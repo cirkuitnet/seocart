@@ -1,0 +1,16 @@
+{
+	// Type-checking and editor support for the Playwright suite only: `npx tsc --noEmit -p .`
+	// Playwright transpiles these files itself, so nothing is emitted from here.
+	"compilerOptions": {
+		"target": "ES2022",
+		"lib": [ "ES2022", "DOM", "DOM.Iterable" ],
+		"module": "preserve",
+		"moduleResolution": "bundler",
+		"types": [ "node" ],
+		"strict": true,
+		"noEmit": true,
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true
+	},
+	"include": [ "playwright.config.ts", "tests/E2E" ]
+}

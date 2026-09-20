@@ -13,6 +13,10 @@ parameters:
 	excludePaths:
 		analyseAndScan:
 			- tools/phpcs/SEOCart/Tests/Fixtures/*
+			# A `wp eval-file` script for disposable sites. It calls WP-CLI and Polylang, and
+			# neither can be discovered: Polylang is not a dependency, and the WP-CLI stubs
+			# conflict with the WordPress 7.1 stubs. It is linted and sniffed like any other file.
+			- bin/dev/polylang-languages.php
 	# Two libraries ship without Composer autoloading, so PHPStan is told where their
 	# symbols live. They are scanned for discovery only, never analysed:
 	# - PHP_CodeSniffer (classes and token constants), used by tools/phpcs/;
