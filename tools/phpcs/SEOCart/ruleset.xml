@@ -1,0 +1,71 @@
+<?xml version="1.0"?>
+<ruleset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="SEOCart" namespace="SEOCart\Tools\phpcs\SEOCart" xsi:noNamespaceSchemaLocation="../../../vendor/squizlabs/php_codesniffer/phpcs.xsd">
+	<description>The SEOCart DRY rules (target-architecture.md, section 2.2) and the WordPress.org "no executable content" lints (wordpress-org-compliance.md, section 7).</description>
+
+	<!--
+		Every sniff under Sniffs/ is part of this standard without being listed here.
+		`composer cs:dry` runs this file on its own; phpcs.xml.dist includes it, so `composer cs`
+		runs it too. Self-tests: Tests/StandardTest.php, run by `composer test:tools`.
+	-->
+
+	<!--
+		The DRY rules govern shipped code only: src/ and the two root files. Tools and tests may,
+		for example, spell out the schema array a compiler is expected to produce. The sniffs take
+		that scope from here and from nowhere else; the fixture tree under Tests/Fixtures/ mirrors it.
+
+		Every path in this file is relative to the root: PHP_CodeSniffer's base path when one is
+		set, otherwise the repository this standard lies in. Helpers/PathScope.php owns that. A
+		rule's include-pattern would be matched anywhere in the absolute path instead, and a
+		checkout below a directory named src/ would then pull tools/ and tests/ into scope.
+
+		A standard cannot choose which files are scanned, so `composer cs:dry` has to name the
+		same paths as its arguments. Tests/StandardTest.php fails when the two lists differ.
+
+		Keep this rule above the rules for the single sniffs: PHP_CodeSniffer hands a category's
+		properties only to the sniffs that no earlier rule has named.
+	-->
+	<rule ref="SEOCart.DRY">
+		<properties>
+			<property name="shippedPaths" type="array">
+				<element value="src"/>
+				<element value="seocart.php"/>
+				<element value="uninstall.php"/>
+			</property>
+		</properties>
+	</rule>
+
+	<!-- DRY rule 2. The schema module is the only place a JSON-Schema array may be spelled out. -->
+	<rule ref="SEOCart.DRY.SchemaLiteral">
+		<properties>
+			<property name="allowedPaths" type="array">
+				<element value="src/Support/Schema"/>
+			</property>
+		</properties>
+	</rule>
+
+	<!-- Every setting goes through the typed settings registry, which alone may write options. -->
+	<rule ref="SEOCart.DRY.RawOptionWrite">
+		<properties>
+			<property name="allowedPaths" type="array">
+				<element value="src/Platform/Settings"/>
+			</property>
+		</properties>
+	</rule>
+
+	<!--
+		DRY rule 7 needs no configuration here: SEOCart.DRY.MoneyArithmeticInInterfaces carries its
+		method lists as defaults, because the Wave 1 task F-SUP pins them to Money's public API with
+		a set-equality test.
+	-->
+
+	<!--
+		Compliance: no executable content, anywhere PHP_CodeSniffer looks. Both sniffs already
+		exist, so they are configured instead of rewritten. eval() is only a warning upstream.
+	-->
+	<rule ref="Squiz.PHP.Eval"/>
+	<rule ref="Squiz.PHP.Eval.Discouraged">
+		<type>error</type>
+		<message>eval() is not allowed: the WordPress.org directory rejects executable content, and merchant-authored text is data, never code.</message>
+	</rule>
+	<rule ref="WordPress.PHP.RestrictedPHPFunctions"/>
+</ruleset>

@@ -12,3 +12,7 @@ parameters:
 	excludePaths:
 		analyseAndScan:
 			- tools/phpcs/SEOCart/Tests/Fixtures/*
+	# PHP_CodeSniffer ships its own autoloader instead of a Composer one, so its classes and
+	# token constants have to be pointed out for the sniffs and self-tests in tools/phpcs/.
+	scanDirectories:
+		- vendor/squizlabs/php_codesniffer/src

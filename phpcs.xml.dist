@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
-<ruleset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="SEOCart" xsi:noNamespaceSchemaLocation="vendor/squizlabs/php_codesniffer/phpcs.xsd">
-	<description>WordPress Coding Standards, PHP compatibility and the SEOCart DRY rules.</description>
+<ruleset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="SEOCart project" xsi:noNamespaceSchemaLocation="vendor/squizlabs/php_codesniffer/phpcs.xsd">
+	<description>WordPress Coding Standards, PHP compatibility and the SEOCart standard (tools/phpcs/SEOCart), for the whole repository.</description>
 
 	<file>.</file>
 
@@ -83,4 +83,10 @@
 			</property>
 		</properties>
 	</rule>
+
+	<!--
+		The SEOCart standard: the DRY sniffs and the "no executable content" lints. Its scope,
+		allow-lists and severities are declared in that file, once; `composer cs:dry` runs it alone.
+	-->
+	<rule ref="./tools/phpcs/SEOCart/ruleset.xml"/>
 </ruleset>
