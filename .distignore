@@ -1,0 +1,57 @@
+# Paths excluded from the release zip. Consumed by bin/build-zip.php.
+#
+# Pattern dialect (implemented by the build script itself, so it is identical on every
+# platform): one pattern per line; `#` starts a comment; a leading `/` anchors the
+# pattern to the plugin root; a pattern without a leading `/` matches a file or
+# directory of that name at any depth; `*` matches within one path segment. A matched
+# directory is excluded with everything beneath it.
+#
+# The zip ships: seocart.php, uninstall.php, readme.txt, LICENSE, CHANGELOG.md, src/,
+# templates/, languages/, build/ (compiled assets) and vendor-scoped/ (Strauss output).
+# The packaging check fails closed: a top-level entry outside that list fails the build.
+# vendor/ is excluded because the scoped copy ships instead; assets/ is excluded because
+# build/ is its compiled form and readme.txt links the public source and build steps
+# (WordPress.org guideline 4).
+
+# Matched at any depth.
+.git
+.gitattributes
+.gitignore
+.gitkeep
+.DS_Store
+Thumbs.db
+
+# Root only. Anchored so that a same-named directory inside src/, build/ or
+# vendor-scoped/ is never stripped by accident. `/.*` covers every dotfile and
+# dot-directory at the root: all of them are development material.
+/.*
+/artifacts
+/assets
+/bin
+/dist
+/docs
+/node_modules
+/spikes
+/tests
+/test-results
+/playwright-report
+/tools
+/vendor
+/composer.json
+/composer.lock
+/package.json
+/package-lock.json
+/budget.json
+/*.dist
+/*.neon
+/*.cjs
+/*.mjs
+/phpcs.xml
+/phpunit.xml
+/playwright.config.ts
+/tsconfig.json
+/README.md
+/CONTRIBUTING.md
+/CODE_OF_CONDUCT.md
+/SECURITY.md
+/AGENTS.md

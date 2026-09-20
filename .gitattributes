@@ -1,0 +1,24 @@
+# Normalize line endings: the repository is authored on Windows and FreeBSD alike.
+* text=auto eol=lf
+
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.mo    binary
+*.zip   binary
+
+# Dev-only paths never leave through `git archive` / "Download ZIP". bin/ and tools/ are
+# NOT listed: composer.json and package.json call scripts in them, so an archive without
+# them could not install or build. The release zip is built by bin/build-zip.php from
+# .distignore; tests/Unit/Packaging/IgnoreListsTest.php keeps the two lists in step.
+/.github/            export-ignore
+/bin/dev/            export-ignore
+/docs/               export-ignore
+/spikes/             export-ignore
+/tests/              export-ignore

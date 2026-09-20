@@ -1,0 +1,30 @@
+# Dependencies and build output — reproducible from the lockfiles, never committed.
+/vendor/
+/vendor-scoped/
+/node_modules/
+/build/
+/dist/
+
+# Local, per-checkout configuration written by bin/dev/ — holds generated database credentials.
+/tests/wp-tests-config.local.php
+/.env
+/.env.*
+!/.env.example
+
+# Test and tool output.
+/artifacts/
+/test-results/
+/playwright-report/
+/tests/E2E/.auth/
+/.phpunit.cache/
+/.phpunit.result.cache
+/.phpcs-cache
+/phpcs.xml
+/phpstan.neon
+/phpunit.xml
+
+# Editors and operating systems.
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
