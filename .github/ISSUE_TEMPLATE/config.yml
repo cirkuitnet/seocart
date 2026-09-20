@@ -1,0 +1,7 @@
+# The issue chooser. Security reports never go in a public issue: the first
+# entry sends the reporter to the security policy (SECURITY.md) instead.
+blank_issues_enabled: false
+contact_links:
+    - name: Report a security vulnerability
+      url: https://github.com/cirkuitnet/seocart/security/policy
+      about: Do not open a public issue for a vulnerability. Follow the private reporting steps in SECURITY.md.
