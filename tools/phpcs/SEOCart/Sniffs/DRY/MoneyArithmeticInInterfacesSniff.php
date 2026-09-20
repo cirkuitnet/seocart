@@ -17,7 +17,7 @@ use PHP_CodeSniffer\Util\Tokens;
 use SEOCart\Tools\phpcs\SEOCart\Helpers\PathScope;
 
 /**
- * Enforces DRY rule 7, "one formula, one place", in every directory named `Interfaces`.
+ * A syntax tripwire for direct spellings of DRY rule 7 in directories named `Interfaces`.
  *
  * An adapter (REST, WP-CLI, admin, block, e-mail) receives amounts that the calculation
  * pipeline has already computed and only formats them. Two shapes are reported:

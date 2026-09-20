@@ -17,7 +17,7 @@ use PHP_CodeSniffer\Util\Tokens;
 use SEOCart\Tools\phpcs\SEOCart\Helpers\PathScope;
 
 /**
- * Enforces DRY rule 2: a field's type, constraint, default and example are declared once.
+ * A syntax tripwire for the obvious array-literal spelling of DRY rule 2.
  *
  * A field is declared as a `FieldSpec` and compiled into each dialect (REST arguments, REST
  * response, Ability, OpenAPI, WP-CLI synopsis, admin form). A schema array typed by hand is

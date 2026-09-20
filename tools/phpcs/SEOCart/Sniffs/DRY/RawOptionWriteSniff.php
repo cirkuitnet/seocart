@@ -17,7 +17,7 @@ use PHP_CodeSniffer\Util\Tokens;
 use SEOCart\Tools\phpcs\SEOCart\Helpers\PathScope;
 
 /**
- * Forbids raw option writes outside the directories listed in `$allowedPaths`.
+ * A syntax tripwire for obvious raw option calls outside `$allowedPaths`.
  *
  * The typed settings registry declares every setting once: its name, type, default,
  * sanitizer and autoload flag (target-architecture.md, sections 2.2 and 12). A direct
