@@ -1,0 +1,104 @@
+# One cell of the WordPress integration suite: one PHP version against one WordPress
+# version, on a real MySQL 8.4 server. WordPress Playground and SQLite are not a
+# correctness oracle for this plugin, so there is no cell without MySQL.
+#
+# Reusable because two workflows run it: ci.yml (the PHP x WordPress matrix) and
+# nightly.yml (WordPress nightly). Every command below is one of the repository's own
+# scripts, so the same cell runs on a developer machine with the same two lines.
+
+name: Integration tests (reusable)
+
+on:
+    workflow_call:
+        inputs:
+            php:
+                description: 'PHP version, for example "8.5". Left out, the cell runs on the version the plugin is developed on.'
+                required: false
+                type: string
+                default: ''
+            wp:
+                description: 'A WordPress release line ("7.1"), an exact release ("7.1.1"), "latest" or "nightly".'
+                required: true
+                type: string
+            allow-failure:
+                description: 'Report a failing cell without failing the workflow that called it.'
+                required: false
+                type: boolean
+                default: false
+
+permissions:
+    contents: read
+
+env:
+    # The version the plugin is developed on: what a caller gets when it names no version.
+    # A caller cannot pass its own `env` to a reusable workflow, so the default lives here.
+    PHP_VERSION: '8.4'
+    # Throwaway values for the MySQL service container below. The container exists for the
+    # length of one job and is reachable from nowhere else; these are not secrets and are
+    # used for nothing but CI. bin/ci/prepare-integration.sh reads them.
+    SEOCART_CI_DB_HOST: '127.0.0.1:3306'
+    SEOCART_CI_DB_USER: root
+    SEOCART_CI_DB_PASSWORD: ci-throwaway
+    SEOCART_CI_DB_NAME: seocart_tests
+
+jobs:
+    integration:
+        name: PHP ${{ inputs.php || '(development version)' }}, WordPress ${{ inputs.wp }}
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+        continue-on-error: ${{ inputs.allow-failure }}
+        services:
+            mysql:
+                image: mysql:8.4
+                env:
+                    MYSQL_ROOT_PASSWORD: ${{ env.SEOCART_CI_DB_PASSWORD }}
+                    MYSQL_DATABASE: ${{ env.SEOCART_CI_DB_NAME }}
+                ports:
+                    - 3306:3306
+                # --host forces TCP: while the image initialises, MySQL listens on its socket
+                # only, so the container turns healthy when the real server accepts connections.
+                options: >-
+                    --health-cmd="mysqladmin ping --host=127.0.0.1 --silent"
+                    --health-interval=5s
+                    --health-timeout=5s
+                    --health-retries=24
+        steps:
+            - name: Check out the repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+
+            - name: Set up PHP ${{ inputs.php || env.PHP_VERSION }}
+              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+              with:
+                  php-version: ${{ inputs.php || env.PHP_VERSION }}
+                  extensions: mysqli
+                  ini-file: development
+                  coverage: none
+                  tools: wp-cli
+
+            - name: Find the Composer cache directory
+              id: composer-cache
+              run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+            - name: Cache Composer downloads
+              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: ${{ steps.composer-cache.outputs.dir }}
+                  key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+                  restore-keys: composer-${{ runner.os }}-
+
+            # With scripts: the plugin loads its libraries from vendor-scoped/.
+            - name: Install Composer dependencies
+              run: composer install --no-interaction --no-progress --prefer-dist
+
+            # The locked wp-phpunit package supplies the 7.1.x test library for every core
+            # version. The CI nightly cell therefore runs newer core against that library and
+            # is advisory (continue-on-error); matching the library to core is a follow-up.
+            - name: Download WordPress and write the test configuration
+              run: sh bin/ci/prepare-integration.sh "$WP_VERSION"
+              env:
+                  WP_VERSION: ${{ inputs.wp }}
+
+            - name: Run the integration suite
+              run: composer test:integration

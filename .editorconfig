@@ -9,9 +9,10 @@ trim_trailing_whitespace = true
 indent_style = tab
 indent_size = 4
 
+# Four spaces, as @wordpress/prettier-config formats YAML: `prettier --check .` is the gate.
 [*.{yml,yaml}]
 indent_style = space
-indent_size = 2
+indent_size = 4
 
 [*.md]
 trim_trailing_whitespace = false

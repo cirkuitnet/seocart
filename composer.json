@@ -109,9 +109,10 @@
 		"test:migration": "@test:integration --group migration",
 		"test:performance": "@test:integration --group performance",
 		"test:contracts": [
-			"@test:unit --group contract",
+			"@test:contracts:unit",
 			"@test:integration --group contract"
 		],
+		"test:contracts:unit": "@test:unit --group contract --fail-on-empty-test-suite",
 		"test:reference-fixtures": [
 			"@test:unit --group reference-fixture",
 			"@test:integration --group reference-fixture"
@@ -146,6 +147,7 @@
 		"test:unit": "Runs the unit suite. WordPress is never loaded.",
 		"test:integration": "Runs the integration suite against WordPress and a real MySQL database.",
 		"test:tools": "Runs the self-tests for the custom sniffs and checkers in tools/.",
+		"test:contracts:unit": "Runs the contract group of the unit suite and fails when the group selects no test.",
 		"docs:generate": "Regenerates every committed, generated document.",
 		"docs:check": "Fails when a generated document has drifted from its source, and prints the command that regenerates it.",
 		"wporg:check": "Runs the WordPress.org directory checks that do not need a built zip.",

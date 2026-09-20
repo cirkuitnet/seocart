@@ -1,0 +1,199 @@
+# The build chain: build the release zip, then validate, check and install that exact zip.
+#
+#   build -> packaging-validate -> plugin-check
+#                               -> install-smoke
+#
+# Reusable because two workflows run it: ci.yml on every pull request and release.yml on
+# every tag. A release is therefore built and proven by the same jobs as a pull request,
+# not by a copy of them. Everything after `build` works on the uploaded zip and never on
+# the source tree: what is checked is what ships.
+#
+# Branch protection sees these jobs under the name of the calling job, for example
+# "package / build" and "package / install-smoke".
+
+name: Package (reusable)
+
+on:
+    workflow_call:
+        outputs:
+            artifact:
+                description: 'Name of the workflow artifact that holds seocart-<version>.zip and its SHA256SUMS.'
+                value: ${{ jobs.build.outputs.artifact }}
+
+permissions:
+    contents: read
+
+env:
+    ZIP_ARTIFACT: seocart-zip
+    # The zip is built on the PHP floor (target architecture, section 17) and installed on
+    # the version the plugin is developed on.
+    PHP_FLOOR: '8.3'
+    PHP_VERSION: '8.4'
+    NODE_VERSION: '22'
+    # Throwaway values for the MySQL service container of install-smoke. The container
+    # exists for the length of one job and is reachable from nowhere else; these are not
+    # secrets and are used for nothing but CI. bin/ci/install-smoke.sh reads them.
+    SEOCART_CI_DB_HOST: '127.0.0.1:3306'
+    SEOCART_CI_DB_USER: root
+    SEOCART_CI_DB_PASSWORD: ci-throwaway
+    SEOCART_CI_DB_NAME: seocart_smoke
+
+jobs:
+    build:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+        outputs:
+            artifact: ${{ env.ZIP_ARTIFACT }}
+        steps:
+            - &checkout
+              name: Check out the repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+
+            - name: Set up PHP ${{ env.PHP_FLOOR }}
+              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+              with:
+                  php-version: ${{ env.PHP_FLOOR }}
+                  ini-file: development
+                  coverage: none
+
+            - name: Find the Composer cache directory
+              id: composer-cache
+              run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+            - name: Cache Composer downloads
+              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: ${{ steps.composer-cache.outputs.dir }}
+                  key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+                  restore-keys: composer-${{ runner.os }}-
+
+            # With scripts: the post-install script runs Strauss, which writes the
+            # vendor-scoped/ directory that ships in the zip. Strauss is a development
+            # dependency, so this is a full install; vendor/ itself never enters the zip.
+            - name: Install Composer dependencies
+              run: composer install --no-interaction --no-progress --prefer-dist
+
+            - name: Set up Node ${{ env.NODE_VERSION }}
+              uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+
+            - name: Install npm dependencies
+              run: npm ci
+
+            - name: Build the assets
+              run: npm run build
+
+            # Writes dist/seocart-<version>.zip and dist/SHA256SUMS. The checksum is taken here,
+            # at build time, by the script that owns it; release.yml verifies it and never
+            # computes it again.
+            - name: Build the zip
+              run: php bin/build-zip.php
+
+            - name: Upload the zip and its checksum
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: ${{ env.ZIP_ARTIFACT }}
+                  path: |
+                      dist/seocart-*.zip
+                      dist/SHA256SUMS
+                  if-no-files-found: error
+                  retention-days: 14
+
+    packaging-validate:
+        needs: build
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            # The checkout supplies bin/check-zip.php and tools/Packaging/. The checker requires
+            # its classes by path and loads no autoloader, so nothing is installed here.
+            - *checkout
+
+            - name: Set up PHP ${{ env.PHP_VERSION }}
+              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+              with:
+                  php-version: ${{ env.PHP_VERSION }}
+                  ini-file: development
+                  coverage: none
+
+            - &download-zip
+              name: Download the zip
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+              with:
+                  name: ${{ env.ZIP_ARTIFACT }}
+                  path: dist
+
+            # Size budget (5 MB, hard limit 10 MB), no development files, nothing outside the
+            # list of shipped paths: the rules live in the script.
+            - name: Validate the zip
+              run: php bin/check-zip.php dist/seocart-*.zip
+
+    plugin-check:
+        needs: packaging-validate
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+        steps:
+            # No checkout: the only plugin on this runner is the one unpacked from the zip.
+            - *download-zip
+
+            - name: Unpack the zip
+              run: |
+                  unzip -q dist/seocart-*.zip -d plugin
+                  test -f plugin/seocart/seocart.php
+
+            # Findings of type ERROR fail the job; WARNING findings are annotations and must
+            # reach zero before 1.0. The action takes the plugin slug from the directory name.
+            # It gets no token: it would only use one to comment on the pull request, and
+            # that needs a write permission this workflow does not grant.
+            #
+            # vendor-scoped/ is excluded the way Plugin Check itself excludes vendor/: it holds
+            # third-party libraries only. Action Scheduler ships there unmodified (ADR-0008), so
+            # it keeps its own text domain, which Plugin Check reports as several hundred errors
+            # that are not ours to fix. First-party code gets no exclusion of any kind.
+            - name: Run Plugin Check
+              uses: WordPress/plugin-check-action@10857da14b6c2246d15402b3e69f777edcf8c12e # v1.1.9
+              with:
+                  build-dir: ./plugin/seocart
+                  exclude-directories: vendor-scoped
+                  repo-token: ''
+
+    install-smoke:
+        needs: packaging-validate
+        runs-on: ubuntu-24.04
+        timeout-minutes: 15
+        services:
+            mysql:
+                image: mysql:8.4
+                env:
+                    MYSQL_ROOT_PASSWORD: ${{ env.SEOCART_CI_DB_PASSWORD }}
+                    MYSQL_DATABASE: ${{ env.SEOCART_CI_DB_NAME }}
+                ports:
+                    - 3306:3306
+                # --host forces TCP: while the image initialises, MySQL listens on its socket
+                # only, so the container turns healthy when the real server accepts connections.
+                options: >-
+                    --health-cmd="mysqladmin ping --host=127.0.0.1 --silent"
+                    --health-interval=5s
+                    --health-timeout=5s
+                    --health-retries=24
+        steps:
+            # The checkout supplies bin/ci/ only; the plugin under test comes from the zip.
+            - *checkout
+
+            # WP-CLI creates the site and installs the zip; WordPress needs mysqli.
+            - name: Set up PHP ${{ env.PHP_VERSION }}
+              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+              with:
+                  php-version: ${{ env.PHP_VERSION }}
+                  extensions: mysqli
+                  ini-file: development
+                  coverage: none
+                  tools: wp-cli
+
+            - *download-zip
+
+            - name: Install the zip on a fresh WordPress site
+              run: sh bin/ci/install-smoke.sh dist/seocart-*.zip

@@ -1,0 +1,100 @@
+# Deploys one published GitHub Release to the WordPress.org plugin directory.
+#
+# WARNING: PUSHING TO THE WORDPRESS.ORG SVN REPOSITORY MAKES THE PLUGIN LIVE, AND IT
+# CANNOT BE UNDONE. Every site that runs SEOCart is offered the new version within hours.
+# There is no staging directory, and the only "off switch" is closing the plugin.
+#
+# That is why this workflow
+#   - starts by hand only (workflow_dispatch): no tag, push, schedule or other workflow
+#     can start it;
+#   - is a dry run unless the person who starts it turns the dry run off;
+#   - deploys the zip attached to the GitHub Release, after verifying its checksum, and
+#     builds nothing: what release.yml proved is what reaches the directory;
+#   - refuses pre-release tags: betas ship from GitHub Releases, never from the directory;
+#   - is inert until it is configured. It needs an environment named "wordpress-org" that
+#     holds the secrets SVN_USERNAME and SVN_PASSWORD. Without them the first step fails
+#     before anything is downloaded. Give that environment required reviewers, so that a
+#     deployment always takes two people.
+
+name: Deploy to WordPress.org
+
+on:
+    workflow_dispatch:
+        inputs:
+            tag:
+                description: 'Tag of the published GitHub Release to deploy, for example v1.0.0.'
+                required: true
+                type: string
+            dry-run:
+                description: 'Dry run: prepare the SVN commit but do not send it. Turn off to go live.'
+                required: true
+                type: boolean
+                default: true
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ${{ github.workflow }}
+    cancel-in-progress: false
+
+jobs:
+    deploy:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+        environment: wordpress-org
+        env:
+            # The tag reaches the shell through the environment, never through text substituted
+            # into a script.
+            TAG: ${{ inputs.tag }}
+        steps:
+            - name: Refuse to run until the deployment is configured
+              run: |
+                  if [ -z "$SVN_USERNAME" ] || [ -z "$SVN_PASSWORD" ]; then
+                    echo "::error::The wordpress-org environment has no SVN_USERNAME and SVN_PASSWORD secrets. Nothing was deployed."
+                    exit 1
+                  fi
+              env:
+                  SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+                  SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+
+            - name: Refuse anything but a final release tag
+              id: release
+              run: |
+                  if ! printf '%s\n' "$TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+                    echo "::error::$TAG is not a final release tag (vX.Y.Z). Pre-releases never go to the directory."
+                    exit 1
+                  fi
+
+                  echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+            # The checkout supplies the optional directory assets from .wordpress-org/ when
+            # that directory exists; it is absent today.
+            - name: Check out the tag
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  ref: refs/tags/${{ inputs.tag }}
+                  persist-credentials: false
+
+            - name: Download the released zip and verify its checksum
+              run: |
+                  mkdir -p "$RUNNER_TEMP/release"
+                  gh release download "$TAG" --dir "$RUNNER_TEMP/release" --pattern 'seocart-*.zip' --pattern SHA256SUMS
+                  cd "$RUNNER_TEMP/release"
+                  sha256sum -c SHA256SUMS
+                  unzip -q seocart-*.zip -d unpacked
+                  test -f unpacked/seocart/seocart.php
+              env:
+                  GH_TOKEN: ${{ github.token }}
+
+            # Copies the unpacked release into SVN trunk/ and tags/<version>/, then commits.
+            - name: Deploy to the WordPress.org SVN repository
+              uses: 10up/action-wordpress-plugin-deploy@54bd289b8525fd23a5c365ec369185f2966529c2 # 2.3.0
+              with:
+                  dry-run: ${{ inputs.dry-run }}
+              env:
+                  SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+                  SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+                  SLUG: seocart
+                  VERSION: ${{ steps.release.outputs.version }}
+                  BUILD_DIR: ${{ runner.temp }}/release/unpacked/seocart

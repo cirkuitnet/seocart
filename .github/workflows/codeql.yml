@@ -1,0 +1,93 @@
+# CodeQL code scanning.
+#
+# PHP IS NOT A CODEQL LANGUAGE. CodeQL analyses C/C++, C#, Go, Java/Kotlin,
+# JavaScript/TypeScript, Python, Ruby, Rust, Swift and GitHub Actions workflows; nothing
+# in this file looks at src/. The PHP side of the plugin is covered by PHPStan, the
+# WordPress security sniffs in PHP_CodeSniffer and Plugin Check (ci.yml), and by review.
+# What CodeQL does cover here is the JavaScript/TypeScript under assets/ and bin/, and
+# these workflow files themselves.
+#
+# Informational, never a required check. Code scanning is free for public repositories
+# only; while this repository is private (and has no GitHub Advanced Security licence)
+# the analysis is skipped instead of failing every week. The visibility is read from the
+# API when the run starts, not from the event payload: a scheduled run is not guaranteed
+# to carry a `repository` object, and in an expression a missing value compares equal to
+# `false`, so `github.event.repository.private == false` would let the job run exactly
+# where it must not.
+
+name: CodeQL
+
+on:
+    schedule:
+        # Mondays, 05:41 UTC.
+        - cron: '41 5 * * 1'
+    pull_request:
+        # The strategy document says "src/**", written on the assumption that CodeQL scans
+        # PHP. These are the paths that hold what it can actually analyse.
+        paths:
+            - 'assets/**'
+            - 'bin/**'
+            - 'tests/E2E/**'
+            - 'tests/JS/**'
+            - '*.js'
+            - '*.cjs'
+            - '*.mjs'
+            - '*.ts'
+            - '.github/workflows/**'
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    visibility:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 5
+        outputs:
+            private: ${{ steps.read.outputs.private }}
+        steps:
+            # On its own line, so that a failed API call fails the step and leaves no output.
+            - name: Read the visibility of the repository
+              id: read
+              run: |
+                  private=$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)
+                  echo "private=$private" >> "$GITHUB_OUTPUT"
+              env:
+                  GH_TOKEN: ${{ github.token }}
+
+    analyze:
+        name: analyze (${{ matrix.language }})
+        needs: visibility
+        if: ${{ needs.visibility.outputs.private == 'false' }}
+        runs-on: ubuntu-24.04
+        timeout-minutes: 30
+        permissions:
+            contents: read
+            security-events: write
+        strategy:
+            fail-fast: false
+            matrix:
+                language:
+                    - javascript-typescript
+                    - actions
+        steps:
+            - name: Check out the repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+
+            # Neither language is compiled, so there is no build step between init and analyze.
+            - name: Initialise CodeQL
+              uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+              with:
+                  languages: ${{ matrix.language }}
+                  build-mode: none
+
+            - name: Analyse
+              uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+              with:
+                  category: /language:${{ matrix.language }}

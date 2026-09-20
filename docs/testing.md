@@ -96,6 +96,7 @@ the source of truth. Run `composer list` or `npm run` to see them with their des
 | `composer test:migration`                | The integration suite, group `migration`                                                                        |
 | `composer test:performance`              | The integration suite, group `performance`: query counts, autoload size and the idle-request budget             |
 | `composer test:contracts`                | Group `contract` in both suites: the DRY derivation checks                                                      |
+| `composer test:contracts:unit`           | The unit half of that group; fails when the group selects no test                                               |
 | `composer test:reference-fixtures`       | Group `reference-fixture` in both suites: hand-authored input and expected-output scenarios                     |
 | `composer test:international`            | Group `international` in both suites: tax-inclusive pricing, multi-currency and multilingual scenarios          |
 | `composer test:multilingual-conformance` | The integration suite, group `multilingual-conformance`, on a disposable site with a real multilingual plugin   |
@@ -109,18 +110,22 @@ the source of truth. Run `composer list` or `npm run` to see them with their des
 
 ### npm
 
-| Command                | What it runs                                                                          |
-| ---------------------- | ------------------------------------------------------------------------------------- |
-| `npm run build`        | Compiles `assets/` into `build/`, then checks the result against `budget.json`        |
-| `npm run start`        | The same build in watch mode, without the budget check                                |
-| `npm run lint`         | `lint:js`, `lint:css` and `format:check`                                              |
-| `npm run lint:js`      | ESLint with the WordPress configuration                                               |
-| `npm run lint:css`     | Stylelint with the WordPress configuration, on the CSS and SCSS files under `assets/` |
-| `npm run format`       | Prettier, writing changes                                                             |
-| `npm run format:check` | Prettier, checking only. Covers JavaScript, JSON, YAML, CSS and Markdown              |
-| `npm run test:unit`    | Jest                                                                                  |
-| `npm run test:e2e`     | Playwright, against the site in `WP_BASE_URL`                                         |
-| `npm audit`            | npm's own check of the dependencies against known security advisories                 |
+| Command                     | What it runs                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------- |
+| `npm run build`             | Compiles `assets/` into `build/`, then checks the result against `budget.json`        |
+| `npm run start`             | The same build in watch mode, without the budget check                                |
+| `npm run lint`              | `lint:js`, `lint:css` and `format:check`                                              |
+| `npm run lint:js`           | ESLint with the WordPress configuration                                               |
+| `npm run lint:css`          | Stylelint with the WordPress configuration, on the CSS and SCSS files under `assets/` |
+| `npm run format`            | Prettier, writing changes                                                             |
+| `npm run format:check`      | Prettier, checking only. Covers JavaScript, JSON, YAML, CSS and Markdown              |
+| `npm run test:unit`         | Jest                                                                                  |
+| `npm run test:e2e`          | Playwright, against the site in `WP_BASE_URL`                                         |
+| `npm run test:e2e:selftest` | The self-tests of the end-to-end harness. They need no site                           |
+| `npm run typecheck`         | The TypeScript compiler, checking only, over the Playwright configuration and tests   |
+| `npm run env:start`         | Starts a disposable `wp-env` site (Docker) with the checkout mounted as the plugin    |
+| `npm run env:cli`           | Runs a command in that site, for example `npm run env:cli -- wp plugin list`          |
+| `npm audit`                 | npm's own check of the dependencies against known security advisories                 |
 
 ## Static gates
 

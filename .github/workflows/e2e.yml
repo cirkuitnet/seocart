@@ -1,0 +1,110 @@
+# End-to-end tests against a disposable wp-env (Docker) site on the runner.
+#
+# THIS IS THE SECONDARY E2E TARGET. The primary target is a real server instance: a
+# disposable WordPress site provisioned by bin/dev/provision-site.sh on the development
+# server, which `npm run test:e2e` drives from a workstation as described in docs/testing.md.
+# That instance runs the production stack — a real web server, PHP-FPM and
+# MySQL 8.4 — and is the source of truth. This workflow exists to notice, overnight, that
+# the suite stopped passing on a second, independent stack. It is never a required check.
+#
+# The same command and the same three variables are used in both places: WP_BASE_URL,
+# WP_USERNAME and WP_PASSWORD.
+
+name: E2E (wp-env, secondary)
+
+on:
+    schedule:
+        # 04:23 UTC, after nightly.yml.
+        - cron: '23 4 * * *'
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ${{ github.workflow }}
+    cancel-in-progress: true
+
+env:
+    PHP_VERSION: '8.4'
+    NODE_VERSION: '22'
+    # wp-env is started through the npm scripts `env:start` and `env:cli`, never through
+    # npx: as a devDependency it is pinned by package-lock.json with an integrity hash, and
+    # Dependabot keeps it current. .wp-env.json mounts the checkout at
+    # wp-content/plugins/seocart, so the slug does not depend on what the repository or its
+    # checkout directory is called.
+    #
+    # The address and the administrator account wp-env creates on every start. They are
+    # documented defaults of a container that lives for one job, not credentials.
+    WP_BASE_URL: http://localhost:8888
+    WP_USERNAME: admin
+    WP_PASSWORD: password
+
+jobs:
+    e2e:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 30
+        steps:
+            - name: Check out the repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+
+            - name: Set up PHP ${{ env.PHP_VERSION }}
+              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+              with:
+                  php-version: ${{ env.PHP_VERSION }}
+                  ini-file: development
+                  coverage: none
+
+            - name: Find the Composer cache directory
+              id: composer-cache
+              run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+            - name: Cache Composer downloads
+              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: ${{ steps.composer-cache.outputs.dir }}
+                  key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+                  restore-keys: composer-${{ runner.os }}-
+
+            # With scripts: the mounted plugin loads its libraries from vendor-scoped/.
+            - name: Install Composer dependencies
+              run: composer install --no-interaction --no-progress --prefer-dist
+
+            - name: Set up Node ${{ env.NODE_VERSION }}
+              uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+
+            - name: Install npm dependencies
+              run: npm ci
+
+            - name: Build the assets
+              run: npm run build
+
+            - name: Install the Playwright browser
+              run: npx playwright install --with-deps chromium
+
+            - name: Start wp-env
+              run: npm run env:start
+
+            # A mapped directory is mounted but not activated.
+            - name: Activate the plugin
+              run: npm run env:cli -- wp plugin activate seocart
+
+            - name: Run the end-to-end suite
+              run: npm run test:e2e
+
+            - name: Upload the Playwright report
+              if: ${{ !cancelled() }}
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: playwright-report
+                  path: |
+                      playwright-report/
+                      test-results/
+                      artifacts/
+                  if-no-files-found: ignore
+                  retention-days: 7

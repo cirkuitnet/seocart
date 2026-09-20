@@ -18,6 +18,7 @@
 # them could not install or build. The release zip is built by bin/build-zip.php from
 # .distignore; tests/Unit/Packaging/IgnoreListsTest.php keeps the two lists in step.
 /.github/            export-ignore
+/bin/ci/             export-ignore
 /bin/dev/            export-ignore
 /docs/               export-ignore
 /spikes/             export-ignore

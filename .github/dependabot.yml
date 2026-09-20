@@ -1,0 +1,77 @@
+# Dependabot: weekly, grouped version updates for the three ecosystems in this repository.
+#
+# Grouping keeps the weekly noise to a handful of pull requests. A major version always
+# gets a pull request of its own, because it is the kind of update that needs reading.
+# Commit subjects follow Conventional Commits ("build(deps): …", "ci(deps): …").
+#
+# The workflows pin every action to a commit SHA with the version in a trailing comment;
+# Dependabot moves both together.
+
+version: 2
+
+updates:
+    - package-ecosystem: composer
+      directory: /
+      schedule:
+          interval: weekly
+          day: monday
+      open-pull-requests-limit: 5
+      commit-message:
+          prefix: build
+          include: scope
+      groups:
+          # Shipped inside the zip (vendor-scoped/). Kept apart from the development tools so
+          # that a change which reaches sites is reviewed as one.
+          composer-runtime:
+              dependency-type: production
+              update-types:
+                  - minor
+                  - patch
+          composer-development:
+              dependency-type: development
+              update-types:
+                  - minor
+                  - patch
+
+    - package-ecosystem: npm
+      directory: /
+      schedule:
+          interval: weekly
+          day: monday
+      open-pull-requests-limit: 5
+      commit-message:
+          prefix: build
+          include: scope
+      groups:
+          # The @wordpress packages are released together and must move together.
+          npm-wordpress:
+              patterns:
+                  - '@wordpress/*'
+              update-types:
+                  - minor
+                  - patch
+          npm-other:
+              patterns:
+                  - '*'
+              exclude-patterns:
+                  - '@wordpress/*'
+              update-types:
+                  - minor
+                  - patch
+
+    - package-ecosystem: github-actions
+      directory: /
+      schedule:
+          interval: weekly
+          day: monday
+      open-pull-requests-limit: 5
+      commit-message:
+          prefix: ci
+          include: scope
+      groups:
+          github-actions:
+              patterns:
+                  - '*'
+              update-types:
+                  - minor
+                  - patch

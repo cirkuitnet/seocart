@@ -33,4 +33,22 @@ module.exports = [
 			'no-console': 'off',
 		},
 	},
+	{
+		// The package's own `test` works on a trusted certificate and fails on a development one.
+		files: [ 'tests/E2E/specs/**/*.ts' ],
+		rules: {
+			'no-restricted-imports': [
+				'error',
+				{
+					paths: [
+						{
+							name: '@wordpress/e2e-test-utils-playwright',
+							message:
+								'Import test and expect from ../fixtures: the package fixture ignores SEOCART_E2E_IGNORE_HTTPS_ERRORS and keeps its own session file.',
+						},
+					],
+				},
+			],
+		},
+	},
 ];

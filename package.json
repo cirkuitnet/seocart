@@ -25,16 +25,23 @@
 		"format": "prettier --write .",
 		"format:check": "prettier --check .",
 		"test:unit": "wp-scripts test-unit-js --passWithNoTests",
-		"test:e2e": "playwright test"
+		"test:e2e": "playwright test",
+		"test:e2e:selftest": "playwright test --config tests/E2E/selftest",
+		"typecheck": "tsc --noEmit -p .",
+		"env:start": "wp-env start",
+		"env:cli": "wp-env run cli"
 	},
 	"devDependencies": {
 		"@axe-core/playwright": "^4.13.0",
 		"@playwright/test": "^1.63.0",
+		"@types/node": "^20.19.43",
 		"@wordpress/e2e-test-utils-playwright": "^1.54.0",
+		"@wordpress/env": "^11.15.0",
 		"@wordpress/eslint-plugin": "^26.0.0",
 		"@wordpress/prettier-config": "^4.55.0",
 		"@wordpress/scripts": "^35.0.0",
 		"@wordpress/stylelint-config": "^25.0.0",
-		"prettier": "npm:wp-prettier@^3.0.3"
+		"prettier": "npm:wp-prettier@^3.0.3",
+		"typescript": "^6.0.3"
 	}
 }

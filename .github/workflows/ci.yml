@@ -1,0 +1,295 @@
+# Continuous integration: every gate a pull request must pass.
+#
+# Every job runs the repository's own scripts (`composer <script>`, `npm run <script>`,
+# `php bin/<tool>.php`, `sh bin/ci/<tool>.sh`). A workflow never restates a command line
+# that a script owns, so a gate that fails here fails the same way, with the same
+# command, on a developer machine.
+#
+# Job graph (arrows are `needs`):
+#
+#   lint-php ------+-> static-analysis --+-> integration-tests (PHP x WordPress)
+#                  +-> unit-tests -------+-> package: build -> packaging-validate
+#                  +-> dry-gates         |                       -> plugin-check
+#                  +-> docs-drift        |                       -> install-smoke
+#                  +-> wporg-gates       |
+#   js-lint-test ------------------------+ (package only)
+#   workflow-lint
+#
+# Required checks for branch protection on main: lint-php, workflow-lint, static-analysis,
+# dry-gates, docs-drift, wporg-gates, every unit-tests cell, the "WordPress 7.1"
+# integration-tests cells, js-lint-test, and the four "package / …" jobs. The WordPress
+# nightly cells are informational.
+#
+# PHP_VERSION, NODE_VERSION, the action pins and the Composer install line are stated in
+# more than one workflow file, because steps cannot be shared between files without a
+# composite action. bin/ci/check-workflows.sh (the workflow-lint job) fails when any two
+# statements of one of those facts disagree.
+
+name: CI
+
+on:
+    pull_request:
+    push:
+        branches:
+            - main
+
+permissions:
+    contents: read
+
+# A newer push to a pull request supersedes the run in progress. Runs on main are never
+# cancelled: every commit on main keeps a complete result.
+concurrency:
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+    # The version the plugin is developed on. The matrices below cover the rest.
+    PHP_VERSION: '8.4'
+    NODE_VERSION: '22'
+
+jobs:
+    lint-php:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - &checkout
+              name: Check out the repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+
+            - &setup-php
+              name: Set up PHP ${{ env.PHP_VERSION }}
+              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+              with:
+                  php-version: ${{ env.PHP_VERSION }}
+                  ini-file: development
+                  coverage: none
+
+            - &composer-cache-dir
+              name: Find the Composer cache directory
+              id: composer-cache
+              run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+            - &composer-cache
+              name: Cache Composer downloads
+              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: ${{ steps.composer-cache.outputs.dir }}
+                  key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+                  restore-keys: composer-${{ runner.os }}-
+
+            - name: Validate composer.json
+              run: composer validate --strict
+
+            # Without scripts: a syntax check and PHP_CodeSniffer read files and never load a
+            # class, so they do not need vendor-scoped/. Composer plugins still run, which is
+            # what registers the coding standards with PHP_CodeSniffer.
+            - name: Install Composer dependencies
+              run: composer install --no-interaction --no-progress --prefer-dist --no-scripts
+
+            - name: Check PHP syntax
+              run: composer lint:php
+
+            - name: Check coding standards
+              run: composer cs
+
+    static-analysis:
+        needs: lint-php
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - *checkout
+            - *setup-php
+            - *composer-cache-dir
+            - *composer-cache
+
+            # With scripts: the post-install script runs Strauss, which writes vendor-scoped/,
+            # the only copy of the runtime libraries the plugin ever loads.
+            - &composer-install
+              name: Install Composer dependencies
+              run: composer install --no-interaction --no-progress --prefer-dist
+
+            - name: Run PHPStan
+              run: composer stan
+
+    # The DRY rules described in docs/testing.md that need no database. The integration
+    # half of `composer test:contracts` runs inside integration-tests, because
+    # `composer test:integration` runs every group of that suite.
+    dry-gates:
+        needs: lint-php
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - *checkout
+            - *setup-php
+            - *composer-cache-dir
+            - *composer-cache
+            - *composer-install
+
+            - name: Run the DRY and compliance sniffs
+              run: composer cs:dry
+
+            # The script fails when the group is empty: a contract gate that runs no test, for
+            # example after the group was renamed, must not pass.
+            - name: Run the contract tests of the unit suite
+              run: composer test:contracts:unit
+
+            - name: Run the self-tests of the sniffs and checkers
+              run: composer test:tools
+
+    docs-drift:
+        needs: lint-php
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - *checkout
+            - *setup-php
+            - *composer-cache-dir
+            - *composer-cache
+            - *composer-install
+
+            - name: Check that generated documents match their sources
+              run: composer docs:check
+
+    # The WordPress.org directory rules that can be checked without a built zip. Zip size
+    # and contents are checked by "package / packaging-validate", Plugin Check by
+    # "package / plugin-check", and the agreement of the version with the git tag by
+    # release.yml.
+    wporg-gates:
+        needs: lint-php
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - *checkout
+            - *setup-php
+            - *composer-cache-dir
+            - *composer-cache
+            - *composer-install
+
+            - name: Run the WordPress.org directory checks
+              run: composer wporg:check
+
+            - name: Check the licences of the runtime dependencies
+              run: composer licenses:check
+
+    unit-tests:
+        name: unit-tests (PHP ${{ matrix.php }})
+        needs: lint-php
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        strategy:
+            fail-fast: false
+            matrix:
+                php: &php-versions ['8.3', '8.4', '8.5']
+        steps:
+            - *checkout
+
+            - name: Set up PHP ${{ matrix.php }}
+              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+              with:
+                  php-version: ${{ matrix.php }}
+                  ini-file: development
+                  coverage: none
+
+            - *composer-cache-dir
+            - *composer-cache
+            - *composer-install
+
+            # The syntax check runs on every supported PHP version, not only in lint-php.
+            - name: Check PHP syntax
+              run: composer lint:php
+
+            - name: Run the unit suite
+              run: composer test:unit
+
+    # Support window: the current WordPress major and the two before it (target
+    # architecture, section 17). At first release the floor IS 7.1, so the window holds one
+    # release line today. It rolls forward: add each new line when it ships, and drop the
+    # oldest once there are three. "nightly" is allowed to fail and is never a required
+    # check.
+    integration-tests:
+        name: integration-tests
+        needs:
+            - static-analysis
+            - unit-tests
+        strategy:
+            fail-fast: false
+            matrix:
+                php: *php-versions
+                wp: ['7.1', 'nightly']
+        uses: ./.github/workflows/reusable-integration-tests.yml
+        with:
+            php: ${{ matrix.php }}
+            wp: ${{ matrix.wp }}
+            allow-failure: ${{ matrix.wp == 'nightly' }}
+
+    js-lint-test:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 15
+        steps:
+            - *checkout
+
+            - name: Set up Node ${{ env.NODE_VERSION }}
+              uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+
+            - name: Install npm dependencies
+              run: npm ci
+
+            # ESLint, stylelint and the Prettier check.
+            - name: Lint JavaScript, styles and formatting
+              run: npm run lint
+
+            - name: Run the JavaScript unit tests
+              run: npm run test:unit
+
+            # These self-tests need no site or secrets. They keep the accessibility helper,
+            # the fail-fast logic and the session-file ignore rule from rotting. They spawn
+            # `git check-ignore`, so this job needs the real checkout above.
+            - name: Install the Playwright browser
+              run: npx playwright install --with-deps chromium
+
+            - name: Check the Playwright types
+              run: npm run typecheck
+
+            - name: Run the end-to-end harness self-tests
+              run: npm run test:e2e:selftest
+
+    # actionlint (which runs shellcheck over every `run:` block), shellcheck over bin/ci/,
+    # and the agreement of the facts that more than one workflow file states. All three
+    # are in the script, which runs the same way on a developer machine.
+    workflow-lint:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        env:
+            # actionlint publishes no action and is not an npm or Composer package, so
+            # Dependabot cannot see this pin: raise the version and the checksum together, by
+            # hand, from the checksums file of the release. shellcheck is part of the runner
+            # image.
+            ACTIONLINT_VERSION: '1.7.12'
+            ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        steps:
+            - *checkout
+
+            - name: Install actionlint
+              run: |
+                  archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+                  curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" \
+                    "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
+                  echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+                  mkdir -p "$RUNNER_TEMP/bin"
+                  tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/bin" actionlint
+                  echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+            - name: Lint the workflows and the CI scripts
+              run: sh bin/ci/check-workflows.sh
+
+    package:
+        needs:
+            - static-analysis
+            - unit-tests
+            - js-lint-test
+        uses: ./.github/workflows/reusable-package.yml

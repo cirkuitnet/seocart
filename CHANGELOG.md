@@ -37,8 +37,25 @@ releasable.
   Prettier, and a compiled-asset size budget that runs on every build.
 - A PHPUnit configuration with three suites: `unit` and `tools`, which never load WordPress,
   and `integration`, which runs against WordPress and a real MySQL database.
-- A unit test that keeps the plugin header, the version constants and the package
-  manifests in agreement.
+- A unit test that keeps the plugin header, the version constants, the package manifests
+  and the requirements table in `README.md` in agreement.
+- A custom PHP_CodeSniffer standard, `SEOCart`, with its own self-tests. It rejects a
+  JSON-Schema array spelled out outside the schema module, a raw option write outside the
+  settings registry, money arithmetic in an interface adapter, and `eval()`.
+- The integration test harness: query, hook and file-load counters, and a test that holds
+  an idle request to zero plugin queries, 15 loaded files and 25 registered hooks.
+- The end-to-end harness: Playwright with the WordPress test utilities and axe-core, and a
+  first test that finds SEOCart active on the Plugins screen.
+- Scripts under `bin/dev/` that create and remove a disposable WordPress site or test
+  database, optionally with WooCommerce or Polylang active, and a check that nothing is
+  left behind.
+- Release packaging: `bin/build-zip.php` builds a reproducible zip from `.distignore`, and
+  `bin/check-zip.php` rejects a zip that is over budget or holds a file that must not ship.
+- `readme.txt` for the WordPress.org directory, with checks for its headers, its build
+  steps, the licences of bundled libraries, and an "External services" section generated
+  from the one list of outbound endpoints.
+- GitHub Actions workflows for pull requests, nightly runs, end-to-end tests, code scanning,
+  releases and the WordPress.org deployment, and a script that lints them.
 - Contributor documentation: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`,
   `CODE_OF_CONDUCT.md`, `AGENTS.md`, issue templates and a pull request template that
   carries the definition of done.

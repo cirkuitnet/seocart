@@ -25,7 +25,12 @@ One version number appears in several places, and they must agree:
 | The git tag                        | `php bin/check-wporg.php --tag=vX.Y.Z`            |
 
 The same unit test keeps the `Requires PHP` and `Requires at least` headers in step with the
-constants in `seocart.php` and with `composer.json`.
+constants in `seocart.php`, with `composer.json` and with the requirements table in
+`README.md`.
+
+Every release must also **raise** the version (WordPress.org guideline 15). The release
+workflow runs `sh bin/ci/require-version-increase.sh vX.Y.Z`, which accepts only a tag of the
+form `vX.Y.Z` and fails unless it is greater than every earlier release tag in its history.
 
 ## Prepare the release
 

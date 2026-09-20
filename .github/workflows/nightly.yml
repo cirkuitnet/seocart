@@ -1,0 +1,107 @@
+# Nightly: early warnings that are too slow-moving or too noisy to gate a pull request.
+#
+# Nothing here is a required check. A red run means "look at this today", not "main is
+# broken": WordPress trunk moved, or an advisory was published for a dependency.
+#
+# The licence job is different in kind. bin/check-licenses.php reads only the committed
+# lockfiles, so on an unchanged main it gives the answer the last CI run gave; it cannot
+# notice that an upstream package changed its licence until the lockfile moves. It is
+# here because the nightly report is the one place where every dependency check described
+# in docs/testing.md is read together, not because it can find something CI missed.
+
+name: Nightly
+
+on:
+    schedule:
+        # 03:17 UTC. Off the hour, when scheduled runs are delayed the least.
+        - cron: '17 3 * * *'
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ${{ github.workflow }}
+    cancel-in-progress: true
+
+env:
+    PHP_VERSION: '8.4'
+    NODE_VERSION: '22'
+
+jobs:
+    # The pull-request matrix runs this cell too but lets it fail quietly. Here it fails
+    # loudly, because reporting it is the point of this run. No `php`: the cell runs on the
+    # version the plugin is developed on, which the reusable workflow declares.
+    wp-nightly:
+        uses: ./.github/workflows/reusable-integration-tests.yml
+        with:
+            wp: nightly
+
+    composer-audit:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - &checkout
+              name: Check out the repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+
+            - &setup-php
+              name: Set up PHP ${{ env.PHP_VERSION }}
+              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+              with:
+                  php-version: ${{ env.PHP_VERSION }}
+                  ini-file: development
+                  coverage: none
+
+            # Reads composer.lock, so nothing has to be installed. Covers runtime and
+            # development packages, and fails on abandoned packages as well as advisories.
+            - name: Audit the Composer dependencies
+              run: composer audit --locked
+
+    npm-audit:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - *checkout
+
+            - name: Set up Node ${{ env.NODE_VERSION }}
+              uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+
+            # Reads package-lock.json, so nothing has to be installed.
+            - name: Audit the npm dependencies that reach a site
+              run: npm audit --omit=dev
+
+            # Informational: the build toolchain is large, and an advisory in it seldom has a
+            # fix that can be taken the same day. It is printed every night and never fails
+            # the run.
+            - name: Audit every npm dependency (informational)
+              continue-on-error: true
+              run: npm audit
+
+    licences:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - *checkout
+            - *setup-php
+
+            - name: Find the Composer cache directory
+              id: composer-cache
+              run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+            - name: Cache Composer downloads
+              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: ${{ steps.composer-cache.outputs.dir }}
+                  key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+                  restore-keys: composer-${{ runner.os }}-
+
+            - name: Install Composer dependencies
+              run: composer install --no-interaction --no-progress --prefer-dist
+
+            - name: Check the licences of the runtime dependencies
+              run: composer licenses:check
