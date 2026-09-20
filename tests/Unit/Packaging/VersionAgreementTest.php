@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Packaging;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Tools\Packaging\PluginPackage;
 
 /**
  * Guards the facts that WordPress and the toolchain force us to state more than once.
@@ -30,6 +31,8 @@ final class VersionAgreementTest extends TestCase {
 	 * Reads a header field from the main plugin file without executing it.
 	 *
 	 * The main file calls WordPress functions at file scope, so it cannot be included here.
+	 * PluginPackage::header() is the one reader of the plugin header: the zip builder, the
+	 * zip checker, the readme validator and this test all ask it, so they cannot disagree.
 	 *
 	 * @since 0.1.0
 	 *
@@ -37,15 +40,11 @@ final class VersionAgreementTest extends TestCase {
 	 * @return string The trimmed header value.
 	 */
 	private function pluginHeader( string $field ): string {
-		$source = (string) file_get_contents( $this->root() . '/seocart.php' );
+		$value = PluginPackage::header( (string) file_get_contents( $this->root() . '/seocart.php' ), $field );
 
-		$this->assertSame(
-			1,
-			preg_match( '/^[ \t\/*#@]*' . preg_quote( $field, '/' ) . ':(.*)$/mi', $source, $matches ),
-			"The plugin header has no \"{$field}\" field."
-		);
+		$this->assertNotNull( $value, "The plugin header has no \"{$field}\" field." );
 
-		return trim( $matches[1] );
+		return $value;
 	}
 
 	/**

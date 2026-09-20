@@ -107,8 +107,11 @@ final class PluginPackage {
 	/**
 	 * Reads one header field, such as `Version`, from the source of the main plugin file.
 	 *
-	 * Uses the expression WordPress itself uses for plugin headers, so this reads exactly
-	 * what the Plugins screen will show. The file is never executed.
+	 * This is the one reader of the plugin header: the zip builder, the zip checker, the
+	 * readme validator and the version-agreement test all ask it, so they cannot disagree.
+	 * It follows WordPress's own get_file_data() — the field name, a colon and the rest of
+	 * the line, inside the first 8 KiB of the file — so it reads exactly what the Plugins
+	 * screen will show. The file is never executed.
 	 *
 	 * @since 0.1.0
 	 *
@@ -117,11 +120,13 @@ final class PluginPackage {
 	 * @return string|null The value, or null when the header is absent or empty.
 	 */
 	public static function header( string $main_file_source, string $field ): ?string {
-		if ( 1 !== preg_match( '/^[ \t\/*#@]*' . preg_quote( $field, '/' ) . ':(.*)$/mi', $main_file_source, $matches ) ) {
+		$head = str_replace( "\r", "\n", substr( $main_file_source, 0, 8192 ) );
+
+		if ( 1 !== preg_match( '/^[ \t\/*#@]*' . preg_quote( $field, '/' ) . ':(.*)$/mi', $head, $matches ) ) {
 			return null;
 		}
 
-		$value = trim( $matches[1] );
+		$value = trim( (string) preg_replace( '/\s*(?:\*\/|\?>).*/', '', $matches[1] ) );
 
 		return '' === $value ? null : $value;
 	}

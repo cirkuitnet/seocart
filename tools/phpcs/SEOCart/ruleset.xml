@@ -28,6 +28,7 @@
 		<properties>
 			<property name="shippedPaths" type="array">
 				<element value="src"/>
+				<element value="templates"/>
 				<element value="seocart.php"/>
 				<element value="uninstall.php"/>
 			</property>

@@ -21,6 +21,7 @@
 		"woocommerce/action-scheduler": "^4.2"
 	},
 	"require-dev": {
+		"ext-zip": "*",
 		"brain/monkey": "^2.7",
 		"brianhenryie/strauss": "^0.30",
 		"dealerdirect/phpcodesniffer-composer-installer": "^1.2",
@@ -95,7 +96,7 @@
 		"lint:php": "parallel-lint --exclude .git --exclude vendor --exclude vendor-scoped --exclude node_modules --exclude build --exclude dist .",
 		"cs": "phpcs",
 		"cs:fix": "phpcbf",
-		"cs:dry": "phpcs --standard=tools/phpcs/SEOCart/ruleset.xml --extensions=php seocart.php uninstall.php src",
+		"cs:dry": "phpcs --standard=tools/phpcs/SEOCart/ruleset.xml --extensions=php --basepath=. seocart.php uninstall.php src templates",
 		"stan": "phpstan analyse --memory-limit=1G",
 		"test": [
 			"@test:unit",

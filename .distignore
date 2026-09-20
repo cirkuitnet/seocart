@@ -1,7 +1,7 @@
-# Paths excluded from the release zip. Consumed by bin/build-zip.php.
+# Paths excluded from the release zip. Consumed by bin/build-zip.php through
+# tools/Packaging/DistIgnore.php, the one implementation of the dialect below.
 #
-# Pattern dialect (implemented by the build script itself, so it is identical on every
-# platform): one pattern per line; `#` starts a comment; a leading `/` anchors the
+# Pattern dialect (ours, so it is identical on every platform): one pattern per line; `#` starts a comment; a leading `/` anchors the
 # pattern to the plugin root; a pattern without a leading `/` matches a file or
 # directory of that name at any depth; `*` matches within one path segment. A matched
 # directory is excluded with everything beneath it.

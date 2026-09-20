@@ -8,7 +8,7 @@
  * @wordpress-plugin
  * Plugin Name:       SEOCart
  * Plugin URI:        https://github.com/cirkuitnet/seocart
- * Description:       A free, open-source store for WordPress: products, cart, checkout, orders and payments, with nothing locked away.
+ * Description:       A free, open-source store plugin in early development. Version 0.1.0 is a development foundation and does not sell anything yet.
  * Version:           0.1.0
  * Requires at least: 7.1
  * Requires PHP:      8.3
