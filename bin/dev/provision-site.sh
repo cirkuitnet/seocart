@@ -1,0 +1,386 @@
+#!/bin/sh
+#
+# Creates the disposable WordPress instance of one checkout. See README.md in this
+# directory.
+
+set -eu
+
+SC_DEV_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=bin/dev/lib.sh
+. "$SC_DEV_DIR/lib.sh"
+
+usage() {
+	cat <<EOF
+usage: provision-site.sh <slug> [--checkout=<path>] [--with-woocommerce] [--with-polylang]
+
+Creates a disposable WordPress install for one checkout:
+
+  - the MySQL database <prefix>wt_<slug> and the account seocart_wt_<slug>, which
+    can reach nothing else (<prefix> is this server's SEOCART_DEV_DB_PREFIX,
+    default "$SC_DB_PREFIX_DEFAULT"; README.md explains it);
+  - the directory <integration site>/$SC_INSTANCES_DIRNAME/<slug>/ with WordPress core, its own
+    wp-config.php, .htaccess and wp-content/, and wp-content/plugins/seocart
+    symlinked to the checkout;
+  - WordPress installed with a generated administrator password, SEOCart activated;
+  - the credentials file <state dir>/instances/<slug>.env (mode 600) with
+    WP_BASE_URL, WP_USERNAME and WP_PASSWORD.
+
+It finishes by requesting the home page and wp-login.php and fails unless both return
+HTTP 200. No password is ever printed.
+
+  <slug>               lower-case a-z, 0-9 and "-", at most $SC_SLUG_MAX characters
+  --checkout=<path>    the checkout to serve (default: the git work tree around the
+                       current directory)
+  --with-woocommerce   install and activate WooCommerce on this instance only
+  --with-polylang      install and activate Polylang (free) on this instance only and
+                       create the languages en_US, en_GB and de_DE
+
+Refuses to run if the instance directory exists: tear the instance down first.
+
+Exit codes: 0 done, 1 failed, 2 usage error or invalid slug.
+EOF
+}
+
+# Runs WP-CLI against the instance. Standard input is closed so that no command waits
+# for a prompt.
+instance_wp() {
+	"$SEOCART_DEV_WP" --path="$site_dir" "$@" </dev/null
+}
+
+# Does a WordPress whose core files are symbolic links find the wp-config.php that sits
+# next to the links? wp-load.php sets ABSPATH from __DIR__, so the answer depends on how
+# PHP resolves __DIR__ for a linked file. Asked of the real wp-load.php, in the scratch
+# directory, with a wp-config.php that only reports it was loaded.
+symlinked_core_works() {
+	probe_dir=$SC_TMPDIR/abspath-probe
+	mkdir "$probe_dir"
+	ln -s "$core_dir/wp-load.php" "$probe_dir/wp-load.php"
+	cat >"$probe_dir/wp-config.php" <<'EOF'
+<?php
+echo 'seocart-abspath-probe-ok';
+exit( 0 );
+EOF
+	probe_output=$(php "$probe_dir/wp-load.php" </dev/null 2>/dev/null) || probe_output=
+	case $probe_output in
+		*seocart-abspath-probe-ok*)
+			return 0
+			;;
+	esac
+	return 1
+}
+
+# wp-admin/, wp-includes/ and the root *.php files, except wp-config.php: linked from the
+# shared checkout when that works, copied when it does not.
+install_core_files() {
+	if symlinked_core_works; then
+		core_mode=symlink
+		ln -s "$core_dir/wp-admin" "$site_dir/wp-admin"
+		ln -s "$core_dir/wp-includes" "$site_dir/wp-includes"
+	else
+		core_mode=copy
+		sc_info "Copying WordPress core instead of linking it: PHP resolves symbolic links in __DIR__,"
+		sc_info "so a linked wp-load.php sets ABSPATH to the shared checkout and looks for wp-config.php there."
+		cp -R "$core_dir/wp-admin" "$core_dir/wp-includes" "$site_dir/"
+	fi
+	for core_file in "$core_dir"/*.php; do
+		case ${core_file##*/} in
+			wp-config.php | wp-config-sample.php)
+				continue
+				;;
+		esac
+		if [ "$core_mode" = symlink ]; then
+			ln -s "$core_file" "$site_dir/${core_file##*/}"
+		else
+			cp "$core_file" "$site_dir/"
+		fi
+	done
+}
+
+# Prints the directory name of the default theme of this WordPress version, or of any
+# bundled theme if that one is missing from the checkout.
+default_theme() {
+	theme_name=$(sed -n "s/.*define( 'WP_DEFAULT_THEME', '\([a-z0-9-]*\)' ).*/\1/p" "$core_dir/wp-includes/default-constants.php" | head -n 1)
+	if [ -n "$theme_name" ] && [ -f "$core_dir/wp-content/themes/$theme_name/style.css" ]; then
+		printf '%s\n' "$theme_name"
+		return 0
+	fi
+	for theme_style in "$core_dir"/wp-content/themes/*/style.css; do
+		[ -f "$theme_style" ] || continue
+		theme_name=${theme_style%/style.css}
+		printf '%s\n' "${theme_name##*/}"
+		return 0
+	done
+	sc_die "no theme found in $core_dir/wp-content/themes"
+}
+
+# The instance's own wp-content/: one theme, the plugin symlink, uploads/.
+install_wp_content() {
+	mkdir -p "$site_dir/wp-content/plugins" "$site_dir/wp-content/themes" "$site_dir/wp-content/uploads"
+	for silence in wp-content/index.php wp-content/plugins/index.php wp-content/themes/index.php; do
+		if [ -f "$core_dir/$silence" ]; then
+			cp "$core_dir/$silence" "$site_dir/$silence"
+		fi
+	done
+	cp -R "$core_dir/wp-content/themes/$theme" "$site_dir/wp-content/themes/"
+	# The one symlink of this instance; it is never pointed anywhere else.
+	ln -s "$checkout" "$(sc_plugin_link "$slug")"
+}
+
+# Credentials and logs are for the owner of the instance alone. The web server's PHP
+# writes the log as that same owner (README.md, "What an instance looks like").
+prepare_state_dir() {
+	(
+		umask 077
+		mkdir -p "$SEOCART_DEV_STATE_DIR/instances" "$SEOCART_DEV_STATE_DIR/logs"
+		: >"$debug_log"
+	)
+	chmod 700 "$SEOCART_DEV_STATE_DIR" "$SEOCART_DEV_STATE_DIR/instances" "$SEOCART_DEV_STATE_DIR/logs"
+	chmod 600 "$debug_log"
+}
+
+write_wp_config() {
+	# No quote, backslash or "$": each value sits in a single-quoted PHP string.
+	salt_set='A-Za-z0-9!#%+,./:;=?@^_~-'
+	salts=
+	for salt_name in AUTH_KEY SECURE_AUTH_KEY LOGGED_IN_KEY NONCE_KEY AUTH_SALT SECURE_AUTH_SALT LOGGED_IN_SALT NONCE_SALT; do
+		salt_value=$(sc_random 64 "$salt_set") || exit 1
+		salts="$salts
+define( '$salt_name', '$salt_value' );"
+	done
+	# Mode 600 from the start: only PHP reads this file, and PHP runs as its owner. The
+	# web server itself, which runs as someone else, has no business reading it.
+	(
+		umask 077
+		cat >"$site_dir/wp-config.php" <<EOF
+<?php
+/**
+ * Configuration of the disposable SEOCart instance "$slug".
+ *
+ * Generated by bin/dev/provision-site.sh; removed by bin/dev/teardown-site.sh.
+ */
+
+define( 'DB_NAME', '$db_name' );
+define( 'DB_USER', '$db_account' );
+define( 'DB_PASSWORD', '$db_password' );
+define( 'DB_HOST', '$SC_DB_ACCOUNT_HOST:$socket' );
+define( 'DB_CHARSET', 'utf8mb4' );
+define( 'DB_COLLATE', '' );
+
+\$table_prefix = '$(sc_table_prefix "$slug")';
+
+define( 'WP_HOME', '$instance_url' );
+define( 'WP_SITEURL', '$instance_url' );
+$salts
+
+define( 'WP_DEBUG', true );
+define( 'WP_DEBUG_LOG', '$debug_log' );
+define( 'WP_DEBUG_DISPLAY', false );
+
+// Core files may be shared with other instances; nothing may update them from here.
+define( 'AUTOMATIC_UPDATER_DISABLED', true );
+
+if ( ! defined( 'ABSPATH' ) ) {
+	define( 'ABSPATH', __DIR__ . '/' );
+}
+
+require_once ABSPATH . 'wp-settings.php';
+EOF
+	)
+}
+
+# The standard WordPress rules, with the instance's URL path as the rewrite base.
+write_htaccess() {
+	url_path=${instance_url#*://}
+	case $url_path in
+		*/*)
+			url_path=/${url_path#*/}/
+			;;
+		*)
+			url_path=/
+			;;
+	esac
+	cat >"$site_dir/.htaccess" <<EOF
+# BEGIN WordPress
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+RewriteBase $url_path
+RewriteRule ^index\.php\$ - [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . ${url_path}index.php [L]
+</IfModule>
+# END WordPress
+EOF
+}
+
+# The administrator password reaches WP-CLI through a configuration file in the private
+# scratch directory: a command-line argument would show in `ps`, and --prompt echoes the
+# value it read.
+install_wordpress() {
+	cli_config=$SC_TMPDIR/wp-cli.yml
+	(
+		umask 077
+		cat >"$cli_config" <<EOF
+core install:
+  admin_password: "$admin_password"
+EOF
+	)
+	(
+		WP_CLI_CONFIG_PATH=$cli_config
+		export WP_CLI_CONFIG_PATH
+		instance_wp core install --url="$instance_url" --title="SEOCart $slug" --admin_user="$admin_user" --admin_email="$admin_email" --skip-email
+	)
+	rm -f -- "$cli_config"
+	instance_wp theme activate "$theme"
+}
+
+write_env_file() {
+	(
+		umask 077
+		cat >"$env_file" <<EOF
+WP_BASE_URL=$instance_url
+WP_USERNAME=$admin_user
+WP_PASSWORD=$admin_password
+EOF
+	)
+	chmod 600 "$env_file"
+}
+
+# Pretty permalinks need the web server to honour .htaccess. Try them, ask for the REST
+# index, and go back to plain permalinks — with a warning, not a failure — if it is not
+# served.
+enable_pretty_permalinks() {
+	if instance_wp rewrite structure '/%postname%/' >/dev/null; then
+		rest_status=$(sc_http_status "$SC_ROUTE" "$instance_url/wp-json/" 2>/dev/null) || rest_status=000
+		if [ "$rest_status" = 200 ]; then
+			sc_info "Pretty permalinks are on."
+			return 0
+		fi
+		sc_warn "$instance_url/wp-json/ returned HTTP $rest_status, so this web server does not apply .htaccess rewrites here; using plain permalinks (the REST API is at ?rest_route=/)"
+	else
+		sc_warn "could not set the permalink structure; using plain permalinks"
+	fi
+	instance_wp option update permalink_structure '' >/dev/null || true
+	instance_wp rewrite flush >/dev/null || true
+}
+
+install_polylang() {
+	instance_wp plugin install polylang --activate
+	instance_wp language core install en_GB de_DE
+	instance_wp eval-file "$SC_DEV_DIR/polylang-languages.php"
+}
+
+slug=
+checkout_option=
+with_woocommerce=no
+with_polylang=no
+
+for argument in "$@"; do
+	case $argument in
+		-h | --help)
+			usage
+			exit 0
+			;;
+		--checkout=*)
+			checkout_option=${argument#*=}
+			;;
+		--with-woocommerce)
+			with_woocommerce=yes
+			;;
+		--with-polylang)
+			with_polylang=yes
+			;;
+		-*)
+			sc_usage_error "unknown option: $argument"
+			;;
+		*)
+			[ -n "$argument" ] || sc_usage_error "empty argument"
+			[ -z "$slug" ] || sc_usage_error "unexpected argument: $argument"
+			slug=$argument
+			;;
+	esac
+done
+
+[ -n "$slug" ] || sc_usage_error "missing <slug>"
+sc_validate_slug "$slug" || exit 2
+
+# Checks without side effects first: a refusal here leaves nothing behind.
+sc_require_wp_cli
+sc_require_commands mysql php curl sed
+checkout=$(sc_resolve_checkout "$checkout_option")
+[ -f "$checkout/seocart.php" ] || sc_die "$checkout is not a SEOCart checkout: seocart.php is missing"
+core_dir=$SEOCART_DEV_WP_CORE_DIR
+[ -f "$core_dir/wp-load.php" ] && [ -d "$core_dir/wp-admin" ] && [ -d "$core_dir/wp-includes" ] || sc_die "no WordPress core checkout at $core_dir (SEOCART_DEV_WP_CORE_DIR)"
+[ -f "$SEOCART_DEV_SITE_PATH/wp-config.php" ] || sc_die "no integration site at $SEOCART_DEV_SITE_PATH (SEOCART_DEV_SITE_PATH)"
+site_dir=$(sc_site_dir "$slug")
+if [ -e "$site_dir" ] || [ -L "$site_dir" ]; then
+	sc_die "$site_dir exists already; run sh $SC_DEV_DIR/teardown-site.sh $slug first"
+fi
+socket=$(sc_mysql_socket) || exit 1
+instance_url=$(sc_instance_url "$slug") || exit 1
+theme=$(default_theme)
+sc_tmp_init
+
+sc_load_db_prefix || exit 1
+db_name=$(sc_db_name wt "$slug")
+db_account=$(sc_account_name wt "$slug")
+db_password=$(sc_password) || exit 1
+admin_user=admin
+admin_password=$(sc_password) || exit 1
+admin_email=${SEOCART_DEV_ADMIN_EMAIL:-admin@example.org}
+env_file=$(sc_env_file "$slug")
+debug_log=$(sc_debug_log "$slug")
+
+sc_info "Creating database $db_name ..."
+sc_create_database "$db_name" || exit 1
+SC_FAILURE_HINT="provision-site.sh did not finish. Remove what it created with: sh $SC_DEV_DIR/teardown-site.sh $slug"
+sc_create_account "$db_account" "$db_name" "$db_password" || exit 1
+
+sc_info "Building $site_dir ..."
+# The web server has to read the static files whatever the caller's umask is.
+umask 022
+mkdir -p "$site_dir"
+install_core_files
+install_wp_content
+prepare_state_dir
+write_wp_config
+write_htaccess
+
+if instance_wp core is-installed 2>/dev/null; then
+	sc_die "database $db_name already holds a WordPress install; run sh $SC_DEV_DIR/teardown-site.sh $slug first"
+fi
+
+sc_info "Installing WordPress ..."
+install_wordpress
+write_env_file
+sc_find_route "$instance_url/wp-login.php" || exit 1
+enable_pretty_permalinks
+
+instance_wp plugin activate seocart
+
+# -------------------------------------------------------------------------------------
+# HOOK POINT (Wave 1). `wp seocart migrate` and `wp seocart test-seed` do not exist yet.
+# When they do, run them here, in that order:
+#     instance_wp seocart migrate
+#     instance_wp seocart test-seed
+# -------------------------------------------------------------------------------------
+
+if [ "$with_woocommerce" = yes ]; then
+	sc_info "Installing WooCommerce on this instance ..."
+	instance_wp plugin install woocommerce --activate
+fi
+if [ "$with_polylang" = yes ]; then
+	sc_info "Installing Polylang on this instance ..."
+	install_polylang
+fi
+
+sc_smoke_check "$instance_url" || exit 1
+
+SC_FAILURE_HINT=
+sc_info "Instance ready."
+sc_info "  URL:         $instance_url/"
+sc_info "  core files:  $core_mode"
+sc_info "  database:    $db_name"
+sc_info "  credentials: $env_file (WP_BASE_URL, WP_USERNAME, WP_PASSWORD)"
+sc_info "  debug log:   $debug_log"
