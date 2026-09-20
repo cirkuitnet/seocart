@@ -76,11 +76,12 @@ final class PluginLoadsTest extends WP_UnitTestCase {
 	/**
 	 * Tests that the plugin's own autoloader loaded every plugin class, the kernel included.
 	 *
-	 * The release zip has no `vendor/`, so the autoloader in seocart.php is all a released site
-	 * has. Composer can find the same classes, and without the watch it would load them first
-	 * and hide a plugin autoloader that finds nothing. The integration bootstrap starts the
-	 * watch directly after it includes seocart.php. The record is read here, so it covers the
-	 * WordPress boot and the tests that ran before this one, not the tests that run after it.
+	 * The release zip has no development `vendor/autoload.php`; its generated scoped autoloader
+	 * does not map plugin classes. Composer can find those classes during development, and
+	 * without the watch it would load them first and hide a plugin autoloader that finds nothing.
+	 * The integration bootstrap starts the watch directly after it includes seocart.php. The
+	 * record is read here, so it covers the WordPress boot and the tests that ran before this
+	 * one, not the tests that run after it.
 	 *
 	 * Planted violation: in the autoloader of seocart.php, change `'/src/'` to `'/source/'`.
 	 * The kernel still boots, through Composer, so the three tests above stay green; this one
@@ -94,7 +95,7 @@ final class PluginLoadsTest extends WP_UnitTestCase {
 		$this->assertSame(
 			array(),
 			AutoloaderWatch::missed(),
-			'The autoloader in seocart.php did not load these plugin classes; Composer did. The release zip ships without Composer\'s autoloader, so a released site would fail on them.'
+			'The autoloader in seocart.php did not load these plugin classes; the development Composer loader did. The release zip has no loader mapping plugin classes, so a released site would fail on them.'
 		);
 	}
 

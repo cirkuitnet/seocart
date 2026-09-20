@@ -16,11 +16,11 @@ use Composer\Autoload\ClassLoader;
 /**
  * Keeps Composer from covering for the autoloader that ships.
  *
- * The release zip has no `vendor/`, so the autoloader in seocart.php is the only one a released
- * site has. In a test process Composer's class loader is registered first, and composer.json
- * maps `SEOCart\` to `src/` as well, so Composer would answer for every plugin class and the
- * plugin's autoloader would never run: a release that cannot find its own classes would pass
- * every test.
+ * The release zip has no development `vendor/autoload.php`; its generated scoped autoloader
+ * does not map plugin classes. In a test process Composer's class loader is registered first,
+ * and composer.json maps `SEOCart\` to `src/` as well, so Composer would answer for every
+ * plugin class and the plugin's autoloader would never run: a release that cannot find its own
+ * classes would pass every test.
  *
  * start() therefore moves Composer's loaders behind the autoloaders registered so far. That
  * alone is not enough, because a plugin autoloader that finds nothing simply lets the request

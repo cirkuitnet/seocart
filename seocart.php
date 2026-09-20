@@ -87,7 +87,7 @@ function seocart_unmet_requirement() {
 /**
  * Displays an admin notice explaining why SEOCart did not load.
  *
- * Runs on `admin_notices`, long after `init`, so translating here is safe.
+ * Runs on `admin_notices` or `network_admin_notices`, long after `init`, so translating here is safe.
  *
  * @since 0.1.0
  */
@@ -122,6 +122,8 @@ function seocart_render_requirements_notice() {
 
 if ( '' !== seocart_unmet_requirement() ) {
 	add_action( 'admin_notices', 'seocart_render_requirements_notice' );
+	// A network-activated plugin is managed from Network Admin, which fires only this hook.
+	add_action( 'network_admin_notices', 'seocart_render_requirements_notice' );
 	return;
 }
 
@@ -129,10 +131,15 @@ if ( '' !== seocart_unmet_requirement() ) {
  * A first-party PSR-4 autoloader for the `SEOCart\` namespace. Composer's autoloader
  * is a development tool here: the release zip ships without `vendor/`, and loading
  * classes the same way in development and in production keeps the two from diverging.
+ * Requiring plain class-name segments keeps a crafted name from traversing outside `src/`.
  */
 spl_autoload_register(
 	static function ( $class_name ) {
 		if ( 0 !== strncmp( $class_name, 'SEOCart\\', 8 ) ) {
+			return;
+		}
+
+		if ( 1 !== preg_match( '/^SEOCart(?:\\\\[A-Za-z_][A-Za-z0-9_]*)+$/D', $class_name ) ) {
 			return;
 		}
 
