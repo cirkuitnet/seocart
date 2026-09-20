@@ -1,0 +1,24 @@
+{
+	"_readme": [
+		"A test fixture for tools/WpOrg/Tests/LicenseCheckCommandTest.php. Not a real lockfile."
+	],
+	"packages": [
+		{
+			"name": "example/gpl3-library",
+			"version": "1.0.0",
+			"license": [ "GPL-3.0-or-later" ]
+		},
+		{
+			"name": "example/dual-licensed-library",
+			"version": "2.0.0",
+			"license": [ "GPL-2.0-only", "MIT" ]
+		}
+	],
+	"packages-dev": [
+		{
+			"name": "example/dev-only-tool",
+			"version": "9.0.0",
+			"license": [ "proprietary" ]
+		}
+	]
+}

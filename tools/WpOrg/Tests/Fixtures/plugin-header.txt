@@ -1,0 +1,12 @@
+<?php
+/**
+ * A fixture main file. It is a .txt file so that no PHP tool scans it.
+ *
+ * @wordpress-plugin
+ * Plugin Name:       SEOCart
+ * Plugin URI:        https://github.com/cirkuitnet/seocart
+ * Version:           0.1.0
+ * Requires at least: 7.1
+ * Requires PHP:      8.3
+ * License:           GPLv3 or later
+ */
