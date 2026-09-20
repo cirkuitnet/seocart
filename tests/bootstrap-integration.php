@@ -3,8 +3,9 @@
  * Bootstrap for the integration test suite
  *
  * Loads WordPress through the wp-phpunit library against a dedicated MySQL database, with
- * SEOCart loaded the way a must-use loader would load it. `composer test:integration`
- * selects this file with PHPUnit's bootstrap command-line option.
+ * SEOCart loaded the way a must-use loader would load it. The idle-request probe can disable
+ * that one inclusion for its control process. `composer test:integration` selects this file
+ * with PHPUnit's bootstrap command-line option.
  *
  * tests/Support/idle-request-probe.php includes this file too, in the child process that the
  * idle-budget test starts to measure a request in a process that served nothing else.
@@ -21,7 +22,8 @@ use SEOCart\Tests\Support\AutoloaderWatch;
 use SEOCart\Tests\Support\ErrorRecorder;
 use SEOCart\Tests\Support\PluginOwnership;
 
-$seocart_tests_plugin_dir = dirname( __DIR__ );
+$seocart_tests_plugin_dir  = dirname( __DIR__ );
+$seocart_tests_load_plugin = '0' !== getenv( 'SEOCART_TESTS_LOAD_PLUGIN' );
 
 require_once $seocart_tests_plugin_dir . '/vendor/autoload.php';
 
@@ -83,22 +85,27 @@ require_once $seocart_tests_library . '/includes/functions.php';
 
 /*
  * The plugin is not inside the WordPress checkout, which is shared and read-only, so it is
- * included directly at the point where WordPress loads must-use plugins. A closure, not a
- * named function: a function called `seocart_…` would be counted by the hook budget as one of
- * the plugin's own registrations.
+ * included directly at the point where WordPress loads must-use plugins unless the idle
+ * probe requested its control mode. A closure, not a named function: a function called
+ * `seocart_…` would be counted by the hook budget as one of the plugin's own registrations.
  *
  * Errors are recorded from here until WordPress has finished loading, which covers the main
  * file, `plugins_loaded` and `init`. PluginLoadsTest fails on anything recorded.
  *
- * Composer's class loader was registered first and maps `SEOCart\` to `src/` too, so it would
- * load every plugin class, and the autoloader in seocart.php, the only one the release zip
- * has, would never run. The watch moves Composer behind that autoloader and records every
- * plugin class that still ends up with Composer. PluginLoadsTest fails on those as well.
+ * Composer's development class loader was registered first and maps `SEOCart\` to `src/` too,
+ * so it would load every plugin class, and the autoloader in seocart.php would never run. The
+ * release's generated scoped autoloader does not map plugin classes. The watch moves the
+ * development loader behind the plugin autoloader and records every plugin class that still
+ * ends up with Composer. PluginLoadsTest fails on those as well.
  */
 tests_add_filter(
 	'muplugins_loaded',
-	static function () use ( $seocart_tests_plugin_dir ): void {
+	static function () use ( $seocart_tests_load_plugin, $seocart_tests_plugin_dir ): void {
 		ErrorRecorder::start();
+
+		if ( ! $seocart_tests_load_plugin ) {
+			return;
+		}
 
 		require_once $seocart_tests_plugin_dir . '/seocart.php';
 

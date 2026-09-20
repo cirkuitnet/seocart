@@ -105,23 +105,23 @@
 		"test:unit": "phpunit --testsuite unit",
 		"test:integration": "phpunit --testsuite integration --bootstrap tests/bootstrap-integration.php",
 		"test:tools": "phpunit --testsuite tools",
-		"test:concurrency": "@test:integration --group concurrency",
-		"test:migration": "@test:integration --group migration",
-		"test:performance": "@test:integration --group performance",
+		"test:concurrency": "@test:integration --group concurrency --fail-on-empty-test-suite",
+		"test:migration": "@test:integration --group migration --fail-on-empty-test-suite",
+		"test:performance": "@test:integration --group performance --fail-on-empty-test-suite",
 		"test:contracts": [
 			"@test:contracts:unit",
-			"@test:integration --group contract"
+			"@test:integration --group contract --fail-on-empty-test-suite"
 		],
 		"test:contracts:unit": "@test:unit --group contract --fail-on-empty-test-suite",
 		"test:reference-fixtures": [
-			"@test:unit --group reference-fixture",
-			"@test:integration --group reference-fixture"
+			"@test:unit --group reference-fixture --fail-on-empty-test-suite",
+			"@test:integration --group reference-fixture --fail-on-empty-test-suite"
 		],
 		"test:international": [
-			"@test:unit --group international",
-			"@test:integration --group international"
+			"@test:unit --group international --fail-on-empty-test-suite",
+			"@test:integration --group international --fail-on-empty-test-suite"
 		],
-		"test:multilingual-conformance": "@test:integration --group multilingual-conformance",
+		"test:multilingual-conformance": "@test:integration --group multilingual-conformance --fail-on-empty-test-suite",
 		"docs:generate": "@php bin/generate-docs.php",
 		"docs:check": "@php bin/generate-docs.php --check",
 		"wporg:check": "@php bin/check-wporg.php",

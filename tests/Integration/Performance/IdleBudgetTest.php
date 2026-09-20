@@ -25,19 +25,18 @@ use WP_UnitTestCase;
  * Section 5.1 of the same document says what the plugin may do in it: read one autoloaded
  * option, register lazy factories and cheap closures, and nothing else.
  *
- * The request is served once, by tests/Support/idle-request-probe.php, in a child PHP process
- * that serves nothing else. The list of included files and the query log only ever grow, so
- * measured inside this PHPUnit process the numbers would depend on which tests ran before.
- * PHPUnit's own process isolation is not used, because it never returns on FreeBSD, which is
- * what the development server runs (see ProcessIsolationTest).
+ * The request is served without and with the plugin, by
+ * tests/Support/idle-request-probe.php, in fresh child PHP processes. The list of included
+ * files and the query log only ever grow, so measured inside this PHPUnit process the numbers
+ * would depend on which tests ran before. PHPUnit's own process isolation is not used,
+ * because it never returns on FreeBSD, which is what the development server runs (see
+ * ProcessIsolationTest).
  *
- * G1 is attributed, not differenced: a query counts against the plugin when shipped plugin
- * code appears in the call stack wpdb recorded for it. Attribution names the culprit and needs
- * no second run without the plugin, but it has a blind spot that a differenced count would
- * not have: a query the plugin causes without being in its stack. Registering a WordPress
- * function as a hook callback does that, and so does a filter whose return value makes
- * WordPress query more. G2, the autoloaded-option budget, arrives with the settings registry
- * that creates the option it measures.
+ * G1 gates on the total-query delta between the two processes. Stack attribution remains as
+ * a diagnostic: a query counts there when shipped plugin code appears in the call stack wpdb
+ * recorded for it. Attribution names a direct culprit but misses a query caused indirectly,
+ * such as one from a WordPress function registered as the callback. G2, the autoloaded-option
+ * budget, arrives with the settings registry that creates the option it measures.
  *
  * Each test names the planted violation that must turn it red. Every plant goes into
  * SEOCart\Platform\Kernel\Kernel::boot(), directly after `self::$booted = true;`, and is
@@ -88,16 +87,57 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	private const G4_MAX_PLUGIN_HOOKS = 25;
 
 	/**
-	 * What the probe reported, once it has run.
+	 * What both probe modes reported, once they have run.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var array{queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>}|null
+	 * @var array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>}}|null
 	 */
-	private static ?array $measurement = null;
+	private static ?array $measurements = null;
 
 	/**
-	 * Tests G1: the plugin issues no query, neither while WordPress boots nor while the page is served.
+	 * Tests G1: loading the plugin adds no query to the total request count.
+	 *
+	 * Planted violation: `add_action( 'init', 'get_users' );` in `Kernel::boot()`. The queries
+	 * are issued by a core callback with no plugin frame, so the attribution test stays green;
+	 * this delta must fail (13 became 16 when it was proven) and print the queries under the
+	 * with-plugin-only heading. Do not plant `wp_count_posts`: `do_action( 'init' )` passes an
+	 * empty string, that is no post type, and the function returns before it queries.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_g1_idle_request_adds_no_queries_to_the_request_total(): void {
+		$measurements   = self::measurements();
+		$without        = $measurements['without_plugin'];
+		$with           = $measurements['with_plugin'];
+		$without_log    = QueryLog::fromWpdb( $without['queries'] );
+		$with_log       = QueryLog::fromWpdb( $with['queries'] );
+		$only_with      = $with_log->difference( $without_log );
+		$failure_report = "\nQueries present only in the with-plugin run:\n" . $only_with->describe() . "\n";
+
+		$this->assertFalse( $without['plugin_loaded'], 'The control probe loaded SEOCart, so it is not a control run.' );
+		$this->assertTrue( $with['plugin_loaded'], 'The with-plugin probe did not load SEOCart, so an equal count would prove nothing.' );
+		$this->assertGreaterThan( 0, count( $without_log ), 'The control probe recorded no WordPress queries, so its total would prove nothing.' );
+		$this->assertSame( $without['queries_run'], count( $without_log ), 'The control probe ran more queries than it recorded, so the totals are not comparable.' );
+		$this->assertSame( $with['queries_run'], count( $with_log ), 'The with-plugin probe ran more queries than it recorded, so the totals are not comparable.' );
+
+		$this->assertSame(
+			$without['queries_run'],
+			$measurements['without_plugin_again']['queries_run'],
+			'Two control runs disagree, so this environment is not stable enough to measure a delta against.'
+		);
+
+		$this->assertSame(
+			$without['queries_run'],
+			$with['queries_run'],
+			'G1, total queries added by SEOCart to an idle request (docs/architecture/performance.md, section 4). '
+			. "Without plugin: {$without['queries_run']}; with plugin: {$with['queries_run']}."
+			. $failure_report
+		);
+	}
+
+	/**
+	 * Tests G1's diagnostic: no recorded query has a shipped plugin frame.
 	 *
 	 * Planted violation: `get_option( 'seocart_planted_option' );`. The option does not exist
 	 * and is therefore not autoloaded, so WordPress looks for it in the database. The failure
@@ -177,18 +217,40 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Returns what the probe reported, running it on first use.
+	 * Returns the with-plugin report, running both modes on first use.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array{queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>} The report.
+	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>} The report.
 	 */
 	private static function measurement(): array {
-		if ( null === self::$measurement ) {
-			self::$measurement = self::serveIdleRequestInChildProcess();
+		return self::measurements()['with_plugin'];
+	}
+
+	/**
+	 * Returns the reports: a control run, the plugin run, and the control run once more.
+	 *
+	 * The suite reinstalls WordPress when it starts, and the first request after an install
+	 * primes options and transients that every later request only reads: measured here, it
+	 * ran 22 queries where each later one ran 13. That request is served once and thrown
+	 * away. The second control run proves that nothing else moved while the plugin ran.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>}} The reports.
+	 */
+	private static function measurements(): array {
+		if ( null === self::$measurements ) {
+			self::serveIdleRequestInChildProcess( false );
+
+			self::$measurements = array(
+				'without_plugin'       => self::serveIdleRequestInChildProcess( false ),
+				'with_plugin'          => self::serveIdleRequestInChildProcess( true ),
+				'without_plugin_again' => self::serveIdleRequestInChildProcess( false ),
+			);
 		}
 
-		return self::$measurement;
+		return self::$measurements;
 	}
 
 	/**
@@ -199,14 +261,17 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array{queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>} The report.
+	 * @param bool $load_plugin Whether the integration bootstrap loads the plugin.
+	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>} The report.
 	 */
-	private static function serveIdleRequestInChildProcess(): array {
+	private static function serveIdleRequestInChildProcess( bool $load_plugin ): array {
 		$result_file = (string) tempnam( sys_get_temp_dir(), 'seocart-idle-' );
+		$mode        = $load_plugin ? 'with-plugin' : 'without-plugin';
 
 		$command = escapeshellarg( PHP_BINARY )
 			. ' ' . escapeshellarg( self::pluginDirectory() . '/tests/Support/idle-request-probe.php' )
 			. ' ' . escapeshellarg( $result_file )
+			. ' ' . escapeshellarg( $mode )
 			. ' 2>&1';
 
 		exec( $command, $output, $status );

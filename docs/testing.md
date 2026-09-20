@@ -108,6 +108,9 @@ the source of truth. Run `composer list` or `npm run` to see them with their des
 | `composer scope-vendor`                  | Runs Strauss. Not a gate; `composer install` runs it for you                                                    |
 | `composer audit`                         | Composer's own check of the dependencies against known security advisories                                      |
 
+A group command fails while its group has no test, because an empty run proves nothing. That
+is expected until the wave that adds the first test of that group.
+
 ### npm
 
 | Command                     | What it runs                                                                          |

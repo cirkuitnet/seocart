@@ -133,6 +133,38 @@ final class QueryLog implements \Countable {
 	}
 
 	/**
+	 * Removes one matching occurrence for every query in a baseline log.
+	 *
+	 * Queries are compared by their whitespace-normalized SQL. The caller is deliberately
+	 * ignored: the same core query can have a different stack when a plugin callback causes it.
+	 * Duplicate queries are subtracted as a multiset rather than collapsed into one entry.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param self $baseline The queries to subtract.
+	 * @return self Queries present only in this log, with their original callers.
+	 */
+	public function difference( self $baseline ): self {
+		$remaining = array();
+
+		foreach ( $baseline->queries as $query ) {
+			$remaining[ $query['sql'] ] = ( $remaining[ $query['sql'] ] ?? 0 ) + 1;
+		}
+
+		return $this->filter(
+			static function ( array $query ) use ( &$remaining ): bool {
+				if ( 0 === ( $remaining[ $query['sql'] ] ?? 0 ) ) {
+					return true;
+				}
+
+				--$remaining[ $query['sql'] ];
+
+				return false;
+			}
+		);
+	}
+
+	/**
 	 * Counts the queries.
 	 *
 	 * @since 0.1.0

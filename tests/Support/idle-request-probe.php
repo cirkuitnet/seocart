@@ -2,7 +2,7 @@
 /**
  * Serves one idle front-end request in a process of its own, and reports what SEOCart did in it
  *
- * Usage: php tests/Support/idle-request-probe.php <result-file>
+ * Usage: php tests/Support/idle-request-probe.php <result-file> <with-plugin|without-plugin>
  *
  * IdleBudgetTest starts this script as a child process and asserts the idle-request budgets on
  * the JSON document it writes. A process of its own is the point: the list of included files
@@ -28,13 +28,25 @@ declare( strict_types=1 );
 use SEOCart\Tests\Support\BootstrapProbes;
 use SEOCart\Tests\Support\PluginOwnership;
 
-if ( 'cli' !== PHP_SAPI || ! isset( $argv[1] ) ) {
-	fwrite( STDERR, 'Usage: php tests/Support/idle-request-probe.php <result-file>' . PHP_EOL );
+if ( 'cli' !== PHP_SAPI || ! isset( $argv[1], $argv[2] ) || ! in_array( $argv[2], array( 'with-plugin', 'without-plugin' ), true ) ) {
+	fwrite( STDERR, 'Usage: php tests/Support/idle-request-probe.php <result-file> <with-plugin|without-plugin>' . PHP_EOL );
 
 	exit( 2 );
 }
 
 $seocart_probe_result_file = $argv[1];
+$seocart_probe_load_plugin = 'with-plugin' === $argv[2];
+
+/*
+ * WP-Cron may write its lock transient and start time-dependent update checks. Disable it in
+ * both modes so the two fresh processes see the same synthetic request and database state.
+ */
+if ( ! defined( 'DISABLE_WP_CRON' ) ) {
+	// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound -- DISABLE_WP_CRON is WordPress's own constant.
+	define( 'DISABLE_WP_CRON', true );
+}
+
+putenv( 'SEOCART_TESTS_LOAD_PLUGIN=' . ( $seocart_probe_load_plugin ? '1' : '0' ) );
 
 require dirname( __DIR__ ) . '/bootstrap-integration.php';
 
@@ -69,10 +81,11 @@ file_put_contents(
 	$seocart_probe_result_file,
 	json_encode(
 		array(
-			'queries_run' => $wpdb->num_queries,
-			'queries'     => $seocart_probe_queries,
-			'files'       => $seocart_probe_probes->loadedPluginFiles(),
-			'hooks'       => $seocart_probe_probes->registeredPluginHooks(),
+			'plugin_loaded' => defined( 'SEOCART_PLUGIN_FILE' ),
+			'queries_run'   => $wpdb->num_queries,
+			'queries'       => $seocart_probe_queries,
+			'files'         => $seocart_probe_probes->loadedPluginFiles(),
+			'hooks'         => $seocart_probe_probes->registeredPluginHooks(),
 		),
 		JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE
 	)

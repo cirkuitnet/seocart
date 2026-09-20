@@ -24,7 +24,7 @@
 		"lint:css": "wp-scripts lint-style \"assets/**/*.{css,scss}\" --allow-empty-input",
 		"format": "prettier --write .",
 		"format:check": "prettier --check .",
-		"test:unit": "wp-scripts test-unit-js --passWithNoTests",
+		"test:unit": "wp-scripts test-unit-js",
 		"test:e2e": "playwright test",
 		"test:e2e:selftest": "playwright test --config tests/E2E/selftest",
 		"typecheck": "tsc --noEmit -p .",

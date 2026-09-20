@@ -110,6 +110,30 @@ final class QueryLogTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a difference subtracts matching SQL as a multiset and keeps its caller.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_difference_keeps_queries_present_only_in_this_log(): void {
+		$with_plugin    = QueryLog::fromWpdb(
+			array(
+				array( "SELECT 1\nFROM dual", 0.1, 'first caller' ),
+				array( 'SELECT 1 FROM dual', 0.1, 'second caller' ),
+				array( 'SELECT 2', 0.1, 'plugin caller' ),
+			)
+		);
+		$without_plugin = QueryLog::fromWpdb( array( array( 'SELECT 1 FROM dual', 0.1, 'core caller' ) ) );
+
+		$this->assertSame(
+			"  1. SELECT 1 FROM dual\n"
+			. "     caller: second caller\n"
+			. "  2. SELECT 2\n"
+			. '     caller: plugin caller',
+			$with_plugin->difference( $without_plugin )->describe()
+		);
+	}
+
+	/**
 	 * Tests that the report numbers each query and prints it with the stack that issued it.
 	 *
 	 * @since 0.1.0

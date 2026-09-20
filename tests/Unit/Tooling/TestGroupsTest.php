@@ -16,12 +16,11 @@ use PHPUnit\Framework\TestCase;
 /**
  * Guards the group names that composer.json and the test classes must agree on.
  *
- * PHPUnit 9 exits 0 when a group option selects no test. A misspelt group in a Composer
- * script, or in the annotation of a test class, therefore drops tests from a gate without
- * any sign of it. A group name is unavoidably written twice, once where tests are tagged and
- * once where they are selected, so this test is the set-equality companion of that pair:
- * every name used on either side must be declared below, and every name declared below must
- * be used on at least one side.
+ * A group name can appear in a Composer selection, in a test annotation, or in both places.
+ * This is a vocabulary check rather than proof that every selected group already has a test:
+ * every name used on either side must be declared below, and every declared name must be used
+ * on at least one side. The Composer group commands use `--fail-on-empty-test-suite` to guard
+ * the separate empty-selection case.
  *
  * @group contract
  *
@@ -61,7 +60,7 @@ final class TestGroupsTest extends TestCase {
 		$this->assertSame(
 			array(),
 			array_values( array_diff( $selected, self::DECLARED_GROUPS ) ),
-			'composer.json selects a group that is not declared in ' . self::class . '::DECLARED_GROUPS. PHPUnit runs zero tests for an unknown group and still exits 0.'
+			'composer.json selects a group that is not declared in ' . self::class . '::DECLARED_GROUPS.'
 		);
 	}
 
