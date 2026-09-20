@@ -1,0 +1,86 @@
+<?xml version="1.0"?>
+<ruleset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="SEOCart" xsi:noNamespaceSchemaLocation="vendor/squizlabs/php_codesniffer/phpcs.xsd">
+	<description>WordPress Coding Standards, PHP compatibility and the SEOCart DRY rules.</description>
+
+	<file>.</file>
+
+	<exclude-pattern>/vendor/*</exclude-pattern>
+	<exclude-pattern>/vendor-scoped/*</exclude-pattern>
+	<exclude-pattern>/node_modules/*</exclude-pattern>
+	<exclude-pattern>/build/*</exclude-pattern>
+	<exclude-pattern>/dist/*</exclude-pattern>
+	<exclude-pattern>/artifacts/*</exclude-pattern>
+	<exclude-pattern>/spikes/*</exclude-pattern>
+	<!-- Sniff fixtures are violations on purpose; the sniff self-tests scan them explicitly. -->
+	<exclude-pattern>/tools/phpcs/SEOCart/Tests/Fixtures/*</exclude-pattern>
+
+	<arg name="extensions" value="php"/>
+	<arg name="basepath" value="."/>
+	<arg name="parallel" value="8"/>
+	<arg name="cache" value=".phpcs-cache"/>
+	<arg value="sp"/>
+
+	<!-- The supported floors: target architecture, section 17. -->
+	<config name="minimum_wp_version" value="7.1"/>
+	<config name="testVersion" value="8.3-"/>
+
+	<rule ref="WordPress">
+		<!--
+			PSR-4 requires each file to be named exactly after the class it declares
+			(OrderRepository.php for `class OrderRepository`). The WordPress file-name sniff
+			assumes core's class-{name}.php convention and cannot be satisfied at the same time.
+		-->
+		<exclude name="WordPress.Files.FileName"/>
+
+		<!--
+			This is a namespaced PSR-4 code base: PascalCase classes, camelCase methods and
+			properties. That departs from core's naming idiom only. Every security, escaping,
+			i18n and formatting sniff stays active. Hook, option, capability and table names
+			remain snake_case, because WordPress interprets those strings itself.
+		-->
+		<exclude name="WordPress.NamingConventions.ValidFunctionName"/>
+		<exclude name="WordPress.NamingConventions.ValidVariableName"/>
+	</rule>
+
+	<!-- Re-enabled for the two files that are not PSR-4 classes and follow core convention. -->
+	<rule ref="WordPress.Files.FileName">
+		<include-pattern>/(seocart|uninstall)\.php$</include-pattern>
+	</rule>
+
+	<!--
+		Command-line tools and tests never run inside a WordPress request: they write to
+		STDOUT, read local files and spawn processes on purpose. The sniffs below protect
+		the WordPress runtime and stay fully active for seocart.php, uninstall.php and src/.
+	-->
+	<rule ref="WordPress.Security.EscapeOutput">
+		<exclude-pattern>/(bin|tools|tests)/*</exclude-pattern>
+	</rule>
+	<rule ref="WordPress.WP.AlternativeFunctions">
+		<exclude-pattern>/(bin|tools|tests)/*</exclude-pattern>
+	</rule>
+	<rule ref="WordPress.PHP.DiscouragedPHPFunctions">
+		<exclude-pattern>/(bin|tools|tests)/*</exclude-pattern>
+	</rule>
+	<rule ref="WordPress.PHP.DevelopmentFunctions">
+		<exclude-pattern>/(bin|tools|tests)/*</exclude-pattern>
+	</rule>
+
+	<rule ref="PHPCompatibilityWP"/>
+
+	<rule ref="WordPress.WP.I18n">
+		<properties>
+			<property name="text_domain" type="array">
+				<element value="seocart"/>
+			</property>
+		</properties>
+	</rule>
+
+	<rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+		<properties>
+			<property name="prefixes" type="array">
+				<element value="seocart"/>
+				<element value="SEOCart"/>
+			</property>
+		</properties>
+	</rule>
+</ruleset>

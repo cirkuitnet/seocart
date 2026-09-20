@@ -1,0 +1,13 @@
+# Generated or third-party. Prettier also honours .gitignore, but lockfiles and
+# committed generated documents are tracked, so they are listed here.
+build
+dist
+vendor
+vendor-scoped
+node_modules
+artifacts
+test-results
+playwright-report
+composer.lock
+package-lock.json
+docs/openapi.json

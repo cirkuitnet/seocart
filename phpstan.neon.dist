@@ -1,0 +1,14 @@
+# PHPStan starts at level 5 with NO baseline. A baseline file may exist only to
+# grandfather issues at the moment the level is raised, and may only shrink.
+# The WordPress extension and stubs are loaded by phpstan/extension-installer.
+parameters:
+	level: 5
+	paths:
+		- seocart.php
+		- uninstall.php
+		- src
+		- tools
+		- tests
+	excludePaths:
+		analyseAndScan:
+			- tools/phpcs/SEOCart/Tests/Fixtures/*
