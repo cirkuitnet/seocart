@@ -17,11 +17,13 @@ use SEOCart\Tools\Packaging\PluginPackage;
 /**
  * Guards the facts that WordPress and the toolchain force us to state more than once.
  *
- * The plugin header is read by WordPress, the constants by the running plugin, and the
- * manifests by Composer and npm. None of them can read another, so the same fact is
- * unavoidably declared in several files. This test owns one fact: those declarations
- * are equal. It is the set-equality companion that every hand-maintained parallel list
- * must have.
+ * The plugin header is read by WordPress, the constants by the running plugin, the
+ * manifests by Composer and npm, and the requirements table in README.md by people. None
+ * of them can read another, so the same fact is unavoidably declared in several files.
+ * This test owns one fact: those declarations are equal. It is the set-equality companion
+ * that every hand-maintained parallel list must have.
+ *
+ * @group contract
  *
  * @since 0.1.0
  */
@@ -80,6 +82,26 @@ final class VersionAgreementTest extends TestCase {
 	}
 
 	/**
+	 * Reads a floor from the requirements table in README.md.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $platform The first cell of the row, for example 'PHP'.
+	 * @return string The version in the row's second cell.
+	 */
+	private function readmeRequirement( string $platform ): string {
+		$source = (string) file_get_contents( $this->root() . '/README.md' );
+
+		$this->assertSame(
+			1,
+			preg_match( '/^\| ' . preg_quote( $platform, '/' ) . ' +\| ([0-9.]+) or newer +\|$/m', $source, $matches ),
+			"The requirements table in README.md has no \"{$platform}\" row of the form \"X.Y or newer\"."
+		);
+
+		return $matches[1];
+	}
+
+	/**
 	 * Returns the repository root.
 	 *
 	 * @since 0.1.0
@@ -113,6 +135,7 @@ final class VersionAgreementTest extends TestCase {
 
 		$this->assertSame( $header, $this->pluginConstant( 'SEOCART_MINIMUM_PHP_VERSION' ), 'SEOCART_MINIMUM_PHP_VERSION must match the Requires PHP header.' );
 		$this->assertSame( '>=' . $header, $this->manifest( 'composer.json' )['require']['php'], 'composer.json "require.php" must match the Requires PHP header.' );
+		$this->assertSame( $header, $this->readmeRequirement( 'PHP' ), 'The PHP row of the requirements table in README.md must match the Requires PHP header.' );
 	}
 
 	/**
@@ -121,10 +144,9 @@ final class VersionAgreementTest extends TestCase {
 	 * @since 0.1.0
 	 */
 	public function test_minimum_wordpress_version_is_declared_consistently(): void {
-		$this->assertSame(
-			$this->pluginHeader( 'Requires at least' ),
-			$this->pluginConstant( 'SEOCART_MINIMUM_WP_VERSION' ),
-			'SEOCART_MINIMUM_WP_VERSION must match the Requires at least header.'
-		);
+		$header = $this->pluginHeader( 'Requires at least' );
+
+		$this->assertSame( $header, $this->pluginConstant( 'SEOCART_MINIMUM_WP_VERSION' ), 'SEOCART_MINIMUM_WP_VERSION must match the Requires at least header.' );
+		$this->assertSame( $header, $this->readmeRequirement( 'WordPress' ), 'The WordPress row of the requirements table in README.md must match the Requires at least header.' );
 	}
 }

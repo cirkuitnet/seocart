@@ -23,6 +23,8 @@ use PHPUnit\Framework\TestCase;
  * every name used on either side must be declared below, and every name declared below must
  * be used on at least one side.
  *
+ * @group contract
+ *
  * @since 0.1.0
  */
 final class TestGroupsTest extends TestCase {

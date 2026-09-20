@@ -24,6 +24,8 @@ use SEOCart\Tools\Packaging\ZipBuilder;
  * the zip checker enforces in code. This test owns one fact: those lists agree. Every
  * question about .distignore is put to DistIgnore, the one implementation of its dialect.
  *
+ * @group contract
+ *
  * @since 0.1.0
  */
 final class IgnoreListsTest extends TestCase {

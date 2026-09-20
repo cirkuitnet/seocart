@@ -354,4 +354,31 @@ final class ReadmeValidatorTest extends TestCase {
 
 		$this->assertSame( array( 'source-link-missing' ), $codes );
 	}
+
+	/**
+	 * Tests that every build step readme.txt must show names something the repository has.
+	 *
+	 * The steps are text in a readme, so nothing else notices when a script is renamed. A step
+	 * of a form this test does not know fails it: a new kind of step needs a new rule here.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_build_steps_name_things_that_exist(): void {
+		$root    = dirname( __DIR__, 3 );
+		$scripts = json_decode( (string) file_get_contents( $root . '/package.json' ), true, 512, JSON_THROW_ON_ERROR )['scripts'];
+
+		foreach ( ReadmeValidator::BUILD_STEPS as $step ) {
+			if ( 1 === preg_match( '/^npm run (\S+)$/', $step, $matches ) ) {
+				$this->assertArrayHasKey( $matches[1], $scripts, "package.json has no \"{$matches[1]}\" script." );
+			} elseif ( 1 === preg_match( '/^php (\S+)$/', $step, $matches ) ) {
+				$this->assertFileExists( $root . '/' . $matches[1] );
+			} elseif ( 'composer install' === $step ) {
+				$this->assertFileExists( $root . '/composer.lock' );
+			} elseif ( 'npm ci' === $step ) {
+				$this->assertFileExists( $root . '/package-lock.json' );
+			} else {
+				$this->fail( "No rule here knows how to verify the build step \"{$step}\"." );
+			}
+		}
+	}
 }
