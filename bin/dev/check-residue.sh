@@ -1,8 +1,8 @@
 #!/bin/sh
 #
-# The "no residue" gate: fails if anything provisioned for a slug still exists. Read-only
-# apart from one no-op statement, explained at account_state below. See README.md in this
-# directory.
+# The "no residue" gate: fails if anything provisioned for a slug still exists. The
+# account probe's limited state-changing potential is explained below. See README.md in
+# this directory.
 
 set -eu
 
@@ -88,6 +88,8 @@ could_not_check() {
 # leave out what the account may not see.
 database_state() {
 	reason=
+	# The format's backticks are literal SQL syntax, so single quotes prevent shell expansion.
+	# shellcheck disable=SC2016
 	if state_output=$(printf 'USE `%s`;\n' "$1" | sc_sql 2>&1); then
 		state=present
 		return 0
@@ -103,10 +105,10 @@ database_state() {
 	esac
 }
 
-# Reading mysql.user is not among the privileges the provisioning account is asked to
-# have, so the question is put as a statement that CREATE USER alone allows and that
-# changes nothing: unlocking an account that is not locked. For a missing account
-# IF EXISTS turns the error into note 3162.
+# The provisioning account cannot read mysql.user, so ALTER USER IF EXISTS plus its warning
+# is the only available existence probe. That statement changes state if an account is
+# locked. Only seocart_wt_<slug> and seocart_test_<slug> accounts are probed, and these
+# scripts never lock them, so unlocking is a no-op for every account they own.
 account_state() {
 	reason=
 	if state_output=$(printf "ALTER USER IF EXISTS '%s'@'%s' ACCOUNT UNLOCK;\nSHOW WARNINGS;\n" "$1" "$SC_DB_ACCOUNT_HOST" | sc_sql 2>&1); then

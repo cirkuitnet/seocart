@@ -16,7 +16,7 @@ untracked file, and every other secret is generated.
 | `provision-test-db.sh <slug> [--checkout=<path>]`                                     | Creates the database `<prefix>test_<slug>` and the account `seocart_test_<slug>`, then fills `tests/wp-tests-config.template.php` into `tests/wp-tests-config.local.php` (gitignored, mode 600). Safe to repeat: the password is replaced.                                                                                                                    |
 | `provision-site.sh <slug> [--checkout=<path>] [--with-woocommerce] [--with-polylang]` | Creates `<prefix>wt_<slug>` and its account, builds `<integration site>/_worktrees/<slug>/`, installs WordPress, activates SEOCart, writes the credentials file, then requests the home page and `wp-login.php` and fails unless both return 200. `--with-woocommerce` and `--with-polylang` (languages `en_US`, `en_GB`, `de_DE`) affect this instance only. |
 | `teardown-site.sh <slug>`                                                             | Removes the instance directory, both databases, both accounts, the credentials file, the debug log and the checkout's local test configuration. Missing pieces are not an error.                                                                                                                                                                              |
-| `teardown-worktree.sh <slug>`                                                         | `teardown-site.sh`, then `git worktree remove --force`, then `git branch -d` (which only deletes a merged branch).                                                                                                                                                                                                                                            |
+| `teardown-worktree.sh <slug> [--discard-changes]`                                     | Refuses a dirty worktree before touching the site, then runs `teardown-site.sh`, `git worktree remove` and `git branch -d` (which only deletes a merged branch). `--discard-changes` explicitly permits a forced removal.                                                                                                                                     |
 | `check-residue.sh <slug>`                                                             | The "no residue" gate, below.                                                                                                                                                                                                                                                                                                                                 |
 | `selftest.sh`                                                                         | Tests the scripts as far as that is possible without MySQL, WP-CLI or a web server, in a sandbox. Run it after every change here.                                                                                                                                                                                                                             |
 | `lib.sh`                                                                              | Shared functions; sourced by the others. `polylang-languages.php` is run inside an instance by `--with-polylang`.                                                                                                                                                                                                                                             |
@@ -86,11 +86,9 @@ leave nothing behind.
 <state dir>/logs/<slug>-debug.log         WP_DEBUG_LOG, outside the web root (mode 600)
 ```
 
-- **Core is copied, not symlinked** (about 50 MB). `provision-site.sh` first asks the real
-  `wp-load.php`, through a symlink, whether it finds a `wp-config.php` beside the link. It
-  does not: WordPress sets `ABSPATH` from `__DIR__`, and PHP resolves symlinks in
-  `__DIR__`, so a linked core looks for its configuration inside the shared checkout. If
-  a future PHP answers differently, the script links instead.
+- **Core is copied, not symlinked** (about 50 MB). WordPress sets `ABSPATH` from `__DIR__`,
+  and PHP resolves symlinks in `__DIR__`, so linked core would look for its configuration
+  inside the shared checkout.
 - **PHP must run as the owner of the files.** On the dev server it does: the virtual host
   hands PHP to an FPM pool that runs as the account owning the integration site. Nothing
   is therefore world-writable, `wp-config.php`, the credentials file and the debug log
@@ -122,6 +120,11 @@ accounts, the check is reported as `UNVERIFIED` and the exit code is `3`, not `0
 `--allow-unverified` accepts that explicitly. Teardown refuses any slug that fails
 validation, and removes a directory only if it resolves to exactly
 `<integration site>/_worktrees/<slug>`.
+
+The account check is not strictly read-only. Because the provisioning account cannot read
+the `mysql` schema, it uses `ALTER USER IF EXISTS ... ACCOUNT UNLOCK` and reads the warning;
+the only accounts it probes are ones these scripts create and never lock, so the statement
+is a no-op for every account they own.
 
 One limit: a local test configuration is looked for in the slug's worktree and in the
 checkout the instance serves. If `provision-test-db.sh` configured a checkout somewhere

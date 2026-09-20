@@ -152,8 +152,8 @@ all need a running site with the plugin active. Do not use a site you care about
 `bin/dev/provision-site.sh` creates a **disposable** one:
 
 - it creates a database for the site;
-- it creates a WordPress install whose core files are linked from the shared core checkout
-  instead of copied, with its own `wp-config.php`, its own table prefix and fresh salts;
+- it creates a WordPress install whose core files are copied from the shared core checkout,
+  with its own `wp-config.php`, its own table prefix and fresh salts;
 - it links your working copy into the site as `wp-content/plugins/seocart` — the link is set
   once and never repointed, so one site always serves one working copy;
 - it installs WordPress with WP-CLI, activates SEOCart, and prints the site URL;

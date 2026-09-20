@@ -80,6 +80,24 @@ expect_equal() {
 	fi
 }
 
+# expect_path <path> <description> — checks that a file or directory still exists.
+expect_path() {
+	if [ -e "$1" ] || [ -L "$1" ]; then
+		passed "$2"
+	else
+		failed "$2: $1 does not exist"
+	fi
+}
+
+# expect_absent <path> <description> — checks that a file or directory is gone.
+expect_absent() {
+	if [ ! -e "$1" ] && [ ! -L "$1" ]; then
+		passed "$2"
+	else
+		failed "$2: $1 still exists"
+	fi
+}
+
 # Runs a function that may call exit without ending this script.
 contained() {
 	("$@")
@@ -134,7 +152,7 @@ printf '\n== slugs\n'
 for good in a 7 abc my-task-1 "$longest_slug"; do
 	expect_exit 0 "accepted: \"$good\"" sc_validate_slug "$good"
 done
-for bad in '' ../x a/b . .. Upper a_b a.b 'a b' -a a- 'a;b' 'a$b' 'a*' "$too_long_slug" "$(repeat a 40)"; do
+for bad in '' ../x a/b . .. Upper a_b a.b 'a b' -a a- 'a;b' "a\$b" 'a*' "$too_long_slug" "$(repeat a 40)"; do
 	expect_exit 1 "rejected: \"$bad\"" sc_validate_slug "$bad"
 done
 
@@ -178,7 +196,7 @@ SC_DB_PREFIX=
 SC_DB_PREFIX_LOADED=no
 printf 'SEOCART_DEV_DB_PREFIX=%sp\n' "$longest_prefix" >"$SC_CONFIG_FILE"
 expect_exit 1 "longer prefix rejected" sc_configured_db_prefix
-for bad in '' '"quoted_"' 'a b_' 'x_;id' 'x_$(id)' 'dash-'; do
+for bad in '' '"quoted_"' 'a b_' 'x_;id' "x_\$(id)" 'dash-'; do
 	printf 'SEOCART_DEV_DB_PREFIX=%s\n' "$bad" >"$SC_CONFIG_FILE"
 	expect_exit 1 "rejected value: $bad" sc_configured_db_prefix
 done
@@ -215,13 +233,15 @@ EOF
 expect_exit 0 "fills the tokens" contained sc_render_template "$template" "$rendered" DB_NAME=name_1 "DB_PASSWORD=$first"
 expect_equal "define( 'DB_NAME', 'name_1' );" "$(grep DB_NAME "$rendered")" "token replaced"
 expect_equal 1 "$(grep -c __DIR__ "$rendered")" "PHP's __DIR__ is not taken for a token"
+# The generated filename is fixed and contains no characters that make ls ambiguous.
+# shellcheck disable=SC2012
 expect_equal -rw------- "$(ls -l "$rendered" | cut -c1-10)" "mode 600"
 rm -f -- "$rendered"
 expect_exit 1 "refuses a template with a token it cannot fill" contained sc_render_template "$template" "$rendered" DB_NAME=name_1
 expect_output __DB_PASSWORD__ "names the unfilled token"
 expect_exit 1 "refuses a value with a quote" contained sc_render_template "$template" "$rendered" "DB_NAME=a'b" DB_PASSWORD=x
 expect_equal '' "$(ls "$sandbox/checkout")" "a refusal leaves no file in the checkout"
-expect_equal '' "$(ls "$sandbox" | grep '^render' || true)" "and none in the scratch directory"
+expect_equal '' "$(find "$sandbox" -name 'render*' -prune -print)" "and none in the scratch directory"
 
 printf '\n== guarded removal of an instance directory\n'
 mkdir -p "$SC_INSTANCES_ROOT/zz-real/wp-content" "$sandbox/elsewhere/victim"
@@ -291,6 +311,110 @@ expect_exit 1 "teardown-site: the MySQL steps cannot run, so it reports failure"
 expect_exit 0 "but every file it is responsible for is gone" run_script check-residue "$slug" --allow-unverified
 expect_equal '' "$(ls "$sandbox/linked-checkout/tests")" "including the configuration in the instance's own checkout"
 expect_equal 1 "$(grep -c "${account}_b" "$neighbour_config")" "the neighbour's configuration is untouched"
+
+printf '\n== teardown-worktree protects uncommitted work before teardown\n'
+# The real teardown needs MySQL, so a stub records whether the worktree guard allowed it
+# to start while a fake Git exposes the exact registry and status responses under test.
+teardown_harness=$sandbox/teardown-worktree-harness
+fake_bin=$teardown_harness/fake-bin
+git_status=$teardown_harness/status
+git_log=$teardown_harness/git.log
+teardown_log=$teardown_harness/teardown.log
+mkdir -p "$fake_bin" "$SEOCART_DEV_REPO/.git"
+cp "$SC_DEV_DIR/teardown-worktree.sh" "$SC_DEV_DIR/lib.sh" "$teardown_harness/"
+cat >"$teardown_harness/teardown-site.sh" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "$1" >"$SEOCART_SELFTEST_TEARDOWN_LOG"
+EOF
+cat >"$fake_bin/git" <<'EOF'
+#!/bin/sh
+set -eu
+
+directory=
+if [ "${1-}" = -C ]; then
+	directory=$2
+	shift 2
+fi
+
+case ${1-}:${2-} in
+	worktree:list)
+		if [ -d "$SEOCART_SELFTEST_GIT_DIRECTORY" ]; then
+			printf 'worktree %s\n\n' "$SEOCART_SELFTEST_GIT_WORKTREE"
+		fi
+		;;
+	status:--porcelain)
+		[ "$directory" = "$SEOCART_SELFTEST_GIT_WORKTREE" ]
+		[ "${3-}" = --untracked-files=all ]
+		cat "$SEOCART_SELFTEST_GIT_STATUS"
+		;;
+	rev-parse:--abbrev-ref)
+		[ "$directory" = "$SEOCART_SELFTEST_GIT_WORKTREE" ]
+		printf 'selftest-branch\n'
+		;;
+	worktree:remove)
+		shift 2
+		force=no
+		if [ "${1-}" = --force ]; then
+			force=yes
+			shift
+		fi
+		[ "$1" = "$SEOCART_SELFTEST_GIT_WORKTREE" ]
+		printf 'remove force=%s %s\n' "$force" "$1" >>"$SEOCART_SELFTEST_GIT_LOG"
+		rm -f -- "$SEOCART_SELFTEST_GIT_DIRECTORY/dirty.txt"
+		rmdir "$SEOCART_SELFTEST_GIT_DIRECTORY/tests" 2>/dev/null || true
+		rmdir "$SEOCART_SELFTEST_GIT_DIRECTORY"
+		;;
+	worktree:prune)
+		;;
+	branch:-d)
+		;;
+	*)
+		exit 1
+		;;
+esac
+EOF
+chmod +x "$fake_bin/git"
+
+worktree_fixture=$SEOCART_DEV_WORKTREES_ROOT/$slug
+SEOCART_SELFTEST_GIT_WORKTREE=$(sc_physical_dir "$SEOCART_DEV_WORKTREES_ROOT")/$slug
+SEOCART_SELFTEST_GIT_DIRECTORY=$worktree_fixture
+SEOCART_SELFTEST_GIT_STATUS=$git_status
+SEOCART_SELFTEST_GIT_LOG=$git_log
+SEOCART_SELFTEST_TEARDOWN_LOG=$teardown_log
+export SEOCART_SELFTEST_GIT_WORKTREE SEOCART_SELFTEST_GIT_DIRECTORY SEOCART_SELFTEST_GIT_STATUS SEOCART_SELFTEST_GIT_LOG SEOCART_SELFTEST_TEARDOWN_LOG
+saved_path=$PATH
+PATH=$fake_bin:$PATH
+export PATH
+
+mkdir -p "$worktree_fixture"
+plant "$worktree_fixture/dirty.txt" dirty
+printf '?? dirty.txt\n' >"$git_status"
+expect_exit 1 "teardown-worktree: refuses a dirty worktree" sh "$teardown_harness/teardown-worktree.sh" "$slug"
+expect_output '?? dirty.txt' "teardown-worktree: prints the dirty status"
+expect_output 'nothing was removed' "teardown-worktree: explains the refusal"
+expect_path "$worktree_fixture/dirty.txt" "teardown-worktree: the dirty worktree is untouched"
+expect_absent "$teardown_log" "teardown-worktree: site teardown did not start"
+
+rm -f -- "$worktree_fixture/dirty.txt"
+: >"$git_status"
+: >"$git_log"
+expect_exit 0 "teardown-worktree: accepts a clean worktree" sh "$teardown_harness/teardown-worktree.sh" "$slug"
+expect_absent "$worktree_fixture" "teardown-worktree: removes the clean worktree"
+expect_equal "remove force=no $SEOCART_SELFTEST_GIT_WORKTREE" "$(cat "$git_log")" "teardown-worktree: clean removal does not force"
+
+rm -f -- "$teardown_log"
+mkdir -p "$worktree_fixture"
+plant "$worktree_fixture/dirty.txt" dirty
+printf '?? dirty.txt\n' >"$git_status"
+: >"$git_log"
+expect_exit 0 "teardown-worktree: accepts a dirty worktree with --discard-changes" sh "$teardown_harness/teardown-worktree.sh" "$slug" --discard-changes
+expect_absent "$worktree_fixture" "teardown-worktree: removes the discarded worktree"
+expect_equal "remove force=yes $SEOCART_SELFTEST_GIT_WORKTREE" "$(cat "$git_log")" "teardown-worktree: discard removal is forced"
+
+PATH=$saved_path
+export PATH
+unset SEOCART_SELFTEST_GIT_WORKTREE SEOCART_SELFTEST_GIT_DIRECTORY SEOCART_SELFTEST_GIT_STATUS SEOCART_SELFTEST_GIT_LOG SEOCART_SELFTEST_TEARDOWN_LOG
 
 printf '\n%s checks, %s failed\n' "$checks" "$failures"
 [ "$failures" -eq 0 ]

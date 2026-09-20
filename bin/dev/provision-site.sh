@@ -47,52 +47,16 @@ instance_wp() {
 	"$SEOCART_DEV_WP" --path="$site_dir" "$@" </dev/null
 }
 
-# Does a WordPress whose core files are symbolic links find the wp-config.php that sits
-# next to the links? wp-load.php sets ABSPATH from __DIR__, so the answer depends on how
-# PHP resolves __DIR__ for a linked file. Asked of the real wp-load.php, in the scratch
-# directory, with a wp-config.php that only reports it was loaded.
-symlinked_core_works() {
-	probe_dir=$SC_TMPDIR/abspath-probe
-	mkdir "$probe_dir"
-	ln -s "$core_dir/wp-load.php" "$probe_dir/wp-load.php"
-	cat >"$probe_dir/wp-config.php" <<'EOF'
-<?php
-echo 'seocart-abspath-probe-ok';
-exit( 0 );
-EOF
-	probe_output=$(php "$probe_dir/wp-load.php" </dev/null 2>/dev/null) || probe_output=
-	case $probe_output in
-		*seocart-abspath-probe-ok*)
-			return 0
-			;;
-	esac
-	return 1
-}
-
-# wp-admin/, wp-includes/ and the root *.php files, except wp-config.php: linked from the
-# shared checkout when that works, copied when it does not.
+# PHP resolves __DIR__ through symlinks, so core is copied to keep ABSPATH in this site.
 install_core_files() {
-	if symlinked_core_works; then
-		core_mode=symlink
-		ln -s "$core_dir/wp-admin" "$site_dir/wp-admin"
-		ln -s "$core_dir/wp-includes" "$site_dir/wp-includes"
-	else
-		core_mode=copy
-		sc_info "Copying WordPress core instead of linking it: PHP resolves symbolic links in __DIR__,"
-		sc_info "so a linked wp-load.php sets ABSPATH to the shared checkout and looks for wp-config.php there."
-		cp -R "$core_dir/wp-admin" "$core_dir/wp-includes" "$site_dir/"
-	fi
+	cp -R "$core_dir/wp-admin" "$core_dir/wp-includes" "$site_dir/"
 	for core_file in "$core_dir"/*.php; do
 		case ${core_file##*/} in
 			wp-config.php | wp-config-sample.php)
 				continue
 				;;
 		esac
-		if [ "$core_mode" = symlink ]; then
-			ln -s "$core_file" "$site_dir/${core_file##*/}"
-		else
-			cp "$core_file" "$site_dir/"
-		fi
+		cp "$core_file" "$site_dir/"
 	done
 }
 
@@ -176,7 +140,7 @@ define( 'WP_DEBUG', true );
 define( 'WP_DEBUG_LOG', '$debug_log' );
 define( 'WP_DEBUG_DISPLAY', false );
 
-// Core files may be shared with other instances; nothing may update them from here.
+// Core updates would make this disposable copy diverge from the shared checkout.
 define( 'AUTOMATIC_UPDATER_DISABLED', true );
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -326,7 +290,7 @@ sc_load_db_prefix || exit 1
 db_name=$(sc_db_name wt "$slug")
 db_account=$(sc_account_name wt "$slug")
 db_password=$(sc_password) || exit 1
-admin_user=admin
+admin_user='admin'
 admin_password=$(sc_password) || exit 1
 admin_email=${SEOCART_DEV_ADMIN_EMAIL:-admin@example.org}
 env_file=$(sc_env_file "$slug")
@@ -380,7 +344,7 @@ sc_smoke_check "$instance_url" || exit 1
 SC_FAILURE_HINT=
 sc_info "Instance ready."
 sc_info "  URL:         $instance_url/"
-sc_info "  core files:  $core_mode"
+sc_info "  core files:  copied"
 sc_info "  database:    $db_name"
 sc_info "  credentials: $env_file (WP_BASE_URL, WP_USERNAME, WP_PASSWORD)"
 sc_info "  debug log:   $debug_log"
