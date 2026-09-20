@@ -99,7 +99,7 @@ SC_FAILURE_HINT="provision-test-db.sh did not finish. Remove what it created wit
 sc_create_account "$account" "$database" "$password" || exit 1
 
 tests_config=$(sc_tests_config "$checkout")
-mv -f -- "$rendered" "$tests_config" || sc_die "could not write $tests_config"
+sc_place_file "$rendered" "$tests_config"
 SC_FAILURE_HINT=
 
 sc_info "Test database ready."

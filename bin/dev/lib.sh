@@ -599,7 +599,19 @@ EOF
 		rm -f -- "$sc_rendered"
 		sc_die "$sc_template has tokens this script does not fill: $sc_unfilled"
 	fi
-	mv -f -- "$sc_rendered" "$sc_destination" || sc_die "could not write $sc_destination"
+	sc_place_file "$sc_rendered" "$sc_destination"
+}
+
+# sc_place_file <source> <destination> — puts a finished file from the private scratch
+# directory in its place, with mode 600 whatever was there before.
+#
+# Not mv: the scratch directory is usually on another file system, where mv copies and
+# then tries to keep the group of the source. On BSD a file made below /tmp carries the
+# group of /tmp, which the account may not hand out, so mv warned on every run.
+sc_place_file() {
+	rm -f -- "$2" || sc_die "could not replace $2"
+	(umask 077 && cp -- "$1" "$2") || sc_die "could not write $2"
+	rm -f -- "$1"
 }
 
 # ---------------------------------------------------------------------------------------
