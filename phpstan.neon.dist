@@ -7,12 +7,17 @@ parameters:
 		- seocart.php
 		- uninstall.php
 		- src
+		- bin
 		- tools
 		- tests
 	excludePaths:
 		analyseAndScan:
 			- tools/phpcs/SEOCart/Tests/Fixtures/*
-	# PHP_CodeSniffer ships its own autoloader instead of a Composer one, so its classes and
-	# token constants have to be pointed out for the sniffs and self-tests in tools/phpcs/.
+	# Two libraries ship without Composer autoloading, so PHPStan is told where their
+	# symbols live. They are scanned for discovery only, never analysed:
+	# - PHP_CodeSniffer (classes and token constants), used by tools/phpcs/;
+	# - the WordPress test library (WP_UnitTestCase, tests_add_filter), used by
+	#   tests/Integration/ and tests/bootstrap-integration.php.
 	scanDirectories:
 		- vendor/squizlabs/php_codesniffer/src
+		- vendor/wp-phpunit/wp-phpunit/includes
