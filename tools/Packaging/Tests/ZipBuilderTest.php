@@ -91,6 +91,7 @@ final class ZipBuilderTest extends TestCase {
 	private function tree(): string {
 		$this->writeFile( 'tree/seocart.php', "<?php\n/**\n * Plugin Name: Fixture\n * Version: 1.2.3\n */\n" );
 		$this->writeFile( 'tree/uninstall.php', "<?php\n" );
+		$this->writeFile( 'tree/composer.json', "{\"name\":\"cirkuitnet/seocart\"}\n" );
 		$this->writeFile( 'tree/src/Zeta.php', "<?php\n// Zeta.\n" );
 		$this->writeFile( 'tree/src/Alpha/Beta.php', "<?php\n// Beta.\n" );
 		$this->writeFile( 'tree/src/docs/Kept.php', "<?php\n// A directory named docs beneath src is not the root docs directory.\n" );
@@ -224,6 +225,7 @@ final class ZipBuilderTest extends TestCase {
 		$this->assertSame( $this->directory . '/dist/seocart-1.2.3.zip', $result['path'] );
 		$this->assertSame(
 			array(
+				'seocart/composer.json',
 				'seocart/seocart.php',
 				'seocart/src/Alpha/Beta.php',
 				'seocart/src/Zeta.php',
@@ -233,7 +235,7 @@ final class ZipBuilderTest extends TestCase {
 			),
 			$this->entryNames( $result['path'] )
 		);
-		$this->assertSame( 6, $result['files'] );
+		$this->assertSame( 7, $result['files'] );
 		$this->assertSame( filesize( $result['path'] ), $result['bytes'] );
 	}
 
@@ -381,7 +383,7 @@ final class ZipBuilderTest extends TestCase {
 
 		$names = $this->entryNames( $this->build( $root, 'dist' )['path'] );
 
-		$this->assertCount( 6, $names );
+		$this->assertCount( 7, $names );
 		$this->assertNotContains( 'seocart/vendor/bin/tool', $names );
 	}
 

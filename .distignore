@@ -6,8 +6,9 @@
 # directory of that name at any depth; `*` matches within one path segment. A matched
 # directory is excluded with everything beneath it.
 #
-# The zip ships: seocart.php, uninstall.php, readme.txt, LICENSE, CHANGELOG.md, src/,
-# templates/, languages/, build/ (compiled assets) and vendor-scoped/ (Strauss output).
+# The zip ships: seocart.php, uninstall.php, readme.txt, LICENSE, composer.json,
+# CHANGELOG.md, src/, templates/, languages/, build/ (compiled assets) and
+# vendor-scoped/ (Strauss output).
 # The packaging check fails closed: a top-level entry outside that list fails the build.
 # vendor/ is excluded because the scoped copy ships instead; assets/ is excluded because
 # build/ is its compiled form and readme.txt links the public source and build steps
@@ -37,7 +38,6 @@ Thumbs.db
 /playwright-report
 /tools
 /vendor
-/composer.json
 /composer.lock
 /package.json
 /package-lock.json

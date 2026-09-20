@@ -63,12 +63,14 @@ php bin/check-zip.php dist/seocart-X.Y.Z.zip
    libraries — and the unprefixed Action Scheduler — to `vendor-scoped/`.
 2. `npm ci` and `npm run build` compile `assets/` into `build/` and enforce the asset
    budget.
-3. `bin/build-zip.php` writes `dist/seocart-X.Y.Z.zip` and `dist/SHA256SUMS`. It leaves out
-   every path that `.distignore` lists: tests, `docs/`, development configuration, `bin/`,
-   `tools/`, the uncompiled `assets/`, `node_modules/` and the unscoped `vendor/`.
+3. `bin/build-zip.php` writes `dist/seocart-X.Y.Z.zip` and `dist/SHA256SUMS`. It includes
+   `composer.json` with the plugin and leaves out every path that `.distignore` lists: tests,
+   `docs/`, development configuration, `bin/`, `tools/`, the uncompiled `assets/`,
+   `node_modules/`, `composer.lock` and the unscoped `vendor/`.
 4. `bin/check-zip.php` inspects the zip that was built and **fails closed**: a top-level
-   entry that is not on its allow-list fails the build. A zip that has not passed this check
-   is never published.
+   entry that is not on its allow-list fails the build. It also requires the generated
+   scoped autoloader and reconciles every runtime package directory with the repository's
+   `composer.lock`. A zip that has not passed this check is never published.
 
 Nothing in the package is downloaded at run time or on activation. Every dependency is in
 the zip.
@@ -81,17 +83,17 @@ ZIP" is not mistaken for a release. A unit test keeps that list and `.distignore
 Every gate below blocks a release. Most of them also run on every pull request, so that a
 release is never the first time a problem is seen.
 
-| Gate                      | Fails when                                                                                                                                                                               | How it runs                            |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| **Zip size**              | The zip is larger than the project's **5 MB budget**. The directory's hard limit is **10 MB**; the check fails there whatever the budget says                                            | `php bin/check-zip.php <zip>`          |
-| **Zip contents**          | The zip holds tests, `docs/`, development configuration, `node_modules/` or an unscoped `vendor/`; or Action Scheduler has been prefixed                                                 | `php bin/check-zip.php <zip>`          |
-| **Version agreement**     | The `Version` header, the `Stable tag` in `readme.txt` and the git tag do not all agree                                                                                                  | `php bin/check-wporg.php --tag=vX.Y.Z` |
-| **Readme validator**      | `Stable tag` is `trunk`; `Tested up to` is not a real WordPress version; the license is not `GPLv3 or later` with a license URI; there are more than five tags; a tag names a competitor | `composer wporg:check`                 |
-| **Licence allow-list**    | A Composer or npm **runtime** dependency has a license that is not compatible with GPLv3                                                                                                 | `composer licenses:check`              |
-| **External services**     | The generated "External services" section of `readme.txt` has drifted from the registry of outbound endpoints                                                                            | `composer docs:check`                  |
-| **No executable content** | `eval` or `create_function` appears anywhere in the plugin                                                                                                                               | `composer cs`                          |
-| **Plugin Check**          | The official Plugin Check tool reports any error or security finding **against the built zip**, not against the source tree. Warnings are tracked and must reach zero before 1.0         | The continuous integration workflow    |
-| **Install smoke**         | The built zip does not install and activate on a clean WordPress site, or it produces a PHP notice under `WP_DEBUG`                                                                      | The continuous integration workflow    |
+| Gate                      | Fails when                                                                                                                                                                                                   | How it runs                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
+| **Zip size**              | The zip is larger than the project's **5 MB budget**. The directory's hard limit is **10 MB**; the check fails there whatever the budget says                                                                | `php bin/check-zip.php <zip>`          |
+| **Zip contents**          | The zip holds tests, `docs/`, development configuration, `node_modules/` or an unscoped `vendor/`; omits `composer.json`, the generated autoloader or a locked runtime package; or prefixes Action Scheduler | `php bin/check-zip.php <zip>`          |
+| **Version agreement**     | The `Version` header, the `Stable tag` in `readme.txt` and the git tag do not all agree                                                                                                                      | `php bin/check-wporg.php --tag=vX.Y.Z` |
+| **Readme validator**      | `Stable tag` is `trunk`; `Tested up to` is not a real WordPress version; the license is not `GPLv3 or later` with a license URI; there are more than five tags; a tag names a competitor                     | `composer wporg:check`                 |
+| **Licence allow-list**    | A Composer or npm **runtime** dependency has a license that is not compatible with GPLv3                                                                                                                     | `composer licenses:check`              |
+| **External services**     | The generated "External services" section of `readme.txt` has drifted from the registry of outbound endpoints                                                                                                | `composer docs:check`                  |
+| **No executable content** | `eval` or `create_function` appears anywhere in the plugin                                                                                                                                                   | `composer cs`                          |
+| **Plugin Check**          | The official Plugin Check tool reports any error or security finding **against the built zip**, not against the source tree. Warnings are tracked and must reach zero before 1.0                             | The continuous integration workflow    |
+| **Install smoke**         | The built zip does not install and activate on a clean WordPress site, or it produces a PHP notice under `WP_DEBUG`                                                                                          | The continuous integration workflow    |
 
 Three more directory rules are enforced by tests as the features they concern arrive: no
 credit link on the storefront with default settings, no third-party `iframe` on an admin

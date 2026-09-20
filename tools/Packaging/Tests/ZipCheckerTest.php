@@ -36,6 +36,15 @@ final class ZipCheckerTest extends TestCase {
 	private const ACTION_SCHEDULER = 'seocart/vendor-scoped/woocommerce/action-scheduler/';
 
 	/**
+	 * Small lockfile used to prove runtime-package reconciliation.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const LOCK_FILE = __DIR__ . '/Fixtures/composer-lock.json';
+
+	/**
 	 * Returns the entries of a zip that may be published: entry name mapped to contents.
 	 *
 	 * The Action Scheduler files are minimal stand-ins written for this test. They carry
@@ -51,8 +60,10 @@ final class ZipCheckerTest extends TestCase {
 			'seocart/uninstall.php'                      => "<?php\n",
 			'seocart/readme.txt'                         => "=== SEOCart ===\n",
 			'seocart/LICENSE'                            => "GNU GENERAL PUBLIC LICENSE\n",
+			'seocart/composer.json'                      => "{\"name\":\"cirkuitnet/seocart\"}\n",
 			'seocart/src/Platform/Kernel/Kernel.php'     => "<?php\nnamespace SEOCart\\Platform\\Kernel;\n",
 			'seocart/vendor-scoped/autoload.php'         => "<?php\n",
+			'seocart/vendor-scoped/composer/autoload_real.php' => "<?php\n",
 			'seocart/vendor-scoped/composer/autoload_classmap.php' => "<?php\nreturn array(\n\t'SEOCart\\\\Vendor\\\\Acme\\\\Lib' => \$vendorDir . '/acme/lib/src/Lib.php',\n);\n",
 			'seocart/vendor-scoped/acme/lib/src/Lib.php' => "<?php\nnamespace SEOCart\\Vendor\\Acme;\n",
 			self::ACTION_SCHEDULER . 'action-scheduler.php' => "<?php\nif ( ! class_exists( 'ActionScheduler_Versions', false ) ) {\n\trequire_once __DIR__ . '/classes/ActionScheduler_Versions.php';\n}\n",
@@ -87,6 +98,20 @@ final class ZipCheckerTest extends TestCase {
 	}
 
 	/**
+	 * Checks a fixture zip against the small fixture lockfile.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $path         Path of the fixture zip.
+	 * @param int    $budget_bytes Size budget.
+	 * @param int    $limit_bytes  Hard size limit.
+	 * @return list<string> Violations.
+	 */
+	private function check( string $path, int $budget_bytes = ZipChecker::DEFAULT_BUDGET_BYTES, int $limit_bytes = ZipChecker::DEFAULT_LIMIT_BYTES ): array {
+		return ZipChecker::check( $path, $budget_bytes, $limit_bytes, self::LOCK_FILE );
+	}
+
+	/**
 	 * Asserts that the checker reports exactly the expected violations, each recognised by a fragment.
 	 *
 	 * @since 0.1.0
@@ -108,7 +133,7 @@ final class ZipCheckerTest extends TestCase {
 	 * @since 0.1.0
 	 */
 	public function test_good_zip_passes(): void {
-		$this->assertSame( array(), ZipChecker::check( $this->zip( $this->goodEntries() ) ) );
+		$this->assertSame( array(), $this->check( $this->zip( $this->goodEntries() ) ) );
 	}
 
 	/**
@@ -125,7 +150,7 @@ final class ZipCheckerTest extends TestCase {
 			'seocart/vendor-scoped/acme/lib/docs/Pages.php' => "<?php\n",
 		);
 
-		$this->assertSame( array(), ZipChecker::check( $this->zip( $entries ) ) );
+		$this->assertSame( array(), $this->check( $this->zip( $entries ) ) );
 	}
 
 	/**
@@ -141,7 +166,7 @@ final class ZipCheckerTest extends TestCase {
 	public function test_unwanted_entry_fails( string $name, array $fragments ): void {
 		$entries = $this->goodEntries() + array( $name => "Unwanted.\n" );
 
-		$this->assertViolations( $fragments, ZipChecker::check( $this->zip( $entries ) ) );
+		$this->assertViolations( $fragments, $this->check( $this->zip( $entries ) ) );
 	}
 
 	/**
@@ -164,10 +189,6 @@ final class ZipCheckerTest extends TestCase {
 			'unscoped vendor at the top'        => array(
 				'seocart/vendor/autoload.php',
 				array( 'unexpected top-level entry seocart/vendor/', 'forbidden path: seocart/vendor (1 entries)' ),
-			),
-			'file that is not on the list'      => array(
-				'seocart/composer.json',
-				array( 'unexpected top-level entry seocart/composer.json' ),
 			),
 			'file with a listed directory name' => array(
 				'seocart/templates',
@@ -237,7 +258,7 @@ final class ZipCheckerTest extends TestCase {
 
 		$this->assertViolations(
 			array( 'forbidden path: seocart/src/tests (2 entries)' ),
-			ZipChecker::check( $this->zip( $entries ) )
+			$this->check( $this->zip( $entries ) )
 		);
 	}
 
@@ -249,7 +270,7 @@ final class ZipCheckerTest extends TestCase {
 	public function test_forbidden_path_names_the_pattern_that_excludes_it(): void {
 		$entries = $this->goodEntries() + array( 'seocart/vendor-scoped/acme/lib/Tests/LibTest.php' => "<?php\n" );
 
-		$violations = ZipChecker::check( $this->zip( $entries ) );
+		$violations = $this->check( $this->zip( $entries ) );
 
 		$this->assertCount( 1, $violations );
 		$this->assertSame( 1, preg_match( '/Exclude it with the line `([^`]+)` in \.distignore/', $violations[0], $matches ), $violations[0] );
@@ -277,7 +298,7 @@ final class ZipCheckerTest extends TestCase {
 
 		unset( $entries[ $name ] );
 
-		$this->assertViolations( array( $fragment ), ZipChecker::check( $this->zip( $entries ) ) );
+		$this->assertViolations( array( $fragment ), $this->check( $this->zip( $entries ) ) );
 	}
 
 	/**
@@ -293,7 +314,63 @@ final class ZipCheckerTest extends TestCase {
 			'uninstall' => array( 'seocart/uninstall.php', 'required entry seocart/uninstall.php is missing' ),
 			'readme'    => array( 'seocart/readme.txt', 'required entry seocart/readme.txt is missing' ),
 			'license'   => array( 'seocart/LICENSE', 'required entry seocart/LICENSE is missing' ),
+			'manifest'  => array( 'seocart/composer.json', 'required entry seocart/composer.json is missing' ),
 			'source'    => array( 'seocart/src/Platform/Kernel/Kernel.php', 'required entry seocart/src/ is missing' ),
+		);
+	}
+
+	/**
+	 * Tests that both generated autoloader files are required by name.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @dataProvider generatedAutoloaderFiles
+	 *
+	 * @param string $file Generated autoloader file to remove.
+	 */
+	public function test_generated_runtime_autoloader_file_is_required( string $file ): void {
+		$entries = $this->goodEntries();
+
+		unset( $entries[ $file ] );
+
+		$this->assertViolations( array( "runtime dependencies: {$file} is missing" ), $this->check( $this->zip( $entries ) ) );
+	}
+
+	/**
+	 * Provides the generated autoloader files required in a release.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, array{string}>
+	 */
+	public function generatedAutoloaderFiles(): array {
+		return array(
+			'autoload entry point' => array( 'seocart/vendor-scoped/autoload.php' ),
+			'autoload bootstrap'   => array( 'seocart/vendor-scoped/composer/autoload_real.php' ),
+		);
+	}
+
+	/**
+	 * Tests that every runtime package in composer.lock has a directory in the zip.
+	 *
+	 * The fixture also names a packages-dev dependency that the release does not contain.
+	 * A good zip passing first proves that development packages are not reconciled.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_runtime_packages_are_reconciled_with_composer_lock(): void {
+		$entries = $this->goodEntries();
+
+		$this->assertSame(
+			array(),
+			$this->check( $this->zip( $entries ) )
+		);
+
+		unset( $entries['seocart/vendor-scoped/acme/lib/src/Lib.php'] );
+
+		$this->assertViolations(
+			array( 'package acme/lib from composer.lock is missing from seocart/vendor-scoped/acme/lib/' ),
+			$this->check( $this->zip( $entries ) )
 		);
 	}
 
@@ -306,14 +383,14 @@ final class ZipCheckerTest extends TestCase {
 		$path  = $this->zip( $this->goodEntries() );
 		$bytes = (int) filesize( $path );
 
-		$this->assertSame( array(), ZipChecker::check( $path, $bytes, $bytes ) );
+		$this->assertSame( array(), $this->check( $path, $bytes, $bytes ) );
 
-		$over_budget = ZipChecker::check( $path, $bytes - 1, $bytes );
+		$over_budget = $this->check( $path, $bytes - 1, $bytes );
 
 		$this->assertViolations( array( 'over the project budget of ' . ( $bytes - 1 ) . ' bytes' ), $over_budget );
 		$this->assertStringNotContainsString( 'will not accept', $over_budget[0] );
 
-		$over_limit = ZipChecker::check( $path, $bytes - 2, $bytes - 1 );
+		$over_limit = $this->check( $path, $bytes - 2, $bytes - 1 );
 
 		$this->assertViolations( array( 'over the WordPress.org hard limit of ' . ( $bytes - 1 ) . ' bytes' ), $over_limit );
 		$this->assertStringNotContainsString( 'project budget', $over_limit[0] );
@@ -340,7 +417,7 @@ final class ZipCheckerTest extends TestCase {
 			}
 		}
 
-		$violations = ZipChecker::check( $this->zip( $entries ) );
+		$violations = $this->check( $this->zip( $entries ) );
 
 		$this->assertViolations( $fragments, $violations );
 		$this->assertStringContainsString( 'ADR-0008', $violations[0] );
@@ -394,7 +471,7 @@ final class ZipCheckerTest extends TestCase {
 	public function test_file_name_version_must_match_the_header(): void {
 		$this->assertViolations(
 			array( 'the file name says 1.2.4 but the Version header of seocart/seocart.php inside the zip says 1.2.3' ),
-			ZipChecker::check( $this->zip( $this->goodEntries(), 'seocart-1.2.4.zip' ) )
+			$this->check( $this->zip( $this->goodEntries(), 'seocart-1.2.4.zip' ) )
 		);
 	}
 
@@ -406,7 +483,7 @@ final class ZipCheckerTest extends TestCase {
 	public function test_file_name_must_state_a_version(): void {
 		$this->assertViolations(
 			array( 'the file name release.zip is not of the form seocart-<version>.zip' ),
-			ZipChecker::check( $this->zip( $this->goodEntries(), 'release.zip' ) )
+			$this->check( $this->zip( $this->goodEntries(), 'release.zip' ) )
 		);
 	}
 
@@ -420,7 +497,7 @@ final class ZipCheckerTest extends TestCase {
 
 		$this->assertViolations(
 			array( 'seocart/seocart.php has no Version header' ),
-			ZipChecker::check( $this->zip( $entries ) )
+			$this->check( $this->zip( $entries ) )
 		);
 	}
 
@@ -437,7 +514,7 @@ final class ZipCheckerTest extends TestCase {
 		$zip->setExternalAttributesName( 'seocart/src/Link.php', ZipArchive::OPSYS_UNIX, 0120777 << 16 );
 		$zip->close();
 
-		$this->assertViolations( array( 'symbolic link: seocart/src/Link.php' ), ZipChecker::check( $path ) );
+		$this->assertViolations( array( 'symbolic link: seocart/src/Link.php' ), $this->check( $path ) );
 	}
 
 	/**
@@ -448,11 +525,11 @@ final class ZipCheckerTest extends TestCase {
 	public function test_unreadable_archive_fails(): void {
 		$this->assertViolations(
 			array( 'is not a readable zip archive' ),
-			ZipChecker::check( $this->writeFile( 'seocart-1.2.3.zip', 'This is not a zip.' ) )
+			$this->check( $this->writeFile( 'seocart-1.2.3.zip', 'This is not a zip.' ) )
 		);
 		$this->assertViolations(
 			array( 'does not exist' ),
-			ZipChecker::check( $this->directory . '/seocart-9.9.9.zip' )
+			$this->check( $this->directory . '/seocart-9.9.9.zip' )
 		);
 	}
 

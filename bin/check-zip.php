@@ -26,4 +26,4 @@ if ( ! extension_loaded( 'zip' ) ) {
 require_once dirname( __DIR__ ) . '/tools/Packaging/PluginPackage.php';
 require_once dirname( __DIR__ ) . '/tools/Packaging/ZipChecker.php';
 
-exit( SEOCart\Tools\Packaging\ZipChecker::main( $argv ) );
+exit( SEOCart\Tools\Packaging\ZipChecker::main( $argv, dirname( __DIR__ ) . '/composer.lock' ) );

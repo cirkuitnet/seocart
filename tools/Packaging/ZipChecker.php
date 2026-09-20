@@ -16,10 +16,11 @@ use ZipArchive;
 /**
  * Decides whether a release zip may be published.
  *
- * The check reads nothing but the zip, because .distignore and the working tree are the
- * things that may be wrong. It fails closed: the top of the plugin folder is compared
- * with an allow-list, so a new file at the repository root fails the release until
- * someone decides whether it ships, instead of shipping until someone notices.
+ * The check reads the zip and the injected repository composer.lock. It fails closed: the
+ * top of the plugin folder is compared with an allow-list, so a new file at the repository
+ * root fails the release until someone decides whether it ships, instead of shipping until
+ * someone notices. Every locked runtime package and the generated autoloader must be in the
+ * archive too.
  *
  * Source maps are rejected. `wp-scripts build` writes none unless it is asked to, so a
  * `.map` file means a development build (`wp-scripts start`) was packaged; it would also
@@ -114,16 +115,32 @@ final class ZipChecker {
 	private const ACTION_SCHEDULER_RULE = 'ADR-0008: Action Scheduler ships unprefixed and outside the generated autoloader, because plugins negotiate which bundled copy runs by its real class names.';
 
 	/**
+	 * Generated Composer autoloader files needed to load scoped runtime packages.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<string>
+	 */
+	private const RUNTIME_AUTOLOADER_FILES = array(
+		'vendor-scoped/autoload.php',
+		'vendor-scoped/composer/autoload_real.php',
+	);
+
+	/**
 	 * Checks a release zip.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string $zip_path     Path of the zip.
-	 * @param int    $budget_bytes The project's size budget.
-	 * @param int    $limit_bytes  The directory's hard size limit.
+	 * @param string      $zip_path           Path of the zip.
+	 * @param int         $budget_bytes       The project's size budget.
+	 * @param int         $limit_bytes        The directory's hard size limit.
+	 * @param string|null $composer_lock_path Path of the repository's composer.lock. Defaults to
+	 *                                        the lock beside this tools directory.
 	 * @return list<string> One message per violation. An empty list means the zip may be published.
 	 */
-	public static function check( string $zip_path, int $budget_bytes = self::DEFAULT_BUDGET_BYTES, int $limit_bytes = self::DEFAULT_LIMIT_BYTES ): array {
+	public static function check( string $zip_path, int $budget_bytes = self::DEFAULT_BUDGET_BYTES, int $limit_bytes = self::DEFAULT_LIMIT_BYTES, ?string $composer_lock_path = null ): array {
+		$composer_lock_path ??= dirname( __DIR__, 2 ) . '/composer.lock';
+
 		if ( ! is_file( $zip_path ) ) {
 			return array( "{$zip_path} does not exist." );
 		}
@@ -146,6 +163,7 @@ final class ZipChecker {
 			self::layoutViolations( $names ),
 			self::forbiddenPathViolations( $names ),
 			self::symbolicLinkViolations( $zip ),
+			self::runtimeDependencyViolations( $names, $composer_lock_path ),
 			self::actionSchedulerViolations( $zip, $names ),
 			self::versionViolations( $zip, basename( $zip_path ) )
 		);
@@ -160,10 +178,11 @@ final class ZipChecker {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string[] $arguments The command line, script name included.
+	 * @param string[] $arguments          The command line, script name included.
+	 * @param string   $composer_lock_path Path of the repository's composer.lock.
 	 * @return int The process exit code: 0 when the zip passes, 1 when it does not, 2 for a usage error.
 	 */
-	public static function main( array $arguments ): int {
+	public static function main( array $arguments, string $composer_lock_path ): int {
 		$usage = sprintf(
 			"Usage: php bin/check-zip.php <zip> [--budget-bytes=%d] [--limit-bytes=%d]\n",
 			self::DEFAULT_BUDGET_BYTES,
@@ -205,7 +224,7 @@ final class ZipChecker {
 			return 2;
 		}
 
-		$violations = self::check( $paths[0], $options['budget-bytes'], $options['limit-bytes'] );
+		$violations = self::check( $paths[0], $options['budget-bytes'], $options['limit-bytes'], $composer_lock_path );
 
 		if ( array() === $violations ) {
 			fwrite(
@@ -395,6 +414,77 @@ final class ZipChecker {
 				&& 0120000 === ( ( $attributes >> 16 ) & 0170000 )
 			) {
 				$violations[] = 'symbolic link: ' . $zip->getNameIndex( $index ) . ' is stored as a link. A release is made of regular files.';
+			}
+		}
+
+		return $violations;
+	}
+
+	/**
+	 * Checks that the generated autoloader and every locked runtime package ship.
+	 *
+	 * The composer.lock file itself remains a development file. The checker reads the
+	 * repository copy injected by bin/check-zip.php, which also lets self-tests use a small
+	 * fixture lock.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string[] $names              Entry names.
+	 * @param string   $composer_lock_path Path of the repository's composer.lock.
+	 * @return list<string> Violations.
+	 */
+	private static function runtimeDependencyViolations( array $names, string $composer_lock_path ): array {
+		$folder     = PluginPackage::SLUG . '/';
+		$violations = array();
+
+		foreach ( self::RUNTIME_AUTOLOADER_FILES as $file ) {
+			$entry = $folder . $file;
+
+			if ( ! in_array( $entry, $names, true ) ) {
+				$violations[] = "runtime dependencies: {$entry} is missing. Run `composer install` so Strauss generates the scoped autoloader before building the zip.";
+			}
+		}
+
+		if ( ! is_readable( $composer_lock_path ) ) {
+			$violations[] = "runtime dependencies: {$composer_lock_path} is not a readable composer.lock, so the zip cannot be reconciled with its runtime packages.";
+
+			return $violations;
+		}
+
+		try {
+			$lock = json_decode( (string) file_get_contents( $composer_lock_path ), true, 512, JSON_THROW_ON_ERROR );
+		} catch ( \JsonException $error ) {
+			$violations[] = "runtime dependencies: {$composer_lock_path} is not valid JSON, so the zip cannot be reconciled with its runtime packages: " . $error->getMessage();
+
+			return $violations;
+		}
+
+		if ( ! is_array( $lock ) || ! isset( $lock['packages'] ) || ! is_array( $lock['packages'] ) ) {
+			$violations[] = "runtime dependencies: {$composer_lock_path} has no packages array, so it is not a usable composer.lock.";
+
+			return $violations;
+		}
+
+		foreach ( $lock['packages'] as $package ) {
+			$name = is_array( $package ) ? ( $package['name'] ?? null ) : null;
+
+			if ( ! is_string( $name ) || 1 !== preg_match( '~^[a-z0-9_.-]+/[a-z0-9_.-]+$~D', $name ) ) {
+				$violations[] = "runtime dependencies: {$composer_lock_path} contains a runtime package without a valid vendor/name, so its directory cannot be checked.";
+				continue;
+			}
+
+			$directory = $folder . 'vendor-scoped/' . $name . '/';
+			$present   = false;
+
+			foreach ( $names as $entry ) {
+				if ( str_starts_with( $entry, $directory ) ) {
+					$present = true;
+					break;
+				}
+			}
+
+			if ( ! $present ) {
+				$violations[] = "runtime dependencies: package {$name} from composer.lock is missing from {$directory}. Run `composer install` before building the zip.";
 			}
 		}
 

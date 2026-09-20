@@ -60,6 +60,7 @@ final class PluginPackage {
 		'uninstall.php'  => true,
 		'readme.txt'     => true,
 		'LICENSE'        => true,
+		'composer.json'  => true,
 		'CHANGELOG.md'   => false,
 		'src/'           => true,
 		'templates/'     => false,

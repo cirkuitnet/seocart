@@ -203,6 +203,8 @@ final class DistIgnoreTest extends TestCase {
 			'tests inside build (checker refuses)'  => array( 'build/tests/index.js', false ),
 			'unscoped vendor'                       => array( 'vendor/autoload.php', true ),
 			'scoped vendor ships'                   => array( 'vendor-scoped/autoload.php', false ),
+			'Composer manifest ships'               => array( 'composer.json', false ),
+			'Composer lock stays in development'    => array( 'composer.lock', true ),
 			'nested vendor (checker refuses)'       => array( 'vendor-scoped/acme/lib/vendor/autoload.php', false ),
 			'placeholder file at depth'             => array( 'src/Platform/Jobs/.gitkeep', true ),
 			'this tool'                             => array( 'tools/Packaging/DistIgnore.php', true ),
