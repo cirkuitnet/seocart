@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<phpunit
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+	bootstrap="tests/bootstrap-unit.php"
+	defaultTestSuite="unit"
+	colors="true"
+	beStrictAboutOutputDuringTests="true"
+	beStrictAboutTestsThatDoNotTestAnything="true"
+	failOnWarning="true"
+	failOnRisky="true"
+	convertDeprecationsToExceptions="true"
+	cacheResultFile=".phpunit.result.cache"
+>
+	<!--
+		Three suites, two bootstraps. `unit` and `tools` never load WordPress and use the
+		bootstrap named above. `integration` loads WordPress against a real MySQL database;
+		`composer test:integration` selects its bootstrap with the bootstrap command-line
+		option, because one configuration file can name only one.
+	-->
+	<testsuites>
+		<testsuite name="unit">
+			<directory suffix="Test.php">tests/Unit</directory>
+		</testsuite>
+		<testsuite name="integration">
+			<directory suffix="Test.php">tests/Integration</directory>
+		</testsuite>
+		<testsuite name="tools">
+			<directory suffix="Test.php">tools</directory>
+		</testsuite>
+	</testsuites>
+</phpunit>
