@@ -1,0 +1,29 @@
+{
+	"$comment": "Gzipped byte ceilings per compiled file, checked by bin/check-asset-budget.js on every build. The first matching rule wins; an asset that matches no rule fails the build. The JavaScript and block CSS ceilings come from budgets G9 and G10 of docs/architecture/performance.md. Those budgets are per template, so a per-file ceiling equal to them is the loosest bound that can still catch a regression; the Playwright byte fixture enforces the per-template totals and reads this file rather than restating the numbers. The admin CSS ceiling is a starting value to calibrate against the first real screen. Raising any ceiling is a reviewed change that says why.",
+	"rules": [
+		{
+			"pattern": "blocks/checkout/**/*.js",
+			"maxGzipBytes": 61440
+		},
+		{
+			"pattern": "blocks/cart/**/*.js",
+			"maxGzipBytes": 40960
+		},
+		{
+			"pattern": "blocks/**/*.js",
+			"maxGzipBytes": 30720
+		},
+		{
+			"pattern": "blocks/**/*.css",
+			"maxGzipBytes": 15360
+		},
+		{
+			"pattern": "admin/**/*.js",
+			"maxGzipBytes": 256000
+		},
+		{
+			"pattern": "admin/**/*.css",
+			"maxGzipBytes": 51200
+		}
+	]
+}

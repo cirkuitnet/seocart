@@ -1,0 +1,155 @@
+{
+	"name": "cirkuitnet/seocart",
+	"description": "SEOCart is a free, open-source e-commerce plugin for WordPress.",
+	"type": "wordpress-plugin",
+	"license": "GPL-3.0-or-later",
+	"keywords": [
+		"wordpress",
+		"ecommerce",
+		"shop",
+		"cart",
+		"checkout"
+	],
+	"homepage": "https://github.com/cirkuitnet/seocart",
+	"support": {
+		"issues": "https://github.com/cirkuitnet/seocart/issues",
+		"source": "https://github.com/cirkuitnet/seocart",
+		"security": "https://github.com/cirkuitnet/seocart/security/policy"
+	},
+	"require": {
+		"php": ">=8.3",
+		"woocommerce/action-scheduler": "^4.2"
+	},
+	"require-dev": {
+		"brain/monkey": "^2.7",
+		"brianhenryie/strauss": "^0.30",
+		"dealerdirect/phpcodesniffer-composer-installer": "^1.2",
+		"php-parallel-lint/php-parallel-lint": "^1.4",
+		"php-stubs/wordpress-stubs": "^7.1",
+		"phpcompatibility/phpcompatibility-wp": "^2.1",
+		"phpstan/extension-installer": "^1.4",
+		"phpstan/phpstan": "^2.2",
+		"phpunit/phpunit": "^9.6",
+		"szepeviktor/phpstan-wordpress": "^2.0",
+		"wp-coding-standards/wpcs": "^3.4",
+		"wp-phpunit/wp-phpunit": "^7.1",
+		"yoast/phpunit-polyfills": "^4.0"
+	},
+	"autoload": {
+		"psr-4": {
+			"SEOCart\\": "src/"
+		}
+	},
+	"autoload-dev": {
+		"psr-4": {
+			"SEOCart\\Tests\\": "tests/",
+			"SEOCart\\Tools\\": "tools/"
+		}
+	},
+	"config": {
+		"allow-plugins": {
+			"dealerdirect/phpcodesniffer-composer-installer": true,
+			"phpstan/extension-installer": true
+		},
+		"optimize-autoloader": true,
+		"platform": {
+			"php": "8.3.0"
+		},
+		"process-timeout": 0,
+		"sort-packages": true
+	},
+	"extra": {
+		"strauss-notes": "Action Scheduler is copied into vendor-scoped/ but deliberately NEVER prefixed and never added to the generated classmap: its version negotiation across plugins depends on the real class names. Reviewed exception: docs/adr/ADR-0008-background-jobs-run-on-action-scheduler-bundled-unscoped-behind-a-port.md. Every other runtime library is prefixed. Strauss reads its configuration only from this file, so there is no strauss.json.",
+		"strauss": {
+			"target_directory": "vendor-scoped",
+			"namespace_prefix": "SEOCart\\Vendor\\",
+			"classmap_prefix": "SEOCart_Vendor_",
+			"constant_prefix": "SEOCART_VENDOR_",
+			"exclude_from_prefix": {
+				"packages": [
+					"woocommerce/action-scheduler"
+				]
+			},
+			"exclude_constants": {
+				"packages": [
+					"woocommerce/action-scheduler"
+				]
+			},
+			"override_autoload": {
+				"woocommerce/action-scheduler": {}
+			},
+			"delete_vendor_packages": false,
+			"include_modified_date": false,
+			"include_author": false,
+			"exclude_from_copy": {
+				"file_patterns": [
+					"woocommerce/action-scheduler/(AGENTS|CLAUDE)[.]md$"
+				]
+			}
+		}
+	},
+	"scripts": {
+		"post-install-cmd": "@scope-vendor",
+		"post-update-cmd": "@scope-vendor",
+		"scope-vendor": "@php tools/scope-vendor.php",
+		"lint:php": "parallel-lint --exclude .git --exclude vendor --exclude vendor-scoped --exclude node_modules --exclude build --exclude dist .",
+		"cs": "phpcs",
+		"cs:fix": "phpcbf",
+		"cs:dry": "phpcs --standard=tools/phpcs/SEOCart/ruleset.xml --extensions=php seocart.php uninstall.php src",
+		"stan": "phpstan analyse --memory-limit=1G",
+		"test": [
+			"@test:unit",
+			"@test:integration"
+		],
+		"test:unit": "phpunit --testsuite unit",
+		"test:integration": "phpunit --testsuite integration --bootstrap tests/bootstrap-integration.php",
+		"test:tools": "phpunit --testsuite tools",
+		"test:concurrency": "@test:integration --group concurrency",
+		"test:migration": "@test:integration --group migration",
+		"test:performance": "@test:integration --group performance",
+		"test:contracts": [
+			"@test:unit --group contract",
+			"@test:integration --group contract"
+		],
+		"test:reference-fixtures": [
+			"@test:unit --group reference-fixture",
+			"@test:integration --group reference-fixture"
+		],
+		"test:international": [
+			"@test:unit --group international",
+			"@test:integration --group international"
+		],
+		"test:multilingual-conformance": "@test:integration --group multilingual-conformance",
+		"docs:generate": "@php bin/generate-docs.php",
+		"docs:check": "@php bin/generate-docs.php --check",
+		"wporg:check": "@php bin/check-wporg.php",
+		"licenses:check": "@php bin/check-licenses.php",
+		"gates": [
+			"@composer validate --strict",
+			"@lint:php",
+			"@cs",
+			"@stan",
+			"@test:tools",
+			"@test:unit",
+			"@docs:check",
+			"@wporg:check",
+			"@licenses:check"
+		]
+	},
+	"scripts-descriptions": {
+		"lint:php": "Checks every PHP file for syntax errors.",
+		"cs": "Runs PHP_CodeSniffer: WordPress Coding Standards, PHPCompatibilityWP and the SEOCart DRY sniffs.",
+		"cs:fix": "Fixes the coding-standard violations that can be fixed automatically.",
+		"cs:dry": "Runs only the SEOCart DRY and compliance sniffs.",
+		"stan": "Runs PHPStan at the level set in phpstan.neon.dist.",
+		"test:unit": "Runs the unit suite. WordPress is never loaded.",
+		"test:integration": "Runs the integration suite against WordPress and a real MySQL database.",
+		"test:tools": "Runs the self-tests for the custom sniffs and checkers in tools/.",
+		"docs:generate": "Regenerates every committed, generated document.",
+		"docs:check": "Fails when a generated document has drifted from its source, and prints the command that regenerates it.",
+		"wporg:check": "Runs the WordPress.org directory checks that do not need a built zip.",
+		"licenses:check": "Fails when a runtime dependency is not on the GPLv3-compatible licence allow-list.",
+		"gates": "Runs every gate that does not need a database or a browser.",
+		"scope-vendor": "Copies runtime dependencies into vendor-scoped/ with Strauss."
+	}
+}

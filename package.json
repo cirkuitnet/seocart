@@ -1,0 +1,40 @@
+{
+	"name": "seocart",
+	"version": "0.1.0",
+	"private": true,
+	"description": "SEOCart is a free, open-source e-commerce plugin for WordPress.",
+	"license": "GPL-3.0-or-later",
+	"homepage": "https://github.com/cirkuitnet/seocart",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/cirkuitnet/seocart.git"
+	},
+	"bugs": {
+		"url": "https://github.com/cirkuitnet/seocart/issues"
+	},
+	"engines": {
+		"node": "^20.19.0 || >=22.13.0",
+		"npm": ">=10"
+	},
+	"scripts": {
+		"build": "wp-scripts build --source-path=assets --output-path=build && node bin/check-asset-budget.js",
+		"start": "wp-scripts start --source-path=assets --output-path=build",
+		"lint": "npm run lint:js && npm run lint:css && npm run format:check",
+		"lint:js": "wp-scripts lint-js .",
+		"lint:css": "wp-scripts lint-style \"assets/**/*.{css,scss}\" --allow-empty-input",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"test:unit": "wp-scripts test-unit-js --passWithNoTests",
+		"test:e2e": "playwright test"
+	},
+	"devDependencies": {
+		"@axe-core/playwright": "^4.13.0",
+		"@playwright/test": "^1.63.0",
+		"@wordpress/e2e-test-utils-playwright": "^1.54.0",
+		"@wordpress/eslint-plugin": "^26.0.0",
+		"@wordpress/prettier-config": "^4.55.0",
+		"@wordpress/scripts": "^35.0.0",
+		"@wordpress/stylelint-config": "^25.0.0",
+		"prettier": "npm:wp-prettier@^3.0.3"
+	}
+}
