@@ -9,7 +9,7 @@
 # the source tree: what is checked is what ships.
 #
 # Branch protection sees these jobs under the name of the calling job, for example
-# "package / build" and "package / install-smoke".
+# "package / build" and "package / install-smoke (PHP floor, WordPress 7.1)".
 
 name: Package (reusable)
 
@@ -26,7 +26,7 @@ permissions:
 env:
     ZIP_ARTIFACT: seocart-zip
     # The zip is built on the PHP floor (target architecture, section 17) and installed on
-    # the version the plugin is developed on.
+    # both the floor and the version the plugin is developed on.
     PHP_FLOOR: '8.3'
     PHP_VERSION: '8.4'
     NODE_VERSION: '22'
@@ -162,8 +162,17 @@ jobs:
 
     install-smoke:
         needs: packaging-validate
+        name: install-smoke (${{ matrix.php }}, WordPress ${{ matrix.wordpress }})
         runs-on: ubuntu-24.04
         timeout-minutes: 15
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - php: PHP floor
+                      wordpress: '7.1'
+                    - php: current PHP
+                      wordpress: latest
         services:
             mysql:
                 image: mysql:8.4
@@ -184,10 +193,10 @@ jobs:
             - *checkout
 
             # WP-CLI creates the site and installs the zip; WordPress needs mysqli.
-            - name: Set up PHP ${{ env.PHP_VERSION }}
+            - name: Set up PHP ${{ matrix.php == 'PHP floor' && env.PHP_FLOOR || env.PHP_VERSION }}
               uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
               with:
-                  php-version: ${{ env.PHP_VERSION }}
+                  php-version: ${{ matrix.php == 'PHP floor' && env.PHP_FLOOR || env.PHP_VERSION }}
                   extensions: mysqli
                   ini-file: development
                   coverage: none
@@ -196,4 +205,4 @@ jobs:
             - *download-zip
 
             - name: Install the zip on a fresh WordPress site
-              run: sh bin/ci/install-smoke.sh dist/seocart-*.zip
+              run: sh bin/ci/install-smoke.sh dist/seocart-*.zip "${{ matrix.wordpress }}"

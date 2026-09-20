@@ -37,6 +37,9 @@ jobs:
     release-gates:
         runs-on: ubuntu-24.04
         timeout-minutes: 10
+        permissions:
+            actions: read
+            contents: read
         steps:
             # Full history: the ancestry check below needs main.
             - name: Check out the repository
@@ -45,10 +48,22 @@ jobs:
                   fetch-depth: 0
                   persist-credentials: false
 
-            # The tagged commit must be on main. That it passed CI there is guaranteed by the
-            # branch protection of main, not by this step, which only proves reachability.
+            # Reachability and a successful run are separate facts, so both are checked.
             - name: Require the tagged commit to be on main
               run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+            # Branch protection is configured outside the repository, so the workflow checks
+            # the CI result for this exact commit itself.
+            - name: Require successful CI for the tagged commit
+              run: |
+                  successful_runs=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --status success --json databaseId --jq length)
+                  if [ "$successful_runs" -lt 1 ]; then
+                    echo "::error::No completed, successful CI workflow run exists for $GITHUB_SHA."
+                    exit 1
+                  fi
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  GH_REPO: ${{ github.repository }}
 
             - name: Set up PHP ${{ env.PHP_VERSION }}
               uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
@@ -98,6 +113,9 @@ jobs:
         needs: release-gates
         uses: ./.github/workflows/reusable-package.yml
 
+    # Known release gap: the architecture requires build provenance through GitHub artifact
+    # attestations, but they are unavailable to this private repository on its current plan.
+    # Add attestations before the first public release.
     publish:
         needs: package
         runs-on: ubuntu-24.04

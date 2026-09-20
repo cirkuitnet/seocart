@@ -66,7 +66,14 @@ jobs:
                     exit 1
                   fi
 
-                  echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+                  version=${TAG#v}
+                  major=${version%%.*}
+                  if [ "$major" -lt 1 ]; then
+                    echo "::error::$TAG is a pre-1.0 release. Releases before 1.0 are GitHub-only and cannot be deployed to WordPress.org."
+                    exit 1
+                  fi
+
+                  echo "version=$version" >> "$GITHUB_OUTPUT"
 
             # The checkout supplies the optional directory assets from .wordpress-org/ when
             # that directory exists; it is absent today.
