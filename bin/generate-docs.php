@@ -17,15 +17,8 @@
 
 declare( strict_types=1 );
 
-use SEOCart\Application\Operations\Operations;
-use SEOCart\Platform\Http\OutboundEndpoints;
-use SEOCart\Tools\Docs\AbilitiesReference;
-use SEOCart\Tools\Docs\CliReference;
 use SEOCart\Tools\Docs\DocsRunner;
-use SEOCart\Tools\Docs\ErrorCatalogs;
-use SEOCart\Tools\Docs\ErrorsReference;
-use SEOCart\Tools\Docs\ExternalServicesSection;
-use SEOCart\Tools\Docs\OpenApiDocument;
+use SEOCart\Tools\Docs\Generators;
 
 if ( 'cli' !== PHP_SAPI ) {
 	exit( 1 );
@@ -73,23 +66,9 @@ if ( ! function_exists( '__' ) ) {
 
 require $seocart_root . '/vendor/autoload.php';
 
-$seocart_operations = Operations::registry();
-$seocart_errors     = ErrorCatalogs::table( $seocart_root . '/src' );
-
-/*
- * Every generator, in the order it runs. A new generated document is added to this list and to
- * nothing else.
- */
-$seocart_generators = array(
-	new ExternalServicesSection( OutboundEndpoints::all() ),
-	new OpenApiDocument( $seocart_operations, $seocart_errors ),
-	new AbilitiesReference( $seocart_operations, $seocart_errors ),
-	new CliReference( $seocart_operations, $seocart_errors ),
-	new ErrorsReference( $seocart_errors ),
-);
-
+// Every generator, in the order it runs: Generators::all() is the one list, which its test pins.
 $seocart_runner = new DocsRunner(
-	$seocart_generators,
+	Generators::all( $seocart_root ),
 	$seocart_root,
 	static function ( string $line ): void {
 		fwrite( STDOUT, $line . "\n" );
