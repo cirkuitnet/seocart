@@ -106,3 +106,8 @@ releasable.
   together share one versioned document saved by compare-and-swap. The first settings are
   the store's base currency (default USD) and the capability installer's per-site record of
   what it has granted.
+- Encrypted secret settings, not yet wired into the plugin. A setting classed as secret is
+  sealed with XChaCha20-Poly1305 under a random data key, which `SEOCART_ENCRYPTION_KEY`
+  in `wp-config.php` wraps when it is defined; the WordPress salts are never used. A
+  canary record, a Site Health test and `wp seocart secrets status|rotate|rekey` report,
+  rotate and re-seal the keys. No read, error, log line or command ever prints a secret.
