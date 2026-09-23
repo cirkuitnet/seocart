@@ -169,9 +169,9 @@ final class OneResourceSourceTest extends WP_UnitTestCase {
 	public function test_the_permission_check_never_sees_an_item_id_from_outside_the_url( string $place ): void {
 		$response = $this->send( sprintf( self::OWNED_ROUTE, self::OTHER ), $place, self::OWNED );
 
-		$this->assertSame( 400, $response->get_status() );
+		$this->assertSame( array(), array_column( $this->surfaces->service->calls, 'item_id' ), 'The service changed an item while the permission check looked at another.' );
 		$this->assertSame( array(), self::$asked, 'The resolver was asked about an item: the permission check ran on a request that should have been refused.' );
-		$this->assertSame( array(), $this->surfaces->service->calls );
+		$this->assertSame( 400, $response->get_status() );
 	}
 
 	/**
