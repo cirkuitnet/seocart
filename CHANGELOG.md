@@ -84,3 +84,7 @@ releasable.
   ability, its WP-CLI command, its permission check, the privacy rules of its fields, and
   the generated OpenAPI document and reference pages (`docs/openapi.json`,
   `docs/reference/`). No operation is declared yet.
+- A data registry, not yet wired into the plugin. It lists every table, migration, option,
+  capability, role and job group the plugin owns, the privacy handling of each
+  personal-data column, and the retention policies. Tests fail when a site holds a plugin
+  table, column or option that nothing registered.
