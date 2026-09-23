@@ -88,16 +88,17 @@ awk '
 		line = $0
 		sub( /^[ \t]*(-[ \t]+)?/, "", line )
 		sub( /[ \t]+$/, "", line )
-		is_workflow = FILENAME !~ /[\\\/]\.github[\\\/]actions[\\\/]/
-		if ( is_workflow && line ~ /^uses:[ \t]+shivammathur\/setup-php@/ ) {
+		# Only the one setup action may set up PHP or Composer; every other file must call it.
+		outside_setup = FILENAME !~ /[\\\/]\.github[\\\/]actions[\\\/]setup-php-composer[\\\/]action\.ya?ml$/
+		if ( outside_setup && line ~ /^uses:[ \t]+shivammathur\/setup-php@/ ) {
 			printf "%s:%d: use ./.github/actions/setup-php-composer instead of direct setup-php\n", FILENAME, FNR
 			bad = 1
 		}
-		if ( is_workflow && line ~ /^(run:[ \t]+)?composer install([ \t]|$)/ ) {
-			printf "%s:%d: use ./.github/actions/setup-php-composer instead of direct composer install\n", FILENAME, FNR
+		if ( outside_setup && line ~ /(^|[ \t;&|(])composer([ \t]+-[^ \t]+)*[ \t]+(install|i|update)([ \t;]|$)/ ) {
+			printf "%s:%d: use ./.github/actions/setup-php-composer instead of running composer install or update directly\n", FILENAME, FNR
 			bad = 1
 		}
-		if ( is_workflow && line ~ /^uses:[ \t]+actions\/cache@/ ) {
+		if ( outside_setup && line ~ /^uses:[ \t]+actions\/cache(\/restore|\/save)?@/ ) {
 			cache_at = FILENAME ":" FNR
 		}
 	}
@@ -153,7 +154,7 @@ awk '
 		next
 	}
 
-	! is_workflow && line ~ /^php-version:.*inputs.php-version \|\|/ {
+	! outside_setup && line ~ /^php-version:.*inputs.php-version \|\|/ {
 		split( line, parts, "\047" )
 		development_version = parts[ 2 ]
 		development_at      = FILENAME ":" FNR
@@ -175,8 +176,8 @@ awk '
 		next
 	}
 
-	line ~ /^key:[ \t]+composer-/ {
-		if ( is_workflow && cache_at != "" ) {
+	line ~ /^key:.*composer/ {
+		if ( outside_setup && cache_at != "" ) {
 			printf "%s:%d: use ./.github/actions/setup-php-composer instead of a direct Composer cache (%s)\n", FILENAME, FNR, cache_at
 			bad = 1
 		}
@@ -197,7 +198,7 @@ awk '
 
 		exit bad
 	}
-' "$@" "$root"/.github/actions/*/action.yml || status=1
+' "$@" "$root"/.github/actions/*/action.y*ml || status=1
 
 if [ "$status" -ne 0 ]; then
 	printf '\ncheck-workflows: FAIL\n' >&2
