@@ -8,7 +8,7 @@ marked "n/a" with one clause of why. An unexplained blank is an unfinished check
 
 ## Summary
 
-<!-- What changes, and why. Link the issue or task contract. -->
+<!-- What changes, and why. Link the public issue, if there is one. -->
 
 ## How to test
 
@@ -65,7 +65,7 @@ marked "n/a" with one clause of why. An unexplained blank is an unfinished check
 
 ### Review and documentation
 
-- [ ] Independent review by someone who did not write the change. A second, senior WordPress review is required for a module's first slice, for any change to the platform kernel, and for any deviation from `docs/architecture/target-architecture.md`. Every reviewer checks the fifteen DRY rows above.
+- [ ] Independent review by someone who did not write the change. A second, senior WordPress review is required for a module's first slice, for any change to the platform kernel, and for any deviation from the agreed architecture. Every reviewer checks the fifteen DRY rows above.
 - [ ] Public contracts are documented with docblocks in WordPress core style. A newly public hook appears in `docs/reference/hooks.md`; that file is generated, so the change is to the declaration, not to the document.
-- [ ] An ADR was added or updated if the change is consequential by the criteria in `docs/adr/README.md`; otherwise it is noted here as not needed.
+- [ ] A consequential, hard-to-reverse design decision in this change was agreed with a maintainer before it was built; otherwise it is noted here that there is none.
 - [ ] `CHANGELOG.md` has an entry under `[Unreleased]`.

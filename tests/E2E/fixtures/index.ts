@@ -3,7 +3,7 @@
  * `requestUtils`, ...) plus SEOCart's own.
  *
  * Further fixtures are merged here, each from its own file in this directory. The asset-byte
- * fixture of docs/architecture/performance.md section 2.1 is the next one expected.
+ * fixture, which holds each template to its byte budget, is the next one expected.
  */
 
 import { test as base, expect } from '@wordpress/e2e-test-utils-playwright';

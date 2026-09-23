@@ -17,7 +17,7 @@ that checks versions and boots an empty kernel, the directory layout, the build 
 quality gates and the test harnesses. There are no products, no cart, no checkout, no
 database tables and no admin screens. Do not install it on a production site.
 
-The architecture is decided and documented; see [docs/](docs/README.md).
+The architecture is decided. The developer documentation is in [docs/](docs/README.md).
 [CHANGELOG.md](CHANGELOG.md) records what exists so far.
 
 ## Principles
@@ -94,9 +94,6 @@ of them a change must pass.
 - [docs/testing.md](docs/testing.md) — the test layers, the commands and the rules for
   writing tests.
 - [docs/releasing.md](docs/releasing.md) — how a release is packaged and checked.
-- [docs/architecture/overview.md](docs/architecture/overview.md) — where to start reading
-  the architecture.
-- [docs/adr/](docs/adr/README.md) — why each consequential decision was made.
 
 ## Contributing
 

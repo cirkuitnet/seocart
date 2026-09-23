@@ -60,7 +60,7 @@
 		"sort-packages": true
 	},
 	"extra": {
-		"strauss-notes": "Action Scheduler is copied into vendor-scoped/ but deliberately NEVER prefixed and never added to the generated classmap: its version negotiation across plugins depends on the real class names. Reviewed exception: docs/adr/ADR-0008-background-jobs-run-on-action-scheduler-bundled-unscoped-behind-a-port.md. Every other runtime library is prefixed. Strauss reads its configuration only from this file, so there is no strauss.json.",
+		"strauss-notes": "Action Scheduler is copied into vendor-scoped/ but deliberately NEVER prefixed and never added to the generated classmap: its version negotiation across plugins depends on the real class names. Every other runtime library is prefixed. Strauss reads its configuration only from this file, so there is no strauss.json.",
 		"strauss": {
 			"target_directory": "vendor-scoped",
 			"namespace_prefix": "SEOCart\\Vendor\\",

@@ -183,7 +183,7 @@ final class ZipCheckerTest extends TestCase {
 				array( 'unexpected top-level entry seocart/tests/', 'forbidden path: seocart/tests (1 entries)' ),
 			),
 			'docs at the top'                   => array(
-				'seocart/docs/adr/ADR-0008.md',
+				'seocart/docs/reference/hooks.md',
 				array( 'unexpected top-level entry seocart/docs/' ),
 			),
 			'unscoped vendor at the top'        => array(
@@ -397,7 +397,7 @@ final class ZipCheckerTest extends TestCase {
 	}
 
 	/**
-	 * Tests the Action Scheduler rules of ADR-0008, one broken zip at a time.
+	 * Tests the Action Scheduler packaging rules, one broken zip at a time.
 	 *
 	 * @since 0.1.0
 	 *
@@ -420,7 +420,7 @@ final class ZipCheckerTest extends TestCase {
 		$violations = $this->check( $this->zip( $entries ) );
 
 		$this->assertViolations( $fragments, $violations );
-		$this->assertStringContainsString( 'ADR-0008', $violations[0] );
+		$this->assertStringContainsString( 'Action Scheduler ships unprefixed', $violations[0] );
 	}
 
 	/**

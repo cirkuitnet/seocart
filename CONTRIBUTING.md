@@ -11,11 +11,7 @@ and where the details are. Everyone who takes part follows the
 1. Read the [README](README.md), especially the principles. SEOCart is free, with no feature
    gating, no telemetry and no upsell surface. A change that conflicts with a principle is
    declined, however well it is built.
-2. Read [docs/architecture/overview.md](docs/architecture/overview.md). The
-   [target architecture](docs/architecture/target-architecture.md) is the decision-bearing
-   document. Do not contradict it in code; propose the change through an
-   [architecture decision record](docs/adr/README.md) instead.
-3. For anything larger than a small fix, open an issue first and agree the approach before
+2. For anything larger than a small fix, open an issue first and agree the approach before
    you write the code.
 
 ## Two ways to work
@@ -29,7 +25,6 @@ The maintainers, and the AI coding agents that work under their direction, use a
 development server: one git worktree per task, a real MySQL server, and one disposable
 WordPress site per worktree, created and destroyed by the scripts in `bin/dev/`. That server
 is private. Access to it is neither needed nor offered for outside contributions.
-[AGENTS.md](AGENTS.md) holds the standing rules for agents.
 
 ### Everyone else
 
@@ -85,11 +80,11 @@ review. A second, senior WordPress review is also required for:
 
 - the first slice of a new module;
 - any change to the platform kernel;
-- any deviation from the target architecture.
+- any deviation from the agreed architecture.
 
 Reviewers check the change against the layer rules and the DRY rules, not only against the
-tests. Expect to be asked for an ADR when a decision is consequential and hard to reverse;
-[docs/adr/README.md](docs/adr/README.md) says when one is needed.
+tests. A decision that is consequential and hard to reverse is agreed with the maintainers
+in the issue before it is built.
 
 ## Definition of done
 

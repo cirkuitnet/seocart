@@ -46,9 +46,7 @@ receives security fixes. No compatibility or back-port promise exists before 1.0
 
 From version 1.0 this table will change to cover the latest minor release of the latest
 major version, with security back-ports to the previous minor line for a published window,
-on the current WordPress major version and the two before it. The
-[compatibility and support policy](docs/architecture/target-architecture.md#17-compatibility-and-support-policy-recommended)
-records that plan.
+on the current WordPress major version and the two before it.
 
 ## Scope
 
@@ -58,8 +56,3 @@ Out of scope: WordPress core, other plugins and themes, the hosting environment,
 payment providers' own services. Report those to their own maintainers. The payment gateway
 plugins for SEOCart live in their own repositories; each one publishes its own supported
 versions and uses the reporting channels described here.
-
-## Security design
-
-The plugin's security model — trust boundaries, authorization, payment safety, secrets and
-privacy — is documented in [docs/architecture/security.md](docs/architecture/security.md).

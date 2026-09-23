@@ -112,7 +112,7 @@ final class ZipChecker {
 	 *
 	 * @var string
 	 */
-	private const ACTION_SCHEDULER_RULE = 'ADR-0008: Action Scheduler ships unprefixed and outside the generated autoloader, because plugins negotiate which bundled copy runs by its real class names.';
+	private const ACTION_SCHEDULER_RULE = 'Action Scheduler ships unprefixed and outside the generated autoloader, because plugins negotiate which bundled copy runs by its real class names.';
 
 	/**
 	 * Generated Composer autoloader files needed to load scoped runtime packages.

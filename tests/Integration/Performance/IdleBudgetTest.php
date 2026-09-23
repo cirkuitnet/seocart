@@ -18,12 +18,12 @@ use SEOCart\Tests\Support\QueryLog;
 use WP_UnitTestCase;
 
 /**
- * The idle-request budgets G1, G3 and G4 of docs/architecture/performance.md, section 4.
+ * The idle-request performance budgets G1, G3 and G4.
  *
  * The request measured is the front page of a site with no commerce on it, from the first
  * line of the WordPress boot (the main plugin file, `plugins_loaded`, `init`) to `wp_footer`.
- * Section 5.1 of the same document says what the plugin may do in it: read one autoloaded
- * option, register lazy factories and cheap closures, and nothing else.
+ * In it the plugin may read one autoloaded option, register lazy factories and cheap
+ * closures, and do nothing else.
  *
  * The request is served without and with the plugin, by
  * tests/Support/idle-request-probe.php, in fresh child PHP processes. The list of included
@@ -51,7 +51,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	use QueryCounter;
 
 	/**
-	 * G1: queries the plugin may add to an idle request. performance.md section 4: "+0 queries".
+	 * G1: queries the plugin may add to an idle request.
 	 *
 	 * @since 0.1.0
 	 *
@@ -60,7 +60,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	private const G1_PLUGIN_QUERIES = 0;
 
 	/**
-	 * G3: plugin PHP files an idle request may load. performance.md section 4: "≤ 15 files".
+	 * G3: plugin PHP files an idle request may load.
 	 *
 	 * @since 0.1.0
 	 *
@@ -69,7 +69,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	private const G3_MAX_PLUGIN_FILES = 15;
 
 	/**
-	 * G3: bytes of plugin PHP an idle request may parse. performance.md section 4: "≤ 250 KB parsed".
+	 * G3: bytes of plugin PHP an idle request may parse.
 	 *
 	 * @since 0.1.0
 	 *
@@ -78,7 +78,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	private const G3_MAX_PLUGIN_BYTES = 250 * 1024;
 
 	/**
-	 * G4: hook registrations the plugin may make on an idle request. performance.md section 4: "≤ 25".
+	 * G4: hook registrations the plugin may make on an idle request.
 	 *
 	 * @since 0.1.0
 	 *
@@ -130,7 +130,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 		$this->assertSame(
 			$without['queries_run'],
 			$with['queries_run'],
-			'G1, total queries added by SEOCart to an idle request (docs/architecture/performance.md, section 4). '
+			'G1, total queries added by SEOCart to an idle request. '
 			. "Without plugin: {$without['queries_run']}; with plugin: {$with['queries_run']}."
 			. $failure_report
 		);
@@ -155,7 +155,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 		$this->assertQueryCount(
 			self::G1_PLUGIN_QUERIES,
 			$everything->issuedBy( PluginOwnership::fromComposerManifest( self::pluginDirectory() ) ),
-			'G1, queries issued by SEOCart on an idle request (docs/architecture/performance.md, section 4)'
+			'G1, queries issued by SEOCart on an idle request'
 		);
 	}
 
@@ -184,13 +184,13 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 		$this->assertLessThanOrEqual(
 			self::G3_MAX_PLUGIN_FILES,
 			count( $files ),
-			'G3, plugin PHP files loaded on an idle request (docs/architecture/performance.md, section 4). An eager service graph looks like this:' . $report
+			'G3, plugin PHP files loaded on an idle request. An eager service graph looks like this:' . $report
 		);
 
 		$this->assertLessThanOrEqual(
 			self::G3_MAX_PLUGIN_BYTES,
 			array_sum( $files ),
-			'G3, bytes of plugin PHP parsed on an idle request (docs/architecture/performance.md, section 4):' . $report
+			'G3, bytes of plugin PHP parsed on an idle request:' . $report
 		);
 	}
 
@@ -212,7 +212,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 		$this->assertLessThanOrEqual(
 			self::G4_MAX_PLUGIN_HOOKS,
 			count( $hooks ),
-			'G4, hook registrations made by SEOCart on an idle request (docs/architecture/performance.md, section 4):' . $report
+			'G4, hook registrations made by SEOCart on an idle request:' . $report
 		);
 	}
 

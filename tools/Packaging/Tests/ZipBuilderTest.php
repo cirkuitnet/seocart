@@ -95,7 +95,7 @@ final class ZipBuilderTest extends TestCase {
 		$this->writeFile( 'tree/src/Zeta.php', "<?php\n// Zeta.\n" );
 		$this->writeFile( 'tree/src/Alpha/Beta.php', "<?php\n// Beta.\n" );
 		$this->writeFile( 'tree/src/docs/Kept.php', "<?php\n// A directory named docs beneath src is not the root docs directory.\n" );
-		$this->writeFile( 'tree/docs/adr/Skipped.md', "# Skipped\n" );
+		$this->writeFile( 'tree/docs/reference/Skipped.md', "# Skipped\n" );
 		$this->writeFile( 'tree/tests/Unit/SkippedTest.php', "<?php\n" );
 		$this->writeFile( 'tree/languages/.gitkeep', '' );
 		$this->writeFile( 'tree/vendor/autoload.php', "<?php\n" );

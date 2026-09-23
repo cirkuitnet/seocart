@@ -166,7 +166,7 @@ for ( const asset of assets ) {
 if ( failures.length ) {
 	fail(
 		`asset budget failed:\n  - ${ failures.join( '\n  - ' ) }\n` +
-			'Raising a budget is a reviewed change to budget.json that says why (docs/architecture/performance.md).'
+			'Raising a budget is a reviewed change to budget.json that says why.'
 	);
 }
 

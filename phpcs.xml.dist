@@ -20,7 +20,7 @@
 	<arg name="cache" value=".phpcs-cache"/>
 	<arg value="sp"/>
 
-	<!-- The supported floors: target architecture, section 17. -->
+	<!-- The supported floors: the requirements table in README.md. -->
 	<config name="minimum_wp_version" value="7.1"/>
 	<config name="testVersion" value="8.3-"/>
 

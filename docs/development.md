@@ -59,9 +59,7 @@ Two facts about that setup are easy to get wrong:
   **without a prefix**, and it is kept out of the generated classmap. Action Scheduler
   negotiates, across every active plugin that bundles it, which copy loads; that negotiation
   depends on the real class names and on Action Scheduler's own loader. A prefixed copy would
-  break it.
-  [ADR-0008](adr/ADR-0008-background-jobs-run-on-action-scheduler-bundled-unscoped-behind-a-port.md)
-  records the decision. Every other runtime library is prefixed.
+  break it. Every other runtime library is prefixed.
 
 Run `composer scope-vendor` to repeat the Strauss step on its own. After
 `composer install --no-dev` Strauss is absent on purpose and the step skips; in any other

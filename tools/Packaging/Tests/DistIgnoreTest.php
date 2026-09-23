@@ -71,7 +71,7 @@ final class DistIgnoreTest extends TestCase {
 	public function patternsAndPaths(): array {
 		return array(
 			'anchored: matches at the root'               => array( '/docs', 'docs', true ),
-			'anchored: covers descendants'                => array( '/docs', 'docs/adr/ADR-0001.md', true ),
+			'anchored: covers descendants'                => array( '/docs', 'docs/reference/hooks.md', true ),
 			'anchored: not beneath vendor-scoped'         => array( '/docs', 'vendor-scoped/acme/lib/docs/Parser.php', false ),
 			'anchored: not beneath src'                   => array( '/tests', 'src/Platform/tests/Fixture.php', false ),
 			'anchored: not a longer name'                 => array( '/docs', 'docs-site/index.html', false ),
@@ -196,7 +196,7 @@ final class DistIgnoreTest extends TestCase {
 			'root dotfile'                          => array( '.editorconfig', true ),
 			'root dot-directory'                    => array( '.github/workflows/ci.yml', true ),
 			'nested dotfile (checker refuses)'      => array( 'build/.vite-manifest.json', false ),
-			'root docs'                             => array( 'docs/adr/ADR-0008.md', true ),
+			'root docs'                             => array( 'docs/reference/hooks.md', true ),
 			'docs inside a scoped library'          => array( 'vendor-scoped/acme/lib/docs/Parser.php', false ),
 			'root tests'                            => array( 'tests/Unit/Packaging/IgnoreListsTest.php', true ),
 			'tests inside src (checker refuses)'    => array( 'src/Platform/tests/Fixture.php', false ),

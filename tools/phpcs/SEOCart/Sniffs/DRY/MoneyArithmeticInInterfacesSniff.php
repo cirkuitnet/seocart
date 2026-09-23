@@ -40,11 +40,11 @@ use SEOCart\Tools\phpcs\SEOCart\Helpers\PathScope;
  * function call (`intdiv( $total->minorUnits(), 100 )`, the bcmath functions). This sniff is
  * a tripwire for the direct shapes and does not replace review.
  *
- * The `Money` class does not exist yet: it arrives in Wave 1, task F-SUP, and the two lists
- * below are this sniff's guess at its public API. They are a hand-maintained parallel list
- * (DRY rule 11), so F-SUP MUST add the companion set-equality test: the public methods of
- * `Money` that return a new amount equal `$arithmeticMethods`, and the public methods that
- * expose the raw number equal `$accessors`.
+ * The `Money` class does not exist yet: it arrives with the Support module, and the two
+ * lists below are this sniff's guess at its public API. They are a hand-maintained parallel
+ * list (DRY rule 11), so the change that adds `Money` MUST add the companion set-equality
+ * test: the public methods of `Money` that return a new amount equal `$arithmeticMethods`,
+ * and the public methods that expose the raw number equal `$accessors`.
  *
  * @since 0.1.0
  */

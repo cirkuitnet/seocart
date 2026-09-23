@@ -21,7 +21,7 @@ defined( 'ABSPATH' ) || exit;
  * returns. A rule with calendar meaning (a sale window, a promotion date) takes an explicit
  * store time zone next to the instant; it never relies on the zone of the returned object.
  *
- * The Support module (task F-SUP) owns this port and supplies the production adapter. The
+ * The Support module owns this port and supplies the production adapter. The
  * interface exists ahead of that module only because the deterministic test doubles in
  * tests/Support/Doubles/ need a contract to implement.
  *

@@ -20,10 +20,9 @@ use SEOCart\Tools\phpcs\SEOCart\Helpers\PathScope;
  * A syntax tripwire for obvious raw option calls outside `$allowedPaths`.
  *
  * The typed settings registry declares every setting once: its name, type, default,
- * sanitizer and autoload flag (target-architecture.md, sections 2.2 and 12). A direct
- * `update_option()` restates the option name and bypasses the rest, so adding, changing
- * and deleting an option, and rewriting its autoload flag, is reserved for the registry's
- * own module. Reads are not restricted.
+ * sanitizer and autoload flag. A direct `update_option()` restates the option name and
+ * bypasses the rest, so adding, changing and deleting an option, and rewriting its
+ * autoload flag, is reserved for the registry's own module. Reads are not restricted.
  *
  * Out of reach, because the sniff goes by the name at the call: a function named as a
  * callback string, and one imported under another name (`use function update_option as save;`).

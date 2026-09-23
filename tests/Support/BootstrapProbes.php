@@ -12,7 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Support;
 
 /**
- * The files-and-hooks half of the measurement harness (docs/architecture/performance.md, section 2.1).
+ * The files-and-hooks half of the measurement harness.
  *
  * An eager service graph shows up here long before it shows up as a slow page: as PHP files
  * that an idle request had no reason to parse, and as hook registrations it had no reason to

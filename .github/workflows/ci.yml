@@ -202,9 +202,9 @@ jobs:
             - name: Run the unit suite
               run: composer test:unit
 
-    # Support window: the current WordPress major and the two before it (target
-    # architecture, section 17). At first release the floor IS 7.1, so the window holds one
-    # release line today. It rolls forward: add each new line when it ships, and drop the
+    # Support window: the current WordPress major and the two before it (SECURITY.md). At
+    # first release the floor IS 7.1, so the window holds one release line today. It rolls
+    # forward: add each new line when it ships, and drop the
     # oldest once there are three. "nightly" is allowed to fail and is never a required
     # check.
     integration-tests:

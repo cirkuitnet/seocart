@@ -138,13 +138,11 @@ is expected until the wave that adds the first test of that group.
   never added to it.
 - **The DRY and compliance sniffs** fail a JSON Schema literal outside `Support\Schema`, a raw
   `update_option()` call on a plugin setting, `Money` arithmetic under `Interfaces\*`, and any
-  use of `eval` or `create_function`. The fifteen DRY rules and the check behind each one are
-  in
-  [the target architecture, §2.2](architecture/target-architecture.md#22-one-declaration-many-surfaces--the-dry-mechanism).
+  use of `eval` or `create_function`. The fifteen DRY rules are rows of the
+  [pull request template](../.github/pull_request_template.md).
 - **Performance budgets are tests.** An idle request — one that touches no commerce — must add
-  zero database queries and a bounded number of files and hooks.
-  [architecture/performance.md](architecture/performance.md) lists every budget and where it
-  is measured.
+  zero database queries and a bounded number of files and hooks, as
+  `tests/Integration/Performance/IdleBudgetTest.php` states.
 - **The WordPress.org gates** are described in [releasing.md](releasing.md).
 
 ## The planted-violation rule

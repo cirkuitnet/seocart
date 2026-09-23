@@ -22,7 +22,7 @@ use SEOCart\Tools\phpcs\SEOCart\Helpers\PathScope;
  * A field is declared as a `FieldSpec` and compiled into each dialect (REST arguments, REST
  * response, Ability, OpenAPI, WP-CLI synopsis, admin form). A schema array typed by hand is
  * a second declaration of the same field, so it is an error everywhere except in the
- * directories listed in `$allowedPaths`. See target-architecture.md, section 2.2.
+ * directories listed in `$allowedPaths`.
  *
  * Two shapes are reported, both only as items of an array literal with a plain string key:
  *

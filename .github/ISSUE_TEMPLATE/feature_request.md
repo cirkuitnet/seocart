@@ -32,6 +32,6 @@ Do not report a security vulnerability here. Follow SECURITY.md instead.
 ## Architecture notes
 
 <!--
-Optional. If the change touches a decision recorded in docs/adr/ or in
-docs/architecture/target-architecture.md, name it. A consequential change needs an ADR.
+Optional. How the change would fit the plugin's architecture, and any existing design
+decision it would change.
 -->

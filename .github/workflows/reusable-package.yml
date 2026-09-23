@@ -25,7 +25,7 @@ permissions:
 
 env:
     ZIP_ARTIFACT: seocart-zip
-    # The zip is built on the PHP floor (target architecture, section 17) and installed on
+    # The zip is built on the PHP floor (the README.md requirements table) and installed on
     # both the floor and the version the plugin is developed on.
     PHP_FLOOR: '8.3'
     PHP_VERSION: '8.4'
@@ -149,7 +149,7 @@ jobs:
             # that needs a write permission this workflow does not grant.
             #
             # vendor-scoped/ is excluded the way Plugin Check itself excludes vendor/: it holds
-            # third-party libraries only. Action Scheduler ships there unmodified (ADR-0008), so
+            # third-party libraries only. Action Scheduler ships there unmodified, so
             # it keeps its own text domain, which Plugin Check reports as several hundred errors
             # that are not ours to fix. First-party code gets no exclusion of any kind.
             - name: Run Plugin Check

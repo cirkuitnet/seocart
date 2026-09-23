@@ -1,5 +1,5 @@
 /**
- * The Wave 0 smoke spec: the harness can reach the site as an administrator, and WordPress
+ * The smoke spec: the harness can reach the site as an administrator, and WordPress
  * lists the plugin under the name its header declares. It changes nothing on the site.
  */
 

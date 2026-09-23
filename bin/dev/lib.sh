@@ -423,9 +423,8 @@ EOF
 
 # The start of every database name. It is a per-server setting, because it has to match
 # what the server's MySQL administrator granted: some servers only let an account own
-# databases whose names start with the account's own name. By owner decision (repository
-# strategy, section 6.1) the value lives in the untracked settings file, never in a
-# tracked one:
+# databases whose names start with the account's own name. The value therefore lives in
+# the untracked settings file, never in a tracked one:
 #
 #     SEOCART_DEV_DB_PREFIX=<account>_seocart_
 #
@@ -458,7 +457,7 @@ sc_configured_db_prefix() {
 # Sets SC_DB_PREFIX for sc_db_name; call it from the main shell.
 #
 # The setting and the grant state the same fact in two places that cannot be merged (MySQL
-# enforces the one, the owner decision names the other), so they are compared here, where
+# enforces the one, the settings file holds the other), so they are compared here, where
 # every script passes: the prefix must be what stands before the final "\_%" of one of
 # the provisioning account's database-level grants. A disagreement stops provisioning,
 # teardown and the residue gate alike, before any of them uses a wrong name. An account

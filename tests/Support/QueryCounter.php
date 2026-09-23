@@ -14,7 +14,7 @@ namespace SEOCart\Tests\Support;
 use PHPUnit\Framework\Assert;
 
 /**
- * The query-count half of the measurement harness (docs/architecture/performance.md, section 2.1).
+ * The query-count half of the measurement harness.
  *
  * Capture the queries around a closure, narrow them with the QueryLog filters, then assert an
  * exact count or a ceiling. A failure prints every counted query with the call stack that

@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <ruleset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="SEOCart" namespace="SEOCart\Tools\phpcs\SEOCart" xsi:noNamespaceSchemaLocation="../../../vendor/squizlabs/php_codesniffer/phpcs.xsd">
-	<description>The SEOCart DRY syntax tripwires (target-architecture.md, section 2.2) and the WordPress.org "no executable content" lints (wordpress-org-compliance.md, section 7). The DRY sniffs catch only an obvious spelling: an aliased import, an offset assignment or arithmetic through a temporary gets past them. Semantic checks arrive with the APIs they protect: task F-SUP adds the Money set-equality test, and the tasks that add the schema and settings registries add their architecture tests.</description>
+	<description>The SEOCart DRY syntax tripwires and the WordPress.org "no executable content" lints. The DRY sniffs catch only an obvious spelling: an aliased import, an offset assignment or arithmetic through a temporary gets past them. Semantic checks arrive with the APIs they protect: the change that adds Money adds its set-equality test, and the tasks that add the schema and settings registries add their architecture tests.</description>
 
 	<!--
 		Every sniff under Sniffs/ is part of this standard without being listed here.
@@ -55,8 +55,8 @@
 
 	<!--
 		DRY rule 7 needs no configuration here: SEOCart.DRY.MoneyArithmeticInInterfaces carries its
-		method lists as defaults, because the Wave 1 task F-SUP pins them to Money's public API with
-		a set-equality test.
+		method lists as defaults, because the change that adds Money pins them to its public API
+		with a set-equality test.
 	-->
 
 	<!--

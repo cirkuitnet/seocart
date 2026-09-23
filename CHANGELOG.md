@@ -25,13 +25,11 @@ releasable.
   On a site below PHP 8.3 or WordPress 7.1 it shows an admin notice and does not load.
 - A kernel, `SEOCart\Platform\Kernel\Kernel`, that boots once per request and registers
   nothing yet.
-- An `uninstall.php` that deletes nothing. Uninstalling preserves store data by design
-  (ADR-0009).
-- The directory layout of the target architecture under `src/`, `assets/`, `templates/`,
+- An `uninstall.php` that deletes nothing. Uninstalling preserves store data by design.
+- The planned directory layout under `src/`, `assets/`, `templates/`,
   `languages/` and `tests/`.
 - Composer and npm tooling, with committed lockfiles. Runtime libraries are copied into
-  `vendor-scoped/` and prefixed by Strauss; Action Scheduler is copied without a prefix
-  (ADR-0008).
+  `vendor-scoped/` and prefixed by Strauss; Action Scheduler is copied without a prefix.
 - Quality gates: a PHP syntax check, PHP_CodeSniffer with the WordPress Coding Standards
   and PHPCompatibilityWP, PHPStan at level 5 with no baseline, ESLint, Stylelint and
   Prettier, and a compiled-asset size budget that runs on every build.
@@ -57,7 +55,6 @@ releasable.
 - GitHub Actions workflows for pull requests, nightly runs, end-to-end tests, code scanning,
   releases and the WordPress.org deployment, and a script that lints them.
 - Contributor documentation: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`,
-  `CODE_OF_CONDUCT.md`, `AGENTS.md`, issue templates and a pull request template that
+  `CODE_OF_CONDUCT.md`, issue templates and a pull request template that
   carries the definition of done.
-- Developer documentation under `docs/`: development setup, testing, releasing, the
-  architecture reference and the architecture decision records (ADR-0001 to ADR-0021).
+- Developer documentation under `docs/`: development setup, testing and releasing.
