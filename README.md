@@ -1,4 +1,17 @@
-# SEOCart
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/seocart-mark-dark.svg">
+    <img src=".github/assets/seocart-mark.svg" alt="SEOCart" width="80">
+  </picture>
+</p>
+
+```text
+  ____  _____ ___   ____           _
+ / ___|| ____/ _ \ / ___|__ _ _ __| |_
+ \___ \|  _|| | | | |   / _` | '__| __|
+  ___) | |__| |_| | |__| (_| | |  | |_
+ |____/|_____\___/ \____\__,_|_|   \__|
+```
 
 SEOCart is a free, open-source e-commerce plugin for WordPress, licensed under
 GPL-3.0-or-later. It is planned as a complete store — products, cart, checkout, orders and

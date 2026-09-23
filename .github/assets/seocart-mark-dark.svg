@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 56" width="48" height="56" role="img" aria-labelledby="title">
+	<title id="title">SEOCart</title>
+	<rect x="7" y="31" width="7" height="11" rx="1.5" fill="#eff2f5"/>
+	<rect x="19" y="23.5" width="7" height="18.5" rx="1.5" fill="#eff2f5"/>
+	<rect x="31" y="15" width="7" height="27" rx="1.5" fill="#eff2f5"/>
+	<path d="M24.5 14.5 L36.5 4 M30.5 4 H36.5 V10" stroke="#ea630c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+	<path d="M8 42 H37" stroke="#eff2f5" stroke-width="2" stroke-linecap="round" fill="none"/>
+	<circle cx="16" cy="47" r="4" fill="#eff2f5"/>
+	<circle cx="29" cy="47" r="4" fill="#eff2f5"/>
+</svg>
