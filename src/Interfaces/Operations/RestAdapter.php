@@ -31,7 +31,8 @@ defined( 'ABSPATH' ) || exit;
  *   before the permission check runs;
  * - PermissionFactory's permission callback;
  * - the compiled output schema, which WordPress serves to OPTIONS requests;
- * - a callback that passes the declared input to OperationInvoker and answers with its result.
+ * - a callback that has OperationInvoker prepare the declared input and run the operation, and
+ *   answers with the result.
  *
  * A route parameter is read from the URL only. WP_REST_Request::get_param() would let a query or
  * body value of the same name win over the URL segment, so a request that sends a route
@@ -208,7 +209,13 @@ final class RestAdapter {
 			}
 		}
 
-		$result = $this->invoker->invoke( $operation, $values );
+		$input = $this->invoker->prepare( $operation, $values );
+
+		if ( $input instanceof WP_Error ) {
+			return $input;
+		}
+
+		$result = $this->invoker->invoke( $operation, $input );
 
 		return $result instanceof WP_Error ? $result : new WP_REST_Response( $result, 200 );
 	}

@@ -19,10 +19,12 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Turns a failure a client caused into the error a surface answers with.
  *
- * This interface owns one fact: where the error table meets the surfaces. The operation adapters
- * catch a CodedException, and only that — any other Throwable is a programming error and
- * propagates — and hand it here: the REST route and the Ability return the WP_Error, and the
- * WP-CLI command prints its code and message. The REST foundation provides the implementation,
+ * This interface owns one fact: where the error table meets the surfaces. OperationInvoker hands a
+ * CodedException here, with the personal-data and secret values of its context already redacted:
+ * the REST route and the Ability return the WP_Error, and the WP-CLI command prints its code and
+ * message. Nothing else reaches a translator: any other Throwable is a failure no client caused,
+ * which the invoker reports and answers with a generic internal error that carries no message of
+ * the exception. The REST foundation provides the implementation,
  * which takes the status and the message from the one error table and adds the details and the
  * request's correlation id; the adapters never build an error response themselves.
  *

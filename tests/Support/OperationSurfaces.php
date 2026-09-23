@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support;
 
+use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Interfaces\Operations\AbilitiesAdapter;
@@ -32,8 +33,9 @@ use WP_REST_Server;
  * The REST routes are registered on `rest_api_init` of a freshly booted server; the abilities on the
  * init hooks of fresh Abilities registries, which WordPress otherwise builds once per process; the
  * commands through a recorder that stands in for WP_CLI::add_command(), with recorders for the
- * printed result and the reported failure. Every application service is resolved to one
- * FixtureStockService, so a test can read every call it received. The test framework restores the
+ * printed result and the reported failure. Every application service is resolved to one object —
+ * a FixtureStockService unless the test passes its own — so a test can read every call it received,
+ * and every unexpected failure the invoker reports is recorded. The test framework restores the
  * hooks after each test; discard() resets the REST server and the Abilities registries.
  *
  * @since 0.1.0
@@ -77,6 +79,15 @@ final class OperationSurfaces {
 	public ?string $failure = null;
 
 	/**
+	 * Every unexpected failure the invoker reported, in order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<\Throwable>
+	 */
+	public array $reported = array();
+
+	/**
 	 * The operations.
 	 *
 	 * @since 0.1.0
@@ -100,18 +111,23 @@ final class OperationSurfaces {
 	 * @since 0.1.0
 	 *
 	 * @param OperationRegistry $registry The operations.
+	 * @param object|null       $service  Optional. The object every service resolves to. Default the
+	 *                                    FixtureStockService in $service.
 	 */
-	public function __construct( OperationRegistry $registry ) {
+	public function __construct( OperationRegistry $registry, ?object $service = null ) {
 		$this->registry = $registry;
 		$this->service  = new FixtureStockService();
-		$service        = $this->service;
+		$resolved       = $service ?? $this->service;
 		$this->invoker  = new OperationInvoker(
-			static function ( string $class_name ) use ( $service ): object {
+			static function ( string $class_name ) use ( $resolved ): object {
 				unset( $class_name );
 
-				return $service;
+				return $resolved;
 			},
-			new TableErrorTranslator()
+			new TableErrorTranslator(),
+			function ( \Throwable $failure ): void {
+				$this->reported[] = $failure;
+			}
 		);
 
 		self::discard();
@@ -211,6 +227,65 @@ final class OperationSurfaces {
 		\PHPUnit\Framework\Assert::assertNotNull( $ability, "The ability {$name} is not registered." );
 
 		return $ability->execute( $input );
+	}
+
+	/**
+	 * Runs one input on the three surfaces of one operation, as each surface's client would send it.
+	 *
+	 * The REST route gets the route parameters in its path, as they are, and every other value in a
+	 * JSON body; the ability gets the input object; the command gets the positional values and every
+	 * other value as option text. Each outcome is also given as one string, so a test can search
+	 * everything a client received.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param OperationDefinition  $definition The operation, bound to all three surfaces.
+	 * @param array<string, mixed> $input      The input, keyed by wire name.
+	 * @return array<string, array{result: mixed, text: string}> The outcome of `rest`, `ability` and `cli`.
+	 */
+	public function everywhere( OperationDefinition $definition, array $input ): array {
+		$rest = $definition->rest();
+		$cli  = $definition->cli();
+
+		\PHPUnit\Framework\Assert::assertNotNull( $rest, 'The operation has no REST route.' );
+		\PHPUnit\Framework\Assert::assertNotNull( $cli, 'The operation has no command.' );
+
+		$route = $rest->route();
+		$body  = $input;
+
+		foreach ( $rest->pathParameters() as $name ) {
+			$route = str_replace( '{' . $name . '}', (string) $input[ $name ], $route );
+			unset( $body[ $name ] );
+		}
+
+		$args  = array();
+		$assoc = $input;
+
+		foreach ( $cli->positional() as $name ) {
+			$args[] = (string) $input[ $name ];
+			unset( $assoc[ $name ] );
+		}
+
+		$response = $this->rest( (string) $definition->httpMethod(), $route, $body );
+		$ability  = $this->ability( (string) $definition->abilityName(), $input );
+		$command  = $this->cli( $cli->command(), $args, array_map( 'strval', $assoc ) );
+
+		return array(
+			'rest'    => array(
+				'result' => $response,
+				'text'   => $response->get_status() . ' ' . wp_json_encode( $response->get_data() ),
+			),
+			'ability' => array(
+				'result' => $ability,
+				'text'   => $ability instanceof \WP_Error
+					? $ability->get_error_code() . ' ' . $ability->get_error_message() . ' ' . wp_json_encode( $ability->get_error_data() )
+					: (string) wp_json_encode( $ability ),
+			),
+			'cli'     => array(
+				'result' => $command,
+				'text'   => (string) wp_json_encode( $command ),
+			),
+		);
 	}
 
 	/**

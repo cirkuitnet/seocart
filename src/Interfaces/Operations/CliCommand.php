@@ -22,12 +22,18 @@ defined( 'ABSPATH' ) || exit;
  *
  * This class owns one fact: the order in which a command handles its arguments, which is the
  * order the REST API and the Abilities API use as well — validate, then check the permission,
- * then run. The arguments are validated against the operation's input schema, the same schema and
- * the same WordPress validator the Ability uses, so the same bad input gets the same message; the
- * permission is PermissionFactory's; the run is OperationInvoker's.
+ * then run. The arguments are validated against the operation's input schema, with the same
+ * WordPress validator the Ability uses; OperationInvoker prepares them; the permission is
+ * PermissionFactory's, checked on the prepared input; the run is OperationInvoker's.
+ *
+ * Under WP-CLI the outcome of bad input is the same as on the other surfaces, but not always the
+ * message: WP-CLI checks the synopsis before it calls the command, so it refuses a missing
+ * required argument or a value outside an option's allowed values itself, with its own wording.
+ * Everything the synopsis cannot express — types, ranges, lengths, formats — reaches this
+ * command's validation, whose message is the Ability's.
  *
  * Arguments arrive as text. Validation accepts a whole number written as text for an integer
- * field, as the REST API does, and the invoker's sanitization turns it into an integer.
+ * field, as the REST API does, and preparation turns it into an integer.
  *
  * @since 0.1.0
  */
@@ -139,7 +145,15 @@ final class CliCommand {
 			return;
 		}
 
-		if ( ! PermissionFactory::allows( $definition, $values ) ) {
+		$input = $this->invoker->prepare( $this->operation, $values );
+
+		if ( $input instanceof WP_Error ) {
+			( $this->fail )( self::describe( $input ) );
+
+			return;
+		}
+
+		if ( ! PermissionFactory::allows( $definition, $input ) ) {
 			( $this->fail )(
 				'rest_forbidden: ' . sprintf(
 					/* translators: %s: A capability name, such as seocart_manage_inventory. */
@@ -151,7 +165,7 @@ final class CliCommand {
 			return;
 		}
 
-		$result = $this->invoker->invoke( $this->operation, $values );
+		$result = $this->invoker->invoke( $this->operation, $input );
 
 		if ( $result instanceof WP_Error ) {
 			( $this->fail )( self::describe( $result ) );

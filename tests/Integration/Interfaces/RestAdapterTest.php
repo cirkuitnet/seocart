@@ -189,23 +189,4 @@ final class RestAdapterTest extends WP_UnitTestCase {
 		$this->assertSame( 400, $response->get_status() );
 		$this->assertSame( 'currency.unknown', $response->get_data()['code'] );
 	}
-
-	/**
-	 * Tests that an exception that is not a coded error is not caught: it is a programming error.
-	 *
-	 * @since 0.1.0
-	 */
-	public function test_an_exception_that_is_not_a_coded_error_propagates(): void {
-		$this->expectException( \RuntimeException::class );
-		$this->expectExceptionMessage( 'The fixture service failed unexpectedly.' );
-
-		$this->surfaces->rest(
-			'POST',
-			'/fixture-stock/' . self::ITEM . '/adjustments',
-			array(
-				'delta' => 1,
-				'note'  => FixtureStockService::FAIL_UNEXPECTED,
-			)
-		);
-	}
 }

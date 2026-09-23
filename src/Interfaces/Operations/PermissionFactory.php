@@ -27,7 +27,8 @@ defined( 'ABSPATH' ) || exit;
  * - the REST route is given forRest() as its `permission_callback`, which the route walker
  *   requires of every plugin route;
  * - the Ability's `permission_callback` and the WP-CLI command call allows(), which asks the same
- *   PermissionCallback about a request that carries only the resource identifier from the input.
+ *   PermissionCallback about a request that carries only the resource identifier from the input
+ *   OperationInvoker prepared — the value the service will act on, not the raw one.
  *
  * A meta capability is checked on the resource named by the operation's resource field. On REST
  * that field is a route parameter, and the route refuses a request that also sends it in the
@@ -63,7 +64,8 @@ final class PermissionFactory {
 	 * @since 0.1.0
 	 *
 	 * @param OperationDefinition  $definition The operation.
-	 * @param array<string, mixed> $input      The input: an Ability's input or a command's arguments.
+	 * @param array<string, mixed> $input      The prepared input of an Ability or a command, from
+	 *                                         OperationInvoker::prepare().
 	 * @return bool The answer of the operation's REST permission callback for the same user and resource.
 	 */
 	public static function allows( OperationDefinition $definition, array $input ): bool {

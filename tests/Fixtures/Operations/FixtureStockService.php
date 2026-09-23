@@ -22,8 +22,8 @@ use SEOCart\Support\SupportError;
  * personal-data note, a secret token and a value the output schema does not declare, so a test
  * sees each privacy rule applied to a real result.
  *
- * Two notes make it fail the way a faulty service would: FAIL_UNDECLARED raises a coded error the
- * operation does not declare, and FAIL_UNEXPECTED throws an exception that is not a coded error.
+ * The note FAIL_UNDECLARED makes it raise a coded error the operation does not declare, the way a
+ * faulty service would.
  *
  * @since 0.1.0
  */
@@ -57,15 +57,6 @@ final class FixtureStockService {
 	public const FAIL_UNDECLARED = 'fail with an undeclared code';
 
 	/**
-	 * The note that makes the service throw an exception that is not a coded error.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	public const FAIL_UNEXPECTED = 'fail with an unexpected exception';
-
-	/**
 	 * The stock levels, keyed by item id.
 	 *
 	 * @since 0.1.0
@@ -92,8 +83,6 @@ final class FixtureStockService {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \RuntimeException For the note FAIL_UNEXPECTED.
-	 *
 	 * @param array<string, mixed> $input The input values, keyed by wire name.
 	 * @return array<string, mixed> The result, keyed by wire name.
 	 */
@@ -102,10 +91,6 @@ final class FixtureStockService {
 
 		if ( self::FAIL_UNDECLARED === ( $input['note'] ?? null ) ) {
 			CodedException::raise( SupportError::UnknownCurrency, array( 'currency' => 'XYZ' ) );
-		}
-
-		if ( self::FAIL_UNEXPECTED === ( $input['note'] ?? null ) ) {
-			throw new \RuntimeException( 'The fixture service failed unexpectedly.' );
 		}
 
 		$item  = (string) $input['item_id'];
