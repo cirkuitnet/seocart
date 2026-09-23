@@ -549,6 +549,108 @@ final class RedactorTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a line reads the text it keeps to one budget for all its strings, and that what the budget does not reach is removed, not kept.
+	 *
+	 * Twenty context values of sixty thousand characters each, all single digits joined by
+	 * spaces, the slowest text the detector reads: the first is read whole and cut to its limit,
+	 * the budget ends inside the second, which leaves nothing but its unread marker, and the
+	 * other eighteen are not read at all.
+	 *
+	 * Planted violation: in Redactor::kept(), give each string a budget of its own (every value
+	 * is read and kept: the output differs and the line takes seconds per value).
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_line_reads_its_kept_text_to_one_budget(): void {
+		$redactor = self::redactor();
+		$started  = hrtime( true );
+		$line     = $redactor->line( 'plain', 500, array( 'values' => array_fill( 0, 20, str_repeat( '1 ', 30000 ) ) ) );
+		$seconds  = ( hrtime( true ) - $started ) / 1e9;
+		$values   = $line['context']['values'];
+
+		$this->assertStringEndsWith( ' [cut]', $values[0], 'The first value is read whole, and cut to its limit.' );
+		$this->assertLessThanOrEqual( Redactor::STRING_LENGTH, mb_strlen( $values[0] ) );
+		$this->assertSame( array_fill( 0, 19, Redactor::UNREAD ), array_slice( $values, 1 ), 'Past the budget nothing is kept.' );
+		$this->assertLessThan( 5, $seconds, 'One budget of reading, not twenty.' );
+		$this->assertFalse( $line['card_number_removed'] );
+
+		// Planted violation: in Redactor::entries(), key an entry by its kept key alone (every key past the budget is the same text, and only the last entry survives).
+		$keyed = $redactor->line(
+			'm',
+			500,
+			array(
+				'big'      => str_repeat( 'a ', 40000 ),
+				'order_id' => 123,
+				'status'   => 500,
+				'retry'    => true,
+			)
+		)['context'];
+
+		$this->assertSame(
+			array( 'big', Redactor::UNREAD . ' #2', Redactor::UNREAD . ' #3', Redactor::UNREAD . ' #4' ),
+			array_keys( $keyed ),
+			'The keys past the budget are not read, and each keeps its entry apart by its position.'
+		);
+		$this->assertSame( array( 123, 500, true ), array_slice( array_values( $keyed ), 1 ), 'A number and a boolean cost nothing to read, and are kept.' );
+	}
+
+	/**
+	 * Tests that where the budget ends inside a string, the word it ends in and the digits before it go too.
+	 *
+	 * A value fills the budget but for a few characters, so the next one is read only in part:
+	 * the part ends in the first groups of a card number, or in the first letters of an email
+	 * address. Neither beginning is kept.
+	 *
+	 * Planted violations: in Redactor::kept(), keep the part as it was read (the first twelve
+	 * digits of the card survive); keep the word the cut ran into (the start of the address
+	 * survives).
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_string_the_budget_ends_in_keeps_no_beginning_of_a_card_or_an_address(): void {
+		$redactor = self::redactor();
+		$reads    = static fn( int $characters, string $text ): string => $redactor->line(
+			'm',
+			500,
+			array(
+				'a' => str_repeat( 'x', Redactor::READ_LENGTH - 3 - $characters ),
+				'b' => $text,
+			)
+		)['context']['b'];
+
+		$this->assertSame( 'card [cut]', $reads( 20, 'card 4111 1111 1111 1111 end' ), 'The budget ends after twelve digits of the card.' );
+		$this->assertSame( 'mail [cut]', $reads( 16, 'mail jane.doe@example.com now' ), 'The budget ends inside the address.' );
+		$this->assertSame( 'kept whole', $reads( 10, 'kept whole' ), 'A string the budget reaches whole is kept whole.' );
+		$this->assertSame( Redactor::UNREAD, $reads( 0, 'not read' ) );
+	}
+
+	/**
+	 * Tests that a very long literal in the server's text is replaced, not left to empty the text, and that a quoted pair value never closed is removed to the end.
+	 *
+	 * The database layer keeps only the start of a statement, but the server's text whole, so a
+	 * long literal reaches the redactor there.
+	 *
+	 * Planted violations: make the quoted-string patterns of SQL_LITERALS greedy again (the
+	 * engine runs out of stack and the text is written empty); in Redactor::pairs(), take a value
+	 * that is never closed only to the next white space (the rest of the secret survives).
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_long_literal_is_replaced_and_an_unclosed_value_removed_to_the_end(): void {
+		$redactor = self::redactor();
+		$server   = static fn( int $length ): string => $redactor->context(
+			array(
+				'exception' => QueryFailed::fromErrno( 1406, '22001', 'INSERT INTO `wp_seocart_planted` ( note ) VALUES ( ? )', "Data too long for column 'note': '" . str_repeat( 'jane ', $length ) . "' at row 1", false ),
+			)
+		)['exception']['previous']['server_message'];
+
+		$this->assertSame( 'Data too long for column ?: ? at row ?', $server( 6000 ), 'A literal of thirty thousand characters is replaced.' );
+		$this->assertSame( 'Data too long for column ?: ?', $server( 20000 ), 'A literal longer than what is read is replaced to the end.' );
+		$this->assertSame( 'key ', $redactor->text( 'key api_key="sk_planted_value and the rest of it' ) );
+		$this->assertSame( 'the note="[redacted]"', $redactor->text( 'the note="Ring twice, then again' ) );
+	}
+
+	/**
 	 * Returns the redactor over the planted registry and the fixture operation.
 	 *
 	 * @since 0.1.0

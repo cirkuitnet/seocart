@@ -64,8 +64,32 @@ final class LogRetention {
 	 *                            `P30D`. Default null, the retention catalog's default for `logs`.
 	 */
 	public function __construct( Database $db, ?string $period = null ) {
-		$period ??= ( new RetentionCatalog() )->defaults( LogsTable::RETENTION )['all'];
+		$this->db            = $db;
+		$this->periodSeconds = self::seconds( $period ?? self::cataloguedPeriod() );
+	}
 
+	/**
+	 * Returns the retention catalog's period for log lines.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string An ISO 8601 duration, such as `P30D`.
+	 */
+	public static function cataloguedPeriod(): string {
+		return ( new RetentionCatalog() )->defaults( LogsTable::RETENTION )['all'];
+	}
+
+	/**
+	 * Returns how many seconds a retention period lasts.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \InvalidArgumentException When the period is not an ISO 8601 duration of at least one second.
+	 *
+	 * @param string $period An ISO 8601 duration, such as `P30D`.
+	 * @return int The seconds, counted from the Unix epoch.
+	 */
+	public static function seconds( string $period ): int {
 		try {
 			$seconds = ( new \DateTimeImmutable( '@0' ) )->add( new \DateInterval( $period ) )->getTimestamp();
 		} catch ( \Exception $invalid ) {
@@ -76,8 +100,7 @@ final class LogRetention {
 			throw new \InvalidArgumentException( sprintf( 'The log retention period "%s" must be at least one second.', $period ) );
 		}
 
-		$this->db            = $db;
-		$this->periodSeconds = $seconds;
+		return $seconds;
 	}
 
 	/**

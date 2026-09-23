@@ -27,10 +27,16 @@ use SEOCart\Platform\DataRegistry\DataRegistry;
 use SEOCart\Platform\DataRegistry\OwnedData;
 use SEOCart\Platform\Events\Outbox;
 use SEOCart\Platform\Events\OutboxTable;
+use SEOCart\Platform\Jobs\ActionSchedulerQueue;
+use SEOCart\Platform\Jobs\JobHandlers;
+use SEOCart\Platform\Logging\CorrelationId;
+use SEOCart\Platform\Logging\LogRetentionJob;
 use SEOCart\Platform\Logging\LogsTable;
 use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
+use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
+use SEOCart\Tests\Support\Jobs\PluginActions;
 use SEOCart\Tests\Support\ReloadsRoles;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- These tests plant faults in real tables on purpose, and remove them.
@@ -40,7 +46,9 @@ use SEOCart\Tests\Support\ReloadsRoles;
  *
  * Each fault is planted, doctor must exit 1 and name it, the fault is removed and doctor must
  * exit 0 again, which proves both that the plant was a real violation and that the check comes
- * back clean. The runner's check-in is checked when the jobs module exists.
+ * back clean. The jobs are the real Action Scheduler's: set_up() records a runner's check-in
+ * a moment ago, as a working site has one, and every job of the plugin's group is deleted
+ * again in tear_down().
  *
  * @since 0.1.0
  */
@@ -110,6 +118,9 @@ final class DoctorTest extends DatabaseTestCase {
 		$this->migrator = new Migrator( $this->db, new LockService( $this->db, LockMode::Table, $this->sleeper() ), new MigrationsTableState( $this->db ), $this->registry->migrations(), FrozenClock::at( self::NOW ), $this->reporter() );
 
 		$this->assertSame( MigrationReport::APPLIED, $this->migrator->migrate( new MigrationRunOptions( 0 ) )->outcome() );
+
+		PluginActions::purge();
+		PluginActions::checkIn();
 	}
 
 	/**
@@ -118,6 +129,8 @@ final class DoctorTest extends DatabaseTestCase {
 	 * @since 0.1.0
 	 */
 	public function tear_down(): void {
+		PluginActions::purge();
+
 		parent::tear_down();
 		self::reloadRoles();
 	}
@@ -136,10 +149,10 @@ final class DoctorTest extends DatabaseTestCase {
 	public function test_a_clean_site_passes(): void {
 		$this->assertSame( DoctorCommand::EXIT_OK, $this->doctor() );
 		$this->assertSame(
-			array( 'schema', 'migrations', 'locks', 'outbox' ),
-			array_map( static fn( string $line ): string => (string) preg_replace( '/^\[ok\]\s+(\w+):.*$/', '$1', $line ), array_slice( $this->printed, 0, 4 ) )
+			array( 'schema', 'migrations', 'locks', 'outbox', 'runner' ),
+			array_map( static fn( string $line ): string => (string) preg_replace( '/^\[ok\]\s+(\w+):.*$/', '$1', $line ), array_slice( $this->printed, 0, 5 ) )
 		);
-		$this->assertSame( 'All 4 checks passed.', end( $this->printed ) );
+		$this->assertSame( 'All 5 checks passed.', end( $this->printed ) );
 	}
 
 	/**
@@ -148,7 +161,8 @@ final class DoctorTest extends DatabaseTestCase {
 	 * Planted violations in the checks, each confirmed red then removed: SchemaCheck ignores the
 	 * undeclared-table sweep; SchemaCheck prints the verifier's line as it is (the planted
 	 * default, an email address, is printed); LocksCheck compares `expires_at > UTC_TIMESTAMP(6)`;
-	 * OutboxCheck ignores failed rows; MigrationsCheck skips the checksum comparison.
+	 * OutboxCheck ignores failed rows; MigrationsCheck skips the checksum comparison; RunnerCheck
+	 * ignores runnerStale() (the runner that has not checked in passes).
 	 *
 	 * @since 0.1.0
 	 */
@@ -164,6 +178,10 @@ final class DoctorTest extends DatabaseTestCase {
 		$recreate  = function (): void {
 			( new CreateLogsMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
 		};
+		$checkIn   = static function (): void {
+			PluginActions::purge();
+			PluginActions::checkIn();
+		};
 		$statement = static function ( string $sql, string ...$tables ) use ( $wpdb ): \Closure {
 			return static function () use ( $wpdb, $sql, $tables ): void {
 				$wpdb->query( $wpdb->prepare( $sql, ...$tables ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- $sql is one of the literal statements of this test, with placeholders.
@@ -171,50 +189,63 @@ final class DoctorTest extends DatabaseTestCase {
 		};
 
 		$faults = array(
-			'a default holding a value' => array(
+			'a default holding a value'        => array(
 				$statement( "ALTER TABLE %i ALTER COLUMN message SET DEFAULT 'jane.doe@example.com'", $logs ),
 				$statement( 'ALTER TABLE %i ALTER COLUMN message DROP DEFAULT', $logs ),
 				$logs . '.message: its default differs from the declaration',
 			),
-			'a dropped index'           => array(
+			'a dropped index'                  => array(
 				$statement( 'ALTER TABLE %i DROP INDEX correlation_id', $logs ),
 				$statement( 'ALTER TABLE %i ADD INDEX correlation_id ( correlation_id )', $logs ),
 				'index correlation_id does not exist',
 			),
-			'a dropped table'           => array(
+			'a dropped table'                  => array(
 				$statement( 'DROP TABLE %i', $logs ),
 				$recreate,
 				$logs . ': the table does not exist',
 			),
-			'an undeclared table'       => array(
+			'an undeclared table'              => array(
 				$statement( 'CREATE TABLE %i ( id int NOT NULL ) ENGINE=InnoDB', $planted ),
 				$statement( 'DROP TABLE %i', $planted ),
 				$planted . ': a plugin table that no module declares',
 			),
-			'a stale lock lease'        => array(
+			'a stale lock lease'               => array(
 				$statement( "INSERT INTO %i ( name, owner_token, acquired_at, expires_at, holder, created_at ) VALUES ( 'planted', REPEAT( 'a', 64 ), UTC_TIMESTAMP(6) - INTERVAL 2 HOUR, UTC_TIMESTAMP(6) - INTERVAL 1 HOUR, 'cli:4242', UTC_TIMESTAMP() )", $locks ),
 				$statement( "DELETE FROM %i WHERE name = 'planted'", $locks ),
 				'Lock planted: its lease lapsed',
 			),
-			'a failed outbox row'       => array(
+			'a failed outbox row'              => array(
 				$this->plantOutboxRow( 'failed', 'UTC_TIMESTAMP(6)' ),
 				$statement( 'DELETE FROM %i', $outbox ),
 				'1 stored event failed delivery',
 			),
-			'a stalled outbox'          => array(
+			'a stalled outbox'                 => array(
 				$this->plantOutboxRow( 'pending', 'UTC_TIMESTAMP(6) - INTERVAL 20 MINUTE', 'UTC_TIMESTAMP(6) - INTERVAL 20 MINUTE' ),
 				$statement( 'DELETE FROM %i', $outbox ),
 				'delivery has stalled',
 			),
-			'a changed migration file'  => array(
+			'a changed migration file'         => array(
 				$statement( "UPDATE %i SET checksum = REPEAT( '0', 64 ) WHERE migration_id = %s", $records, CreateLogsMigration::ID ),
 				$statement( 'UPDATE %i SET checksum = %s WHERE migration_id = %s', $records, $checksum, CreateLogsMigration::ID ),
 				'Migration ' . CreateLogsMigration::ID . ' changed after it was applied',
 			),
-			'a failed migration'        => array(
+			'a failed migration'               => array(
 				$statement( "UPDATE %i SET state = 'failed' WHERE migration_id = %s", $records, CreateLogsMigration::ID ),
 				$statement( "UPDATE %i SET state = 'applied' WHERE migration_id = %s", $records, CreateLogsMigration::ID ),
 				'Migration ' . CreateLogsMigration::ID . ' failed.',
+			),
+			'a runner that has not checked in' => array(
+				static function (): void {
+					PluginActions::purge();
+					PluginActions::checkIn( 2 * HOUR_IN_SECONDS );
+				},
+				$checkIn,
+				'No runner has started one of SEOCart\'s jobs for 72',
+			),
+			'a failed job'                     => array(
+				static fn() => PluginActions::failed( LogRetentionJob::name(), 'jane.doe@example.com 4111111111111111 planted-secret-value' ),
+				$checkIn,
+				'handler logs.prune: 1 failed',
 			),
 		);
 
@@ -250,7 +281,8 @@ final class DoctorTest extends DatabaseTestCase {
 		$this->assertStringContainsString( '[FAIL] outbox: The check could not run: database.query_failed: The database refused a statement with error 1146 (SQLSTATE 42S02).', $output );
 		$this->assertStringContainsString( '[ok]   locks:', $output );
 		$this->assertStringContainsString( '[ok]   migrations:', $output );
-		$this->assertStringContainsString( '2 of 4 checks failed.', $output );
+		$this->assertStringContainsString( '[ok]   runner:', $output );
+		$this->assertStringContainsString( '2 of 5 checks failed.', $output );
 	}
 
 	/**
@@ -301,6 +333,7 @@ final class DoctorTest extends DatabaseTestCase {
 		$outbox = $this->db->table( OutboxTable::NAME );
 
 		$this->plantOutboxRow( 'failed', 'UTC_TIMESTAMP(6)' )();
+		PluginActions::failed( LogRetentionJob::name(), 'jane.doe@example.com 4111111111111111 planted-secret-value' );
 		$wpdb->query( $wpdb->prepare( "INSERT INTO %i ( name, owner_token, acquired_at, expires_at, holder, created_at ) VALUES ( 'planted', REPEAT( 'a', 64 ), UTC_TIMESTAMP(6) - INTERVAL 2 HOUR, UTC_TIMESTAMP(6) - INTERVAL 1 HOUR, 'jane.doe@example.com', UTC_TIMESTAMP() )", $this->db->table( 'locks' ) ) );
 		$wpdb->query( $wpdb->prepare( "INSERT INTO %i ( name, owner_token, acquired_at, expires_at, holder, created_at ) VALUES ( 'jane.doe@example.com', REPEAT( 'b', 64 ), UTC_TIMESTAMP(6) - INTERVAL 2 HOUR, UTC_TIMESTAMP(6) - INTERVAL 1 HOUR, 'cli:1', UTC_TIMESTAMP() )", $this->db->table( 'locks' ) ) );
 		$wpdb->query( $wpdb->prepare( "UPDATE %i SET state = 'failed', error_message = 'jane.doe@example.com 4111111111111111 planted-secret-value' WHERE migration_id = %s", $this->db->table( 'migrations' ), CreateLogsMigration::ID ) );
@@ -328,6 +361,8 @@ final class DoctorTest extends DatabaseTestCase {
 		$output = implode( "\n", $printed );
 
 		$this->assertStringContainsString( 'Lock planted: its lease lapsed', $output, 'The faults were reported.' );
+		$this->assertStringContainsString( 'handler logs.prune: 1 failed', $output );
+		$this->assertStringContainsString( 'job group seocart (declared): 1 complete, 1 failed', $output );
 		$this->assertStringContainsString( 'option seocart_planted_secret_value (undeclared)', $output, 'A name that is an identifier is printed.' );
 		$this->assertStringContainsString( '(a name that is not an identifier, withheld)', $output );
 
@@ -341,8 +376,8 @@ final class DoctorTest extends DatabaseTestCase {
 	/**
 	 * Tests `--residue`: everything the plugin owns is residue, nothing left passes, and each kind of leftover is found.
 	 *
-	 * Planted violation: in ResidueCheck::options(), look for `seocart_` names only (the planted
-	 * transient is missed).
+	 * Planted violations: in ResidueCheck::options(), look for `seocart_` names only (the planted
+	 * transient is missed); in ResidueCheck::run(), leave out jobs() (the planted job is missed).
 	 *
 	 * @since 0.1.0
 	 */
@@ -355,6 +390,8 @@ final class DoctorTest extends DatabaseTestCase {
 		foreach ( self::pluginTablesNow() as $table ) {
 			$wpdb->query( $wpdb->prepare( 'DROP TABLE %i', $table ) );
 		}
+
+		PluginActions::purge();
 
 		$this->assertSame( DoctorCommand::EXIT_OK, $this->doctor( true ), "Nothing is left:\n" . implode( "\n", $this->printed ) );
 		$this->assertStringContainsString( 'Nothing the plugin owned remains on this site', $this->printed[0] );
@@ -379,6 +416,11 @@ final class DoctorTest extends DatabaseTestCase {
 				static fn() => get_role( 'administrator' )->add_cap( 'seocart_view_reports' ),
 				static fn() => get_role( 'administrator' )->remove_cap( 'seocart_view_reports' ),
 				'role administrator still has 1 plugin capability',
+			),
+			'a background job'    => array(
+				static fn() => PluginActions::checkIn(),
+				static fn() => PluginActions::purge(),
+				'job group seocart (declared): 1 complete',
 			),
 			'a scheduled event'   => array(
 				static fn() => wp_schedule_single_event( time() + 3600, 'seocart_residue_planted' ),
@@ -413,7 +455,7 @@ final class DoctorTest extends DatabaseTestCase {
 		$this->printed = array();
 
 		$command = new DoctorCommand(
-			new Doctor( $this->db, $this->registry, $this->migrator, new Outbox( $this->db ) ),
+			new Doctor( $this->db, $this->registry, $this->migrator, new Outbox( $this->db ), new ActionSchedulerQueue( $this->db, new LockService( $this->db, LockMode::Table, $this->sleeper() ), new JobHandlers( JobHandlers::PRODUCTION, 'strval' ), new CorrelationId( new SequentialIdGenerator() ), $this->reporter() ) ),
 			function ( string $line ): void {
 				$this->printed[] = $line;
 			}

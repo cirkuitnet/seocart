@@ -35,7 +35,9 @@ defined( 'ABSPATH' ) || exit;
  *
  * A single run of 13 to 19 digits that fails the checksum is kept, so an order or reference
  * number survives. A run of more than 19 digits without a separator is not a card number and
- * is kept too. Nothing else is exempt: an identifier whose digit groups happen to pass the
+ * is kept too, by design: that includes a card number fused to more digits, such as one
+ * followed directly by its expiry date. Card data never reaches PHP, so this detector is
+ * defence in depth, not the boundary. Nothing else is exempt: an identifier whose digit groups happen to pass the
  * checksum is replaced as well, which is rare for a UUID and accepted, and so is a date range
  * written with only dashes and spaces between two dates.
  *
@@ -156,6 +158,25 @@ final class CardNumbers {
 		$readable = self::readable( $text );
 
 		return self::scrub( $readable ) !== $readable;
+	}
+
+	/**
+	 * Removes the groups of digits, and the separators among and after them, that a text ends in.
+	 *
+	 * A text cut short can end in the first groups of a card number whose last ones were cut
+	 * off: too few digits to be found, but still part of a card. Whatever follows the last
+	 * character that is neither a digit nor a separator goes.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $text Valid UTF-8.
+	 * @return string The text up to and including its last character outside a chain; empty when there is none.
+	 */
+	public static function withoutTrailingChain( string $text ): string {
+		// A greedy prefix backs off from the end one character at a time, so this is linear.
+		$outside = '[^\p{Nd}' . substr( self::SEPARATOR, 1 );
+
+		return 1 === preg_match( '/^.*' . $outside . '/su', $text, $prefix ) ? $prefix[0] : '';
 	}
 
 	/**

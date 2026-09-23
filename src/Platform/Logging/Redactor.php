@@ -47,14 +47,24 @@ defined( 'ABSPATH' ) || exit;
  * last bracketed part. A pair whose name is a declared personal-data name keeps its name and
  * has its value replaced by REDACTED; one whose name is a declared secret name is removed
  * whole. A value is a quoted string or runs to the next white space, `&`, `;`, `,` or closing
- * bracket. Card numbers go, and so do SQL literals in a statement or the server's text.
- * Everything else in free text is kept: a person's name, a postal address, a phone number or
- * any other personal data written in prose is not guessed at and stays.
+ * bracket; a quoted value that is never closed runs to the end of the text. Card numbers go,
+ * and so do SQL literals in a statement or the server's text. Everything else in free text is
+ * kept: a person's name, a postal address, a phone number or any other personal data written
+ * in prose is not guessed at and stays.
+ *
+ * A line reads at most READ_LENGTH characters of the text it keeps, its message and every
+ * string of its context together, so no line can cost more than that much scanning. What the
+ * budget does not reach is removed unread, never kept: a string it reaches only in part is
+ * kept to that part, less the word the cut ran into, and ends in CUT; one it does not reach at
+ * all becomes UNREAD. A context key it does not reach becomes UNREAD followed by the entry's
+ * position, `[left out: …] #3`, so the entries after it keep their values apart; so does a
+ * key that redacts to one already kept.
  *
  * A value that is replaced or dropped because of its declared name is checked for a card
- * number first, so its removal is still reported, and nothing of it is kept. That check reads
- * at most READ_LENGTH characters for a whole line and follows arrays no deeper than
- * MAX_DEPTH; a value it cannot finish is reported as unchecked instead, without reading on.
+ * number first, so its removal is still reported, and nothing of it is kept. That check has a
+ * budget of its own, also READ_LENGTH characters for a whole line, and follows arrays no
+ * deeper than MAX_DEPTH; a value it cannot finish is reported as unchecked instead, without
+ * reading on.
  *
  * Output is bounded: strings, arrays, nesting and the total number of values have limits, so
  * a runaway context cannot fill the log.
@@ -93,13 +103,22 @@ final class Redactor {
 	private const KEY_LENGTH = 100;
 
 	/**
-	 * The most characters of a text that are read at all.
+	 * The most characters one line reads of the text it keeps, every string together; and, apart from that, of the values it replaces or drops.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var int
 	 */
-	private const READ_LENGTH = 65536;
+	public const READ_LENGTH = 65536;
+
+	/**
+	 * What replaces a text of which nothing is kept, because the line had read all it may before it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const UNREAD = '[left out: the line was read to its limit]';
 
 	/**
 	 * How deep arrays and previous exceptions are followed.
@@ -184,7 +203,25 @@ final class Redactor {
 	 *
 	 * @var string
 	 */
-	private const PAIR_VALUE = '(?:"(?:[^"\\\\]++|\\\\.)*+"|\'(?:[^\'\\\\]++|\\\\.)*+\'|[^\s&;,})\]]++)';
+	private const PAIR_VALUE = '(?:' . self::QUOTED . '|[^\s&;,})\]]++)';
+
+	/**
+	 * A string in double or single quotes, with backslash escapes.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const QUOTED = '"(?:[^"\\\\]++|\\\\.)*+"|\'(?:[^\'\\\\]++|\\\\.)*+\'';
+
+	/**
+	 * A quoted string, closed, where a pair's value starts.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const QUOTED_AT = '/\G(?:' . self::QUOTED . ')/u';
 
 	/**
 	 * The start of a pair in free text: its name and its separator.
@@ -223,14 +260,17 @@ final class Redactor {
 	 * SQL literals and what replaces them: quoted strings, including one cut off at the end,
 	 * hexadecimal literals, and numbers that are not part of a name.
 	 *
+	 * The quantifiers of a quoted string are possessive, so a long literal is replaced instead
+	 * of exhausting the regular expression engine's stack.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @var array<string, string>
 	 */
 	private const SQL_LITERALS = array(
-		'/\'(?:[^\'\\\\]|\\\\.|\'\')*(?:\'|$)/s' => '?',
-		'/"(?:[^"\\\\]|\\\\.|"")*(?:"|$)/s'      => '?',
-		'/\b0x[0-9a-f]+\b/i'                     => '?',
+		'/\'(?:[^\'\\\\]++|\\\\.|\'\')*+(?:\'|$)/s' => '?',
+		'/"(?:[^"\\\\]++|\\\\.|"")*+(?:"|$)/s'      => '?',
+		'/\b0x[0-9a-f]+\b/i'                        => '?',
 		'/(?<![\w$.`])\d+(?:\.\d+)?(?:e[+-]?\d+)?(?![\w$`])/i' => '?',
 	);
 
@@ -287,6 +327,15 @@ final class Redactor {
 	 * @var int
 	 */
 	private int $checkBudget = self::READ_LENGTH;
+
+	/**
+	 * How many more characters of the text it keeps the current line may read.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private int $readBudget = self::READ_LENGTH;
 
 	/**
 	 * Keeps the names. Use fromDeclarations(): names never come from anywhere else.
@@ -367,8 +416,10 @@ final class Redactor {
 		$this->cardNumberRemoved   = false;
 		$this->cardNumberUnchecked = false;
 
-		$message = $this->text( $message, $messageLength );
-		$context = $this->context( $context );
+		$this->startReading();
+
+		$message = $this->kept( $message, $messageLength );
+		$context = $this->entries( $context, 0 );
 
 		return array(
 			'message'               => $message,
@@ -381,6 +432,8 @@ final class Redactor {
 	/**
 	 * Makes a text safe to log: valid UTF-8, the free-text policy applied, no card-shaped number, and no longer than a limit.
 	 *
+	 * The text is read up to READ_LENGTH characters, as one line would read it.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @param string $text      The text.
@@ -388,15 +441,96 @@ final class Redactor {
 	 * @return string The text.
 	 */
 	public function text( string $text, int $maxLength = self::STRING_LENGTH ): string {
+		$this->startReading();
+
+		return $this->kept( $text, $maxLength );
+	}
+
+	/**
+	 * Redacts a log line's context.
+	 *
+	 * The context is read as one line would read it: its strings share one budget of
+	 * READ_LENGTH characters.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param array<mixed> $context The context the caller passed.
+	 * @return array<mixed> What may be stored: personal data replaced, secrets dropped, card
+	 *                      numbers removed, objects summarized, sizes bounded.
+	 */
+	public function context( array $context ): array {
+		$this->startReading();
+
+		return $this->entries( $context, 0 );
+	}
+
+	/**
+	 * Starts the budgets of one line: the values it keeps, the characters it reads of them, and those it reads of the values it replaces or drops.
+	 *
+	 * @since 0.1.0
+	 */
+	private function startReading(): void {
+		$this->budget      = self::MAX_VALUES;
+		$this->readBudget  = self::READ_LENGTH;
+		$this->checkBudget = self::READ_LENGTH;
+	}
+
+	/**
+	 * Makes one string of the line safe to keep, reading no more of it than the line's budget has left.
+	 *
+	 * What the budget does not reach is removed unread, with the last word that was read, and
+	 * the digits it ends in: they may be the start of an address or a card number that runs on
+	 * into the part not read. The rest ends in CUT. Of a string the budget does not reach at
+	 * all, UNREAD is kept.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $text      The text.
+	 * @param int    $maxLength The most characters the result has.
+	 * @return string The text.
+	 */
+	private function kept( string $text, int $maxLength = self::STRING_LENGTH ): string {
 		if ( 1 !== preg_match( '//u', $text ) ) {
 			// Not valid UTF-8: every byte outside ASCII becomes a question mark.
 			$text = (string) preg_replace( '/[\x80-\xFF]/', '?', $text );
 		}
 
-		if ( strlen( $text ) > self::READ_LENGTH ) {
-			$text = mb_substr( $text, 0, self::READ_LENGTH );
+		$length = mb_strlen( $text );
+		$read   = min( $length, max( 0, $this->readBudget ) );
+
+		$this->readBudget -= $read;
+
+		if ( $read === $length ) {
+			return $this->safe( $text, $maxLength );
 		}
 
+		// The greedy prefix ends at the last white space, so the word the cut ran into is dropped.
+		$part = 1 === preg_match( '/^.*\s/su', mb_substr( $text, 0, $read ), $prefix ) ? $prefix[0] : '';
+		$part = CardNumbers::withoutTrailingChain( $part );
+
+		if ( '' === trim( $part ) ) {
+			return mb_substr( self::UNREAD, 0, $maxLength );
+		}
+
+		$safe = $this->safe( $part, $maxLength );
+
+		if ( str_ends_with( $safe, self::CUT ) ) {
+			return $safe;
+		}
+
+		return mb_substr( $safe, 0, max( 0, $maxLength - mb_strlen( self::CUT ) ) ) . self::CUT;
+	}
+
+	/**
+	 * Applies the free-text policy to a text that was read whole, removes its card numbers, and cuts it to a limit.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $text      Valid UTF-8.
+	 * @param int    $maxLength The most characters the result has.
+	 * @return string The text.
+	 */
+	private function safe( string $text, int $maxLength ): string {
 		$text = $this->freeText( $text );
 
 		// First every card number goes, so a cut can never leave the beginning of one behind.
@@ -415,22 +549,6 @@ final class Redactor {
 		$keep = max( 0, $maxLength - mb_strlen( self::CUT ) - mb_strlen( CardNumbers::MARKER ) );
 
 		return mb_substr( CardNumbers::scrub( mb_substr( $text, 0, $keep ) . self::CUT ), 0, $maxLength );
-	}
-
-	/**
-	 * Redacts a log line's context.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param array<mixed> $context The context the caller passed.
-	 * @return array<mixed> What may be stored: personal data replaced, secrets dropped, card
-	 *                      numbers removed, objects summarized, sizes bounded.
-	 */
-	public function context( array $context ): array {
-		$this->budget      = self::MAX_VALUES;
-		$this->checkBudget = self::READ_LENGTH;
-
-		return $this->entries( $context, 0 );
 	}
 
 	/**
@@ -463,7 +581,12 @@ final class Redactor {
 
 			++$kept;
 
-			$safeKey = is_int( $key ) && ! CardNumbers::contains( (string) $key ) ? $key : $this->text( (string) $key, self::KEY_LENGTH );
+			$safeKey = is_int( $key ) && ! CardNumbers::contains( (string) $key ) ? $key : $this->kept( (string) $key, self::KEY_LENGTH );
+
+			if ( is_string( $safeKey ) && ( self::UNREAD === $safeKey || array_key_exists( $safeKey, $redacted ) ) ) {
+				// A key the budget did not reach, or one redacted to a key already kept: its position keeps the entry apart.
+				$safeKey = sprintf( '%s #%d', $safeKey, $kept );
+			}
 
 			if ( isset( $this->personal[ $name ] ) ) {
 				$this->noteCardNumberIn( $value, $depth );
@@ -597,7 +720,7 @@ final class Redactor {
 		}
 
 		if ( is_string( $value ) ) {
-			return $this->text( $value );
+			return $this->kept( $value );
 		}
 
 		if ( $depth > self::MAX_DEPTH && ( is_array( $value ) || is_object( $value ) ) ) {
@@ -662,8 +785,8 @@ final class Redactor {
 		if ( $throwable instanceof StatementDiagnostic ) {
 			$written = array(
 				'class'          => get_class( $throwable ),
-				'statement'      => $this->text( self::withoutLiterals( $throwable->statement() ) ),
-				'server_message' => $this->text( self::withoutLiterals( $throwable->serverMessage() ) ),
+				'statement'      => $this->kept( self::withoutLiterals( $throwable->statement() ) ),
+				'server_message' => $this->kept( self::withoutLiterals( $throwable->serverMessage() ) ),
 			);
 		} elseif ( $throwable instanceof CodedException ) {
 			$written = array(
@@ -676,7 +799,7 @@ final class Redactor {
 		} else {
 			$written = array(
 				'class'   => get_class( $throwable ),
-				'message' => $this->text( $throwable->getMessage() ),
+				'message' => $this->kept( $throwable->getMessage() ),
 				'file'    => self::path( $throwable->getFile() ),
 				'line'    => $throwable->getLine(),
 			);
@@ -792,6 +915,13 @@ final class Redactor {
 				continue;
 			}
 
+			$opening = $value[0][0];
+
+			if ( ( '"' === $opening || '\'' === $opening ) && 1 !== preg_match( self::QUOTED_AT, $text, $closed, 0, $valueStart ) ) {
+				// A quoted value that is never closed: all that follows may be the value, so all of it goes.
+				$value = array( substr( $text, $valueStart ) );
+			}
+
 			$end   = $valueStart + strlen( $value[0] );
 			$kept .= substr( $text, $at, $start - $at );
 
@@ -868,12 +998,19 @@ final class Redactor {
 	/**
 	 * Replaces every literal in a SQL statement or a server message.
 	 *
+	 * Only its first READ_LENGTH bytes are looked at, which is more than a line keeps of it; a
+	 * literal they cut off is replaced to their end.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @param string $sql The text.
 	 * @return string The text with each quoted string, hexadecimal literal and number replaced by a question mark.
 	 */
 	private static function withoutLiterals( string $sql ): string {
+		if ( strlen( $sql ) > self::READ_LENGTH ) {
+			$sql = mb_strcut( $sql, 0, self::READ_LENGTH, 'UTF-8' );
+		}
+
 		return (string) preg_replace( array_keys( self::SQL_LITERALS ), array_values( self::SQL_LITERALS ), $sql );
 	}
 

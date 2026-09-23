@@ -313,4 +313,57 @@ final class CorrelationThroughDeliveryTest extends OutboxTestCase {
 		$this->assertSame( self::DELIVERING_REQUEST, $this->correlation->current(), 'The drainer\'s own id is back.' );
 		$this->assertSame( array(), $this->fallback );
 	}
+
+	/**
+	 * Tests that a fatal error in a listener is reported under the id stored with its row, whatever id the listener left in force.
+	 *
+	 * The listener takes on an id of its own, as one that handles another request's work would,
+	 * and then dies. PHP cannot be killed inside PHPUnit, so it calls the shutdown handler with
+	 * the description error_get_last() would give, while its row is in flight.
+	 *
+	 * Planted violation: in OutboxDrainer::releaseAfterFatal(), report without scoped() (the line
+	 * carries the id the listener left).
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_fatal_error_in_a_listener_is_reported_under_the_rows_correlation_id(): void {
+		$b      = $this->secondConnection();
+		$stored = '00000000-0000-7000-8000-0000000000f1';
+		$logger = new Logger(
+			$this->db,
+			$this->correlation,
+			Redactor::fromDeclarations( OwnedData::registry(), ...DeclaredFields::production() ),
+			Level::Debug,
+			null,
+			$this->fallbackLog()
+		);
+
+		$this->plantEvent( $b, new ThingHappened( 1 ), array( 'correlation_id' => "'{$stored}'" ) );
+
+		$this->listen(
+			'seocart_' . ThingHappened::eventName(),
+			10,
+			function (): void {
+				$this->correlation->accept( '0192a3b4-0000-7000-8000-00000000cccc' );
+
+				OutboxDrainer::handleShutdown(
+					array(
+						'type'    => E_ERROR,
+						'message' => 'Allowed memory size exhausted',
+						'file'    => __FILE__,
+						'line'    => __LINE__,
+					)
+				);
+			}
+		);
+
+		$this->correlation->accept( self::DELIVERING_REQUEST );
+
+		( new OutboxDrainer( $this->db, new Outbox( $this->db ), $this->bridge, $this->catalog, new LockService( $this->db, LockMode::Table, $this->sleeper() ), $this->correlation, new Reporter( static fn(): Logger => $logger, $this->correlation ) ) )->drain( DrainOptions::command() );
+
+		$fatal = $this->db->fetchAll( 'SELECT correlation_id FROM %i WHERE machine_code = %s', $this->db->table( LogsTable::NAME ), ReportCode::ListenerFatal->value );
+
+		$this->assertSame( array( array( 'correlation_id' => $stored ) ), $fatal );
+		$this->assertSame( array(), $this->fallback );
+	}
 }

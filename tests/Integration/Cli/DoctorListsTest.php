@@ -20,8 +20,12 @@ use SEOCart\Platform\Database\MigrationsTableState;
 use SEOCart\Platform\Database\Migrator;
 use SEOCart\Platform\DataRegistry\OwnedData;
 use SEOCart\Platform\Events\Outbox;
+use SEOCart\Platform\Jobs\ActionSchedulerQueue;
+use SEOCart\Platform\Jobs\JobHandlers;
+use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
+use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Unit\Support\PhpSource;
 
 /**
@@ -60,7 +64,8 @@ final class DoctorListsTest extends DatabaseTestCase {
 
 		$registry = OwnedData::registry();
 		$migrator = new Migrator( $this->db, new LockService( $this->db, LockMode::Table, $this->sleeper() ), new MigrationsTableState( $this->db ), $registry->migrations(), FrozenClock::at( '2026-09-23 12:00:00' ), $this->reporter() );
-		$doctor   = new Doctor( $this->db, $registry, $migrator, new Outbox( $this->db ) );
+		$queue    = new ActionSchedulerQueue( $this->db, new LockService( $this->db, LockMode::Table, $this->sleeper() ), new JobHandlers( JobHandlers::PRODUCTION, 'strval' ), new CorrelationId( new SequentialIdGenerator() ), $this->reporter() );
+		$doctor   = new Doctor( $this->db, $registry, $migrator, new Outbox( $this->db ), $queue );
 		$listed   = array_map( 'get_class', array_merge( $doctor->checks(), $doctor->residueChecks() ) );
 
 		sort( $found );

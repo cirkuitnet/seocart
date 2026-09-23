@@ -28,6 +28,7 @@ use SEOCart\Platform\Jobs\Handlers\OutboxRetention;
 use SEOCart\Platform\Jobs\Job;
 use SEOCart\Platform\Jobs\JobHandler;
 use SEOCart\Platform\Jobs\JobHandlers;
+use SEOCart\Platform\Logging\LogRetentionJob;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
 use SEOCart\Tests\Support\Doubles\RecordingWake;
 use SEOCart\Tests\Support\Events\ThingHappened;
@@ -80,19 +81,20 @@ final class FoundationJobsTest extends JobsTestCase {
 	}
 
 	/**
-	 * Tests that the platform's recurring jobs are scheduled at their intervals: the catch-up every five minutes, the two sweeps daily.
+	 * Tests that the platform's recurring jobs are scheduled at their intervals: the catch-up every five minutes, the three sweeps daily.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_the_platforms_recurring_jobs_are_scheduled_at_their_intervals(): void {
 		$this->wirePlatform();
 
-		$this->assertSame( array( OutboxCatchUp::name(), OutboxRetention::name(), JobHistoryCleanup::name() ), $this->queue->ensureRecurring() );
+		$this->assertSame( array( OutboxCatchUp::name(), OutboxRetention::name(), JobHistoryCleanup::name(), LogRetentionJob::name() ), $this->queue->ensureRecurring() );
 		$this->assertSame(
 			array(
 				'[{"h":"outbox.catch_up","r":300}]',
 				'[{"h":"outbox.prune","r":86400}]',
 				'[{"h":"job_history.prune","r":86400}]',
+				'[{"h":"logs.prune","r":86400}]',
 			),
 			array_column( $this->actions(), 'args' )
 		);

@@ -253,7 +253,7 @@ final class OutboxDrainer {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var array<string, array{drainer: self, id: int, token: string, hook: string, attempts: int, maxAttempts: int}>
+	 * @var array<string, array{drainer: self, id: int, token: string, hook: string, attempts: int, maxAttempts: int, correlation: string|null}>
 	 */
 	private static array $inFlight = array();
 
@@ -664,6 +664,7 @@ final class OutboxDrainer {
 				'hook'        => $envelope->hook,
 				'attempts'    => $attempts,
 				'maxAttempts' => $options->maxAttempts,
+				'correlation' => $correlationId,
 			);
 
 			$this->correlation->scoped( $correlationId, fn() => $this->bridge->dispatch( $envelope ) );
@@ -770,10 +771,13 @@ final class OutboxDrainer {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param array $flight The row: its drainer, id, token, action, attempts and the attempts allowed.
+	 * The report is written under the correlation id stored with the row, whatever id the
+	 * listener that died left in force.
+	 *
+	 * @param array $flight The row: its drainer, id, token, action, attempts, the attempts allowed and its correlation id.
 	 * @param array $error  The fatal error, as error_get_last() describes it.
 	 *
-	 * @phpstan-param array{drainer: self, id: int, token: string, hook: string, attempts: int, maxAttempts: int} $flight
+	 * @phpstan-param array{drainer: self, id: int, token: string, hook: string, attempts: int, maxAttempts: int, correlation: string|null} $flight
 	 * @phpstan-param array<mixed> $error
 	 */
 	private function releaseAfterFatal( array $flight, array $error ): void {
@@ -788,8 +792,17 @@ final class OutboxDrainer {
 			'parked'    => $park,
 		);
 
+		$report = function ( bool $released ) use ( $flight, $context ): void {
+			try {
+				$this->correlation->scoped( $flight['correlation'], fn() => $this->reportSafely( ReportCode::ListenerFatal, $context + array( 'released' => $released ) ) );
+			} catch ( \Throwable $unscoped ) {
+				// Only restoring the id could throw here, at shutdown, where nothing may.
+				unset( $unscoped );
+			}
+		};
+
 		if ( 0 !== $this->db->depth() ) {
-			$this->reportSafely( ReportCode::ListenerFatal, $context + array( 'released' => false ) );
+			$report( false );
 
 			return;
 		}
@@ -800,9 +813,9 @@ final class OutboxDrainer {
 				? $this->outbox->park( $flight['id'], $flight['token'], $message )
 				: $this->outbox->retry( $flight['id'], $flight['token'], Backoff::seconds( max( 1, $flight['attempts'] ) ), $message );
 
-			$this->reportSafely( ReportCode::ListenerFatal, $context + array( 'released' => $released ) );
+			$report( $released );
 		} catch ( \Throwable $failure ) {
-			$this->reportSafely( ReportCode::ListenerFatal, $context + array( 'released' => false ) );
+			$report( false );
 		}
 	}
 

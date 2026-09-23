@@ -19,9 +19,12 @@ use SEOCart\Platform\Database\MigrationsTableState;
 use SEOCart\Platform\Database\Migrator;
 use SEOCart\Platform\DataRegistry\OwnedData;
 use SEOCart\Platform\Events\Outbox;
+use SEOCart\Platform\Jobs\ActionSchedulerQueue;
+use SEOCart\Platform\Jobs\JobHandlers;
 use SEOCart\Platform\Logging\Level;
 use SEOCart\Platform\Logging\Logger;
 use SEOCart\Platform\Logging\LogRetention;
+use SEOCart\Platform\Logging\LogRetentionJob;
 use SEOCart\Platform\Logging\Redactor;
 use SEOCart\Platform\Logging\Reporter;
 use SEOCart\Support\SystemClock;
@@ -29,7 +32,7 @@ use SEOCart\Tests\Support\Logging\DeclaredFields;
 use SEOCart\Tests\Support\Logging\LogsTestCase;
 
 /**
- * Building the logger, the reporter, the redactor, the sweep and doctor sends no query and adds no hook, and a line costs one statement.
+ * Building the logger, the reporter, the redactor, the sweep, its job and doctor sends no query and adds no hook, and a line costs one statement.
  *
  * Nothing here is wired into the plugin's boot yet, so the idle-request budgets measured in a
  * child process are untouched; this measures the module itself, in-process.
@@ -59,9 +62,10 @@ final class IdleBudgetLoggingTest extends LogsTestCase {
 				$reporter = new Reporter( static fn(): Logger => $logger, $this->correlation );
 				$registry = OwnedData::registry();
 				$migrator = new Migrator( $this->db, new LockService( $this->db, LockMode::Table ), new MigrationsTableState( $this->db ), $registry->migrations(), new SystemClock(), $reporter );
-				$doctor   = new Doctor( $this->db, $registry, $migrator, new Outbox( $this->db ) );
+				$queue    = new ActionSchedulerQueue( $this->db, new LockService( $this->db, LockMode::Table ), new JobHandlers( JobHandlers::PRODUCTION, 'strval' ), $this->correlation, $reporter );
+				$doctor   = new Doctor( $this->db, $registry, $migrator, new Outbox( $this->db ), $queue );
 
-				$built = array( $redactor, $logger, $reporter, new LogRetention( $this->db ), $doctor, $doctor->checks(), $doctor->residueChecks(), new DoctorCommand( $doctor, static function (): void {} ) );
+				$built = array( $redactor, $logger, $reporter, new LogRetentionJob( new LogRetention( $this->db ) ), $doctor, $doctor->checks(), $doctor->residueChecks(), new DoctorCommand( $doctor, static function (): void {} ) );
 			}
 		);
 

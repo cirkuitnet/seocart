@@ -22,9 +22,11 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: what counts as residue. After the store's data has been deleted, nothing in
  * the plugin's namespaces may remain on the current site: no `{prefix}seocart_` table, no
  * `seocart_` option or transient, no role the plugin ships, no plugin capability on any role,
- * and no `seocart_` scheduled event. Each thing found is one line, marked `declared` when the
- * data registry names it and `undeclared` when nothing does, which is worse: nothing would
- * ever have removed it. Only names are shown, never values.
+ * no `seocart_` scheduled event, and no background job in the plugin's job group or any other
+ * `seocart` group of Action Scheduler, whatever its status. Each thing found is one line,
+ * marked `declared` when the data registry names it and `undeclared` when nothing does, which
+ * is worse: nothing would ever have removed it. Jobs are counted by status, one line per
+ * group. Only names and counts are shown, never values.
  *
  * Doctor runs this check only when asked with `--residue`, because on a working store every
  * declared thing is meant to exist.
@@ -59,6 +61,15 @@ final class ResidueCheck implements Check {
 	 * @var string
 	 */
 	private const HOOK_PREFIX = 'seocart_';
+
+	/**
+	 * How the names of the plugin's job groups start, beside the groups the registry declares.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const JOB_GROUP_PREFIX = 'seocart';
 
 	/**
 	 * The connection.
@@ -110,10 +121,10 @@ final class ResidueCheck implements Check {
 	 * @return CheckResult Passed when nothing remains.
 	 */
 	public function run(): CheckResult {
-		$findings = array_merge( $this->tables(), $this->options(), $this->roles(), $this->scheduledEvents() );
+		$findings = array_merge( $this->tables(), $this->options(), $this->roles(), $this->scheduledEvents(), $this->jobs() );
 
 		if ( array() === $findings ) {
-			return CheckResult::pass( self::NAME, 'Nothing the plugin owned remains on this site: no table, option, role, capability or scheduled event.' );
+			return CheckResult::pass( self::NAME, 'Nothing the plugin owned remains on this site: no table, option, role, capability, scheduled event or background job.' );
 		}
 
 		return CheckResult::fail( self::NAME, sprintf( '%d %s the plugin owned %s on this site.', count( $findings ), 1 === count( $findings ) ? 'thing' : 'things', 1 === count( $findings ) ? 'remains' : 'remain' ), $findings );
@@ -208,5 +219,45 @@ final class ResidueCheck implements Check {
 		ksort( $hooks );
 
 		return array_map( static fn( string $hook ): string => sprintf( 'scheduled event %s', CheckResult::identifier( $hook ) ), array_keys( $hooks ) );
+	}
+
+	/**
+	 * Lists the background jobs that remain in the plugin's job groups, by group and status.
+	 *
+	 * The jobs are read from Action Scheduler's tables. A site without them has none to list.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<string> One line per group, with its jobs counted by status.
+	 */
+	private function jobs(): array {
+		$actions = $this->db->prefix() . 'actionscheduler_actions';
+		$groups  = $this->db->prefix() . 'actionscheduler_groups';
+
+		if ( 2 !== (int) $this->db->fetchValue( 'SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ( %s, %s )', $actions, $groups ) ) {
+			return array();
+		}
+
+		$declared = array_map( 'strval', array_keys( $this->registry->jobGroups() ) );
+		$rows     = $this->db->fetchAll(
+			'SELECT g.slug AS job_group, a.status, COUNT(*) AS total FROM %i a INNER JOIN %i g ON g.group_id = a.group_id WHERE g.slug LIKE %s' . str_repeat( ' OR g.slug = %s', count( $declared ) ) . ' GROUP BY g.slug, a.status ORDER BY g.slug, a.status',
+			$actions,
+			$groups,
+			addcslashes( self::JOB_GROUP_PREFIX, '\\_%' ) . '%',
+			...$declared
+		);
+		$counts   = array();
+
+		foreach ( $rows as $row ) {
+			$counts[ (string) $row['job_group'] ][] = sprintf( '%1$d %2$s', (int) $row['total'], CheckResult::identifier( (string) $row['status'] ) );
+		}
+
+		$findings = array();
+
+		foreach ( $counts as $group => $statuses ) {
+			$findings[] = sprintf( 'job group %1$s (%2$s): %3$s', CheckResult::identifier( (string) $group ), in_array( (string) $group, $declared, true ) ? 'declared' : 'undeclared', implode( ', ', $statuses ) );
+		}
+
+		return $findings;
 	}
 }

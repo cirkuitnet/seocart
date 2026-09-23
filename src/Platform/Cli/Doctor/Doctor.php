@@ -15,6 +15,7 @@ use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Migrator;
 use SEOCart\Platform\DataRegistry\DataRegistry;
 use SEOCart\Platform\Events\Outbox;
+use SEOCart\Platform\Jobs\JobQueue;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Error\ErrorDefinition;
 
@@ -24,9 +25,10 @@ defined( 'ABSPATH' ) || exit;
  * Holds every doctor check and runs them for the current site.
  *
  * Owns one fact: which checks doctor runs. checks() is the one list of the checks a healthy
- * store passes: the schema, the migrations, the locks and the outbox; residueChecks() is the
- * list for a site whose store data was deleted. The command prints them and Site Health can
- * show the same list; a test holds both lists equal to the Check classes that exist.
+ * store passes: the schema, the migrations, the locks, the outbox and the runner of background
+ * jobs; residueChecks() is the list for a site whose store data was deleted. The command
+ * prints them and Site Health can show the same list; a test holds both lists equal to the
+ * Check classes that exist.
  *
  * Every check is read-only. run() never throws: a check that cannot run, because a table is
  * missing or the database refuses, counts as failed with its error code, never its values.
@@ -72,6 +74,15 @@ final class Doctor {
 	private Outbox $outbox;
 
 	/**
+	 * The queue of background jobs, which reports on them.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var JobQueue
+	 */
+	private JobQueue $jobs;
+
+	/**
 	 * Creates the doctor. Sends nothing.
 	 *
 	 * @since 0.1.0
@@ -80,12 +91,14 @@ final class Doctor {
 	 * @param DataRegistry $registry What the plugin owns.
 	 * @param Migrator     $migrator The migrator, built from the registry's chain.
 	 * @param Outbox       $outbox   The outbox rows.
+	 * @param JobQueue     $jobs     The queue of background jobs.
 	 */
-	public function __construct( Database $db, DataRegistry $registry, Migrator $migrator, Outbox $outbox ) {
+	public function __construct( Database $db, DataRegistry $registry, Migrator $migrator, Outbox $outbox, JobQueue $jobs ) {
 		$this->db       = $db;
 		$this->registry = $registry;
 		$this->migrator = $migrator;
 		$this->outbox   = $outbox;
+		$this->jobs     = $jobs;
 	}
 
 	/**
@@ -101,6 +114,7 @@ final class Doctor {
 			new MigrationsCheck( $this->migrator, $this->db, $this->registry ),
 			new LocksCheck( $this->db ),
 			new OutboxCheck( $this->outbox ),
+			new RunnerCheck( $this->jobs ),
 		);
 	}
 
