@@ -8,8 +8,8 @@
  * WordPress, a test double of it, or any plugin class. The process:
  *
  * 1. declares every global function the WordPress stubs declare as a counter that records the
- *    call and returns null, so a declaration that calls WordPress in any way is counted rather
- *    than crashing;
+ *    call and returns its first argument — the text, for a gettext call — so a declaration that
+ *    calls WordPress in any way is counted rather than crashing;
  * 2. replaces `$wpdb` with an object that records every property read and method call;
  * 3. records every file opened through PHP's file stream wrapper, includes and reads alike;
  * 4. builds the production registry together with the test-fixture operation, and compiles each
@@ -55,7 +55,7 @@ foreach ( explode( "\n", $seocart_stubs ) as $seocart_line ) {
 	if ( 1 === preg_match( '/^namespace\s*(\S*)\s*\{/', $seocart_line, $seocart_match ) ) {
 		$seocart_global = '' === $seocart_match[1];
 	} elseif ( $seocart_global && 1 === preg_match( '/^    function ([A-Za-z_][A-Za-z0-9_]*)\(/', $seocart_line, $seocart_match ) && ! function_exists( $seocart_match[1] ) ) {
-		$seocart_counters[] = 'function ' . $seocart_match[1] . "() { \$GLOBALS['seocart_probe_calls'][ __FUNCTION__ ] = ( \$GLOBALS['seocart_probe_calls'][ __FUNCTION__ ] ?? 0 ) + 1; return null; }";
+		$seocart_counters[] = 'function ' . $seocart_match[1] . "( ...\$args ) { \$GLOBALS['seocart_probe_calls'][ __FUNCTION__ ] = ( \$GLOBALS['seocart_probe_calls'][ __FUNCTION__ ] ?? 0 ) + 1; return \$args[0] ?? null; }";
 	}
 }
 
