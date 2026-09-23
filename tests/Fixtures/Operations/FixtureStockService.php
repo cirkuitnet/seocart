@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Fixtures\Operations;
 
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Support\SupportError;
 
 /**
  * Keeps stock levels in memory and records every call, so a test can see what each surface passed.
@@ -20,6 +21,9 @@ use SEOCart\Support\Error\CodedException;
  * the fixture's declared code. The result carries, besides the declared public fields, a
  * personal-data note, a secret token and a value the output schema does not declare, so a test
  * sees each privacy rule applied to a real result.
+ *
+ * Two notes make it fail the way a faulty service would: FAIL_UNDECLARED raises a coded error the
+ * operation does not declare, and FAIL_UNEXPECTED throws an exception that is not a coded error.
  *
  * @since 0.1.0
  */
@@ -44,6 +48,24 @@ final class FixtureStockService {
 	public const AUDIT_TOKEN = 'fixture-audit-token-never-serialized';
 
 	/**
+	 * The note that makes the service raise a coded error the operation does not declare.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const FAIL_UNDECLARED = 'fail with an undeclared code';
+
+	/**
+	 * The note that makes the service throw an exception that is not a coded error.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const FAIL_UNEXPECTED = 'fail with an unexpected exception';
+
+	/**
 	 * The stock levels, keyed by item id.
 	 *
 	 * @since 0.1.0
@@ -64,15 +86,27 @@ final class FixtureStockService {
 	/**
 	 * Adjusts the level of one item.
 	 *
+	 * Raises FixtureStockError::Insufficient when the level would drop below zero, and
+	 * SupportError::UnknownCurrency, which the operation does not declare, for the note
+	 * FAIL_UNDECLARED.
+	 *
 	 * @since 0.1.0
 	 *
-	 * @throws CodedException With FixtureStockError::Insufficient when the level would drop below zero.
+	 * @throws \RuntimeException For the note FAIL_UNEXPECTED.
 	 *
 	 * @param array<string, mixed> $input The input values, keyed by wire name.
 	 * @return array<string, mixed> The result, keyed by wire name.
 	 */
 	public function adjust( array $input ): array {
 		$this->calls[] = $input;
+
+		if ( self::FAIL_UNDECLARED === ( $input['note'] ?? null ) ) {
+			CodedException::raise( SupportError::UnknownCurrency, array( 'currency' => 'XYZ' ) );
+		}
+
+		if ( self::FAIL_UNEXPECTED === ( $input['note'] ?? null ) ) {
+			throw new \RuntimeException( 'The fixture service failed unexpectedly.' );
+		}
 
 		$item  = (string) $input['item_id'];
 		$delta = (int) $input['delta'];
