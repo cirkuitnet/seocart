@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Unit\Support\Error;
 
+use PHPUnit\Framework\AssertionFailedError;
 use PHPUnit\Framework\TestCase;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Error\ErrorTableException;
@@ -19,7 +20,8 @@ use SEOCart\Tests\Unit\Support\Error\Fixtures\FixtureException;
 use SEOCart\Tests\Unit\Support\Error\Fixtures\MissingRowError;
 
 /**
- * Proves that a coded exception carries its code and exactly the context its row declares.
+ * Proves that a coded exception carries its code and exactly the context its row declares, and
+ * that raise() throws exactly what because() builds.
  *
  * @since 0.1.0
  */
@@ -67,6 +69,121 @@ final class CodedExceptionTest extends TestCase {
 		$this->assertInstanceOf( FixtureException::class, $exception );
 		$this->assertInstanceOf( CodedException::class, $exception );
 		$this->assertSame( array(), $exception->context() );
+	}
+
+	/**
+	 * Tests that raise() throws exactly the exception because() builds, of the class it is called on.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @dataProvider data_exceptions_to_raise
+	 *
+	 * @param string       $exception_class CodedException or a module's subclass.
+	 * @param FixtureError $code            The code.
+	 * @param array        $context         The context.
+	 *
+	 * @phpstan-param class-string<CodedException> $exception_class
+	 * @phpstan-param array<string, int|string|bool> $context
+	 */
+	public function test_raise_throws_exactly_what_because_builds( string $exception_class, FixtureError $code, array $context ): void {
+		$built  = $exception_class::because( $code, $context );
+		$raised = self::thrownBy( static fn() => $exception_class::raise( $code, $context ) );
+
+		$this->assertSame( get_class( $built ), get_class( $raised ) );
+		$this->assertSame( $built->errorCode(), $raised->errorCode() );
+		$this->assertSame( $built->context(), $raised->context() );
+		$this->assertSame( $built->getMessage(), $raised->getMessage() );
+		$this->assertSame( $built->getCode(), $raised->getCode() );
+		$this->assertNull( $raised->getPrevious() );
+	}
+
+	/**
+	 * Provides exceptions to raise: the base class with a context, and a subclass without one.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, array{class-string<CodedException>, FixtureError, array<string, int>}> Test cases.
+	 */
+	public static function data_exceptions_to_raise(): array {
+		return array(
+			'the base class, with a context' => array(
+				CodedException::class,
+				FixtureError::Insufficient,
+				array(
+					'requested' => 3,
+					'available' => 1,
+				),
+			),
+			'a module subclass'              => array( FixtureException::class, FixtureError::NotFound, array() ),
+		);
+	}
+
+	/**
+	 * Tests that raise() checks the context exactly as because() does.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_raise_checks_the_context_like_because(): void {
+		$this->expectException( ErrorTableException::class );
+		$this->expectExceptionMessage( 'must carry exactly the placeholders its row declares' );
+
+		CodedException::raise( FixtureError::Insufficient, array( 'requested' => 3 ) );
+	}
+
+	/**
+	 * Tests that raise() is declared never, and that code relying on it works.
+	 *
+	 * The proof that PHPStan understands `never` is stockOf() below: its last statement is a
+	 * call to raise() and it has no return statement after it. PHPStan accepts that only
+	 * because raise() never returns; with any other return type, `composer stan` fails with
+	 * "should return int but return statement is missing".
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_raise_never_returns(): void {
+		$declared = ( new \ReflectionMethod( CodedException::class, 'raise' ) )->getReturnType();
+
+		$this->assertInstanceOf( \ReflectionNamedType::class, $declared );
+		$this->assertSame( 'never', $declared->getName() );
+		$this->assertSame( 3, self::stockOf( array( 'sku-1' => 3 ), 'sku-1' ) );
+		$this->assertSame( FixtureError::NotFound, self::thrownBy( static fn() => self::stockOf( array(), 'sku-2' ) )->errorCode() );
+	}
+
+	/**
+	 * Looks a quantity up, raising a coded error when it is missing.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param array<string, int> $stock Quantities, keyed by SKU.
+	 * @param string             $sku   The SKU to look up.
+	 * @return int The quantity.
+	 */
+	private static function stockOf( array $stock, string $sku ): int {
+		if ( isset( $stock[ $sku ] ) ) {
+			return $stock[ $sku ];
+		}
+
+		CodedException::raise( FixtureError::NotFound );
+	}
+
+	/**
+	 * Runs code that must throw a coded exception, and returns what it threw.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws AssertionFailedError When the code returns instead of throwing.
+	 *
+	 * @param callable $code The code to run.
+	 * @return CodedException The exception it threw.
+	 */
+	private static function thrownBy( callable $code ): CodedException {
+		try {
+			$code();
+		} catch ( CodedException $thrown ) {
+			return $thrown;
+		}
+
+		throw new AssertionFailedError( 'The code returned instead of throwing a CodedException.' );
 	}
 
 	/**

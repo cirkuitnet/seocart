@@ -23,13 +23,16 @@ defined( 'ABSPATH' ) || exit;
  * `{requested, available}`. There is no Result type and no `WP_Error` outside adapters; an
  * adapter catches this exception and renders it through the ErrorTable.
  *
- * Raise it with because(), not `new`:
+ * Raise it with raise(), never with `new`:
  *
- *     throw CodedException::because( SupportError::UnknownCurrency, array( 'currency' => $code ) );
+ *     CodedException::raise( SupportError::UnknownCurrency, array( 'currency' => $code ) );
  *
- * A module may declare its own subclass so callers can catch its errors by type
- * (`final class InventoryException extends CodedException {}`); because() then returns that
- * subclass. The constructor is final, so every subclass is created and checked the same way.
+ * because() builds the same exception without throwing it, for a caller that needs the
+ * instance: to wrap it, to inspect it, or to throw it later. A module may declare its own
+ * subclass so callers can catch its errors by type
+ * (`final class InventoryException extends CodedException {}`); raise() and because() called on
+ * the subclass then throw and return the subclass. The constructor is final, so every subclass
+ * is created and checked the same way.
  *
  * The context must carry exactly the placeholders the code's row declares, and each value must
  * be an int, a string or a bool — never an object, never a secret, because the message a
@@ -117,6 +120,37 @@ class CodedException extends \RuntimeException {
 	 */
 	public static function because( ErrorCode $error_code, array $context = array(), ?\Throwable $previous = null ): static {
 		return new static( $error_code, $context, $previous );
+	}
+
+	/**
+	 * Throws the exception, of the class it is called on. This is how code raises a coded error.
+	 *
+	 * It builds the exception with because() and then throws the instance it built, and that
+	 * order is deliberate. The WordPress sniff WordPress.Security.EscapeOutput.ExceptionNotEscaped
+	 * checks the arguments of an exception constructed inside a `throw` statement and leaves an
+	 * exception built beforehand alone. Its concern does not apply to a coded exception: the
+	 * message is only the code, a fixed `module.reason` string from a catalog, and the context
+	 * reaches a person only through the adapter that renders it, which escapes it for its output.
+	 * This method is the one place in the code base where the sniff's construction check is
+	 * bypassed on purpose, so that a throw site needs no `phpcs:ignore` and every other `throw`
+	 * stays checked.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException Always: the exception because() builds, of the class this is called on.
+	 *
+	 * @param ErrorCode $error_code The code, a case of a module's catalog.
+	 * @param array     $context    Optional. The values the message contains, keyed by
+	 *                              placeholder name: exactly the placeholders the code's row
+	 *                              declares. Default empty.
+	 * @return never
+	 *
+	 * @phpstan-param array<array-key, mixed> $context
+	 */
+	public static function raise( ErrorCode $error_code, array $context = array() ): never {
+		$exception = static::because( $error_code, $context );
+
+		throw $exception;
 	}
 
 	/**

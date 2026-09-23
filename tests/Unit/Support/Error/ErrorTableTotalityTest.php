@@ -26,8 +26,9 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * Both directions of DRY rule 8 are checked:
  *
  * - Every code src/ can raise has exactly one row. A code is raised through
- *   CodedException::because(), which accepts only a case of an ErrorCode enum, so the codes
- *   src/ can raise are the cases of the ErrorCode enums declared under src/. This test finds
+ *   CodedException::raise() or built by CodedException::because(), and both accept only a case
+ *   of an ErrorCode enum, so the codes src/ can raise are the cases of the ErrorCode enums
+ *   declared under src/. This test finds
  *   every such enum, composes them all into one table — which fails for a case with no row
  *   or two, and for a code two catalogs declare — and checks every row: a 4xx or 5xx status,
  *   a message, and placeholders equal to the row's declared context keys.

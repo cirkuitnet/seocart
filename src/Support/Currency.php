@@ -259,8 +259,7 @@ final class Currency {
 	 */
 	public static function of( string $code ): self {
 		if ( ! isset( self::EXPONENTS[ $code ] ) ) {
-			// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- A CodedException's message is its code; the context is rendered, and escaped, by the adapter that shows it.
-			throw CodedException::because( SupportError::UnknownCurrency, array( 'currency' => $code ) );
+			CodedException::raise( SupportError::UnknownCurrency, array( 'currency' => $code ) );
 		}
 
 		return new self( $code, self::EXPONENTS[ $code ] );
