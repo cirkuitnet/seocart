@@ -29,7 +29,6 @@ env:
     # both the floor and the version the plugin is developed on.
     PHP_FLOOR: '8.3'
     PHP_VERSION: '8.4'
-    NODE_VERSION: '22'
     # Throwaway values for the MySQL service container of install-smoke. The container
     # exists for the length of one job and is reachable from nowhere else; these are not
     # secrets and are used for nothing but CI. bin/ci/install-smoke.sh reads them.
@@ -75,10 +74,10 @@ jobs:
             - name: Install Composer dependencies
               run: composer install --no-interaction --no-progress --prefer-dist
 
-            - name: Set up Node ${{ env.NODE_VERSION }}
+            - name: Set up Node from .nvmrc
               uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
               with:
-                  node-version: ${{ env.NODE_VERSION }}
+                  node-version-file: .nvmrc
                   cache: npm
 
             - name: Install npm dependencies

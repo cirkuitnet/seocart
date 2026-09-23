@@ -11,8 +11,8 @@ project's development server.
 | --------- | --------------------------------------------- | ----------------------------------------------------------- |
 | PHP       | A supported version; 8.4 is used day to day   | Every Composer script                                       |
 | Composer  | 2                                             | PHP dependencies, Strauss, the gate scripts                 |
-| Node.js   | 22                                            | The asset build, the JavaScript and CSS linters, Playwright |
-| npm       | 10                                            | Installing from `package-lock.json`                         |
+| Node.js   | The major version in `.nvmrc`                 | The asset build, the JavaScript and CSS linters, Playwright |
+| npm       | The version bundled with that Node.js         | Installing from `package-lock.json`                         |
 | MySQL     | 8.4 recommended                               | The integration suite and any WordPress site                |
 | WordPress | A supported version; 7.1.1 is used day to day | The integration suite, end-to-end tests, manual testing     |
 | WP-CLI    | 2.12 or newer                                 | The provisioning scripts in `bin/dev/`                      |

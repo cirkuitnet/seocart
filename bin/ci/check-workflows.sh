@@ -15,12 +15,13 @@
 #   2. shellcheck over bin/ci/*.sh.
 #   3. Agreement. Steps cannot be shared between workflow files without a composite
 #      action, so a few facts are stated once per file or once per job: PHP_VERSION,
-#      PHP_FLOOR, NODE_VERSION, the pin of each third-party action, the image of a service
-#      container, the Composer cache key and the `composer install` line. This check is
-#      the set-equality companion of those parallel statements: each fact must have the
-#      same value wherever it is stated. It also requires every third-party action to be
-#      pinned to a full commit SHA with the version in a trailing comment, which
-#      actionlint does not look at.
+#      PHP_FLOOR, the pin of each third-party action, the image of a service container,
+#      the Composer cache key and the `composer install` line. This check is the
+#      set-equality companion of those parallel statements: each fact must have the same
+#      value wherever it is stated. It also requires every third-party action to be pinned
+#      to a full commit SHA with the version in a trailing comment, which actionlint does
+#      not look at, and every Node.js setup to read its version from .nvmrc, the one place
+#      that states it.
 #
 # Needs actionlint (https://github.com/rhysd/actionlint) and shellcheck on PATH. POSIX sh
 # and awk: runs on the Ubuntu runner and on a developer machine alike.
@@ -119,7 +120,20 @@ awk '
 		next
 	}
 
-	line ~ /^(PHP_VERSION|PHP_FLOOR|NODE_VERSION):/ {
+	# .nvmrc states the Node.js version once; a version written into a workflow would be a
+	# second statement that nothing keeps in step with it.
+	line ~ /^node-version:/ {
+		printf "%s:%d: state the Node.js version in .nvmrc and read it with \"node-version-file: .nvmrc\"\n", FILENAME, FNR
+		bad = 1
+		next
+	}
+
+	line ~ /^node-version-file:/ {
+		note( "the Node.js version file", after_colon( line ) )
+		next
+	}
+
+	line ~ /^(PHP_VERSION|PHP_FLOOR):/ {
 		key = line
 		sub( /:.*$/, "", key )
 		note( key, after_colon( line ) )

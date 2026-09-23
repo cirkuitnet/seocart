@@ -58,6 +58,16 @@ updates:
               update-types:
                   - minor
                   - patch
+      ignore:
+          # @types/node follows the Node.js major in .nvmrc and moves with it, by hand.
+          - dependency-name: '@types/node'
+            update-types:
+                - version-update:semver-major
+          # typescript-eslint, which the linter runs on, supports TypeScript below 6.1 only.
+          # Lift this when typescript-eslint supports TypeScript 7.
+          - dependency-name: typescript
+            update-types:
+                - version-update:semver-major
 
     - package-ecosystem: github-actions
       directory: /

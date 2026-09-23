@@ -20,10 +20,10 @@
 # integration-tests cells, js-lint-test, and the four "package / …" jobs. The WordPress
 # nightly cells are informational.
 #
-# PHP_VERSION, NODE_VERSION, the action pins and the Composer install line are stated in
-# more than one workflow file, because steps cannot be shared between files without a
-# composite action. bin/ci/check-workflows.sh (the workflow-lint job) fails when any two
-# statements of one of those facts disagree.
+# PHP_VERSION, the action pins and the Composer install line are stated in more than one
+# workflow file, because steps cannot be shared between files without a composite action.
+# bin/ci/check-workflows.sh (the workflow-lint job) fails when any two statements of one
+# of those facts disagree. The Node.js version is stated once, in .nvmrc.
 
 name: CI
 
@@ -45,7 +45,6 @@ concurrency:
 env:
     # The version the plugin is developed on. The matrices below cover the rest.
     PHP_VERSION: '8.4'
-    NODE_VERSION: '22'
 
 jobs:
     lint-php:
@@ -230,10 +229,10 @@ jobs:
         steps:
             - *checkout
 
-            - name: Set up Node ${{ env.NODE_VERSION }}
+            - name: Set up Node from .nvmrc
               uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
               with:
-                  node-version: ${{ env.NODE_VERSION }}
+                  node-version-file: .nvmrc
                   cache: npm
 
             - name: Install npm dependencies
