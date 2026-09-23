@@ -88,3 +88,9 @@ releasable.
   capability, role and job group the plugin owns, the privacy handling of each
   personal-data column, and the retention policies. Tests fail when a site holds a plugin
   table, column or option that nothing registered.
+- One documented error shape for the REST API, abilities and WP-CLI commands: every error
+  carries `status`, `details` and `correlation_id`. Internal failures, such as database
+  errors, reach a client only as a generic message with the correlation id, and their
+  details go to the error log. Every operation response is sent with
+  `Cache-Control: no-store, private`, plus `Vary: Cookie` when the request was
+  cookie-authenticated.
