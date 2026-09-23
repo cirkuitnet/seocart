@@ -235,7 +235,9 @@ site_wp core install \
 	--admin_email=admin@example.org \
 	--skip-email >/dev/null
 
-php -S "127.0.0.1:$port" -t "$site" >"$work/server.log" 2>&1 &
+# Opcache is off for the built-in server: PHP 8.4's opcache segfaulted in it on CI after
+# activation (kernel log: "segfault ... in opcache.so"), which made this check fail at random.
+php -d opcache.enable=0 -d opcache.enable_cli=0 -S "127.0.0.1:$port" -t "$site" >"$work/server.log" 2>&1 &
 server_pid=$!
 
 attempts=0
