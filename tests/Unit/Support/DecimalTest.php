@@ -546,7 +546,8 @@ final class DecimalTest extends TestCase {
 
 				list( $quotient, $remainder ) = DigitArithmetic::divide( $dividend, $divisor );
 
-				$this->assertTrue( DigitArithmetic::isCanonical( $quotient ) && DigitArithmetic::isCanonical( $remainder ) );
+				$this->assertMatchesRegularExpression( '/^(?:0|[1-9][0-9]*)$/', $quotient, 'The quotient is a canonical digit string.' );
+				$this->assertMatchesRegularExpression( '/^(?:0|[1-9][0-9]*)$/', $remainder, 'The remainder is a canonical digit string.' );
 				$this->assertSame( $dividend, DigitArithmetic::add( DigitArithmetic::multiply( $quotient, $divisor ), $remainder ) );
 				$this->assertSame( -1, DigitArithmetic::compare( $remainder, $divisor ), 'The remainder is smaller than the divisor.' );
 

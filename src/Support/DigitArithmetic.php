@@ -62,18 +62,6 @@ final class DigitArithmetic {
 	private const SHORT_DIVISOR_DIGITS = 9;
 
 	/**
-	 * Tells whether a string is a canonical digit string.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $digits The string to check.
-	 * @return bool True for ASCII digits with no leading zero, or '0'.
-	 */
-	public static function isCanonical( string $digits ): bool {
-		return 1 === preg_match( '/^(?:0|[1-9][0-9]*)\z/', $digits );
-	}
-
-	/**
 	 * Removes leading zeros, keeping '0' for zero.
 	 *
 	 * @since 0.1.0
