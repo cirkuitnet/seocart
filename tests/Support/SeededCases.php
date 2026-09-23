@@ -161,6 +161,10 @@ final class SeededCases {
 			return 'array(' . implode( ', ', $items ) . ')';
 		}
 
+		if ( $value instanceof \UnitEnum ) {
+			return get_class( $value ) . '::' . $value->name;
+		}
+
 		if ( is_object( $value ) ) {
 			return get_class( $value );
 		}
