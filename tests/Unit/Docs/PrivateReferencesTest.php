@@ -21,7 +21,8 @@ use PHPUnit\Framework\TestCase;
  * number or planning identifier points readers at something they cannot open, so every
  * comment, docblock, test and document says what the rule is instead, or names the public
  * file or test that enforces it. This test owns one fact: which spellings count as such a
- * citation. The two ignore files are exempt, because they must name the paths they ignore.
+ * citation. The patterns of the two ignore files are exempt, because they must name the
+ * paths they ignore; their comments are not.
  *
  * @since 0.1.0
  */
@@ -35,29 +36,33 @@ final class PrivateReferencesTest extends TestCase {
 	 * @var array<string, string> Regular expression => what it catches.
 	 */
 	private const CITATIONS = array(
-		'/\bADR-\d{4}\b/'                                 => 'a design-record number',
-		'#docs/(?:adr|architecture|phase-)#'              => 'a path of the private documentation',
-		'/\btarget[- ]architecture\b/i'                   => 'the private architecture document',
-		'/(?<![A-Za-z])(?:data-storage|security|extensibility|performance|domain-map|overview)\.md\b/' => 'a private architecture note (SECURITY.md, in capitals, is public)',
-		'#\bresearch/\d{2}\b#'                            => 'a private research note',
-		'/\b(?:open-questions|phase-1-backlog|repo-ci-worktree-strategy|test-strategy|wordpress-org-compliance|capability-inventory|SEOCart_Phase\d)\b/' => 'a private planning document',
-		'/\bF-(?:SUP|DB|REG|OPS|AUT|SET|EVT|JOB|LOG|KRN|RST)\b/' => 'a planning task identifier',
-		'/\b(?:A-0[1-9]|B-0[1-9]|B-S\d{1,2}|X-0[1-9])\b/' => 'a planning task identifier',
+		'/\bADRs?[- #]?\d{1,4}\b/i'               => 'a design-record number',
+		'#docs[\\\\/](?:adr|architecture|phase-\d)(?![\w.-])#' => 'a path of the private documentation',
+		'#(?:^|[\s(\[<"\'`])(?:\.\./)*(?:adr|architecture|phase-\d)/#' => 'a relative link into the private documentation',
+		'/\btarget[- ]architecture\b/i'           => 'the private architecture document',
+		'/(?<![\w-])(?:data-storage|extensibility|domain-map)\.md\b/' => 'a private architecture note',
+		'/(?<![\w-])(?:overview|performance|security)\.md\s*§/' => 'a section of a private architecture note (SECURITY.md, in capitals, is public)',
+		'#\bresearch/\d{2}\b#'                    => 'a private research note',
+		'/\b(?:open-questions|phase-1-backlog|repo-ci-worktree-strategy|test-strategy|wordpress-org-compliance|capability-inventory)\b/' => 'a private planning document',
+		'/(?<![\w-])(?:executive-summary|legacy-data-model|legacy-system-map|migration-strategy|woocommerce-case-study|woocommerce-pain-points|wordpress-mapping|DISPOSITIONS|wave-\d-exit-report|wave-\d-log|_AGENT_BRIEF|_RECONCILIATION)\.md\b/' => 'a private planning document',
+		'/\bSEOCart_\w*Handoff\b|\bhandoff\s*§/i' => 'a private handoff document',
+		'/(?<![\w-])F-(?:SUP|DB|REG|OPS|AUT|SET|EVT|JOB|LOG|KRN|RST)(?![\w-])/' => 'a planning task identifier',
+		'/(?<![\w-])(?:A-0[1-9]|B-0[1-9]|B-S\d{1,2}|X-0[1-9])(?![\w-])/' => 'a planning task identifier',
 		'/\b(?:Wave \d|Slice [AB]|Checkpoint F|Gate [AB])\b/' => 'a planning phase',
-		'/\b(?:AGENTS|CLAUDE)\.md\b/'                     => 'a maintainer-only instruction file',
+		'/\b(?:AGENTS|CLAUDE)\.md\b/'             => 'a maintainer-only instruction file',
 	);
 
 	/**
-	 * Tracked files allowed to name private paths, relative to the repository root.
+	 * Ignore files, whose patterns must name the private paths they ignore. Their comment
+	 * lines are still checked.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var list<string>
 	 */
-	private const EXEMPT = array(
+	private const IGNORE_FILES = array(
 		'.distignore',
 		'.gitignore',
-		'tests/Unit/Docs/PrivateReferencesTest.php',
 	);
 
 	/**
@@ -70,7 +75,8 @@ final class PrivateReferencesTest extends TestCase {
 		$found = array();
 
 		foreach ( $this->trackedFiles( $root ) as $file ) {
-			if ( in_array( $file, self::EXEMPT, true ) || str_starts_with( $file, 'vendor-scoped/' ) ) {
+			// This file spells every citation it looks for; a file deleted but not yet removed from git has nothing to read.
+			if ( 'tests/Unit/Docs/PrivateReferencesTest.php' === $file || ! is_file( $root . '/' . $file ) ) {
 				continue;
 			}
 
@@ -81,7 +87,13 @@ final class PrivateReferencesTest extends TestCase {
 				continue;
 			}
 
+			$patterns_only = in_array( $file, self::IGNORE_FILES, true );
+
 			foreach ( explode( "\n", $content ) as $index => $line ) {
+				if ( $patterns_only && ! str_starts_with( ltrim( $line ), '#' ) ) {
+					continue;
+				}
+
 				foreach ( $this->citationsIn( $line ) as $match => $what ) {
 					$found[] = sprintf( '%s:%d cites %s ("%s")', $file, $index + 1, $what, $match );
 				}
@@ -117,6 +129,16 @@ final class PrivateReferencesTest extends TestCase {
 			'before Slice B',
 			'at Checkpoint F',
 			'read AGENTS.md first',
+			'see SEOCart_Phase1_Wave1_Handoff.md',
+			'as the handoff §8 says',
+			'[records](adr/README.md)',
+			'](../phase-0/reviews/DISPOSITIONS.md)',
+			'W:\docs\adr\README.md',
+			'ADR 0004 and adr-0012',
+			'the legacy-system-map.md notes',
+			'recorded in wave-1-log.md',
+			'performance.md §4',
+			'SKU B-S7 is reserved',
 		);
 
 		foreach ( $citations as $text ) {
@@ -130,6 +152,11 @@ final class PrivateReferencesTest extends TestCase {
 			'the performance budget and the security model',
 			'A-1 grade; F-35',
 			'docs/development.md and docs/testing.md',
+			'the architecture-overview.md and docs/architecture-tour.md pages',
+			'https://developer.wordpress.org/plugins/architecture/',
+			'a stock location SKU-B-01',
+			'the performance.md and security.md pages of a public manual',
+			'"_readme": "https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies"',
 		);
 
 		foreach ( $ordinary as $text ) {
