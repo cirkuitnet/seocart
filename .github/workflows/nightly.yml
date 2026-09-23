@@ -24,13 +24,11 @@ concurrency:
     group: ${{ github.workflow }}
     cancel-in-progress: true
 
-env:
-    PHP_VERSION: '8.4'
 
 jobs:
     # The pull-request matrix runs this cell too but lets it fail quietly. Here it fails
-    # loudly, because reporting it is the point of this run. No `php`: the cell runs on the
-    # version the plugin is developed on, which the reusable workflow declares.
+    # loudly, because reporting it is the point of this run. No `php`: the setup action
+    # supplies the version the plugin is developed on.
     wp-nightly:
         uses: ./.github/workflows/reusable-integration-tests.yml
         with:
@@ -46,13 +44,10 @@ jobs:
               with:
                   persist-credentials: false
 
-            - &setup-php
-              name: Set up PHP ${{ env.PHP_VERSION }}
-              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+            - name: Set up PHP and Composer
+              uses: ./.github/actions/setup-php-composer
               with:
-                  php-version: ${{ env.PHP_VERSION }}
-                  ini-file: development
-                  coverage: none
+                  install: none
 
             # Reads composer.lock, so nothing has to be installed. Covers runtime and
             # development packages, and fails on abandoned packages as well as advisories.
@@ -86,21 +81,10 @@ jobs:
         timeout-minutes: 10
         steps:
             - *checkout
-            - *setup-php
-
-            - name: Find the Composer cache directory
-              id: composer-cache
-              run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
-
-            - name: Cache Composer downloads
-              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+            - name: Set up PHP and Composer
+              uses: ./.github/actions/setup-php-composer
               with:
-                  path: ${{ steps.composer-cache.outputs.dir }}
-                  key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
-                  restore-keys: composer-${{ runner.os }}-
-
-            - name: Install Composer dependencies
-              run: composer install --no-interaction --no-progress --prefer-dist
+                  install: full
 
             - name: Check the licences of the runtime dependencies
               run: composer licenses:check

@@ -1,7 +1,8 @@
 #!/bin/sh
 #
-# Lints the GitHub Actions workflows and the CI scripts, and checks that every fact the
-# workflow files state more than once has one value.
+# Lints workflows and CI scripts, requires PHP/Composer setup through the local action,
+# checks third-party action pins in workflows and composite actions, and checks the
+# remaining shared facts (PHP floor, service images and Node.js version file).
 #
 # Usage: sh bin/ci/check-workflows.sh [root]
 #
@@ -13,15 +14,11 @@
 #   1. actionlint over .github/workflows/. With shellcheck on PATH, which check 2 needs
 #      anyway, actionlint also runs it over every `run:` block.
 #   2. shellcheck over bin/ci/*.sh.
-#   3. Agreement. Steps cannot be shared between workflow files without a composite
-#      action, so a few facts are stated once per file or once per job: PHP_VERSION,
-#      PHP_FLOOR, the pin of each third-party action, the image of a service container,
-#      the Composer cache key and the `composer install` line. This check is the
-#      set-equality companion of those parallel statements: each fact must have the same
-#      value wherever it is stated. It also requires every third-party action to be pinned
-#      to a full commit SHA with the version in a trailing comment, which actionlint does
-#      not look at, and every Node.js setup to read its version from .nvmrc, the one place
-#      that states it.
+#   3. Shared setup and agreement. Workflows cannot call setup-php or install Composer
+#      directly, or cache Composer outside the composite action. Every third-party action
+#      in workflows and composite actions needs a full commit SHA and a version comment.
+#      Repeated pins, the PHP matrix development version, PHP_FLOOR and service images
+#      must agree; Node.js setup reads .nvmrc.
 #
 # Needs actionlint (https://github.com/rhysd/actionlint) and shellcheck on PATH. POSIX sh
 # and awk: runs on the Ubuntu runner and on a developer machine alike.
@@ -65,7 +62,7 @@ step "actionlint ($# workflow files)"
 step 'shellcheck bin/ci/*.sh'
 shellcheck "$root"/bin/ci/*.sh || status=1
 
-step 'agreement of the facts stated in more than one place'
+step 'shared setup, action pins and remaining agreement'
 awk '
 	# Records the first statement of a fact and reports every later one that differs.
 	function note( key, value ) {
@@ -91,6 +88,18 @@ awk '
 		line = $0
 		sub( /^[ \t]*(-[ \t]+)?/, "", line )
 		sub( /[ \t]+$/, "", line )
+		is_workflow = FILENAME !~ /[\\\/]\.github[\\\/]actions[\\\/]/
+		if ( is_workflow && line ~ /^uses:[ \t]+shivammathur\/setup-php@/ ) {
+			printf "%s:%d: use ./.github/actions/setup-php-composer instead of direct setup-php\n", FILENAME, FNR
+			bad = 1
+		}
+		if ( is_workflow && line ~ /^(run:[ \t]+)?composer install([ \t]|$)/ ) {
+			printf "%s:%d: use ./.github/actions/setup-php-composer instead of direct composer install\n", FILENAME, FNR
+			bad = 1
+		}
+		if ( is_workflow && line ~ /^uses:[ \t]+actions\/cache@/ ) {
+			cache_at = FILENAME ":" FNR
+		}
 	}
 
 	line ~ /^uses:[ \t]/ {
@@ -133,7 +142,25 @@ awk '
 		next
 	}
 
-	line ~ /^(PHP_VERSION|PHP_FLOOR):/ {
+	# The PHP versions the unit-test matrix covers. The version the setup action falls back
+	# to, the one the plugin is developed on, must be one of them (checked at the end).
+	line ~ /^php: &php-versions \[/ {
+		matrix_at = FILENAME ":" FNR
+		count = split( line, parts, "\047" )
+		for ( i = 2; i <= count; i += 2 ) {
+			matrix_versions[ parts[ i ] ] = 1
+		}
+		next
+	}
+
+	! is_workflow && line ~ /^php-version:.*inputs.php-version \|\|/ {
+		split( line, parts, "\047" )
+		development_version = parts[ 2 ]
+		development_at      = FILENAME ":" FNR
+		next
+	}
+
+	line ~ /^PHP_FLOOR:/ {
 		key = line
 		sub( /:.*$/, "", key )
 		note( key, after_colon( line ) )
@@ -149,21 +176,28 @@ awk '
 	}
 
 	line ~ /^key:[ \t]+composer-/ {
-		note( "the Composer cache key", after_colon( line ) )
-		next
-	}
-
-	line ~ /^run:[ \t]+composer install/ {
-		command = after_colon( line )
-		sub( / --no-scripts$/, "", command )
-		note( "the composer install line (apart from --no-scripts)", command )
+		if ( is_workflow && cache_at != "" ) {
+			printf "%s:%d: use ./.github/actions/setup-php-composer instead of a direct Composer cache (%s)\n", FILENAME, FNR, cache_at
+			bad = 1
+		}
 		next
 	}
 
 	END {
+		if ( development_version == "" ) {
+			printf "the setup action states no development PHP version (php-version: ${{ inputs.php-version || \047<version>\047 }})\n"
+			bad = 1
+		} else if ( matrix_at == "" ) {
+			printf "no workflow declares the unit-test PHP matrix (php: &php-versions [...])\n"
+			bad = 1
+		} else if ( ! ( development_version in matrix_versions ) ) {
+			printf "%s: the unit-test PHP matrix does not include %s, the development version stated at %s\n", matrix_at, development_version, development_at
+			bad = 1
+		}
+
 		exit bad
 	}
-' "$@" || status=1
+' "$@" "$root"/.github/actions/*/action.yml || status=1
 
 if [ "$status" -ne 0 ]; then
 	printf '\ncheck-workflows: FAIL\n' >&2

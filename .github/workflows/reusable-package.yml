@@ -28,7 +28,6 @@ env:
     # The zip is built on the PHP floor (the README.md requirements table) and installed on
     # both the floor and the version the plugin is developed on.
     PHP_FLOOR: '8.3'
-    PHP_VERSION: '8.4'
     # Throwaway values for the MySQL service container of install-smoke. The container
     # exists for the length of one job and is reachable from nowhere else; these are not
     # secrets and are used for nothing but CI. bin/ci/install-smoke.sh reads them.
@@ -50,29 +49,11 @@ jobs:
               with:
                   persist-credentials: false
 
-            - name: Set up PHP ${{ env.PHP_FLOOR }}
-              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+            - name: Set up PHP and Composer
+              uses: ./.github/actions/setup-php-composer
               with:
                   php-version: ${{ env.PHP_FLOOR }}
-                  ini-file: development
-                  coverage: none
-
-            - name: Find the Composer cache directory
-              id: composer-cache
-              run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
-
-            - name: Cache Composer downloads
-              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-              with:
-                  path: ${{ steps.composer-cache.outputs.dir }}
-                  key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
-                  restore-keys: composer-${{ runner.os }}-
-
-            # With scripts: the post-install script runs Strauss, which writes the
-            # vendor-scoped/ directory that ships in the zip. Strauss is a development
-            # dependency, so this is a full install; vendor/ itself never enters the zip.
-            - name: Install Composer dependencies
-              run: composer install --no-interaction --no-progress --prefer-dist
+                  install: full
 
             - name: Set up Node from .nvmrc
               uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -111,12 +92,10 @@ jobs:
             # its classes by path and loads no autoloader, so nothing is installed here.
             - *checkout
 
-            - name: Set up PHP ${{ env.PHP_VERSION }}
-              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+            - name: Set up PHP and Composer
+              uses: ./.github/actions/setup-php-composer
               with:
-                  php-version: ${{ env.PHP_VERSION }}
-                  ini-file: development
-                  coverage: none
+                  install: none
 
             - &download-zip
               name: Download the zip
@@ -192,14 +171,13 @@ jobs:
             - *checkout
 
             # WP-CLI creates the site and installs the zip; WordPress needs mysqli.
-            - name: Set up PHP ${{ matrix.php == 'PHP floor' && env.PHP_FLOOR || env.PHP_VERSION }}
-              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+            - name: Set up PHP and Composer
+              uses: ./.github/actions/setup-php-composer
               with:
-                  php-version: ${{ matrix.php == 'PHP floor' && env.PHP_FLOOR || env.PHP_VERSION }}
+                  php-version: ${{ matrix.php == 'PHP floor' && env.PHP_FLOOR || '' }}
                   extensions: mysqli
-                  ini-file: development
-                  coverage: none
                   tools: wp-cli
+                  install: none
 
             - *download-zip
 

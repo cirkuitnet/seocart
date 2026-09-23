@@ -20,10 +20,9 @@
 # integration-tests cells, js-lint-test, and the four "package / …" jobs. The WordPress
 # nightly cells are informational.
 #
-# PHP_VERSION, the action pins and the Composer install line are stated in more than one
-# workflow file, because steps cannot be shared between files without a composite action.
-# bin/ci/check-workflows.sh (the workflow-lint job) fails when any two statements of one
-# of those facts disagree. The Node.js version is stated once, in .nvmrc.
+# The local setup action owns the development PHP version and Composer installation.
+# bin/ci/check-workflows.sh keeps these steps in the action and checks action pins.
+# The Node.js version is stated once, in .nvmrc.
 
 name: CI
 
@@ -42,10 +41,6 @@ concurrency:
     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-    # The version the plugin is developed on. The matrices below cover the rest.
-    PHP_VERSION: '8.4'
-
 jobs:
     lint-php:
         runs-on: ubuntu-24.04
@@ -57,35 +52,16 @@ jobs:
               with:
                   persist-credentials: false
 
-            - &setup-php
-              name: Set up PHP ${{ env.PHP_VERSION }}
-              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
-              with:
-                  php-version: ${{ env.PHP_VERSION }}
-                  ini-file: development
-                  coverage: none
-
-            - &composer-cache-dir
-              name: Find the Composer cache directory
-              id: composer-cache
-              run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
-
-            - &composer-cache
-              name: Cache Composer downloads
-              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-              with:
-                  path: ${{ steps.composer-cache.outputs.dir }}
-                  key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
-                  restore-keys: composer-${{ runner.os }}-
-
-            - name: Validate composer.json
-              run: composer validate --strict
-
             # Without scripts: a syntax check and PHP_CodeSniffer read files and never load a
             # class, so they do not need vendor-scoped/. Composer plugins still run, which is
             # what registers the coding standards with PHP_CodeSniffer.
-            - name: Install Composer dependencies
-              run: composer install --no-interaction --no-progress --prefer-dist --no-scripts
+            - name: Set up PHP and Composer
+              uses: ./.github/actions/setup-php-composer
+              with:
+                  install: no-scripts
+
+            - name: Validate composer.json
+              run: composer validate --strict
 
             - name: Check PHP syntax
               run: composer lint:php
@@ -99,15 +75,11 @@ jobs:
         timeout-minutes: 10
         steps:
             - *checkout
-            - *setup-php
-            - *composer-cache-dir
-            - *composer-cache
-
-            # With scripts: the post-install script runs Strauss, which writes vendor-scoped/,
-            # the only copy of the runtime libraries the plugin ever loads.
-            - &composer-install
-              name: Install Composer dependencies
-              run: composer install --no-interaction --no-progress --prefer-dist
+            - &setup-php-full
+              name: Set up PHP and Composer
+              uses: ./.github/actions/setup-php-composer
+              with:
+                  install: full
 
             - name: Run PHPStan
               run: composer stan
@@ -121,10 +93,7 @@ jobs:
         timeout-minutes: 10
         steps:
             - *checkout
-            - *setup-php
-            - *composer-cache-dir
-            - *composer-cache
-            - *composer-install
+            - *setup-php-full
 
             - name: Run the DRY and compliance sniffs
               run: composer cs:dry
@@ -143,10 +112,7 @@ jobs:
         timeout-minutes: 10
         steps:
             - *checkout
-            - *setup-php
-            - *composer-cache-dir
-            - *composer-cache
-            - *composer-install
+            - *setup-php-full
 
             - name: Check that generated documents match their sources
               run: composer docs:check
@@ -161,10 +127,7 @@ jobs:
         timeout-minutes: 10
         steps:
             - *checkout
-            - *setup-php
-            - *composer-cache-dir
-            - *composer-cache
-            - *composer-install
+            - *setup-php-full
 
             - name: Run the WordPress.org directory checks
               run: composer wporg:check
@@ -184,16 +147,12 @@ jobs:
         steps:
             - *checkout
 
-            - name: Set up PHP ${{ matrix.php }}
-              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+            - name: Set up PHP and Composer
+              uses: ./.github/actions/setup-php-composer
               with:
                   php-version: ${{ matrix.php }}
-                  ini-file: development
-                  coverage: none
+                  install: full
 
-            - *composer-cache-dir
-            - *composer-cache
-            - *composer-install
 
             # The syntax check runs on every supported PHP version, not only in lint-php.
             - name: Check PHP syntax
@@ -258,7 +217,7 @@ jobs:
               run: npm run test:e2e:selftest
 
     # actionlint (which runs shellcheck over every `run:` block), shellcheck over bin/ci/,
-    # and the agreement of the facts that more than one workflow file states. All three
+    # and the shared setup, pins and remaining agreement rules. All three
     # are in the script, which runs the same way on a developer machine.
     workflow-lint:
         runs-on: ubuntu-24.04

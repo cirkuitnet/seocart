@@ -1,0 +1,63 @@
+# Sets up PHP and installs the Composer dependencies.
+#
+# The one fact this action owns: how a job of this repository gets PHP and vendor/. That is
+# the setup-php options, the Composer cache key, the `composer install` flags, and the PHP
+# version a job runs on when it names none (the version the plugin is developed on).
+# Every workflow job that needs PHP calls it after its checkout step.
+
+name: Set up PHP and Composer
+description: Sets up PHP, restores the Composer download cache and installs the dependencies.
+
+inputs:
+    php-version:
+        description: 'PHP version. Left out or empty: the version the plugin is developed on.'
+        required: false
+        default: ''
+    extensions:
+        description: 'Extra PHP extensions, for example "mysqli".'
+        required: false
+        default: ''
+    tools:
+        description: 'Extra tools for setup-php to install, for example "wp-cli".'
+        required: false
+        default: ''
+    install:
+        description: '"full" runs the Composer scripts (Strauss writes vendor-scoped/); "no-scripts" skips them; "none" installs nothing.'
+        required: false
+        default: full
+
+runs:
+    using: composite
+    steps:
+        - name: Set up PHP
+          uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+          with:
+              php-version: ${{ inputs.php-version || '8.4' }}
+              extensions: ${{ inputs.extensions }}
+              tools: ${{ inputs.tools }}
+              ini-file: development
+              coverage: none
+
+        - name: Find the Composer cache directory
+          if: ${{ inputs.install != 'none' }}
+          id: composer-cache
+          shell: bash
+          run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+        - name: Cache Composer downloads
+          if: ${{ inputs.install != 'none' }}
+          uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          with:
+              path: ${{ steps.composer-cache.outputs.dir }}
+              key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+              restore-keys: composer-${{ runner.os }}-
+
+        - name: Install Composer dependencies
+          if: ${{ inputs.install == 'full' }}
+          shell: bash
+          run: composer install --no-interaction --no-progress --prefer-dist
+
+        - name: Install Composer dependencies without running scripts
+          if: ${{ inputs.install == 'no-scripts' }}
+          shell: bash
+          run: composer install --no-interaction --no-progress --prefer-dist --no-scripts

@@ -128,6 +128,28 @@ server_evidence() {
 	tail -n 40 "$work/server.log" >&2 || true
 	printf 'install-smoke: the end of the debug log:\n' >&2
 	tail -n 20 "$log" >&2 2>/dev/null || true
+
+	# The server's process and any children: a worker that died, or one still busy with the
+	# request, shows here. PHP_CLI_SERVER_WORKERS would make the server fork workers.
+	printf 'install-smoke: PHP_CLI_SERVER_WORKERS=%s; the server process and its children:\n' "${PHP_CLI_SERVER_WORKERS:-unset}" >&2
+	if [ -n "$server_pid" ]; then
+		ps -A -o pid= -o ppid= -o stat= -o etime= -o args= 2>/dev/null |
+			awk -v pid="$server_pid" '$1 == pid || $2 == pid' >&2 || true
+	fi
+
+	# A segfault in any PHP process lands in the kernel log. Best effort: it needs sudo
+	# without a password, which the hosted runner has and a developer machine may not.
+	printf 'install-smoke: the end of the kernel log (best effort):\n' >&2
+	sudo -n dmesg 2>/dev/null | tail -n 20 >&2 || true
+
+	# Whether the request was only slow: the server logs its response and "Closing" when it
+	# finishes. A blocking request from WordPress to this single-threaded server would show
+	# up as a response logged later, or as a follow-up request that is not answered either.
+	sleep 5
+	printf 'install-smoke: the server log five seconds later:\n' >&2
+	tail -n 10 "$work/server.log" >&2 || true
+	printf 'install-smoke: a follow-up request for a static file: HTTP %s\n' \
+		"$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "$url/license.txt" 2>&1 || true)" >&2
 }
 
 # Loads WordPress once through WP-CLI and once over HTTP. Both must succeed.

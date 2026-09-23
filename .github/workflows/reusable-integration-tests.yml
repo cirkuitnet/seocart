@@ -30,9 +30,6 @@ permissions:
     contents: read
 
 env:
-    # The version the plugin is developed on: what a caller gets when it names no version.
-    # A caller cannot pass its own `env` to a reusable workflow, so the default lives here.
-    PHP_VERSION: '8.4'
     # Throwaway values for the MySQL service container below. The container exists for the
     # length of one job and is reachable from nowhere else; these are not secrets and are
     # used for nothing but CI. bin/ci/prepare-integration.sh reads them.
@@ -68,33 +65,22 @@ jobs:
               with:
                   persist-credentials: false
 
-            - name: Set up PHP ${{ inputs.php || env.PHP_VERSION }}
-              uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+            - name: Set up PHP and Composer
+              uses: ./.github/actions/setup-php-composer
               with:
-                  php-version: ${{ inputs.php || env.PHP_VERSION }}
+                  php-version: ${{ inputs.php }}
                   extensions: mysqli
-                  ini-file: development
-                  coverage: none
                   tools: wp-cli
+                  install: full
 
-            - name: Find the Composer cache directory
-              id: composer-cache
-              run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+            # Nightly uses the master test library built from WordPress trunk. Other cells
+            # keep the library pinned in composer.lock; the nightly workspace change is local.
+            - name: Match the WordPress nightly test library to trunk
+              if: ${{ inputs.wp == 'nightly' }}
+              run: |
+                  composer require --dev wp-phpunit/wp-phpunit:dev-master --no-interaction --no-progress --prefer-dist --no-scripts
+                  composer show wp-phpunit/wp-phpunit | grep -E '^(versions|source) *:'
 
-            - name: Cache Composer downloads
-              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-              with:
-                  path: ${{ steps.composer-cache.outputs.dir }}
-                  key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
-                  restore-keys: composer-${{ runner.os }}-
-
-            # With scripts: the plugin loads its libraries from vendor-scoped/.
-            - name: Install Composer dependencies
-              run: composer install --no-interaction --no-progress --prefer-dist
-
-            # The locked wp-phpunit package supplies the 7.1.x test library for every core
-            # version. The CI nightly cell therefore runs newer core against that library and
-            # is advisory (continue-on-error); matching the library to core is a follow-up.
             - name: Download WordPress and write the test configuration
               run: sh bin/ci/prepare-integration.sh "$WP_VERSION"
               env:
