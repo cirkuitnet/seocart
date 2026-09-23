@@ -1,0 +1,53 @@
+<?php
+/**
+ * OwnedData: the production list of what each module owns in a site
+ *
+ * @package SEOCart
+ * @since   0.1.0
+ * @license GPL-3.0-or-later
+ */
+
+declare( strict_types=1 );
+
+namespace SEOCart\Platform\DataRegistry;
+
+use SEOCart\Platform\Authorization\CapabilityDeclaration;
+use SEOCart\Platform\Database\Migrations\PlatformBootstrapMigration;
+use SEOCart\Platform\Database\Schema\PlatformTables;
+
+defined( 'ABSPATH' ) || exit;
+
+/**
+ * Builds the data registry the plugin runs with.
+ *
+ * Owns one fact: which modules contribute what to the site. The kernel reads this registry to
+ * install each site and to know what exists at uninstall, `doctor --residue` reads it, and the
+ * coverage tests apply its migrations to an empty database and compare the result with its
+ * tables, so all of them see the same list. There is no second one.
+ *
+ * A module adds one line: a Contribution naming its tables beside the migrations that create
+ * them, and its options and job groups, for example
+ *
+ *     new Contribution( tables: array( ExampleTable::definition() ), migrations: array( new CreateExampleTable() ) ),
+ *
+ * Capabilities and roles are not contributed: the registry takes the capability declaration
+ * whole.
+ *
+ * @since 0.1.0
+ */
+final class OwnedData {
+
+	/**
+	 * Returns a new registry of everything the plugin owns in a site. Calls no WordPress function.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return DataRegistry The registry.
+	 */
+	public static function registry(): DataRegistry {
+		return new DataRegistry(
+			new CapabilityDeclaration(),
+			new Contribution( tables: array( PlatformTables::migrations(), PlatformTables::locks() ), migrations: array( new PlatformBootstrapMigration() ) ),
+		);
+	}
+}

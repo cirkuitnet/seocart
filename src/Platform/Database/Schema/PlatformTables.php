@@ -35,7 +35,7 @@ final class PlatformTables {
 		return new TableDefinition(
 			'migrations',
 			'Platform',
-			'Records every migration this site has run, with its state, checksum, timing and the post-conditions it verified.',
+			'Records every migration this site has run, with its state, checksum, timing and the post-conditions it verified; rows are kept permanently because the migrator reads them to decide what still has to run, and a deleted row would run its migration again.',
 			MutationPattern::MutableTransactional,
 			array(
 				new ColumnSpec( 'id', 'bigint unsigned', Classification::Public, 'Surrogate key.', autoIncrement: true ),
@@ -78,7 +78,7 @@ final class PlatformTables {
 		return new TableDefinition(
 			'locks',
 			'Platform',
-			'Lease-based advisory locks for hosts where GET_LOCK cannot be trusted.',
+			'Lease-based advisory locks for hosts where GET_LOCK cannot be trusted; rows are kept permanently because there is one per lock name, a small fixed set, and only the lease a row holds expires.',
 			MutationPattern::MutableTransactional,
 			array(
 				new ColumnSpec( 'name', 'varchar(191)', Classification::Public, 'The lock name, for example schema.', collation: 'ascii_bin' ),

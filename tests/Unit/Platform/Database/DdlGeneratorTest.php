@@ -128,7 +128,7 @@ final class DdlGeneratorTest extends TestCase {
 			array(
 				new ColumnSpec( 'id', 'bigint unsigned', Classification::Public, 'Key.', autoIncrement: true ),
 				new ColumnSpec( 'uuid', 'char(36)', Classification::Public, 'Public id.', collation: 'ascii_bin' ),
-				new ColumnSpec( 'name', 'varchar(191)', Classification::Pii, 'A name.', defaultValue: '' ),
+				new ColumnSpec( 'name', 'varchar(191)', Classification::Pii, 'A name.', defaultValue: '', erasure: ColumnSpec::ERASE_DESTROY ),
 				new ColumnSpec( 'price_minor', 'bigint', Classification::Financial, 'Minor units.', defaultValue: '0' ),
 				new ColumnSpec( 'note', 'longtext', Classification::Public, 'Free text.', nullable: true ),
 				new ColumnSpec( 'created_at', 'datetime(6)', Classification::Public, 'UTC.' ),
