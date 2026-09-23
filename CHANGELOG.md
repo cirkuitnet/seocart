@@ -94,3 +94,9 @@ releasable.
   details go to the error log. Every operation response is sent with
   `Cache-Control: no-store, private`, plus `Vary: Cookie` when the request was
   cookie-authenticated.
+- Domain events and a transactional outbox, not yet wired into the plugin. An event that
+  must not be lost is stored in the same transaction as the change that raised it and is
+  delivered after the commit, at least once, as a `seocart_` action, with each listener
+  contained so one failure cannot stop the others. A delivery that fails is retried after
+  1, 4, 16 and 60 minutes, then parked. `wp seocart outbox drain|status|prune` runs and
+  inspects delivery.
