@@ -58,3 +58,8 @@ releasable.
   `CODE_OF_CONDUCT.md`, issue templates and a pull request template that
   carries the definition of done.
 - Developer documentation under `docs/`: development setup, testing and releasing.
+- The capability model, not yet installed on activation: fine-grained `seocart_`
+  capabilities that fail closed, role bundles for store staff and customers with an
+  installer that never re-grants a capability a merchant removed, the product post type's
+  capability map, one `map_meta_cap` callback, and a test that fails when a SEOCart REST
+  route does not use the plugin's permission callback.
