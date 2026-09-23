@@ -11,9 +11,11 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Database;
 
+use PHPUnit\Framework\AssertionFailedError;
 use SEOCart\Platform\Database\Exception\ForbiddenInsideTransaction;
 use SEOCart\Platform\Database\Exception\LockLost;
 use SEOCart\Platform\Database\Exception\LockNotAcquired;
+use SEOCart\Platform\Database\Exception\QueryFailed;
 use SEOCart\Platform\Database\Lease;
 use SEOCart\Platform\Database\LockMode;
 use SEOCart\Platform\Database\LockProbe;
@@ -31,7 +33,7 @@ use SEOCart\Tests\Support\SecondConnection;
  *
  * Connection B plays the other runner. The table-mode sleeper is the barrier: whatever B must
  * do between two attempts, it does inside the sleeper. In GetLock mode B waits inside the
- * server, asynchronously, and the test asks whether it is still blocked without waiting.
+ * server, asynchronously, and the test waits until the server shows it waiting.
  *
  * Each test names its planted violation, in src/Platform/Database/LockService.php or Lease.php.
  *
@@ -163,7 +165,38 @@ final class LockServiceTest extends DatabaseTestCase {
 	}
 
 	/**
+	 * A lease that has expired is not renewed, even while no other runner has reclaimed it yet.
+	 *
+	 * Planted violation: in Lease::renew(), drop `AND expires_at > UTC_TIMESTAMP(6)`.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_expired_lease_is_not_renewed(): void {
+		$b     = $this->secondConnection();
+		$lease = $this->tableLocks()->acquire( self::NAME, 60, 0 );
+
+		$b->query( sprintf( "UPDATE `%s` SET expires_at = UTC_TIMESTAMP(6) - INTERVAL 1 SECOND WHERE name = '%s'", $this->locksTable(), self::NAME ) );
+
+		$expired = $this->lockRow( $b )['expires_at'];
+
+		try {
+			$lease->renew();
+			$this->fail( 'An expired lease must not be renewed.' );
+		} catch ( LockLost $lost ) {
+			$this->assertSame( LockLost::EXPIRED, $lost->context()['reason'] );
+		}
+
+		$row = $this->lockRow( $b );
+
+		$this->assertSame( $lease->token(), $row['owner_token'], 'Nobody has reclaimed it yet.' );
+		$this->assertSame( $expired, $row['expires_at'], 'The expired lease was not extended.' );
+	}
+
+	/**
 	 * In GetLock mode the lock belongs to wpdb's connection, and B, waiting inside the server, gets it on release.
+	 *
+	 * The server itself must show B waiting on the user lock before A releases, so the test cannot
+	 * pass on a B whose GET_LOCK simply had not arrived yet.
 	 *
 	 * Planted violation: in Lease::release(), skip the RELEASE_LOCK statement. B then stays
 	 * blocked and isReady( 2000 ) fails; the pass path never waits.
@@ -177,9 +210,11 @@ final class LockServiceTest extends DatabaseTestCase {
 
 		$this->assertSame( (string) $this->db->threadId(), $b->fetchValue( "SELECT IS_USED_LOCK( '{$server}' )" ) );
 
-		$b->queryAsync( "SELECT GET_LOCK( '{$server}', 10 )" );
+		$waiting = "SELECT GET_LOCK( '{$server}', 10 )";
 
-		$this->assertFalse( $b->isReady( 0 ), 'B must be waiting inside the server.' );
+		$b->queryAsync( $waiting );
+
+		$this->awaitWaiting( $b, $waiting, 'User lock' );
 
 		$lease->release();
 
@@ -301,6 +336,58 @@ final class LockServiceTest extends DatabaseTestCase {
 
 		$this->assertSame( '1', $b->fetchValue( "SELECT GET_LOCK( '{$fixed}', 0 )" ) );
 		$this->assertSame( LockMode::GetLock, LockProbe::run( $this->db ) );
+	}
+
+	/**
+	 * The probe releases its lock when a check after GET_LOCK fails, and still answers Table.
+	 *
+	 * Planted violation: in LockProbe::decide(), delete the release in the finally block.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_probe_releases_its_lock_when_a_later_check_fails(): void {
+		$b    = $this->secondConnection();
+		$name = LockService::serverLockName( $this->db->databaseName(), $this->db->prefix(), 'lock_probe_failing' );
+
+		$mode = LockProbe::decide(
+			'localhost',
+			$this->db->threadId(),
+			function ( string $sql ) use ( $name ): mixed {
+				if ( str_starts_with( $sql, 'SELECT IS_USED_LOCK' ) ) {
+					throw QueryFailed::fromErrno( 1142, '42000', 'SELECT IS_USED_LOCK', 'the holder check failed', false );
+				}
+
+				return $this->db->fetchValue( $sql, $name );
+			}
+		);
+
+		$this->assertSame( LockMode::Table, $mode );
+		$this->assertNull( $b->fetchValue( "SELECT IS_USED_LOCK( '{$name}' )" ), 'The probe lock is free again.' );
+	}
+
+	/**
+	 * The waiting barrier refuses a B that is not blocked: it fails the test instead of passing it.
+	 *
+	 * Planted violation: in DatabaseTestCase::awaitWaiting(), return as soon as the process list shows B at all.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_waiting_barrier_refuses_a_statement_that_is_not_blocked(): void {
+		$b       = $this->secondConnection();
+		$free    = "SELECT GET_LOCK( '{$this->serverName()}', 10 )";
+		$refused = null;
+
+		$b->queryAsync( $free );
+
+		try {
+			$this->awaitWaiting( $b, $free, 'User lock' );
+		} catch ( AssertionFailedError $failed ) {
+			$refused = $failed->getMessage();
+		}
+
+		$this->assertNotNull( $refused, 'Nothing holds the lock, so B never waits, and the barrier must say so.' );
+		$this->assertStringContainsString( 'it was never blocked', (string) $refused );
+		$this->assertSame( '1', $b->reap() );
 	}
 
 	/**

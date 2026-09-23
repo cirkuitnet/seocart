@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Database;
 
+use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Exception\DuplicateKey;
 use SEOCart\Platform\Database\Exception\ForbiddenInsideTransaction;
 use SEOCart\Platform\Database\Exception\QueryFailed;
@@ -751,9 +752,12 @@ final class TransactionTest extends DatabaseTestCase {
 				$this->db->execute( "UPDATE %i SET value = 'a' WHERE id = 1", $this->rowsTable() );
 
 				if ( 1 === $attempts ) {
-					$b->queryAsync( sprintf( "UPDATE `%s` SET value = 'b' WHERE id = 1", $this->rowsTable() ) );
+					$waiting = sprintf( "UPDATE `%s` SET value = 'b' WHERE id = 1", $this->rowsTable() );
 
-					$this->assertFalse( $b->isReady( 0 ), 'B must be waiting for A\'s lock on row 1.' );
+					$b->queryAsync( $waiting );
+
+					// B must be waiting for A's lock on row 1, as the server sees it.
+					$this->awaitWaiting( $b, $waiting, 'updating' );
 				}
 
 				try {
@@ -832,9 +836,12 @@ final class TransactionTest extends DatabaseTestCase {
 				function () use ( $b ): void {
 					$this->db->execute( "UPDATE %i SET value = 'a' WHERE id = 1", $this->rowsTable() );
 
-					$b->queryAsync( sprintf( "UPDATE `%s` SET value = 'b' WHERE id = 1", $this->rowsTable() ) );
+					$waiting = sprintf( "UPDATE `%s` SET value = 'b' WHERE id = 1", $this->rowsTable() );
 
-					$this->assertFalse( $b->isReady( 0 ), 'B must be waiting for A\'s lock on row 1.' );
+					$b->queryAsync( $waiting );
+
+					// B must be waiting for A's lock on row 1, as the server sees it.
+					$this->awaitWaiting( $b, $waiting, 'updating' );
 
 					try {
 						$this->db->execute( "UPDATE %i SET value = 'a' WHERE id = 2", $this->rowsTable() );
@@ -1210,6 +1217,65 @@ final class TransactionTest extends DatabaseTestCase {
 		$this->assertSame( 'database.query_failed', $this->reports[0]['code'] );
 		$this->assertSame( 'ROLLBACK', $this->reports[0]['context']['statement'] );
 		$this->assertSame( 0, $this->db->depth() );
+	}
+
+	/**
+	 * A failed ROLLBACK whose report throws still leaves the wrapper outside any transaction, ready for the next one.
+	 *
+	 * The reporter throws here the way a process dies there. Whatever it does, the levels are
+	 * closed and the after-rollback callbacks run, so the next transaction() opens a fresh one
+	 * instead of a savepoint inside a unit of work that no longer exists.
+	 *
+	 * Planted violation: in abandon(), reset the state after the ROLLBACK and its report instead of in a finally block.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_failed_rollback_whose_report_throws_leaves_no_transaction_open(): void {
+		global $wpdb;
+
+		$b          = $this->secondConnection();
+		$break      = static fn( $query ) => 'ROLLBACK' === $query ? 'ROLLBACK_THE_SERVER_REFUSES' : $query;
+		$rolledBack = 0;
+		$caught     = null;
+		$db         = new Database(
+			$wpdb,
+			true,
+			static function ( string $code ): void {
+				throw new \RuntimeException( 'the reporter failed on ' . $code );
+			},
+			5,
+			$this->sleeper(),
+			$this->randomSource()
+		);
+
+		add_filter( 'query', $break );
+
+		try {
+			$db->transaction(
+				static function () use ( $db, &$rolledBack ): void {
+					$db->afterRollback(
+						static function () use ( &$rolledBack ): void {
+							++$rolledBack;
+						}
+					);
+
+					throw new \DomainException( 'the work failed' );
+				}
+			);
+		} catch ( \RuntimeException $reporterFailed ) {
+			$caught = $reporterFailed->getMessage();
+		} finally {
+			remove_filter( 'query', $break );
+			$wpdb->query( 'ROLLBACK' );
+		}
+
+		$this->assertSame( 'the reporter failed on database.query_failed', $caught, 'The reporter\'s failure propagates.' );
+		$this->assertSame( 0, $db->depth(), 'No level is left open.' );
+		$this->assertSame( 1, $rolledBack, 'The after-rollback callbacks ran.' );
+
+		$db->transaction( fn() => $db->execute( 'INSERT INTO %i ( id, value ) VALUES ( %d, %s )', $this->rowsTable(), 7, 'after the failed rollback' ) );
+
+		$this->assertSame( 1, $this->committedRows( $b, 'id = 7' ), 'The next transaction commits.' );
 	}
 
 	/**

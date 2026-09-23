@@ -58,6 +58,24 @@ abstract class DatabaseTestCase extends WP_UnitTestCase {
 	protected const ROWS = 'test_rows';
 
 	/**
+	 * How long awaitWaiting() gives the server to show B waiting before it fails the test, in milliseconds.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const WAITING_DEADLINE_MS = 5000;
+
+	/**
+	 * How long awaitWaiting() watches B's socket between two looks at the process list, in milliseconds.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const WAITING_LOOK_MS = 5;
+
+	/**
 	 * The wrapper under test, over the real `$wpdb`, with strict guards.
 	 *
 	 * @since 0.1.0
@@ -110,6 +128,15 @@ abstract class DatabaseTestCase extends WP_UnitTestCase {
 	 * @var list<SecondConnection>
 	 */
 	private array $connections = array();
+
+	/**
+	 * The connection awaitWaiting() reads the process list on, opened on first use.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var SecondConnection|null
+	 */
+	private ?SecondConnection $observer = null;
 
 	/**
 	 * The plugin tables that existed before the test.
@@ -188,6 +215,7 @@ abstract class DatabaseTestCase extends WP_UnitTestCase {
 		}
 
 		$this->connections = array();
+		$this->observer    = null;
 
 		// Whatever the test left open on wpdb's connection ends here; DROP would commit it anyway.
 		$wpdb->query( 'ROLLBACK' );
@@ -289,6 +317,48 @@ abstract class DatabaseTestCase extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Returns once the server shows B's asynchronous statement waiting, and fails the test otherwise.
+	 *
+	 * A bare isReady( 0 ) cannot tell "blocked in the server" from "not answered yet": right after
+	 * queryAsync() the statement may not even have reached the server. So this asks the server.
+	 * Another connection of the same MySQL user reads B's row of information_schema.PROCESSLIST
+	 * (a user sees its own threads without the PROCESS privilege) until the row shows the very
+	 * statement B sent, still running, in the given state; then B must still have no answer one
+	 * look later. Between two looks it waits on B's socket, never on a pause: if B answers first,
+	 * B was never blocked and the test fails. The deadline fails the test too; it never passes it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param SecondConnection $b     Connection B, with an asynchronous statement in flight.
+	 * @param string           $sql   The statement B sent, exactly.
+	 * @param string           $state The process-list state of the wait, compared without case: `User lock`
+	 *                                for GET_LOCK, `updating` for an UPDATE waiting for a row lock.
+	 */
+	protected function awaitWaiting( SecondConnection $b, string $sql, string $state ): void {
+		$this->observer ??= $this->secondConnection();
+
+		$query    = sprintf( 'SELECT COMMAND, STATE, INFO FROM information_schema.PROCESSLIST WHERE ID = %d', $b->threadId() );
+		$deadline = hrtime( true ) + self::WAITING_DEADLINE_MS * 1000000;
+
+		while ( true ) {
+			$row     = $this->observer->fetchRow( $query );
+			$waiting = null !== $row && 'Query' === $row['COMMAND'] && $sql === $row['INFO'] && 0 === strcasecmp( $state, (string) $row['STATE'] );
+
+			if ( $b->isReady( self::WAITING_LOOK_MS ) ) {
+				$this->fail( sprintf( 'B answered while the server showed %s: it was never blocked.', (string) wp_json_encode( $row ) ) );
+			}
+
+			if ( $waiting ) {
+				return;
+			}
+
+			if ( hrtime( true ) >= $deadline ) {
+				$this->fail( sprintf( 'The server did not show B waiting (%s) within %d ms; last seen: %s.', $state, self::WAITING_DEADLINE_MS, (string) wp_json_encode( $row ) ) );
+			}
+		}
+	}
+
+	/**
 	 * Returns the full name of the fixture table.
 	 *
 	 * @since 0.1.0
@@ -348,11 +418,15 @@ abstract class DatabaseTestCase extends WP_UnitTestCase {
 	/**
 	 * Creates the fixture table `{prefix}seocart_test_rows` as a real InnoDB table.
 	 *
+	 * A run that died before its tear_down() leaves the table behind, so it is dropped first:
+	 * one broken run must not fail the next one.
+	 *
 	 * @since 0.1.0
 	 */
 	private function createRowsTable(): void {
 		global $wpdb;
 
+		$wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', $this->rowsTable() ) );
 		$wpdb->query(
 			$wpdb->prepare(
 				"CREATE TABLE %i ( id bigint unsigned NOT NULL, value varchar(100) NOT NULL DEFAULT '', n int NOT NULL DEFAULT 0, PRIMARY KEY (id) ) ENGINE=InnoDB",

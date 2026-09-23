@@ -640,16 +640,13 @@ final class Database implements TransactionManager {
 	 *
 	 * ROLLBACK is sent even when the unit of work was already ended; it is harmless then. A
 	 * failure of the ROLLBACK itself is reported, never thrown, so the original failure wins.
+	 * The rest runs in a finally block, whatever the ROLLBACK or the reporter does: a wrapper
+	 * left at depth 1 would turn every later transaction() into a savepoint of a unit of work
+	 * that no longer exists, and its guards would refuse every later statement.
 	 *
 	 * @since 0.1.0
 	 */
 	private function abandon(): void {
-		try {
-			$this->control( 'ROLLBACK', false );
-		} catch ( DatabaseException $failure ) {
-			( $this->report )( (string) $failure->errorCode()->value, array( 'statement' => 'ROLLBACK' ) + $failure->context() );
-		}
-
 		$keys      = array();
 		$callbacks = array();
 
@@ -658,9 +655,15 @@ final class Database implements TransactionManager {
 			$callbacks = array_merge( $callbacks, $level['rollback'] );
 		}
 
-		$this->reset();
-		$this->flush( $keys );
-		$this->runAfterRollback( $callbacks );
+		try {
+			$this->control( 'ROLLBACK', false );
+		} catch ( DatabaseException $failure ) {
+			( $this->report )( (string) $failure->errorCode()->value, array( 'statement' => 'ROLLBACK' ) + $failure->context() );
+		} finally {
+			$this->reset();
+			$this->flush( $keys );
+			$this->runAfterRollback( $callbacks );
+		}
 	}
 
 	/**

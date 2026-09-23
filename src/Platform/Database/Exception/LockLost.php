@@ -16,7 +16,7 @@ use SEOCart\Platform\Database\DatabaseError;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * The lease expired and was reclaimed, or the connection that held the server lock is gone.
+ * The table lease expired, or the connection that held the server lock is gone.
  *
  * Owns one fact: that the holder must stop at once, because another runner may already be
  * doing the same work. Lease::renew() raises it before every step of long work, with the lock
@@ -63,11 +63,11 @@ final class LockLost extends DatabaseException {
 	public const NOT_HELD = 'not_held';
 
 	/**
-	 * Reason: the table lease expired and another runner reclaimed it.
+	 * Reason: the table lease expired; another runner may already have reclaimed it.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const RECLAIMED = 'reclaimed';
+	public const EXPIRED = 'expired';
 }

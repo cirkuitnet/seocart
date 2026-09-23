@@ -42,7 +42,8 @@ final class LockProbe {
 	private const PROBE_LOCK = 'lock_probe';
 
 	/**
-	 * Runs the probe on the live connection. Sends at most three statements.
+	 * Runs the probe on the live connection. Sends at most four statements; the fourth is a second
+	 * RELEASE_LOCK, only when a check after GET_LOCK failed.
 	 *
 	 * The lock name ends with a nonce, random unless given, so two probes running at once on the
 	 * same site never take each other's lock for a sign that GET_LOCK cannot be trusted.
@@ -82,19 +83,44 @@ final class LockProbe {
 			return LockMode::Table;
 		}
 
+		$held = false;
+
 		try {
 			if ( '1' !== self::answer( $fetchValue( 'SELECT GET_LOCK( %s, 0 )' ) ) ) {
 				return LockMode::Table;
 			}
 
-			// Always released below, even when the holder check fails, so the probe leaves nothing behind.
+			$held = true;
+
 			$holder   = self::answer( $fetchValue( 'SELECT IS_USED_LOCK( %s )' ) );
 			$released = self::answer( $fetchValue( 'SELECT RELEASE_LOCK( %s )' ) );
+			$held     = false;
 		} catch ( QueryFailed $failed ) {
 			return LockMode::Table;
+		} finally {
+			// The probe leaves nothing behind: a lock it took is released even when a later check failed.
+			if ( $held ) {
+				self::releaseQuietly( $fetchValue );
+			}
 		}
 
 		return ( (string) $threadId === $holder && '1' === $released ) ? LockMode::GetLock : LockMode::Table;
+	}
+
+	/**
+	 * Releases the probe lock after a failed check, best-effort: the probe has already chosen Table.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param callable(string): mixed $fetchValue As for decide().
+	 */
+	private static function releaseQuietly( callable $fetchValue ): void {
+		try {
+			$fetchValue( 'SELECT RELEASE_LOCK( %s )' );
+		} catch ( QueryFailed $failed ) {
+			// Nothing more can be done here; the lock goes when the connection ends.
+			unset( $failed );
+		}
 	}
 
 	/**

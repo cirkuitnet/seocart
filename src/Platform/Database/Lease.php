@@ -153,8 +153,8 @@ final class Lease {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws LockLost When the lock is no longer held: released, expired and reclaimed, or its
-	 *                  connection gone.
+	 * @throws LockLost When the lock is no longer held: released, expired (reclaimed by another
+	 *                  runner or not yet), or its connection gone.
 	 */
 	public function renew(): void {
 		$this->refuseInsideTransaction();
@@ -176,8 +176,9 @@ final class Lease {
 			return;
 		}
 
+		// A lapsed lease is lost even before anyone reclaims it: from its expiry on, another runner may take it at any moment.
 		$renewed = $this->db->execute(
-			'UPDATE %i SET expires_at = UTC_TIMESTAMP(6) + INTERVAL %d SECOND WHERE name = %s AND owner_token = %s',
+			'UPDATE %i SET expires_at = UTC_TIMESTAMP(6) + INTERVAL %d SECOND WHERE name = %s AND owner_token = %s AND expires_at > UTC_TIMESTAMP(6)',
 			$this->where,
 			$this->ttlSeconds,
 			$this->name,
@@ -185,7 +186,7 @@ final class Lease {
 		);
 
 		if ( 1 !== $renewed ) {
-			$this->lost( LockLost::RECLAIMED );
+			$this->lost( LockLost::EXPIRED );
 		}
 	}
 
