@@ -17,8 +17,7 @@ defined( 'ABSPATH' ) || exit;
  * Reports an attempt to combine amounts in different currencies.
  *
  * This class owns one fact: that amounts in different currencies are never added, subtracted
- * or compared (target architecture §21.2). Converting first, through a ConversionContext, is
- * the only way across. Every operation that combines amounts asks assertSameCurrency(), so the
+ * or compared. Converting first, through a ConversionContext, is the only way across. Every operation that combines amounts asks assertSameCurrency(), so the
  * rule and its message live here once. Reaching this exception is a programming error, so it
  * is a LogicException and has no row in the error table.
  *

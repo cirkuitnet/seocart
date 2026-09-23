@@ -18,9 +18,8 @@ defined( 'ABSPATH' ) || exit;
 /**
  * A failure a client can cause, carrying a code from the error table and its context.
  *
- * This class owns one fact: how domain and application code report a failure (target
- * architecture §2.1) — a stable machine code, `stock.insufficient`, and structured context,
- * `{requested, available}`. There is no Result type and no `WP_Error` outside adapters; an
+ * This class owns one fact: how domain and application code report a failure — a stable
+ * machine code, `stock.insufficient`, and structured context, `{requested, available}`. There is no Result type and no `WP_Error` outside adapters; an
  * adapter catches this exception and renders it through the ErrorTable.
  *
  * Raise it with raise(), never with `new`:

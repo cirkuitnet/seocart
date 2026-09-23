@@ -19,7 +19,7 @@ use SEOCart\Support\TaxedMoney;
  * Money assertions for test cases.
  *
  * Two amounts are equal when they have the same ISO 4217 code and the same integer number of
- * minor units (test strategy §9). A failure shows both as "USD 1234", so the diff names the
+ * minor units, never as floats. A failure shows both as "USD 1234", so the diff names the
  * currency and the exact minor units.
  *
  * @since 0.1.0

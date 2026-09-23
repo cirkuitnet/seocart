@@ -17,7 +17,7 @@ defined( 'ABSPATH' ) || exit;
  * An amount with its tax: net, tax and gross in one currency.
  *
  * This class owns one fact: the invariant `net + tax = gross`, in minor units, for every
- * amount that carries tax (target architecture §21.1). The constructor refuses a triple that
+ * amount that carries tax. The constructor refuses a triple that
  * breaks it, and every operation builds its result so that it cannot: tax is computed once and
  * the third figure is derived from the other two, never rounded on its own.
  *
@@ -28,7 +28,7 @@ defined( 'ABSPATH' ) || exit;
  *   once; net = gross − tax.
  *
  * Several rates, compound rates, cross-zone policies and per-jurisdiction allocation are
- * built on this type by the tax work (backlog B-S9), not here.
+ * built on this type by the tax module, not here.
  *
  * @since 0.1.0
  */

@@ -28,7 +28,7 @@ defined( 'ABSPATH' ) || exit;
  *   moves away from zero, rounding a negated amount gives the negated result, so a refund
  *   rounds exactly as the charge did.
  * - TowardZero drops the extra digits: 2.7 becomes 2 and -2.7 becomes -2. Largest-remainder
- *   allocation (ADR-0004) starts every share at its exact proportion rounded toward zero.
+ *   allocation starts every share at its exact proportion rounded toward zero.
  *
  * Half-even, floor and ceiling are not implemented because no documented rule uses them. A
  * mode is added together with the rule that needs it.

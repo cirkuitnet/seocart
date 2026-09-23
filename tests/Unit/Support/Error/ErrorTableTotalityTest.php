@@ -28,19 +28,19 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * - Every code src/ can raise has exactly one row. A code is raised through
  *   CodedException::raise() or built by CodedException::because(), and both accept only a case
  *   of an ErrorCode enum, so the codes src/ can raise are the cases of the ErrorCode enums
- *   declared under src/. This test finds
- *   every such enum, composes them all into one table — which fails for a case with no row
- *   or two, and for a code two catalogs declare — and checks every row: a 4xx or 5xx status,
- *   a message, and placeholders equal to the row's declared context keys.
+ *   declared under src/. This test finds every such enum, composes them all into one table —
+ *   which fails for a case with no row or two, and for a code two catalogs declare — and
+ *   checks every row: a 4xx or 5xx status, a message, and placeholders equal to the row's
+ *   declared context keys.
  * - Every row is used: each case is referenced somewhere under src/ outside its own catalog.
  *
- * The seam for the operations work (F-OPS): an OperationDefinition declares the codes its
- * operation can fail with, as ErrorCode cases. Those references are code under src/ and so
- * already count as uses here. When F-OPS wants the stricter rule — a code reachable from a
- * public surface must be declared by its definition — it adds the definitions' codes as a
- * second source next to codesReferencedIn() and compares; nothing else here changes. The seam
- * for the REST foundation (F-RST) is ErrorTable::definitionFor() with ErrorDefinition's
- * httpStatus() and render(), fed by CodedException::errorCode() and context().
+ * The seam for the operations layer: an operation's declaration names the codes the operation
+ * can fail with, as ErrorCode cases. Those references are code under src/ and so already count
+ * as uses here. The stricter rule — a code reachable from a public surface must be declared by
+ * its operation — adds the declared codes as a second source next to codesReferencedIn() and
+ * compares; nothing else here changes. The seam for the REST layer is
+ * ErrorTable::definitionFor() with ErrorDefinition's httpStatus() and render(), fed by
+ * CodedException::errorCode() and context().
  *
  * @group contract
  *

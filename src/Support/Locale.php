@@ -17,7 +17,7 @@ defined( 'ABSPATH' ) || exit;
  * A WordPress locale.
  *
  * This class owns one fact: the form a locale takes in SEOCart — the WordPress locale that
- * every `locale` column stores (data storage §3.1) — and how that form is written as a BCP 47
+ * every `locale` column stores — and how that form is written as a BCP 47
  * language tag. A WordPress locale is a language code of two or three lower-case letters, an
  * optional region of two upper-case letters, and an optional variant of four or more lower-case
  * letters and digits: 'ja', 'en_GB', 'pt_BR', 'ast', 'de_DE_formal', 'pt_PT_ao90'.
@@ -28,7 +28,7 @@ defined( 'ABSPATH' ) || exit;
  * BCP 47 subtag ('ao90' is not even well-formed there): de_DE_formal is 'de-DE'.
  *
  * Turning a URL language code, a BCP 47 tag or a visitor's choice into a Locale is the
- * multilingual adapter's job (backlog A-07), not this class's: it only accepts the exact form.
+ * multilingual adapter's job, not this class's: it only accepts the exact form.
  *
  * @since 0.1.0
  */

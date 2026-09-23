@@ -20,7 +20,7 @@ defined( 'ABSPATH' ) || exit;
  *
  * This class owns one fact: which ISO 4217 codes exist and how many minor-unit digits each
  * one has. The exponent is data shipped in code, never a constant 2 and never a
- * merchant-editable column (data storage §3.1), so a merchant cannot mistype JPY as a
+ * merchant-editable column, so a merchant cannot mistype JPY as a
  * two-decimal currency. What a store does with a currency — whether it is enabled, how it
  * rounds, whether converted prices may fall back to it — is configuration, carried by
  * CurrencyRoundingRule and the `currencies` table, not by this class.

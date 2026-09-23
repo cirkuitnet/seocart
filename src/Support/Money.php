@@ -17,7 +17,7 @@ defined( 'ABSPATH' ) || exit;
  * An immutable amount of money: an integer count of minor units and a currency.
  *
  * This class owns one fact: what an amount is — minor units plus an ISO 4217 currency, the
- * form every monetary column stores (ADR-0004) — and the arithmetic that keeps it exact.
+ * form every monetary column stores — and the arithmetic that keeps it exact.
  *
  * - Amounts combine only within one currency. Mixing currencies is a programming error
  *   (CurrencyMismatchException); a ConversionContext is the only way across.
@@ -238,7 +238,7 @@ final class Money {
 	 *
 	 * Every share starts at its exact proportion rounded toward zero. The minor units left over
 	 * — fewer than the number of shares — go one each to the shares with the largest remainders;
-	 * a tie goes to the share that comes first in the ratios (ordinal tie-break, ADR-0004). So:
+	 * a tie goes to the share that comes first in the ratios (an ordinal tie-break). So:
 	 *
 	 * - the shares always sum to the amount;
 	 * - each share is within one minor unit of its exact proportion;

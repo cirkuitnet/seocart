@@ -17,7 +17,7 @@ defined( 'ABSPATH' ) || exit;
  * An exact percentage, such as a tax rate or a percentage discount.
  *
  * This class owns one fact: the storage form of a rate, `rate_micropercent` — an integer
- * count of millionths of a percent (data storage §3.1), so 20% is 20000000 and 7.25% is
+ * count of millionths of a percent, so 20% is 20000000 and 7.25% is
  * 7250000 — and how that form becomes a multiplication factor. It is exact: a percentage that
  * needs more than six decimal places is refused rather than rounded, and nothing is a float.
  *

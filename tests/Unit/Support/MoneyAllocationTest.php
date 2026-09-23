@@ -19,7 +19,8 @@ use SEOCart\Support\Money;
 use SEOCart\Tests\Support\SeededCases;
 
 /**
- * Proves the allocation rule of ADR-0004 on worked examples and on seeded random cases.
+ * Proves largest-remainder allocation with an ordinal tie-break, on worked examples and on
+ * seeded random cases.
  *
  * The property oracle is exact integer arithmetic: for a total T and integer ratios r with sum
  * S, share i must be floor(|T| × r_i / S) or one more, and the extra units must go to the

@@ -17,10 +17,10 @@ defined( 'ABSPATH' ) || exit;
  * The rounding a store applies to amounts in one currency.
  *
  * This class owns one fact: the merchant's rounding policy for a currency, as the columns
- * `currencies.rounding_mode` and `currencies.cash_rounding_step_minor` store it. It is one of
- * the four rounding concepts that target architecture §21.2 keeps apart: the ISO exponent
- * belongs to Currency, the tax rounding mode to the pipeline, price-ending rules do not exist
- * in 1.0, and this is the fourth — the mode and the lawful cash rounding step.
+ * `currencies.rounding_mode` and `currencies.cash_rounding_step_minor` store it. Four kinds of
+ * rounding are kept apart: the ISO exponent belongs to Currency, the tax rounding mode to the
+ * calculation pipeline, price-ending rules such as x.99 are not supported, and this is the
+ * fourth — the mode and the lawful cash rounding step.
  *
  * The values come from configuration; defaultFor() gives the column defaults.
  *

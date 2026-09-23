@@ -19,7 +19,7 @@ defined( 'ABSPATH' ) || exit;
  * This class owns one fact: the value of an intermediate amount before it is rounded to minor
  * units, and exact arithmetic on it. Percentages, inclusive-tax extraction, currency
  * conversion and allocation all need more precision than a minor unit before their declared
- * rounding point (ADR-0004); they compute with Decimal and turn the result into Money only
+ * rounding point; they compute with Decimal and turn the result into Money only
  * where the pipeline declares a rounding boundary.
  *
  * The scale is the number of fractional digits and is part of the value's identity as a
