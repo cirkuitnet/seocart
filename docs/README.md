@@ -18,10 +18,11 @@ only copy. Vulnerability reports follow [SECURITY.md](../SECURITY.md).
 
 ## Generated reference
 
-`docs/openapi.json` and the files under `docs/reference/` — abilities, CLI commands, error
-codes and hooks — are **generated** from the operation registry by `composer docs:generate`
-and checked for drift by `composer docs:check`. Do not edit them by hand. The registry has no
-operations yet, so there is nothing to generate so far.
+`docs/openapi.json` and the files under `docs/reference/` — abilities, CLI commands and error
+codes — are **generated** by `composer docs:generate` from the operation registry and the error
+catalogs, and checked for drift by `composer docs:check`, which prints the command to run when
+a file is out of date. Do not edit them by hand: change the declaration and regenerate. The
+registry has no operations yet, so the API and command references are still empty.
 
 ## Terms
 

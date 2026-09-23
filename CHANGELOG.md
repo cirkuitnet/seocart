@@ -80,3 +80,7 @@ releasable.
 - The authorization check that application services use: the acting user or process is
   named explicitly, never assumed from the logged-in user, and an action it may not take
   fails with a "not allowed" error (HTTP 403) that names the capability it needs.
+- The operations mechanism: one declaration per operation compiles its REST route, its
+  ability, its WP-CLI command, its permission check, the privacy rules of its fields, and
+  the generated OpenAPI document and reference pages (`docs/openapi.json`,
+  `docs/reference/`). No operation is declared yet.
