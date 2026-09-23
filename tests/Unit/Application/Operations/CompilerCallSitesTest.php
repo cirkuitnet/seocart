@@ -23,7 +23,9 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * Tests are left out, because the compiler's own tests call each function directly. A call is
  * found in every spelling PHP resolves to the compiler class — imported, aliased, fully qualified
  * — and so is any `JsonSchemaCompiler::class` outside the compiler, since a callable built from it
- * could call a dialect without a visible call site.
+ * could call a dialect without a visible call site, and any `new JsonSchemaCompiler`, since an
+ * instance could call one through `->`. The compiler's constructor is private, which a test pins,
+ * so such an instance cannot exist at run time either.
  *
  * The dialect list below is hand-kept, so it has a companion check: it must equal the compiler's
  * public static functions.
@@ -125,7 +127,23 @@ final class CompilerCallSitesTest extends TestCase {
 			$problems[] = 'JsonSchemaCompiler::class is named at ' . $site . ', which could call a dialect without a visible call site.';
 		}
 
+		foreach ( $sites['new'] ?? array() as $site ) {
+			$problems[] = 'JsonSchemaCompiler is instantiated at ' . $site . ', and an instance could call a dialect without a visible call site.';
+		}
+
 		$this->assertSame( array(), $problems, "Schemas must be compiled at one place per dialect:\n  " . implode( "\n  ", $problems ) . "\n" );
+	}
+
+	/**
+	 * Tests that the compiler cannot be instantiated, so no dialect can be called through an instance.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_compiler_cannot_be_instantiated(): void {
+		$constructor = ( new \ReflectionClass( JsonSchemaCompiler::class ) )->getConstructor();
+
+		$this->assertNotNull( $constructor, 'The compiler declares no constructor, so anyone can instantiate it.' );
+		$this->assertTrue( $constructor->isPrivate(), 'The compiler\'s constructor is not private.' );
 	}
 
 	/**
@@ -152,6 +170,7 @@ final class Planted {
 		$constant = JsonSchemaCompiler::CLI_FORMATS;
 		$text     = 'JsonSchemaCompiler::restArguments( array() )';
 		Other::restArguments( array() );
+		( new JsonSchemaCompiler() )->restArguments( array() );
 	}
 }
 PHP;
@@ -163,6 +182,7 @@ PHP;
 				array( 'cliSynopsis', 12 ),
 				array( 'wordPressSchema', 13 ),
 				array( 'class', 14 ),
+				array( 'new', 18 ),
 			),
 			array_map( static fn( array $found ): array => array( $found['member'], $found['line'] ), self::compilerUses( $source ) )
 		);
@@ -180,12 +200,12 @@ PHP;
 	}
 
 	/**
-	 * Finds every call to a compiler function, and every naming of the compiler class, in a file.
+	 * Finds every call to a compiler function, every naming of the compiler class and every instantiation of it, in a file.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param string $source The PHP source.
-	 * @return list<array{member: string, line: int}> The function called, or `class`, with its line.
+	 * @return list<array{member: string, line: int}> The function called, `class` or `new`, with its line.
 	 */
 	private static function compilerUses( string $source ): array {
 		$tokens    = PhpSource::tokens( $source );
@@ -194,6 +214,17 @@ PHP;
 		$uses      = array();
 
 		foreach ( $tokens as $index => $token ) {
+			$next = $tokens[ $index + 1 ] ?? null;
+
+			if ( $token->is( T_NEW ) && null !== $next && $next->is( array( T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED, T_NAME_RELATIVE ) ) && JsonSchemaCompiler::class === PhpSource::resolve( $next->text, $namespace, $imports ) ) {
+				$uses[] = array(
+					'member' => 'new',
+					'line'   => $next->line,
+				);
+
+				continue;
+			}
+
 			if ( ! $token->is( T_DOUBLE_COLON ) ) {
 				continue;
 			}

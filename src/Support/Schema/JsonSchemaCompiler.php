@@ -72,6 +72,14 @@ final class JsonSchemaCompiler {
 	public const CLI_FORMATS = array( 'table', 'json' );
 
 	/**
+	 * Cannot be called: the compiler is used through its static functions only, so each dialect
+	 * has no call site but the one its contract test finds.
+	 *
+	 * @since 0.1.0
+	 */
+	private function __construct() {}
+
+	/**
 	 * Compiles fields into WordPress REST route arguments.
 	 *
 	 * @since 0.1.0
