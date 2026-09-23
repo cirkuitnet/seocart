@@ -25,3 +25,7 @@ parameters:
 	scanDirectories:
 		- vendor/squizlabs/php_codesniffer/src
 		- vendor/wp-phpunit/wp-phpunit/includes
+	# WP-CLI's own stubs conflict with the WordPress 7.1 stubs; the few WP_CLI symbols the
+	# plugin calls are declared by hand in this file instead.
+	scanFiles:
+		- tools/phpstan/stubs/wp-cli.stub

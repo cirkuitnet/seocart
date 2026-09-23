@@ -1,0 +1,26 @@
+<?php
+/**
+ * The WP-CLI symbols SEOCart's own code uses, declared for PHPStan only.
+ *
+ * The php-stubs/wp-cli-stubs package conflicts with php-stubs/wordpress-stubs ^7.1, so the few
+ * symbols the plugin calls are declared here instead, with the signatures WP-CLI 2 documents.
+ * phpstan.neon.dist lists this file under scanFiles, because PHPStan's stubFiles can only
+ * override symbols that exist elsewhere. Add a symbol in the change that starts using it;
+ * nothing ever executes this file.
+ *
+ * @package SEOCart
+ */
+
+/**
+ * Various utilities for WP-CLI commands.
+ */
+class WP_CLI {
+
+	/**
+	 * Halts script execution with a specific return code.
+	 *
+	 * @param int $return_code The exit status.
+	 * @return never
+	 */
+	public static function halt( $return_code ) {}
+}
