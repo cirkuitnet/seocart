@@ -158,8 +158,9 @@ final class MigrationStatus {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return bool True when the applied head differs from the code head, or a migration that
-	 *              cannot operate half-applied is running or failed.
+	 * @return bool True when the schema is newer than the code, or when a migration that is not
+	 *              applied cannot operate half-applied. Outstanding migrations that can operate
+	 *              half-applied leave writes open.
 	 */
 	public function writesBlocked(): bool {
 		return $this->writesBlocked;

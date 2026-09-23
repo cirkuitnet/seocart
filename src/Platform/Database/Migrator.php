@@ -45,7 +45,11 @@ defined( 'ABSPATH' ) || exit;
  *    becomes `applied` with its timing, version, checksum and verified summary; on failure it
  *    becomes `failed` with the error and the diff, the chain stops, and MigrationFailed is
  *    thrown once the lock is released.
- * 6. The last contiguous applied id is recorded as the schema head.
+ * 6. The newest applied id is recorded as the schema head.
+ *
+ * Commerce writes are refused while the schema is newer than the code, or while a migration
+ * that cannot operate half-applied is outstanding; writesBlocked() decides it from the head
+ * alone, and status() from each migration's recorded state.
  *
  * The checksum of an applied migration's class file is compared on every run; a difference is
  * reported, not treated as a failure, because the verifier guards the shape.
@@ -302,30 +306,18 @@ final class Migrator {
 	 * @return MigrationStatus The heads, the pending, failed and running migrations, and whether writes are blocked.
 	 */
 	public function status(): MigrationStatus {
-		$chain   = $this->chain();
-		$rows    = $this->rows();
-		$applied = array();
-
-		foreach ( $rows as $id => $row ) {
-			if ( self::APPLIED === $row['state'] ) {
-				$applied[] = (string) $id;
-			}
-		}
-
-		sort( $applied, SORT_STRING );
-
-		$codeHead    = $chain[ count( $chain ) - 1 ]->id();
-		$appliedHead = array() === $applied ? null : $applied[ count( $applied ) - 1 ];
-		$pending     = array();
+		$chain       = $this->chain();
+		$rows        = $this->rows();
+		$appliedHead = self::newestApplied( $rows );
+		$outstanding = array();
 		$failed      = null;
 		$running     = null;
-		$blocked     = $codeHead !== $appliedHead;
 
 		foreach ( $chain as $migration ) {
 			$state = $rows[ $migration->id() ]['state'] ?? null;
 
 			if ( self::APPLIED !== $state ) {
-				$pending[] = $migration->id();
+				$outstanding[] = $migration;
 			}
 
 			if ( self::FAILED === $state && null === $failed ) {
@@ -335,13 +327,38 @@ final class Migrator {
 			if ( self::RUNNING === $state && null === $running ) {
 				$running = $migration->id();
 			}
+		}
 
-			if ( ! $migration->canOperateHalfApplied() && ( self::RUNNING === $state || self::FAILED === $state ) ) {
-				$blocked = true;
+		$codeHead = self::codeHead( $chain );
+
+		return new MigrationStatus( $codeHead, $appliedHead, self::ids( $outstanding ), $failed, $running, self::blocksWrites( $outstanding, $appliedHead, $codeHead ) );
+	}
+
+	/**
+	 * Tells whether commerce writes must be refused, from the schema head alone. Sends nothing.
+	 *
+	 * The kernel's schema gate calls this on every request with the head cached in its boot
+	 * option, so it reads no table: every registered migration whose id sorts after the head
+	 * counts as outstanding. That relies on the rule that a migration is never released with
+	 * an id sorting before one already released. status() applies the same rule to each
+	 * migration's recorded state instead.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string|null $schemaHead The newest applied migration id, as DatabaseState::schemaHead() returns it.
+	 * @return bool True when the schema is newer than the code, or when a migration after the head cannot operate half-applied.
+	 */
+	public function writesBlocked( ?string $schemaHead ): bool {
+		$chain       = $this->chain();
+		$outstanding = array();
+
+		foreach ( $chain as $migration ) {
+			if ( null === $schemaHead || strcmp( $migration->id(), $schemaHead ) > 0 ) {
+				$outstanding[] = $migration;
 			}
 		}
 
-		return new MigrationStatus( $codeHead, $appliedHead, $pending, $failed, $running, $blocked );
+		return self::blocksWrites( $outstanding, $schemaHead, self::codeHead( $chain ) );
 	}
 
 	/**
@@ -370,7 +387,7 @@ final class Migrator {
 			$duration = $this->apply( $migration, $rows[ $migration->id() ]['batch_cursor'] ?? null, $lease, $options, $started );
 
 			if ( null === $duration ) {
-				$this->recordHead( $chain, $rows, $applied );
+				$this->recordHead( $rows, $applied );
 
 				return new MigrationReport( MigrationReport::INCOMPLETE, $applied, $elsewhere, $migration->id() );
 			}
@@ -381,7 +398,7 @@ final class Migrator {
 			);
 		}
 
-		$this->recordHead( $chain, $rows, $applied );
+		$this->recordHead( $rows, $applied );
 
 		return new MigrationReport( array() === $applied ? MigrationReport::UP_TO_DATE : MigrationReport::APPLIED, $applied, $elsewhere );
 	}
@@ -597,29 +614,92 @@ final class Migrator {
 	}
 
 	/**
-	 * Records the last contiguous applied migration as the schema head.
+	 * Records the newest applied migration as the schema head.
+	 *
+	 * Newest across every recorded row, not only this release's chain: an older release that
+	 * runs after a newer one must not lower the head, or the gate would stop seeing that the
+	 * schema is newer than the code.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param Migration[]                               $chain   The chain.
 	 * @param array<string, array<string, mixed>>       $rows    The rows read under the lock.
 	 * @param list<array{id: string, duration_ms: int}> $applied The migrations this run applied.
 	 */
-	private function recordHead( array $chain, array $rows, array $applied ): void {
-		$appliedNow = array_column( $applied, 'id' );
-		$head       = null;
+	private function recordHead( array $rows, array $applied ): void {
+		$head = self::newestApplied( $rows );
 
-		foreach ( $chain as $migration ) {
-			if ( ! in_array( $migration->id(), $appliedNow, true ) && self::APPLIED !== ( $rows[ $migration->id() ]['state'] ?? null ) ) {
-				break;
+		foreach ( $applied as $entry ) {
+			if ( null === $head || strcmp( $entry['id'], $head ) > 0 ) {
+				$head = $entry['id'];
 			}
-
-			$head = $migration->id();
 		}
 
 		if ( null !== $head ) {
 			$this->state->recordSchemaHead( $head );
 		}
+	}
+
+	/**
+	 * Decides whether commerce writes must be refused. The one place that rule is written.
+	 *
+	 * Writes are refused when the schema is newer than the code, or when an outstanding
+	 * migration (pending, running or failed) cannot operate half-applied. Outstanding
+	 * migrations that can operate half-applied do not refuse writes: the store keeps trading
+	 * while they backfill.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Migration[] $outstanding The registered migrations that are not applied.
+	 * @param string|null $appliedHead The newest applied migration id, or null.
+	 * @param string      $codeHead    The newest registered migration id.
+	 * @return bool True when writes must be refused.
+	 */
+	private static function blocksWrites( array $outstanding, ?string $appliedHead, string $codeHead ): bool {
+		if ( null !== $appliedHead && strcmp( $appliedHead, $codeHead ) > 0 ) {
+			return true;
+		}
+
+		foreach ( $outstanding as $migration ) {
+			if ( ! $migration->canOperateHalfApplied() ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Returns the newest applied migration id among recorded rows.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param array<string, array<string, mixed>> $rows The recorded rows, by migration id.
+	 * @return string|null The id that sorts last among applied rows, or null when none is applied.
+	 */
+	private static function newestApplied( array $rows ): ?string {
+		$head = null;
+
+		foreach ( $rows as $id => $row ) {
+			$id = (string) $id;
+
+			if ( self::APPLIED === $row['state'] && ( null === $head || strcmp( $id, $head ) > 0 ) ) {
+				$head = $id;
+			}
+		}
+
+		return $head;
+	}
+
+	/**
+	 * Returns the newest registered migration id.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Migration[] $chain The chain, in id order.
+	 * @return string The id of its last migration.
+	 */
+	private static function codeHead( array $chain ): string {
+		return $chain[ count( $chain ) - 1 ]->id();
 	}
 
 	/**

@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Integration\Database;
 
 use SEOCart\Platform\Database\Cli\MigrateCommand;
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\DatabaseState;
 use SEOCart\Platform\Database\Exception\ForbiddenInsideTransaction;
 use SEOCart\Platform\Database\Exception\MigrationFailed;
 use SEOCart\Platform\Database\LockMode;
@@ -27,6 +28,7 @@ use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\PlatformTables;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
+use SEOCart\Tests\Support\Doubles\RecordingDatabaseState;
 use SEOCart\Tests\Support\Migrations\CreatesTestTable;
 use SEOCart\Tests\Support\Migrations\DeclaresMissingIndex;
 use SEOCart\Tests\Support\Migrations\MarksRowsInBatches;
@@ -576,6 +578,133 @@ final class MigratorTest extends DatabaseTestCase {
 	}
 
 	/**
+	 * A data migration that can operate half-applied, left running by the time budget, keeps the store trading.
+	 *
+	 * The heads differ here (the code's newest migration is not applied), and that alone must
+	 * not refuse writes.
+	 *
+	 * Planted violation: in Migrator::blocksWrites(), refuse writes whenever $outstanding is not
+	 * empty, which is the old "the heads differ" rule.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_backfill_in_progress_leaves_writes_open(): void {
+		$a     = new CreatesTestTable( '20990101_0001_a', 'a' );
+		$marks = $this->seedMarks();
+		$chain = array( new PlatformBootstrapMigration(), $a, $marks );
+		$state = new RecordingDatabaseState();
+
+		$report = $this->migrator( $chain, LockMode::Table, null, $state )->migrate( new MigrationRunOptions( 0, 0 ) );
+
+		$this->assertSame( MigrationReport::INCOMPLETE, $report->outcome() );
+		$this->assertSame( array( $a->id() ), $state->heads, 'The recorded head is the newest applied migration.' );
+
+		$migrator = $this->migrator( $chain );
+		$status   = $migrator->status();
+
+		$this->assertSame( $marks->id(), $status->running() );
+		$this->assertNotSame( $status->codeHead(), $status->appliedHead(), 'The heads differ while the backfill runs.' );
+		$this->assertFalse( $status->writesBlocked(), 'A half-applicable backfill must not refuse writes.' );
+		$this->assertFalse( $migrator->writesBlocked( $a->id() ), 'The zero-query gate agrees.' );
+	}
+
+	/**
+	 * A migration that cannot operate half-applied refuses writes while it is outstanding, even behind a running backfill.
+	 *
+	 * Planted violation: in Migrator::blocksWrites(), delete the loop over $outstanding.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_migration_that_cannot_operate_half_applied_blocks_writes_until_applied(): void {
+		$marks = $this->seedMarks();
+		$z     = new CreatesTestTable( '20990101_0010_z', 'z', false );
+		$chain = array( new PlatformBootstrapMigration(), $marks, $z );
+
+		$this->migrator( $chain )->migrate( new MigrationRunOptions( 0, 0 ) );
+
+		$migrator = $this->migrator( $chain );
+		$status   = $migrator->status();
+
+		$this->assertSame( array( $marks->id(), $z->id() ), $status->pending(), 'The backfill runs and Z waits behind it.' );
+		$this->assertTrue( $status->writesBlocked(), 'Z cannot operate half-applied.' );
+		$this->assertTrue( $migrator->writesBlocked( PlatformBootstrapMigration::ID ), 'The zero-query gate agrees.' );
+
+		$this->migrator( $chain )->migrate( new MigrationRunOptions( 0 ) );
+
+		$this->assertFalse( $this->migrator( $chain )->status()->writesBlocked(), 'Writes reopen once Z is applied.' );
+		$this->assertFalse( $migrator->writesBlocked( $z->id() ) );
+	}
+
+	/**
+	 * A schema newer than the code refuses writes, and an older release that runs does not lower the recorded head.
+	 *
+	 * Planted violations: in Migrator::blocksWrites(), delete the comparison of the applied head
+	 * with the code head; and, separately, in Migrator::recordHead(), consider only the
+	 * migrations of this release's chain.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_schema_newer_than_the_code_blocks_writes(): void {
+		$b     = $this->secondConnection();
+		$a     = new CreatesTestTable( '20990101_0001_a', 'a' );
+		$chain = array( new PlatformBootstrapMigration(), $a );
+		$newer = '20990101_0099_newer';
+
+		$this->migrator( $chain )->migrate( new MigrationRunOptions( 0 ) );
+
+		// A newer release applied a migration this code does not know.
+		$b->query(
+			sprintf(
+				"INSERT INTO `%s` ( migration_id, kind, can_operate_half_applied, state, plugin_version, checksum, applied_at, created_at, updated_at ) VALUES ( '%s', 'schema', 0, 'applied', '9.9.9', '%s', UTC_TIMESTAMP(), UTC_TIMESTAMP(), UTC_TIMESTAMP() )",
+				$this->db->table( 'migrations' ),
+				$newer,
+				str_repeat( 'e', 64 )
+			)
+		);
+
+		$state    = new RecordingDatabaseState();
+		$migrator = $this->migrator( $chain, LockMode::Table, null, $state );
+
+		$this->assertSame( MigrationReport::UP_TO_DATE, $migrator->migrate( new MigrationRunOptions( 0 ) )->outcome() );
+		$this->assertSame( array( $newer ), $state->heads, 'An older release must not lower the recorded head.' );
+
+		$status = $migrator->status();
+
+		$this->assertSame( $newer, $status->appliedHead() );
+		$this->assertSame( array(), $status->pending() );
+		$this->assertTrue( $status->writesBlocked(), 'The schema is newer than the code.' );
+		$this->assertTrue( $migrator->writesBlocked( $newer ), 'The zero-query gate agrees.' );
+		$this->assertFalse( $migrator->writesBlocked( $a->id() ), 'At the code\'s own head, writes are open.' );
+	}
+
+	/**
+	 * The zero-query gate decides from the registry and the head alone, and sends no query.
+	 *
+	 * Planted violation: at the top of Migrator::writesBlocked(), call $this->rows().
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_write_gate_sends_no_query(): void {
+		$migrator = $this->migrator( array( new PlatformBootstrapMigration(), new CreatesTestTable( '20990101_0001_a', 'a' ), new CreatesTestTable( '20990101_0010_z', 'z', false ) ) );
+		$answers  = array();
+
+		$log = $this->captureQueries(
+			function () use ( $migrator, &$answers ): void {
+				foreach ( array( null, PlatformBootstrapMigration::ID, '20990101_0001_a', '20990101_0010_z', '20990101_0099_newer' ) as $head ) {
+					$answers[] = $migrator->writesBlocked( $head );
+				}
+			}
+		);
+
+		$this->assertQueryCount( 0, $log, 'The write gate' );
+		$this->assertSame(
+			array( true, true, true, false, true ),
+			$answers,
+			'Nothing applied, then the bootstrap, then A (Z outstanding each time), then Z (all applied), then a head newer than the code.'
+		);
+	}
+
+	/**
 	 * M12: migrate() inside a transaction is refused before it sends anything, whether the guards throw or report.
 	 *
 	 * Planted violation: at the top of migrate(), delete the depth check. In strict mode the DDL
@@ -613,15 +742,16 @@ final class MigratorTest extends DatabaseTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param Migration[]   $migrations The chain.
-	 * @param LockMode      $mode       Optional. How the schema lock is held. Default Table.
-	 * @param Database|null $db         Optional. The connection. Default the test's.
+	 * @param Migration[]        $migrations The chain.
+	 * @param LockMode           $mode       Optional. How the schema lock is held. Default Table.
+	 * @param Database|null      $db         Optional. The connection. Default the test's.
+	 * @param DatabaseState|null $state      Optional. Receives the schema head. Default a MigrationsTableState.
 	 * @return Migrator The migrator.
 	 */
-	private function migrator( array $migrations, LockMode $mode = LockMode::Table, ?Database $db = null ): Migrator {
+	private function migrator( array $migrations, LockMode $mode = LockMode::Table, ?Database $db = null, ?DatabaseState $state = null ): Migrator {
 		$db = $db ?? $this->db;
 
-		return new Migrator( $db, new LockService( $db, $mode, $this->sleeper() ), new MigrationsTableState( $db ), $migrations, FrozenClock::at( self::NOW ), $this->reporter() );
+		return new Migrator( $db, new LockService( $db, $mode, $this->sleeper() ), $state ?? new MigrationsTableState( $db ), $migrations, FrozenClock::at( self::NOW ), $this->reporter() );
 	}
 
 	/**

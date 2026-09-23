@@ -39,7 +39,7 @@ interface DatabaseState {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string $migrationId The id of the last contiguous applied migration.
+	 * @param string $migrationId The id of the newest applied migration.
 	 */
 	public function recordSchemaHead( string $migrationId ): void;
 
