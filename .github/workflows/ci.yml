@@ -7,7 +7,7 @@
 #
 # Job graph (arrows are `needs`):
 #
-#   lint-php ------+-> static-analysis --+-> integration-tests (PHP x WordPress)
+#   lint-php ------+-> static-analysis --+-> integration-tests (PHP x WordPress), integration-tests-multisite
 #                  +-> unit-tests -------+-> package: build -> packaging-validate
 #                  +-> dry-gates         |                       -> plugin-check
 #                  +-> docs-drift        |                       -> install-smoke
@@ -18,7 +18,7 @@
 # Required checks for branch protection on main: lint-php, workflow-lint, static-analysis,
 # dry-gates, docs-drift, wporg-gates, every unit-tests cell, the "WordPress 7.1"
 # integration-tests cells, js-lint-test, and the four "package / …" jobs. The WordPress
-# nightly cells are informational.
+# nightly cells and the multisite cell are informational.
 #
 # The local setup action owns the development PHP version and Composer installation.
 # bin/ci/check-workflows.sh keeps these steps in the action and checks action pins.
@@ -180,6 +180,24 @@ jobs:
             php: ${{ matrix.php }}
             wp: ${{ matrix.wp }}
             allow-failure: ${{ matrix.wp == 'nightly' }}
+
+    # The same suite on a WordPress network (WP_MULTISITE=1), where every site installs the
+    # plugin by itself and the tests that only mean something on a network run instead of
+    # skipping. One cell: PHP 8.4, WordPress 7.1. A job of its own rather
+    # than an `include` in the matrix above: an include that matches the 8.4 / 7.1 cell would be
+    # merged into it, and would rename a required check. Informational, like the nightly cells:
+    # it is not among the required checks, and a failure is reported without failing the workflow.
+    integration-tests-multisite:
+        name: integration-tests-multisite
+        needs:
+            - static-analysis
+            - unit-tests
+        uses: ./.github/workflows/reusable-integration-tests.yml
+        with:
+            php: '8.4'
+            wp: '7.1'
+            multisite: true
+            allow-failure: true
 
     js-lint-test:
         runs-on: ubuntu-24.04

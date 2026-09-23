@@ -25,6 +25,11 @@ on:
                 required: false
                 type: boolean
                 default: false
+            multisite:
+                description: 'Run the suite on a WordPress network: the test library installs one when WP_MULTISITE is 1.'
+                required: false
+                type: boolean
+                default: false
 
 permissions:
     contents: read
@@ -40,7 +45,7 @@ env:
 
 jobs:
     integration:
-        name: PHP ${{ inputs.php || '(development version)' }}, WordPress ${{ inputs.wp }}
+        name: PHP ${{ inputs.php || '(development version)' }}, WordPress ${{ inputs.wp }}${{ inputs.multisite && ', multisite' || '' }}
         runs-on: ubuntu-24.04
         timeout-minutes: 20
         continue-on-error: ${{ inputs.allow-failure }}
@@ -86,5 +91,8 @@ jobs:
               env:
                   WP_VERSION: ${{ inputs.wp }}
 
+            # The child processes some tests start inherit WP_MULTISITE, so they boot the same network.
             - name: Run the integration suite
               run: composer test:integration
+              env:
+                  WP_MULTISITE: ${{ inputs.multisite && '1' || '0' }}

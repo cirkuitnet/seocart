@@ -97,7 +97,7 @@
 		"cs": "phpcs",
 		"cs:fix": "phpcbf",
 		"cs:dry": "phpcs --standard=tools/phpcs/SEOCart/ruleset.xml --extensions=php --basepath=. seocart.php uninstall.php src templates",
-		"stan": "phpstan analyse --memory-limit=1G",
+		"stan": "phpstan analyse --memory-limit=1536M",
 		"test": [
 			"@test:unit",
 			"@test:integration"
