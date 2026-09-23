@@ -63,3 +63,9 @@ releasable.
   installer that never re-grants a capability a merchant removed, the product post type's
   capability map, one `map_meta_cap` callback, and a test that fails when a SEOCart REST
   route does not use the plugin's permission callback.
+- The shared kernel under `SEOCart\Support`: exact money in integer minor units with
+  checked overflow and largest-remainder allocation, fixed-scale decimals without floats or
+  PHP extensions, the ISO 4217 currencies with their minor units, amounts carrying net, tax
+  and gross, frozen exchange rates with a fingerprint, locales, addresses, date ranges,
+  time-ordered identifiers, and one table of error codes with its HTTP status and
+  translatable message per code.
