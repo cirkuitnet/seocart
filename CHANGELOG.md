@@ -111,3 +111,10 @@ releasable.
   in `wp-config.php` wraps when it is defined; the WordPress salts are never used. A
   canary record, a Site Health test and `wp seocart secrets status|rotate|rekey` report,
   rotate and re-seal the keys. No read, error, log line or command ever prints a secret.
+- A logger and `wp seocart doctor`, not yet wired into the plugin. Log lines go to a new
+  `logs` table, kept 30 days, each with the correlation id of the request that caused it.
+  Personal data is redacted and secrets are dropped according to the plugin's own data
+  declarations, card numbers are removed from every line, and a line written by work that
+  is later rolled back is still kept. `wp seocart doctor` checks the schema, the
+  migrations, the locks and the event outbox without changing anything, and exits
+  non-zero when it finds a problem.
