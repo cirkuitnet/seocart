@@ -135,3 +135,7 @@ installation record. The rest is the skeleton and the checks that keep it releas
   events ends its response before their listeners run, or, where the server cannot end
   it early, hands their delivery to the job runner. The main file now loads the bundled
   Action Scheduler so that it takes part in choosing the newest copy on the site.
+- `wp seocart doctor` now checks background jobs: that a runner has started one recently,
+  that a supported copy of Action Scheduler with its own store is in control, and that
+  none has failed. `--residue` also lists the plugin's leftover jobs. Log lines past
+  their retention period are deleted by a daily job.
