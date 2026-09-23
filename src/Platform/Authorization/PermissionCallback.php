@@ -16,7 +16,7 @@ use WP_REST_Request;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Answers a REST request by checking one declared capability through current_user_can().
+ * Answers a REST request by checking one declared capability for the user who sent it.
  *
  * This class owns one fact: how a plugin route decides whether the current request may run.
  * Every route in a `seocart*` namespace passes an instance as its `permission_callback`, built
@@ -24,9 +24,11 @@ defined( 'ABSPATH' ) || exit;
  * capability. The route walker in the test suite fails the build on any other callback, so a
  * route cannot be more permissive than the capability it declares.
  *
- * The check always goes through current_user_can(), and so through the one map_meta_cap
- * callback (CapabilityMapper), which the admin screens and the CLI use as well. There is no
- * shortcut for logged-in users and no "assume the current user" fallback.
+ * The check is the Authorizer's, the same one the application service behind the route makes:
+ * the REST request is where the current user becomes the actor, so this is the one place that
+ * names them, explicitly, with Actor::user( get_current_user_id() ). The check then goes
+ * through user_can(), and so through the one map_meta_cap callback (CapabilityMapper), which
+ * the admin screens and the CLI use as well. There is no shortcut for logged-in users.
  *
  * Three kinds exist:
  *
@@ -193,8 +195,13 @@ final class PermissionCallback {
 	 *              one, and every policy allows the request.
 	 */
 	public function __invoke( WP_REST_Request $request ): bool {
-		if ( null !== $this->capability && ! $this->currentUserHolds( $this->capability, $request ) ) {
-			return false;
+		if ( null !== $this->capability ) {
+			$resource = null === $this->resourceParameter ? null : $request->get_param( $this->resourceParameter );
+			$actor    = Actor::user( get_current_user_id() );
+
+			if ( ! ( new Authorizer( new CapabilityDeclaration() ) )->allows( $actor, $this->capability, $resource ) ) {
+				return false;
+			}
 		}
 
 		foreach ( $this->policies as $policy ) {
@@ -204,48 +211,5 @@ final class PermissionCallback {
 		}
 
 		return true;
-	}
-
-	/**
-	 * Checks the capability for the current user, on the resource the request names if there is one.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string          $capability The capability to check.
-	 * @param WP_REST_Request $request    The request being answered.
-	 * @return bool The answer of current_user_can(), or false when no usable resource is named.
-	 */
-	private function currentUserHolds( string $capability, WP_REST_Request $request ): bool {
-		if ( null === $this->resourceParameter ) {
-			return current_user_can( $capability );
-		}
-
-		$resource = self::resourceIdentifier( $request->get_param( $this->resourceParameter ) );
-
-		return null !== $resource && current_user_can( $capability, $resource );
-	}
-
-	/**
-	 * Reads a resource identifier from a request parameter.
-	 *
-	 * A number, including one written as digits in a string, as route patterns deliver it,
-	 * becomes a positive integer. Any other non-empty string, such as a uuid, is passed on as it
-	 * is, for the resolver to look up. Everything else names no resource.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param mixed $value The parameter's value.
-	 * @return int|string|null The identifier, or null when the value names no resource.
-	 */
-	private static function resourceIdentifier( $value ) {
-		if ( is_string( $value ) && 1 === preg_match( '/^[0-9]+$/D', $value ) ) {
-			$value = (int) $value;
-		}
-
-		if ( is_int( $value ) ) {
-			return $value > 0 ? $value : null;
-		}
-
-		return is_string( $value ) && '' !== trim( $value ) ? $value : null;
 	}
 }

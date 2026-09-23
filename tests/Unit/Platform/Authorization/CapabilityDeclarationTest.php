@@ -104,13 +104,15 @@ final class CapabilityDeclarationTest extends TestCase {
 	/**
 	 * Tests that the whole declaration is built and read with WordPress absent (DRY rule 12).
 	 *
-	 * Nothing is stubbed: a WordPress call would be a fatal error for an undefined function.
+	 * Nothing is stubbed here. A WordPress function is then either undefined, a fatal error when
+	 * called, or left behind by an earlier test's Brain Monkey stub, which throws when it is
+	 * called without being mocked; either way a WordPress call fails this test.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_it_is_built_and_read_with_wordpress_absent(): void {
-		$this->assertFalse( function_exists( 'add_role' ), 'WordPress is loaded in the unit suite, so this test would prove nothing.' );
-		$this->assertFalse( function_exists( '__' ), 'WordPress is loaded in the unit suite, so this test would prove nothing.' );
+		$this->assertFalse( defined( 'WPINC' ), 'WordPress is loaded in the unit suite, so this test would prove nothing.' );
+		$this->assertFalse( class_exists( 'WP_Roles', false ), 'WordPress is loaded in the unit suite, so this test would prove nothing.' );
 
 		$declaration = new CapabilityDeclaration();
 
