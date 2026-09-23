@@ -69,3 +69,11 @@ releasable.
   and gross, frozen exchange rates with a fingerprint, locales, addresses, date ranges,
   time-ordered identifiers, and one table of error codes with its HTTP status and
   translatable message per code.
+- The database layer, `SEOCart\Platform\Database`, not yet wired into the plugin. It has
+  three parts:
+    - A transaction wrapper that nests with savepoints, refuses to commit after `$wpdb`
+      reconnects or after a commit it did not send, and re-runs a deadlocked unit of work.
+    - A lock service that uses `GET_LOCK` where a probe shows it can be trusted and a
+      `locks` table otherwise.
+    - A migrator that records each migration and checks every table against its declaration
+      in `information_schema`. It runs as `wp seocart migrate`.
