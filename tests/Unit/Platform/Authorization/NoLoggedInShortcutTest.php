@@ -20,8 +20,7 @@ use PHPUnit\Framework\TestCase;
  * a logged-in path and a guest path. The authorization path therefore has no such branch: every
  * decision goes through current_user_can(), and a visitor who is not logged in is simply a user
  * with no capabilities. This test reads the module's source for the function name, as a call or
- * as a callback string, until the SEOCart coding standard carries the equivalent sniff that
- * security.md §5 names.
+ * as a callback string, until the SEOCart coding standard carries an equivalent sniff.
  *
  * Planted violation: add `if ( is_user_logged_in() ) { return true; }` as the first line of
  * PermissionCallback::__invoke(). The failure must name the file and the line.

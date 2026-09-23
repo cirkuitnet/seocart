@@ -16,14 +16,14 @@ use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 
 /**
- * Pins the declaration to the security model, and proves it is data.
+ * Pins the declaration to the intended capability model, and proves it is data.
  *
- * The expected lists below are the specification, security.md §4.2 and §4.3, restated once
- * on purpose: a test that derived them from the class under test would prove nothing. Two
- * additions to the written model are pinned here too: `edit_private_seocart_products`, which
- * core's map_meta_cap() uses to decide who may edit someone else's private product, and core's
- * `read` on every shipped role, without which WordPress refuses the user the dashboard and
- * their own profile.
+ * The expected lists below are that model, the capability groups and the role bundles,
+ * restated once on purpose: a test that derived them from the class under test would prove
+ * nothing. Two capabilities are there because WordPress needs them:
+ * `edit_private_seocart_products`, which core's map_meta_cap() uses to decide who may edit
+ * someone else's private product, and core's `read` on every shipped role, without which
+ * WordPress refuses the user the dashboard and their own profile.
  *
  * @since 0.1.0
  */
@@ -164,7 +164,7 @@ final class CapabilityDeclarationTest extends TestCase {
 	}
 
 	/**
-	 * Tests that meta capabilities are declared apart, as security.md §4.4 names them, and never granted to a role.
+	 * Tests that meta capabilities are declared apart from primitives, and never granted to a role.
 	 *
 	 * @since 0.1.0
 	 */
