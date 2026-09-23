@@ -33,10 +33,14 @@ use PHPUnit\Framework\TestCase;
  *   `intdiv()` and `%` are the integer forms.
  * - A call to a function that returns a float or converts through one: floatval, doubleval,
  *   round, floor, ceil, fdiv, fmod, fpow, pow, sqrt, exp, expm1, log, log10, log1p, pi, the
- *   trigonometric and hyperbolic functions, hypot, deg2rad, rad2deg, lcg_value, microtime,
- *   number_format, abs (a float for the smallest integer), array_sum and array_product (a
- *   float on overflow), hexdec, octdec and bindec (a float past 64 bits), is_nan,
- *   is_finite, is_infinite, json_decode and unserialize (floats from text), and settype.
+ *   trigonometric and hyperbolic functions, hypot, deg2rad, rad2deg, lcg_value, microtime and
+ *   gettimeofday (the time as a float), number_format, abs (a float for the smallest
+ *   integer), array_sum and array_product (a float on overflow), hexdec, octdec, bindec and
+ *   base_convert (through a float past 64 bits), is_nan, is_finite, is_infinite, json_decode
+ *   and unserialize (floats from text), and settype.
+ * - A string literal that names one of those functions, whatever the case and with or without
+ *   a leading backslash: a function passed by name, as in `array_map( 'floatval', $list )` or
+ *   `call_user_func( 'round', $value )`, is called all the same.
  * - A call to Randomizer::getFloat() or nextFloat().
  * - A float constant: PHP_FLOAT_*, INF, NAN, M_*, PHP_ROUND_* and the float filters.
  * - A printf-style format written in the call with a float conversion (%e, %f, %g, %h and
@@ -71,6 +75,7 @@ final class FloatFreeKernelTest extends TestCase {
 		'atan',
 		'atan2',
 		'atanh',
+		'base_convert',
 		'bindec',
 		'ceil',
 		'cos',
@@ -84,6 +89,7 @@ final class FloatFreeKernelTest extends TestCase {
 		'floor',
 		'fmod',
 		'fpow',
+		'gettimeofday',
 		'hexdec',
 		'hypot',
 		'is_finite',
@@ -236,33 +242,38 @@ final class FloatFreeKernelTest extends TestCase {
 	 */
 	public function test_every_float_rule_fires_on_a_planted_violation(): void {
 		$planted = array(
-			'float literal'         => '$a = 1.5;',
-			'exponent literal'      => '$a = 1e3;',
-			'integer past 64 bits'  => '$a = 9223372036854775808;',
-			'float cast'            => '$a = (float) $b;',
-			'double cast'           => '$a = (double) $b;',
-			'float parameter type'  => 'function f( float $a ): int { return 1; }',
-			'float return type'     => 'function f(): float { return 1; }',
-			'union with float'      => 'function f( int|float $a ) {}',
-			'division'              => '$a = $b / 100;',
-			'division assignment'   => '$a /= 100;',
-			'power'                 => '$a = 10 ** $b;',
-			'power assignment'      => '$a **= 2;',
-			'round'                 => '$a = round( $b );',
-			'fully qualified floor' => '$a = \floor( $b );',
-			'abs'                   => '$a = abs( $b );',
-			'array_sum'             => '$a = array_sum( $b );',
-			'microtime'             => '$a = microtime( true );',
-			'number_format'         => '$a = number_format( $b );',
-			'json_decode'           => '$a = json_decode( $b );',
-			'Randomizer::getFloat'  => '$a = $random->getFloat( 0, 1 );',
-			'PHP_FLOAT_EPSILON'     => '$a = PHP_FLOAT_EPSILON;',
-			'M_PI'                  => '$a = M_PI;',
-			'INF'                   => '$a = INF;',
-			'PHP_ROUND_HALF_UP'     => '$a = PHP_ROUND_HALF_UP;',
-			'sprintf %f'            => '$a = sprintf( "%.2f", $b );',
-			'sprintf %1$e'          => '$a = sprintf( \'%1$e\', $b );',
-			'fprintf %g'            => 'fprintf( $h, \'%g\', $b );',
+			'float literal'          => '$a = 1.5;',
+			'exponent literal'       => '$a = 1e3;',
+			'integer past 64 bits'   => '$a = 9223372036854775808;',
+			'float cast'             => '$a = (float) $b;',
+			'double cast'            => '$a = (double) $b;',
+			'float parameter type'   => 'function f( float $a ): int { return 1; }',
+			'float return type'      => 'function f(): float { return 1; }',
+			'union with float'       => 'function f( int|float $a ) {}',
+			'division'               => '$a = $b / 100;',
+			'division assignment'    => '$a /= 100;',
+			'power'                  => '$a = 10 ** $b;',
+			'power assignment'       => '$a **= 2;',
+			'round'                  => '$a = round( $b );',
+			'fully qualified floor'  => '$a = \floor( $b );',
+			'abs'                    => '$a = abs( $b );',
+			'array_sum'              => '$a = array_sum( $b );',
+			'microtime'              => '$a = microtime( true );',
+			'number_format'          => '$a = number_format( $b );',
+			'json_decode'            => '$a = json_decode( $b );',
+			'Randomizer::getFloat'   => '$a = $random->getFloat( 0, 1 );',
+			'PHP_FLOAT_EPSILON'      => '$a = PHP_FLOAT_EPSILON;',
+			'M_PI'                   => '$a = M_PI;',
+			'INF'                    => '$a = INF;',
+			'PHP_ROUND_HALF_UP'      => '$a = PHP_ROUND_HALF_UP;',
+			'sprintf %f'             => '$a = sprintf( "%.2f", $b );',
+			'sprintf %1$e'           => '$a = sprintf( \'%1$e\', $b );',
+			'fprintf %g'             => 'fprintf( $h, \'%g\', $b );',
+			'gettimeofday'           => '$a = gettimeofday( true );',
+			'base_convert'           => '$a = base_convert( $b, 16, 10 );',
+			'array_map floatval'     => '$a = array_map( \'floatval\', $b );',
+			'call_user_func round'   => '$a = call_user_func( "\\\\round", $b );',
+			'callable in a variable' => '$f = \'ROUND\'; $a = $f( $b );',
 		);
 
 		foreach ( $planted as $rule => $code ) {
@@ -278,6 +289,7 @@ final class FloatFreeKernelTest extends TestCase {
 			'sprintf without floats'   => '$a = sprintf( \'%1$s is %2$d%% of %3$x\', $b, $c, $d );',
 			'hexadecimal integer'      => '$a = 0x3FFFFFFFFFFFFFFF;',
 			'a variable format'        => '$a = vsprintf( $format, $values );',
+			'a word in a sentence'     => '$a = \'round the total\' . "abs." . \'floor_plan\';',
 		);
 
 		foreach ( $look_alikes as $name => $code ) {
@@ -334,6 +346,8 @@ final class FloatFreeKernelTest extends TestCase {
 
 			if ( $token->is( T_DNUMBER ) ) {
 				$violations[] = $token->line . ': float literal ' . $token->text;
+			} elseif ( $token->is( T_CONSTANT_ENCAPSED_STRING ) && in_array( strtolower( ltrim( substr( $token->text, 1, -1 ), '\\' ) ), self::FLOAT_FUNCTIONS, true ) ) {
+				$violations[] = $token->line . ': function named in a string, ' . $token->text;
 			} elseif ( $token->is( T_DOUBLE_CAST ) ) {
 				$violations[] = $token->line . ': cast ' . $token->text;
 			} elseif ( '/' === $token->text || $token->is( array( T_DIV_EQUAL, T_POW, T_POW_EQUAL ) ) ) {

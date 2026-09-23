@@ -27,12 +27,20 @@ use SEOCart\Tools\phpcs\SEOCart\Sniffs\DRY\MoneyArithmeticInInterfacesSniff;
  * - `$arithmeticMethods` must equal the public methods, of any class under src/Support
  *   (Schema/ aside), that compute an amount: a method whose declared return type is an amount
  *   type — Money, TaxedMoney or Decimal, or `array` on one of those (allocate()) — except a
- *   static method none of whose parameters is an amount (it builds an amount from scalars:
- *   Money::of(), Decimal::of()) and a component getter (an instance method with no parameters
- *   that returns the property of the same name: TaxedMoney::net(), ConversionContext::rate()).
- * - `$accessors` must equal the public instance methods of an amount type that take no
- *   parameter and return a bare number, `int` or `string`: Money::minorUnits(),
- *   Decimal::toString() and their kind.
+ *   static method that builds an amount from scalars (Money::of(), Decimal::of()) and a
+ *   component getter (an instance method with no parameters that returns the property of the
+ *   same name: TaxedMoney::net(), ConversionContext::rate()). A static method counts as
+ *   building from scalars only when no parameter can carry an amount: a parameter typed with an
+ *   amount type, `array`, `iterable`, `object` or `mixed` makes it arithmetic, so
+ *   `Money::sum( array $amounts ): Money` is.
+ * - `$accessors` must equal the public methods of an amount type that return a bare number,
+ *   `int` or `string`, except a comparison: a method with parameters that are all amounts
+ *   (Money::compare()). Money::minorUnits() is an accessor, and so would be a
+ *   `shareOf( int $basis_points ): int` that computes a number from its parameters.
+ *
+ * Classification reads native types only, so every public method under src/Support must
+ * declare a native return type and native parameter types; a method that relies on `@return`
+ * alone would otherwise be classified as nothing at all.
  *
  * TaxedMoney and Decimal are in scope, not just Money: the sniff matches names, not types, and
  * DRY rule 7 is about recomputing amounts in an adapter, which a TaxedMoney or a Decimal does
@@ -46,11 +54,27 @@ final class MoneyApiListsTest extends TestCase {
 	/**
 	 * The amount types: the classes whose values are amounts or amounts on their way to rounding.
 	 *
+	 * A class is an amount type exactly when one of its public instance methods returns a new
+	 * value of its own type: amounts are values that operations combine into new amounts. A class
+	 * whose values are only built and read (Currency, Percentage, Locale) is not one, and a class
+	 * that converts into amounts is covered through its return types. The list is kept by hand so
+	 * that a new amount type is a visible decision; test_amount_types_are_the_classes_closed_under_an_operation()
+	 * derives the same set from the code and fails when the two differ.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @var list<class-string>
 	 */
 	private const AMOUNT_TYPES = array( Money::class, TaxedMoney::class, Decimal::class );
+
+	/**
+	 * Parameter types that can carry an amount without naming an amount type.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<string>
+	 */
+	private const CONTAINER_TYPES = array( 'array', 'iterable', 'mixed', 'object' );
 
 	/**
 	 * Loads PHP_CodeSniffer's autoloader, which Composer does not register, for the sniff's interface.
@@ -105,6 +129,72 @@ final class MoneyApiListsTest extends TestCase {
 	}
 
 	/**
+	 * Tests that every public method under src/Support declares native types, which the classification reads.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_every_public_method_declares_native_types(): void {
+		$untyped = array();
+
+		foreach ( self::supportClasses() as $reflection ) {
+			foreach ( $reflection->getMethods( \ReflectionMethod::IS_PUBLIC ) as $method ) {
+				if ( $method->getDeclaringClass()->getName() !== $reflection->getName() || ! $method->isUserDefined() ) {
+					continue;
+				}
+
+				$where = $reflection->getName() . '::' . $method->getName() . '()';
+
+				if ( ! $method->isConstructor() && ! $method->hasReturnType() ) {
+					$untyped[] = $where . ' has no native return type';
+				}
+
+				foreach ( $method->getParameters() as $parameter ) {
+					if ( ! $parameter->hasType() ) {
+						$untyped[] = $where . ' has no native type for $' . $parameter->getName();
+					}
+				}
+			}
+		}
+
+		$this->assertSame( array(), $untyped, 'The money lists are derived from native types; a type given only in a docblock hides a method from them.' );
+	}
+
+	/**
+	 * Tests that the hand-kept amount types are exactly the classes closed under an operation.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_amount_types_are_the_classes_closed_under_an_operation(): void {
+		foreach ( self::AMOUNT_TYPES as $type ) {
+			$this->assertTrue( class_exists( $type ), 'MoneyApiListsTest::AMOUNT_TYPES names a class that does not exist: ' . $type );
+		}
+
+		$closed = array();
+
+		foreach ( self::supportClasses() as $reflection ) {
+			if ( $reflection->isInterface() || $reflection->isEnum() ) {
+				continue;
+			}
+
+			foreach ( $reflection->getMethods( \ReflectionMethod::IS_PUBLIC ) as $method ) {
+				if ( ! $method->isStatic() && $method->getDeclaringClass()->getName() === $reflection->getName()
+					&& in_array( $reflection->getName(), self::typeNames( $method->getReturnType(), $reflection ), true )
+				) {
+					$closed[] = $reflection->getName();
+					break;
+				}
+			}
+		}
+
+		$expected = self::AMOUNT_TYPES;
+
+		sort( $closed );
+		sort( $expected );
+
+		$this->assertSame( $closed, $expected, 'MoneyApiListsTest::AMOUNT_TYPES must list exactly the classes under src/Support with a public instance method that returns their own type.' );
+	}
+
+	/**
 	 * Tests the classification on methods whose kind is known, so a classifier that finds nothing cannot pass.
 	 *
 	 * @since 0.1.0
@@ -116,9 +206,10 @@ final class MoneyApiListsTest extends TestCase {
 		$this->assertContains( Money::class . '::allocate', $classified['arithmetic']['allocate'], 'An array of amounts counts.' );
 		$this->assertContains( Money::class . '::ofDecimal', $classified['arithmetic']['ofdecimal'], 'A static method that rounds a Decimal counts.' );
 		$this->assertContains( Money::class . '::minorUnits', $classified['accessors']['minorunits'] );
+		$this->assertContains( Decimal::class . '::scale', $classified['accessors']['scale'] );
 		$this->assertArrayNotHasKey( 'of', $classified['arithmetic'], 'Money::of() builds an amount from scalars.' );
 		$this->assertArrayNotHasKey( 'net', $classified['arithmetic'], 'TaxedMoney::net() returns a component, it computes nothing.' );
-		$this->assertArrayNotHasKey( 'compare', $classified['accessors'], 'A comparison takes an operand.' );
+		$this->assertArrayNotHasKey( 'compare', $classified['accessors'], 'A comparison takes only amounts.' );
 	}
 
 	/**
@@ -187,31 +278,44 @@ final class MoneyApiListsTest extends TestCase {
 	 *
 	 * @param \ReflectionClass  $reflection The class.
 	 * @param \ReflectionMethod $method     The method.
-	 * @return bool True for a parameterless instance method of an amount type returning int or string.
+	 * @return bool True for a method of an amount type that returns int or string, unless it is a
+	 *              comparison: a method whose parameters, one or more, are all amounts.
 	 *
 	 * @phpstan-param \ReflectionClass<object> $reflection
 	 */
 	private static function exposesARawNumber( \ReflectionClass $reflection, \ReflectionMethod $method ): bool {
-		return in_array( $reflection->getName(), self::AMOUNT_TYPES, true )
-			&& ! $method->isStatic()
-			&& 0 === $method->getNumberOfParameters()
-			&& array() !== array_intersect( self::typeNames( $method->getReturnType(), $reflection ), array( 'int', 'string' ) );
+		if ( ! in_array( $reflection->getName(), self::AMOUNT_TYPES, true )
+			|| array() === array_intersect( self::typeNames( $method->getReturnType(), $reflection ), array( 'int', 'string' ) )
+		) {
+			return false;
+		}
+
+		$parameters = $method->getParameters();
+
+		foreach ( $parameters as $parameter ) {
+			if ( array() === array_intersect( self::typeNames( $parameter->getType(), $reflection ), self::AMOUNT_TYPES ) ) {
+				return true;
+			}
+		}
+
+		return array() === $parameters;
 	}
 
 	/**
-	 * Tells whether any parameter of a method is an amount.
+	 * Tells whether any parameter of a method can carry an amount.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param \ReflectionClass  $reflection The class.
 	 * @param \ReflectionMethod $method     The method.
-	 * @return bool True when a parameter's type includes an amount type.
+	 * @return bool True when a parameter's type includes an amount type or a type that can hold
+	 *              amounts: array, iterable, object or mixed.
 	 *
 	 * @phpstan-param \ReflectionClass<object> $reflection
 	 */
 	private static function takesAnAmount( \ReflectionClass $reflection, \ReflectionMethod $method ): bool {
 		foreach ( $method->getParameters() as $parameter ) {
-			if ( array() !== array_intersect( self::typeNames( $parameter->getType(), $reflection ), self::AMOUNT_TYPES ) ) {
+			if ( array() !== array_intersect( self::typeNames( $parameter->getType(), $reflection ), array_merge( self::AMOUNT_TYPES, self::CONTAINER_TYPES ) ) ) {
 				return true;
 			}
 		}
