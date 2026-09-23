@@ -77,3 +77,6 @@ releasable.
       `locks` table otherwise.
     - A migrator that records each migration and checks every table against its declaration
       in `information_schema`. It runs as `wp seocart migrate`.
+- The authorization check that application services use: the acting user or process is
+  named explicitly, never assumed from the logged-in user, and an action it may not take
+  fails with a "not allowed" error (HTTP 403) that names the capability it needs.
