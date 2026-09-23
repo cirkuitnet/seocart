@@ -116,6 +116,18 @@ final class AuthorizerTest extends TestCase {
 			}
 		);
 
+		// Post 10 is a product, post 11 an ordinary post; nothing else exists.
+		Functions\when( 'get_post_type' )->alias(
+			static function ( $post ) {
+				$types = array(
+					10 => 'seocart_product',
+					11 => 'post',
+				);
+
+				return $types[ $post ] ?? false;
+			}
+		);
+
 		Functions\when( '__' )->returnArg();
 	}
 
@@ -170,8 +182,9 @@ final class AuthorizerTest extends TestCase {
 	 * The stubs report an administrator as logged in who may do anything. A visitor, another
 	 * user and a system actor bound to another user must each be judged on their own grants.
 	 *
-	 * Planted violation: in Authorizer::allows(), change the primitive branch's `$actor->userId()`
-	 * to `$actor->userId() ?: get_current_user_id()`: a visitor then acts as whoever is logged in.
+	 * Planted violations: in Authorizer::allows(), change `$actor->userId()` to
+	 * `$actor->userId() ?: get_current_user_id()`, in the primitive branch or in the meta
+	 * capability branch: a visitor then acts as whoever is logged in.
 	 *
 	 * @since 0.1.0
 	 */
@@ -179,9 +192,36 @@ final class AuthorizerTest extends TestCase {
 		$this->assertFalse( $this->authorizer->allows( Actor::user( 0 ), 'seocart_manage_inventory' ), 'A visitor.' );
 		$this->assertFalse( $this->authorizer->allows( Actor::user( 7 ), 'seocart_manage_inventory' ), 'Another user.' );
 		$this->assertFalse( $this->authorizer->allows( Actor::system( 'cli', 7 ), 'seocart_manage_inventory' ), 'A system actor bound to another user.' );
+		$this->assertFalse( $this->authorizer->allows( Actor::user( 0 ), 'seocart_view_order', 42 ), 'A visitor, on a resource the logged-in administrator may see.' );
 
 		$this->assertSame( 0, $this->loggedInUserReads, 'The authorizer consulted the logged-in user.' );
-		$this->assertSame( array( 0, 7, 7 ), array_column( $this->userCanCalls, 0 ), 'user_can() must be asked about the actor\'s user.' );
+		$this->assertSame( array( 0, 7, 7, 0 ), array_column( $this->userCanCalls, 0 ), 'user_can() must be asked about the actor\'s user.' );
+	}
+
+	/**
+	 * Tests that a product meta capability is checked only on a product.
+	 *
+	 * Core maps `edit_seocart_product` through the type of the post the check names, so on an
+	 * ordinary post it would answer with the capabilities for editing posts, which an editor
+	 * holds. The user here holds the capability on posts 10 and 11 alike; only post 10, the
+	 * product, may be allowed.
+	 *
+	 * Planted violation: in Authorizer::isAbout(), return `true` first.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_product_meta_capability_is_checked_only_on_a_product(): void {
+		$this->grants[5] = array( 'edit_seocart_product@10', 'edit_seocart_product@11', 'delete_seocart_product@11', 'read_seocart_product@11' );
+
+		$this->assertTrue( $this->authorizer->allows( Actor::user( 5 ), 'edit_seocart_product', 10 ), 'A product.' );
+		$this->assertTrue( $this->authorizer->allows( Actor::user( 5 ), 'edit_seocart_product', '10' ), 'A product, its id written as digits.' );
+		$this->assertFalse( $this->authorizer->allows( Actor::user( 5 ), 'edit_seocart_product', 11 ), 'An ordinary post.' );
+		$this->assertFalse( $this->authorizer->allows( Actor::user( 5 ), 'delete_seocart_product', 11 ), 'An ordinary post.' );
+		$this->assertFalse( $this->authorizer->allows( Actor::user( 5 ), 'read_seocart_product', 11 ), 'An ordinary post.' );
+		$this->assertFalse( $this->authorizer->allows( Actor::user( 5 ), 'edit_seocart_product', 12 ), 'A post that does not exist.' );
+		$this->assertFalse( $this->authorizer->allows( Actor::user( 5 ), 'edit_seocart_product', '0190c8a2-uuid' ), 'A product is addressed by its post id.' );
+
+		$this->assertSame( array( array( 5, 'edit_seocart_product', 10 ), array( 5, 'edit_seocart_product', 10 ) ), $this->userCanCalls, 'Only the product may be asked about.' );
 	}
 
 	/**

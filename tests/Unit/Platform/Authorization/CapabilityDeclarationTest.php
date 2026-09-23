@@ -14,6 +14,8 @@ namespace SEOCart\Tests\Unit\Platform\Authorization;
 use PHPUnit\Framework\TestCase;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Authorization\ProductCapabilities;
+use SEOCart\Tests\Support\ChildProcessProbe;
+use SEOCart\Tests\Support\DeclarationSnapshot;
 
 /**
  * Pins the declaration to the intended capability model, and proves it is data.
@@ -102,30 +104,34 @@ final class CapabilityDeclarationTest extends TestCase {
 	}
 
 	/**
-	 * Tests that the whole declaration is built and read with WordPress absent (DRY rule 12).
+	 * Tests that the whole declaration is built and read in a process without WordPress (DRY rule 12).
 	 *
-	 * Nothing is stubbed here. A WordPress function is then either undefined, a fatal error when
-	 * called, or left behind by an earlier test's Brain Monkey stub, which throws when it is
-	 * called without being mocked; either way a WordPress call fails this test.
+	 * The test process cannot prove that: Brain Monkey, used by earlier unit tests, leaves real
+	 * functions behind under WordPress's names, such as apply_filters() and absint(), and a call
+	 * to one of them succeeds quietly. So the declaration is built, and every accessor read, by
+	 * tests/Support/declaration-probe.php in a fresh process that loads only the unit bootstrap,
+	 * where a WordPress call is a fatal error. The answers must equal the ones given here, which
+	 * also shows that the probe really read the declaration.
+	 *
+	 * Planted violations: in the CapabilityDeclaration constructor, add
+	 * `\apply_filters( 'seocart_capabilities', null );`, or `\absint( 1 );`. The probe must fail
+	 * with "Call to undefined function".
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_it_is_built_and_read_with_wordpress_absent(): void {
-		$this->assertFalse( defined( 'WPINC' ), 'WordPress is loaded in the unit suite, so this test would prove nothing.' );
-		$this->assertFalse( class_exists( 'WP_Roles', false ), 'WordPress is loaded in the unit suite, so this test would prove nothing.' );
+	public function test_it_is_built_and_read_in_a_process_without_wordpress(): void {
+		$report = ChildProcessProbe::run( dirname( __DIR__, 4 ) . '/tests/Support/declaration-probe.php' );
 
-		$declaration = new CapabilityDeclaration();
+		$this->assertFalse( $report['wordpress_loaded'], 'The probe loaded WordPress, so it cannot show that the declaration needs none.' );
+		$this->assertSame( array(), $report['wordpress_functions'], 'WordPress functions exist in the probe process, so a call to one would not fail there.' );
+		$this->assertSame( DeclarationSnapshot::take(), $report['snapshot'], 'The declaration answered differently in a process without WordPress.' );
 
-		foreach ( $declaration->roles() as $role ) {
-			$this->assertSame( $declaration->isShippedRole( $role ), null !== $declaration->roleName( $role ), "The {$role} role has a name exactly when the plugin ships it." );
-			$this->assertNotSame( array(), $declaration->bundle( $role ), "The {$role} role has an empty bundle." );
+		foreach ( $report['snapshot']['roles'] as $role => $answers ) {
+			$this->assertSame( $answers['shipped'], null !== $answers['name'], "The {$role} role has a name exactly when the plugin ships it." );
+			$this->assertNotSame( array(), $answers['bundle'], "The {$role} role has an empty bundle." );
 		}
 
-		foreach ( $declaration->primitives() as $capability ) {
-			$this->assertNotNull( $declaration->group( $capability ), $capability );
-		}
-
-		$this->assertNotSame( array(), $declaration->metaCapabilities() );
+		$this->assertCount( count( $this->declaration->primitives() ), $report['snapshot']['primitives'], 'The probe did not read every primitive.' );
 	}
 
 	/**

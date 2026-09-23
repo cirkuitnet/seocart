@@ -35,7 +35,8 @@ defined( 'ABSPATH' ) || exit;
  * - a declared primitive is checked without a resource;
  * - a declared meta capability is checked on a resource. A resource that names nothing — none
  *   at all, zero, a negative number, a blank string, or a value that is neither a number nor a
- *   string — is denied without asking anyone.
+ *   string — is denied without asking anyone, and so is a product meta capability on anything
+ *   but a product post.
  *
  * Anything else, including core capabilities such as `read` or `exist` and a primitive with a
  * resource, is a programming error: an InvalidArgumentException, never an answer.
@@ -115,7 +116,30 @@ final class Authorizer {
 
 		$usable = self::resourceIdentifier( $identifier );
 
-		return null !== $usable && user_can( $actor->userId(), $capability, $usable );
+		return null !== $usable && self::isAbout( $capability, $usable ) && user_can( $actor->userId(), $capability, $usable );
+	}
+
+	/**
+	 * Tells whether a resource is one the meta capability can be about.
+	 *
+	 * Core maps the product post type's meta capabilities through the type of whichever post the
+	 * check names: `edit_seocart_product` on an ordinary post is answered with the capabilities
+	 * for editing posts, which an editor holds. They are therefore checked only on a post of the
+	 * product post type; anything else is denied without asking. The plugin's own meta
+	 * capabilities are left to their resolvers, which look the resource up themselves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string     $capability A declared meta capability.
+	 * @param int|string $identifier A usable resource identifier.
+	 * @return bool False for a product meta capability on anything but a product post.
+	 */
+	private static function isAbout( string $capability, int|string $identifier ): bool {
+		if ( ! in_array( $capability, ProductCapabilities::metaCapabilities(), true ) ) {
+			return true;
+		}
+
+		return is_int( $identifier ) && ProductCapabilities::POST_TYPE === get_post_type( $identifier );
 	}
 
 	/**

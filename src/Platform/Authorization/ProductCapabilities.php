@@ -31,13 +31,26 @@ defined( 'ABSPATH' ) || exit;
  * Three keys are meta capabilities: `edit_post`, `read_post` and `delete_post`. Core maps them
  * per post, through this map, before the plugin's map_meta_cap callback sees the check, and
  * they are never granted to a role. `read` stays core's own primitive: a published product may
- * be read by anyone who may read a published post.
+ * be read by anyone who may read a published post. Core maps them through the type of whichever
+ * post the check names, so the Authorizer checks them only on a post of POST_TYPE.
  *
  * Nothing here calls WordPress, so the whole map is built and tested without it.
  *
  * @since 0.1.0
  */
 final class ProductCapabilities {
+
+	/**
+	 * The name of the product post type these capabilities belong to.
+	 *
+	 * The catalog module registers the post type under this name; the Authorizer checks the
+	 * product meta capabilities only on posts of this type.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const POST_TYPE = 'seocart_product';
 
 	/**
 	 * The singular capability base: meta capabilities are named after it.

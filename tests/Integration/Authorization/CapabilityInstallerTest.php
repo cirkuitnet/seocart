@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Integration\Authorization;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Authorization\CapabilityInstaller;
 use SEOCart\Tests\Support\BootstrapProbes;
+use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\Doubles\InMemoryGrantLedger;
 use SEOCart\Tests\Support\PluginOwnership;
 use SEOCart\Tests\Support\QueryCounter;
@@ -320,35 +321,16 @@ final class CapabilityInstallerTest extends WP_UnitTestCase {
 		return new CapabilityInstaller( $this->declaration, $ledger );
 	}
 
-
 	/**
 	 * Serves the front page in a child PHP process, with the plugin loaded, and returns the probe's report.
 	 *
-	 * The child inherits the test configuration path and WP_TESTS_SKIP_INSTALL from this process.
-	 *
 	 * @since 0.1.0
 	 *
-	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>} The report.
+	 * @return array<string, mixed> The report of tests/Support/idle-request-probe.php: plugin_loaded,
+	 *                              queries_run, queries, files and hooks.
 	 */
 	private static function serveOrdinaryRequestInChildProcess(): array {
-		$result_file = (string) tempnam( sys_get_temp_dir(), 'seocart-request-' );
-
-		$command = escapeshellarg( PHP_BINARY )
-			. ' ' . escapeshellarg( self::pluginDirectory() . '/tests/Support/idle-request-probe.php' )
-			. ' ' . escapeshellarg( $result_file )
-			. ' with-plugin 2>&1';
-
-		exec( $command, $output, $status );
-
-		$report = (string) file_get_contents( $result_file );
-
-		unlink( $result_file );
-
-		if ( 0 !== $status || '' === $report ) {
-			self::fail( "The request probe failed with exit status {$status}. Its output:\n" . implode( "\n", $output ) . "\n" );
-		}
-
-		return json_decode( $report, true, 512, JSON_THROW_ON_ERROR );
+		return ChildProcessProbe::run( self::pluginDirectory() . '/tests/Support/idle-request-probe.php', array( 'with-plugin' ) );
 	}
 
 	/**
