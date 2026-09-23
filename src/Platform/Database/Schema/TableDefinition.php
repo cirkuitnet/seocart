@@ -18,8 +18,8 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Everything that is true of one plugin table, declared once, in the module that owns it.
  *
- * Owns one fact: the table's declaration, every field of the storage document's table
- * declaration from the first migration on. Name, owning module, purpose, mutation pattern,
+ * Owns one fact: the table's declaration, complete from the first migration on. Name, owning
+ * module, purpose, mutation pattern,
  * columns with their classification, primary key, unique keys with the invariant each
  * enforces, indexes with the query each serves, retention policy and orphan policy.
  *

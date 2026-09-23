@@ -16,7 +16,7 @@ defined( 'ABSPATH' ) || exit;
 /**
  * How a table's rows are written, which decides the operations allowed on it.
  *
- * Owns one fact: the five mutation patterns of the storage conventions. Every table declares
+ * Owns one fact: the five ways a plugin table's rows may change. Every table declares
  * exactly one.
  *
  * @since 0.1.0

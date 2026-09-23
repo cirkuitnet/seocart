@@ -25,7 +25,7 @@ use SEOCart\Tests\Support\SecondConnection;
 // phpcs:disable WordPress.DB.DirectDatabaseQuery, WordPress.DB.RestrictedFunctions, WordPress.DB.PreparedSQL -- These tests drive the connection directly to play the parts of third parties and failures.
 
 /**
- * T1 to T13 and T15 to T18 of the Database design: what the wrapper commits, refuses and
+ * T1 to T13 and T15 to T18: what the wrapper commits, refuses and
  * reports, observed from a second connection, which sees only what is committed.
  *
  * Each test names its planted violation, a change to src/Platform/Database/Database.php or
@@ -834,8 +834,8 @@ final class TransactionTest extends DatabaseTestCase {
 	 * T18: the known limit, pinned. wpdb re-runs a statement on its new connection after error
 	 * 2006, where it commits on its own before the wrapper can refuse.
 	 *
-	 * No plant: this test documents a limit (design memo section 1.6, point 1; data-storage
-	 * section 5.1). It fails the day the limit is lifted, and whoever lifts it updates it.
+	 * No plant: this test documents a limit of any wrapper around wpdb, stated in the Database
+	 * class description. It fails the day the limit is lifted, and whoever lifts it updates it.
 	 *
 	 * @since 0.1.0
 	 */
@@ -864,7 +864,7 @@ final class TransactionTest extends DatabaseTestCase {
 		$this->assertSame(
 			1,
 			$this->committedRows( $b, 'id = 2' ),
-			'Known limit (design memo 1.6 point 1, data-storage 5.1): wpdb re-ran Y on its new connection, where it committed on its own before the wrapper regained control. If this now fails, the limit was lifted: update this test and the documents.'
+			'Known limit, stated in the Database class description: wpdb re-ran Y on its new connection, where it committed on its own before the wrapper regained control. If this now fails, the limit was lifted: update this test and that description.'
 		);
 	}
 

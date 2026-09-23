@@ -25,7 +25,7 @@ use SEOCart\Platform\Database\Schema\TableDefinition;
  *
  * This suite never loads WordPress, so building the declarations here proves they are data:
  * no I/O, no container, no translation and no WordPress call. The platform tables are held to
- * the storage catalogue: every key column it names, the keys it names, and nothing unclassified.
+ * the columns and keys each must have, and nothing unclassified.
  *
  * @since 0.1.0
  *
@@ -47,11 +47,11 @@ final class SchemaDeclarationsTest extends TestCase {
 	}
 
 	/**
-	 * Tests that `migrations` carries the catalogue's key columns and keys, and that every column is classified.
+	 * Tests that `migrations` carries its key columns and keys, and that every column is classified.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_migrations_table_matches_the_catalogue(): void {
+	public function test_the_migrations_table_has_its_columns_and_keys(): void {
 		$table = PlatformTables::migrations();
 
 		$this->assertSame( 'Platform', $table->module() );
@@ -69,11 +69,11 @@ final class SchemaDeclarationsTest extends TestCase {
 	}
 
 	/**
-	 * Tests that `locks` carries the catalogue's columns and its primary key only.
+	 * Tests that `locks` carries its columns and its primary key only.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_locks_table_matches_the_catalogue(): void {
+	public function test_the_locks_table_has_its_columns_and_key(): void {
 		$table = PlatformTables::locks();
 
 		$this->assertSame( array( 'name', 'owner_token', 'acquired_at', 'expires_at', 'holder', 'created_at' ), self::columnNames( $table ) );

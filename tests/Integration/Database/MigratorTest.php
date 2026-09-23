@@ -36,7 +36,7 @@ use SEOCart\Tests\Support\SecondConnection;
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- These tests plant and inspect migrator state directly, as another runner or a crash would leave it.
 
 /**
- * M1 to M3, M5 to M9, M11 and M12 of the Database design, plus the bootstrap race and the
+ * M1 to M3, M5 to M9, M11 and M12, plus the bootstrap race and the
  * re-run of a migration whose tables already exist.
  *
  * Fixture migrations live in tests/Support/Migrations/ and create `test_` tables, which the
@@ -516,6 +516,11 @@ final class MigratorTest extends DatabaseTestCase {
 		$this->assertSame( MigrateCommand::EXIT_BLOCKED, $this->command( array( new PlatformBootstrapMigration(), $a, $c ), $lines )->run( array( 'wait' => '0' ) ) );
 		$this->assertContains( 'Another runner holds the schema lock, so nothing was changed. Run the command again later.', $lines );
 
+		if ( is_multisite() ) {
+			// On a network, --network iterates the sites: the network test covers that branch.
+			return;
+		}
+
 		$lines = array();
 
 		$this->assertSame( MigrateCommand::EXIT_FAILED, $this->command( array( new PlatformBootstrapMigration() ), $lines )->run( array( 'network' => true ) ) );
@@ -529,7 +534,7 @@ final class MigratorTest extends DatabaseTestCase {
 	 */
 	public function test_m11_network_migrates_every_site_of_the_batch(): void {
 		if ( ! is_multisite() ) {
-			$this->markTestSkipped( 'Needs a multisite test run (WP_MULTISITE=1). The multisite CI cell arrives with the kernel task F-KRN.' );
+			$this->markTestSkipped( 'Needs a multisite test run (WP_MULTISITE=1).' );
 		}
 
 		global $wpdb;

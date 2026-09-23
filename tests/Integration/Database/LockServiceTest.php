@@ -26,7 +26,7 @@ use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\SecondConnection;
 
 /**
- * L1 to L7 of the Database design: at most one holder, bounded waits, stale reclaim, and a
+ * L1 to L7: at most one holder, bounded waits, stale reclaim, and a
  * lease that knows when it is lost.
  *
  * Connection B plays the other runner. The table-mode sleeper is the barrier: whatever B must

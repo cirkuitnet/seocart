@@ -24,7 +24,7 @@ defined( 'ABSPATH' ) || exit;
  *
  * The type is written the way MySQL reports it, lowercase: `bigint unsigned`, `varchar(191)`,
  * `datetime(6)`, `decimal(24,12)`, `tinyint(1)`. A default is a plain literal, sent quoted.
- * No expression defaults, no ENUM and no generated columns: the storage conventions use none.
+ * No expression defaults, no ENUM and no generated columns: no plugin table uses any of them.
  * Pure data: constructing one does no I/O and calls no WordPress function.
  *
  * @since 0.1.0

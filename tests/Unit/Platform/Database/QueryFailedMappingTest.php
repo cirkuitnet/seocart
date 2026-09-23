@@ -128,7 +128,7 @@ final class QueryFailedMappingTest extends TestCase {
 
 		ksort( $table );
 
-		$this->assertSame( self::DOCUMENTED, $table, 'QueryFailed::CLASSES changed: update the documented table here and the design notes with it.' );
+		$this->assertSame( self::DOCUMENTED, $table, 'QueryFailed::CLASSES changed: update the documented table here in the same change.' );
 	}
 
 	/**
