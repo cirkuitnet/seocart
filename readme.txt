@@ -82,7 +82,7 @@ To build the plugin from source you need PHP, Composer, and Node.js with npm. Th
 
 == Privacy ==
 
-SEOCart 0.1.0 does not collect, store or share personal data. It sets no cookies, creates no database tables and contains no telemetry. The "External services" section lists every server the plugin contacts.
+SEOCart 0.1.0 does not collect, store or share personal data. It sets no cookies and contains no telemetry. On activation it creates its own database tables, which hold no personal data in this version. The "External services" section lists every server the plugin contacts.
 
 == Changelog ==
 

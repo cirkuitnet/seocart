@@ -13,10 +13,10 @@ under `[Unreleased]`. The release process moves those entries under the new vers
 ## [Unreleased]
 
 This is the repository bootstrap. **The plugin has no store features yet:** it has no
-products, cart, checkout, orders or payments, it creates no database tables, options, roles
-or scheduled jobs, and it registers no REST route, block, admin screen or WP-CLI command.
-What exists is the skeleton that the features will be built on, and the checks that keep it
-releasable.
+products, cart, checkout, orders or payments, and it registers no REST route, block, admin
+screen, scheduled job or WP-CLI command. Activation installs the foundation the features
+will be built on: the plugin's database tables, its roles and capabilities, and one
+installation record. The rest is the skeleton and the checks that keep it releasable.
 
 ### Added
 
@@ -118,3 +118,11 @@ releasable.
   is later rolled back is still kept. `wp seocart doctor` checks the schema, the
   migrations, the locks and the event outbox without changing anything, and exits
   non-zero when it finds a problem.
+- Installation. Activating the plugin installs it on the current site (and on each new site
+  of a network as it is created): its database tables, the store roles and capabilities,
+  and one small installation record, the only option the plugin autoloads. Deactivating and
+  uninstalling remove nothing, and a capability the site owner took away is never granted
+  again. While the database schema and the code disagree, the store refuses every change
+  with `store.unavailable` (HTTP 503) and says so in an admin notice. When the site's
+  address changes, or the site looks like a copy, Safe Mode stops the copy from acting as
+  the store until an administrator confirms it.
