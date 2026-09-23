@@ -16,6 +16,7 @@ use SEOCart\Application\Operations\Operations;
 use SEOCart\Interfaces\Operations\CliAdapter;
 use SEOCart\Interfaces\Operations\OperationInvoker;
 use SEOCart\Platform\Authorization\PermissionCallback;
+use SEOCart\Tests\Fixtures\Operations\Cli\FixtureMaintenanceCommand;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
 use SEOCart\Tests\Support\Doubles\TableErrorTranslator;
 use SEOCart\Tests\Support\OperationSurfaces;
@@ -26,16 +27,24 @@ use WP_UnitTestCase;
 /**
  * One declaration per operation, on every surface, in both directions.
  *
- * The first tests walk what the plugin itself registers: the routes of a REST server booted as a
- * request boots it, the abilities WordPress holds, and the commands the command adapter registers
- * for the production registry, together with the command classes under src/, against the
- * production registry. The plugin registers no operation yet, so these walks find nothing on
- * either side; they are the gate for the first operation and for the kernel's wiring.
+ * The first tests walk what the plugin itself registers — the routes of a REST server booted as a
+ * request boots it, and the abilities WordPress holds — against the production registry. The
+ * command half is split in two:
  *
- * The self-tests register the fixture through the adapters and must find nothing wrong, then plant
- * each violation — a route, an ability and a command that no operation declares, an operation
- * whose route and ability are not registered, an unlisted command class and a listed one that is
- * gone — and require each to be reported.
+ * - the operation commands: the commands the command adapter registers for the production registry
+ *   must be exactly the registry's commands. Real WP-CLI registrations are not observed yet: the
+ *   suite runs without WP-CLI, so the recorded list is the adapter's alone until the kernel
+ *   registers every command through a recording `add_command`, which then feeds this walk;
+ * - the maintenance commands: OperationSurfaceWalker::MAINTENANCE_COMMANDS must list exactly the
+ *   command classes under the `Cli/` directories of src/, each with its reason. They are checked
+ *   against that class search only, never against the registered list.
+ *
+ * The plugin registers no operation yet, so the operation walks find nothing on either side; they
+ * are the gate for the first operation and for the kernel's wiring. The self-tests register the
+ * fixture through the adapters and must find nothing wrong, then plant each violation — a route,
+ * an ability and a command that no operation declares, an operation whose surfaces are not
+ * registered, an unlisted command class and a listed one that is gone — and require each to be
+ * reported.
  *
  * @group contract
  *
@@ -70,11 +79,11 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Tests that every command resolves to a production operation or is a listed maintenance command, and back.
+	 * Tests that the commands registered for the production registry are exactly its operation commands.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_plugins_commands_resolve_to_its_operations_or_the_maintenance_list(): void {
+	public function test_the_plugins_operation_commands_resolve_to_its_operations(): void {
 		$commands = array();
 
 		( new CliAdapter( Operations::registry(), self::invoker() ) )->register(
@@ -85,10 +94,63 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 			static function (): void {}
 		);
 
-		$this->assertSame(
-			array(),
-			OperationSurfaceWalker::commandViolations( $commands, Operations::registry(), OperationSurfaceWalker::MAINTENANCE_COMMANDS, OperationSurfaceWalker::commandClasses() )
+		$this->assertSame( array(), OperationSurfaceWalker::commandViolations( $commands, Operations::registry(), OperationSurfaceWalker::MAINTENANCE_COMMANDS ) );
+	}
+
+	/**
+	 * Tests that the maintenance list names exactly the command classes under src/.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_maintenance_list_names_exactly_the_command_classes_under_src(): void {
+		$this->assertSame( array(), OperationSurfaceWalker::maintenanceViolations( OperationSurfaceWalker::MAINTENANCE_COMMANDS, OperationSurfaceWalker::commandClasses( 'src' ) ) );
+	}
+
+	/**
+	 * Tests the maintenance check on a fixture tree: a listed class passes, an unlisted one and a listed one that is gone fail.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_listed_maintenance_class_passes_and_an_unlisted_one_fails(): void {
+		$classes = OperationSurfaceWalker::commandClasses( 'tests/Fixtures/Operations' );
+		$listed  = array(
+			'seocart fixture-maintenance' => array(
+				'class'  => FixtureMaintenanceCommand::class,
+				'reason' => 'Stands for a maintenance command: operational tooling with no REST route or ability.',
+			),
 		);
+
+		$this->assertSame( array( FixtureMaintenanceCommand::class ), $classes, 'The class search did not find the fixture class, so the checks below would prove nothing.' );
+		$this->assertSame( array(), OperationSurfaceWalker::maintenanceViolations( $listed, $classes ) );
+		$this->assertSame(
+			array( 'The command class ' . FixtureMaintenanceCommand::class . ' is neither an operation\'s command nor listed as a maintenance command with its reason.' ),
+			OperationSurfaceWalker::maintenanceViolations( array(), $classes )
+		);
+		$this->assertSame(
+			array( 'The maintenance command seocart fixture-maintenance is listed, but its class ' . FixtureMaintenanceCommand::class . ' no longer exists: remove it from the list.' ),
+			OperationSurfaceWalker::maintenanceViolations( $listed, array() )
+		);
+	}
+
+	/**
+	 * Tests that a registered maintenance command is not an unresolved command, and an unlisted one is.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_registered_maintenance_command_is_not_an_unresolved_operation(): void {
+		$listed = array(
+			'seocart fixture-maintenance' => array(
+				'class'  => FixtureMaintenanceCommand::class,
+				'reason' => 'Stands for a maintenance command.',
+			),
+		);
+
+		$this->assertSame( array(), OperationSurfaceWalker::commandViolations( array( 'seocart fixture-maintenance' ), new OperationRegistry(), $listed ) );
+		$this->assertSame(
+			array( 'The command seocart fixture-maintenance resolves to no operation definition.' ),
+			OperationSurfaceWalker::commandViolations( array( 'seocart fixture-maintenance' ), new OperationRegistry(), array() )
+		);
+		$this->assertSame( array(), OperationSurfaceWalker::commandViolations( array(), new OperationRegistry(), $listed ), 'A listed maintenance command is not required to be registered.' );
 	}
 
 	/**
@@ -102,7 +164,7 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 
 		$this->assertSame( array(), OperationSurfaceWalker::restViolations( $surfaces->server(), $registry ) );
 		$this->assertSame( array(), OperationSurfaceWalker::abilityViolations( self::abilityNames(), $registry ) );
-		$this->assertSame( array(), OperationSurfaceWalker::commandViolations( array_keys( $surfaces->commands ), $registry, array(), array() ) );
+		$this->assertSame( array(), OperationSurfaceWalker::commandViolations( array_keys( $surfaces->commands ), $registry, array() ) );
 	}
 
 	/**
@@ -127,13 +189,13 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 		);
 		$this->assertSame(
 			array( 'The command seocart planted resolves to no operation definition.' ),
-			OperationSurfaceWalker::commandViolations( array_merge( array_keys( $surfaces->commands ), array( 'seocart planted' ) ), $registry, array(), array() )
+			OperationSurfaceWalker::commandViolations( array_merge( array_keys( $surfaces->commands ), array( 'seocart planted' ) ), $registry, array() )
 		);
 	}
 
 	/**
-	 * Tests that an operation whose route and ability were never registered is reported, so a walk
-	 * over an empty surface cannot pass for a clean one.
+	 * Tests that an operation whose route, ability and command were never registered is reported, so
+	 * a walk over an empty surface cannot pass for a clean one.
 	 *
 	 * @since 0.1.0
 	 */
@@ -152,39 +214,7 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 		);
 		$this->assertSame(
 			array( 'fixture_stock.adjust_stock declares the command seocart fixture-stock adjust, which is not registered.' ),
-			OperationSurfaceWalker::commandViolations( array(), $registry, array(), array() )
-		);
-	}
-
-	/**
-	 * Tests the maintenance list both ways: an unlisted command class fails, and so does a listed class that is gone.
-	 *
-	 * @since 0.1.0
-	 */
-	public function test_the_maintenance_list_is_checked_both_ways(): void {
-		$registry    = new OperationRegistry();
-		$maintenance = array(
-			'seocart migrate' => array(
-				'class'  => 'SEOCart\\Platform\\Database\\Cli\\MigrateCommand',
-				'reason' => 'Applies schema migrations: operational tooling with no REST route or ability.',
-			),
-		);
-
-		$this->assertSame(
-			array(),
-			OperationSurfaceWalker::commandViolations( array( 'seocart migrate' ), $registry, $maintenance, array( 'SEOCart\\Platform\\Database\\Cli\\MigrateCommand' ) ),
-			'A listed maintenance command that is registered and whose class exists is accepted.'
-		);
-		$this->assertSame(
-			array( 'The command class SEOCart\\Platform\\Cli\\DoctorCommand is neither an operation\'s command nor listed as a maintenance command with its reason.' ),
-			OperationSurfaceWalker::commandViolations( array( 'seocart migrate' ), $registry, $maintenance, array( 'SEOCart\\Platform\\Database\\Cli\\MigrateCommand', 'SEOCart\\Platform\\Cli\\DoctorCommand' ) )
-		);
-		$this->assertSame(
-			array(
-				'the maintenance command class SEOCart\\Platform\\Database\\Cli\\MigrateCommand declares the command seocart migrate, which is not registered.',
-				'The maintenance command seocart migrate is listed, but its class SEOCart\\Platform\\Database\\Cli\\MigrateCommand no longer exists: remove it from the list.',
-			),
-			OperationSurfaceWalker::commandViolations( array(), $registry, $maintenance, array() )
+			OperationSurfaceWalker::commandViolations( array(), $registry, array() )
 		);
 	}
 
@@ -194,11 +224,11 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_the_command_class_search_finds_only_command_classes(): void {
-		foreach ( OperationSurfaceWalker::commandClasses() as $class ) {
+		foreach ( OperationSurfaceWalker::commandClasses( 'src' ) as $class ) {
 			$this->assertMatchesRegularExpression( '/\\\\Cli\\\\[A-Za-z0-9]+Command$/', $class );
 		}
 
-		$this->assertNotContains( 'SEOCart\\Interfaces\\Operations\\CliCommand', OperationSurfaceWalker::commandClasses(), 'The operations\' command is registered per operation, not as a maintenance command.' );
+		$this->assertNotContains( 'SEOCart\\Interfaces\\Operations\\CliCommand', OperationSurfaceWalker::commandClasses( 'src' ), 'The operations\' command is registered per operation, not as a maintenance command.' );
 	}
 
 	/**

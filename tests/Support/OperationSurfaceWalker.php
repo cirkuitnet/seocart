@@ -28,9 +28,10 @@ use WP_REST_Server;
  *
  * The one exception is a maintenance command: operational tooling such as applying migrations,
  * which has no REST route or ability and so no definition. Those are an asserted set,
- * MAINTENANCE_COMMANDS, each with its class and the reason. A command class under a `Cli/`
- * directory of src/ that is not listed fails the walk, and so does a listed command whose class is
- * gone.
+ * MAINTENANCE_COMMANDS, each with its class and the reason, checked against the command classes
+ * under the `Cli/` directories of src/ in both directions (maintenanceViolations()): an unlisted
+ * class fails, and so does a listed class that is gone. They are never required to be registered,
+ * and a registered one is never taken for an unresolved operation command (commandViolations()).
  *
  * The REST walk reuses RoutePermissionWalker's decision of which routes are the plugin's, so the
  * two walks cannot disagree about that.
@@ -40,12 +41,19 @@ use WP_REST_Server;
 final class OperationSurfaceWalker {
 
 	/**
-	 * The maintenance commands: no operation definition by design.
+	 * The maintenance list: the commands that have no operation definition by design.
 	 *
-	 * Keyed by the command as WP_CLI::add_command() names it, such as `seocart migrate`, each with
-	 * the class that implements it and the reason it has no definition. Add a command here in the
-	 * change that adds its class; the walk fails until it is listed. Empty until the first
-	 * maintenance command is on this branch.
+	 * Keyed by the command as WP_CLI::add_command() names it, each with the class that implements it
+	 * and the reason it has no definition. A module that adds a maintenance command adds exactly one
+	 * entry here, in the same change as its class, for example:
+	 *
+	 *     'seocart migrate' => array(
+	 *         'class'  => 'SEOCart\\Platform\\Database\\Cli\\MigrateCommand',
+	 *         'reason' => 'Applies schema migrations: operational tooling with no REST route or ability.',
+	 *     ),
+	 *
+	 * The contract test fails until the class is listed, and fails again if the class goes away
+	 * while its entry stays. Empty until the first maintenance command is on this branch.
 	 *
 	 * @since 0.1.0
 	 *
@@ -119,20 +127,21 @@ final class OperationSurfaceWalker {
 	}
 
 	/**
-	 * Checks the plugin's commands against the registry and the maintenance set.
+	 * Checks the operation commands: the registered ones against the registry, both ways.
+	 *
+	 * A registered command that is a listed maintenance command is not an operation command and is
+	 * left out; a maintenance command is never required to be registered.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param string[]                                            $commands    Every command registered, as WP_CLI::add_command() names it.
 	 * @param OperationRegistry                                   $registry    The operations that should be registered.
-	 * @param array<string, array{class: string, reason: string}> $maintenance The maintenance commands.
-	 * @param string[]                                            $classes     The command classes found under `Cli/` directories of src/.
-	 * @return list<string> One message per unresolved, unregistered or unlisted command.
+	 * @param array<string, array{class: string, reason: string}> $maintenance The maintenance list.
+	 * @return list<string> One message per registered command without an operation and per operation command not registered.
 	 *
 	 * @phpstan-param list<string> $commands
-	 * @phpstan-param list<string> $classes
 	 */
-	public static function commandViolations( array $commands, OperationRegistry $registry, array $maintenance, array $classes ): array {
+	public static function commandViolations( array $commands, OperationRegistry $registry, array $maintenance ): array {
 		$declared = array();
 
 		foreach ( $registry->all() as $definition ) {
@@ -141,19 +150,30 @@ final class OperationSurfaceWalker {
 			}
 		}
 
-		foreach ( $maintenance as $command => $entry ) {
-			$declared[ $command ] = 'the maintenance command class ' . $entry['class'];
-		}
-
 		$registered = array();
 
 		foreach ( $commands as $command ) {
-			if ( str_starts_with( $command . ' ', CliBinding::ROOT . ' ' ) ) {
+			if ( str_starts_with( $command . ' ', CliBinding::ROOT . ' ' ) && ! isset( $maintenance[ $command ] ) ) {
 				$registered[ $command ] = true;
 			}
 		}
 
-		$violations = self::compare( $declared, $registered, 'the command' );
+		return self::compare( $declared, $registered, 'the command' );
+	}
+
+	/**
+	 * Checks the maintenance list against the command classes found, both ways.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param array<string, array{class: string, reason: string}> $maintenance The maintenance list.
+	 * @param string[]                                            $classes     The command classes found by commandClasses().
+	 * @return list<string> One message per unlisted class and per listed class that is gone.
+	 *
+	 * @phpstan-param list<string> $classes
+	 */
+	public static function maintenanceViolations( array $maintenance, array $classes ): array {
+		$violations = array();
 		$listed     = array_column( $maintenance, 'class' );
 
 		foreach ( $classes as $class ) {
@@ -172,16 +192,17 @@ final class OperationSurfaceWalker {
 	}
 
 	/**
-	 * Finds the command classes under the `Cli/` directories of src/.
+	 * Finds the command classes under the `Cli/` directories of a directory of the repository.
 	 *
 	 * @since 0.1.0
 	 *
+	 * @param string $directory The directory, relative to the repository root, such as `src`.
 	 * @return list<string> The class names.
 	 */
-	public static function commandClasses(): array {
+	public static function commandClasses( string $directory ): array {
 		$classes = array();
 
-		foreach ( PhpSource::files( 'src' ) as $file => $source ) {
+		foreach ( PhpSource::files( $directory ) as $file => $source ) {
 			if ( 1 === preg_match( '~/Cli/[A-Za-z0-9]+Command\.php$~', $file ) ) {
 				$classes = array_merge( $classes, PhpSource::declarations( $source ) );
 			}
