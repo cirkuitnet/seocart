@@ -15,6 +15,7 @@ use SEOCart\Application\Operations\CliBinding;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Interfaces\Operations\RestAdapter;
+use SEOCart\Platform\Cli\DoctorCommand;
 use SEOCart\Platform\Database\Cli\MigrateCommand;
 use SEOCart\Platform\Events\Cli\OutboxCommand;
 use SEOCart\Platform\Secrets\Cli\SecretsCommand;
@@ -67,6 +68,10 @@ final class OperationSurfaceWalker {
 		'seocart secrets' => array(
 			'class'  => SecretsCommand::class,
 			'reason' => 'Reports on the data keys (status), creates a new one (rotate) and re-seals the stored secrets with it (rekey): key management for operators on the server, which no REST route or ability may offer.',
+		),
+		'seocart doctor'  => array(
+			'class'  => DoctorCommand::class,
+			'reason' => 'Checks the schema, migrations, locks, outbox and residue read-only and exits non-zero on a problem: a diagnostic for operators, with no REST route or ability twin.',
 		),
 	);
 

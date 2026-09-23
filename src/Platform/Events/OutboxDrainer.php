@@ -570,9 +570,10 @@ final class OutboxDrainer {
 	 * @return string DISPATCHED, RETRIED, FAILED or LOST.
 	 */
 	private function dispatchRow( array $row, string $token, DrainOptions $options ): string {
-		$id       = (int) $row['id'];
-		$attempts = (int) $row['attempts'];
-		$name     = (string) $row['event_name'];
+		$id            = (int) $row['id'];
+		$attempts      = (int) $row['attempts'];
+		$name          = (string) $row['event_name'];
+		$correlationId = isset( $row['correlation_id'] ) ? (string) $row['correlation_id'] : null;
 
 		/*
 		 * `attempts` counts deliveries of this row that were started, and a started delivery
@@ -590,7 +591,8 @@ final class OutboxDrainer {
 				ReportCode::ListenerAbandoned,
 				$name,
 				sprintf( 'the process died or exited during delivery; parked after %d started deliveries without running the listeners again', $attempts ),
-				array( 'attempts' => $attempts )
+				array( 'attempts' => $attempts ),
+				$correlationId
 			);
 		}
 
@@ -598,11 +600,11 @@ final class OutboxDrainer {
 
 		if ( null === $class ) {
 			// Removed by a later release, or written by a newer one: no retry can help.
-			return $this->parkUndeliverable( $id, $token, ReportCode::UnknownEvent, $name, 'no registered event has this name', array() );
+			return $this->parkUndeliverable( $id, $token, ReportCode::UnknownEvent, $name, 'no registered event has this name', array(), $correlationId );
 		}
 
 		if ( ! $this->outbox->startDelivery( $id, $token ) ) {
-			$this->reportLeaseLost( $id, $name );
+			$this->reportLeaseLost( $id, $name, $correlationId );
 
 			return self::LOST;
 		}
@@ -615,7 +617,7 @@ final class OutboxDrainer {
 		try {
 			$stored = Outbox::decode( (string) $row['payload_json'] );
 		} catch ( \Throwable $unreadable ) {
-			return $this->retryOrPark( $id, $token, $name, $attempts, $options->maxAttempts, $unreadable );
+			return $this->retryOrPark( $id, $token, $name, $attempts, $options->maxAttempts, $unreadable, $correlationId );
 		}
 
 		if ( $stored['v'] > $class::payloadVersion() ) {
@@ -628,15 +630,15 @@ final class OutboxDrainer {
 				array(
 					'stored_version' => $stored['v'],
 					'known_version'  => $class::payloadVersion(),
-				)
+				),
+				$correlationId
 			);
 		}
 
 		$flight = spl_object_id( $this ) . ':' . $id . ':' . $token;
 
 		try {
-			$envelope      = EventEnvelope::fromRow( $row, $class::fromPayload( $stored['p'], $stored['at'], $stored['v'] ) );
-			$correlationId = isset( $row['correlation_id'] ) ? (string) $row['correlation_id'] : null;
+			$envelope = EventEnvelope::fromRow( $row, $class::fromPayload( $stored['p'], $stored['at'], $stored['v'] ) );
 
 			self::$inFlight[ $flight ] = array(
 				'drainer'     => $this,
@@ -649,7 +651,7 @@ final class OutboxDrainer {
 
 			$this->correlation->scoped( $correlationId, fn() => $this->bridge->dispatch( $envelope ) );
 		} catch ( \Throwable $failure ) {
-			return $this->retryOrPark( $id, $token, $name, $attempts, $options->maxAttempts, $failure );
+			return $this->retryOrPark( $id, $token, $name, $attempts, $options->maxAttempts, $failure, $correlationId );
 		} finally {
 			unset( self::$inFlight[ $flight ] );
 		}
@@ -658,7 +660,7 @@ final class OutboxDrainer {
 			return self::DISPATCHED;
 		}
 
-		$this->reportLeaseLost( $id, $name );
+		$this->reportLeaseLost( $id, $name, $correlationId );
 
 		return self::LOST;
 	}
@@ -668,36 +670,40 @@ final class OutboxDrainer {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int        $id          The row's id.
-	 * @param string     $token       The claim's token.
-	 * @param string     $name        The event's name.
-	 * @param int        $attempts    How many attempts the row has had, this one included.
-	 * @param int        $maxAttempts After how many attempts a row is parked.
-	 * @param \Throwable $failure     What failed.
+	 * @param int         $id            The row's id.
+	 * @param string      $token         The claim's token.
+	 * @param string      $name          The event's name.
+	 * @param int         $attempts      How many attempts the row has had, this one included.
+	 * @param int         $maxAttempts   After how many attempts a row is parked.
+	 * @param \Throwable  $failure       What failed.
+	 * @param string|null $correlationId The correlation id stored with the row, which the report carries.
 	 * @return string RETRIED, FAILED or LOST.
 	 */
-	private function retryOrPark( int $id, string $token, string $name, int $attempts, int $maxAttempts, \Throwable $failure ): string {
+	private function retryOrPark( int $id, string $token, string $name, int $attempts, int $maxAttempts, \Throwable $failure, ?string $correlationId ): string {
 		$park  = $attempts >= $maxAttempts;
 		$delay = $park ? 0 : Backoff::seconds( max( 1, $attempts ) );
 		$error = ReportCode::DispatchFailed->value . ' ' . get_class( $failure ) . ': ' . $failure->getMessage();
 
 		$released = $park ? $this->outbox->park( $id, $token, $error ) : $this->outbox->retry( $id, $token, $delay, $error );
 
-		$this->reportSafely(
-			ReportCode::DispatchFailed,
-			array(
-				'outbox_id' => $id,
-				'event'     => $name,
-				'attempt'   => $attempts,
-				'exception' => get_class( $failure ),
-				'message'   => $failure->getMessage(),
-				'parked'    => $park,
-				'retry_in'  => $delay,
+		$this->correlation->scoped(
+			$correlationId,
+			fn() => $this->reportSafely(
+				ReportCode::DispatchFailed,
+				array(
+					'outbox_id' => $id,
+					'event'     => $name,
+					'attempt'   => $attempts,
+					'exception' => get_class( $failure ),
+					'message'   => $failure->getMessage(),
+					'parked'    => $park,
+					'retry_in'  => $delay,
+				)
 			)
 		);
 
 		if ( ! $released ) {
-			$this->reportLeaseLost( $id, $name );
+			$this->reportLeaseLost( $id, $name, $correlationId );
 
 			return self::LOST;
 		}
@@ -710,27 +716,31 @@ final class OutboxDrainer {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int                  $id      The row's id.
-	 * @param string               $token   The claim's token.
-	 * @param ReportCode           $code    ListenerAbandoned, UnknownEvent or PayloadVersion.
-	 * @param string               $name    The event's name.
-	 * @param string               $why     Why, for `last_error` after the code and the name.
-	 * @param array<string, mixed> $context What was found, for the report.
+	 * @param int                  $id            The row's id.
+	 * @param string               $token         The claim's token.
+	 * @param ReportCode           $code          ListenerAbandoned, UnknownEvent or PayloadVersion.
+	 * @param string               $name          The event's name.
+	 * @param string               $why           Why, for `last_error` after the code and the name.
+	 * @param array<string, mixed> $context       What was found, for the report.
+	 * @param string|null          $correlationId The correlation id stored with the row, which the report carries.
 	 * @return string FAILED or LOST.
 	 */
-	private function parkUndeliverable( int $id, string $token, ReportCode $code, string $name, string $why, array $context ): string {
+	private function parkUndeliverable( int $id, string $token, ReportCode $code, string $name, string $why, array $context, ?string $correlationId ): string {
 		$parked = $this->outbox->park( $id, $token, $code->value . ' ' . $name . ': ' . $why );
 
-		$this->reportSafely(
-			$code,
-			array(
-				'outbox_id' => $id,
-				'event'     => $name,
-			) + $context
+		$this->correlation->scoped(
+			$correlationId,
+			fn() => $this->reportSafely(
+				$code,
+				array(
+					'outbox_id' => $id,
+					'event'     => $name,
+				) + $context
+			)
 		);
 
 		if ( ! $parked ) {
-			$this->reportLeaseLost( $id, $name );
+			$this->reportLeaseLost( $id, $name, $correlationId );
 
 			return self::LOST;
 		}
@@ -784,16 +794,20 @@ final class OutboxDrainer {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int    $id   The row's id.
-	 * @param string $name The event's name.
+	 * @param int         $id            The row's id.
+	 * @param string      $name          The event's name.
+	 * @param string|null $correlationId The correlation id stored with the row, which the report carries.
 	 */
-	private function reportLeaseLost( int $id, string $name ): void {
-		$this->reportSafely(
-			ReportCode::LeaseLost,
-			array(
-				'lease'     => 'row',
-				'outbox_id' => $id,
-				'event'     => $name,
+	private function reportLeaseLost( int $id, string $name, ?string $correlationId ): void {
+		$this->correlation->scoped(
+			$correlationId,
+			fn() => $this->reportSafely(
+				ReportCode::LeaseLost,
+				array(
+					'lease'     => 'row',
+					'outbox_id' => $id,
+					'event'     => $name,
+				)
 			)
 		);
 	}

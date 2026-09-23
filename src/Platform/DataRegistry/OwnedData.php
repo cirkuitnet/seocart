@@ -16,6 +16,8 @@ use SEOCart\Platform\Database\Migrations\PlatformBootstrapMigration;
 use SEOCart\Platform\Database\Schema\PlatformTables;
 use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Events\OutboxTable;
+use SEOCart\Platform\Logging\LogsTable;
+use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
 use SEOCart\Platform\Secrets\Migrations\CreateSecretKeysMigration;
 use SEOCart\Platform\Secrets\SecretKeysTable;
 use SEOCart\Platform\Settings\Settings;
@@ -56,6 +58,7 @@ final class OwnedData {
 			new Contribution( tables: array( OutboxTable::definition() ), migrations: array( new CreateOutboxMigration() ) ),
 			new Contribution( options: Settings::registry()->optionDefinitions() ),
 			new Contribution( tables: array( SecretKeysTable::definition() ), migrations: array( new CreateSecretKeysMigration() ) ),
+			new Contribution( tables: array( LogsTable::definition() ), migrations: array( new CreateLogsMigration() ) ),
 		);
 	}
 }

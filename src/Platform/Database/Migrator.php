@@ -1029,14 +1029,17 @@ final class Migrator {
 	}
 
 	/**
-	 * Returns the checksum of a migration's class file.
+	 * Returns the checksum of a migration's class file, as the migrator records and compares it.
+	 *
+	 * The one definition of the checksum: `doctor` compares each applied migration's recorded
+	 * checksum with this, so the two can never disagree about what changed.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param Migration $migration The migration.
 	 * @return string SHA-256 in hexadecimal, or 64 zeros when the file cannot be read.
 	 */
-	private static function checksum( Migration $migration ): string {
+	public static function checksum( Migration $migration ): string {
 		$file = ( new \ReflectionClass( $migration ) )->getFileName();
 		$hash = false === $file ? false : hash_file( 'sha256', $file );
 

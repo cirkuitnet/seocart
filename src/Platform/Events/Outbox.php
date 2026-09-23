@@ -365,7 +365,7 @@ final class Outbox {
 	 */
 	public function report(): OutboxReport {
 		$rows = $this->db->fetchAll(
-			'SELECT state, COUNT(*) AS total, TIMESTAMPDIFF( SECOND, MIN( created_at ), UTC_TIMESTAMP(6) ) AS oldest_seconds, SUM( claimed_until > UTC_TIMESTAMP(6) ) AS leased, SUM( dispatched_at > UTC_TIMESTAMP(6) - INTERVAL 1 DAY ) AS recent FROM %i GROUP BY state',
+			'SELECT state, COUNT(*) AS total, TIMESTAMPDIFF( SECOND, MIN( created_at ), UTC_TIMESTAMP(6) ) AS oldest_seconds, TIMESTAMPDIFF( SECOND, MIN( CASE WHEN available_at <= UTC_TIMESTAMP(6) THEN available_at END ), UTC_TIMESTAMP(6) ) AS oldest_due_seconds, SUM( claimed_until > UTC_TIMESTAMP(6) ) AS leased, SUM( dispatched_at > UTC_TIMESTAMP(6) - INTERVAL 1 DAY ) AS recent FROM %i GROUP BY state',
 			$this->table()
 		);
 
@@ -384,7 +384,8 @@ final class Outbox {
 			null === $pending ? null : (int) $pending['oldest_seconds'],
 			null === $pending ? 0 : (int) $pending['leased'],
 			null === $failed ? 0 : (int) $failed['total'],
-			null === $dispatched ? 0 : (int) $dispatched['recent']
+			null === $dispatched ? 0 : (int) $dispatched['recent'],
+			null === $pending || null === $pending['oldest_due_seconds'] ? null : (int) $pending['oldest_due_seconds']
 		);
 	}
 

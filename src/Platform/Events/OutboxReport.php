@@ -70,6 +70,18 @@ final readonly class OutboxReport {
 	public int $dispatchedLastDay;
 
 	/**
+	 * How long the waiting row that has been due longest has been due, in seconds of the database clock, or null when no waiting row is due yet.
+	 *
+	 * A row is due once its `available_at` has passed; a row whose retry is scheduled for later
+	 * is not counted until then. This is the age that shows delivery stalled.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int|null
+	 */
+	public ?int $oldestDueSeconds;
+
+	/**
 	 * Records the counts.
 	 *
 	 * @since 0.1.0
@@ -79,12 +91,15 @@ final readonly class OutboxReport {
 	 * @param int      $inFlight             Waiting rows under a live lease.
 	 * @param int      $failed               Failed rows.
 	 * @param int      $dispatchedLastDay    Rows delivered in the last 24 hours.
+	 * @param int|null $oldestDueSeconds     Optional. How long the longest-due waiting row has been
+	 *                                       due, or null when none is due. Default null.
 	 */
-	public function __construct( int $pending, ?int $oldestPendingSeconds, int $inFlight, int $failed, int $dispatchedLastDay ) {
+	public function __construct( int $pending, ?int $oldestPendingSeconds, int $inFlight, int $failed, int $dispatchedLastDay, ?int $oldestDueSeconds = null ) {
 		$this->pending              = $pending;
 		$this->oldestPendingSeconds = $oldestPendingSeconds;
 		$this->inFlight             = $inFlight;
 		$this->failed               = $failed;
 		$this->dispatchedLastDay    = $dispatchedLastDay;
+		$this->oldestDueSeconds     = $oldestDueSeconds;
 	}
 }
