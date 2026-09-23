@@ -14,6 +14,7 @@ namespace SEOCart\Tools\Docs;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\RestBinding;
+use SEOCart\Platform\Rest\ErrorShape;
 use SEOCart\Support\Error\ErrorTable;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\JsonSchemaCompiler;
@@ -28,11 +29,15 @@ use SEOCart\Support\Schema\JsonSchemaCompiler;
  *   as a query parameter — otherwise a JSON request body of the other inputs;
  * - the success response, which refers to the operation's resource schema;
  * - one error response per status: the validation and permission failures every route has, and
- *   each code the operation declares, with its English message.
+ *   each code the operation declares, with its English message — or, for an internal code, the
+ *   fact that a client gets a generic message. An operation that changes the store also lists every
+ *   code any write may raise, from FieldDocs::errorCodes(). Each refers to the one `Error` component:
+ *   WordPress's `{ code, message, data }`, whose data members are ErrorShape's.
  *
  * A component is written only when a response refers to it, so the document carries no schema
- * that nothing uses, and two resources with one name must be the same resource. Nothing is
- * skipped: an operation that cannot be documented fails the run.
+ * that nothing uses, and two resources with one name must be the same resource; no resource may
+ * take the name of the `Error` component. Nothing is skipped: an operation that cannot be
+ * documented fails the run, and so does an ErrorShape member this generator has no type for.
  *
  * @since 0.1.0
  */
@@ -46,6 +51,31 @@ final class OpenApiDocument implements Generator {
 	 * @var string
 	 */
 	public const SCHEMA_DIALECT = 'https://spec.openapis.org/oas/3.1/dialect/base';
+
+	/**
+	 * The name of the component every error response refers to.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const ERROR_COMPONENT = 'Error';
+
+	/**
+	 * The JSON type of each ErrorShape member, keyed by member name.
+	 *
+	 * The members and their descriptions are ErrorShape's; this generator adds only the type each
+	 * one has on the wire. errorSchema() fails when the two lists differ.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<string, array<string, mixed>>
+	 */
+	private const ERROR_MEMBER_TYPES = array(
+		ErrorShape::STATUS         => array( 'type' => 'integer' ),
+		ErrorShape::DETAILS        => array( 'type' => 'object' ),
+		ErrorShape::CORRELATION_ID => array( 'type' => array( 'string', 'null' ) ),
+	);
 
 	/**
 	 * The operations.
@@ -164,6 +194,14 @@ final class OpenApiDocument implements Generator {
 			$components[ $resource->name() ] = $schema;
 
 			$paths[ $rest->route() ][ strtolower( (string) $definition->httpMethod() ) ] = $this->operation( $definition, $rest );
+		}
+
+		if ( array() !== $paths ) {
+			if ( isset( $components[ self::ERROR_COMPONENT ] ) ) {
+				throw new \RuntimeException( 'A resource is named ' . self::ERROR_COMPONENT . ', the name of the component every error response refers to; rename the resource.' );
+			}
+
+			$components[ self::ERROR_COMPONENT ] = self::errorSchema();
 		}
 
 		ksort( $paths );
@@ -302,8 +340,14 @@ final class OpenApiDocument implements Generator {
 			403 => array( 'The user does not hold the capability ' . $capability . ': `rest_forbidden`.' ),
 		);
 
-		foreach ( $definition->errors() as $code ) {
-			$row          = $this->errors->definitionFor( $code );
+		foreach ( FieldDocs::errorCodes( $definition, $this->errors ) as $code ) {
+			$row = $this->errors->definitionFor( $code );
+
+			if ( $row->isInternal() ) {
+				$descriptions[ $row->httpStatus() ][] = '`' . $code->value . '`: an internal failure, answered with a generic message and empty details. The site\'s error log has what went wrong, under the correlation id.';
+				continue;
+			}
+
 			$placeholders = array();
 
 			foreach ( $row->placeholders() as $name ) {
@@ -327,10 +371,64 @@ final class OpenApiDocument implements Generator {
 		);
 
 		foreach ( $descriptions as $status => $lines ) {
-			$responses[ (string) $status ] = array( 'description' => implode( "\n\n", $lines ) );
+			$responses[ (string) $status ] = array(
+				'description' => implode( "\n\n", $lines ),
+				'content'     => array(
+					'application/json' => array(
+						'schema' => array( '$ref' => '#/components/schemas/' . self::ERROR_COMPONENT ),
+					),
+				),
+			);
 		}
 
 		return $responses;
+	}
+
+	/**
+	 * Builds the `Error` component: WordPress's error body, with ErrorShape's data members.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \RuntimeException When ErrorShape has a member this generator has no type for, or
+	 *                           this generator types a member ErrorShape does not have.
+	 *
+	 * @return array<string, mixed> The schema.
+	 */
+	private static function errorSchema(): array {
+		$members = ErrorShape::members();
+		$missing = array_diff_key( $members, self::ERROR_MEMBER_TYPES );
+		$extra   = array_diff_key( self::ERROR_MEMBER_TYPES, $members );
+
+		if ( array() !== $missing || array() !== $extra ) {
+			throw new \RuntimeException( 'The error data members of ErrorShape and the types in the OpenAPI generator differ: without a type [' . implode( ', ', array_keys( $missing ) ) . '], typed but not a member [' . implode( ', ', array_keys( $extra ) ) . ']. Give every member exactly one type in ERROR_MEMBER_TYPES.' );
+		}
+
+		$properties = array();
+
+		foreach ( $members as $name => $description ) {
+			$properties[ $name ] = self::ERROR_MEMBER_TYPES[ $name ] + array( 'description' => $description );
+		}
+
+		return array(
+			'type'        => 'object',
+			'description' => 'An error. WordPress writes it as its code, its message and its data; the data members are the same for every error of these routes, including WordPress\'s own refusal of a request that does not match the input schema or of a user who lacks the capability, but not its refusal of a JSONP callback, which it sends before any route is matched.',
+			'properties'  => array(
+				'code'    => array(
+					'type'        => 'string',
+					'description' => 'The error code: one of those in docs/reference/errors.md, or a code of the WordPress REST API such as `rest_invalid_param` or `rest_forbidden`.',
+				),
+				'message' => array(
+					'type'        => 'string',
+					'description' => 'What went wrong, for people, in the language of the site. An internal error has a generic message.',
+				),
+				'data'    => array(
+					'type'       => 'object',
+					'properties' => $properties,
+					'required'   => array_keys( $properties ),
+				),
+			),
+			'required'    => array( 'code', 'message', 'data' ),
+		);
 	}
 
 	/**

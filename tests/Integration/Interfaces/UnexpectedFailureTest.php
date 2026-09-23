@@ -12,7 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Interfaces;
 
 use SEOCart\Application\Operations\OperationRegistry;
-use SEOCart\Interfaces\Operations\OperationInvoker;
+use SEOCart\Interfaces\Operations\ErrorTranslator;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
 use SEOCart\Tests\Support\OperationSurfaces;
 use WP_Error;
@@ -21,7 +21,8 @@ use WP_UnitTestCase;
 /**
  * A service that fails with anything but a coded error has failed in a way no client caused and no
  * client may read about: its message can hold a query, a path or a value. The invoker reports it
- * through its reporter and answers with one generic internal error, the same on every surface.
+ * through its reporter and answers with one generic internal error, the same on every surface,
+ * which carries the documented data members and the correlation id.
  *
  * WordPress itself would catch the exception of an ability's callback and return its message to
  * `wp-abilities/v1` clients; the invoker never lets it get that far.
@@ -92,20 +93,24 @@ final class UnexpectedFailureTest extends WP_UnitTestCase {
 
 		foreach ( $outcomes as $surface => $outcome ) {
 			$this->assertStringNotContainsString( 'SELECT', $outcome['text'], "{$surface}: the exception's message reached the client." );
-			$this->assertStringContainsString( OperationInvoker::INTERNAL_ERROR, $outcome['text'], "{$surface}: the generic internal error is missing." );
+			$this->assertStringContainsString( ErrorTranslator::INTERNAL_ERROR, $outcome['text'], "{$surface}: the generic internal error is missing." );
 		}
 
+		$data = '{"status":500,"details":{},"correlation_id":"' . OperationSurfaces::CORRELATION_ID . '"}';
+
 		$this->assertSame( 500, $outcomes['rest']['result']->get_status() );
-		$this->assertSame( OperationInvoker::INTERNAL_ERROR, $outcomes['rest']['result']->get_data()['code'] );
+		$this->assertSame( ErrorTranslator::INTERNAL_ERROR, $outcomes['rest']['result']->get_data()['code'] );
+		$this->assertSame( $data, wp_json_encode( $outcomes['rest']['result']->get_data()['data'] ) );
 
 		$ability = $outcomes['ability']['result'];
 
 		$this->assertInstanceOf( WP_Error::class, $ability );
-		$this->assertSame( OperationInvoker::INTERNAL_ERROR, $ability->get_error_code() );
-		$this->assertSame( array( 'status' => 500 ), $ability->get_error_data() );
+		$this->assertSame( ErrorTranslator::INTERNAL_ERROR, $ability->get_error_code() );
+		$this->assertSame( $data, wp_json_encode( $ability->get_error_data() ) );
 
 		$this->assertNull( $outcomes['cli']['result']['printed'] );
-		$this->assertStringStartsWith( OperationInvoker::INTERNAL_ERROR . ': ', (string) $outcomes['cli']['result']['failure'] );
+		$this->assertStringStartsWith( ErrorTranslator::INTERNAL_ERROR . ': ', (string) $outcomes['cli']['result']['failure'] );
+		$this->assertStringEndsWith( '(correlation id: ' . OperationSurfaces::CORRELATION_ID . ')', (string) $outcomes['cli']['result']['failure'] );
 
 		$this->assertCount( 3, $surfaces->reported, 'Each surface reports the exception once.' );
 

@@ -14,6 +14,7 @@ namespace SEOCart\Interfaces\Operations;
 use SEOCart\Application\Operations\CompiledOperation;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
+use SEOCart\Platform\Authorization\Actor;
 use WP_Error;
 
 defined( 'ABSPATH' ) || exit;
@@ -34,7 +35,8 @@ defined( 'ABSPATH' ) || exit;
  *   the definition allows it. A destructive operation, or one that moves money or reads personal
  *   data in bulk, cannot be declared with it;
  * - PermissionFactory's check and OperationInvoker's execution, both on the input OperationInvoker
- *   prepared, so the check sees the value the service acts on.
+ *   prepared, so the check sees the value the service acts on. The service runs for the current
+ *   user, as an Actor, and an error it raises is returned with the documented data members.
  *
  * WordPress initialises the Abilities registry on the first request that asks for it, never on an
  * idle one. The kernel hooks the two registration methods:
@@ -126,7 +128,7 @@ final class AbilitiesAdapter {
 					'execute_callback'    => function ( $input = null ) use ( $operation ): array|WP_Error {
 						$prepared = $this->invoker->prepare( $operation, is_array( $input ) ? $input : array() );
 
-						return $prepared instanceof WP_Error ? $prepared : $this->invoker->invoke( $operation, $prepared );
+						return $prepared instanceof WP_Error ? $prepared : $this->invoker->invoke( $operation, $prepared, Actor::user( get_current_user_id() ) );
 					},
 					'permission_callback' => function ( $input = null ) use ( $operation, $definition ): bool {
 						$prepared = $this->invoker->prepare( $operation, is_array( $input ) ? $input : array() );

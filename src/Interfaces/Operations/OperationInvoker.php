@@ -13,7 +13,9 @@ namespace SEOCart\Interfaces\Operations;
 
 use SEOCart\Application\Operations\CompiledOperation;
 use SEOCart\Application\Operations\OperationDefinition;
+use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Support\Error\ErrorDefinition;
 use SEOCart\Support\Schema\Privacy;
 use SEOCart\Support\Schema\SchemaException;
 use WP_Error;
@@ -34,16 +36,25 @@ defined( 'ABSPATH' ) || exit;
  *    check reads and what the service receives, on every surface, so the two can never disagree
  *    about which resource a request is for.
  * 2. invoke() resolves the service by class name only now, through the resolver the kernel
- *    provides, and calls its method with the prepared input.
+ *    provides, and calls its method with the prepared input and the Actor the surface names: the
+ *    current user for the REST route and the Ability, the user WP-CLI runs as for a command. The
+ *    service authorizes that actor itself, with the Authorizer, so its check and the permission
+ *    check in front of it ask the same question:
+ *
+ *        public function adjust( array $input, Actor $actor ): array
+ *
  * 3. A CodedException becomes the WP_Error of the ErrorTranslator, after every context value whose
  *    name is a personal-data or secret field of the operation — input or output — has been replaced
  *    by REDACTED: the context is rendered into the message a client reads. A code the operation
  *    does not declare is still translated, and reported to the developer, because the documented
- *    error responses would otherwise be incomplete.
+ *    error responses would otherwise be incomplete — except an internal code, which any
+ *    operation can meet and no client reads about, and a code whose row says any write may raise
+ *    it, on an operation that changes the store. The translator still reports an internal code.
  * 4. Any other Throwable is a failure no client caused and no client may read about: it goes to the
- *    reporter, and the surface gets the generic INTERNAL_ERROR, which carries no exception message.
- * 5. The result is serialized through the output schema for the current user: secrets never,
- *    personal data only for a user who holds the personal-data capability.
+ *    reporter, and the surface gets the ErrorTranslator's generic internal error, which carries no
+ *    exception message.
+ * 5. The result is serialized through the output schema for the actor: secrets never, personal
+ *    data only when the actor's user holds the personal-data capability.
  *
  * @since 0.1.0
  */
@@ -66,15 +77,6 @@ final class OperationInvoker {
 	 * @var string
 	 */
 	public const REDACTED = '[redacted]';
-
-	/**
-	 * The code of the error every surface answers with when a service fails unexpectedly.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	public const INTERNAL_ERROR = 'seocart_internal_error';
 
 	/**
 	 * Returns the application service instance of a class.
@@ -132,7 +134,8 @@ final class OperationInvoker {
 	 * @param CompiledOperation    $operation The operation.
 	 * @param array<string, mixed> $values    The validated values, keyed by wire name.
 	 * @return array<string, mixed>|WP_Error The declared fields, with defaults, sanitized; or the
-	 *                                       error of a value the schema cannot sanitize.
+	 *                                       error of a value the schema cannot sanitize, with the
+	 *                                       data members every error carries.
 	 */
 	public function prepare( CompiledOperation $operation, array $values ): array|WP_Error {
 		$input = array();
@@ -147,36 +150,41 @@ final class OperationInvoker {
 
 		$input = rest_sanitize_value_from_schema( $input, $operation->inputSchema(), 'input' );
 
-		return is_array( $input ) || $input instanceof WP_Error ? $input : array();
+		if ( $input instanceof WP_Error ) {
+			return $this->translator->conform( $input );
+		}
+
+		return is_array( $input ) ? $input : array();
 	}
 
 	/**
-	 * Runs an operation for the current user.
+	 * Runs an operation on an actor's authority.
 	 *
 	 * The caller has validated the values, prepared them with prepare() and checked the permission
-	 * on the prepared input; this method does none of that.
+	 * on the prepared input; this method does none of that. The service checks the actor again.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param CompiledOperation    $operation The operation.
 	 * @param array<string, mixed> $input     The prepared input, from prepare().
+	 * @param Actor                $actor     Who acts: the current user, or the user a command runs as.
 	 * @return array<string, mixed>|WP_Error The serialized output, or the error the surface answers with.
 	 */
-	public function invoke( CompiledOperation $operation, array $input ): array|WP_Error {
+	public function invoke( CompiledOperation $operation, array $input, Actor $actor ): array|WP_Error {
 		$definition = $operation->definition();
 
 		list( $class, $method ) = $definition->service();
 
 		try {
-			$result = call_user_func( array( ( $this->resolve )( $class ), $method ), $input );
+			$result = call_user_func( array( ( $this->resolve )( $class ), $method ), $input, $actor );
 
 			if ( ! is_array( $result ) ) {
 				SchemaException::raise( 'The service of %1$s returned %2$s instead of an array keyed by wire name.', $definition->id(), get_debug_type( $result ) );
 			}
 
-			return $definition->output()->serialize( $result, current_user_can( self::PERSONAL_DATA_CAPABILITY ) );
+			return $definition->output()->serialize( $result, user_can( $actor->userId(), self::PERSONAL_DATA_CAPABILITY ) );
 		} catch ( CodedException $error ) {
-			if ( ! in_array( $error->errorCode(), $definition->errors(), true ) ) {
+			if ( self::isUndeclared( $definition, $error ) ) {
 				_doing_it_wrong(
 					__METHOD__,
 					esc_html( sprintf( 'The operation %1$s failed with the error code %2$s, which it does not declare. Add the code to its declaration.', $definition->id(), (string) $error->errorCode()->value ) ),
@@ -188,11 +196,7 @@ final class OperationInvoker {
 		} catch ( \Throwable $failure ) {
 			( $this->report )( $failure, $definition->id() );
 
-			return new WP_Error(
-				self::INTERNAL_ERROR,
-				__( 'The operation failed because of an internal error. The site administrator can find the details in the error log.', 'seocart' ),
-				array( 'status' => 500 )
-			);
+			return $this->translator->unexpected();
 		}
 	}
 
@@ -207,6 +211,30 @@ final class OperationInvoker {
 	public static function logFailure( \Throwable $failure, string $operation_id ): void {
 		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- the default reporter of unexpected failures, until the logging module provides one; the message never reaches a client.
 		error_log( sprintf( 'SEOCart: the operation %1$s failed unexpectedly: %2$s: %3$s in %4$s:%5$d', $operation_id, get_class( $failure ), $failure->getMessage(), $failure->getFile(), $failure->getLine() ) );
+	}
+
+	/**
+	 * Tells whether a failure has a code its operation should have declared, and did not.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param OperationDefinition $definition The operation.
+	 * @param CodedException      $error      The failure.
+	 * @return bool False for a declared code, an internal code, and, on an operation that changes
+	 *              the store, a code any write may raise.
+	 */
+	private static function isUndeclared( OperationDefinition $definition, CodedException $error ): bool {
+		if ( in_array( $error->errorCode(), $definition->errors(), true ) ) {
+			return false;
+		}
+
+		$row = ErrorDefinition::of( $error->errorCode() );
+
+		if ( $row->isInternal() ) {
+			return false;
+		}
+
+		return ! ( $row->isAnyWrite() && ! $definition->annotations()->isReadOnly() );
 	}
 
 	/**

@@ -12,6 +12,8 @@ declare( strict_types=1 );
 namespace SEOCart\Interfaces\Operations;
 
 use SEOCart\Application\Operations\CompiledOperation;
+use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Rest\ErrorShape;
 use SEOCart\Support\Schema\JsonSchemaCompiler;
 use WP_Error;
 
@@ -34,6 +36,14 @@ defined( 'ABSPATH' ) || exit;
  *
  * Arguments arrive as text. Validation accepts a whole number written as text for an integer
  * field, as the REST API does, and preparation turns it into an integer.
+ *
+ * The command acts as the user WP-CLI runs as, `--user`: the service receives
+ * `Actor::system( 'cli', <that user> )` and authorizes it. Without `--user` WP-CLI runs as no one,
+ * and a command that changes the store refuses to run, naming the capability and the option; a
+ * read-only command is left to the permission check, which a visitor fails as well.
+ *
+ * A failure is reported as `<code>: <message>`, followed by the correlation id when the error
+ * carries one.
  *
  * @since 0.1.0
  */
@@ -98,7 +108,8 @@ final class CliCommand {
 	/**
 	 * Runs the operation with the command's arguments. WP-CLI calls it.
 	 *
-	 * On failure it reports `<code>: <message>` through the fail function and prints nothing.
+	 * On failure it reports `<code>: <message>` and the correlation id through the fail function,
+	 * and prints nothing.
 	 *
 	 * @since 0.1.0
 	 *
@@ -153,6 +164,20 @@ final class CliCommand {
 			return;
 		}
 
+		$user_id = get_current_user_id();
+
+		if ( 0 === $user_id && ! $definition->annotations()->isReadOnly() ) {
+			( $this->fail )(
+				'rest_forbidden: ' . sprintf(
+					/* translators: %s: A capability name, such as seocart_manage_inventory. */
+					__( 'This command changes the store, so it runs only as a user. Run it with --user=<id|login|email> for a user who holds the capability %s.', 'seocart' ),
+					$definition->capability()
+				)
+			);
+
+			return;
+		}
+
 		if ( ! PermissionFactory::allows( $definition, $input ) ) {
 			( $this->fail )(
 				'rest_forbidden: ' . sprintf(
@@ -165,7 +190,7 @@ final class CliCommand {
 			return;
 		}
 
-		$result = $this->invoker->invoke( $this->operation, $input );
+		$result = $this->invoker->invoke( $this->operation, $input, 0 === $user_id ? Actor::user( 0 ) : Actor::system( 'cli', $user_id ) );
 
 		if ( $result instanceof WP_Error ) {
 			( $this->fail )( self::describe( $result ) );
@@ -182,9 +207,21 @@ final class CliCommand {
 	 * @since 0.1.0
 	 *
 	 * @param WP_Error $error The error.
-	 * @return string `<code>: <message>`.
+	 * @return string `<code>: <message>`, and the correlation id when the error carries one.
 	 */
 	private static function describe( WP_Error $error ): string {
-		return $error->get_error_code() . ': ' . $error->get_error_message();
+		$line           = $error->get_error_code() . ': ' . $error->get_error_message();
+		$correlation_id = ErrorShape::correlationId( $error );
+
+		if ( null === $correlation_id ) {
+			return $line;
+		}
+
+		return sprintf(
+			/* translators: 1: An error code and message. 2: The identifier of the request, which the site's log records with the error. */
+			__( '%1$s (correlation id: %2$s)', 'seocart' ),
+			$line,
+			$correlation_id
+		);
 	}
 }

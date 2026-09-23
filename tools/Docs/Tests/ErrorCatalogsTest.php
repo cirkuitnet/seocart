@@ -14,6 +14,7 @@ namespace SEOCart\Tools\Docs\Tests;
 use PHPUnit\Framework\TestCase;
 use SEOCart\Support\SupportError;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockError;
+use SEOCart\Tests\Fixtures\Operations\FixtureStoreError;
 use SEOCart\Tools\Docs\ErrorCatalogs;
 
 /**
@@ -50,9 +51,9 @@ final class ErrorCatalogsTest extends TestCase {
 	 */
 	public function test_a_tree_is_searched_under_its_namespace(): void {
 		$this->assertSame(
-			array( FixtureStockError::class ),
+			array( FixtureStockError::class, FixtureStoreError::class ),
 			ErrorCatalogs::find( dirname( __DIR__, 3 ) . '/tests/Fixtures/Operations', 'SEOCart\\Tests\\Fixtures\\Operations\\' ),
-			'The fixture directory holds one catalog among plain classes.'
+			'The fixture directory holds two catalogs among plain classes, found in name order.'
 		);
 	}
 

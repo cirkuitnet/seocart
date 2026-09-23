@@ -11,7 +11,12 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Interfaces;
 
+use SEOCart\Application\Operations\CompiledOperation;
 use SEOCart\Application\Operations\OperationRegistry;
+use SEOCart\Interfaces\Operations\OperationInvoker;
+use SEOCart\Interfaces\Operations\PermissionFactory;
+use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Rest\ErrorShape;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockService;
 use SEOCart\Tests\Support\OperationSurfaces;
@@ -26,6 +31,11 @@ use WP_UnitTestCase;
  * failure for the same bad input, the same permission decision for the same user, the same error
  * code for the same failure, and the same output for the same success. Each surface adjusts its
  * own item, so the three start from the same stock level.
+ *
+ * The service authorizes the actor it is given with the Authorizer, as every application service
+ * does. The permission check in front of it runs first on every surface, so a separate test calls
+ * the service past that check, for users with and without the capability, and requires the two
+ * checks to agree.
  *
  * @since 0.1.0
  */
@@ -280,28 +290,103 @@ final class SurfaceParityTest extends WP_UnitTestCase {
 		$this->assertCount( 3, $this->surfaces->service->calls );
 		$this->assertSame(
 			array(
-				'status'  => 409,
-				'code'    => 'fixture_stock.insufficient',
-				'message' => $message,
+				'status'         => 409,
+				'code'           => 'fixture_stock.insufficient',
+				'message'        => $message,
+				'correlation_id' => OperationSurfaces::CORRELATION_ID,
 			),
 			$outcomes['rest']
 		);
 		$this->assertSame(
 			array(
-				'status'  => 409,
-				'code'    => 'fixture_stock.insufficient',
-				'message' => $message,
+				'status'         => 409,
+				'code'           => 'fixture_stock.insufficient',
+				'message'        => $message,
+				'correlation_id' => OperationSurfaces::CORRELATION_ID,
 			),
 			$outcomes['ability']
 		);
 		$this->assertSame(
 			array(
-				'status'  => null,
-				'code'    => 'fixture_stock.insufficient',
-				'message' => $message,
+				'status'         => null,
+				'code'           => 'fixture_stock.insufficient',
+				'message'        => $message,
+				'correlation_id' => OperationSurfaces::CORRELATION_ID,
 			),
 			$outcomes['cli']
 		);
+	}
+
+	/**
+	 * Provides users with and without the operation's capability.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, array{list<string>|null}> The user's capabilities, or null for a visitor.
+	 */
+	public static function checkedUsers(): array {
+		return array(
+			'a user with the capability'              => array( array( 'seocart_manage_inventory' ) ),
+			'a logged-in user without the capability' => array( array( 'seocart_view_customer_pii' ) ),
+			'a visitor who is not logged in'          => array( null ),
+		);
+	}
+
+	/**
+	 * Tests that the service's own check agrees with the permission check every surface runs first,
+	 * for the actor each surface names.
+	 *
+	 * The service is called past the permission check, through the invoker, so its own verdict is
+	 * seen even where the permission check would have stopped the request.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @dataProvider checkedUsers
+	 *
+	 * @param list<string>|null $capabilities The user's capabilities, or null for a visitor.
+	 */
+	public function test_the_services_own_check_agrees_with_the_permission_check( ?array $capabilities ): void {
+		$user_id = null === $capabilities ? 0 : self::user( $capabilities );
+
+		wp_set_current_user( $user_id );
+
+		$operation = new CompiledOperation( FixtureStockOperation::definition() );
+		$input     = $this->surfaces->invoker()->prepare(
+			$operation,
+			array(
+				'item_id' => self::ITEMS['rest'],
+				'delta'   => 1,
+			)
+		);
+
+		$this->assertIsArray( $input );
+
+		$permitted = PermissionFactory::allows( $operation->definition(), $input );
+		$actors    = array( 'the REST route and the ability' => Actor::user( $user_id ) );
+
+		if ( ! $permitted ) {
+			// The operation does not declare `authorization.denied`: behind its permission check a
+			// refusal by the service means the two checks disagree, and the invoker says so.
+			$this->setExpectedIncorrectUsage( OperationInvoker::class . '::invoke' );
+		}
+
+		if ( 0 !== $user_id ) {
+			$actors['the command'] = Actor::system( 'cli', $user_id );
+		}
+
+		foreach ( $actors as $surface => $actor ) {
+			$result = $this->surfaces->invoker()->invoke( $operation, $input, $actor );
+
+			if ( $permitted ) {
+				$this->assertIsArray( $result, "{$surface}: the permission check allows the user, but the service refused." );
+			} else {
+				$this->assertInstanceOf( WP_Error::class, $result, "{$surface}: the permission check refuses the user, but the service ran." );
+				$this->assertSame( 'authorization.denied', $result->get_error_code(), $surface );
+				$this->assertSame( 403, $result->get_error_data()['status'], $surface );
+			}
+		}
+
+		$this->assertSame( null !== $capabilities && in_array( FixtureStockService::CAPABILITY, $capabilities, true ), $permitted, 'The permission check gave an unexpected answer, so the agreement proves nothing.' );
 	}
 
 	/**
@@ -328,9 +413,10 @@ final class SurfaceParityTest extends WP_UnitTestCase {
 
 				$outcomes['rest'] = $response->is_error()
 					? array(
-						'status'  => $response->get_status(),
-						'code'    => $data['code'],
-						'message' => trim( $data['message'] . ' ' . implode( ' ', (array) ( $data['data']['params'] ?? array() ) ) ),
+						'status'         => $response->get_status(),
+						'code'           => $data['code'],
+						'message'        => trim( $data['message'] . ' ' . implode( ' ', (array) ( ( (array) ( $data['data'][ ErrorShape::DETAILS ] ?? array() ) )['params'] ?? array() ) ) ),
+						'correlation_id' => $data['data'][ ErrorShape::CORRELATION_ID ] ?? null,
 					)
 					: $data;
 			} elseif ( 'ability' === $surface ) {
@@ -338,9 +424,10 @@ final class SurfaceParityTest extends WP_UnitTestCase {
 
 				$outcomes['ability'] = $result instanceof WP_Error
 					? array(
-						'status'  => $result->get_error_data()['status'] ?? null,
-						'code'    => $result->get_error_code(),
-						'message' => $result->get_error_message(),
+						'status'         => $result->get_error_data()['status'] ?? null,
+						'code'           => $result->get_error_code(),
+						'message'        => $result->get_error_message(),
+						'correlation_id' => ErrorShape::correlationId( $result ),
 					)
 					: $result;
 			} else {
@@ -354,10 +441,14 @@ final class SurfaceParityTest extends WP_UnitTestCase {
 				} else {
 					list( $code, $message ) = explode( ': ', $cli['failure'], 2 );
 
+					$suffix         = ' (correlation id: ' . OperationSurfaces::CORRELATION_ID . ')';
+					$correlation_id = str_ends_with( $message, $suffix ) ? OperationSurfaces::CORRELATION_ID : null;
+
 					$outcomes['cli'] = array(
-						'status'  => null,
-						'code'    => $code,
-						'message' => $message,
+						'status'         => null,
+						'code'           => $code,
+						'message'        => null === $correlation_id ? $message : substr( $message, 0, -strlen( $suffix ) ),
+						'correlation_id' => $correlation_id,
 					);
 				}
 			}

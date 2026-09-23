@@ -30,6 +30,10 @@ defined( 'ABSPATH' ) || exit;
  * carries SQL or the server's error text: those can hold a customer's data, and stay in the
  * StatementDiagnostic the exception carries.
  *
+ * Every row is internal: a client gets the status and a generic message, never the message or
+ * the values below, which go to the site's log. A service that expects one of these failures,
+ * such as a duplicate key, catches it and raises its own public code instead.
+ *
  * @since 0.1.0
  */
 enum DatabaseError: string implements ErrorCode {
@@ -114,7 +118,8 @@ enum DatabaseError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: MySQL error number. %2$s: SQLSTATE code. */
 					__( 'The database refused a statement with error %1$s (SQLSTATE %2$s).', 'seocart' ),
-				$statement
+				$statement,
+				internal: true
 			),
 			new ErrorDefinition(
 				self::DuplicateKey,
@@ -122,7 +127,8 @@ enum DatabaseError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: MySQL error number. %2$s: SQLSTATE code. */
 					__( 'The record already exists: the database refused a duplicate value for a unique key (error %1$s, SQLSTATE %2$s).', 'seocart' ),
-				$statement
+				$statement,
+				internal: true
 			),
 			new ErrorDefinition(
 				self::TransactionRetryable,
@@ -130,7 +136,8 @@ enum DatabaseError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: MySQL error number. %2$s: SQLSTATE code. */
 					__( 'The database ended the operation to resolve a conflict with another request (error %1$s, SQLSTATE %2$s). Try again.', 'seocart' ),
-				$statement
+				$statement,
+				internal: true
 			),
 			new ErrorDefinition(
 				self::TransactionLost,
@@ -138,7 +145,8 @@ enum DatabaseError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: Why the transaction was lost, a code such as connection_changed. */
 					__( 'The database transaction could not be completed safely (%1$s). Try again.', 'seocart' ),
-				array( 'reason' )
+				array( 'reason' ),
+				internal: true
 			),
 			new ErrorDefinition(
 				self::TransactionDepth,
@@ -146,7 +154,8 @@ enum DatabaseError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: The deepest nesting of database transactions allowed. */
 					__( 'Database transactions were nested more than %1$s levels deep.', 'seocart' ),
-				array( 'max_depth' )
+				array( 'max_depth' ),
+				internal: true
 			),
 			new ErrorDefinition(
 				self::ForbiddenInTransaction,
@@ -154,7 +163,8 @@ enum DatabaseError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: The kind of work, such as http, mail, ddl or lock. %2$s: Where it was attempted: a host name, a statement or a lock name. */
 					__( 'Work of the kind %1$s is not allowed while a database transaction is open (%2$s).', 'seocart' ),
-				array( 'kind', 'detail' )
+				array( 'kind', 'detail' ),
+				internal: true
 			),
 			new ErrorDefinition(
 				self::LockNotAcquired,
@@ -162,7 +172,8 @@ enum DatabaseError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: The lock name. %2$s: How long the process waited, in milliseconds. */
 					__( 'Another process holds the lock %1$s; gave up after waiting %2$s milliseconds. Try again later.', 'seocart' ),
-				array( 'name', 'waited' )
+				array( 'name', 'waited' ),
+				internal: true
 			),
 			new ErrorDefinition(
 				self::LockLost,
@@ -170,7 +181,8 @@ enum DatabaseError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: The lock name. %2$s: How the lock was held, get_lock or table. %3$s: Why it is lost, a code such as reclaimed. */
 					__( 'The lock %1$s (%2$s) is no longer held by this process (%3$s).', 'seocart' ),
-				array( 'name', 'mode', 'reason' )
+				array( 'name', 'mode', 'reason' ),
+				internal: true
 			),
 			new ErrorDefinition(
 				self::MigrationFailed,
@@ -178,7 +190,8 @@ enum DatabaseError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: The migration id. %2$s: The error code recorded for it. %3$s: What went wrong, or the differences between the tables and their declarations, one per line. */
 					__( 'Database migration %1$s failed with %2$s: %3$s', 'seocart' ),
-				array( 'migration_id', 'error_code', 'detail' )
+				array( 'migration_id', 'error_code', 'detail' ),
+				internal: true
 			),
 		);
 	}

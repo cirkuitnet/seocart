@@ -161,7 +161,7 @@ final class FixtureStockOperation {
 					),
 				)
 			),
-			capability: 'seocart_manage_inventory',
+			capability: FixtureStockService::CAPABILITY,
 			resource_field: null,
 			errors: array( FixtureStockError::Insufficient ),
 			annotations: new Annotations( read_only: false, destructive: false, idempotent: false ),

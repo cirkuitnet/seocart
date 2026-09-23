@@ -18,6 +18,9 @@ use SEOCart\Application\Operations\Annotations;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\RestBinding;
+use SEOCart\Application\Operations\WriteMethod;
+use SEOCart\Platform\Database\DatabaseError;
+use SEOCart\Platform\Rest\ErrorShape;
 use SEOCart\Support\Error\ErrorTable;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
@@ -25,11 +28,13 @@ use SEOCart\Support\Schema\ResourceSchema;
 use SEOCart\Support\SupportError;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockError;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
+use SEOCart\Tests\Fixtures\Operations\FixtureStoreError;
 use SEOCart\Tools\Docs\OpenApiDocument;
 
 /**
  * The document for an empty registry and for the fixture, the rule that a component exists only
- * when something refers to it, the declared error responses, and the query parameters of a GET.
+ * when something refers to it, the declared error responses and the one `Error` component they
+ * all refer to, and the query parameters of a GET.
  *
  * @since 0.1.0
  */
@@ -123,16 +128,44 @@ final class OpenApiDocumentTest extends TestCase {
 		                        }
 		                    },
 		                    "400": {
-		                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`."
+		                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+		                        "content": {
+		                            "application/json": {
+		                                "schema": {
+		                                    "$ref": "#/components/schemas/Error"
+		                                }
+		                            }
+		                        }
 		                    },
 		                    "401": {
-		                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_inventory`: `rest_forbidden`."
+		                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_inventory`: `rest_forbidden`.",
+		                        "content": {
+		                            "application/json": {
+		                                "schema": {
+		                                    "$ref": "#/components/schemas/Error"
+		                                }
+		                            }
+		                        }
 		                    },
 		                    "403": {
-		                        "description": "The user does not hold the capability `seocart_manage_inventory`: `rest_forbidden`."
+		                        "description": "The user does not hold the capability `seocart_manage_inventory`: `rest_forbidden`.",
+		                        "content": {
+		                            "application/json": {
+		                                "schema": {
+		                                    "$ref": "#/components/schemas/Error"
+		                                }
+		                            }
+		                        }
 		                    },
 		                    "409": {
-		                        "description": "`fixture_stock.insufficient`: You asked to remove {requested}, but only {available} are in stock."
+		                        "description": "`fixture_stock.insufficient`: You asked to remove {requested}, but only {available} are in stock.",
+		                        "content": {
+		                            "application/json": {
+		                                "schema": {
+		                                    "$ref": "#/components/schemas/Error"
+		                                }
+		                            }
+		                        }
 		                    }
 		                }
 		            }
@@ -140,6 +173,50 @@ final class OpenApiDocumentTest extends TestCase {
 		    },
 		    "components": {
 		        "schemas": {
+		            "Error": {
+		                "type": "object",
+		                "description": "An error. WordPress writes it as its code, its message and its data; the data members are the same for every error of these routes, including WordPress's own refusal of a request that does not match the input schema or of a user who lacks the capability, but not its refusal of a JSONP callback, which it sends before any route is matched.",
+		                "properties": {
+		                    "code": {
+		                        "type": "string",
+		                        "description": "The error code: one of those in docs/reference/errors.md, or a code of the WordPress REST API such as `rest_invalid_param` or `rest_forbidden`."
+		                    },
+		                    "message": {
+		                        "type": "string",
+		                        "description": "What went wrong, for people, in the language of the site. An internal error has a generic message."
+		                    },
+		                    "data": {
+		                        "type": "object",
+		                        "properties": {
+		                            "status": {
+		                                "type": "integer",
+		                                "description": "The HTTP status of the error."
+		                            },
+		                            "details": {
+		                                "type": "object",
+		                                "description": "The values the message was built from, keyed by name. For an error WordPress raised, such as its refusal of a request that does not match the input schema, every other member of its data under the name WordPress gave it, such as `params`. Always an object, and empty for an internal error."
+		                            },
+		                            "correlation_id": {
+		                                "type": [
+		                                    "string",
+		                                    "null"
+		                                ],
+		                                "description": "The identifier of the request the error happened in, which the site's log records with the error; null when the request has none."
+		                            }
+		                        },
+		                        "required": [
+		                            "status",
+		                            "details",
+		                            "correlation_id"
+		                        ]
+		                    }
+		                },
+		                "required": [
+		                    "code",
+		                    "message",
+		                    "data"
+		                ]
+		            },
 		            "FixtureStockLevel": {
 		                "type": "object",
 		                "properties": {
@@ -290,6 +367,96 @@ final class OpenApiDocumentTest extends TestCase {
 	}
 
 	/**
+	 * Tests that every error response refers to the one Error component, and nothing else does.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_every_error_response_refers_to_the_error_component(): void {
+		$document = self::decode( self::fixtureDocument() );
+		$error    = array( '$ref' => '#/components/schemas/' . OpenApiDocument::ERROR_COMPONENT );
+		$checked  = 0;
+
+		foreach ( $document['paths'] as $operations ) {
+			foreach ( $operations as $operation ) {
+				foreach ( $operation['responses'] as $status => $response ) {
+					if ( (int) $status < 400 ) {
+						$this->assertNotSame( $error, $response['content']['application/json']['schema'] ?? null, "The {$status} response is not an error." );
+						continue;
+					}
+
+					$this->assertSame( $error, $response['content']['application/json']['schema'] ?? null, "The {$status} response does not refer to the Error component." );
+					++$checked;
+				}
+			}
+		}
+
+		$this->assertSame( 4, $checked, 'The fixture has four error responses: 400, 401, 403 and 409.' );
+		$this->assertArrayHasKey( OpenApiDocument::ERROR_COMPONENT, $document['components']['schemas'] );
+	}
+
+	/**
+	 * Tests that the Error component carries exactly ErrorShape's data members, required, with ErrorShape's descriptions.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_error_component_carries_the_members_of_the_error_shape(): void {
+		$component = self::decode( self::fixtureDocument() )['components']['schemas'][ OpenApiDocument::ERROR_COMPONENT ];
+		$data      = $component['properties']['data'];
+
+		$this->assertSame( array( 'code', 'message', 'data' ), $component['required'] );
+		$this->assertSame( array_keys( ErrorShape::members() ), array_keys( $data['properties'] ) );
+		$this->assertSame( array_keys( ErrorShape::members() ), $data['required'] );
+		$this->assertSame( array_values( ErrorShape::members() ), array_column( $data['properties'], 'description' ) );
+	}
+
+	/**
+	 * Tests that an internal code is documented without its message, which no client receives.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_internal_code_is_documented_without_its_message(): void {
+		$registry = new OperationRegistry();
+		$registry->add( 'fixture_stock.adjust_contended_stock', array( self::class, 'contendedDefinition' ) );
+
+		$responses = self::decode( ( new OpenApiDocument( $registry, ErrorTable::compose( SupportError::class, DatabaseError::class ) ) )->generate( '' )->content )['paths']['/fixture-contended-stock/{item_id}']['post']['responses'];
+
+		$this->assertSame( '`database.transaction_retryable`: an internal failure, answered with a generic message and empty details. The site\'s error log has what went wrong, under the correlation id.', $responses['503']['description'] );
+		$this->assertStringNotContainsString( 'SQLSTATE', (string) json_encode( $responses ) );
+	}
+
+	/**
+	 * Tests that a code any write may raise is documented on every changing operation, and on no read-only one.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_code_any_write_may_raise_is_documented_on_every_changing_operation(): void {
+		$registry = new OperationRegistry();
+
+		FixtureStockOperation::register( $registry );
+		$registry->add( 'fixture_stock.show_stock', array( self::class, 'shownDefinition' ) );
+
+		$paths = self::decode( ( new OpenApiDocument( $registry, ErrorTable::compose( SupportError::class, FixtureStockError::class, FixtureStoreError::class ) ) )->generate( '' )->content )['paths'];
+
+		$this->assertSame( '`fixture_store.unavailable`: The store is being updated. Try again in a minute.', $paths[ FixtureStockOperation::ROUTE ]['post']['responses']['503']['description'] ?? null, 'The changing operation does not list it.' );
+		$this->assertArrayNotHasKey( '503', $paths['/fixture-stock/{item_id}']['get']['responses'], 'A read-only operation lists only what it declares.' );
+	}
+
+	/**
+	 * Tests that a resource named like the Error component fails the run instead of replacing it.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_resource_named_like_the_error_component_fails(): void {
+		$registry = new OperationRegistry();
+		$registry->add( 'fixture_stock.show_stock', array( self::class, 'errorNamedDefinition' ) );
+
+		$this->expectException( \RuntimeException::class );
+		$this->expectExceptionMessage( 'A resource is named Error' );
+
+		( new OpenApiDocument( $registry, self::fixtureErrors() ) )->generate( '' );
+	}
+
+	/**
 	 * Tests that a read-only operation is documented as GET, with its other inputs as query parameters.
 	 *
 	 * @since 0.1.0
@@ -364,6 +531,81 @@ final class OpenApiDocumentTest extends TestCase {
 			summary: 'Shows the stock level of one fixture item.',
 			input: array( $fixture->input()[0], $history ),
 			output: new ResourceSchema( 'FixtureStockLevel', array( $fixture->output()->fields()[0] ) ),
+			capability: 'seocart_manage_inventory',
+			resource_field: null,
+			errors: array(),
+			annotations: new Annotations( read_only: true, destructive: false, idempotent: true ),
+			service: $fixture->service(),
+			rest: new RestBinding( '/fixture-stock/{item_id}' )
+		);
+	}
+
+	/**
+	 * Declares a variant of the fixture that may fail with an internal database code.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function contendedDefinition(): OperationDefinition {
+		$fixture = FixtureStockOperation::definition();
+
+		return new OperationDefinition(
+			id: 'fixture_stock.adjust_contended_stock',
+			label: $fixture->label(),
+			summary: 'Adjusts the stock level of one fixture item, and may meet a deadlock.',
+			input: array( $fixture->input()[0], $fixture->input()[1] ),
+			output: new ResourceSchema( 'FixtureContendedStock', array( $fixture->output()->fields()[0] ) ),
+			capability: 'seocart_manage_inventory',
+			resource_field: null,
+			errors: array( DatabaseError::TransactionRetryable ),
+			annotations: new Annotations( read_only: false, destructive: false, idempotent: false ),
+			service: $fixture->service(),
+			rest: new RestBinding( '/fixture-contended-stock/{item_id}', WriteMethod::Post )
+		);
+	}
+
+	/**
+	 * Declares a read-only variant of the fixture with a resource of its own.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function shownDefinition(): OperationDefinition {
+		$fixture = FixtureStockOperation::definition();
+
+		return new OperationDefinition(
+			id: 'fixture_stock.show_stock',
+			label: $fixture->label(),
+			summary: 'Shows the stock level of one fixture item.',
+			input: array( $fixture->input()[0] ),
+			output: new ResourceSchema( 'FixtureStockShown', array( $fixture->output()->fields()[0] ) ),
+			capability: 'seocart_manage_inventory',
+			resource_field: null,
+			errors: array(),
+			annotations: new Annotations( read_only: true, destructive: false, idempotent: true ),
+			service: $fixture->service(),
+			rest: new RestBinding( '/fixture-stock/{item_id}' )
+		);
+	}
+
+	/**
+	 * Declares a read-only variant of the fixture whose resource is named Error.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function errorNamedDefinition(): OperationDefinition {
+		$fixture = FixtureStockOperation::definition();
+
+		return new OperationDefinition(
+			id: 'fixture_stock.show_stock',
+			label: $fixture->label(),
+			summary: 'Shows the stock level of one fixture item.',
+			input: array( $fixture->input()[0] ),
+			output: new ResourceSchema( OpenApiDocument::ERROR_COMPONENT, array( $fixture->output()->fields()[0] ) ),
 			capability: 'seocart_manage_inventory',
 			resource_field: null,
 			errors: array(),

@@ -15,6 +15,8 @@ use Brain\Monkey;
 use Brain\Monkey\Functions;
 use PHPUnit\Framework\TestCase;
 use SEOCart\Application\Operations\OperationRegistry;
+use SEOCart\Platform\Database\DatabaseError;
+use SEOCart\Platform\Rest\ErrorShape;
 use SEOCart\Support\Error\ErrorTable;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
@@ -22,6 +24,7 @@ use SEOCart\Support\Schema\Privacy;
 use SEOCart\Support\SupportError;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockError;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
+use SEOCart\Tests\Fixtures\Operations\FixtureStoreError;
 use SEOCart\Tools\Docs\AbilitiesReference;
 use SEOCart\Tools\Docs\CliReference;
 use SEOCart\Tools\Docs\ErrorsReference;
@@ -129,6 +132,51 @@ final class ReferenceDocumentsTest extends TestCase {
 		$this->assertStringNotContainsString( '## ', $abilities );
 		$this->assertStringEndsWith( "\n\nSEOCart has no operation commands yet.\n", $commands );
 		$this->assertStringNotContainsString( '## ', $commands );
+	}
+
+	/**
+	 * Tests that the error reference states the shape once, from ErrorShape, and marks every internal row.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_error_reference_states_the_shape_and_marks_internal_rows(): void {
+		$errors = ( new ErrorsReference( ErrorTable::compose( SupportError::class, DatabaseError::class ) ) )->generate( '' )->content;
+
+		$this->assertSame( 1, substr_count( $errors, '## The shape of an error' ) );
+
+		foreach ( ErrorShape::members() as $name => $description ) {
+			$this->assertSame( 1, substr_count( $errors, '- `' . $name . '`: ' . $description ), "The member {$name} is not stated exactly once." );
+		}
+
+		$sections = array();
+
+		foreach ( array_slice( explode( "\n## `", $errors ), 1 ) as $section ) {
+			$sections[ strstr( $section, '`', true ) ] = $section;
+		}
+
+		$this->assertCount( 1 + count( DatabaseError::cases() ), $sections );
+
+		foreach ( $sections as $code => $section ) {
+			$this->assertSame( str_starts_with( $code, 'database.' ), str_contains( $section, "\n- Internal: " ), "{$code} is marked internal exactly when its row is." );
+		}
+	}
+
+	/**
+	 * Tests that a code any write may raise is marked in the error reference and listed for every changing operation.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_code_any_write_may_raise_is_marked_and_listed(): void {
+		$errors = ( new ErrorsReference( ErrorTable::compose( SupportError::class, FixtureStoreError::class ) ) )->generate( '' )->content;
+
+		$this->assertStringContainsString( "## `fixture_store.unavailable`\n\n- HTTP status: 503\n- Any write: every operation that changes the store may answer with this code, whether or not it lists it.\n", $errors );
+		$this->assertSame( 1, substr_count( $errors, '- Any write: ' ), 'Only the row that says so is marked.' );
+
+		$table    = ErrorTable::compose( SupportError::class, FixtureStockError::class, FixtureStoreError::class );
+		$commands = ( new CliReference( self::fixtureRegistry(), $table ) )->generate( '' )->content;
+
+		$this->assertStringContainsString( '- Error codes: `fixture_stock.insufficient` (409), `fixture_store.unavailable` (503)', $commands );
+		$this->assertSame( array( FixtureStockError::Insufficient, FixtureStoreError::Unavailable ), FieldDocs::errorCodes( FixtureStockOperation::definition(), $table ) );
 	}
 
 	/**

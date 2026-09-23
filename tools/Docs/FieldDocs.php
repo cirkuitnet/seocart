@@ -13,6 +13,7 @@ namespace SEOCart\Tools\Docs;
 
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Interfaces\Operations\OperationInvoker;
+use SEOCart\Support\Error\ErrorCode;
 use SEOCart\Support\Error\ErrorTable;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
@@ -24,7 +25,8 @@ use SEOCart\Support\Schema\Privacy;
  * This class owns one fact: how a generated reference document words a field's type,
  * constraints, default and privacy, and an operation's capability and error codes. Both markdown
  * references read it, so the same field is described the same way in both, and the output is
- * already in the form Prettier leaves unchanged.
+ * already in the form Prettier leaves unchanged. errorCodes() is also the OpenAPI document's list
+ * of an operation's codes, so every document lists the same ones.
  *
  * @since 0.1.0
  */
@@ -109,7 +111,7 @@ final class FieldDocs {
 	public static function operationFacts( OperationDefinition $definition, ErrorTable $errors ): array {
 		$codes = array();
 
-		foreach ( $definition->errors() as $code ) {
+		foreach ( self::errorCodes( $definition, $errors ) as $code ) {
 			$codes[] = '`' . $code->value . '` (' . $errors->definitionFor( $code )->httpStatus() . ')';
 		}
 
@@ -118,6 +120,32 @@ final class FieldDocs {
 			'- Capability: ' . self::capability( $definition ),
 			'- Error codes: ' . ( array() === $codes ? 'none' : implode( ', ', $codes ) ),
 		);
+	}
+
+	/**
+	 * Lists the codes an operation can answer with: the ones it declares, and, when it changes the
+	 * store, every code whose row says any write may raise it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param OperationDefinition $definition The operation.
+	 * @param ErrorTable          $errors     The error table.
+	 * @return list<ErrorCode> The declared codes in their order, then the others in code order.
+	 */
+	public static function errorCodes( OperationDefinition $definition, ErrorTable $errors ): array {
+		$codes = $definition->errors();
+
+		if ( $definition->annotations()->isReadOnly() ) {
+			return $codes;
+		}
+
+		foreach ( $errors->definitions() as $row ) {
+			if ( $row->isAnyWrite() && ! in_array( $row->code(), $codes, true ) ) {
+				$codes[] = $row->code();
+			}
+		}
+
+		return $codes;
 	}
 
 	/**

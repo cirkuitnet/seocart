@@ -19,8 +19,14 @@ use SEOCart\Interfaces\Operations\CliAdapter;
 use SEOCart\Interfaces\Operations\CliCommand;
 use SEOCart\Interfaces\Operations\OperationInvoker;
 use SEOCart\Interfaces\Operations\RestAdapter;
+use SEOCart\Platform\Rest\RestErrorTranslator;
+use SEOCart\Support\Error\CodedException;
+use SEOCart\Support\Error\ErrorTable;
+use SEOCart\Tests\Fixtures\Operations\FixtureStockError;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockService;
-use SEOCart\Tests\Support\Doubles\TableErrorTranslator;
+use SEOCart\Tests\Fixtures\Operations\FixtureStoreError;
+use SEOCart\Tests\Support\Doubles\ContextEchoError;
+use SEOCart\Tools\Docs\ErrorCatalogs;
 use WP_Abilities_Registry;
 use WP_Ability_Categories_Registry;
 use WP_REST_Request;
@@ -35,12 +41,24 @@ use WP_REST_Server;
  * commands through a recorder that stands in for WP_CLI::add_command(), with recorders for the
  * printed result and the reported failure. Every application service is resolved to one object —
  * a FixtureStockService unless the test passes its own — so a test can read every call it received,
- * and every unexpected failure the invoker reports is recorded. The test framework restores the
- * hooks after each test; discard() resets the REST server and the Abilities registries.
+ * and every unexpected failure the invoker reports is recorded. Errors are translated by the
+ * plugin's RestErrorTranslator, with the error table of every catalog under src/ and the test
+ * catalogs, and the correlation id in $correlationId; every internal failure it reports is
+ * recorded too. The test framework restores the hooks after each test; discard() resets the REST
+ * server and the Abilities registries.
  *
  * @since 0.1.0
  */
 final class OperationSurfaces {
+
+	/**
+	 * The correlation id every error carries unless a test changes $correlationId.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const CORRELATION_ID = 'fixture-correlation-id';
 
 	/**
 	 * The service every operation runs.
@@ -88,6 +106,24 @@ final class OperationSurfaces {
 	public array $reported = array();
 
 	/**
+	 * Every internal failure the translator reported, in order, with the correlation id it was given.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<array{error: CodedException, correlation_id: string|null}>
+	 */
+	public array $reportedInternal = array();
+
+	/**
+	 * The correlation id the translator's provider returns.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string|null
+	 */
+	public ?string $correlationId = self::CORRELATION_ID;
+
+	/**
 	 * The operations.
 	 *
 	 * @since 0.1.0
@@ -106,6 +142,15 @@ final class OperationSurfaces {
 	private OperationInvoker $invoker;
 
 	/**
+	 * The translator every adapter shares.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var RestErrorTranslator
+	 */
+	private RestErrorTranslator $translator;
+
+	/**
 	 * Wires the adapters for a registry and registers every surface.
 	 *
 	 * @since 0.1.0
@@ -115,16 +160,26 @@ final class OperationSurfaces {
 	 *                                    FixtureStockService in $service.
 	 */
 	public function __construct( OperationRegistry $registry, ?object $service = null ) {
-		$this->registry = $registry;
-		$this->service  = new FixtureStockService();
-		$resolved       = $service ?? $this->service;
-		$this->invoker  = new OperationInvoker(
+		$this->registry   = $registry;
+		$this->service    = new FixtureStockService();
+		$resolved         = $service ?? $this->service;
+		$this->translator = new RestErrorTranslator(
+			self::errorTable(),
+			fn(): ?string => $this->correlationId,
+			function ( CodedException $error, ?string $correlation_id ): void {
+				$this->reportedInternal[] = array(
+					'error'          => $error,
+					'correlation_id' => $correlation_id,
+				);
+			}
+		);
+		$this->invoker    = new OperationInvoker(
 			static function ( string $class_name ) use ( $resolved ): object {
 				unset( $class_name );
 
 				return $resolved;
 			},
-			new TableErrorTranslator(),
+			$this->translator,
 			function ( \Throwable $failure ): void {
 				$this->reported[] = $failure;
 			}
@@ -134,7 +189,7 @@ final class OperationSurfaces {
 
 		$abilities = new AbilitiesAdapter( $this->registry, $this->invoker );
 
-		add_action( 'rest_api_init', array( new RestAdapter( $this->registry, $this->invoker ), 'register' ) );
+		add_action( 'rest_api_init', array( new RestAdapter( $this->registry, $this->invoker, $this->translator ), 'register' ) );
 		add_action( 'wp_abilities_api_categories_init', array( $abilities, 'registerCategory' ) );
 		add_action( 'wp_abilities_api_init', array( $abilities, 'registerAbilities' ) );
 
@@ -159,6 +214,28 @@ final class OperationSurfaces {
 		);
 
 		rest_get_server();
+	}
+
+	/**
+	 * Composes the error table the translator uses: every catalog under src/, and the test catalogs.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return ErrorTable The table.
+	 */
+	public static function errorTable(): ErrorTable {
+		return ErrorTable::compose( ...array_merge( ErrorCatalogs::find( dirname( __DIR__, 2 ) . '/src' ), array( FixtureStockError::class, FixtureStoreError::class, ContextEchoError::class ) ) );
+	}
+
+	/**
+	 * Returns the invoker every adapter shares.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return OperationInvoker The invoker.
+	 */
+	public function invoker(): OperationInvoker {
+		return $this->invoker;
 	}
 
 	/**

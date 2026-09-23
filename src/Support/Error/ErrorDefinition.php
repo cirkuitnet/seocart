@@ -37,6 +37,18 @@ defined( 'ABSPATH' ) || exit;
  * order the row names them, so a translation may reorder them. The totality test checks that
  * a message uses exactly the placeholders its row declares.
  *
+ * A row is public by default: a client reads its message and the values in it. A row declared
+ * with `internal: true` describes a failure a client must never read about, such as a database
+ * fault: an adapter answers with the row's status and a generic message only, and the message
+ * and its values go to the site's log. The flag is on the row and nowhere else, so there is no
+ * list of internal codes to keep in step with the catalogs.
+ *
+ * A row declared with `any_write: true` is a failure any operation that changes the store can
+ * meet without declaring it, such as the store refusing writes while its schema is being
+ * updated. An operation that changes the store is documented as possibly answering with it, and
+ * it raises no undeclared-code notice there; a read-only operation must still declare it. The
+ * flag says nothing about exposure: such a row is public unless it is also internal.
+ *
  * @since 0.1.0
  */
 final class ErrorDefinition {
@@ -96,6 +108,24 @@ final class ErrorDefinition {
 	private array $placeholders;
 
 	/**
+	 * Whether a client must never read the message or the values: true for an internal row.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var bool
+	 */
+	private bool $internal;
+
+	/**
+	 * Whether any operation that changes the store may fail with the code without declaring it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var bool
+	 */
+	private bool $anyWrite;
+
+	/**
 	 * Declares a row.
 	 *
 	 * @since 0.1.0
@@ -109,11 +139,16 @@ final class ErrorDefinition {
 	 * @param \Closure  $message      Returns the message format through a literal gettext call.
 	 * @param string[]  $placeholders Optional. The context values the message contains, in
 	 *                                placeholder order: the first is `%1$s`. Default none.
+	 * @param bool      $internal     Optional. Whether the failure is internal: a client gets the
+	 *                                status and a generic message, and the message and its values
+	 *                                go to the site's log. Default false, a public row.
+	 * @param bool      $any_write    Optional. Whether any operation that changes the store may
+	 *                                fail with the code without declaring it. Default false.
 	 *
 	 * @phpstan-param \Closure(): string $message
 	 * @phpstan-param list<string>       $placeholders
 	 */
-	public function __construct( ErrorCode $code, int $http_status, \Closure $message, array $placeholders = array() ) {
+	public function __construct( ErrorCode $code, int $http_status, \Closure $message, array $placeholders = array(), bool $internal = false, bool $any_write = false ) {
 		$value = (string) $code->value;
 
 		if ( ! is_string( $code->value ) || 1 !== preg_match( self::CODE_PATTERN, $value ) ) {
@@ -138,6 +173,8 @@ final class ErrorDefinition {
 		$this->httpStatus   = $http_status;
 		$this->message      = $message;
 		$this->placeholders = $placeholders;
+		$this->internal     = $internal;
+		$this->anyWrite     = $any_write;
 	}
 
 	/**
@@ -197,6 +234,28 @@ final class ErrorDefinition {
 	 */
 	public function placeholders(): array {
 		return $this->placeholders;
+	}
+
+	/**
+	 * Tells whether the row is internal: no client may read its message or its values.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool True for an internal row, false for a public one.
+	 */
+	public function isInternal(): bool {
+		return $this->internal;
+	}
+
+	/**
+	 * Tells whether any operation that changes the store may fail with the code without declaring it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool True for a row declared with `any_write: true`.
+	 */
+	public function isAnyWrite(): bool {
+		return $this->anyWrite;
 	}
 
 	/**

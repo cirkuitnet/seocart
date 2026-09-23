@@ -11,11 +11,19 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Fixtures\Operations;
 
+use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Authorization\Authorizer;
+use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\SupportError;
 
 /**
  * Keeps stock levels in memory and records every call, so a test can see what each surface passed.
+ *
+ * Like every application service, it authorizes the actor it is given before it does anything:
+ * the Authorizer checks CAPABILITY, which the operation's declaration names as its capability too,
+ * for the actor's user. A refusal raises `authorization.denied`. The input and the actor of every
+ * call are recorded first, refused calls included.
  *
  * Every item starts at INITIAL_LEVEL. An adjustment that would take a level below zero fails with
  * the fixture's declared code. The result carries, besides the declared public fields, a
@@ -37,6 +45,15 @@ final class FixtureStockService {
 	 * @var int
 	 */
 	public const INITIAL_LEVEL = 5;
+
+	/**
+	 * The capability the service requires; the operation declares the same one.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const CAPABILITY = 'seocart_manage_inventory';
 
 	/**
 	 * The secret token every result carries, which no surface may serialize.
@@ -75,19 +92,54 @@ final class FixtureStockService {
 	public array $calls = array();
 
 	/**
-	 * Adjusts the level of one item.
+	 * The actor of every call, in order.
 	 *
-	 * Raises FixtureStockError::Insufficient when the level would drop below zero, and
+	 * @since 0.1.0
+	 *
+	 * @var list<Actor>
+	 */
+	public array $actors = array();
+
+	/**
+	 * Checks the actor's capability.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var Authorizer
+	 */
+	private Authorizer $authorizer;
+
+	/**
+	 * Creates the service.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Authorizer|null $authorizer Optional. Checks the actor's capability. Default the
+	 *                                    plugin's Authorizer.
+	 */
+	public function __construct( ?Authorizer $authorizer = null ) {
+		$this->authorizer = $authorizer ?? new Authorizer( new CapabilityDeclaration() );
+	}
+
+	/**
+	 * Adjusts the level of one item, on the actor's authority.
+	 *
+	 * Raises `authorization.denied` when the actor does not hold CAPABILITY,
+	 * FixtureStockError::Insufficient when the level would drop below zero, and
 	 * SupportError::UnknownCurrency, which the operation does not declare, for the note
 	 * FAIL_UNDECLARED.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param array<string, mixed> $input The input values, keyed by wire name.
+	 * @param Actor                $actor Who acts.
 	 * @return array<string, mixed> The result, keyed by wire name.
 	 */
-	public function adjust( array $input ): array {
-		$this->calls[] = $input;
+	public function adjust( array $input, Actor $actor ): array {
+		$this->calls[]  = $input;
+		$this->actors[] = $actor;
+
+		$this->authorizer->authorize( $actor, self::CAPABILITY );
 
 		if ( self::FAIL_UNDECLARED === ( $input['note'] ?? null ) ) {
 			CodedException::raise( SupportError::UnknownCurrency, array( 'currency' => 'XYZ' ) );

@@ -142,14 +142,14 @@ final class CliAdapterTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Tests that a failure is reported as `<code>: <message>` and nothing is printed.
+	 * Tests that a failure is reported as `<code>: <message>` with the correlation id, and nothing is printed.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_a_failure_is_reported_with_its_code(): void {
 		$outcome = $this->surfaces->cli( FixtureStockOperation::COMMAND, array( self::ITEM ), array( 'delta' => '-9' ) );
 
-		$this->assertSame( 'fixture_stock.insufficient: You asked to remove 9, but only 5 are in stock.', $outcome['failure'] );
+		$this->assertSame( 'fixture_stock.insufficient: You asked to remove 9, but only 5 are in stock. (correlation id: ' . OperationSurfaces::CORRELATION_ID . ')', $outcome['failure'] );
 		$this->assertNull( $outcome['printed'] );
 	}
 }
