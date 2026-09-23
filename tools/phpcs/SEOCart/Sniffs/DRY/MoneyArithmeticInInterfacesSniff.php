@@ -67,20 +67,48 @@ final class MoneyArithmeticInInterfacesSniff implements Sniff {
 	public $shippedPaths = array();
 
 	/**
-	 * Names of the Money methods that compute an amount. Compared without regard to case.
+	 * Names of the money API methods that compute an amount. Compared without regard to case.
+	 *
+	 * Exactly the public methods of the classes under src/Support that return a new Money,
+	 * TaxedMoney or Decimal (or an array of them, from allocate()), other than static methods
+	 * that build an amount from scalars and getters that return a stored component. Pinned by
+	 * Tests/MoneyApiListsTest.php, which derives the set from the classes and fails when this
+	 * list and the API differ.
 	 *
 	 * @since 0.1.0
 	 * @var string[]
 	 */
-	public $arithmeticMethods = array( 'add', 'subtract', 'multiply', 'divide', 'allocate', 'percentage', 'negate' );
+	public $arithmeticMethods = array(
+		'add',
+		'allocate',
+		'convertToBase',
+		'convertToBaseMoney',
+		'convertToQuote',
+		'convertToQuoteMoney',
+		'divide',
+		'fromGross',
+		'fromNet',
+		'multiply',
+		'negate',
+		'ofDecimal',
+		'rescale',
+		'roundToCashStep',
+		'subtract',
+		'toDecimal',
+		'toFactor',
+	);
 
 	/**
-	 * Names of the Money methods or properties that expose the raw number. Compared without regard to case.
+	 * Names of the money API methods or properties that expose a raw number. Compared without regard to case.
+	 *
+	 * Exactly the public parameterless methods of Money, TaxedMoney and Decimal that return an
+	 * int or a string: the minor units, and a Decimal's digits, scale and sign. Pinned by
+	 * Tests/MoneyApiListsTest.php.
 	 *
 	 * @since 0.1.0
 	 * @var string[]
 	 */
-	public $accessors = array( 'minorUnits', 'amount' );
+	public $accessors = array( 'minorUnits', 'scale', 'sign', 'toString', 'toUnscaledInt' );
 
 	/**
 	 * Returns the tokens this sniff listens for.

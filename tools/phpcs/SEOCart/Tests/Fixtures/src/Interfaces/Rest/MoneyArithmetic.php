@@ -14,7 +14,17 @@ $total = $total->subtract( $discount ); // Expect: SEOCart.DRY.MoneyArithmeticIn
 $line  = $price->multiply( $quantity ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
 $each  = $line->divide( 3 ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
 $parts = $total->allocate( 1, 1, 1 ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
-$tax   = $total->percentage( $rate ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
+$cash  = $total->roundToCashStep( $rule ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
+$exact = $total->toDecimal(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
+$cents = Money::ofDecimal( $exact, $usd, $mode ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
+$rate  = $percent->toFactor(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
+$fine  = $exact->rescale( 2, $mode ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
+$pair  = TaxedMoney::fromNet( $net, $rate, $mode ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
+$pair  = TaxedMoney::fromGross( $gross, $rate, $mode ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
+$local = $context->convertToQuote( $total ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
+$local = $context->convertToQuoteMoney( $total, $mode ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
+$home  = $context->convertToBase( $local, 2, $mode ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
+$home  = $context->convertToBaseMoney( $local, $mode ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
 $owed  = $paid->negate(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
 $safe  = $order?->total()?->Add( $fee ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
 $sum   = Money::add( $one, $two ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
@@ -27,26 +37,27 @@ $scaled = $price->multiply( '1.5' ); // Expect: SEOCart.DRY.MoneyArithmeticInInt
 
 $display = $total->minorUnits() / 100; // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
 $display = 0.01 * $total->minorUnits(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
-$gross   = $net->amount() + $tax->amount(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
-$change  = $paid->amount() - $order->total()->amount(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
+$gross   = $net->minorUnits() + $tax->minorUnits(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
+$change  = $paid->minorUnits() - $order->total()->minorUnits(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
 $cents   = $total->minorUnits() % 100; // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
 $squared = $total->minorUnits() ** 2; // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
 $cast    = $quantity * (int) $lines[0]->price()->minorUnits(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
-$prop    = $total->amount * 2; // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
+$prop    = $total->minorUnits * 2; // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
 $nullish = 2 * $order?->total()?->MinorUnits(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
 $owed    = -$paid->minorUnits(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
 $grouped = ( $total->minorUnits() ) / 100; // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
-$divisor = 100 / (float) ( ( $total->amount() ) ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
+$divisor = 100 / (float) ( ( $total->minorUnits() ) ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
 
-$total->amount++; // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
---$total->amount; // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
+$total->minorUnits++; // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
+--$total->minorUnits; // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
 
 $running += $line->minorUnits(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
 $running -= $line->minorUnits(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
-$running *= $line->amount(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
-$running /= $line->amount(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
-$running %= $line->amount(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
-$running **= $line->amount(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
+$running *= $rate->toUnscaledInt(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
+$running /= $line->minorUnits(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
+$running %= $rate->scale(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
+$running **= $rate->sign(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
+$ratio    = $rate->toString() * 100; // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
 
 $both = $a->add( $b )->minorUnits() + 1; // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall, SEOCart.DRY.MoneyArithmeticInInterfaces.Operator
 
@@ -54,20 +65,20 @@ $both = $a->add( $b )->minorUnits() + 1; // Expect: SEOCart.DRY.MoneyArithmeticI
 
 $label    = $formatter->format( $total );
 $raw      = $total->minorUnits();
-$text     = $total->amount() . ' ' . $total->currency()->code();
+$text     = $total->minorUnits() . ' ' . $total->currency()->code();
 $is_free  = 0 === $total->minorUnits();
-$is_more  = $total->amount() > $other->amount();
+$is_more  = $total->minorUnits() > $other->minorUnits();
 $pages    = $count / $per_page + 1;
 $offset   = ( $page - 1 ) * $per_page;
 $index    = $position++;
 $padded   = $width - strlen( $total->formatted() );
 $args     = array( $total->minorUnits(), -1 );
-$chained  = 2 * $total->minorUnits()->scale();
+$chained  = 2 * $total->minorUnits()->count();
 $other    = $cart->count() + $cart->weight();
 $named    = $registry->address( $id );
 $adder    = $calculator->addition( 1, 2 );
 $property = $stats->add;
-$length   = strlen( (string) $total->amount() ) + 2;
+$length   = strlen( (string) $rate->toString() ) + 2;
 $counted  = ( $page - 1 ) + count( $lines );
 $ticks    = ++$position;
 

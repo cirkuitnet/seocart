@@ -20,9 +20,9 @@ defined( 'ABSPATH' ) || exit;
  * lowercase hexadecimal, grouped 8-4-4-4-12, with the RFC 4122 variant bits. Version 7 is
  * time-ordered, so identifiers minted later sort after identifiers minted earlier.
  *
- * The Support module owns this port and supplies the production adapter. The
- * interface exists ahead of that module only because the deterministic test double in
- * tests/Support/Doubles/ needs a contract to implement.
+ * This interface owns one fact: that public identifiers are minted through a port, never
+ * made up where they are needed. SystemIdGenerator is the production adapter; the double in
+ * tests/Support/Doubles/ is the one tests use.
  *
  * @since 0.1.0
  */

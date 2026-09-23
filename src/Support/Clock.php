@@ -21,9 +21,8 @@ defined( 'ABSPATH' ) || exit;
  * returns. A rule with calendar meaning (a sale window, a promotion date) takes an explicit
  * store time zone next to the instant; it never relies on the zone of the returned object.
  *
- * The Support module owns this port and supplies the production adapter. The
- * interface exists ahead of that module only because the deterministic test doubles in
- * tests/Support/Doubles/ need a contract to implement.
+ * This interface owns one fact: that the current time is asked for, never read. SystemClock
+ * is the production adapter; the doubles in tests/Support/Doubles/ are the ones tests use.
  *
  * @since 0.1.0
  */
