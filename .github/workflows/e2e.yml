@@ -5,7 +5,7 @@
 # server, which `npm run test:e2e` drives from a workstation as described in docs/testing.md.
 # That instance runs the production stack — a real web server, PHP-FPM and
 # MySQL 8.4 — and is the source of truth. This workflow exists to notice that the suite
-# stopped passing on a second, independent stack: weekly, and on every pull request that
+# stopped passing on a second, independent stack: nightly, and on every pull request that
 # changes the JavaScript toolchain or the suite itself, which the CI workflow does not run.
 # It is never a required check.
 #
@@ -16,9 +16,8 @@ name: E2E (wp-env, secondary)
 
 on:
     schedule:
-        # Mondays 04:23 UTC, after nightly.yml. Weekly while the repository is private, to
-        # stay inside the included Actions minutes.
-        - cron: '23 4 * * 1'
+        # 04:23 UTC, after nightly.yml.
+        - cron: '23 4 * * *'
     pull_request:
         paths:
             - .nvmrc

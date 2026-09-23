@@ -36,9 +36,7 @@ This Code of Conduct applies within all community spaces, and also applies when 
 
 ## Enforcement
 
-<!-- OWNER ACTION REQUIRED: replace the placeholder in the next paragraph with the enforcement contact before this repository becomes public. -->
-
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at **[PLACEHOLDER: enforcement contact to be supplied by the project owner]**. All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at <conduct@seocart.com>. All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
 
