@@ -43,7 +43,7 @@ final class OptionDefinition {
 	 *
 	 * @var string
 	 */
-	private const NAME_PATTERN = '/^seocart_[a-z0-9_]{1,183}$/';
+	private const NAME_PATTERN = '/^seocart_[a-z0-9_]{1,183}$/D';
 
 	/**
 	 * The option name, for example `seocart_boot`.
@@ -173,7 +173,8 @@ final class OptionDefinition {
 	}
 
 	/**
-	 * Returns what the value is, for privacy purposes.
+	 * Returns what the value is, for privacy purposes. `secret` is a credential or key: never
+	 * exported, logged or shown.
 	 *
 	 * @since 0.1.0
 	 *
@@ -181,16 +182,5 @@ final class OptionDefinition {
 	 */
 	public function classification(): Classification {
 		return $this->classification;
-	}
-
-	/**
-	 * Tells whether the option holds a secret: a credential or key, never exported, logged or shown.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return bool True when its class is `secret`.
-	 */
-	public function holdsSecret(): bool {
-		return Classification::Secret === $this->classification;
 	}
 }

@@ -44,7 +44,7 @@ final class Contribution {
 	 *
 	 * @var string
 	 */
-	private const JOB_GROUP_PATTERN = '/^seocart(?:[_-][a-z0-9]+)*$/';
+	private const JOB_GROUP_PATTERN = '/^seocart(?:[_-][a-z0-9]+)*$/D';
 
 	/**
 	 * The module's tables.

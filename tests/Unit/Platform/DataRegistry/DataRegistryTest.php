@@ -184,6 +184,15 @@ final class DataRegistryTest extends TestCase {
 				static fn() => self::registry( new Contribution( tables: array( self::table( 'ledger', array( $created() ), 'permanent', 'Every stock movement, kept permanently.' ) ) ) ),
 				'so its purpose must say why',
 			),
+			// Planted violation: the pattern's `\s+\w` after "because" dropped.
+			'permanent with created_at and "because" with nothing after it' => array(
+				static fn() => self::registry( new Contribution( tables: array( self::table( 'ledger', array( $created() ), 'permanent', 'Every stock movement, kept permanently because' ) ) ) ),
+				'so its purpose must say why',
+			),
+			'permanent with created_at and "because" then only punctuation' => array(
+				static fn() => self::registry( new Contribution( tables: array( self::table( 'ledger', array( $created() ), 'permanent', 'Every stock movement, kept permanently because .' ) ) ) ),
+				'so its purpose must say why',
+			),
 			// Planted violation: the autoload count check removed.
 			'two autoloaded options'                   => array(
 				static fn() => self::registry( new Contribution( options: array( self::option( 'seocart_boot', true ), self::option( 'seocart_other', true ) ) ) ),
@@ -202,6 +211,11 @@ final class DataRegistryTest extends TestCase {
 				static fn() => self::option( 'seocart_StoreName' ),
 				'must be seocart_ followed by lowercase snake_case',
 			),
+			// Planted violation: the D modifier dropped from OptionDefinition::NAME_PATTERN.
+			'an option name ending in a line feed'     => array(
+				static fn() => self::option( "seocart_store_name\n" ),
+				'must be seocart_ followed by lowercase snake_case',
+			),
 			'an option name longer than its column'    => array(
 				static fn() => self::option( 'seocart_' . str_repeat( 'x', 184 ) ),
 				'191 characters at most',
@@ -218,6 +232,11 @@ final class DataRegistryTest extends TestCase {
 			'a job group outside the plugin namespace' => array(
 				static fn() => new Contribution( jobGroups: array( 'woocommerce' => 'Jobs' ) ),
 				'The job group "woocommerce" is not in the plugin\'s namespace',
+			),
+			// Planted violation: the D modifier dropped from Contribution::JOB_GROUP_PATTERN.
+			'a job group ending in a line feed'        => array(
+				static fn() => new Contribution( jobGroups: array( "seocart\n" => 'Jobs' ) ),
+				'is not in the plugin\'s namespace',
 			),
 			'a job group without its module'           => array(
 				static fn() => new Contribution( jobGroups: array( 'seocart' => ' ' ) ),

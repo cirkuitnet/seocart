@@ -18,6 +18,7 @@ use SEOCart\Platform\Database\Schema\PlatformTables;
 use SEOCart\Platform\Database\SchemaMigration;
 use SEOCart\Platform\DataRegistry\OwnedData;
 use SEOCart\Tests\Support\ChildProcessProbe;
+use SEOCart\Tests\Support\DataRegistrySnapshot;
 
 /**
  * The production list, checked without a database.
@@ -26,6 +27,8 @@ use SEOCart\Tests\Support\ChildProcessProbe;
  * Composer's autoloader and nothing else (tests/Support/data-registry-probe.php, started by
  * ChildProcessProbe). An in-process check would prove nothing, because Brain Monkey leaves
  * stand-ins for WordPress functions behind in this process once another test has used them.
+ * Building is not enough: the probe reads every accessor, through DataRegistrySnapshot, and its
+ * answers must equal the ones given here.
  *
  * DRY rule 11: a module registers its tables beside the migrations that create them, which is
  * two lists, so the two are held equal here: every registered table is declared, with the same
@@ -40,23 +43,33 @@ use SEOCart\Tests\Support\ChildProcessProbe;
 final class OwnedDataTest extends TestCase {
 
 	/**
-	 * Tests that the production registry is built and read, in full, where WordPress does not exist.
+	 * Tests that the registry is built and every accessor read, with the same answers, where WordPress does not exist.
 	 *
-	 * Planted violation: a get_option() call at the top of OwnedData::registry().
+	 * The probe reads the production registry and a fixture registry that holds what no module
+	 * registers yet (an option, a job group, keys, every column class and every kind of privacy
+	 * handling), so every accessor path is taken there.
+	 *
+	 * Planted violations: a get_option() call at the top of OwnedData::registry(); one inside
+	 * DataRegistry::tableNamed(); one inside OptionDefinition::autoloads().
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_production_registry_is_built_and_read_with_wordpress_absent(): void {
+	public function test_the_registry_is_built_and_read_with_wordpress_absent(): void {
 		$probe    = ChildProcessProbe::run( dirname( __DIR__, 3 ) . '/Support/data-registry-probe.php' );
 		$registry = OwnedData::registry();
 
 		$this->assertFalse( $probe['wordpress_loaded'], 'WordPress is loaded in the probe process, so its clean result would prove nothing.' );
 		$this->assertSame( array(), $probe['wordpress_functions'], 'WordPress functions, or stand-ins for them, exist in the probe process, so its clean result would prove nothing.' );
 
-		$this->assertSame( $registry->tableNames(), $probe['tables'], 'The probe built a different registry.' );
-		$this->assertSame( array_map( static fn( $migration ): string => $migration->id(), $registry->migrations() ), $probe['migrations'] );
-		$this->assertSame( $registry->retention()->ids(), array_keys( $probe['retention'] ) );
-		$this->assertSame( $registry->capabilities()->roles(), array_keys( $probe['roles'] ) );
+		$this->assertSame(
+			json_decode( (string) json_encode( DataRegistrySnapshot::take(), JSON_THROW_ON_ERROR ), true, 512, JSON_THROW_ON_ERROR ),
+			$probe['snapshot'],
+			'The registry answered differently in a process without WordPress.'
+		);
+
+		$this->assertSame( $registry->tableNames(), array_keys( $probe['snapshot']['production']['tables'] ), 'The probe did not read every production table through tableNamed().' );
+		$this->assertCount( count( $registry->capabilities()->primitives() ), $probe['snapshot']['production']['primitives'], 'The probe did not read every primitive.' );
+		$this->assertNotSame( array(), $probe['snapshot']['fixture']['options'], 'The probe read no option, so the option accessors were never called.' );
 
 		$root    = (string) realpath( dirname( __DIR__, 4 ) ) . '/';
 		$foreign = array();
@@ -69,13 +82,13 @@ final class OwnedDataTest extends TestCase {
 
 			if ( str_starts_with( $relative, 'src/' ) ) {
 				$read[] = $relative;
-			} elseif ( ! str_starts_with( $relative, 'vendor/' ) && ! in_array( $relative, array( 'tests/Support/data-registry-probe.php', 'tests/bootstrap-unit.php' ), true ) ) {
+			} elseif ( ! str_starts_with( $relative, 'vendor/' ) && ! in_array( $relative, array( 'tests/Support/data-registry-probe.php', 'tests/Support/DataRegistrySnapshot.php', 'tests/bootstrap-unit.php' ), true ) ) {
 				$foreign[] = $relative;
 			}
 		}
 
 		$this->assertContains( 'src/Platform/DataRegistry/DataRegistry.php', $read, 'The probe recorded no registry class among the files it loaded: the recording is broken.' );
-		$this->assertSame( array(), $foreign, "Building the registry loaded files that are neither the plugin's classes nor Composer's:\n  " . implode( "\n  ", $foreign ) . "\n" );
+		$this->assertSame( array(), $foreign, "Building the registry loaded files that are neither the plugin's classes, Composer's nor the snapshot:\n  " . implode( "\n  ", $foreign ) . "\n" );
 	}
 
 	/**

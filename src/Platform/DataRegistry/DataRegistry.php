@@ -48,14 +48,17 @@ defined( 'ABSPATH' ) || exit;
 final class DataRegistry {
 
 	/**
-	 * What a permanent table with a `created_at` column must say in its purpose: that it is
-	 * kept permanently, and because of what.
+	 * What a permanent table with a `created_at` column must say in its purpose: that it is kept
+	 * permanently, then `because`, then at least one word.
+	 *
+	 * A phrasing gate: it proves a reason was written down where the generated reference and a
+	 * reviewer will read it, not that the reason is a good one. That is the review's to judge.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	private const PERMANENCE_REASON = '/\bpermanent(?:ly)?\b.*\bbecause\b/is';
+	private const PERMANENCE_REASON = '/\bpermanent(?:ly)?\b.*\bbecause\s+\w/isu';
 
 	/**
 	 * The capability vocabulary and the role bundles.
