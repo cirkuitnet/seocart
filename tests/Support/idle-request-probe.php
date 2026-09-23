@@ -14,6 +14,10 @@
  * plugin loaded, the main query, `template_redirect`, `wp_head` and `wp_footer`. No theme
  * template is rendered, because a bundled theme is not what is being measured.
  *
+ * `files` and `hooks` are SEOCart's own share; the bundled Action Scheduler's files are in
+ * `library_files`, and `all_hooks` lets a test tell which registrations loading the plugin and
+ * the library added (LibraryShare decides which is which).
+ *
  * The script boots WordPress through the integration bootstrap, so it uses the same test
  * database and loads the plugin the same way. Started by a test, it inherits
  * WP_TESTS_SKIP_INSTALL from the PHPUnit process and leaves the installed site alone.
@@ -26,6 +30,7 @@
 declare( strict_types=1 );
 
 use SEOCart\Tests\Support\BootstrapProbes;
+use SEOCart\Tests\Support\LibraryShare;
 use SEOCart\Tests\Support\PluginOwnership;
 
 if ( 'cli' !== PHP_SAPI || ! isset( $argv[1], $argv[2] ) || ! in_array( $argv[2], array( 'with-plugin', 'without-plugin' ), true ) ) {
@@ -77,6 +82,8 @@ foreach ( $wpdb->queries as $seocart_probe_query ) {
 	$seocart_probe_queries[] = array( $seocart_probe_query[0], $seocart_probe_query[1], $seocart_probe_query[2] );
 }
 
+$seocart_probe_files = LibraryShare::splitFiles( $seocart_probe_probes->loadedPluginFiles() );
+
 file_put_contents(
 	$seocart_probe_result_file,
 	json_encode(
@@ -84,8 +91,11 @@ file_put_contents(
 			'plugin_loaded' => defined( 'SEOCART_PLUGIN_FILE' ),
 			'queries_run'   => $wpdb->num_queries,
 			'queries'       => $seocart_probe_queries,
-			'files'         => $seocart_probe_probes->loadedPluginFiles(),
-			'hooks'         => $seocart_probe_probes->registeredPluginHooks(),
+			'files'         => $seocart_probe_files['plugin'],
+			'library_files' => $seocart_probe_files['library'],
+			'hooks'         => LibraryShare::ownHooks( $seocart_probe_probes->registeredPluginHooks() ),
+			// Every registration, so the test can tell what loading the plugin and its bundled library added.
+			'all_hooks'     => LibraryShare::describeAll( (array) $GLOBALS['wp_filter'], $seocart_probe_probes ),
 		),
 		JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE
 	)

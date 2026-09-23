@@ -17,6 +17,7 @@ use SEOCart\Platform\Database\Schema\Classification;
 use SEOCart\Platform\Database\Schema\PlatformTables;
 use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Events\OutboxTable;
+use SEOCart\Platform\Jobs\JobQueue;
 use SEOCart\Platform\Kernel\BootOption;
 use SEOCart\Platform\Logging\LogsTable;
 use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
@@ -62,6 +63,7 @@ final class OwnedData {
 			new Contribution( options: array( new OptionDefinition( BootOption::NAME, 'Kernel', 'The installation record: the plugin version and schema head the site was installed to, how locks are held, the install identity and address Safe Mode compares with, and the recorded Safe Mode reason.', true, Classification::Public ) ) ),
 			new Contribution( tables: array( SecretKeysTable::definition() ), migrations: array( new CreateSecretKeysMigration() ) ),
 			new Contribution( tables: array( LogsTable::definition() ), migrations: array( new CreateLogsMigration() ) ),
+			new Contribution( jobGroups: array( JobQueue::GROUP => 'Jobs' ) ),
 		);
 	}
 }

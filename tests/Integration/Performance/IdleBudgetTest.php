@@ -12,6 +12,8 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Performance;
 
 use SEOCart\Tests\Support\BootstrapProbes;
+use SEOCart\Tests\Support\ChildProcessProbe;
+use SEOCart\Tests\Support\LibraryShare;
 use SEOCart\Tests\Support\PluginOwnership;
 use SEOCart\Tests\Support\QueryCounter;
 use SEOCart\Tests\Support\QueryLog;
@@ -37,6 +39,14 @@ use WP_UnitTestCase;
  * recorded for it. Attribution names a direct culprit but misses a query caused indirectly,
  * such as one from a WordPress function registered as the callback. G2, the autoloaded-option
  * budget, arrives with the settings registry that creates the option it measures.
+ *
+ * The plugin bundles Action Scheduler and requires it from its main file, so every request
+ * also loads the library and its hooks. G3 and G4 state that share apart from the plugin's own,
+ * with budgets of its own (LibraryShare decides which is which); G1 covers both. The library
+ * finishes a one-time setup of its data store on its first queue run, and until then every
+ * request reads that setup's state: the integration suite reinstalls WordPress and never runs
+ * the queue, so tests/Support/library-prime-probe.php runs that setup once, as WP-Cron would,
+ * before anything is measured.
  *
  * Each test names the planted violation that must turn it red. Unless it says otherwise, a plant
  * goes into SEOCart\Platform\Kernel\Kernel::boot(), directly after `self::$booted = true;`, and
@@ -80,25 +90,6 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	private const G3_MAX_PLUGIN_FILES = 6;
 
 	/**
-	 * G3: files of the libraries bundled under `vendor-scoped/` an idle request may load. The rest
-	 * of the whole budget, until a bundled library states its own number.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var int
-	 */
-	private const G3_MAX_LIBRARY_FILES = 9;
-
-	/**
-	 * G3: plugin PHP files an idle request may load in all: the plugin's share and the libraries'.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var int
-	 */
-	private const G3_MAX_FILES = self::G3_MAX_PLUGIN_FILES + self::G3_MAX_LIBRARY_FILES;
-
-	/**
 	 * G3: bytes of plugin PHP an idle request may parse.
 	 *
 	 * @since 0.1.0
@@ -117,11 +108,44 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	private const G4_MAX_PLUGIN_HOOKS = 25;
 
 	/**
+	 * G3, the bundled Action Scheduler's share: library PHP files an idle request may load.
+	 *
+	 * The library's three budgets are its measured cost, not a design target: Action Scheduler
+	 * 4.2.0 on WordPress 7.1, once its data-store setup is done, loads 25 files (217,070 bytes)
+	 * and adds 42 hook registrations. They are not the plugin's to shrink; they exist so that a
+	 * library update, or a plugin change that wakes more of the library, shows up here and is
+	 * measured again in that change.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const G3_MAX_LIBRARY_FILES = 25;
+
+	/**
+	 * G3, the bundled Action Scheduler's share: bytes of library PHP an idle request may parse.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const G3_MAX_LIBRARY_BYTES = 215 * 1024;
+
+	/**
+	 * G4, the bundled Action Scheduler's share: hook registrations loading the library adds to an idle request.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const G4_MAX_LIBRARY_HOOKS = 42;
+
+	/**
 	 * What both probe modes reported, once they have run.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>}}|null
+	 * @var array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>}}|null
 	 */
 	private static ?array $measurements = null;
 
@@ -195,8 +219,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 * Planted violation for the plugin's share: create three files `src/Planted/P01.php` to
 	 * `src/Planted/P03.php`, each holding only `<?php`, and plant
 	 * `foreach ( glob( dirname( __DIR__, 2 ) . '/Planted/P*.php' ) as $planted ) { require $planted; }`.
-	 * With the main file and the kernel's three that makes seven. Fifteen such files overrun the
-	 * whole budget as well.
+	 * With the main file and the kernel's three that makes seven.
 	 *
 	 * Planted violation for the byte count: create `src/Planted/Big.php` holding `<?php //`
 	 * followed by 260,000 characters on the same line, and plant
@@ -207,34 +230,50 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_g3_idle_request_loads_few_plugin_files(): void {
-		$files     = self::measurement()['files'];
-		$report    = "\n" . BootstrapProbes::describeFiles( $files ) . "\n";
-		$libraries = array_filter( array_keys( $files ), static fn( string $path ): bool => str_starts_with( $path, 'vendor-scoped/' ) );
+		$files  = self::measurement()['files'];
+		$report = "\n" . BootstrapProbes::describeFiles( $files ) . "\n";
 
 		$this->assertArrayHasKey( 'seocart.php', $files, 'The probe did not see the main plugin file, so a small count would prove nothing.' . $report );
 
 		$this->assertLessThanOrEqual(
 			self::G3_MAX_PLUGIN_FILES,
-			count( $files ) - count( $libraries ),
-			'G3, files of the plugin\'s own code loaded on an idle request. An eager service graph looks like this:' . $report
-		);
-
-		$this->assertLessThanOrEqual(
-			self::G3_MAX_LIBRARY_FILES,
-			count( $libraries ),
-			'G3, files of bundled libraries loaded on an idle request:' . $report
-		);
-
-		$this->assertLessThanOrEqual(
-			self::G3_MAX_FILES,
 			count( $files ),
-			'G3, plugin PHP files loaded on an idle request:' . $report
+			'G3, files of the plugin\'s own code loaded on an idle request. An eager service graph looks like this:' . $report
 		);
 
 		$this->assertLessThanOrEqual(
 			self::G3_MAX_PLUGIN_BYTES,
 			array_sum( $files ),
 			'G3, bytes of plugin PHP parsed on an idle request:' . $report
+		);
+	}
+
+	/**
+	 * Tests G3's library share: the bundled Action Scheduler loads what it was measured to load, and no more.
+	 *
+	 * Planted violation, in Kernel::boot():
+	 * `add_action( 'init', static function () { class_exists( 'ActionScheduler_wpPostStore' ); }, 99 );`.
+	 * The library's posts store and what it depends on load, and the library's share grows past
+	 * its budget. The failure must list every library file with its size.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_g3_idle_request_loads_the_measured_share_of_the_bundled_library(): void {
+		$files  = self::measurement()['library_files'];
+		$report = "\n" . BootstrapProbes::describeFiles( $files ) . "\n";
+
+		$this->assertArrayHasKey( LibraryShare::DIRECTORY . 'action-scheduler.php', $files, 'The probe did not see the bundled library, so a small count would prove nothing.' . $report );
+
+		$this->assertLessThanOrEqual(
+			self::G3_MAX_LIBRARY_FILES,
+			count( $files ),
+			'G3, library PHP files loaded on an idle request:' . $report
+		);
+
+		$this->assertLessThanOrEqual(
+			self::G3_MAX_LIBRARY_BYTES,
+			array_sum( $files ),
+			'G3, bytes of library PHP parsed on an idle request:' . $report
 		);
 	}
 
@@ -249,8 +288,8 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_g4_idle_request_registers_few_plugin_hooks(): void {
-		$hooks  = self::measurement()['hooks'];
-		$report = "\n" . BootstrapProbes::describeHooks( $hooks ) . "\n";
+		$hooks  = self::hookShares()['plugin'];
+		$report = "\n  " . implode( "\n  ", $hooks ) . "\n";
 
 		$this->assertNotSame( array(), $hooks, 'The probe did not see even the plugins_loaded registration, so a small count would prove nothing.' );
 
@@ -262,11 +301,47 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Tests G4's library share: loading the bundled Action Scheduler adds the hooks it was measured to add, and no more.
+	 *
+	 * Planted violation, in Kernel::boot():
+	 * `for ( $planted = 0; $planted < 30; $planted++ ) { add_action( 'wp_footer', 'ActionScheduler_Versions::instance', 1000 + $planted ); }`.
+	 * Those callbacks are not the plugin's by the ownership rules, but loading the plugin added
+	 * them, so they count here. The failure must list every registration.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_g4_idle_request_adds_the_measured_share_of_the_bundled_librarys_hooks(): void {
+		$hooks  = self::hookShares()['library'];
+		$report = "\n  " . implode( "\n  ", $hooks ) . "\n";
+
+		$this->assertNotSame( array(), $hooks, 'The probe saw no registration of the bundled library, so a small count would prove nothing.' );
+
+		$this->assertLessThanOrEqual(
+			self::G4_MAX_LIBRARY_HOOKS,
+			count( $hooks ),
+			'G4, hook registrations that loading the bundled library added to an idle request:' . $report
+		);
+	}
+
+	/**
+	 * Returns the idle request's hook registrations, split into the plugin's own and the bundled library's.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array{plugin: list<string>, library: list<string>} One line per registration.
+	 */
+	private static function hookShares(): array {
+		$measurements = self::measurements();
+
+		return LibraryShare::splitHooks( $measurements['with_plugin']['hooks'], $measurements['with_plugin']['all_hooks'], $measurements['without_plugin']['all_hooks'] );
+	}
+
+	/**
 	 * Returns the with-plugin report, running both modes on first use.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>} The report.
+	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>} The report.
 	 */
 	private static function measurement(): array {
 		return self::measurements()['with_plugin'];
@@ -282,10 +357,16 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>}} The reports.
+	 * @return array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>}} The reports.
 	 */
 	private static function measurements(): array {
 		if ( null === self::$measurements ) {
+			$primed = ChildProcessProbe::run( self::pluginDirectory() . '/tests/Support/library-prime-probe.php' );
+
+			if ( true !== $primed['after'] ) {
+				self::fail( 'The bundled Action Scheduler did not finish its data-store setup, so an idle request would be measured in that transient state.' );
+			}
+
 			self::serveIdleRequestInChildProcess( false );
 
 			self::$measurements = array(
@@ -307,7 +388,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 *
 	 * @param bool $load_plugin Whether the integration bootstrap loads the plugin.
-	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>} The report.
+	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>} The report.
 	 */
 	private static function serveIdleRequestInChildProcess( bool $load_plugin ): array {
 		$result_file = (string) tempnam( sys_get_temp_dir(), 'seocart-idle-' );

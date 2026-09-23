@@ -41,6 +41,10 @@ final class RetentionCatalogTest extends TestCase {
 			'dispatched' => 'P7D',
 			'failed'     => 'P90D',
 		),
+		'job_history'      => array(
+			'finished' => 'P7D',
+			'failed'   => 'P90D',
+		),
 		'stock_holds'      => array( 'expired' => 'PT24H' ),
 		'carts'            => array(
 			'guest'     => 'P7D',

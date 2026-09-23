@@ -18,6 +18,7 @@ use SEOCart\Interfaces\Operations\RestAdapter;
 use SEOCart\Platform\Cli\DoctorCommand;
 use SEOCart\Platform\Database\Cli\MigrateCommand;
 use SEOCart\Platform\Events\Cli\OutboxCommand;
+use SEOCart\Platform\Jobs\Cli\JobsCommand;
 use SEOCart\Platform\Kernel\Cli\SafeModeCommand;
 use SEOCart\Platform\Secrets\Cli\SecretsCommand;
 use SEOCart\Tests\Unit\Support\PhpSource;
@@ -77,6 +78,10 @@ final class OperationSurfaceWalker {
 		'seocart doctor'    => array(
 			'class'  => DoctorCommand::class,
 			'reason' => 'Checks the schema, migrations, locks, outbox and residue read-only and exits non-zero on a problem: a diagnostic for operators, with no REST route or ability twin.',
+		),
+		'seocart jobs'      => array(
+			'class'  => JobsCommand::class,
+			'reason' => 'Runs the due background jobs for a system cron and reports on them: a maintenance tool for operators, with no REST route or ability twin.',
 		),
 	);
 

@@ -33,7 +33,7 @@ final class DrainOptionsTest extends TestCase {
 		$this->assertSame( 50, $shutdown->batchSize );
 		$this->assertSame( 5, $shutdown->maxAttempts );
 		$this->assertSame( 60, $shutdown->leaseSeconds );
-		$this->assertTrue( $shutdown->prune );
+		$this->assertFalse( $shutdown->prune, 'The end of a request does not prune: the retention job does.' );
 		$this->assertSame( 60, DrainOptions::command()->timeBudgetSeconds );
 		$this->assertSame( 300, DrainOptions::command( 300 )->timeBudgetSeconds );
 		$this->assertFalse( ( new DrainOptions( 20, 200, 5, 60, false ) )->prune, 'The job runner turns pruning off once its sweep prunes.' );

@@ -7,7 +7,12 @@
  * KernelWiringTest starts this script as a child process, once per kind of request, because the
  * kernel decides which hooks to add from the kind of request it boots in: an admin request, a
  * WP-CLI run or a cron run. Each kind is set up the way WordPress itself marks it, before
- * WordPress loads: WP_ADMIN, WP_CLI or DOING_CRON.
+ * WordPress loads: WP_ADMIN, WP_CLI or DOING_CRON. A WP-CLI run also has the WP_CLI classes, which
+ * code that sees the constant calls: the bundled Action Scheduler adds its commands while it
+ * initialises, at `plugins_loaded`. Stand-ins take them and do nothing with them.
+ *
+ * `hooks` and `files` are SEOCart's own share; the bundled library's are left out
+ * (LibraryShare), since the idle-request budgets measure them.
  *
  * The report is taken at the end of `plugins_loaded`, right after the kernel booted. The plugin's
  * callbacks on `init`, `admin_init` and `cli_init` are then detached, because they reconcile the
@@ -25,6 +30,7 @@
 declare( strict_types=1 );
 
 use SEOCart\Tests\Support\BootstrapProbes;
+use SEOCart\Tests\Support\LibraryShare;
 use SEOCart\Tests\Support\PluginOwnership;
 
 if ( 'cli' !== PHP_SAPI || ! isset( $argv[1], $argv[2] ) || ! in_array( $argv[2], array( 'front', 'admin', 'cli', 'cron' ), true ) ) {
@@ -40,6 +46,28 @@ if ( 'admin' === $argv[2] ) {
 	define( 'WP_ADMIN', true );
 } elseif ( 'cli' === $argv[2] ) {
 	define( 'WP_CLI', true );
+
+	class_alias(
+		get_class(
+			new class() {
+				/**
+				 * Takes a command, as WP_CLI::add_command() does, and registers nothing.
+				 *
+				 * @param mixed ...$command The command's name, callable and arguments.
+				 * @return bool Always true.
+				 */
+				public static function add_command( mixed ...$command ): bool {
+					unset( $command );
+
+					return true;
+				}
+			}
+		),
+		'WP_CLI'
+	);
+
+	// The base class of a command, which the library's migration command extends.
+	class_alias( get_class( new class() {} ), 'WP_CLI_Command' );
 } elseif ( 'cron' === $argv[2] ) {
 	define( 'DOING_CRON', true );
 }
@@ -53,7 +81,7 @@ if ( 'admin' === $argv[2] ) {
 $GLOBALS['wp_filter']['plugins_loaded'][ PHP_INT_MAX ][] = array(
 	'function'      => static function () use ( $seocart_hooks_probe_result_file ): void {
 		$probes = new BootstrapProbes( PluginOwnership::fromComposerManifest( dirname( __DIR__, 2 ) ) );
-		$hooks  = $probes->registeredPluginHooks();
+		$hooks  = LibraryShare::ownHooks( $probes->registeredPluginHooks() );
 
 		file_put_contents(
 			$seocart_hooks_probe_result_file,
@@ -62,7 +90,7 @@ $GLOBALS['wp_filter']['plugins_loaded'][ PHP_INT_MAX ][] = array(
 					'is_admin'  => is_admin(),
 					'multisite' => is_multisite(),
 					'hooks'     => $hooks,
-					'files'     => $probes->loadedPluginFiles(),
+					'files'     => LibraryShare::splitFiles( $probes->loadedPluginFiles() )['plugin'],
 				),
 				JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE
 			)

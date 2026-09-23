@@ -20,8 +20,9 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: the bounds a trigger sets for its drain. Each trigger builds its own: the end
  * of a request uses shutdown(), `wp seocart outbox drain` uses command(), and the job runner
- * builds its own with a budget of its choosing and no opportunistic pruning once its daily
- * sweep prunes.
+ * builds its own with a budget of its choosing. Only the command prunes opportunistically:
+ * the daily retention job prunes the outbox, so neither the end of a request nor the job
+ * runner spends time on it.
  *
  * @since 0.1.0
  */
@@ -141,10 +142,10 @@ final readonly class DrainOptions {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return self A 2-second budget and the defaults.
+	 * @return self A 2-second budget, the defaults, and no pruning.
 	 */
 	public static function shutdown(): self {
-		return new self( self::SHUTDOWN_BUDGET_SECONDS );
+		return new self( self::SHUTDOWN_BUDGET_SECONDS, prune: false );
 	}
 
 	/**

@@ -40,13 +40,16 @@ defined( 'ABSPATH' ) || exit;
  * run in priority order, then in the order they were added. A listener reads current state
  * and keys its side effect on the envelope's outbox id; it never replays events as a log.
  *
- * Who drains: the request that published, at its end. Publisher's wake is
- * scheduleAtShutdown(), which only notes the site and, once per process, registers
- * drainAtShutdown(): no query and no I/O at commit time. At shutdown the listeners run after
- * the response has been built, but on PHP-FPM the client's connection stays open until the
- * shutdown work is done, so the drain adds up to its budget (2 seconds) of latency to the
- * request that published. `wp seocart outbox drain` and the job runner call drain() with
- * bounds of their own.
+ * Who drains: the request that published, at its end. Publisher's wake only notes the site
+ * and, once per process, registers its end-of-request work: no query and no I/O at commit
+ * time. At the end of the request, drainAtEndOfRequest() drains every site that published,
+ * within the shutdown bounds. The listeners run after the response has been built, but the
+ * client's connection stays open until the shutdown work is done unless the wake ends the
+ * response first. scheduleAtShutdown() is the wake that does not: registering
+ * drainAtShutdown(), it adds up to the drain's budget (2 seconds) of latency to the request
+ * that published. The wake the plugin binds ends the response first where the server can,
+ * and elsewhere hands the drain to a background job. `wp seocart outbox drain` and the job
+ * runner call drain() with bounds of their own.
  *
  * A fatal error in a listener cannot be caught. When the drain runs from a request's main
  * code (the command, a job), a shutdown handler registered at the first drain puts the row
@@ -342,12 +345,9 @@ final class OutboxDrainer {
 	/**
 	 * Drains, at the end of the request, the outbox of every site that published. Registered by scheduleAtShutdown().
 	 *
-	 * Each site is drained with the shutdown bounds, switched to when it is not the current one.
-	 * The sites share one time budget: each drain stops at the deadline the first one started
-	 * with, so a request that published on several sites still adds at most the budget. After a
-	 * fatal error in the request nothing is drained: the rows wait for the next wake, and a row
-	 * left leased by the fatal error is claimed again once its lease lapses. Nothing is ever
-	 * thrown, because it is shutdown; failures are reported.
+	 * After a fatal error in the request nothing is drained: the rows wait for the next wake, and
+	 * a row left leased by the fatal error is claimed again once its lease lapses. Otherwise the
+	 * sites are drained by drainAtEndOfRequest(). Nothing is ever thrown, because it is shutdown.
 	 *
 	 * @since 0.1.0
 	 *
@@ -362,6 +362,23 @@ final class OutboxDrainer {
 			return;
 		}
 
+		$this->drainAtEndOfRequest( $sites );
+	}
+
+	/**
+	 * Drains the outbox of each site given, with the shutdown bounds. The end-of-request drain of every wake.
+	 *
+	 * Each site is switched to when it is not the current one. The sites share one time budget:
+	 * each drain stops at the deadline the first one started with, so a request that published
+	 * on several sites still spends at most the budget. The caller has checked that the request
+	 * did not end in a fatal error (isFatal()). Nothing is ever thrown, because it runs at
+	 * shutdown; failures are reported.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int[] $sites The ids of the sites that published.
+	 */
+	public function drainAtEndOfRequest( array $sites ): void {
 		$options  = DrainOptions::shutdown();
 		$deadline = ( $this->clock )() + $options->timeBudgetSeconds * self::NANOSECONDS;
 
@@ -846,12 +863,14 @@ final class OutboxDrainer {
 	/**
 	 * Tells whether an error, as error_get_last() describes it, ended the process.
 	 *
+	 * Public for the work that runs at shutdown elsewhere, which checks it before it acts.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @param mixed $error The description, or null.
 	 * @return bool True for a fatal error.
 	 */
-	private static function isFatal( mixed $error ): bool {
+	public static function isFatal( mixed $error ): bool {
 		return is_array( $error ) && 0 !== ( (int) ( $error['type'] ?? 0 ) & self::FATAL_ERRORS );
 	}
 }

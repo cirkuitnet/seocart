@@ -17,14 +17,16 @@ parameters:
 			# neither can be discovered: Polylang is not a dependency, and the WP-CLI stubs
 			# conflict with the WordPress 7.1 stubs. It is linted and sniffed like any other file.
 			- bin/dev/polylang-languages.php
-	# Two libraries ship without Composer autoloading, so PHPStan is told where their
+	# Three libraries ship without Composer autoloading, so PHPStan is told where their
 	# symbols live. They are scanned for discovery only, never analysed:
 	# - PHP_CodeSniffer (classes and token constants), used by tools/phpcs/;
 	# - the WordPress test library (WP_UnitTestCase, tests_add_filter), used by
-	#   tests/Integration/ and tests/bootstrap-integration.php.
+	#   tests/Integration/ and tests/bootstrap-integration.php;
+	# - the bundled Action Scheduler (its functions and classes), used by src/Platform/Jobs/.
 	scanDirectories:
 		- vendor/squizlabs/php_codesniffer/src
 		- vendor/wp-phpunit/wp-phpunit/includes
+		- vendor-scoped/woocommerce/action-scheduler
 	# WP-CLI's own stubs conflict with the WordPress 7.1 stubs; the few WP_CLI symbols the
 	# plugin calls are declared by hand in this file instead.
 	scanFiles:

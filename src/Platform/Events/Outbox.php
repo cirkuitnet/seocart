@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Events;
 
+use SEOCart\Platform\DataRegistry\RetentionCatalog;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Exception\DatabaseException;
 use SEOCart\Support\Events\DomainEvent;
@@ -133,42 +134,36 @@ final class Outbox {
 	private Database $db;
 
 	/**
-	 * How many days a dispatched row is kept.
+	 * How long a dispatched row is kept after its dispatch, in seconds.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var int
 	 */
-	private int $dispatchedRetentionDays;
+	private int $dispatchedRetentionSeconds;
 
 	/**
-	 * How many days a failed row is kept after it was parked.
+	 * How long a failed row is kept after it was parked, in seconds.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var int
 	 */
-	private int $failedRetentionDays;
+	private int $failedRetentionSeconds;
 
 	/**
-	 * Creates the repository. Sends nothing.
+	 * Creates the repository, with the table's retention periods from the retention catalog. Sends nothing.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \InvalidArgumentException When a retention period is shorter than one day.
-	 *
-	 * @param Database $db                      The connection.
-	 * @param int      $dispatchedRetentionDays Optional. How many days a dispatched row is kept. Default 7.
-	 * @param int      $failedRetentionDays     Optional. How many days a failed row is kept. Default 90.
+	 * @param Database $db The connection.
 	 */
-	public function __construct( Database $db, int $dispatchedRetentionDays = 7, int $failedRetentionDays = 90 ) {
-		if ( $dispatchedRetentionDays < 1 || $failedRetentionDays < 1 ) {
-			throw new \InvalidArgumentException( 'Outbox rows are kept for at least one day.' );
-		}
+	public function __construct( Database $db ) {
+		$periods = ( new RetentionCatalog() )->defaults( OutboxTable::RETENTION );
 
-		$this->db                      = $db;
-		$this->dispatchedRetentionDays = $dispatchedRetentionDays;
-		$this->failedRetentionDays     = $failedRetentionDays;
+		$this->db                         = $db;
+		$this->dispatchedRetentionSeconds = self::seconds( $periods['dispatched'] );
+		$this->failedRetentionSeconds     = self::seconds( $periods['failed'] );
 	}
 
 	/**
@@ -337,17 +332,17 @@ final class Outbox {
 	 */
 	public function prune( int $limit ): int {
 		$dispatched = $this->db->execute(
-			"DELETE FROM %i WHERE state = 'dispatched' AND dispatched_at < UTC_TIMESTAMP(6) - INTERVAL %d DAY ORDER BY dispatched_at LIMIT %d",
+			"DELETE FROM %i WHERE state = 'dispatched' AND dispatched_at < UTC_TIMESTAMP(6) - INTERVAL %d SECOND ORDER BY dispatched_at LIMIT %d",
 			$this->table(),
-			$this->dispatchedRetentionDays,
+			$this->dispatchedRetentionSeconds,
 			$limit
 		);
 
 		// A parked row's available_at is the moment it was parked.
 		$failed = $this->db->execute(
-			"DELETE FROM %i WHERE state = 'failed' AND available_at < UTC_TIMESTAMP(6) - INTERVAL %d DAY ORDER BY available_at LIMIT %d",
+			"DELETE FROM %i WHERE state = 'failed' AND available_at < UTC_TIMESTAMP(6) - INTERVAL %d SECOND ORDER BY available_at LIMIT %d",
 			$this->table(),
-			$this->failedRetentionDays,
+			$this->failedRetentionSeconds,
 			$limit
 		);
 
@@ -599,5 +594,17 @@ final class Outbox {
 		}
 
 		return $largest;
+	}
+
+	/**
+	 * Returns the length of a retention period, in seconds.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $period An ISO 8601 duration, as the retention catalog writes it.
+	 * @return int Its length, counted from the Unix epoch.
+	 */
+	private static function seconds( string $period ): int {
+		return ( new \DateTimeImmutable( '@0' ) )->add( new \DateInterval( $period ) )->getTimestamp();
 	}
 }

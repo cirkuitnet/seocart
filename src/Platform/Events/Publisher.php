@@ -40,7 +40,9 @@ defined( 'ABSPATH' ) || exit;
  * after-commit event becomes an after-commit callback at the current level, which fires its
  * action once the outermost level has committed, or at once outside a transaction; a rolled
  * back level drops it. Once per call that stored a row, the wake is registered after the
- * commit too; it costs nothing when it runs (OutboxDrainer::scheduleAtShutdown()).
+ * commit too; it costs nothing when it runs. The kernel binds Jobs\EventWake, which only notes
+ * the site and delivers at the end of the request, after the response has ended, or hands the
+ * delivery to the job runner.
  *
  * Every event carries the correlation id of the request that publishes it.
  *
@@ -130,8 +132,8 @@ final class Publisher implements EventPublisher {
 	 * @param HookBridge         $bridge          Fires after-commit events.
 	 * @param EventCatalog       $catalog         The events that may be published.
 	 * @param CorrelationId      $correlation     The correlation id events carry.
-	 * @param callable           $wake            Runs after a commit that stored events, normally
-	 *                                            OutboxDrainer::scheduleAtShutdown().
+	 * @param callable           $wake            Runs after a commit that stored events: the
+	 *                                            kernel binds Jobs\EventWake.
 	 * @param int                $payloadCapBytes Optional. The longest encoded payload, in bytes.
 	 *                                            Default DEFAULT_PAYLOAD_CAP_BYTES.
 	 */

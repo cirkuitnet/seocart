@@ -20,11 +20,11 @@
  */
 
 /*
- * This file does five things and nothing else: it checks the PHP and WordPress
- * versions, registers the class autoloader, hooks the kernel to `plugins_loaded`, and
- * registers the kernel's activation and deactivation hooks. The last two must be
- * registered here, at file scope: WordPress activates a plugin in a request where it
- * includes the plugin file after `plugins_loaded` has already fired.
+ * This file does six things and nothing else: it checks the PHP and WordPress
+ * versions, registers the class autoloader, loads the bundled Action Scheduler, hooks the
+ * kernel to `plugins_loaded`, and registers the kernel's activation and deactivation hooks.
+ * The last two must be registered here, at file scope: WordPress activates a plugin in a
+ * request where it includes the plugin file after `plugins_loaded` has already fired.
  * It must stay parsable by PHP versions older than the supported floor, so that an
  * unsupported site sees a notice instead of a parse error. No translation call, no
  * database access and no object construction may happen at file scope.
@@ -153,6 +153,17 @@ spl_autoload_register(
 		}
 	}
 );
+
+/*
+ * Action Scheduler, the background-job library, bundled without a namespace prefix. Every
+ * plugin that bundles a copy registers it at `plugins_loaded` priority 0, and the newest
+ * registered copy is initialised at priority 1, so it must be required here, while this file
+ * is included. Required from the kernel's `plugins_loaded` callback, which runs at priority
+ * 10, it would register too late: this copy would take no part in choosing the newest, and
+ * which copy ran would depend on the order plugins load. The file loads one class and adds
+ * two callbacks; SEOCart does not call the library before `action_scheduler_init`.
+ */
+require_once __DIR__ . '/vendor-scoped/woocommerce/action-scheduler/action-scheduler.php';
 
 add_action( 'plugins_loaded', array( 'SEOCart\\Platform\\Kernel\\Kernel', 'boot' ) );
 register_activation_hook( __FILE__, array( 'SEOCart\\Platform\\Kernel\\Kernel', 'activate' ) );

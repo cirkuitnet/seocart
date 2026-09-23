@@ -30,7 +30,8 @@ defined( 'ABSPATH' ) || exit;
  * truncated and rebuilt. Every period is the value a new store starts with; a merchant may
  * change it later.
  *
- * The catalog holds exactly the policies the plugin's tables use, and grows with them.
+ * The catalog holds exactly the policies the plugin's tables use, and the one its job queue
+ * uses for the plugin's own jobs, and grows with them.
  * Declarations are data: building and reading it does no I/O and calls no WordPress function.
  *
  * @since 0.1.0
@@ -75,6 +76,13 @@ final class RetentionCatalog {
 			'defaults' => array(
 				'dispatched' => 'P7D',
 				'failed'     => 'P90D',
+			),
+		),
+		'job_history'      => array(
+			'rule'     => 'A background job of the plugin\'s own group that completed or was cancelled is deleted the first period after its last run, a failed one the second period after it failed; a waiting or running job is never swept, and neither is another plugin\'s.',
+			'defaults' => array(
+				'finished' => 'P7D',
+				'failed'   => 'P90D',
 			),
 		),
 		'stock_holds'      => array(
