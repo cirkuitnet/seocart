@@ -17,6 +17,7 @@ use SEOCart\Application\Operations\CliBinding;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Application\Operations\WriteMethod;
+use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
 use SEOCart\Support\Schema\SchemaException;
@@ -116,6 +117,7 @@ final class OperationDefinitionTest extends TestCase {
 			array(
 				'capability'     => 'seocart_view_order',
 				'resource_field' => 'item_id',
+				'agent_exposed'  => false,
 			)
 		);
 
@@ -205,6 +207,23 @@ final class OperationDefinitionTest extends TestCase {
 			'ability slug with a slash'            => array( array( 'ability' => 'seocart/adjust' ), 'is not kebab-case' ),
 			'positional argument that is no input' => array( array( 'cli' => new CliBinding( array( 'fixture-stock', 'adjust' ), array( 'sku' ) ) ), 'The positional argument sku' ),
 			'positional argument that is optional' => array( array( 'cli' => new CliBinding( array( 'fixture-stock', 'adjust' ), array( 'note' ) ) ), 'The positional argument note' ),
+			'nullable input field'                 => array(
+				array(
+					'input' => array(
+						FixtureStockOperation::definition()->input()[0],
+						self::input( 'delta' ),
+						new FieldSpec(
+							name: 'note',
+							type: FieldType::String,
+							description: 'A note.',
+							label: static fn(): string => 'Note',
+							example: 'x',
+							nullable: true
+						),
+					),
+				),
+				'The input field note of fixture_stock.adjust_stock is nullable',
+			),
 		);
 	}
 
@@ -234,12 +253,68 @@ final class OperationDefinitionTest extends TestCase {
 	 * @return array<string, array{array<string, mixed>, string}> Overrides, and the expected message part.
 	 */
 	public static function neverExposedVariants(): array {
+		$destructive = new Annotations( read_only: false, destructive: true, idempotent: false );
+		$on_resource = 'is checked on one resource, so what it can reach cannot be told from its declaration, and it is never exposed to agents';
+
 		return array(
-			'destructive'                 => array( array( 'annotations' => new Annotations( read_only: false, destructive: true, idempotent: false ) ), 'is destructive, and a destructive operation is never exposed to agents' ),
-			'moves money: refunds'        => array( array( 'capability' => 'seocart_refund_orders' ), 'requires seocart_refund_orders: it moves money or reads personal data in bulk' ),
-			'moves money: captures'       => array( array( 'capability' => 'seocart_capture_payments' ), 'requires seocart_capture_payments: it moves money' ),
-			'moves money: stored value'   => array( array( 'capability' => 'seocart_manage_stored_value' ), 'requires seocart_manage_stored_value: it moves money' ),
-			'overrides money state'       => array( array( 'capability' => 'seocart_override_money_state' ), 'requires seocart_override_money_state: it moves money' ),
+			'destructive'                 => array( array( 'annotations' => $destructive ), 'is destructive, and a destructive operation is never exposed to agents' ),
+			'moves money: refunds'        => array(
+				array(
+					'capability'  => 'seocart_refund_orders',
+					'annotations' => $destructive,
+				),
+				'requires seocart_refund_orders: it moves money or reads personal data in bulk',
+			),
+			'moves money: one refund'     => array(
+				array(
+					'capability'     => 'seocart_refund_order',
+					'resource_field' => 'item_id',
+					'annotations'    => $destructive,
+				),
+				'requires seocart_refund_order, which ' . $on_resource,
+			),
+			'moves money: captures'       => array(
+				array(
+					'capability'  => 'seocart_capture_payments',
+					'annotations' => $destructive,
+				),
+				'requires seocart_capture_payments: it moves money',
+			),
+			'moves money: stored value'   => array(
+				array(
+					'capability'  => 'seocart_manage_stored_value',
+					'annotations' => $destructive,
+				),
+				'requires seocart_manage_stored_value: it moves money',
+			),
+			'overrides money state'       => array(
+				array(
+					'capability'  => 'seocart_override_money_state',
+					'annotations' => $destructive,
+				),
+				'requires seocart_override_money_state: it moves money',
+			),
+			'edits one order'             => array(
+				array(
+					'capability'     => 'seocart_edit_order',
+					'resource_field' => 'item_id',
+				),
+				'requires seocart_edit_order, which ' . $on_resource,
+			),
+			'reads one customer'          => array(
+				array(
+					'capability'     => 'seocart_view_customer',
+					'resource_field' => 'item_id',
+				),
+				'requires seocart_view_customer, which ' . $on_resource,
+			),
+			'edits one product'           => array(
+				array(
+					'capability'     => 'edit_seocart_product',
+					'resource_field' => 'item_id',
+				),
+				'requires edit_seocart_product, which ' . $on_resource,
+			),
 			'reads personal data in bulk' => array( array( 'capability' => 'seocart_export_customers' ), 'requires seocart_export_customers: it moves money or reads personal data in bulk' ),
 			'exports orders'              => array( array( 'capability' => 'seocart_export_orders' ), 'requires seocart_export_orders' ),
 			'reads personal data'         => array( array( 'capability' => 'seocart_view_customer_pii' ), 'requires seocart_view_customer_pii' ),
@@ -275,6 +350,78 @@ final class OperationDefinitionTest extends TestCase {
 
 			$this->assertFalse( $definition->isAgentExposed(), $name );
 		}
+	}
+
+	/**
+	 * Provides operations that move money but are not annotated destructive.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, array{array<string, mixed>}> Overrides of the fixture's declaration.
+	 */
+	public static function moneyWithoutDestructive(): array {
+		$cases = array();
+
+		foreach ( array( 'seocart_capture_payments', 'seocart_void_payments', 'seocart_refund_orders', 'seocart_manage_stored_value', 'seocart_override_money_state' ) as $capability ) {
+			$cases[ $capability ] = array( array( 'capability' => $capability ) );
+		}
+
+		$cases['seocart_refund_order'] = array(
+			array(
+				'capability'     => 'seocart_refund_order',
+				'resource_field' => 'item_id',
+			),
+		);
+
+		return $cases;
+	}
+
+	/**
+	 * Tests that an operation that moves money must be annotated destructive, exposed or not.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @dataProvider moneyWithoutDestructive
+	 *
+	 * @param array<string, mixed> $overrides The capability, and the resource field of a meta capability.
+	 */
+	public function test_an_operation_that_moves_money_must_be_annotated_destructive( array $overrides ): void {
+		$this->expectException( SchemaException::class );
+		$this->expectExceptionMessage( 'moves money, so it must be annotated destructive' );
+
+		self::variant( $overrides + array( 'agent_exposed' => false ) );
+	}
+
+	/**
+	 * Tests which meta capabilities count as moving money: exactly the refund of one order.
+	 *
+	 * Every other capability's group is declared by CapabilityDeclaration; a meta capability has no
+	 * group, so OperationDefinition keeps the money ones in a list of its own. This test is that
+	 * list's companion: it tries every declared meta capability and requires the refused ones to be
+	 * exactly the ones named here, so a new meta capability is classified in the change that adds it.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_meta_capabilities_that_move_money_are_exactly_the_listed_ones(): void {
+		$moves_money = array();
+
+		foreach ( ( new CapabilityDeclaration() )->metaCapabilities() as $capability ) {
+			try {
+				self::variant(
+					array(
+						'capability'     => $capability,
+						'resource_field' => 'item_id',
+						'agent_exposed'  => false,
+					)
+				);
+			} catch ( SchemaException $exception ) {
+				$this->assertStringContainsString( 'moves money, so it must be annotated destructive', $exception->getMessage() );
+
+				$moves_money[] = $capability;
+			}
+		}
+
+		$this->assertSame( array( 'seocart_refund_order' ), $moves_money );
 	}
 
 	/**

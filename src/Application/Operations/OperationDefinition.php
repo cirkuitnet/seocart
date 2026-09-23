@@ -46,9 +46,15 @@ defined( 'ABSPATH' ) || exit;
  *   meta capability together with the required input field that names the resource;
  * - a REST route whose parameters are not required inputs, a resource field that is not one of the
  *   route's parameters, a read-only operation with a write method, or a changing one without;
+ * - a nullable input field: the REST API reads an explicit null as a missing argument while the
+ *   Ability's schema accepts it, so the surfaces would disagree;
  * - a positional CLI argument that is not a required input;
+ * - an operation that moves money — it requires a primitive of the plugin's money group, or a
+ *   meta capability in MONEY_META_CAPABILITIES — without the `destructive` annotation;
  * - agent exposure for an operation that is destructive, moves money or reads personal data in
- *   bulk (a primitive of the plugin's money or sensitivity group) — those are never exposed.
+ *   bulk (a primitive of the money or data-sensitivity group), or that requires a meta capability,
+ *   whose reach cannot be told from its declaration. Those are never exposed; the check fails
+ *   closed.
  *
  * @since 0.1.0
  */
@@ -80,6 +86,19 @@ final class OperationDefinition {
 	 * @var string
 	 */
 	public const ABILITY_NAMESPACE = 'seocart';
+
+	/**
+	 * The plugin's meta capabilities that move money.
+	 *
+	 * The capability declaration gives every primitive a group but a meta capability none, so the
+	 * meta capabilities that move money are named here. Every declared meta capability is either in
+	 * this list or deliberately not, which the definition's unit test pins.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<string>
+	 */
+	private const MONEY_META_CAPABILITIES = array( 'seocart_refund_order' );
 
 	/**
 	 * The id.
@@ -268,6 +287,10 @@ final class OperationDefinition {
 		self::checkService( $id, $service );
 		self::checkErrors( $id, $errors );
 		self::checkCapability( $id, $capability, $resource_field, $fields );
+
+		if ( self::movesMoney( $capability ) && ! $annotations->isDestructive() ) {
+			SchemaException::raise( 'The operation %1$s requires %2$s: it moves money, so it must be annotated destructive.', $id, $capability );
+		}
 
 		if ( null === $rest && null === $ability && null === $cli ) {
 			SchemaException::raise( 'The operation %1$s is bound to no surface: give it a REST route, an ability or a command.', $id );
@@ -507,6 +530,10 @@ final class OperationDefinition {
 				SchemaException::raise( 'The operation %1$s declares the input field %2$s twice.', $id, $field->name() );
 			}
 
+			if ( $field->isNullable() ) {
+				SchemaException::raise( 'The input field %2$s of %1$s is nullable, which an input cannot be: the REST API reads an explicit null as a missing argument, while the Ability\'s schema accepts it.', $id, $field->name() );
+			}
+
 			$fields[ $field->name() ] = $field;
 		}
 
@@ -624,12 +651,25 @@ final class OperationDefinition {
 	}
 
 	/**
+	 * Tells whether a capability moves money: a primitive of the money group, or a money meta capability.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $capability The capability.
+	 * @return bool True when the operation that requires it moves money.
+	 */
+	private static function movesMoney( string $capability ): bool {
+		return in_array( $capability, self::MONEY_META_CAPABILITIES, true )
+			|| CapabilityDeclaration::GROUP_MONEY === ( new CapabilityDeclaration() )->group( $capability );
+	}
+
+	/**
 	 * Checks that an operation asked to be exposed to agents may be.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws SchemaException When the operation has no ability, is destructive, or requires a
-	 *                         primitive of the money or sensitivity group.
+	 * @throws SchemaException When the operation has no ability, requires a meta capability, requires
+	 *                         a primitive of the money or data-sensitivity group, or is destructive.
 	 *
 	 * @param string      $id          The operation id, for messages.
 	 * @param string      $capability  The capability.
@@ -637,18 +677,24 @@ final class OperationDefinition {
 	 * @param string|null $ability     The ability slug, or null.
 	 */
 	private static function checkAgentExposure( string $id, string $capability, Annotations $annotations, ?string $ability ): void {
+		$declaration = new CapabilityDeclaration();
+
 		if ( null === $ability ) {
 			SchemaException::raise( 'The operation %1$s is exposed to agents but has no ability.', $id );
 		}
 
-		if ( $annotations->isDestructive() ) {
-			SchemaException::raise( 'The operation %1$s is destructive, and a destructive operation is never exposed to agents.', $id );
+		if ( $declaration->isMetaCapability( $capability ) ) {
+			SchemaException::raise( 'The operation %1$s requires %2$s, which is checked on one resource, so what it can reach cannot be told from its declaration, and it is never exposed to agents.', $id, $capability );
 		}
 
-		$group = ( new CapabilityDeclaration() )->group( $capability );
+		$group = $declaration->group( $capability );
 
 		if ( CapabilityDeclaration::GROUP_MONEY === $group || CapabilityDeclaration::GROUP_SENSITIVITY === $group ) {
 			SchemaException::raise( 'The operation %1$s requires %2$s: it moves money or reads personal data in bulk, and is never exposed to agents.', $id, $capability );
+		}
+
+		if ( $annotations->isDestructive() ) {
+			SchemaException::raise( 'The operation %1$s is destructive, and a destructive operation is never exposed to agents.', $id );
 		}
 	}
 }
