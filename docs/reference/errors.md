@@ -88,3 +88,15 @@ An internal error carries a generic message and empty details: it is a code mark
 - Internal: a client receives the code, the status, a generic message and the correlation id. This message and its values go to the site's error log only.
 - Message: The database ended the operation to resolve a conflict with another request (error {errno}, SQLSTATE {sqlstate}). Try again.
 - Values: `errno`, `sqlstate`
+
+## `settings.stored_value_invalid`
+
+- HTTP status: 500
+- Message: The option {option} holds a value SEOCart cannot use. Save the setting again to replace it.
+- Values: `option`
+
+## `settings.version_conflict`
+
+- HTTP status: 409
+- Message: The {group} settings were changed by someone else after you read them, so your change was not saved. Read them again, then repeat your change.
+- Values: `group`
