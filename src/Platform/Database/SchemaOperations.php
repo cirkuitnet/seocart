@@ -18,8 +18,6 @@ use SEOCart\Platform\Database\Schema\TableDefinition;
 
 defined( 'ABSPATH' ) || exit;
 
-// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception messages go to logs and the command line, never into HTML; the REST layer answers with the translated message of the error code.
-
 /**
  * Creates tables from their declarations and runs the explicit ALTERs a contract step needs.
  *
@@ -172,7 +170,7 @@ final class SchemaOperations {
 
 			// dbDelta asks DESCRIBE and SHOW INDEX first; only a change it made can fail the step.
 			if ( 1 === preg_match( '/^\s*(?:ALTER|CREATE)\b/i', $query ) ) {
-				throw new QueryFailed( 0, '', $query, (string) ( $error['error_str'] ?? '' ) );
+				QueryFailed::raiseRefused( 0, '', $query, (string) ( $error['error_str'] ?? '' ) );
 			}
 		}
 	}

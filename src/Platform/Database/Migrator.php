@@ -23,7 +23,7 @@ use SEOCart\Support\Clock;
 
 defined( 'ABSPATH' ) || exit;
 
-// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception messages go to logs and the command line, never into HTML; the REST layer answers with the translated message of the error code.
+// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- The LogicExceptions below name migration ids for the developer who registered them; they are never rendered as HTML.
 
 /**
  * Brings the current site's schema to the head of the migration chain, and says where it stands.
@@ -102,15 +102,6 @@ final class Migrator {
 	 * @var int
 	 */
 	public const SCHEMA_LOCK_TTL_SECONDS = 300;
-
-	/**
-	 * The machine code reported when an applied migration's class file changed since it ran.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	public const CHECKSUM_MISMATCH = 'database.migration_checksum_mismatch';
 
 	/**
 	 * A migration id: a date, a four-digit sequence and a snake_case name.
@@ -265,7 +256,13 @@ final class Migrator {
 	 */
 	public function migrate( MigrationRunOptions $options ): MigrationReport {
 		if ( 0 !== $this->db->depth() ) {
-			throw new ForbiddenInsideTransaction( ForbiddenInsideTransaction::KIND_DDL, 'migrate' );
+			ForbiddenInsideTransaction::raise(
+				ForbiddenInsideTransaction::CODE,
+				array(
+					'kind'   => ForbiddenInsideTransaction::KIND_DDL,
+					'detail' => 'migrate',
+				)
+			);
 		}
 
 		$started   = (int) hrtime( true );
@@ -301,6 +298,10 @@ final class Migrator {
 	/**
 	 * Describes where the current site's schema stands. Sends one query.
 	 *
+	 * Admin and command-line requests call it, so it also checks what the zero-query gate
+	 * cannot see: a migration that is not applied but sorts before the newest applied one.
+	 * Each such migration is reported as ReportCode::MigrationOutOfOrder, and it refuses writes.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @return MigrationStatus The heads, the pending, failed and running migrations, and whether writes are blocked.
@@ -327,6 +328,16 @@ final class Migrator {
 			if ( self::RUNNING === $state && null === $running ) {
 				$running = $migration->id();
 			}
+		}
+
+		foreach ( self::outOfOrder( $outstanding, $appliedHead ) as $migration ) {
+			( $this->report )(
+				ReportCode::MigrationOutOfOrder->value,
+				array(
+					'migration_id' => $migration->id(),
+					'schema_head'  => (string) $appliedHead,
+				)
+			);
 		}
 
 		$codeHead = self::codeHead( $chain );
@@ -576,7 +587,9 @@ final class Migrator {
 		}
 
 		if ( array() !== $diff ) {
-			throw MigrationFailed::postconditions( $migration->id(), $diff );
+			$failed = MigrationFailed::postconditions( $migration->id(), $diff );
+
+			throw $failed;
 		}
 
 		return array( 'tables' => $summary );
@@ -602,7 +615,7 @@ final class Migrator {
 
 			if ( $current !== (string) $row['checksum'] ) {
 				( $this->report )(
-					self::CHECKSUM_MISMATCH,
+					ReportCode::MigrationChecksumMismatch->value,
 					array(
 						'migration_id' => $migration->id(),
 						'recorded'     => (string) $row['checksum'],
@@ -642,10 +655,11 @@ final class Migrator {
 	/**
 	 * Decides whether commerce writes must be refused. The one place that rule is written.
 	 *
-	 * Writes are refused when the schema is newer than the code, or when an outstanding
-	 * migration (pending, running or failed) cannot operate half-applied. Outstanding
-	 * migrations that can operate half-applied do not refuse writes: the store keeps trading
-	 * while they backfill.
+	 * Writes are refused when the schema is newer than the code; when an outstanding
+	 * migration (pending, running or failed) cannot operate half-applied; or when an
+	 * outstanding migration sorts before the newest applied one, which means the chain is
+	 * inconsistent. Other outstanding migrations can operate half-applied and do not refuse
+	 * writes: the store keeps trading while they backfill.
 	 *
 	 * @since 0.1.0
 	 *
@@ -659,6 +673,10 @@ final class Migrator {
 			return true;
 		}
 
+		if ( array() !== self::outOfOrder( $outstanding, $appliedHead ) ) {
+			return true;
+		}
+
 		foreach ( $outstanding as $migration ) {
 			if ( ! $migration->canOperateHalfApplied() ) {
 				return true;
@@ -666,6 +684,27 @@ final class Migrator {
 		}
 
 		return false;
+	}
+
+	/**
+	 * Returns the outstanding migrations that sort before the newest applied one.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Migration[] $outstanding The registered migrations that are not applied.
+	 * @param string|null $appliedHead The newest applied migration id, or null.
+	 * @return list<Migration> The migrations that break the order, in id order.
+	 */
+	private static function outOfOrder( array $outstanding, ?string $appliedHead ): array {
+		$found = array();
+
+		foreach ( $outstanding as $migration ) {
+			if ( null !== $appliedHead && strcmp( $migration->id(), $appliedHead ) < 0 ) {
+				$found[] = $migration;
+			}
+		}
+
+		return $found;
 	}
 
 	/**
@@ -781,15 +820,15 @@ final class Migrator {
 				'UPDATE %i SET state = %s, error_code = %s, error_message = %s, postcondition_json = %s, updated_at = %s WHERE migration_id = %s',
 				$this->db->table( 'migrations' ),
 				self::FAILED,
-				$failed->errorCode(),
-				mb_substr( $failed->getMessage(), 0, self::ERROR_MESSAGE_LENGTH ),
+				$failed->recordedCode(),
+				mb_substr( $failed->detail(), 0, self::ERROR_MESSAGE_LENGTH ),
 				(string) wp_json_encode( $failed->diff() ),
 				$this->now(),
 				$migration->id()
 			);
 		} catch ( DatabaseException $unrecorded ) {
 			( $this->report )(
-				$unrecorded->code(),
+				(string) $unrecorded->errorCode()->value,
 				array(
 					'migration_id' => $migration->id(),
 					'while'        => 'recording a migration failure',
@@ -878,7 +917,12 @@ final class Migrator {
 	}
 
 	/**
-	 * Builds and validates the chain on first use: kinds, ids, duplicates, and the bootstrap migration first.
+	 * Builds and validates the chain on first use: kinds, ids, order, and the bootstrap migration first.
+	 *
+	 * Migrations are registered in strictly ascending id order, each id once. Ids sort by date
+	 * and are append-only, so a list in any other order is a mistake in the registry, and the
+	 * zero-query write gate, which counts every migration after the head as outstanding,
+	 * depends on it.
 	 *
 	 * @since 0.1.0
 	 *
@@ -891,7 +935,8 @@ final class Migrator {
 			return $this->chain;
 		}
 
-		$byId = array();
+		$chain    = array();
+		$previous = null;
 
 		foreach ( $this->migrations as $migration ) {
 			if ( ! $migration instanceof SchemaMigration && ! $migration instanceof DataMigration ) {
@@ -904,16 +949,13 @@ final class Migrator {
 				throw new \LogicException( sprintf( 'Migration id "%s" must look like YYYYMMDD_NNNN_name.', $id ) );
 			}
 
-			if ( isset( $byId[ $id ] ) ) {
-				throw new \LogicException( sprintf( 'Migration id %s is registered twice.', $id ) );
+			if ( null !== $previous && strcmp( $id, $previous ) <= 0 ) {
+				throw new \LogicException( sprintf( 'Migration %1$s is registered after %2$s: migrations are registered in strictly ascending id order, each id once.', $id, $previous ) );
 			}
 
-			$byId[ $id ] = $migration;
+			$chain[]  = $migration;
+			$previous = $id;
 		}
-
-		ksort( $byId, SORT_STRING );
-
-		$chain = array_values( $byId );
 
 		if ( ! isset( $chain[0] ) || ! $chain[0] instanceof PlatformBootstrapMigration ) {
 			throw new \LogicException( sprintf( 'The first migration must be %s, which creates the migrator\'s own tables.', PlatformBootstrapMigration::ID ) );

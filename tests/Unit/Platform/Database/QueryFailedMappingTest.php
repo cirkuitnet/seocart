@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests the error-number table that types database failures, and the set of database error codes
+ * Tests the error-number table that types database failures, and how each class maps to a catalog case
  *
  * @package SEOCart
  * @since   0.1.0
@@ -12,19 +12,21 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Platform\Database;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Platform\Database\DatabaseError;
 use SEOCart\Platform\Database\Exception\DatabaseException;
 use SEOCart\Platform\Database\Exception\DuplicateKey;
 use SEOCart\Platform\Database\Exception\QueryFailed;
 use SEOCart\Platform\Database\Exception\TransactionIntegrityLost;
 use SEOCart\Platform\Database\Exception\TransactionRetryable;
+use SEOCart\Support\Error\ErrorDefinition;
 
 /**
- * T14: the two hand-maintained lists of the Database module, each held to a set-equality test (DRY rule 11).
+ * T14: the hand-maintained lists of the Database module, each held to a set-equality test (DRY rule 11).
  *
  * The first list is QueryFailed's table from MySQL error number to exception class. The second
- * is the set of `database.*` codes, one per concrete exception class, which is the set of rows
- * the one error table must carry. Adding an exception class without its row, or a row without
- * its class, turns this red.
+ * is the pairing of exception classes with DatabaseError cases: every concrete class names
+ * exactly one case in its CODE constant, and every case is named by exactly one class. The
+ * third is the HTTP status of each case.
  *
  * Planted violation: in QueryFailed::CLASSES, delete the line for 1205. The mapping of 1205 and
  * the equality with the documented table both turn red.
@@ -49,22 +51,22 @@ final class QueryFailedMappingTest extends TestCase {
 	);
 
 	/**
-	 * The `database.*` codes the error table receives: one per concrete exception class.
+	 * The HTTP status of each case: a retry may succeed (503), a duplicate is a conflict (409), anything else is a server fault.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var list<string>
+	 * @var array<string, int>
 	 */
-	private const CODES = array(
-		'database.duplicate_key',
-		'database.forbidden_in_transaction',
-		'database.lock_lost',
-		'database.lock_not_acquired',
-		'database.migration_failed',
-		'database.query_failed',
-		'database.transaction_depth',
-		'database.transaction_lost',
-		'database.transaction_retryable',
+	private const STATUSES = array(
+		'database.duplicate_key'            => 409,
+		'database.forbidden_in_transaction' => 500,
+		'database.lock_lost'                => 500,
+		'database.lock_not_acquired'        => 503,
+		'database.migration_failed'         => 500,
+		'database.query_failed'             => 500,
+		'database.transaction_depth'        => 500,
+		'database.transaction_lost'         => 503,
+		'database.transaction_retryable'    => 500,
 	);
 
 	/**
@@ -92,7 +94,7 @@ final class QueryFailedMappingTest extends TestCase {
 	}
 
 	/**
-	 * Tests that each error number becomes the documented class, and keeps its facts.
+	 * Tests that each error number becomes the documented class, with its own code and its facts.
 	 *
 	 * @since 0.1.0
 	 *
@@ -103,14 +105,15 @@ final class QueryFailedMappingTest extends TestCase {
 	 * @param string $expected The name of the class it must become.
 	 */
 	public function test_each_error_number_becomes_the_documented_class( int $errno, bool $inside, string $expected ): void {
-		$failure = QueryFailed::fromErrno( $errno, '40001', 'UPDATE wp_seocart_orders SET state = \'paid\'', 'server text', $inside );
+		$failure = QueryFailed::fromErrno( $errno, '40001', "UPDATE wp_seocart_orders SET state = 'paid'", 'server text', $inside );
 
 		$this->assertSame( $expected, get_class( $failure ), sprintf( 'Error %d %s a window.', $errno, $inside ? 'inside' : 'outside' ) );
+		$this->assertSame( $expected::CODE, $failure->errorCode() );
 
 		if ( $failure instanceof QueryFailed ) {
 			$this->assertSame( $errno, $failure->errno() );
 			$this->assertSame( '40001', $failure->sqlstate() );
-			$this->assertSame( 'server text', $failure->context()['server_message'] );
+			$this->assertSame( 'server text', $failure->serverMessage() );
 		}
 
 		if ( $failure instanceof TransactionIntegrityLost ) {
@@ -137,38 +140,67 @@ final class QueryFailedMappingTest extends TestCase {
 	 * @since 0.1.0
 	 */
 	public function test_only_the_beginning_of_the_statement_is_kept(): void {
-		$failure = new QueryFailed( 1064, '42000', "SELECT\n\n  " . str_repeat( 'x', 300 ), '' );
+		$failure = QueryFailed::fromErrno( 1064, '42000', "SELECT\n\n  " . str_repeat( 'x', 300 ), '', false );
 
+		$this->assertInstanceOf( QueryFailed::class, $failure );
 		$this->assertSame( QueryFailed::STATEMENT_LENGTH, strlen( $failure->statement() ) );
 		$this->assertStringStartsWith( 'SELECT x', $failure->statement() );
 	}
 
 	/**
-	 * Tests that every concrete exception class declares its own code, and that the codes are exactly the documented set.
+	 * Tests that every concrete exception class names its own catalog case, and that the pairing covers every case once.
+	 *
+	 * Planted violation: set LockLost::CODE to DatabaseError::LockNotAcquired.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_every_exception_class_has_its_own_code_and_the_codes_are_the_documented_set(): void {
-		$codes = array();
+	public function test_every_class_raises_its_own_case_and_every_case_has_a_class(): void {
+		$named = array();
 
 		foreach ( self::exceptionClasses() as $class ) {
 			$reflection = new \ReflectionClass( $class );
 
-			if ( $reflection->isAbstract() ) {
+			if ( DatabaseException::class === $class ) {
 				continue;
 			}
 
 			$this->assertTrue( $reflection->isSubclassOf( DatabaseException::class ), $class . ' must extend DatabaseException.' );
-			$this->assertSame( $class, ( new \ReflectionClassConstant( $class, 'CODE' ) )->getDeclaringClass()->getName(), $class . ' must declare its own CODE.' );
-			$this->assertArrayNotHasKey( $class::CODE, $codes, $class . ' repeats the code of ' . ( $codes[ $class::CODE ] ?? '' ) . '.' );
+			$this->assertFalse( $reflection->isAbstract(), $class . ' must be concrete: only DatabaseException is abstract.' );
 
-			$codes[ $class::CODE ] = $class;
+			$code = new \ReflectionClassConstant( $class, 'CODE' );
+
+			$this->assertSame( $class, $code->getDeclaringClass()->getName(), $class . ' must name its own case in CODE.' );
+			$this->assertInstanceOf( DatabaseError::class, $code->getValue(), $class . '::CODE must be a DatabaseError case.' );
+			$this->assertArrayNotHasKey( $code->getValue()->name, $named, $class . ' names the same case as ' . ( $named[ $code->getValue()->name ] ?? '' ) . '.' );
+
+			$named[ $code->getValue()->name ] = $class;
 		}
 
-		$found = array_keys( $codes );
-		sort( $found );
+		$cases = array_map( static fn( DatabaseError $each ): string => $each->name, DatabaseError::cases() );
 
-		$this->assertSame( self::CODES, $found, 'The database error codes changed: every code needs exactly one row in the error table.' );
+		sort( $cases );
+		ksort( $named );
+
+		$this->assertSame( $cases, array_keys( $named ), 'Every DatabaseError case is raised by exactly one exception class.' );
+	}
+
+	/**
+	 * Tests the HTTP status of every case.
+	 *
+	 * Planted violation: in DatabaseError::definitions(), answer 500 for TransactionLost.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_each_case_answers_with_its_documented_status(): void {
+		$statuses = array();
+
+		foreach ( DatabaseError::cases() as $case ) {
+			$statuses[ $case->value ] = ErrorDefinition::of( $case )->httpStatus();
+		}
+
+		ksort( $statuses );
+
+		$this->assertSame( self::STATUSES, $statuses );
 	}
 
 	/**

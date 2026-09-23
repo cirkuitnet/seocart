@@ -12,7 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Platform\Database;
 
 use PHPUnit\Framework\TestCase;
-use SEOCart\Platform\Database\Exception\TransactionRetryable;
+use SEOCart\Platform\Database\Exception\QueryFailed;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Tests\Support\Doubles\FakeTransactionManager;
@@ -121,7 +121,7 @@ final class FakeTransactionManagerTest extends TestCase {
 				$manager->touchCacheKey( 'k' . $runs, 'g' );
 
 				if ( 1 === $runs ) {
-					throw new TransactionRetryable( 1213, '40001', 'UPDATE t', 'deadlock' );
+					throw QueryFailed::fromErrno( 1213, '40001', 'UPDATE t', 'deadlock', true );
 				}
 			},
 			RetryPolicy::deadlocks()

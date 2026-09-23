@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Database\Exception;
 
+use SEOCart\Platform\Database\DatabaseError;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -24,11 +26,11 @@ defined( 'ABSPATH' ) || exit;
 final class DuplicateKey extends QueryFailed {
 
 	/**
-	 * The machine code.
+	 * The catalog case this class raises.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var string
+	 * @var DatabaseError
 	 */
-	public const CODE = 'database.duplicate_key';
+	public const CODE = DatabaseError::DuplicateKey;
 }

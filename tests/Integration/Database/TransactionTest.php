@@ -518,7 +518,7 @@ final class TransactionTest extends DatabaseTestCase {
 		$this->assertSame( 'answered by the test', wp_remote_retrieve_body( $response ) );
 		$this->assertSame( 1, $answered );
 		$this->assertCount( 1, $this->reports );
-		$this->assertSame( ForbiddenInsideTransaction::CODE, $this->reports[0]['code'] );
+		$this->assertSame( ForbiddenInsideTransaction::CODE->value, $this->reports[0]['code'] );
 		$this->assertSame( ForbiddenInsideTransaction::KIND_HTTP, $this->reports[0]['context']['kind'] );
 	}
 
@@ -668,7 +668,7 @@ final class TransactionTest extends DatabaseTestCase {
 
 		$this->assertNotNull( $duplicate );
 		$this->assertSame( 1062, $duplicate->errno() );
-		$this->assertSame( DuplicateKey::CODE, $duplicate->code() );
+		$this->assertSame( DuplicateKey::CODE, $duplicate->errorCode() );
 		$this->assertStringStartsWith( 'INSERT INTO', $duplicate->statement() );
 		$this->assertSame( array(), $this->reports, 'Nothing was reported.' );
 
@@ -775,7 +775,7 @@ final class TransactionTest extends DatabaseTestCase {
 						++$inner;
 
 						if ( 1 === $inner ) {
-							throw new TransactionRetryable( 1213, '40001', 'UPDATE', 'Deadlock found' );
+							throw QueryFailed::fromErrno( 1213, '40001', 'UPDATE', 'Deadlock found', true );
 						}
 					},
 					RetryPolicy::deadlocks()

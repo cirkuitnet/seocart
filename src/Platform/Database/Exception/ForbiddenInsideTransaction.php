@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Database\Exception;
 
+use SEOCart\Platform\Database\DatabaseError;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -26,13 +28,13 @@ defined( 'ABSPATH' ) || exit;
 final class ForbiddenInsideTransaction extends DatabaseException {
 
 	/**
-	 * The machine code.
+	 * The catalog case this class raises.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var string
+	 * @var DatabaseError
 	 */
-	public const CODE = 'database.forbidden_in_transaction';
+	public const CODE = DatabaseError::ForbiddenInTransaction;
 
 	/**
 	 * Kind: an outbound HTTP request. The detail is the host.
@@ -71,40 +73,20 @@ final class ForbiddenInsideTransaction extends DatabaseException {
 	public const KIND_LOCK = 'lock';
 
 	/**
-	 * The kind of forbidden work: one of the KIND_* constants.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private string $kind;
-
-	/**
-	 * Where it was attempted: a host, a statement or a lock name.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private string $detail;
-
-	/**
-	 * Describes the forbidden work.
+	 * Builds the exception without throwing it, for a caller that reports it instead.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param string $kind   One of the KIND_* constants.
 	 * @param string $detail A host, a statement or a lock name. Cut to QueryFailed::STATEMENT_LENGTH.
+	 * @return self The exception.
 	 */
-	public function __construct( string $kind, string $detail ) {
-		$this->kind   = $kind;
-		$this->detail = QueryFailed::shorten( $detail );
-
-		parent::__construct(
-			sprintf( 'Not allowed inside a database transaction: %s (%s).', $kind, $this->detail ),
+	public static function of( string $kind, string $detail ): self {
+		return self::because(
+			self::CODE,
 			array(
 				'kind'   => $kind,
-				'detail' => $this->detail,
+				'detail' => QueryFailed::shorten( $detail ),
 			)
 		);
 	}
@@ -117,7 +99,7 @@ final class ForbiddenInsideTransaction extends DatabaseException {
 	 * @return string One of the KIND_* constants.
 	 */
 	public function kind(): string {
-		return $this->kind;
+		return (string) $this->context()['kind'];
 	}
 
 	/**
@@ -128,6 +110,6 @@ final class ForbiddenInsideTransaction extends DatabaseException {
 	 * @return string A host, a statement or a lock name.
 	 */
 	public function detail(): string {
-		return $this->detail;
+		return (string) $this->context()['detail'];
 	}
 }

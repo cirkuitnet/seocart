@@ -181,10 +181,9 @@ final class MigrateCommand {
 		try {
 			$report = $this->migrator->migrate( $options );
 		} catch ( MigrationFailed $failed ) {
-			$this->say( sprintf( 'Migration %s failed: %s', $failed->migrationId(), $failed->errorCode() ) );
-			$this->say( $failed->getMessage() );
+			$this->say( sprintf( 'Migration %s failed: %s', $failed->migrationId(), $failed->recordedCode() ) );
 
-			foreach ( $failed->diff() as $line ) {
+			foreach ( explode( "\n", $failed->detail() ) as $line ) {
 				$this->say( '  ' . $line );
 			}
 

@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Database\Exception;
 
+use SEOCart\Platform\Database\DatabaseError;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -27,20 +29,20 @@ defined( 'ABSPATH' ) || exit;
  * - `aborted`: a deadlock or lock-wait timeout already ended the unit of work, and a statement
  *   was still issued inside it.
  *
- * The REST layer answers 503 for this code: the request may succeed if it is sent again.
+ * Its row answers 503: the request may succeed if it is sent again.
  *
  * @since 0.1.0
  */
 final class TransactionIntegrityLost extends DatabaseException {
 
 	/**
-	 * The machine code.
+	 * The catalog case this class raises.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var string
+	 * @var DatabaseError
 	 */
-	public const CODE = 'database.transaction_lost';
+	public const CODE = DatabaseError::TransactionLost;
 
 	/**
 	 * Reason: wpdb is on a different connection than the one the transaction began on.
@@ -79,114 +81,32 @@ final class TransactionIntegrityLost extends DatabaseException {
 	public const ABORTED = 'aborted';
 
 	/**
-	 * Why the transaction was refused: one of the reason constants.
+	 * Builds the exception without throwing it.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var string
+	 * @param string          $reason    One of the reason constants.
+	 * @param string          $statement The statement at which the loss was noticed. Cut to QueryFailed::STATEMENT_LENGTH.
+	 * @param \Throwable|null $previous  Optional. The failure that revealed it. Default null.
+	 * @return self The exception.
 	 */
-	private string $reason;
-
-	/**
-	 * Describes a refused transaction. Use the named constructors.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string               $reason   One of the reason constants.
-	 * @param string               $message  What happened, for a person reading a log.
-	 * @param array<string, mixed> $context  Structured facts.
-	 * @param \Throwable|null      $previous Optional. The failure that revealed it. Default null.
-	 */
-	private function __construct( string $reason, string $message, array $context, ?\Throwable $previous = null ) {
-		$this->reason = $reason;
-
-		parent::__construct( $message, array( 'reason' => $reason ) + $context, $previous );
+	public static function lost( string $reason, string $statement, ?\Throwable $previous = null ): self {
+		return self::because( self::CODE, self::facts( $reason, $statement ), $previous );
 	}
 
 	/**
-	 * Describes a reconnect: the connection now in use is not the one the transaction began on.
+	 * Raises the exception.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string $statement The statement after which the change was noticed.
-	 * @param int    $openedOn  The connection's thread id when the transaction began.
-	 * @param int    $current   The thread id of the connection wpdb holds now.
-	 * @return self The exception.
+	 * @throws TransactionIntegrityLost Always.
+	 *
+	 * @param string $reason    One of the reason constants.
+	 * @param string $statement The statement at which the loss was noticed.
+	 * @return never
 	 */
-	public static function connectionChanged( string $statement, int $openedOn, int $current ): self {
-		$statement = QueryFailed::shorten( $statement );
-
-		return new self(
-			self::CONNECTION_CHANGED,
-			sprintf(
-				'wpdb reconnected inside a transaction (thread %d became %d), so the server rolled the transaction back. Noticed after: %s. A statement wpdb re-ran on the new connection was committed on its own.',
-				$openedOn,
-				$current,
-				$statement
-			),
-			array(
-				'statement'  => $statement,
-				'opened_on'  => $openedOn,
-				'current_on' => $current,
-			)
-		);
-	}
-
-	/**
-	 * Describes a connection that went away inside the window without wpdb reconnecting.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param int    $errno     The error number, 2006 or 2013.
-	 * @param string $statement The statement that found the connection gone.
-	 * @return self The exception.
-	 */
-	public static function connectionLost( int $errno, string $statement ): self {
-		$statement = QueryFailed::shorten( $statement );
-
-		return new self(
-			self::CONNECTION_LOST,
-			sprintf( 'The database connection was lost inside a transaction (error %d) at: %s', $errno, $statement ),
-			array(
-				'errno'     => $errno,
-				'statement' => $statement,
-			)
-		);
-	}
-
-	/**
-	 * Describes a missing probe savepoint: something ended the transaction behind the wrapper's back.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param QueryFailed $probe The failure of the probe, error 1305.
-	 * @return self The exception.
-	 */
-	public static function endedExternally( QueryFailed $probe ): self {
-		return new self(
-			self::ENDED_EXTERNALLY,
-			'The transaction was ended by a statement the transaction wrapper did not issue (a COMMIT, ROLLBACK, START TRANSACTION or DDL), so COMMIT was not sent.',
-			array( 'errno' => $probe->errno() ),
-			$probe
-		);
-	}
-
-	/**
-	 * Describes a statement issued inside a unit of work that a deadlock or lock-wait timeout had already ended.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $statement The statement that was refused.
-	 * @return self The exception.
-	 */
-	public static function aborted( string $statement ): self {
-		$statement = QueryFailed::shorten( $statement );
-
-		return new self(
-			self::ABORTED,
-			sprintf( 'The unit of work was already ended by a deadlock or lock-wait timeout; refused: %s', $statement ),
-			array( 'statement' => $statement )
-		);
+	public static function raiseLost( string $reason, string $statement ): never {
+		self::raise( self::CODE, self::facts( $reason, $statement ) );
 	}
 
 	/**
@@ -197,6 +117,33 @@ final class TransactionIntegrityLost extends DatabaseException {
 	 * @return string One of the reason constants.
 	 */
 	public function reason(): string {
-		return $this->reason;
+		return (string) $this->context()['reason'];
+	}
+
+	/**
+	 * Returns the statement at which the loss was noticed.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string At most QueryFailed::STATEMENT_LENGTH characters.
+	 */
+	public function statement(): string {
+		return (string) $this->context()['statement'];
+	}
+
+	/**
+	 * Builds the context.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $reason    One of the reason constants.
+	 * @param string $statement The statement.
+	 * @return array{reason: string, statement: string} The context.
+	 */
+	private static function facts( string $reason, string $statement ): array {
+		return array(
+			'reason'    => $reason,
+			'statement' => QueryFailed::shorten( $statement ),
+		);
 	}
 }

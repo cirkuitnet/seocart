@@ -14,10 +14,9 @@ namespace SEOCart\Platform\Database;
 use SEOCart\Platform\Database\Exception\DatabaseException;
 use SEOCart\Platform\Database\Exception\ForbiddenInsideTransaction;
 use SEOCart\Platform\Database\Exception\LockNotAcquired;
+use SEOCart\Platform\Database\Exception\QueryFailed;
 
 defined( 'ABSPATH' ) || exit;
-
-// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception messages go to logs and the command line, never into HTML; the REST layer answers with the translated message of the error code.
 
 /**
  * Takes a named lock for one runner, waits a bounded time for it, and hands out a Lease.
@@ -129,9 +128,9 @@ final class LockService {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws LockNotAcquired|ForbiddenInsideTransaction When another runner held the lock for the whole
-	 *                                                    wait; or when called inside a transaction.
-	 * @throws \InvalidArgumentException                  When the TTL is below one second or the wait is negative.
+	 * @throws LockNotAcquired|ForbiddenInsideTransaction|\InvalidArgumentException When another runner held
+	 *         the lock for the whole wait; when called inside a transaction; or when the TTL is below one
+	 *         second or the wait is negative.
 	 *
 	 * @param string $name        The lock's name, for example 'schema'.
 	 * @param int    $ttlSeconds  How long a table-mode lease lasts without renew(). At least 1.
@@ -140,7 +139,13 @@ final class LockService {
 	 */
 	public function acquire( string $name, int $ttlSeconds, int $waitSeconds ): Lease {
 		if ( 0 !== $this->db->depth() ) {
-			throw new ForbiddenInsideTransaction( ForbiddenInsideTransaction::KIND_LOCK, $name );
+			ForbiddenInsideTransaction::raise(
+				ForbiddenInsideTransaction::CODE,
+				array(
+					'kind'   => ForbiddenInsideTransaction::KIND_LOCK,
+					'detail' => QueryFailed::shorten( $name ),
+				)
+			);
 		}
 
 		if ( $ttlSeconds < 1 || $waitSeconds < 0 ) {
@@ -228,7 +233,13 @@ final class LockService {
 		$acquired = $this->db->fetchValue( 'SELECT GET_LOCK( %s, %d )', $serverName, $waitSeconds );
 
 		if ( '1' !== (string) $acquired ) {
-			throw new LockNotAcquired( $name, $waitSeconds * 1000 );
+			LockNotAcquired::raise(
+				LockNotAcquired::CODE,
+				array(
+					'name'   => $name,
+					'waited' => $waitSeconds * 1000,
+				)
+			);
 		}
 
 		return new Lease( $this->db, LockMode::GetLock, $name, $serverName, self::token(), $ttlSeconds, $this->db->threadId() );
@@ -270,7 +281,13 @@ final class LockService {
 			}
 
 			if ( $waited + self::POLL_MILLISECONDS > $waitSeconds * 1000 ) {
-				throw new LockNotAcquired( $name, $waited );
+				LockNotAcquired::raise(
+					LockNotAcquired::CODE,
+					array(
+						'name'   => $name,
+						'waited' => $waited,
+					)
+				);
 			}
 
 			( $this->sleep )( self::POLL_MILLISECONDS );

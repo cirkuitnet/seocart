@@ -215,12 +215,12 @@ final class TransactionGuards {
 	 * @param string $detail Where it was attempted.
 	 */
 	private function forbid( string $kind, string $detail ): void {
-		$violation = new ForbiddenInsideTransaction( $kind, $detail );
+		$violation = ForbiddenInsideTransaction::of( $kind, $detail );
 
 		if ( $this->strict ) {
 			throw $violation;
 		}
 
-		( $this->report )( $violation->code(), $violation->context() );
+		( $this->report )( (string) $violation->errorCode()->value, $violation->context() );
 	}
 }

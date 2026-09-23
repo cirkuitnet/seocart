@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Database\Exception;
 
+use SEOCart\Platform\Database\DatabaseError;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -29,13 +31,13 @@ defined( 'ABSPATH' ) || exit;
 class QueryFailed extends DatabaseException {
 
 	/**
-	 * The machine code.
+	 * The catalog case this class raises.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var string
+	 * @var DatabaseError
 	 */
-	public const CODE = 'database.query_failed';
+	public const CODE = DatabaseError::QueryFailed;
 
 	/**
 	 * Error numbers that become a more specific class. Any other number stays a QueryFailed.
@@ -67,7 +69,7 @@ class QueryFailed extends DatabaseException {
 	private const CONNECTION_LOST = array( 2006, 2013 );
 
 	/**
-	 * How much of a statement is kept for the log. Enough to recognize it, short of most values.
+	 * How much of a statement is kept. Enough to recognize it, short of most values.
 	 *
 	 * @since 0.1.0
 	 *
@@ -76,64 +78,11 @@ class QueryFailed extends DatabaseException {
 	public const STATEMENT_LENGTH = 120;
 
 	/**
-	 * The MySQL error number, or 0 when WordPress refused the statement before the server saw it.
+	 * Types a failed statement by its error number, without throwing it.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var int
-	 */
-	private int $errno;
-
-	/**
-	 * The SQLSTATE the server reported, or an empty string.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private string $sqlstate;
-
-	/**
-	 * The beginning of the statement that failed.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private string $statement;
-
-	/**
-	 * Describes a refused statement.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param int    $errno         The MySQL error number, or 0.
-	 * @param string $sqlstate      The SQLSTATE, or an empty string.
-	 * @param string $statement     The statement. Only its first STATEMENT_LENGTH characters are kept.
-	 * @param string $serverMessage The error text wpdb recorded. Context only, never a discriminator.
-	 */
-	final public function __construct( int $errno, string $sqlstate, string $statement, string $serverMessage ) {
-		$this->errno     = $errno;
-		$this->sqlstate  = $sqlstate;
-		$this->statement = self::shorten( $statement );
-
-		parent::__construct(
-			sprintf( 'The database refused a statement (error %d, SQLSTATE %s): %s', $errno, '' === $sqlstate ? 'none' : $sqlstate, $this->statement ),
-			array(
-				'errno'          => $errno,
-				'sqlstate'       => $sqlstate,
-				'statement'      => $this->statement,
-				'server_message' => $serverMessage,
-			)
-		);
-	}
-
-	/**
-	 * Types a failed statement by its error number.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param int    $errno             The MySQL error number, or 0.
+	 * @param int    $errno             The MySQL error number, or 0 when WordPress refused the statement first.
 	 * @param string $sqlstate          The SQLSTATE, or an empty string.
 	 * @param string $statement         The statement that failed.
 	 * @param string $serverMessage     The error text wpdb recorded.
@@ -143,12 +92,29 @@ class QueryFailed extends DatabaseException {
 	 */
 	public static function fromErrno( int $errno, string $sqlstate, string $statement, string $serverMessage, bool $insideTransaction ): DatabaseException {
 		if ( $insideTransaction && in_array( $errno, self::CONNECTION_LOST, true ) ) {
-			return TransactionIntegrityLost::connectionLost( $errno, $statement );
+			return TransactionIntegrityLost::lost( TransactionIntegrityLost::CONNECTION_LOST, $statement );
 		}
 
 		$class = self::CLASSES[ $errno ] ?? self::class;
 
-		return new $class( $errno, $sqlstate, $statement, $serverMessage );
+		return $class::because( $class::CODE, self::facts( $errno, $sqlstate, $statement, $serverMessage ) );
+	}
+
+	/**
+	 * Raises a QueryFailed for a statement refused before or outside the error-number table.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws QueryFailed Always.
+	 *
+	 * @param int    $errno         The MySQL error number, or 0.
+	 * @param string $sqlstate      The SQLSTATE, or an empty string.
+	 * @param string $statement     The statement.
+	 * @param string $serverMessage What refused it.
+	 * @return never
+	 */
+	public static function raiseRefused( int $errno, string $sqlstate, string $statement, string $serverMessage ): never {
+		self::raise( self::CODE, self::facts( $errno, $sqlstate, $statement, $serverMessage ) );
 	}
 
 	/**
@@ -159,7 +125,7 @@ class QueryFailed extends DatabaseException {
 	 * @return int The error number, or 0 when WordPress refused the statement before the server saw it.
 	 */
 	public function errno(): int {
-		return $this->errno;
+		return (int) $this->context()['errno'];
 	}
 
 	/**
@@ -170,7 +136,7 @@ class QueryFailed extends DatabaseException {
 	 * @return string The SQLSTATE, or an empty string.
 	 */
 	public function sqlstate(): string {
-		return $this->sqlstate;
+		return (string) $this->context()['sqlstate'];
 	}
 
 	/**
@@ -181,11 +147,22 @@ class QueryFailed extends DatabaseException {
 	 * @return string At most STATEMENT_LENGTH characters.
 	 */
 	public function statement(): string {
-		return $this->statement;
+		return (string) $this->context()['statement'];
 	}
 
 	/**
-	 * Cuts a statement to the length kept for the log.
+	 * Returns the error text the server gave. For people only: never decide on it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string The text.
+	 */
+	public function serverMessage(): string {
+		return (string) $this->context()['server_message'];
+	}
+
+	/**
+	 * Cuts a statement to the length kept.
 	 *
 	 * @since 0.1.0
 	 *
@@ -194,5 +171,25 @@ class QueryFailed extends DatabaseException {
 	 */
 	public static function shorten( string $statement ): string {
 		return substr( trim( (string) preg_replace( '/\s+/', ' ', $statement ) ), 0, self::STATEMENT_LENGTH );
+	}
+
+	/**
+	 * Builds the context the three statement codes share.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int    $errno         The MySQL error number.
+	 * @param string $sqlstate      The SQLSTATE.
+	 * @param string $statement     The statement, cut to STATEMENT_LENGTH here.
+	 * @param string $serverMessage The error text.
+	 * @return array{errno: int, sqlstate: string, statement: string, server_message: string} The context.
+	 */
+	private static function facts( int $errno, string $sqlstate, string $statement, string $serverMessage ): array {
+		return array(
+			'errno'          => $errno,
+			'sqlstate'       => $sqlstate,
+			'statement'      => self::shorten( $statement ),
+			'server_message' => $serverMessage,
+		);
 	}
 }

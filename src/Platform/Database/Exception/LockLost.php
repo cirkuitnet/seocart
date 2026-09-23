@@ -11,7 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Database\Exception;
 
-use SEOCart\Platform\Database\LockMode;
+use SEOCart\Platform\Database\DatabaseError;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -19,37 +19,55 @@ defined( 'ABSPATH' ) || exit;
  * The lease expired and was reclaimed, or the connection that held the server lock is gone.
  *
  * Owns one fact: that the holder must stop at once, because another runner may already be
- * doing the same work. Lease::renew() throws it before every step of long work.
+ * doing the same work. Lease::renew() raises it before every step of long work, with the lock
+ * `name`, the `mode` it was held in, and the `reason`, one of the constants below.
  *
  * @since 0.1.0
  */
 final class LockLost extends DatabaseException {
 
 	/**
-	 * The machine code.
+	 * The catalog case this class raises.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var DatabaseError
+	 */
+	public const CODE = DatabaseError::LockLost;
+
+	/**
+	 * Reason: the lease was already released.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const CODE = 'database.lock_lost';
+	public const RELEASED = 'released';
 
 	/**
-	 * Describes the lost lease.
+	 * Reason: wpdb reconnected, and the server released the lock with the old connection.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string   $name The lock's name, as the caller gave it.
-	 * @param LockMode $mode How the lock was held.
-	 * @param string   $why  What showed that it is lost.
+	 * @var string
 	 */
-	public function __construct( string $name, LockMode $mode, string $why ) {
-		parent::__construct(
-			sprintf( 'The lock "%s" is no longer held by this runner: %s', $name, $why ),
-			array(
-				'name' => $name,
-				'mode' => $mode->value,
-			)
-		);
-	}
+	public const CONNECTION_CHANGED = 'connection_changed';
+
+	/**
+	 * Reason: the server says this connection does not hold the lock.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const NOT_HELD = 'not_held';
+
+	/**
+	 * Reason: the table lease expired and another runner reclaimed it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const RECLAIMED = 'reclaimed';
 }

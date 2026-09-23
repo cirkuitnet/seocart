@@ -11,125 +11,79 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Database\Exception;
 
+use SEOCart\Platform\Database\DatabaseError;
+use SEOCart\Platform\Database\ReportCode;
+use SEOCart\Support\Error\CodedException;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
  * A migration threw, or its tables do not match their declarations afterwards.
  *
  * Owns one fact: which migration stopped the chain, and why, in the same words the
- * `migrations` row records: the error code and, for a post-condition failure, the diff.
- * Nothing after that migration ran, and the store stays in degraded mode where the migration
- * requires it until a re-run gets past it.
+ * `migrations` row records: the recorded error code and the detail, which for a
+ * post-condition failure is the diff, one line per difference. Nothing after that migration
+ * ran, and the store stays in degraded mode where the migration requires it until a re-run
+ * gets past it.
  *
  * @since 0.1.0
  */
 final class MigrationFailed extends DatabaseException {
 
 	/**
-	 * The machine code.
+	 * The catalog case this class raises.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var string
+	 * @var DatabaseError
 	 */
-	public const CODE = 'database.migration_failed';
+	public const CODE = DatabaseError::MigrationFailed;
 
 	/**
-	 * The error code recorded when the tables do not match their declarations after the migration ran.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	public const POSTCONDITION_MISMATCH = 'database.postcondition_mismatch';
-
-	/**
-	 * The migration's id.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private string $migrationId;
-
-	/**
-	 * The recorded error code: POSTCONDITION_MISMATCH, the code of a database failure, or CODE.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private string $errorCode;
-
-	/**
-	 * The post-condition diff, one line per deviation. Empty when the migration threw.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var list<string>
-	 */
-	private array $diff;
-
-	/**
-	 * Describes the failed migration. Use the named constructors.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string          $migrationId The migration's id.
-	 * @param string          $errorCode   The recorded error code.
-	 * @param string[]        $diff        The post-condition diff, or an empty list.
-	 * @param string          $message     What happened, for a person reading a log.
-	 * @param \Throwable|null $previous    Optional. The failure the migration threw. Default null.
-	 */
-	private function __construct( string $migrationId, string $errorCode, array $diff, string $message, ?\Throwable $previous = null ) {
-		$this->migrationId = $migrationId;
-		$this->errorCode   = $errorCode;
-		$this->diff        = $diff;
-
-		parent::__construct(
-			$message,
-			array(
-				'migration_id' => $migrationId,
-				'error_code'   => $errorCode,
-				'diff'         => $diff,
-			),
-			$previous
-		);
-	}
-
-	/**
-	 * Describes a migration whose tables do not match their declarations.
+	 * Builds the failure of a migration whose tables do not match their declarations.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param string   $migrationId The migration's id.
-	 * @param string[] $diff        One line per deviation, as SchemaVerifier::diff() returns them.
+	 * @param string[] $diff        One line per difference, as SchemaVerifier::diff() returns them.
 	 * @return self The exception.
 	 */
 	public static function postconditions( string $migrationId, array $diff ): self {
-		return new self(
-			$migrationId,
-			self::POSTCONDITION_MISMATCH,
-			$diff,
-			sprintf( 'Migration %s ran, but %d post-condition(s) failed; first: %s', $migrationId, count( $diff ), $diff[0] ?? '(none)' )
+		return self::because(
+			self::CODE,
+			array(
+				'migration_id' => $migrationId,
+				'error_code'   => ReportCode::PostconditionMismatch->value,
+				'detail'       => implode( "\n", $diff ),
+			)
 		);
 	}
 
 	/**
-	 * Describes a migration that threw.
+	 * Builds the failure of a migration that threw.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param string     $migrationId The migration's id.
 	 * @param \Throwable $failure     What it threw.
-	 * @return self The exception.
+	 * @return self The exception, carrying the failure as its previous exception.
 	 */
 	public static function threw( string $migrationId, \Throwable $failure ): self {
-		return new self(
-			$migrationId,
-			$failure instanceof DatabaseException ? $failure->code() : self::CODE,
-			array(),
-			sprintf( 'Migration %s failed: %s', $migrationId, $failure->getMessage() ),
+		if ( $failure instanceof CodedException ) {
+			$code   = (string) $failure->errorCode()->value;
+			$detail = $code . ' ' . (string) wp_json_encode( $failure->context() );
+		} else {
+			$code   = self::CODE->value;
+			$detail = get_class( $failure ) . ': ' . $failure->getMessage();
+		}
+
+		return self::because(
+			self::CODE,
+			array(
+				'migration_id' => $migrationId,
+				'error_code'   => $code,
+				'detail'       => $detail,
+			),
 			$failure
 		);
 	}
@@ -142,7 +96,7 @@ final class MigrationFailed extends DatabaseException {
 	 * @return string The migration id.
 	 */
 	public function migrationId(): string {
-		return $this->migrationId;
+		return (string) $this->context()['migration_id'];
 	}
 
 	/**
@@ -150,10 +104,22 @@ final class MigrationFailed extends DatabaseException {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return string POSTCONDITION_MISMATCH, the code of a database failure, or CODE for anything else.
+	 * @return string ReportCode::PostconditionMismatch, the code of the coded failure the
+	 *                migration threw, or database.migration_failed for any other failure.
 	 */
-	public function errorCode(): string {
-		return $this->errorCode;
+	public function recordedCode(): string {
+		return (string) $this->context()['error_code'];
+	}
+
+	/**
+	 * Returns what went wrong.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string The diff lines joined by line breaks, or a description of what the migration threw.
+	 */
+	public function detail(): string {
+		return (string) $this->context()['detail'];
 	}
 
 	/**
@@ -161,9 +127,13 @@ final class MigrationFailed extends DatabaseException {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return list<string> One line per deviation; empty when the migration threw.
+	 * @return list<string> One line per difference; empty when the migration threw.
 	 */
 	public function diff(): array {
-		return $this->diff;
+		if ( ReportCode::PostconditionMismatch->value !== $this->recordedCode() || '' === $this->detail() ) {
+			return array();
+		}
+
+		return explode( "\n", $this->detail() );
 	}
 }

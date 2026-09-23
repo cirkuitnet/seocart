@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Database\Exception;
 
+use SEOCart\Platform\Database\DatabaseError;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -18,32 +20,19 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: that the nesting itself is a programming error. A deep nest means a service
  * calls another service that opens its own unit of work, which is the shape the two units of
- * work of order placement exist to prevent. It is thrown before any statement is sent.
+ * work of order placement exist to prevent. It is raised before any statement is sent, with
+ * the ceiling as `max_depth`.
  *
  * @since 0.1.0
  */
 final class TransactionDepthExceeded extends DatabaseException {
 
 	/**
-	 * The machine code.
+	 * The catalog case this class raises.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var string
+	 * @var DatabaseError
 	 */
-	public const CODE = 'database.transaction_depth';
-
-	/**
-	 * Describes the refused level.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param int $maxDepth The deepest level allowed.
-	 */
-	public function __construct( int $maxDepth ) {
-		parent::__construct(
-			sprintf( 'Transactions may nest %d levels deep; a level beyond that was refused.', $maxDepth ),
-			array( 'max_depth' => $maxDepth )
-		);
-	}
+	public const CODE = DatabaseError::TransactionDepth;
 }

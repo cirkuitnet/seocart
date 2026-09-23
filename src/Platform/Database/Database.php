@@ -19,8 +19,6 @@ use SEOCart\Platform\Database\Exception\TransactionRetryable;
 
 defined( 'ABSPATH' ) || exit;
 
-// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception messages go to logs and the command line, never into HTML; the REST layer answers with the translated message of the error code.
-
 /**
  * Sends every plugin statement to wpdb, and runs units of work as depth-counted savepoint transactions.
  *
@@ -47,15 +45,6 @@ defined( 'ABSPATH' ) || exit;
  * @since 0.1.0
  */
 final class Database implements TransactionManager {
-
-	/**
-	 * The machine code reported when an after-rollback callback throws. The original failure still propagates.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	public const AFTER_ROLLBACK_FAILED = 'database.after_rollback_failed';
 
 	/**
 	 * MySQL's error for a savepoint that does not exist, which is what the probe looks for.
@@ -244,11 +233,10 @@ final class Database implements TransactionManager {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws TransactionIntegrityLost|TransactionDepthExceeded When the transaction cannot be committed as
-	 *                                                           the one that began; or when the level would be
-	 *                                                           deeper than the ceiling, and no statement is sent.
-	 * @throws TransactionRetryable                              When a deadlock or lock-wait timeout ended the
-	 *                                                           last attempt the policy allows.
+	 * @throws TransactionDepthExceeded|TransactionIntegrityLost|TransactionRetryable When the level would be
+	 *         deeper than the ceiling (no statement is sent); when the transaction cannot be committed as
+	 *         the one that began; or when a deadlock or lock-wait timeout ended the last attempt the
+	 *         policy allows.
 	 *
 	 * @param-immediately-invoked-callable $work
 	 *
@@ -258,7 +246,7 @@ final class Database implements TransactionManager {
 	 */
 	public function transaction( callable $work, ?RetryPolicy $retry = null ): mixed {
 		if ( $this->depth + 1 > $this->maxDepth ) {
-			throw new TransactionDepthExceeded( $this->maxDepth );
+			TransactionDepthExceeded::raise( TransactionDepthExceeded::CODE, array( 'max_depth' => $this->maxDepth ) );
 		}
 
 		$outermost = 0 === $this->depth;
@@ -572,7 +560,7 @@ final class Database implements TransactionManager {
 	 */
 	private function savepoint( callable $work ): mixed {
 		if ( $this->aborted ) {
-			throw TransactionIntegrityLost::aborted( 'SAVEPOINT' );
+			TransactionIntegrityLost::raiseLost( TransactionIntegrityLost::ABORTED, 'SAVEPOINT' );
 		}
 
 		$index = $this->depth;
@@ -587,7 +575,7 @@ final class Database implements TransactionManager {
 			$result = $work();
 
 			if ( $this->aborted ) {
-				throw TransactionIntegrityLost::aborted( 'RELEASE SAVEPOINT ' . $name );
+				TransactionIntegrityLost::raiseLost( TransactionIntegrityLost::ABORTED, 'RELEASE SAVEPOINT ' . $name );
 			}
 
 			$this->control( 'RELEASE SAVEPOINT ' . $name );
@@ -623,12 +611,11 @@ final class Database implements TransactionManager {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws TransactionIntegrityLost When it is not.
-	 * @throws QueryFailed              When the probe fails for another reason.
+	 * @throws TransactionIntegrityLost|QueryFailed When it is not; or when the probe fails for another reason.
 	 */
 	private function assertCommittable(): void {
 		if ( $this->aborted ) {
-			throw TransactionIntegrityLost::aborted( 'COMMIT' );
+			TransactionIntegrityLost::raiseLost( TransactionIntegrityLost::ABORTED, 'COMMIT' );
 		}
 
 		$this->assertSameConnection( 'COMMIT' );
@@ -639,7 +626,9 @@ final class Database implements TransactionManager {
 			if ( self::SAVEPOINT_DOES_NOT_EXIST === $probe->errno() ) {
 				$this->aborted = true;
 
-				throw TransactionIntegrityLost::endedExternally( $probe );
+				$lost = TransactionIntegrityLost::lost( TransactionIntegrityLost::ENDED_EXTERNALLY, 'RELEASE SAVEPOINT ' . self::PROBE_SAVEPOINT, $probe );
+
+				throw $lost;
 			}
 
 			throw $probe;
@@ -658,7 +647,7 @@ final class Database implements TransactionManager {
 		try {
 			$this->control( 'ROLLBACK', false );
 		} catch ( DatabaseException $failure ) {
-			( $this->report )( $failure->code(), array( 'statement' => 'ROLLBACK' ) + $failure->context() );
+			( $this->report )( (string) $failure->errorCode()->value, array( 'statement' => 'ROLLBACK' ) + $failure->context() );
 		}
 
 		$keys      = array();
@@ -693,7 +682,7 @@ final class Database implements TransactionManager {
 		if ( $current !== $this->openedOn ) {
 			$this->aborted = true;
 
-			throw TransactionIntegrityLost::connectionChanged( $sql, $this->openedOn, $current );
+			TransactionIntegrityLost::raiseLost( TransactionIntegrityLost::CONNECTION_CHANGED, $sql );
 		}
 	}
 
@@ -709,7 +698,7 @@ final class Database implements TransactionManager {
 	 */
 	private function statement( string $sql ): int|bool {
 		if ( $this->aborted ) {
-			throw TransactionIntegrityLost::aborted( $sql );
+			TransactionIntegrityLost::raiseLost( TransactionIntegrityLost::ABORTED, $sql );
 		}
 
 		return $this->send( $sql );
@@ -800,7 +789,7 @@ final class Database implements TransactionManager {
 		$prepared = $this->wpdb->prepare( $sql, ...$args );
 
 		if ( ! is_string( $prepared ) || '' === $prepared ) {
-			throw new QueryFailed( 0, '', $sql, 'wpdb::prepare() rejected the statement or its arguments.' );
+			QueryFailed::raiseRefused( 0, '', $sql, 'wpdb::prepare() rejected the statement or its arguments.' );
 		}
 
 		return $prepared;
@@ -884,7 +873,7 @@ final class Database implements TransactionManager {
 				$callback();
 			} catch ( \Throwable $failure ) {
 				( $this->report )(
-					self::AFTER_ROLLBACK_FAILED,
+					ReportCode::AfterRollbackFailed->value,
 					array(
 						'exception' => get_class( $failure ),
 						'message'   => $failure->getMessage(),

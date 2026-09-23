@@ -11,55 +11,29 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Database\Exception;
 
+use SEOCart\Platform\Database\DatabaseError;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
  * The lock was held by another runner for as long as the caller was willing to wait.
  *
  * Owns one fact: that the caller must not proceed. A loser never goes on as if it held the
- * lock; the migrator reports "blocked" and the job runner tries again on its next tick.
+ * lock; the migrator reports "blocked" and the job runner tries again on its next tick. The
+ * context carries the lock `name` and how long the caller `waited`, in milliseconds.
  *
  * @since 0.1.0
  */
 final class LockNotAcquired extends DatabaseException {
 
 	/**
-	 * The machine code.
+	 * The catalog case this class raises.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var string
+	 * @var DatabaseError
 	 */
-	public const CODE = 'database.lock_not_acquired';
-
-	/**
-	 * The lock's name, as the caller gave it.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private string $name;
-
-	/**
-	 * Describes the lock that could not be taken.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $name     The lock's name, as the caller gave it.
-	 * @param int    $waitedMs How long the caller waited, in milliseconds.
-	 */
-	public function __construct( string $name, int $waitedMs ) {
-		$this->name = $name;
-
-		parent::__construct(
-			sprintf( 'The lock "%s" is held by another runner; gave up after waiting %d ms.', $name, $waitedMs ),
-			array(
-				'name'   => $name,
-				'waited' => $waitedMs,
-			)
-		);
-	}
+	public const CODE = DatabaseError::LockNotAcquired;
 
 	/**
 	 * Returns the lock's name.
@@ -69,6 +43,6 @@ final class LockNotAcquired extends DatabaseException {
 	 * @return string The name the caller asked for.
 	 */
 	public function name(): string {
-		return $this->name;
+		return (string) $this->context()['name'];
 	}
 }

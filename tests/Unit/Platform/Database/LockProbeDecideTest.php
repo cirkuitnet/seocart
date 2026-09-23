@@ -110,7 +110,7 @@ final class LockProbeDecideTest extends TestCase {
 	 */
 	public function test_a_failed_statement_chooses_the_table(): void {
 		$refusing = static function (): mixed {
-			throw new QueryFailed( 1142, '42000', 'SELECT GET_LOCK( %s, 0 )', 'command denied' );
+			throw QueryFailed::fromErrno( 1142, '42000', 'SELECT GET_LOCK( %s, 0 )', 'command denied', false );
 		};
 
 		$this->assertSame( LockMode::Table, LockProbe::decide( 'db.example.com', self::OWN_THREAD, $refusing ) );

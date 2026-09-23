@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Integration\Database;
 
 use SEOCart\Platform\Database\Cli\MigrateCommand;
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\DatabaseError;
 use SEOCart\Platform\Database\DatabaseState;
 use SEOCart\Platform\Database\Exception\ForbiddenInsideTransaction;
 use SEOCart\Platform\Database\Exception\MigrationFailed;
@@ -24,6 +25,7 @@ use SEOCart\Platform\Database\MigrationRunOptions;
 use SEOCart\Platform\Database\Migrations\PlatformBootstrapMigration;
 use SEOCart\Platform\Database\MigrationsTableState;
 use SEOCart\Platform\Database\Migrator;
+use SEOCart\Platform\Database\ReportCode;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\PlatformTables;
 use SEOCart\Tests\Support\DatabaseTestCase;
@@ -149,11 +151,11 @@ final class MigratorTest extends DatabaseTestCase {
 		$b     = $this->secondConnection();
 		$a     = new CreatesTestTable( '20990101_0001_a', 'a' );
 		$bee   = new CreatesTestTable( '20990101_0002_b', 'b' );
-		$chain = array( $bee, new PlatformBootstrapMigration(), $a );
+		$chain = array( new PlatformBootstrapMigration(), $a, $bee );
 
 		$first = $this->migrator( $chain )->migrate( new MigrationRunOptions( 0 ) );
 
-		$this->assertSame( array( PlatformBootstrapMigration::ID, $a->id(), $bee->id() ), array_column( $first->applied(), 'id' ), 'Registered in any order, applied in id order.' );
+		$this->assertSame( array( PlatformBootstrapMigration::ID, $a->id(), $bee->id() ), array_column( $first->applied(), 'id' ), 'Applied in id order.' );
 		$this->assertSame( '3', $b->fetchValue( sprintf( 'SELECT COUNT(*) FROM `%s`', $this->db->table( 'migrations' ) ) ) );
 
 		$second = null;
@@ -244,13 +246,13 @@ final class MigratorTest extends DatabaseTestCase {
 
 		$this->assertNotNull( $failed, 'C must fail its post-conditions.' );
 		$this->assertSame( $c->id(), $failed->migrationId() );
-		$this->assertSame( MigrationFailed::POSTCONDITION_MISMATCH, $failed->errorCode() );
+		$this->assertSame( ReportCode::PostconditionMismatch->value, $failed->recordedCode() );
 		$this->assertSame( array( $this->db->table( 'test_c' ) . ': index value does not exist' ), $failed->diff() );
 
 		$row = $this->migrationRow( $b, $c->id() );
 
 		$this->assertSame( Migrator::FAILED, $row['state'] );
-		$this->assertSame( MigrationFailed::POSTCONDITION_MISMATCH, $row['error_code'] );
+		$this->assertSame( ReportCode::PostconditionMismatch->value, $row['error_code'] );
 		$this->assertSame( $failed->diff(), json_decode( (string) $row['postcondition_json'], true ) );
 		$this->assertNull( $b->fetchRow( sprintf( "SELECT state FROM `%s` WHERE migration_id = '%s'", $this->db->table( 'migrations' ), $d->id() ) ), 'D was not attempted.' );
 		$this->assertSame( 0, $d->runs );
@@ -297,7 +299,7 @@ final class MigratorTest extends DatabaseTestCase {
 
 		$this->assertNotNull( $failed );
 		$this->assertSame( $e->id(), $failed->migrationId() );
-		$this->assertSame( MigrationFailed::CODE, $failed->errorCode(), 'A failure that is not a database failure is recorded with the migrator\'s own code.' );
+		$this->assertSame( DatabaseError::MigrationFailed->value, $failed->recordedCode(), 'A failure that is not a coded failure is recorded with the migrator\'s own code.' );
 		$this->assertInstanceOf( \RuntimeException::class, $failed->getPrevious() );
 		$this->assertSame( Migrator::FAILED, $this->migrationRow( $b, $e->id() )['state'] );
 		$this->assertStringContainsString( 'the process died inside E', (string) $this->migrationRow( $b, $e->id() )['error_message'] );
@@ -483,7 +485,7 @@ final class MigratorTest extends DatabaseTestCase {
 		$this->assertContains( 'Nothing to migrate: the schema is up to date.', $lines );
 		$this->assertSame( 1, $a->runs );
 		$this->assertCount( 1, $this->reports );
-		$this->assertSame( Migrator::CHECKSUM_MISMATCH, $this->reports[0]['code'] );
+		$this->assertSame( ReportCode::MigrationChecksumMismatch->value, $this->reports[0]['code'] );
 		$this->assertSame( $a->id(), $this->reports[0]['context']['migration_id'] );
 	}
 
@@ -702,6 +704,83 @@ final class MigratorTest extends DatabaseTestCase {
 			$answers,
 			'Nothing applied, then the bootstrap, then A (Z outstanding each time), then Z (all applied), then a head newer than the code.'
 		);
+	}
+
+	/**
+	 * A registry list that is not in strictly ascending id order is refused before anything is read or sent.
+	 *
+	 * Planted violation: in Migrator::chain(), delete the order check and sort the list by id instead.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_registry_out_of_id_order_is_refused(): void {
+		global $wpdb;
+
+		$a      = new CreatesTestTable( '20990101_0001_a', 'a' );
+		$bee    = new CreatesTestTable( '20990101_0002_b', 'b' );
+		$before = count( (array) $wpdb->queries );
+
+		foreach ( array(
+			'swapped'   => array( new PlatformBootstrapMigration(), $bee, $a ),
+			'duplicate' => array( new PlatformBootstrapMigration(), $a, new CreatesTestTable( '20990101_0001_a', 'again' ) ),
+		) as $case => $chain ) {
+			try {
+				$this->migrator( $chain )->status();
+				$this->fail( 'A registry ' . $case . ' must be refused.' );
+			} catch ( \LogicException $refused ) {
+				$this->assertStringContainsString( 'strictly ascending id order', $refused->getMessage(), $case );
+			}
+
+			$this->assertFalse( $this->migrator( array( new PlatformBootstrapMigration(), $a, $bee ) )->writesBlocked( $bee->id() ), 'The same migrations in order are accepted.' );
+		}
+
+		$this->assertSame( $before, count( (array) $wpdb->queries ), 'The order check runs before any query.' );
+	}
+
+	/**
+	 * A migration that is not applied but sorts before the newest applied one blocks writes and is reported.
+	 *
+	 * The zero-query gate counts only migrations after the head, so it cannot see this; status(),
+	 * which admin and command-line requests call, can.
+	 *
+	 * Planted violation: in Migrator::blocksWrites(), delete the out-of-order check, and in
+	 * Migrator::status(), delete the report loop.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_status_reports_and_blocks_a_migration_that_sorts_before_the_head(): void {
+		$z = new CreatesTestTable( '20990101_0010_z', 'z' );
+		$m = new CreatesTestTable( '20990101_0005_m', 'm' );
+
+		$this->migrator( array( new PlatformBootstrapMigration(), $z ) )->migrate( new MigrationRunOptions( 0 ) );
+
+		// A later release registers M, whose id sorts before Z, which is already applied.
+		$chain    = array( new PlatformBootstrapMigration(), $m, $z );
+		$migrator = $this->migrator( $chain );
+		$status   = $migrator->status();
+
+		$this->assertSame( array( $m->id() ), $status->pending() );
+		$this->assertTrue( $status->writesBlocked(), 'An inconsistent chain refuses writes, although M can operate half-applied.' );
+		$this->assertSame(
+			array(
+				array(
+					'code'    => ReportCode::MigrationOutOfOrder->value,
+					'context' => array(
+						'migration_id' => $m->id(),
+						'schema_head'  => $z->id(),
+					),
+				),
+			),
+			$this->reports
+		);
+		$this->assertFalse( $migrator->writesBlocked( $z->id() ), 'The zero-query gate cannot see it; this is why status() checks.' );
+
+		$this->migrator( $chain )->migrate( new MigrationRunOptions( 0 ) );
+
+		$this->reports = array();
+
+		$this->assertFalse( $this->migrator( $chain )->status()->writesBlocked(), 'Once M is applied, the chain is consistent again.' );
+		$this->assertSame( array(), $this->reports );
 	}
 
 	/**

@@ -15,8 +15,6 @@ use SEOCart\Platform\Database\Exception\LockLost;
 
 defined( 'ABSPATH' ) || exit;
 
-// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception messages go to logs and the command line, never into HTML; the REST layer answers with the translated message of the error code.
-
 /**
  * A lock held by this runner, until it is released or lost.
  *
@@ -158,17 +156,17 @@ final class Lease {
 	 */
 	public function renew(): void {
 		if ( $this->released ) {
-			throw new LockLost( $this->name, $this->mode, 'the lease was released.' );
+			$this->lost( LockLost::RELEASED );
 		}
 
 		if ( LockMode::GetLock === $this->mode ) {
 			// A reconnect drops a server lock with the old connection: the free check first, then the server's word.
 			if ( $this->db->threadId() !== $this->threadId ) {
-				throw new LockLost( $this->name, $this->mode, 'wpdb reconnected, and the server released the lock with the old connection.' );
+				$this->lost( LockLost::CONNECTION_CHANGED );
 			}
 
 			if ( '1' !== (string) $this->db->fetchValue( 'SELECT IS_USED_LOCK( %s ) = CONNECTION_ID()', $this->where ) ) {
-				throw new LockLost( $this->name, $this->mode, 'the server says this connection does not hold it.' );
+				$this->lost( LockLost::NOT_HELD );
 			}
 
 			return;
@@ -183,7 +181,7 @@ final class Lease {
 		);
 
 		if ( 1 !== $renewed ) {
-			throw new LockLost( $this->name, $this->mode, 'the lease expired and another runner reclaimed it.' );
+			$this->lost( LockLost::RECLAIMED );
 		}
 	}
 
@@ -211,6 +209,27 @@ final class Lease {
 			$this->where,
 			$this->name,
 			$this->token
+		);
+	}
+
+	/**
+	 * Raises LockLost for this lease.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws LockLost Always.
+	 *
+	 * @param string $reason One of the LockLost reason constants.
+	 * @return never
+	 */
+	private function lost( string $reason ): never {
+		LockLost::raise(
+			LockLost::CODE,
+			array(
+				'name'   => $this->name,
+				'mode'   => $this->mode->value,
+				'reason' => $reason,
+			)
 		);
 	}
 }
