@@ -26,7 +26,7 @@ use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\SecondConnection;
 
 /**
- * L1 to L7: at most one holder, bounded waits, stale reclaim, and a
+ * At most one holder, bounded waits, stale reclaim, and a
  * lease that knows when it is lost.
  *
  * Connection B plays the other runner. The table-mode sleeper is the barrier: whatever B must
@@ -62,13 +62,13 @@ final class LockServiceTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * L1: acquire writes the lease; a stale lease of another runner cannot release it; release frees it.
+	 * Acquire writes the lease; a stale lease of another runner cannot release it; release frees it.
 	 *
 	 * Planted violation: in Lease::release(), drop `AND owner_token = %s` from the table-mode UPDATE.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_l1_a_lease_is_recorded_and_only_its_owner_releases_it(): void {
+	public function test_a_lease_is_recorded_and_only_its_owner_releases_it(): void {
 		$b     = $this->secondConnection();
 		$lease = $this->tableLocks()->acquire( self::NAME, 60, 0 );
 		$row   = $this->lockRow( $b );
@@ -90,14 +90,14 @@ final class LockServiceTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * L2: a held lock is not taken; a loser polls through the sleeper and wins once the holder lets go.
+	 * A held lock is not taken; a loser polls through the sleeper and wins once the holder lets go.
 	 *
 	 * Planted violation: in LockService::acquireTableLock(), drop
 	 * `AND ( owner_token IS NULL OR expires_at < UTC_TIMESTAMP(6) )`. Attempt 1 then "wins".
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_l2_a_held_lock_is_waited_for_then_taken(): void {
+	public function test_a_held_lock_is_waited_for_then_taken(): void {
 		$b = $this->secondConnection();
 
 		$this->plantLease( $b, '+ INTERVAL 1 HOUR' );
@@ -122,13 +122,13 @@ final class LockServiceTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * L3: an expired lease is reclaimed on the first attempt.
+	 * An expired lease is reclaimed on the first attempt.
 	 *
 	 * Planted violation: in LockService::acquireTableLock(), drop `OR expires_at < UTC_TIMESTAMP(6)`.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_l3_an_expired_lease_is_reclaimed(): void {
+	public function test_an_expired_lease_is_reclaimed(): void {
 		$b = $this->secondConnection();
 
 		$this->plantLease( $b, '- INTERVAL 1 SECOND' );
@@ -140,13 +140,13 @@ final class LockServiceTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * L4: renew() extends the lease, and throws LockLost once another runner owns the row.
+	 * Renew() extends the lease, and throws LockLost once another runner owns the row.
 	 *
 	 * Planted violation: in Lease::renew(), ignore the number of affected rows in table mode.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_l4_renew_extends_the_lease_and_notices_a_takeover(): void {
+	public function test_renew_extends_the_lease_and_notices_a_takeover(): void {
 		$b      = $this->secondConnection();
 		$lease  = $this->tableLocks()->acquire( self::NAME, 60, 0 );
 		$before = (string) $this->lockRow( $b )['expires_at'];
@@ -163,14 +163,14 @@ final class LockServiceTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * L5: in GetLock mode the lock belongs to wpdb's connection, and B, waiting inside the server, gets it on release.
+	 * In GetLock mode the lock belongs to wpdb's connection, and B, waiting inside the server, gets it on release.
 	 *
 	 * Planted violation: in Lease::release(), skip the RELEASE_LOCK statement. B then stays
 	 * blocked and isReady( 2000 ) fails; the pass path never waits.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_l5_a_server_lock_passes_to_the_waiting_runner_on_release(): void {
+	public function test_a_server_lock_passes_to_the_waiting_runner_on_release(): void {
 		$b      = $this->secondConnection();
 		$lease  = ( new LockService( $this->db, LockMode::GetLock ) )->acquire( self::NAME, 60, 0 );
 		$server = $this->serverName();
@@ -189,14 +189,14 @@ final class LockServiceTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * L6: in GetLock mode, a reconnect loses the lock, and renew() says so.
+	 * In GetLock mode, a reconnect loses the lock, and renew() says so.
 	 *
 	 * Planted violation: in Lease::renew(), delete both the thread-id comparison and the
 	 * IS_USED_LOCK check.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_l6_a_reconnect_loses_a_server_lock(): void {
+	public function test_a_reconnect_loses_a_server_lock(): void {
 		global $wpdb;
 
 		$b     = $this->secondConnection();
@@ -216,14 +216,14 @@ final class LockServiceTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * L7, integration half: on this server the probe trusts GET_LOCK and leaves no lock behind.
+	 * On this server the probe trusts GET_LOCK and leaves no lock behind.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_l7_the_probe_chooses_get_lock_on_this_server(): void {
-		$this->assertSame( LockMode::GetLock, LockProbe::run( $this->db ) );
+	public function test_the_probe_chooses_get_lock_on_this_server(): void {
+		$this->assertSame( LockMode::GetLock, LockProbe::run( $this->db, 'test' ) );
 
-		$probe = LockService::serverLockName( $this->db->databaseName(), $this->db->prefix(), 'lock_probe' );
+		$probe = LockService::serverLockName( $this->db->databaseName(), $this->db->prefix(), 'lock_probe_test' );
 
 		$this->assertNull( $this->secondConnection()->fetchValue( "SELECT IS_USED_LOCK( '{$probe}' )" ) );
 	}
@@ -258,6 +258,49 @@ final class LockServiceTest extends DatabaseTestCase {
 		$this->expectException( ForbiddenInsideTransaction::class );
 
 		$this->db->transaction( fn() => $locks->acquire( self::NAME, 60, 0 ) );
+	}
+
+	/**
+	 * A lease is neither renewed nor released inside a transaction, where the table row would stay invisible until COMMIT.
+	 *
+	 * Planted violation: in Lease::renew() and Lease::release(), delete the depth check.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_lease_is_neither_renewed_nor_released_inside_a_transaction(): void {
+		$b     = $this->secondConnection();
+		$lease = $this->tableLocks()->acquire( self::NAME, 60, 0 );
+
+		foreach ( array(
+			'renew'   => static fn() => $lease->renew(),
+			'release' => static fn() => $lease->release(),
+		) as $method => $call ) {
+			try {
+				$this->db->transaction( $call );
+				$this->fail( $method . '() inside a transaction must be refused.' );
+			} catch ( ForbiddenInsideTransaction $refused ) {
+				$this->assertSame( ForbiddenInsideTransaction::KIND_LOCK, $refused->kind(), $method );
+			}
+		}
+
+		$this->assertSame( $lease->token(), $this->lockRow( $b )['owner_token'], 'The lease is still held.' );
+
+		$lease->release();
+	}
+
+	/**
+	 * The probe does not collide with another probe in progress: its lock name is unique per run.
+	 *
+	 * Planted violation: in LockProbe::run(), use the fixed name `lock_probe` again.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_probe_does_not_collide_with_another_probe_in_progress(): void {
+		$b     = $this->secondConnection();
+		$fixed = LockService::serverLockName( $this->db->databaseName(), $this->db->prefix(), 'lock_probe' );
+
+		$this->assertSame( '1', $b->fetchValue( "SELECT GET_LOCK( '{$fixed}', 0 )" ) );
+		$this->assertSame( LockMode::GetLock, LockProbe::run( $this->db ) );
 	}
 
 	/**

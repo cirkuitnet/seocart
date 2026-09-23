@@ -46,6 +46,13 @@ enum ReportCode: string {
 	case MigrationOutOfOrder = 'database.migration_out_of_order';
 
 	/**
+	 * Reported when an after-commit callback throws; the committed unit of work stands and is not run again.
+	 *
+	 * @since 0.1.0
+	 */
+	case AfterCommitFailed = 'database.after_commit_failed';
+
+	/**
 	 * Reported when an after-rollback callback throws; the rollback's own cause still propagates.
 	 *
 	 * @since 0.1.0

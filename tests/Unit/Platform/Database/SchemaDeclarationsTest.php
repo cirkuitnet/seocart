@@ -39,7 +39,8 @@ final class SchemaDeclarationsTest extends TestCase {
 	 * @since 0.1.0
 	 */
 	public function test_the_declarations_build_without_wordpress(): void {
-		$this->assertFalse( function_exists( 'add_filter' ), 'This test proves nothing if WordPress is loaded.' );
+		// WordPress stubs another unit test defined may exist; WordPress itself must not be loaded.
+		$this->assertFalse( defined( 'WPINC' ), 'This test proves nothing if WordPress is loaded.' );
 
 		$tables = ( new PlatformBootstrapMigration() )->tables();
 
@@ -69,17 +70,16 @@ final class SchemaDeclarationsTest extends TestCase {
 	}
 
 	/**
-	 * Tests that `locks` carries its columns and its primary key only.
+	 * Tests what the `locks` declaration says beyond its storage shape: owner, retention and classification.
+	 *
+	 * Its columns and keys are stated once, in the expected CREATE TABLE of DdlGeneratorTest.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_locks_table_has_its_columns_and_key(): void {
+	public function test_the_locks_table_is_permanent_and_classified(): void {
 		$table = PlatformTables::locks();
 
-		$this->assertSame( array( 'name', 'owner_token', 'acquired_at', 'expires_at', 'holder', 'created_at' ), self::columnNames( $table ) );
-		$this->assertSame( array( 'name' ), $table->primaryKey() );
-		$this->assertSame( array(), $table->uniqueKeys() );
-		$this->assertSame( array(), $table->indexes() );
+		$this->assertSame( 'Platform', $table->module() );
 		$this->assertSame( 'permanent', $table->retention() );
 		$this->assertAllPublic( $table );
 	}

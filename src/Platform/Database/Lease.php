@@ -11,7 +11,9 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Database;
 
+use SEOCart\Platform\Database\Exception\ForbiddenInsideTransaction;
 use SEOCart\Platform\Database\Exception\LockLost;
+use SEOCart\Platform\Database\Exception\QueryFailed;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -155,6 +157,8 @@ final class Lease {
 	 *                  connection gone.
 	 */
 	public function renew(): void {
+		$this->refuseInsideTransaction();
+
 		if ( $this->released ) {
 			$this->lost( LockLost::RELEASED );
 		}
@@ -195,6 +199,8 @@ final class Lease {
 			return;
 		}
 
+		$this->refuseInsideTransaction();
+
 		$this->released = true;
 
 		if ( LockMode::GetLock === $this->mode ) {
@@ -209,6 +215,27 @@ final class Lease {
 			$this->where,
 			$this->name,
 			$this->token
+		);
+	}
+
+	/**
+	 * Refuses to touch the lease inside a transaction, where a table-mode change would stay invisible to other runners until COMMIT.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws ForbiddenInsideTransaction Inside a transaction.
+	 */
+	private function refuseInsideTransaction(): void {
+		if ( 0 === $this->db->depth() ) {
+			return;
+		}
+
+		ForbiddenInsideTransaction::raise(
+			ForbiddenInsideTransaction::CODE,
+			array(
+				'kind'   => ForbiddenInsideTransaction::KIND_LOCK,
+				'detail' => QueryFailed::shorten( $this->name ),
+			)
 		);
 	}
 

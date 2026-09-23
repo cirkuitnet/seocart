@@ -30,15 +30,6 @@ defined( 'ABSPATH' ) || exit;
 final class MigrationsTableState implements DatabaseState {
 
 	/**
-	 * MySQL's error for a table that does not exist.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var int
-	 */
-	private const NO_SUCH_TABLE = 1146;
-
-	/**
 	 * The connection.
 	 *
 	 * @since 0.1.0
@@ -92,7 +83,7 @@ final class MigrationsTableState implements DatabaseState {
 			try {
 				$head = $this->db->fetchValue( 'SELECT MAX( migration_id ) FROM %i WHERE state = %s', $this->db->table( 'migrations' ), Migrator::APPLIED );
 			} catch ( QueryFailed $failed ) {
-				if ( self::NO_SUCH_TABLE !== $failed->errno() ) {
+				if ( MysqlErrno::NO_SUCH_TABLE !== $failed->errno() ) {
 					throw $failed;
 				}
 

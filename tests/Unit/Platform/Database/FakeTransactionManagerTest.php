@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Unit\Platform\Database;
 
 use PHPUnit\Framework\TestCase;
 use SEOCart\Platform\Database\Exception\QueryFailed;
+use SEOCart\Platform\Database\Exception\TransactionRetryable;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Tests\Support\Doubles\FakeTransactionManager;
@@ -143,5 +144,39 @@ final class FakeTransactionManagerTest extends TestCase {
 			),
 			$manager->touchedKeys()
 		);
+	}
+
+	/**
+	 * Tests that a failing after-commit callback is recorded, not thrown, and that the committed work is not run again.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_failing_after_commit_callback_is_recorded_and_the_work_is_not_run_again(): void {
+		$manager = new FakeTransactionManager();
+		$runs    = 0;
+		$ran     = false;
+
+		$manager->transaction(
+			function () use ( $manager, &$runs, &$ran ): void {
+				++$runs;
+
+				$manager->afterCommit(
+					static function (): void {
+						throw QueryFailed::fromErrno( 1205, 'HY000', 'UPDATE listener', 'Lock wait timeout exceeded', false );
+					}
+				);
+				$manager->afterCommit(
+					static function () use ( &$ran ): void {
+						$ran = true;
+					}
+				);
+			},
+			RetryPolicy::deadlocks()
+		);
+
+		$this->assertSame( 1, $runs );
+		$this->assertTrue( $ran, 'Every after-commit callback still runs.' );
+		$this->assertCount( 1, $manager->afterCommitFailures() );
+		$this->assertInstanceOf( TransactionRetryable::class, $manager->afterCommitFailures()[0] );
 	}
 }

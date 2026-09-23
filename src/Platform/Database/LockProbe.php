@@ -33,7 +33,7 @@ defined( 'ABSPATH' ) || exit;
 final class LockProbe {
 
 	/**
-	 * The name of the lock the probe takes and releases.
+	 * The beginning of the name of the lock the probe takes and releases.
 	 *
 	 * @since 0.1.0
 	 *
@@ -44,13 +44,17 @@ final class LockProbe {
 	/**
 	 * Runs the probe on the live connection. Sends at most three statements.
 	 *
+	 * The lock name ends with a nonce, random unless given, so two probes running at once on the
+	 * same site never take each other's lock for a sign that GET_LOCK cannot be trusted.
+	 *
 	 * @since 0.1.0
 	 *
-	 * @param Database $db The connection.
+	 * @param Database    $db    The connection.
+	 * @param string|null $nonce Optional. The end of the lock name. Default null, twelve random hexadecimal digits.
 	 * @return LockMode GetLock when every check passed, otherwise Table.
 	 */
-	public static function run( Database $db ): LockMode {
-		$name = LockService::serverLockName( $db->databaseName(), $db->prefix(), self::PROBE_LOCK );
+	public static function run( Database $db, ?string $nonce = null ): LockMode {
+		$name = LockService::serverLockName( $db->databaseName(), $db->prefix(), self::PROBE_LOCK . '_' . ( $nonce ?? bin2hex( random_bytes( 6 ) ) ) );
 
 		return self::decide(
 			defined( 'DB_HOST' ) ? (string) DB_HOST : '',

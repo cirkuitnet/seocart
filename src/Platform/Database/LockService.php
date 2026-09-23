@@ -111,17 +111,6 @@ final class LockService {
 	}
 
 	/**
-	 * Returns how locks are held on this host.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return LockMode The mode.
-	 */
-	public function mode(): LockMode {
-		return $this->mode;
-	}
-
-	/**
 	 * Takes a lock, waiting at most the given time for another runner to let go of it.
 	 *
 	 * A caller that gets LockNotAcquired must not proceed.

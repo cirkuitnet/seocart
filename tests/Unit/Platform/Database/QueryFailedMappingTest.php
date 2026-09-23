@@ -21,7 +21,7 @@ use SEOCart\Platform\Database\Exception\TransactionRetryable;
 use SEOCart\Support\Error\ErrorDefinition;
 
 /**
- * T14: the hand-maintained lists of the Database module, each held to a set-equality test (DRY rule 11).
+ * The hand-maintained lists of the Database module, each held to a set-equality test (DRY rule 11).
  *
  * The first list is QueryFailed's table from MySQL error number to exception class. The second
  * is the pairing of exception classes with DatabaseError cases: every concrete class names
@@ -66,7 +66,7 @@ final class QueryFailedMappingTest extends TestCase {
 		'database.query_failed'             => 500,
 		'database.transaction_depth'        => 500,
 		'database.transaction_lost'         => 503,
-		'database.transaction_retryable'    => 500,
+		'database.transaction_retryable'    => 503,
 	);
 
 	/**
@@ -201,6 +201,34 @@ final class QueryFailedMappingTest extends TestCase {
 		ksort( $statuses );
 
 		$this->assertSame( self::STATUSES, $statuses );
+	}
+
+	/**
+	 * Tests that no MySQL error number is written as a literal outside MysqlErrno.
+	 *
+	 * Planted violation: in Migrator, compare with 1050 instead of MysqlErrno::TABLE_EXISTS.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_error_numbers_are_named_in_one_place(): void {
+		$root     = dirname( __DIR__, 4 ) . '/src/Platform/Database';
+		$numbers  = array( '1050', '1062', '1146', '1205', '1213', '1305', '2006', '2013' );
+		$literals = array();
+		$files    = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( $root, \FilesystemIterator::SKIP_DOTS ) );
+
+		foreach ( $files as $file ) {
+			if ( ! $file instanceof \SplFileInfo || 'php' !== $file->getExtension() || 'MysqlErrno.php' === $file->getFilename() ) {
+				continue;
+			}
+
+			foreach ( token_get_all( (string) file_get_contents( $file->getPathname() ) ) as $token ) {
+				if ( is_array( $token ) && T_LNUMBER === $token[0] && in_array( $token[1], $numbers, true ) ) {
+					$literals[] = $file->getFilename() . ':' . $token[2] . ' ' . $token[1];
+				}
+			}
+		}
+
+		$this->assertSame( array(), $literals, 'Name the error number with a MysqlErrno constant.' );
 	}
 
 	/**

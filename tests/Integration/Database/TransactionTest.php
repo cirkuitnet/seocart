@@ -18,6 +18,7 @@ use SEOCart\Platform\Database\Exception\TransactionDepthExceeded;
 use SEOCart\Platform\Database\Exception\TransactionIntegrityLost;
 use SEOCart\Platform\Database\Exception\TransactionRetryable;
 use SEOCart\Platform\Database\RetryPolicy;
+use SEOCart\Platform\Database\TransactionGuards;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\QueryLog;
 use SEOCart\Tests\Support\SecondConnection;
@@ -25,7 +26,7 @@ use SEOCart\Tests\Support\SecondConnection;
 // phpcs:disable WordPress.DB.DirectDatabaseQuery, WordPress.DB.RestrictedFunctions, WordPress.DB.PreparedSQL -- These tests drive the connection directly to play the parts of third parties and failures.
 
 /**
- * T1 to T13 and T15 to T18: what the wrapper commits, refuses and
+ * What the transaction wrapper commits, refuses and
  * reports, observed from a second connection, which sees only what is committed.
  *
  * Each test names its planted violation, a change to src/Platform/Database/Database.php or
@@ -74,13 +75,13 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T1: a row inserted inside transaction() is visible to another connection after it returns.
+	 * A row inserted inside transaction() is visible to another connection after it returns.
 	 *
 	 * Planted violation: in unitOfWork(), send 'ROLLBACK' where 'COMMIT' is sent.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t1_a_committed_row_is_visible_to_another_connection(): void {
+	public function test_a_committed_row_is_visible_to_another_connection(): void {
 		$b = $this->secondConnection();
 
 		$this->db->transaction( fn() => $this->insertRow( 1, 'committed' ) );
@@ -107,13 +108,13 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T2: an inner level that throws is undone on its own; the outer level catches, goes on and commits.
+	 * An inner level that throws is undone on its own; the outer level catches, goes on and commits.
 	 *
 	 * Planted violation: in savepoint(), do not send ROLLBACK TO SAVEPOINT when the work throws.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t2_an_inner_failure_caught_by_the_outer_level_undoes_only_the_inner_level(): void {
+	public function test_an_inner_failure_caught_by_the_outer_level_undoes_only_the_inner_level(): void {
 		$b = $this->secondConnection();
 
 		$this->db->transaction(
@@ -139,13 +140,13 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T3: an inner failure that the outer level does not catch undoes everything and reaches the caller.
+	 * An inner failure that the outer level does not catch undoes everything and reaches the caller.
 	 *
 	 * Planted violation: in unitOfWork(), return null instead of rethrowing after abandon().
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t3_an_inner_failure_the_outer_level_does_not_catch_undoes_both_and_propagates(): void {
+	public function test_an_inner_failure_the_outer_level_does_not_catch_undoes_both_and_propagates(): void {
 		$b      = $this->secondConnection();
 		$caught = null;
 
@@ -174,13 +175,13 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T4: the callable's return value comes back unchanged, and depth() is the level inside.
+	 * The callable's return value comes back unchanged, and depth() is the level inside.
 	 *
 	 * Planted violation: in unitOfWork(), return null instead of $result.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t4_the_return_value_is_unchanged_and_depth_counts_the_levels(): void {
+	public function test_the_return_value_is_unchanged_and_depth_counts_the_levels(): void {
 		$depths = array();
 
 		$result = $this->db->transaction(
@@ -203,13 +204,13 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T5: five levels work; a sixth is refused before any statement is sent.
+	 * Five levels work; a sixth is refused before any statement is sent.
 	 *
 	 * Planted violation: in transaction(), compare the ceiling with `>=` instead of `>`.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t5_the_sixth_level_is_refused_before_any_statement(): void {
+	public function test_the_sixth_level_is_refused_before_any_statement(): void {
 		global $wpdb;
 
 		$b       = $this->secondConnection();
@@ -245,13 +246,13 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T6: after-commit callbacks run once, after COMMIT, outside any level; never for a rolled-back level or a rollback.
+	 * After-commit callbacks run once, after COMMIT, outside any level; never for a rolled-back level or a rollback.
 	 *
 	 * Planted violation: in unitOfWork(), run the after-commit callbacks just before sending COMMIT.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t6_after_commit_callbacks_run_after_commit_and_only_for_committed_work(): void {
+	public function test_after_commit_callbacks_run_after_commit_and_only_for_committed_work(): void {
 		$b    = $this->secondConnection();
 		$seen = array();
 
@@ -319,13 +320,13 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T7: afterCommit() outside a transaction runs the callback at once.
+	 * AfterCommit() outside a transaction runs the callback at once.
 	 *
 	 * Planted violation: in afterCommit(), delete the depth-0 branch, so the callback is queued.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t7_after_commit_outside_a_transaction_runs_at_once(): void {
+	public function test_after_commit_outside_a_transaction_runs_at_once(): void {
 		$runs = 0;
 
 		$this->db->afterCommit(
@@ -338,13 +339,13 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T8: cache keys touched in a rolled-back level are removed; an inner rollback removes only its own.
+	 * Cache keys touched in a rolled-back level are removed; an inner rollback removes only its own.
 	 *
 	 * Planted violation: make flush() do nothing.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t8_cache_keys_touched_in_a_rolled_back_level_are_removed(): void {
+	public function test_cache_keys_touched_in_a_rolled_back_level_are_removed(): void {
 		$this->db->transaction(
 			function (): void {
 				$this->touchAndSet( 'outer', 'kept' );
@@ -382,7 +383,7 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T9: after wpdb reconnects inside the window, COMMIT is refused because the connection changed.
+	 * After wpdb reconnects inside the window, COMMIT is refused because the connection changed.
 	 *
 	 * Planted violation: make assertSameConnection() return at once. The probe still refuses,
 	 * but with the reason `ended_externally`, so the assertion on the reason proves the identity
@@ -390,7 +391,7 @@ final class TransactionTest extends DatabaseTestCase {
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t9_a_reconnect_inside_the_window_refuses_the_commit(): void {
+	public function test_a_reconnect_inside_the_window_refuses_the_commit(): void {
 		global $wpdb;
 
 		$b             = $this->secondConnection();
@@ -435,13 +436,13 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T10: a COMMIT sent behind wpdb's back ends the transaction, and the probe refuses the wrapper's COMMIT.
+	 * A COMMIT sent behind wpdb's back ends the transaction, and the probe refuses the wrapper's COMMIT.
 	 *
 	 * Planted violation: in assertCommittable(), delete the probe (the RELEASE SAVEPOINT sc_0 block).
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t10_a_foreign_commit_is_caught_by_the_probe(): void {
+	public function test_a_foreign_commit_is_caught_by_the_probe(): void {
 		global $wpdb;
 
 		$b      = $this->secondConnection();
@@ -472,13 +473,13 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T11: in strict mode an outbound request inside a window throws before any filter answers; otherwise it is reported.
+	 * In strict mode an outbound request inside a window throws before any filter answers; otherwise it is reported.
 	 *
 	 * Planted violation: in TransactionGuards::register(), delete the `pre_http_request` registration.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t11_outbound_http_inside_a_window_is_refused_or_reported(): void {
+	public function test_outbound_http_inside_a_window_is_refused_or_reported(): void {
 		$answered = 0;
 
 		add_filter(
@@ -523,13 +524,13 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T11, mail half: wp_mail() inside a window throws in strict mode and is reported otherwise.
+	 * The wp_mail() function inside a window throws in strict mode and is reported otherwise.
 	 *
 	 * Planted violation: in TransactionGuards::register(), delete the `pre_wp_mail` registration.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t11_mail_inside_a_window_is_refused_or_reported(): void {
+	public function test_mail_inside_a_window_is_refused_or_reported(): void {
 		$refused = null;
 
 		try {
@@ -548,33 +549,47 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Lists statements that end a transaction silently, and must be stopped inside a window.
+	 * Lists statements that end a transaction silently, and must be stopped inside a window: one row per guarded keyword.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array<string, array{string}> The statement, with `%t` for the fixture table.
+	 * @return array<string, array{list<string>}> Statements starting with the keyword that keys the row, with `%t` for the fixture table.
 	 */
 	public static function transactionEnders(): array {
 		return array(
-			'CREATE TABLE'           => array( 'CREATE TABLE `%t_new` ( id int )' ),
-			'ALTER TABLE'            => array( 'ALTER TABLE `%t` ADD COLUMN extra int' ),
-			'DROP TABLE'             => array( 'DROP TABLE `%t`' ),
-			'TRUNCATE'               => array( 'TRUNCATE TABLE `%t`' ),
-			'RENAME'                 => array( 'RENAME TABLE `%t` TO `%t_renamed`' ),
-			'COMMIT'                 => array( 'COMMIT' ),
-			'ROLLBACK'               => array( '  rollback' ),
-			'START TRANSACTION'      => array( 'START TRANSACTION' ),
-			'BEGIN'                  => array( 'BEGIN' ),
-			'SET autocommit'         => array( 'SET autocommit = 0' ),
-			'SET SESSION autocommit' => array( 'SET SESSION autocommit = 1' ),
-			'LOCK TABLES'            => array( 'LOCK TABLES `%t` WRITE' ),
-			'UNLOCK TABLES'          => array( 'UNLOCK TABLES' ),
-			'OPTIMIZE'               => array( 'OPTIMIZE TABLE `%t`' ),
+			'ALTER'                           => array( array( 'ALTER TABLE `%t` ADD COLUMN extra int' ) ),
+			'CREATE'                          => array( array( 'CREATE TABLE `%t_new` ( id int )', 'create table `%t_new` ( id int )' ) ),
+			'DROP'                            => array( array( 'DROP TABLE `%t`' ) ),
+			'RENAME'                          => array( array( 'RENAME TABLE `%t` TO `%t_renamed`' ) ),
+			'TRUNCATE'                        => array( array( 'TRUNCATE TABLE `%t`' ) ),
+			'START\s+TRANSACTION'             => array( array( 'START TRANSACTION', "START\n\tTRANSACTION" ) ),
+			'BEGIN'                           => array( array( 'BEGIN' ) ),
+			'COMMIT'                          => array( array( 'COMMIT', 'commit work' ) ),
+			'ROLLBACK(?!\s+(?:WORK\s+)?TO\b)' => array( array( '  rollback', 'ROLLBACK WORK' ) ),
+			'SET\s+(?:(?:SESSION|LOCAL)\s+|@@(?:SESSION\.|LOCAL\.)?)?autocommit' => array( array( 'SET autocommit = 0', 'SET SESSION autocommit = 1', 'SET @@autocommit = 1', 'SET @@SESSION.autocommit = 1' ) ),
+			'LOCK\s+TABLES?'                  => array( array( 'LOCK TABLES `%t` WRITE', 'LOCK TABLE `%t` READ' ) ),
+			'UNLOCK\s+TABLES?'                => array( array( 'UNLOCK TABLES' ) ),
+			'ANALYZE'                         => array( array( 'ANALYZE TABLE `%t`' ) ),
+			'OPTIMIZE'                        => array( array( 'OPTIMIZE TABLE `%t`' ) ),
+			'REPAIR'                          => array( array( 'REPAIR TABLE `%t`' ) ),
+			'FLUSH'                           => array( array( 'FLUSH TABLES' ) ),
+			'LOAD\s+DATA'                     => array( array( "LOAD DATA LOCAL INFILE '/nonexistent' INTO TABLE `%t`" ) ),
 		);
 	}
 
 	/**
-	 * T12: DDL and foreign transaction control inside a window throw before wpdb sends them.
+	 * Tests that the statements above cover every keyword the guard refuses, one row per keyword.
+	 *
+	 * Planted violation: add a keyword to TransactionGuards::IMPLICIT_COMMIT without a row here.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_every_keyword_the_guard_refuses_has_statements_here(): void {
+		$this->assertSame( TransactionGuards::IMPLICIT_COMMIT, array_keys( self::transactionEnders() ) );
+	}
+
+	/**
+	 * DDL and foreign transaction control inside a window throw before wpdb sends them.
 	 *
 	 * Planted violation: in TransactionGuards::IMPLICIT_COMMIT, delete `CREATE|`. The
 	 * CREATE TABLE case then creates the table and fails the "absent afterwards" assertion.
@@ -583,14 +598,26 @@ final class TransactionTest extends DatabaseTestCase {
 	 *
 	 * @dataProvider transactionEnders
 	 *
+	 * @param string[] $statements Statements that start with the keyword.
+	 */
+	public function test_a_statement_that_ends_the_transaction_is_stopped_before_it_is_sent( array $statements ): void {
+		foreach ( $statements as $statement ) {
+			$this->assertStoppedBeforeItIsSent( str_replace( '%t', $this->rowsTable(), $statement ) );
+		}
+	}
+
+	/**
+	 * Asserts that the guard stops one statement inside a window before wpdb sends it.
+	 *
+	 * @since 0.1.0
+	 *
 	 * @param string $statement The statement.
 	 */
-	public function test_t12_a_statement_that_ends_the_transaction_is_stopped_before_it_is_sent( string $statement ): void {
+	private function assertStoppedBeforeItIsSent( string $statement ): void {
 		global $wpdb;
 
-		$b         = $this->secondConnection();
-		$statement = str_replace( '%t', $this->rowsTable(), $statement );
-		$refused   = null;
+		$b       = $this->secondConnection();
+		$refused = null;
 
 		try {
 			$this->db->transaction(
@@ -616,11 +643,11 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T12: temporary tables, reads and savepoint statements pass the guard.
+	 * Temporary tables, reads and savepoint statements pass the guard.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t12_temporary_tables_and_ordinary_statements_pass(): void {
+	public function test_temporary_tables_and_ordinary_statements_pass(): void {
 		global $wpdb;
 
 		$b     = $this->secondConnection();
@@ -642,7 +669,7 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T13: a duplicate key becomes DuplicateKey, from the error number, with no output and no log line.
+	 * A duplicate key becomes DuplicateKey, from the error number, with no output and no log line.
 	 *
 	 * The strict PHPUnit configuration fails on output, and DatabaseTestCase fails a test that
 	 * writes to the PHP error log, so a leak through wpdb::print_error() cannot pass.
@@ -651,7 +678,7 @@ final class TransactionTest extends DatabaseTestCase {
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t13_a_duplicate_key_is_typed_by_its_error_number_and_stays_quiet(): void {
+	public function test_a_duplicate_key_is_typed_by_its_error_number_and_stays_quiet(): void {
 		global $EZSQL_ERROR;
 
 		$b = $this->secondConnection();
@@ -694,7 +721,7 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T15: a deadlocked unit of work is rolled back, paused with jitter and run again whole.
+	 * A deadlocked unit of work is rolled back, paused with jitter and run again whole.
 	 *
 	 * B locks rows 2 to 4 and waits, asynchronously, for row 1, which A holds; A then asks for
 	 * row 2. InnoDB rolls back the lighter transaction, A. The pause is the barrier: the test's
@@ -704,7 +731,7 @@ final class TransactionTest extends DatabaseTestCase {
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t15_a_deadlocked_unit_of_work_is_retried_whole(): void {
+	public function test_a_deadlocked_unit_of_work_is_retried_whole(): void {
 		$b = $this->deadlockPartner();
 
 		$attempts   = 0;
@@ -756,13 +783,13 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T16: an inner level never retries; its failure reaches the outermost level, whose policy re-runs everything.
+	 * An inner level never retries; its failure reaches the outermost level, whose policy re-runs everything.
 	 *
 	 * Planted violation: in transaction(), delete `$policy = RetryPolicy::none();` for inner levels.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t16_only_the_outermost_level_retries(): void {
+	public function test_only_the_outermost_level_retries(): void {
 		$outer = 0;
 		$inner = 0;
 
@@ -789,14 +816,14 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T17: after a deadlock, a statement sent from a catch block inside the window is refused, not autocommitted.
+	 * After a deadlock, a statement sent from a catch block inside the window is refused, not autocommitted.
 	 *
 	 * Planted violation: in statement(), delete the aborted check. The statement then runs on a
 	 * connection whose transaction InnoDB already ended, commits on its own, and B sees it.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t17_a_statement_after_a_deadlock_is_refused(): void {
+	public function test_a_statement_after_a_deadlock_is_refused(): void {
 		$b    = $this->deadlockPartner();
 		$lost = null;
 
@@ -831,7 +858,7 @@ final class TransactionTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * T18: the known limit, pinned. wpdb re-runs a statement on its new connection after error
+	 * The known limit, pinned. wpdb re-runs a statement on its new connection after error
 	 * 2006, where it commits on its own before the wrapper can refuse.
 	 *
 	 * No plant: this test documents a limit of any wrapper around wpdb, stated in the Database
@@ -839,7 +866,7 @@ final class TransactionTest extends DatabaseTestCase {
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_t18_the_statement_wpdb_re_runs_after_a_reconnect_is_committed_on_its_own(): void {
+	public function test_the_statement_wpdb_re_runs_after_a_reconnect_is_committed_on_its_own(): void {
 		$b    = $this->secondConnection();
 		$lost = null;
 
@@ -859,13 +886,359 @@ final class TransactionTest extends DatabaseTestCase {
 
 		$this->assertNotNull( $lost );
 		$this->assertSame( TransactionIntegrityLost::CONNECTION_CHANGED, $lost->reason() );
-		$this->assertStringStartsWith( 'INSERT INTO', (string) $lost->context()['statement'], 'The exception names the statement wpdb re-ran.' );
+		$this->assertStringStartsWith( 'INSERT INTO', $lost->statement(), 'The exception names the statement wpdb re-ran.' );
 		$this->assertSame( 0, $this->committedRows( $b, 'id = 1' ), 'X died with the killed connection.' );
 		$this->assertSame(
 			1,
 			$this->committedRows( $b, 'id = 2' ),
 			'Known limit, stated in the Database class description: wpdb re-ran Y on its new connection, where it committed on its own before the wrapper regained control. If this now fails, the limit was lifted: update this test and that description.'
 		);
+	}
+
+	/**
+	 * A failing after-commit callback is reported, never thrown, and never runs the committed work again.
+	 *
+	 * The unit of work is durable once COMMIT returns. A listener that fails afterwards, even with
+	 * a retryable error, must not reach the retry loop, which would run the work a second time,
+	 * nor the caller, who would be told a committed write failed.
+	 *
+	 * Planted violation: in transaction(), run the after-commit callbacks inside the retry loop.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_failing_after_commit_callback_is_reported_and_the_work_is_not_run_again(): void {
+		$b    = $this->secondConnection();
+		$runs = 0;
+		$ran  = array();
+
+		$this->db->transaction(
+			function () use ( &$runs, &$ran ): void {
+				++$runs;
+
+				$this->insertRow( $runs, 'committed once' );
+
+				$this->db->afterCommit(
+					static function (): void {
+						throw QueryFailed::fromErrno( 1205, 'HY000', 'UPDATE listener SET n = n + 1', 'Lock wait timeout exceeded', false );
+					}
+				);
+				$this->db->afterCommit(
+					static function () use ( &$ran ): void {
+						$ran[] = 'second listener';
+					}
+				);
+			},
+			RetryPolicy::deadlocks()
+		);
+
+		$this->assertSame( 1, $runs, 'The committed unit of work ran exactly once.' );
+		$this->assertSame( 1, $this->committedRows( $b ) );
+		$this->assertSame( array( 'second listener' ), $ran, 'Every after-commit callback still runs.' );
+		$this->assertCount( 1, $this->reports );
+		$this->assertSame( 'database.after_commit_failed', $this->reports[0]['code'] );
+	}
+
+	/**
+	 * A statement issued after wpdb reconnected elsewhere in the window is refused before it is sent.
+	 *
+	 * Another plugin's query finds the connection gone, and wpdb reconnects to run it. The
+	 * wrapper's next statement would then autocommit on the new connection, so the connection is
+	 * compared before the statement is sent, not only after.
+	 *
+	 * Planted violation: in statement(), delete the connection check before send().
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_statement_after_a_reconnect_elsewhere_is_refused_before_it_is_sent(): void {
+		global $wpdb;
+
+		$b    = $this->secondConnection();
+		$lost = null;
+
+		try {
+			$this->db->transaction(
+				function () use ( $b, $wpdb ): void {
+					$this->insertRow( 1, 'X' );
+
+					$b->kill( $this->db->threadId() );
+
+					$this->assertSame( '1', $wpdb->get_var( 'SELECT 1' ), 'wpdb reconnected to run another query.' );
+
+					$this->insertRow( 2, 'Y' );
+				}
+			);
+		} catch ( TransactionIntegrityLost $refused ) {
+			$lost = $refused;
+		}
+
+		$this->assertNotNull( $lost );
+		$this->assertSame( TransactionIntegrityLost::CONNECTION_CHANGED, $lost->reason() );
+		$this->assertSame( 0, $this->committedRows( $b ), 'X died with the killed connection, and Y must never have been sent.' );
+	}
+
+	/**
+	 * A statement WordPress refuses without sending is not typed by the error number of an earlier statement.
+	 *
+	 * The mysqli handle keeps the last error number until the next statement it sends, so after a
+	 * caught duplicate key, a refusal by WordPress itself would read as another duplicate.
+	 *
+	 * Planted violation: in send(), trust mysqli_errno() whatever wpdb's last error says.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_statement_wordpress_refuses_is_not_typed_by_a_stale_error_number(): void {
+		$this->insertRow( 1, 'café' );
+
+		try {
+			$this->insertRow( 1, 'again' );
+			$this->fail( 'The second insert must be a duplicate.' );
+		} catch ( DuplicateKey $expected ) {
+			$this->assertSame( 1062, $expected->errno() );
+		}
+
+		$refused = null;
+
+		try {
+			$this->insertRow( 2, "invalid \xC3\x28 bytes" );
+		} catch ( QueryFailed $failure ) {
+			$refused = $failure;
+		}
+
+		$this->assertNotNull( $refused, 'WordPress refuses invalid UTF-8 without sending it.' );
+		$this->assertSame( QueryFailed::class, get_class( $refused ) );
+		$this->assertSame( 0, $refused->errno() );
+	}
+
+	/**
+	 * In reporting mode, a statement after a reported COMMIT is refused instead of autocommitting.
+	 *
+	 * Planted violation: in TransactionGuards::forbid(), report without marking the unit of work aborted.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_in_reporting_mode_a_statement_after_a_reported_commit_is_refused(): void {
+		global $wpdb;
+
+		$b         = $this->secondConnection();
+		$reporting = $this->makeDatabase( false );
+		$lost      = null;
+
+		try {
+			$reporting->transaction(
+				function () use ( $reporting, $wpdb ): void {
+					$reporting->execute( 'INSERT INTO %i ( id, value ) VALUES ( %d, %s )', $this->rowsTable(), 1, 'before' );
+
+					$wpdb->query( 'COMMIT' );
+
+					$reporting->execute( 'INSERT INTO %i ( id, value ) VALUES ( %d, %s )', $this->rowsTable(), 2, 'after' );
+				}
+			);
+		} catch ( TransactionIntegrityLost $refused ) {
+			$lost = $refused;
+		}
+
+		$this->assertNotNull( $lost, 'The statement after the reported COMMIT must be refused.' );
+		$this->assertSame( TransactionIntegrityLost::ABORTED, $lost->reason() );
+		$this->assertSame( 1, $this->committedRows( $b, 'id = 1' ), 'The foreign COMMIT made row 1 durable.' );
+		$this->assertSame( 0, $this->committedRows( $b, 'id = 2' ), 'Row 2 must not autocommit.' );
+		$this->assertSame( ForbiddenInsideTransaction::KIND_DDL, $this->reports[0]['context']['kind'] ?? null );
+	}
+
+	/**
+	 * An inner level whose savepoint is already gone leaves the unit of work aborted.
+	 *
+	 * Planted violation: in savepoint(), do not mark the unit aborted when ROLLBACK TO SAVEPOINT fails.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_inner_level_whose_savepoint_is_gone_leaves_the_unit_aborted(): void {
+		global $wpdb;
+
+		$b    = $this->secondConnection();
+		$lost = null;
+
+		try {
+			$this->db->transaction(
+				function () use ( $wpdb ): void {
+					$this->insertRow( 1 );
+
+					try {
+						$this->db->transaction(
+							function () use ( $wpdb ): void {
+								$this->insertRow( 2 );
+
+								mysqli_query( $wpdb->__get( 'dbh' ), 'COMMIT' );
+
+								throw new \DomainException( 'inner failed' );
+							}
+						);
+					} catch ( \DomainException $expected ) {
+						unset( $expected );
+					}
+
+					// Carrying on would autocommit on a connection with no transaction left.
+					$this->insertRow( 3 );
+				}
+			);
+		} catch ( TransactionIntegrityLost $refused ) {
+			$lost = $refused;
+		}
+
+		$this->assertNotNull( $lost );
+		$this->assertSame( TransactionIntegrityLost::ABORTED, $lost->reason() );
+		$this->assertSame( 0, $this->committedRows( $b, 'id = 3' ) );
+	}
+
+	/**
+	 * After-rollback callbacks run when their own level rolls back; a level that succeeds hands them to the level around it.
+	 *
+	 * Planted violation: in savepoint(), do not run the rolled-back level's after-rollback callbacks.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_after_rollback_callbacks_run_when_their_own_level_rolls_back(): void {
+		$seen = array();
+
+		try {
+			$this->db->transaction(
+				function () use ( &$seen ): void {
+					try {
+						$this->db->transaction(
+							function () use ( &$seen ): void {
+								$this->db->afterRollback(
+									static function () use ( &$seen ): void {
+										$seen[] = 'failed inner level';
+									}
+								);
+
+								throw new \DomainException( 'inner failed' );
+							}
+						);
+					} catch ( \DomainException $expected ) {
+						$seen[] = 'outer level caught';
+					}
+
+					$this->db->transaction(
+						function () use ( &$seen ): void {
+							$this->db->afterRollback(
+								static function () use ( &$seen ): void {
+									$seen[] = 'succeeded inner level';
+								}
+							);
+						}
+					);
+
+					throw new \LogicException( 'outer failed' );
+				}
+			);
+		} catch ( \LogicException $expected ) {
+			$seen[] = 'caller caught';
+		}
+
+		$this->assertSame( array( 'failed inner level', 'outer level caught', 'succeeded inner level', 'caller caught' ), $seen );
+	}
+
+	/**
+	 * A failing after-rollback callback is reported, the others still run, and the rollback's cause propagates.
+	 *
+	 * Planted violation: in runAfterRollback(), rethrow the callback's failure instead of reporting it.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_failing_after_rollback_callback_is_reported(): void {
+		$caught = null;
+		$ran    = false;
+
+		try {
+			$this->db->transaction(
+				function () use ( &$ran ): void {
+					$this->db->afterRollback(
+						static function (): void {
+							throw new \RuntimeException( 'listener broke' );
+						}
+					);
+					$this->db->afterRollback(
+						static function () use ( &$ran ): void {
+							$ran = true;
+						}
+					);
+
+					throw new \DomainException( 'the work failed' );
+				}
+			);
+		} catch ( \DomainException $failure ) {
+			$caught = $failure;
+		}
+
+		$this->assertNotNull( $caught, 'The rollback\'s own cause propagates.' );
+		$this->assertTrue( $ran, 'The next callback still ran.' );
+		$this->assertCount( 1, $this->reports );
+		$this->assertSame( 'database.after_rollback_failed', $this->reports[0]['code'] );
+		$this->assertSame( \RuntimeException::class, $this->reports[0]['context']['exception'] );
+	}
+
+	/**
+	 * A ROLLBACK the server refuses is reported, and the failure that caused the rollback propagates.
+	 *
+	 * Planted violation: in abandon(), rethrow the ROLLBACK's failure instead of reporting it.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_failing_rollback_is_reported(): void {
+		global $wpdb;
+
+		$break  = static fn( $query ) => 'ROLLBACK' === $query ? 'ROLLBACK_THE_SERVER_REFUSES' : $query;
+		$caught = null;
+
+		add_filter( 'query', $break );
+
+		try {
+			$this->db->transaction(
+				static function (): void {
+					throw new \DomainException( 'the work failed' );
+				}
+			);
+		} catch ( \DomainException $failure ) {
+			$caught = $failure;
+		} finally {
+			remove_filter( 'query', $break );
+			$wpdb->query( 'ROLLBACK' );
+		}
+
+		$this->assertNotNull( $caught, 'The rollback\'s own cause propagates.' );
+		$this->assertCount( 1, $this->reports );
+		$this->assertSame( 'database.query_failed', $this->reports[0]['code'] );
+		$this->assertSame( 'ROLLBACK', $this->reports[0]['context']['statement'] );
+		$this->assertSame( 0, $this->db->depth() );
+	}
+
+	/**
+	 * The lastInsertId() value is the AUTO_INCREMENT value of the last insert, inside a window too.
+	 *
+	 * Planted violation: make lastInsertId() return 0.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_last_insert_id_is_the_auto_increment_value_of_the_last_insert(): void {
+		global $wpdb;
+
+		$table = $this->db->table( 'test_auto' );
+
+		$wpdb->query( $wpdb->prepare( 'CREATE TABLE %i ( id bigint unsigned NOT NULL AUTO_INCREMENT, value varchar(20) NOT NULL, PRIMARY KEY (id) ) ENGINE=InnoDB', $table ) );
+
+		$this->db->execute( 'INSERT INTO %i ( value ) VALUES ( %s )', $table, 'first' );
+
+		$this->assertSame( 1, $this->db->lastInsertId() );
+
+		$inside = $this->db->transaction(
+			function () use ( $table ): int {
+				$this->db->execute( 'INSERT INTO %i ( value ) VALUES ( %s )', $table, 'second' );
+
+				return $this->db->lastInsertId();
+			}
+		);
+
+		$this->assertSame( 2, $inside );
 	}
 
 	/**

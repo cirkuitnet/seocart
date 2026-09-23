@@ -21,10 +21,10 @@ use SEOCart\Platform\Database\Schema\PlatformTables;
 use SEOCart\Platform\Database\Schema\TableDefinition;
 
 /**
- * M10: the generator's output, byte for byte, for a declaration that uses every rule.
+ * The generator's output, byte for byte, for a declaration that uses every rule.
  *
  * The expected strings are written out by hand, so a change to the generator is a change to
- * this test, never a silent change to every table. The integration test M2 proves the other
+ * this test, never a silent change to every table. MigratorTest proves the other
  * half: that dbDelta, parsing this output for an existing table, sends no ALTER.
  *
  * Planted violation: in DdlGenerator::createTable(), write `PRIMARY KEY (` with one space.

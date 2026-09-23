@@ -17,7 +17,7 @@ use SEOCart\Platform\Database\LockMode;
 use SEOCart\Platform\Database\LockProbe;
 
 /**
- * L7, unit half: every branch of LockProbe::decide(), with a scripted server.
+ * Every branch of LockProbe::decide(), with a scripted server.
  *
  * GET_LOCK is trusted only when the lock is granted at once, the server says this very
  * connection holds it, and the release succeeds. Anything else chooses the table.

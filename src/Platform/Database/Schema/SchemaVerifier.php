@@ -20,7 +20,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: what "the table matches its declaration" means. That is: the table exists;
  * its engine is InnoDB; its collation is the site's; every declared column is present with its
- * type, nullability, default, AUTO_INCREMENT and, where declared, collation; no column is
+ * type, nullability, default and EXTRA (exactly `auto_increment` or nothing, as declared); every
+ * text column has its declared collation, or the table's when none is declared; no column is
  * undeclared; and the index set is exactly the declared one, primary key included, by name,
  * uniqueness, column order and prefix length. An empty diff is the only pass. dbDelta's
  * return value is never taken as evidence.
@@ -99,7 +100,8 @@ final class SchemaVerifier {
 			$lines[] = sprintf( '%s: table collation is %s, expected %s', $table, (string) $facts['collation_name'], $collation );
 		}
 
-		return array_merge( $lines, $this->columnDiff( $definition, $table ), $this->indexDiff( $definition, $table ) );
+		// A text column without a declared collation inherits the table's actual one; the table's own difference is reported above, once.
+		return array_merge( $lines, $this->columnDiff( $definition, $table, (string) $facts['collation_name'] ), $this->indexDiff( $definition, $table ) );
 	}
 
 	/**
@@ -212,11 +214,12 @@ final class SchemaVerifier {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param TableDefinition $definition The declaration.
-	 * @param string          $table      The full table name.
+	 * @param TableDefinition $definition     The declaration.
+	 * @param string          $table          The full table name.
+	 * @param string          $tableCollation The table's actual collation, which a text column without a declared one must have.
 	 * @return list<string> One line per difference.
 	 */
-	private function columnDiff( TableDefinition $definition, string $table ): array {
+	private function columnDiff( TableDefinition $definition, string $table, string $tableCollation ): array {
 		$actual = array();
 
 		foreach ( $this->db->fetchAll(
@@ -256,12 +259,20 @@ final class SchemaVerifier {
 				$lines[] = sprintf( '%s.%s: default is %s, declared %s', $table, $name, self::show( $default ), self::show( $column->defaultValue() ) );
 			}
 
-			if ( str_contains( strtolower( (string) $row['extra'] ), 'auto_increment' ) !== $column->autoIncrement() ) {
-				$lines[] = sprintf( '%s.%s: AUTO_INCREMENT is %s, declared %s', $table, $name, $column->autoIncrement() ? 'missing' : 'present', $column->autoIncrement() ? 'present' : 'absent' );
+			$extra    = strtolower( trim( (string) $row['extra'] ) );
+			$declared = $column->autoIncrement() ? 'auto_increment' : '';
+
+			if ( $declared !== $extra ) {
+				$lines[] = sprintf( '%s.%s: extra is %s, declared %s', $table, $name, self::show( '' === $extra ? null : $extra ), self::show( '' === $declared ? null : $declared ) );
 			}
 
-			if ( null !== $column->collation() && $column->collation() !== (string) $row['collation_name'] ) {
-				$lines[] = sprintf( '%s.%s: collation is %s, declared %s', $table, $name, self::show( null === $row['collation_name'] ? null : (string) $row['collation_name'] ), $column->collation() );
+			$actualCollation = null === $row['collation_name'] ? null : (string) $row['collation_name'];
+
+			if ( null !== $column->collation() && $column->collation() !== $actualCollation ) {
+				$lines[] = sprintf( '%s.%s: collation is %s, declared %s', $table, $name, self::show( $actualCollation ), $column->collation() );
+			} elseif ( null === $column->collation() && null !== $actualCollation && $tableCollation !== $actualCollation ) {
+				// A text column without a declared collation inherits the table's; a different one is a host rewrite or a broken migration.
+				$lines[] = sprintf( "%s.%s: collation is %s, declared the table's %s", $table, $name, self::show( $actualCollation ), $tableCollation );
 			}
 		}
 

@@ -21,7 +21,8 @@ use SEOCart\Platform\Database\TransactionManager;
  * Owns one fact: the TransactionManager contract without a database. It runs the callable,
  * counts depth, keeps after-commit and after-rollback callbacks per level with the same rules
  * as Database (a rolled-back level's after-commit callbacks never run; its after-rollback
- * callbacks run at its rollback; a level that succeeds hands both to the level around it),
+ * callbacks run at its rollback; a level that succeeds hands both to the level around it; the
+ * committed callbacks run after the retry loop, and a failing one is recorded, not thrown),
  * re-runs the outermost level on TransactionRetryable as the policy allows without pausing,
  * and records what a test may want to assert: how many units of work began, how many
  * attempts ran, and which cache keys were touched.
@@ -85,6 +86,24 @@ final class FakeTransactionManager implements TransactionManager {
 	private array $touched = array();
 
 	/**
+	 * The after-commit callbacks of the unit of work that just committed, waiting to run.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<callable(): mixed>
+	 */
+	private array $committed = array();
+
+	/**
+	 * The failures of after-commit callbacks, in order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<\Throwable>
+	 */
+	private array $afterCommitFailures = array();
+
+	/**
 	 * Runs the work as a unit of work.
 	 *
 	 * @since 0.1.0
@@ -116,6 +135,9 @@ final class FakeTransactionManager implements TransactionManager {
 
 				continue;
 			}
+
+			// Outside the retry loop, as Database does: the unit of work is durable, and nothing may run it again.
+			$this->runAfterCommit();
 
 			return $result;
 		}
@@ -263,9 +285,7 @@ final class FakeTransactionManager implements TransactionManager {
 		if ( 0 === $index ) {
 			++$this->commits;
 
-			foreach ( $level['commit'] as $callback ) {
-				$callback();
-			}
+			$this->committed = $level['commit'];
 
 			return $result;
 		}
@@ -274,6 +294,35 @@ final class FakeTransactionManager implements TransactionManager {
 		$this->levels[ $index ]['rollback'] = array_merge( $this->levels[ $index ]['rollback'], $level['rollback'] );
 
 		return $result;
+	}
+
+	/**
+	 * Runs the committed unit of work's after-commit callbacks. Every callback runs; a failure is recorded, never thrown.
+	 *
+	 * @since 0.1.0
+	 */
+	private function runAfterCommit(): void {
+		$callbacks       = $this->committed;
+		$this->committed = array();
+
+		foreach ( $callbacks as $callback ) {
+			try {
+				$callback();
+			} catch ( \Throwable $failure ) {
+				$this->afterCommitFailures[] = $failure;
+			}
+		}
+	}
+
+	/**
+	 * Returns the failures of after-commit callbacks, which Database reports instead of throwing.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<\Throwable> In the order they happened.
+	 */
+	public function afterCommitFailures(): array {
+		return $this->afterCommitFailures;
 	}
 
 	/**

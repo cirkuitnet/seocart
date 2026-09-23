@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Platform\Database\Exception;
 
 use SEOCart\Platform\Database\DatabaseError;
+use SEOCart\Platform\Database\StatementDiagnostic;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -29,7 +30,8 @@ defined( 'ABSPATH' ) || exit;
  * - `aborted`: a deadlock or lock-wait timeout already ended the unit of work, and a statement
  *   was still issued inside it.
  *
- * Its row answers 503: the request may succeed if it is sent again.
+ * Its row answers 503: the request may succeed if it is sent again. The context holds the reason
+ * only; the statement is in the StatementDiagnostic among the previous exceptions.
  *
  * @since 0.1.0
  */
@@ -86,12 +88,14 @@ final class TransactionIntegrityLost extends DatabaseException {
 	 * @since 0.1.0
 	 *
 	 * @param string          $reason    One of the reason constants.
-	 * @param string          $statement The statement at which the loss was noticed. Cut to QueryFailed::STATEMENT_LENGTH.
-	 * @param \Throwable|null $previous  Optional. The failure that revealed it. Default null.
+	 * @param string          $statement The statement at which the loss was noticed; kept in a
+	 *                                   StatementDiagnostic, never in the context.
+	 * @param \Throwable|null $previous  Optional. The failure that revealed it, which carries its
+	 *                                   own diagnostic. Default null, which carries one for $statement.
 	 * @return self The exception.
 	 */
 	public static function lost( string $reason, string $statement, ?\Throwable $previous = null ): self {
-		return self::because( self::CODE, self::facts( $reason, $statement ), $previous );
+		return self::because( self::CODE, array( 'reason' => $reason ), $previous ?? StatementDiagnostic::of( $statement, '' ) );
 	}
 
 	/**
@@ -106,7 +110,9 @@ final class TransactionIntegrityLost extends DatabaseException {
 	 * @return never
 	 */
 	public static function raiseLost( string $reason, string $statement ): never {
-		self::raise( self::CODE, self::facts( $reason, $statement ) );
+		$lost = self::lost( $reason, $statement );
+
+		throw $lost;
 	}
 
 	/**
@@ -121,29 +127,13 @@ final class TransactionIntegrityLost extends DatabaseException {
 	}
 
 	/**
-	 * Returns the statement at which the loss was noticed.
+	 * Returns the statement at which the loss was noticed, from the diagnostic. Never render it.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return string At most QueryFailed::STATEMENT_LENGTH characters.
+	 * @return string At most QueryFailed::STATEMENT_LENGTH characters, or an empty string.
 	 */
 	public function statement(): string {
-		return (string) $this->context()['statement'];
-	}
-
-	/**
-	 * Builds the context.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $reason    One of the reason constants.
-	 * @param string $statement The statement.
-	 * @return array{reason: string, statement: string} The context.
-	 */
-	private static function facts( string $reason, string $statement ): array {
-		return array(
-			'reason'    => $reason,
-			'statement' => QueryFailed::shorten( $statement ),
-		);
+		return (string) $this->diagnostic()?->statement();
 	}
 }

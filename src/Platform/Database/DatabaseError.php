@@ -24,9 +24,11 @@ defined( 'ABSPATH' ) || exit;
  * its case in its CODE constant. The context keys of a failure are the placeholders of its
  * row. Codes that are only logged or recorded, never thrown, are in ReportCode instead.
  *
- * A transaction that could not be completed and a lock another process holds answer 503: the
- * request may succeed if it is sent again. A duplicate unique key answers 409. Everything else
- * is a server fault, 500.
+ * A transaction that could not be completed, a unit of work ended by a deadlock or lock-wait
+ * timeout, and a lock another process holds answer 503: the request may succeed if it is sent
+ * again. A duplicate unique key answers 409. Everything else is a server fault, 500. No row
+ * carries SQL or the server's error text: those can hold a customer's data, and stay in the
+ * StatementDiagnostic the exception carries.
  *
  * @since 0.1.0
  */
@@ -103,40 +105,40 @@ enum DatabaseError: string implements ErrorCode {
 	 * @return list<ErrorDefinition> One row per case.
 	 */
 	public static function definitions(): array {
-		$statement = array( 'errno', 'sqlstate', 'statement', 'server_message' );
+		$statement = array( 'errno', 'sqlstate' );
 
 		return array(
 			new ErrorDefinition(
 				self::QueryFailed,
 				500,
 				static fn(): string =>
-					/* translators: %1$s: MySQL error number. %2$s: SQLSTATE code. %3$s: The beginning of the SQL statement. %4$s: The error text the database server returned. */
-					__( 'The database refused a statement with error %1$s (SQLSTATE %2$s): %3$s. The server said: %4$s', 'seocart' ),
+					/* translators: %1$s: MySQL error number. %2$s: SQLSTATE code. */
+					__( 'The database refused a statement with error %1$s (SQLSTATE %2$s).', 'seocart' ),
 				$statement
 			),
 			new ErrorDefinition(
 				self::DuplicateKey,
 				409,
 				static fn(): string =>
-					/* translators: %1$s: MySQL error number. %2$s: SQLSTATE code. %3$s: The beginning of the SQL statement. %4$s: The error text the database server returned. */
-					__( 'The record already exists: the database refused a duplicate value for a unique key with error %1$s (SQLSTATE %2$s) in: %3$s. The server said: %4$s', 'seocart' ),
+					/* translators: %1$s: MySQL error number. %2$s: SQLSTATE code. */
+					__( 'The record already exists: the database refused a duplicate value for a unique key (error %1$s, SQLSTATE %2$s).', 'seocart' ),
 				$statement
 			),
 			new ErrorDefinition(
 				self::TransactionRetryable,
-				500,
+				503,
 				static fn(): string =>
-					/* translators: %1$s: MySQL error number. %2$s: SQLSTATE code. %3$s: The beginning of the SQL statement. %4$s: The error text the database server returned. */
-					__( 'The database ended the operation to resolve a conflict with another request, with error %1$s (SQLSTATE %2$s) at: %3$s. The server said: %4$s', 'seocart' ),
+					/* translators: %1$s: MySQL error number. %2$s: SQLSTATE code. */
+					__( 'The database ended the operation to resolve a conflict with another request (error %1$s, SQLSTATE %2$s). Try again.', 'seocart' ),
 				$statement
 			),
 			new ErrorDefinition(
 				self::TransactionLost,
 				503,
 				static fn(): string =>
-					/* translators: %1$s: Why the transaction was lost, a code such as connection_changed. %2$s: The beginning of the SQL statement at which it was noticed. */
-					__( 'The database transaction could not be completed safely (%1$s) at: %2$s. Try again.', 'seocart' ),
-				array( 'reason', 'statement' )
+					/* translators: %1$s: Why the transaction was lost, a code such as connection_changed. */
+					__( 'The database transaction could not be completed safely (%1$s). Try again.', 'seocart' ),
+				array( 'reason' )
 			),
 			new ErrorDefinition(
 				self::TransactionDepth,

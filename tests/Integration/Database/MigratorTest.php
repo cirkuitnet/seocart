@@ -40,8 +40,8 @@ use SEOCart\Tests\Support\SecondConnection;
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- These tests plant and inspect migrator state directly, as another runner or a crash would leave it.
 
 /**
- * M1 to M3, M5 to M9, M11 and M12, plus the bootstrap race and the
- * re-run of a migration whose tables already exist.
+ * The migrator, its bootstrap migration and `wp seocart migrate`: runs, resumes, failures, the
+ * schema lock, the write gate, and the re-run of a migration whose tables already exist.
  *
  * Fixture migrations live in tests/Support/Migrations/ and create `test_` tables, which the
  * base class drops after each test together with `migrations` and `locks`.
@@ -65,13 +65,13 @@ final class MigratorTest extends DatabaseTestCase {
 	private const NOW = '2026-09-22 12:00:00';
 
 	/**
-	 * M1: on an empty database the bootstrap creates `migrations` and `locks` and records itself.
+	 * On an empty database the bootstrap creates `migrations` and `locks` and records itself.
 	 *
 	 * Planted violation: at the top of recordApplied(), return when the migration is the bootstrap.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_m1_the_bootstrap_creates_the_platform_tables_and_records_itself(): void {
+	public function test_the_bootstrap_creates_the_platform_tables_and_records_itself(): void {
 		$b     = $this->secondConnection();
 		$state = new MigrationsTableState( $this->db );
 
@@ -141,13 +141,13 @@ final class MigratorTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * M2: a chain applies in id order; a second run changes nothing and sends no DDL.
+	 * A chain applies in id order; a second run changes nothing and sends no DDL.
 	 *
 	 * Planted violation: in pending(), ignore the state and return the whole chain.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_m2_a_chain_applies_in_order_once(): void {
+	public function test_a_chain_applies_in_order_once(): void {
 		$b     = $this->secondConnection();
 		$a     = new CreatesTestTable( '20990101_0001_a', 'a' );
 		$bee   = new CreatesTestTable( '20990101_0002_b', 'b' );
@@ -184,7 +184,7 @@ final class MigratorTest extends DatabaseTestCase {
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_m2_a_migration_interrupted_after_its_ddl_resumes_without_ddl(): void {
+	public function test_a_migration_interrupted_after_its_ddl_resumes_without_ddl(): void {
 		$b = $this->secondConnection();
 		$a = new CreatesTestTable( '20990101_0001_a', 'a' );
 
@@ -215,7 +215,7 @@ final class MigratorTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * M3: a migration whose post-conditions fail is recorded failed with the diff, stops the chain and releases the lock.
+	 * A migration whose post-conditions fail is recorded failed with the diff, stops the chain and releases the lock.
 	 *
 	 * The fixture DeclaresMissingIndex is the permanent plant: its declaration names an index
 	 * its up() never creates, so only the verifier can notice.
@@ -228,7 +228,7 @@ final class MigratorTest extends DatabaseTestCase {
 	 *
 	 * @param LockMode $mode How the schema lock is held.
 	 */
-	public function test_m3_a_failed_post_condition_stops_the_chain( LockMode $mode ): void {
+	public function test_a_failed_post_condition_stops_the_chain( LockMode $mode ): void {
 		$b = $this->secondConnection();
 		$a = new CreatesTestTable( '20990101_0001_a', 'a' );
 		$c = new DeclaresMissingIndex( '20990101_0003_c', 'c' );
@@ -272,13 +272,13 @@ final class MigratorTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * M5: an interrupted chain resumes at the migration that failed, and never repeats one that was applied.
+	 * An interrupted chain resumes at the migration that failed, and never repeats one that was applied.
 	 *
 	 * Planted violation: in pending(), ignore the state and return the whole chain.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_m5_an_interrupted_chain_resumes_where_it_stopped(): void {
+	public function test_an_interrupted_chain_resumes_where_it_stopped(): void {
 		$b = $this->secondConnection();
 		$a = new CreatesTestTable( '20990101_0001_a', 'a' );
 		$e = new CreatesTestTable( '20990101_0005_e', 'e' );
@@ -316,14 +316,14 @@ final class MigratorTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * M6: a data migration commits each batch with its cursor; interrupted inside a batch, it resumes without repeating a row.
+	 * A data migration commits each batch with its cursor; interrupted inside a batch, it resumes without repeating a row.
 	 *
 	 * Planted violation: in runBatches(), write the cursor after the batch's transaction
 	 * returns, instead of inside it. The log assertion turns red, and so does the next test.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_m6_a_data_migration_resumes_from_its_cursor(): void {
+	public function test_a_data_migration_resumes_from_its_cursor(): void {
 		$b     = $this->secondConnection();
 		$marks = $this->seedMarks();
 
@@ -355,32 +355,47 @@ final class MigratorTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * M6, the crash between a batch's COMMIT and whatever follows it: nothing is replayed.
+	 * A crash between a batch's COMMIT and whatever follows it replays nothing.
 	 *
-	 * The fixture registers an after-commit callback that throws in batch 2, which is exactly a
-	 * process dying right after the batch committed.
+	 * The fixture registers an after-commit callback that fails in batch 2, and this migrator's
+	 * reporter throws when that failure is reported: the run stops right after the batch
+	 * committed, which is exactly a process dying there.
 	 *
 	 * Planted violation: as for the test above. With the cursor written after the transaction,
 	 * the crash leaves the cursor behind the committed rows, and the re-run marks rows 3 to 5 again.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_m6_a_crash_right_after_a_batch_commits_replays_nothing(): void {
+	public function test_a_crash_right_after_a_batch_commits_replays_nothing(): void {
+		global $wpdb;
+
 		$b     = $this->secondConnection();
 		$marks = $this->seedMarks();
+		$dying = new Database(
+			$wpdb,
+			true,
+			static function ( string $code ): void {
+				if ( ReportCode::AfterCommitFailed->value === $code ) {
+					throw new \RuntimeException( 'the process died right after batch 2 committed' );
+				}
+			},
+			5,
+			$this->sleeper(),
+			$this->randomSource()
+		);
 
 		$marks->onBatch = static function ( int $batch, Database $db ): void {
 			if ( 2 === $batch ) {
 				$db->afterCommit(
 					static function (): void {
-						throw new \RuntimeException( 'the process died right after batch 2 committed' );
+						throw new \RuntimeException( 'a listener failed after batch 2 committed' );
 					}
 				);
 			}
 		};
 
 		try {
-			$this->migrator( array( new PlatformBootstrapMigration(), $marks ) )->migrate( new MigrationRunOptions( 0 ) );
+			$this->migrator( array( new PlatformBootstrapMigration(), $marks ), LockMode::Table, $dying )->migrate( new MigrationRunOptions( 0 ) );
 			$this->fail( 'The crash must fail the migration.' );
 		} catch ( MigrationFailed $failed ) {
 			$this->assertSame( $marks->id(), $failed->migrationId() );
@@ -396,13 +411,13 @@ final class MigratorTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * M7: a time budget stops a data migration after a batch, leaves it running, and a later run finishes it.
+	 * A time budget stops a data migration after a batch, leaves it running, and a later run finishes it.
 	 *
 	 * Planted violation: make budgetSpent() return false.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_m7_the_time_budget_leaves_a_data_migration_running(): void {
+	public function test_the_time_budget_leaves_a_data_migration_running(): void {
 		$b     = $this->secondConnection();
 		$marks = $this->seedMarks();
 
@@ -421,7 +436,7 @@ final class MigratorTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * M8: a runner that waited for another's schema lock re-reads the table, skips what the
+	 * A runner that waited for another's schema lock re-reads the table, skips what the
 	 * other applied, and applies the rest.
 	 *
 	 * B holds the schema lease. The sleeper is the barrier: B records G as applied, as the
@@ -433,7 +448,7 @@ final class MigratorTest extends DatabaseTestCase {
 	 *
 	 * @group concurrency
 	 */
-	public function test_m8_a_runner_that_waited_skips_what_another_runner_applied(): void {
+	public function test_a_runner_that_waited_skips_what_another_runner_applied(): void {
 		$b = $this->secondConnection();
 		$g = new CreatesTestTable( '20990101_0007_g', 'g' );
 		$h = new CreatesTestTable( '20990101_0008_h', 'h' );
@@ -464,13 +479,13 @@ final class MigratorTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * M9: a changed checksum on an applied migration is reported once, and nothing is applied.
+	 * A changed checksum on an applied migration is reported once, and nothing is applied.
 	 *
 	 * Planted violation: in reportChecksumMismatches(), delete the comparison's report.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_m9_a_changed_checksum_is_reported_not_fatal(): void {
+	public function test_a_changed_checksum_is_reported_not_fatal(): void {
 		$b = $this->secondConnection();
 		$a = new CreatesTestTable( '20990101_0001_a', 'a' );
 
@@ -490,13 +505,13 @@ final class MigratorTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * M11: `wp seocart migrate` exits 0 when it applied, 1 on a failure with the diff printed, 2 when blocked.
+	 * `wp seocart migrate` exits 0 when it applied, 1 on a failure with the diff printed, 2 when blocked.
 	 *
 	 * Planted violation: in MigrateCommand::migrateSite(), return EXIT_OK from the MigrationFailed catch.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_m11_the_command_reports_through_its_exit_code(): void {
+	public function test_the_command_reports_through_its_exit_code(): void {
 		$b = $this->secondConnection();
 		$a = new CreatesTestTable( '20990101_0001_a', 'a' );
 
@@ -532,11 +547,11 @@ final class MigratorTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * M11, network half: `--network` migrates each site of a batch on its own prefix.
+	 * The `--network` option migrates each site of a batch on its own prefix.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_m11_network_migrates_every_site_of_the_batch(): void {
+	public function test_network_migrates_every_site_of_the_batch(): void {
 		if ( ! is_multisite() ) {
 			$this->markTestSkipped( 'Needs a multisite test run (WP_MULTISITE=1).' );
 		}
@@ -784,7 +799,84 @@ final class MigratorTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * M12: migrate() inside a transaction is refused before it sends anything, whether the guards throw or report.
+	 * A run that fails still records the head it reached.
+	 *
+	 * Planted violation: in runLocked(), rethrow a failed migration without recording the head.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_run_that_fails_records_the_head_it_reached(): void {
+		$a     = new CreatesTestTable( '20990101_0001_a', 'a' );
+		$c     = new DeclaresMissingIndex( '20990101_0003_c', 'c' );
+		$state = new RecordingDatabaseState();
+
+		try {
+			$this->migrator( array( new PlatformBootstrapMigration(), $a, $c ), LockMode::Table, null, $state )->migrate( new MigrationRunOptions( 0 ) );
+			$this->fail( 'C must fail.' );
+		} catch ( MigrationFailed $failed ) {
+			$this->assertSame( $c->id(), $failed->migrationId() );
+		}
+
+		$this->assertSame( array( $a->id() ), $state->heads, 'A was applied in this run, so the head is A.' );
+	}
+
+	/**
+	 * Non-ASCII text is stored in a plugin table that mixes ascii_bin and utf8mb4 columns.
+	 *
+	 * WordPress judges such a table's character set as ascii and refuses any other text. The
+	 * `migrations` table is such a table, and a failure message is written by people.
+	 *
+	 * Planted violation: in Database, do not register the pre_get_table_charset filter.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_non_ascii_text_is_stored_in_a_table_that_mixes_ascii_and_utf8mb4_columns(): void {
+		$b = $this->secondConnection();
+		$e = new CreatesTestTable( '20990101_0005_e', 'e' );
+
+		$e->beforeUp = static function (): void {
+			throw new \RuntimeException( 'Échec : la table a refusé 🙂' );
+		};
+
+		try {
+			$this->migrator( array( new PlatformBootstrapMigration(), $e ) )->migrate( new MigrationRunOptions( 0 ) );
+			$this->fail( 'E must fail.' );
+		} catch ( MigrationFailed $failed ) {
+			$this->assertSame( $e->id(), $failed->migrationId() );
+		}
+
+		$this->assertStringContainsString( 'Échec : la table a refusé 🙂', (string) $this->migrationRow( $b, $e->id() )['error_message'] );
+		$this->assertSame( array(), $this->reports, 'The failure was recorded, not reported as unrecordable.' );
+
+		$this->db->execute( 'UPDATE %i SET batch_cursor = %s, error_message = %s WHERE migration_id = %s', $this->db->table( 'migrations' ), 'café 🙂', 'naïve 🙂', $e->id() );
+
+		$this->assertSame(
+			array(
+				'batch_cursor'  => 'café 🙂',
+				'error_message' => 'naïve 🙂',
+			),
+			$this->db->fetchRow( 'SELECT batch_cursor, error_message FROM %i WHERE migration_id = %s', $this->db->table( 'migrations' ), $e->id() )
+		);
+	}
+
+	/**
+	 * The command exits 1 with the error's code and message on any database error, instead of a fatal.
+	 *
+	 * Planted violation: in MigrateCommand::migrateSite(), catch MigrationFailed only.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_command_exits_1_on_a_database_error(): void {
+		$lines   = array();
+		$command = $this->command( array( new PlatformBootstrapMigration() ), $lines );
+		$code    = $this->db->transaction( static fn(): int => $command->run( array( 'wait' => '0' ) ) );
+
+		$this->assertSame( MigrateCommand::EXIT_FAILED, $code );
+		$this->assertStringStartsWith( 'database.forbidden_in_transaction: ', $lines[0] ?? '' );
+	}
+
+	/**
+	 * Migrate() inside a transaction is refused before it sends anything, whether the guards throw or report.
 	 *
 	 * Planted violation: at the top of migrate(), delete the depth check. In strict mode the DDL
 	 * guard then throws with the CREATE statement as its detail; in reporting mode the CREATE
@@ -792,7 +884,7 @@ final class MigratorTest extends DatabaseTestCase {
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_m12_migrate_inside_a_transaction_is_refused(): void {
+	public function test_migrate_inside_a_transaction_is_refused(): void {
 		global $wpdb;
 
 		foreach ( array( true, false ) as $strict ) {

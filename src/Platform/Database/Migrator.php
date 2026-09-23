@@ -113,24 +113,6 @@ final class Migrator {
 	private const ID_PATTERN = '/^\d{8}_\d{4}_[a-z0-9_]+$/';
 
 	/**
-	 * MySQL's error for CREATE TABLE of a table that exists.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var int
-	 */
-	private const TABLE_EXISTS = 1050;
-
-	/**
-	 * MySQL's error for a table that does not exist.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var int
-	 */
-	private const NO_SUCH_TABLE = 1146;
-
-	/**
 	 * How much of a failure message the row keeps.
 	 *
 	 * @since 0.1.0
@@ -377,6 +359,8 @@ final class Migrator {
 	 *
 	 * @since 0.1.0
 	 *
+	 * @throws MigrationFailed When a migration fails, once the head this run reached is recorded.
+	 *
 	 * @param Migration[]                               $chain         The chain.
 	 * @param string[]                                  $pendingBefore The ids that were pending before the lock was taken.
 	 * @param list<array{id: string, duration_ms: int}> $applied       What this run applied before the lock: the bootstrap, or nothing.
@@ -395,7 +379,14 @@ final class Migrator {
 		$elsewhere = array_values( array_diff( $pendingBefore, self::ids( $pending ) ) );
 
 		foreach ( $pending as $migration ) {
-			$duration = $this->apply( $migration, $rows[ $migration->id() ]['batch_cursor'] ?? null, $lease, $options, $started );
+			try {
+				$duration = $this->apply( $migration, $rows[ $migration->id() ]['batch_cursor'] ?? null, $lease, $options, $started );
+			} catch ( MigrationFailed $failed ) {
+				// What this run applied before the failure is applied; the head says so.
+				$this->recordHead( $rows, $applied );
+
+				throw $failed;
+			}
 
 			if ( null === $duration ) {
 				$this->recordHead( $rows, $applied );
@@ -518,7 +509,7 @@ final class Migrator {
 			} catch ( QueryFailed $raced ) {
 				--$passes;
 
-				if ( self::TABLE_EXISTS !== $raced->errno() || $passes < 1 ) {
+				if ( MysqlErrno::TABLE_EXISTS !== $raced->errno() || $passes < 1 ) {
 					throw $raced;
 				}
 			}
@@ -821,7 +812,7 @@ final class Migrator {
 				$this->db->table( 'migrations' ),
 				self::FAILED,
 				$failed->recordedCode(),
-				mb_substr( $failed->detail(), 0, self::ERROR_MESSAGE_LENGTH ),
+				mb_substr( self::errorMessage( $failed ), 0, self::ERROR_MESSAGE_LENGTH ),
 				(string) wp_json_encode( $failed->diff() ),
 				$this->now(),
 				$migration->id()
@@ -835,6 +826,21 @@ final class Migrator {
 				) + $unrecorded->context()
 			);
 		}
+	}
+
+	/**
+	 * Builds the text a failed migration's row records: the detail, then the statement and the
+	 * server's text when the failure carries them. The row is read by `doctor`, never by a client.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param MigrationFailed $failed The failure.
+	 * @return string The message, not yet cut to length.
+	 */
+	private static function errorMessage( MigrationFailed $failed ): string {
+		$diagnostic = $failed->diagnostic();
+
+		return null === $diagnostic ? $failed->detail() : $failed->detail() . ' [' . $diagnostic->getMessage() . ']';
 	}
 
 	/**
@@ -879,7 +885,7 @@ final class Migrator {
 		try {
 			$rows = $this->db->fetchAll( 'SELECT migration_id, state, checksum, batch_cursor FROM %i', $this->db->table( 'migrations' ) );
 		} catch ( QueryFailed $failed ) {
-			if ( self::NO_SUCH_TABLE === $failed->errno() ) {
+			if ( MysqlErrno::NO_SUCH_TABLE === $failed->errno() ) {
 				return array();
 			}
 

@@ -22,7 +22,7 @@ use SEOCart\Tests\Support\DatabaseTestCase;
 // phpcs:disable WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL -- Each test builds the table under inspection by hand, as a host or a broken migration would leave it.
 
 /**
- * M4: the verifier notices each kind of difference on its own, and nothing else.
+ * The verifier notices each kind of difference on its own, and nothing else.
  *
  * Every case creates the declared table by hand with exactly one deviation and expects a diff
  * of exactly one line that names it. A matching table must give an empty diff.
@@ -55,6 +55,7 @@ final class SchemaVerifierTest extends DatabaseTestCase {
 		note varchar(20) NULL,
 		a int NOT NULL DEFAULT '0',
 		b int NOT NULL DEFAULT '0',
+		seen datetime NULL,
 		PRIMARY KEY (id),
 		UNIQUE KEY code (code),
 		KEY name (name),
@@ -90,16 +91,18 @@ final class SchemaVerifierTest extends DatabaseTestCase {
 	 */
 	public static function deviations(): array {
 		return array(
-			'column type'      => array( 'name varchar(50)', 'name varchar(60)', '.name: type is varchar(60), declared varchar(50)' ),
-			'nullability'      => array( 'note varchar(20) NULL', 'note varchar(20) NOT NULL', '.note: NOT NULL, declared nullable' ),
-			'default'          => array( "DEFAULT 'abc'", "DEFAULT 'xyz'", ".code: default is 'xyz', declared 'abc'" ),
-			'extra column'     => array( 'b int NOT NULL', "extra int NULL,\n\t\tb int NOT NULL", '.extra: the column is not declared' ),
-			'missing index'    => array( "KEY name (name),\n", '', ': index name does not exist' ),
-			'unique vs plain'  => array( 'UNIQUE KEY code (code)', 'KEY code (code)', ': index code is not unique, declared unique' ),
-			'index order'      => array( 'KEY a_b (a, b)', 'KEY a_b (b, a)', ': index a_b covers (b,a), declared (a,b)' ),
-			'engine'           => array( '%e', 'MEMORY', ': engine is MEMORY, declared InnoDB' ),
-			'table collation'  => array( '%c', 'DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci', ': table collation is utf8mb4_general_ci, expected %collation%' ),
-			'column collation' => array( 'char(3) COLLATE ascii_bin', 'char(3)', '.code: collation is \'%collation%\', declared ascii_bin' ),
+			'column type'        => array( 'name varchar(50)', 'name varchar(60)', '.name: type is varchar(60), declared varchar(50)' ),
+			'nullability'        => array( 'note varchar(20) NULL', 'note varchar(20) NOT NULL', '.note: NOT NULL, declared nullable' ),
+			'default'            => array( "DEFAULT 'abc'", "DEFAULT 'xyz'", ".code: default is 'xyz', declared 'abc'" ),
+			'extra column'       => array( 'b int NOT NULL', "extra int NULL,\n\t\tb int NOT NULL", '.extra: the column is not declared' ),
+			'missing index'      => array( "KEY name (name),\n", '', ': index name does not exist' ),
+			'unique vs plain'    => array( 'UNIQUE KEY code (code)', 'KEY code (code)', ': index code is not unique, declared unique' ),
+			'index order'        => array( 'KEY a_b (a, b)', 'KEY a_b (b, a)', ': index a_b covers (b,a), declared (a,b)' ),
+			'engine'             => array( '%e', 'MEMORY', ': engine is MEMORY, declared InnoDB' ),
+			'table collation'    => array( '%c', 'DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci', ': table collation is utf8mb4_general_ci, expected %collation%' ),
+			'column collation'   => array( 'char(3) COLLATE ascii_bin', 'char(3)', '.code: collation is \'%collation%\', declared ascii_bin' ),
+			'undeclared charset' => array( 'name varchar(50)', 'name varchar(50) CHARACTER SET utf8mb3', '.name: collation is \'utf8mb3_general_ci\', declared the table\'s %collation%' ),
+			'extra clause'       => array( 'seen datetime NULL', 'seen datetime NULL ON UPDATE CURRENT_TIMESTAMP', '.seen: extra is \'on update current_timestamp\', declared none' ),
 		);
 	}
 
@@ -192,6 +195,7 @@ final class SchemaVerifierTest extends DatabaseTestCase {
 				new ColumnSpec( 'note', 'varchar(20)', Classification::Public, 'A note.', nullable: true ),
 				new ColumnSpec( 'a', 'int', Classification::Public, 'First of a pair.', defaultValue: '0' ),
 				new ColumnSpec( 'b', 'int', Classification::Public, 'Second of a pair.', defaultValue: '0' ),
+				new ColumnSpec( 'seen', 'datetime', Classification::Public, 'When it was last seen.', nullable: true ),
 			),
 			array( 'id' ),
 			array( IndexSpec::unique( 'code', array( 'code' ), 'One row per code.' ) ),

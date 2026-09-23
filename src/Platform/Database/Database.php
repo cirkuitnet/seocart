@@ -47,24 +47,6 @@ defined( 'ABSPATH' ) || exit;
 final class Database implements TransactionManager {
 
 	/**
-	 * MySQL's error for a savepoint that does not exist, which is what the probe looks for.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var int
-	 */
-	private const SAVEPOINT_DOES_NOT_EXIST = 1305;
-
-	/**
-	 * The error number wpdb itself assumes when it holds no usable connection handle.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var int
-	 */
-	private const SERVER_GONE = 2006;
-
-	/**
 	 * The name of the probe savepoint, taken at BEGIN and released just before COMMIT.
 	 *
 	 * @since 0.1.0
@@ -192,6 +174,15 @@ final class Database implements TransactionManager {
 	private ?TransactionGuards $guards = null;
 
 	/**
+	 * Whether the plugin-table character-set filter is registered.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var bool
+	 */
+	private bool $charsetFilterRegistered = false;
+
+	/**
 	 * Wraps a wpdb connection. Constructing it sends nothing and registers nothing.
 	 *
 	 * @since 0.1.0
@@ -249,21 +240,20 @@ final class Database implements TransactionManager {
 			TransactionDepthExceeded::raise( TransactionDepthExceeded::CODE, array( 'max_depth' => $this->maxDepth ) );
 		}
 
-		$outermost = 0 === $this->depth;
-		$policy    = $retry ?? RetryPolicy::none();
-
-		if ( $outermost ) {
-			$this->registerGuards();
-		} else {
+		if ( 0 !== $this->depth ) {
 			// After a deadlock an inner savepoint no longer exists; only the outermost level may run the work again.
-			$policy = RetryPolicy::none();
+			return $this->savepoint( $work );
 		}
 
-		$attempt = 1;
+		$this->registerGuards();
 
-		while ( true ) {
+		$policy    = $retry ?? RetryPolicy::none();
+		$attempt   = 1;
+		$committed = null;
+
+		while ( null === $committed ) {
 			try {
-				return $outermost ? $this->unitOfWork( $work ) : $this->savepoint( $work );
+				$committed = $this->unitOfWork( $work );
 			} catch ( TransactionRetryable $retryable ) {
 				if ( $attempt >= $policy->attempts() ) {
 					throw $retryable;
@@ -274,6 +264,11 @@ final class Database implements TransactionManager {
 				++$attempt;
 			}
 		}
+
+		// Outside the retry loop: the unit of work is durable now, and nothing may run it again.
+		$this->runAfterCommit( $committed['callbacks'] );
+
+		return $committed['result'];
 	}
 
 	/**
@@ -509,16 +504,19 @@ final class Database implements TransactionManager {
 	}
 
 	/**
-	 * Runs the outermost level: BEGIN, the work, the checks, COMMIT, then the after-commit callbacks.
+	 * Runs the outermost level: BEGIN, the work, the checks and COMMIT.
+	 *
+	 * The after-commit callbacks are returned, not run: transaction() runs them once it has left
+	 * the retry loop.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \Throwable Whatever the work or the checks threw, after the rollback.
 	 *
 	 * @param callable(): mixed $work The unit of work.
-	 * @return mixed What the callable returned.
+	 * @return array{result: mixed, callbacks: list<callable(): mixed>} What the callable returned, and the committed level's after-commit callbacks.
 	 */
-	private function unitOfWork( callable $work ): mixed {
+	private function unitOfWork( callable $work ): array {
 		$this->control( 'START TRANSACTION' );
 
 		$this->openedOn = $this->threadId();
@@ -542,9 +540,11 @@ final class Database implements TransactionManager {
 		$committed = $this->levels[1]['commit'];
 
 		$this->reset();
-		$this->runAfterCommit( $committed );
 
-		return $result;
+		return array(
+			'result'    => $result,
+			'callbacks' => $committed,
+		);
 	}
 
 	/**
@@ -623,7 +623,7 @@ final class Database implements TransactionManager {
 		try {
 			$this->control( 'RELEASE SAVEPOINT ' . self::PROBE_SAVEPOINT );
 		} catch ( QueryFailed $probe ) {
-			if ( self::SAVEPOINT_DOES_NOT_EXIST === $probe->errno() ) {
+			if ( MysqlErrno::SAVEPOINT_DOES_NOT_EXIST === $probe->errno() ) {
 				$this->aborted = true;
 
 				$lost = TransactionIntegrityLost::lost( TransactionIntegrityLost::ENDED_EXTERNALLY, 'RELEASE SAVEPOINT ' . self::PROBE_SAVEPOINT, $probe );
@@ -689,6 +689,9 @@ final class Database implements TransactionManager {
 	/**
 	 * Sends a statement from a caller, unless the unit of work it would belong to has already ended.
 	 *
+	 * Inside a window the connection is compared before the statement is sent, not only after:
+	 * if something else made wpdb reconnect, the statement would autocommit on the new connection.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws TransactionIntegrityLost When a deadlock or lock-wait timeout already ended the unit of work.
@@ -699,6 +702,10 @@ final class Database implements TransactionManager {
 	private function statement( string $sql ): int|bool {
 		if ( $this->aborted ) {
 			TransactionIntegrityLost::raiseLost( TransactionIntegrityLost::ABORTED, $sql );
+		}
+
+		if ( $this->depth > 0 ) {
+			$this->assertSameConnection( $sql );
 		}
 
 		return $this->send( $sql );
@@ -737,14 +744,16 @@ final class Database implements TransactionManager {
 		$wpdb       = $this->wpdb;
 		$suppressed = $wpdb->suppress_errors( true );
 
+		$this->registerCharsetFilter();
+
+		// A refusal by WordPress, or a query a filter blanked, leaves wpdb's error text alone; start from none.
+		$wpdb->last_error = '';
+
 		try {
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange -- The one place plugin statements reach wpdb: prepare() bound every value, and callers own their caching.
 			$result = $wpdb->query( $sql );
 
-			// Read at once: the error number is only kept until the next statement on this handle.
-			$connection = $this->connection();
-			$errno      = $connection instanceof \mysqli ? mysqli_errno( $connection ) : self::SERVER_GONE; // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_errno -- wpdb keeps only the error text, which is not a discriminator.
-			$sqlstate   = $connection instanceof \mysqli ? mysqli_sqlstate( $connection ) : ''; // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_sqlstate -- as above.
+			$error = false === $result ? $this->errorOfLastStatement() : array( 0, '' );
 		} finally {
 			$wpdb->suppress_errors( $suppressed );
 		}
@@ -759,10 +768,10 @@ final class Database implements TransactionManager {
 			return $result;
 		}
 
-		$failure = QueryFailed::fromErrno( $errno, $sqlstate, $sql, $wpdb->last_error, $inside );
+		$failure = QueryFailed::fromErrno( $error[0], $error[1], $sql, $wpdb->last_error, $inside );
 
 		if ( $inside && ( $failure instanceof TransactionRetryable || $failure instanceof TransactionIntegrityLost ) ) {
-			// InnoDB rolled back the transaction (1213) or the statement (1205), or the connection is gone.
+			// InnoDB rolled back the transaction (deadlock) or the statement (lock-wait timeout), or the connection is gone.
 			$this->aborted = true;
 		}
 
@@ -836,28 +845,98 @@ final class Database implements TransactionManager {
 	}
 
 	/**
-	 * Runs after-commit callbacks. Every callback runs; the first failure is rethrown afterwards.
+	 * Runs after-commit callbacks. Every callback runs; a failure is reported, never thrown.
+	 *
+	 * The unit of work is durable by now. Throwing would tell the caller that a committed write
+	 * failed, and a retryable failure would reach the retry loop and run the work again.
 	 *
 	 * @since 0.1.0
-	 *
-	 * @throws \Throwable The first failure of a callback, once all of them have run.
 	 *
 	 * @param callable[] $callbacks The callbacks, in registration order.
 	 */
 	private function runAfterCommit( array $callbacks ): void {
-		$first = null;
-
 		foreach ( $callbacks as $callback ) {
 			try {
 				$callback();
 			} catch ( \Throwable $failure ) {
-				$first = $first ?? $failure;
+				( $this->report )(
+					ReportCode::AfterCommitFailed->value,
+					array(
+						'exception' => get_class( $failure ),
+						'message'   => $failure->getMessage(),
+					)
+				);
 			}
 		}
+	}
 
-		if ( null !== $first ) {
-			throw $first;
+	/**
+	 * Tells wpdb, once, that plugin tables take the connection's character set.
+	 *
+	 * WordPress works out a table's character set from its columns, and a table that mixes
+	 * `ascii_bin` identifier columns with utf8mb4 text columns comes out as `ascii`, so wpdb
+	 * refuses any statement carrying other text. The `ascii_bin` columns only ever receive
+	 * ASCII identifiers, which MySQL enforces itself, so for `{prefix}seocart_` tables the
+	 * connection's character set is the right answer. Registered on the first statement, so a
+	 * request that never uses this class registers nothing.
+	 *
+	 * @since 0.1.0
+	 */
+	private function registerCharsetFilter(): void {
+		if ( $this->charsetFilterRegistered ) {
+			return;
 		}
+
+		$this->charsetFilterRegistered = true;
+
+		add_filter( 'pre_get_table_charset', array( $this, 'tableCharset' ), 10, 2 );
+	}
+
+	/**
+	 * Answers the character set of a plugin table. Hooked to `pre_get_table_charset`.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param mixed $charset The answer so far, normally null.
+	 * @param mixed $table   The table name.
+	 * @return mixed The connection's character set for a `{prefix}seocart_` table; otherwise the answer, unchanged.
+	 */
+	public function tableCharset( mixed $charset, mixed $table = '' ): mixed {
+		$ours = strtolower( $this->wpdb->prefix . 'seocart_' );
+
+		if ( null !== $charset || ! is_string( $table ) || ! str_starts_with( strtolower( $table ), $ours ) || '' === (string) $this->wpdb->charset ) {
+			return $charset;
+		}
+
+		return (string) $this->wpdb->charset;
+	}
+
+	/**
+	 * Reads the error number and SQLSTATE of the statement wpdb just refused. Read at once: the
+	 * handle keeps them only until its next statement.
+	 *
+	 * They are trusted only when wpdb's error text is the handle's: when WordPress refused the
+	 * statement without sending it, or a filter blanked it, the handle still holds the error of
+	 * an earlier statement, and the number is 0.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array{0: int, 1: string} The error number and the SQLSTATE.
+	 */
+	private function errorOfLastStatement(): array {
+		$connection = $this->connection();
+
+		if ( ! $connection instanceof \mysqli ) {
+			return array( MysqlErrno::SERVER_GONE, '' );
+		}
+
+		// phpcs:disable WordPress.DB.RestrictedFunctions -- wpdb keeps only the error text, which is not a discriminator.
+		if ( mysqli_error( $connection ) !== (string) $this->wpdb->last_error ) {
+			return array( 0, '' );
+		}
+
+		return array( mysqli_errno( $connection ), mysqli_sqlstate( $connection ) );
+		// phpcs:enable WordPress.DB.RestrictedFunctions
 	}
 
 	/**
@@ -923,7 +1002,14 @@ final class Database implements TransactionManager {
 			return;
 		}
 
-		$this->guards = new TransactionGuards( $this->strictGuards, $this->report, fn(): bool => $this->issuingControl );
+		$this->guards = new TransactionGuards(
+			$this->strictGuards,
+			$this->report,
+			fn(): bool => $this->issuingControl,
+			function (): void {
+				$this->aborted = true;
+			}
+		);
 		$this->guards->register( $this );
 	}
 

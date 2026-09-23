@@ -28,8 +28,9 @@ defined( 'ABSPATH' ) || exit;
  *   Temporary tables do not commit and pass. The wrapper's own BEGIN, COMMIT and ROLLBACK pass.
  *
  * In strict mode (development) a violation throws ForbiddenInsideTransaction at the call site;
- * otherwise it is reported and allowed to proceed, and the savepoint probe still refuses the
- * commit if the transaction was ended. Database registers the guards once, at its first
+ * otherwise it is reported and allowed to proceed. A reported statement that ends the
+ * transaction also marks the unit of work aborted, so the wrapper's later statements are
+ * refused instead of autocommitting, and COMMIT is never sent. Database registers the guards once, at its first
  * transaction, so an idle request pays nothing and a request without a transaction pays one
  * depth comparison per hook call.
  *
@@ -42,13 +43,36 @@ defined( 'ABSPATH' ) || exit;
 final class TransactionGuards {
 
 	/**
-	 * Statements that commit implicitly or take over transaction control, by leading keyword.
+	 * The leading keywords of statements that commit implicitly or take over transaction control.
+	 *
+	 * Each entry is a regular-expression fragment, matched case-insensitively at the start of the
+	 * statement and followed by a word boundary. `ROLLBACK TO SAVEPOINT` does not end the
+	 * transaction and passes. TransactionTest has one row of statements per entry, and a test
+	 * keeps the two lists equal.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var string
+	 * @var list<string>
 	 */
-	private const IMPLICIT_COMMIT = '/^\s*(?:ALTER|CREATE|DROP|RENAME|TRUNCATE|START\s+TRANSACTION|BEGIN|COMMIT|ROLLBACK(?!\s+(?:WORK\s+)?TO\b)|SET\s+(?:(?:SESSION|LOCAL)\s+|@@(?:SESSION\.|LOCAL\.)?)?autocommit|LOCK\s+TABLES?|UNLOCK\s+TABLES?|ANALYZE|OPTIMIZE|REPAIR|FLUSH|LOAD\s+DATA)\b/i';
+	public const IMPLICIT_COMMIT = array(
+		'ALTER',
+		'CREATE',
+		'DROP',
+		'RENAME',
+		'TRUNCATE',
+		'START\s+TRANSACTION',
+		'BEGIN',
+		'COMMIT',
+		'ROLLBACK(?!\s+(?:WORK\s+)?TO\b)',
+		'SET\s+(?:(?:SESSION|LOCAL)\s+|@@(?:SESSION\.|LOCAL\.)?)?autocommit',
+		'LOCK\s+TABLES?',
+		'UNLOCK\s+TABLES?',
+		'ANALYZE',
+		'OPTIMIZE',
+		'REPAIR',
+		'FLUSH',
+		'LOAD\s+DATA',
+	);
 
 	/**
 	 * Temporary-table DDL, which does not commit implicitly.
@@ -87,6 +111,24 @@ final class TransactionGuards {
 	private \Closure $isOwnStatement;
 
 	/**
+	 * Marks the unit of work aborted, when a reported statement is about to end the transaction.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var \Closure(): void
+	 */
+	private \Closure $markAborted;
+
+	/**
+	 * The pattern built from IMPLICIT_COMMIT, once needed.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string|null
+	 */
+	private ?string $implicitCommit = null;
+
+	/**
 	 * The connection whose depth decides whether a window is open; null until registered.
 	 *
 	 * @since 0.1.0
@@ -103,11 +145,13 @@ final class TransactionGuards {
 	 * @param bool     $strict         True to throw, false to report.
 	 * @param callable $report         Receives a machine code (string) and its context (array).
 	 * @param \Closure $isOwnStatement Returns true while Database itself is sending the statement.
+	 * @param \Closure $markAborted    Marks the unit of work aborted.
 	 */
-	public function __construct( bool $strict, callable $report, \Closure $isOwnStatement ) {
+	public function __construct( bool $strict, callable $report, \Closure $isOwnStatement, \Closure $markAborted ) {
 		$this->strict         = $strict;
 		$this->report         = $report;
 		$this->isOwnStatement = $isOwnStatement;
+		$this->markAborted    = $markAborted;
 	}
 
 	/**
@@ -186,7 +230,11 @@ final class TransactionGuards {
 			return $query;
 		}
 
-		if ( 1 === preg_match( self::IMPLICIT_COMMIT, $query ) && 1 !== preg_match( self::TEMPORARY_TABLE, $query ) ) {
+		if ( null === $this->implicitCommit ) {
+			$this->implicitCommit = '/^\s*(?:' . implode( '|', self::IMPLICIT_COMMIT ) . ')\b/i';
+		}
+
+		if ( 1 === preg_match( $this->implicitCommit, $query ) && 1 !== preg_match( self::TEMPORARY_TABLE, $query ) ) {
 			$this->forbid( ForbiddenInsideTransaction::KIND_DDL, $query );
 		}
 
@@ -219,6 +267,11 @@ final class TransactionGuards {
 
 		if ( $this->strict ) {
 			throw $violation;
+		}
+
+		if ( ForbiddenInsideTransaction::KIND_DDL === $kind ) {
+			// The statement is about to end the transaction; nothing after it may autocommit.
+			( $this->markAborted )();
 		}
 
 		( $this->report )( (string) $violation->errorCode()->value, $violation->context() );

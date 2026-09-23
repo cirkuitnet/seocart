@@ -11,10 +11,12 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Database\Cli;
 
+use SEOCart\Platform\Database\Exception\DatabaseException;
 use SEOCart\Platform\Database\Exception\MigrationFailed;
 use SEOCart\Platform\Database\MigrationReport;
 use SEOCart\Platform\Database\MigrationRunOptions;
 use SEOCart\Platform\Database\Migrator;
+use SEOCart\Support\Error\ErrorDefinition;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -22,8 +24,9 @@ defined( 'ABSPATH' ) || exit;
  * Runs the migrator for the current site, or for a network in bounded batches, and turns the outcome into an exit code.
  *
  * Owns one fact: the command's contract with an operator. Exit 0 when migrations were applied
- * or nothing was pending, 1 when a migration failed (with its id, code and diff printed), 2
- * when another runner holds the schema lock and nothing was changed.
+ * or nothing was pending, 1 when a migration failed (with its id, code and diff printed) or any
+ * other database error stopped the run (with its code and message), 2 when another runner
+ * holds the schema lock and nothing was changed.
  *
  * It is a maintenance command, not an application operation: it has no REST or Ability
  * twin, so it resolves to no operation definition by design.
@@ -188,6 +191,10 @@ final class MigrateCommand {
 			}
 
 			$this->say( 'Nothing after it ran. Fix the cause and run the command again; it resumes at this migration.' );
+
+			return self::EXIT_FAILED;
+		} catch ( DatabaseException $failure ) {
+			$this->say( (string) $failure->errorCode()->value . ': ' . ErrorDefinition::of( $failure->errorCode() )->render( $failure->context() ) );
 
 			return self::EXIT_FAILED;
 		}

@@ -12,6 +12,8 @@ declare( strict_types=1 );
 namespace SEOCart\Platform\Database\Exception;
 
 use SEOCart\Platform\Database\DatabaseError;
+use SEOCart\Platform\Database\MysqlErrno;
+use SEOCart\Platform\Database\StatementDiagnostic;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -21,7 +23,9 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: which exception class a MySQL error number becomes. fromErrno() is the only
  * place that decision is made; everything else catches the class it produces. The decision
  * reads the error number and never the error text, which differs between MySQL and MariaDB
- * and between server languages; the text travels in the context for people only.
+ * and between server languages. The context holds the error number and the SQLSTATE only; the
+ * statement and the server's text are in the StatementDiagnostic this exception carries as its
+ * previous exception.
  *
  * The table is hand-maintained, so QueryFailedMappingTest compares it with the documented
  * mapping as a set (DRY rule 11).
@@ -42,31 +46,28 @@ class QueryFailed extends DatabaseException {
 	/**
 	 * Error numbers that become a more specific class. Any other number stays a QueryFailed.
 	 *
-	 * 1062 is a duplicate entry for a unique key. 1213 is a deadlock, after which InnoDB has
-	 * rolled back the whole transaction; 1205 is a lock-wait timeout, after which only the
-	 * statement was rolled back but the unit of work cannot safely continue. Both are worth
-	 * running again from the beginning.
+	 * A duplicate entry is a unique key doing its job. A deadlock rolls back the whole
+	 * transaction; a lock-wait timeout rolls back the statement, but the unit of work cannot
+	 * safely continue. Both are worth running again from the beginning.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var array<int, class-string<QueryFailed>>
 	 */
 	private const CLASSES = array(
-		1062 => DuplicateKey::class,
-		1205 => TransactionRetryable::class,
-		1213 => TransactionRetryable::class,
+		MysqlErrno::DUPLICATE_ENTRY   => DuplicateKey::class,
+		MysqlErrno::LOCK_WAIT_TIMEOUT => TransactionRetryable::class,
+		MysqlErrno::DEADLOCK          => TransactionRetryable::class,
 	);
 
 	/**
-	 * Error numbers that mean the connection went away: server gone (2006) and connection lost (2013).
-	 *
-	 * Inside a transaction they mean the transaction is gone as well.
+	 * Error numbers that mean the connection went away. Inside a transaction, the transaction is gone as well.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var list<int>
 	 */
-	private const CONNECTION_LOST = array( 2006, 2013 );
+	private const CONNECTION_GONE = array( MysqlErrno::SERVER_GONE, MysqlErrno::CONNECTION_LOST );
 
 	/**
 	 * How much of a statement is kept. Enough to recognize it, short of most values.
@@ -91,17 +92,19 @@ class QueryFailed extends DatabaseException {
 	 *                           window; otherwise a QueryFailed or the subclass the table names.
 	 */
 	public static function fromErrno( int $errno, string $sqlstate, string $statement, string $serverMessage, bool $insideTransaction ): DatabaseException {
-		if ( $insideTransaction && in_array( $errno, self::CONNECTION_LOST, true ) ) {
-			return TransactionIntegrityLost::lost( TransactionIntegrityLost::CONNECTION_LOST, $statement );
+		$diagnostic = StatementDiagnostic::of( $statement, $serverMessage );
+
+		if ( $insideTransaction && in_array( $errno, self::CONNECTION_GONE, true ) ) {
+			return TransactionIntegrityLost::lost( TransactionIntegrityLost::CONNECTION_LOST, $statement, $diagnostic );
 		}
 
 		$class = self::CLASSES[ $errno ] ?? self::class;
 
-		return $class::because( $class::CODE, self::facts( $errno, $sqlstate, $statement, $serverMessage ) );
+		return $class::because( $class::CODE, self::facts( $errno, $sqlstate ), $diagnostic );
 	}
 
 	/**
-	 * Raises a QueryFailed for a statement refused before or outside the error-number table.
+	 * Raises a QueryFailed for a statement refused outside the error-number table: by WordPress, or while dbDelta ran.
 	 *
 	 * @since 0.1.0
 	 *
@@ -114,7 +117,9 @@ class QueryFailed extends DatabaseException {
 	 * @return never
 	 */
 	public static function raiseRefused( int $errno, string $sqlstate, string $statement, string $serverMessage ): never {
-		self::raise( self::CODE, self::facts( $errno, $sqlstate, $statement, $serverMessage ) );
+		$refused = self::because( self::CODE, self::facts( $errno, $sqlstate ), StatementDiagnostic::of( $statement, $serverMessage ) );
+
+		throw $refused;
 	}
 
 	/**
@@ -140,25 +145,25 @@ class QueryFailed extends DatabaseException {
 	}
 
 	/**
-	 * Returns the beginning of the statement that failed.
+	 * Returns the beginning of the statement that failed, from the diagnostic. Never render it.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return string At most STATEMENT_LENGTH characters.
+	 * @return string At most STATEMENT_LENGTH characters, or an empty string.
 	 */
 	public function statement(): string {
-		return (string) $this->context()['statement'];
+		return (string) $this->diagnostic()?->statement();
 	}
 
 	/**
-	 * Returns the error text the server gave. For people only: never decide on it.
+	 * Returns the error text the server gave, from the diagnostic. For people only: never decide on it, never render it.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return string The text.
+	 * @return string The text, or an empty string.
 	 */
 	public function serverMessage(): string {
-		return (string) $this->context()['server_message'];
+		return (string) $this->diagnostic()?->serverMessage();
 	}
 
 	/**
@@ -178,18 +183,14 @@ class QueryFailed extends DatabaseException {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int    $errno         The MySQL error number.
-	 * @param string $sqlstate      The SQLSTATE.
-	 * @param string $statement     The statement, cut to STATEMENT_LENGTH here.
-	 * @param string $serverMessage The error text.
-	 * @return array{errno: int, sqlstate: string, statement: string, server_message: string} The context.
+	 * @param int    $errno    The MySQL error number.
+	 * @param string $sqlstate The SQLSTATE.
+	 * @return array{errno: int, sqlstate: string} The context.
 	 */
-	private static function facts( int $errno, string $sqlstate, string $statement, string $serverMessage ): array {
+	private static function facts( int $errno, string $sqlstate ): array {
 		return array(
-			'errno'          => $errno,
-			'sqlstate'       => $sqlstate,
-			'statement'      => self::shorten( $statement ),
-			'server_message' => $serverMessage,
+			'errno'    => $errno,
+			'sqlstate' => $sqlstate,
 		);
 	}
 }
