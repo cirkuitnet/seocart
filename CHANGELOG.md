@@ -100,3 +100,9 @@ releasable.
   contained so one failure cannot stop the others. A delivery that fails is retried after
   1, 4, 16 and 60 minutes, then parked. `wp seocart outbox drain|status|prune` runs and
   inspects delivery.
+- A typed settings registry, not yet wired into the plugin. Every plugin option is declared
+  once, listed in the data registry and written only through the settings store, and none
+  is autoloaded. An independent setting has an option of its own; settings that belong
+  together share one versioned document saved by compare-and-swap. The first settings are
+  the store's base currency (default USD) and the capability installer's per-site record of
+  what it has granted.
