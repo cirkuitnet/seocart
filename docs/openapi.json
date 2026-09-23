@@ -1,0 +1,25 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "SEOCart REST API",
+        "version": "v1",
+        "description": "The routes of the `seocart/v1` namespace. Each operation is generated from the same declaration as its ability and its WP-CLI command, which docs/reference/ describes. A request authenticates as a WordPress user, with a REST nonce or an application password, and each operation names the capability it requires.",
+        "license": {
+            "name": "GPL-3.0-or-later",
+            "identifier": "GPL-3.0-or-later"
+        }
+    },
+    "jsonSchemaDialect": "https://spec.openapis.org/oas/3.1/dialect/base",
+    "servers": [
+        {
+            "url": "{site}/wp-json/seocart/v1",
+            "variables": {
+                "site": {
+                    "default": "https://example.com",
+                    "description": "The address of the WordPress site."
+                }
+            }
+        }
+    ],
+    "paths": {}
+}

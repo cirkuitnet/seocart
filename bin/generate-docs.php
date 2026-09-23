@@ -17,9 +17,15 @@
 
 declare( strict_types=1 );
 
+use SEOCart\Application\Operations\Operations;
 use SEOCart\Platform\Http\OutboundEndpoints;
+use SEOCart\Tools\Docs\AbilitiesReference;
+use SEOCart\Tools\Docs\CliReference;
 use SEOCart\Tools\Docs\DocsRunner;
+use SEOCart\Tools\Docs\ErrorCatalogs;
+use SEOCart\Tools\Docs\ErrorsReference;
 use SEOCart\Tools\Docs\ExternalServicesSection;
+use SEOCart\Tools\Docs\OpenApiDocument;
 
 if ( 'cli' !== PHP_SAPI ) {
 	exit( 1 );
@@ -43,14 +49,43 @@ if ( ! defined( 'ABSPATH' ) ) {
 	define( 'ABSPATH', $seocart_root . '/__wordpress-is-not-loaded-by-command-line-tools__/' );
 }
 
+/*
+ * The documents show every message in its English source. A message is a closure around a
+ * literal gettext call, and without WordPress there is no gettext, so __() is defined here to
+ * return its text unchanged: exactly what WordPress's own returns when no translation is loaded.
+ */
+if ( ! function_exists( '__' ) ) {
+	/**
+	 * Returns the text unchanged: the English source string.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $text   The text.
+	 * @param string $domain The text domain. Unused.
+	 * @return string The text.
+	 */
+	function __( $text, $domain = 'default' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound -- gettext's own name, declared only because WordPress is not loaded here.
+		unset( $domain );
+
+		return $text;
+	}
+}
+
 require $seocart_root . '/vendor/autoload.php';
 
+$seocart_operations = Operations::registry();
+$seocart_errors     = ErrorCatalogs::table( $seocart_root . '/src' );
+
 /*
- * Every generator, in the order it runs. Later generators (docs/openapi.json and the
- * reference documents under docs/reference/) are added to this list and to nothing else.
+ * Every generator, in the order it runs. A new generated document is added to this list and to
+ * nothing else.
  */
 $seocart_generators = array(
 	new ExternalServicesSection( OutboundEndpoints::all() ),
+	new OpenApiDocument( $seocart_operations, $seocart_errors ),
+	new AbilitiesReference( $seocart_operations, $seocart_errors ),
+	new CliReference( $seocart_operations, $seocart_errors ),
+	new ErrorsReference( $seocart_errors ),
 );
 
 $seocart_runner = new DocsRunner(
