@@ -30,7 +30,6 @@ concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
     cancel-in-progress: false
 
-
 jobs:
     release-gates:
         runs-on: ubuntu-24.04

@@ -80,6 +80,14 @@ transitive packages, and `npm ci` then failed on Node.js 22. When you change a d
 `npm install` with the right versions, commit the lockfile with the change, and confirm that
 `npm ci` succeeds from a clean `node_modules/`.
 
+**Dependency install scripts run only when `package.json` allows them.** Its `allowScripts`
+field names the packages whose `install` or `postinstall` script may run: the ones that build or
+select a native binary (`fs-ext-extra-prebuilt`, `unrs-resolver`, `@parcel/watcher`) are allowed,
+and the two whose script only prints a message (`core-js`, `core-js-pure`) are denied. When npm
+lists a new package with an unreviewed script, read the script, then record the decision with
+`npm install-scripts approve <package> --no-allow-scripts-pin` or `npm install-scripts deny
+<package>`; `npm install-scripts ls` shows what is still unreviewed.
+
 ### What `npm run build` does
 
 It compiles `assets/` into `build/` with `@wordpress/scripts`, then runs

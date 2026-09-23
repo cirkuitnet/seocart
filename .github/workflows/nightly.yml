@@ -24,7 +24,6 @@ concurrency:
     group: ${{ github.workflow }}
     cancel-in-progress: true
 
-
 jobs:
     # The pull-request matrix runs this cell too but lets it fail quietly. Here it fails
     # loudly, because reporting it is the point of this run. No `php`: the setup action

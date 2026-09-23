@@ -153,7 +153,6 @@ jobs:
                   php-version: ${{ matrix.php }}
                   install: full
 
-
             # The syntax check runs on every supported PHP version, not only in lint-php.
             - name: Check PHP syntax
               run: composer lint:php
