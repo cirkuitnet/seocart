@@ -389,7 +389,7 @@ final class MoneyApiListsTest extends TestCase {
 
 			$name = 'SEOCart\\' . str_replace( '/', '\\', substr( $relative, 0, -4 ) );
 
-			self::assertTrue( class_exists( $name ) || interface_exists( $name ) || enum_exists( $name ), $relative . ' does not declare ' . $name . '.' );
+			self::assertTrue( class_exists( $name ) || interface_exists( $name ) || enum_exists( $name ) || trait_exists( $name ), $relative . ' does not declare ' . $name . '.' );
 
 			$classes[] = new \ReflectionClass( $name );
 		}

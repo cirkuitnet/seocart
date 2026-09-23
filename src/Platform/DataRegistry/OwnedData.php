@@ -14,6 +14,8 @@ namespace SEOCart\Platform\DataRegistry;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Migrations\PlatformBootstrapMigration;
 use SEOCart\Platform\Database\Schema\PlatformTables;
+use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
+use SEOCart\Platform\Events\OutboxTable;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -48,6 +50,7 @@ final class OwnedData {
 		return new DataRegistry(
 			new CapabilityDeclaration(),
 			new Contribution( tables: array( PlatformTables::migrations(), PlatformTables::locks() ), migrations: array( new PlatformBootstrapMigration() ) ),
+			new Contribution( tables: array( OutboxTable::definition() ), migrations: array( new CreateOutboxMigration() ) ),
 		);
 	}
 }
