@@ -148,3 +148,10 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 409
 - Message: The {group} settings were changed by someone else after you read them, so your change was not saved. Read them again, then repeat your change.
 - Values: `group`
+
+## `store.unavailable`
+
+- HTTP status: 503
+- Any write: every operation that changes the store may answer with this code, whether or not it lists it.
+- Message: The store is temporarily unavailable while its database is being updated ({reason}).
+- Values: `reason`

@@ -18,6 +18,7 @@ use SEOCart\Interfaces\Operations\RestAdapter;
 use SEOCart\Platform\Cli\DoctorCommand;
 use SEOCart\Platform\Database\Cli\MigrateCommand;
 use SEOCart\Platform\Events\Cli\OutboxCommand;
+use SEOCart\Platform\Kernel\Cli\SafeModeCommand;
 use SEOCart\Platform\Secrets\Cli\SecretsCommand;
 use SEOCart\Tests\Unit\Support\PhpSource;
 use WP_REST_Server;
@@ -57,19 +58,23 @@ final class OperationSurfaceWalker {
 	 * @var array<string, array{class: string, reason: string}>
 	 */
 	public const MAINTENANCE_COMMANDS = array(
-		'seocart migrate' => array(
+		'seocart migrate'   => array(
 			'class'  => MigrateCommand::class,
 			'reason' => 'Applies the pending schema and data migrations: a maintenance tool for operators, with no REST route or ability twin.',
 		),
-		'seocart outbox'  => array(
+		'seocart outbox'    => array(
 			'class'  => OutboxCommand::class,
 			'reason' => 'Drains, reports on and prunes the event outbox: a maintenance tool for operators, with no REST route or ability twin.',
 		),
-		'seocart secrets' => array(
+		'seocart safe-mode' => array(
+			'class'  => SafeModeCommand::class,
+			'reason' => 'Switches Safe Mode on or off from a shell or a deployment script: an operator\'s control over the site\'s environment state, with no REST route or ability twin.',
+		),
+		'seocart secrets'   => array(
 			'class'  => SecretsCommand::class,
 			'reason' => 'Reports on the data keys (status), creates a new one (rotate) and re-seals the stored secrets with it (rekey): key management for operators on the server, which no REST route or ability may offer.',
 		),
-		'seocart doctor'  => array(
+		'seocart doctor'    => array(
 			'class'  => DoctorCommand::class,
 			'reason' => 'Checks the schema, migrations, locks, outbox and residue read-only and exits non-zero on a problem: a diagnostic for operators, with no REST route or ability twin.',
 		),

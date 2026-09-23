@@ -18,6 +18,7 @@ use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Settings\SettingsOperations;
 use SEOCart\Platform\Settings\SettingsService;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Tests\Support\CreatesUsers;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\OperationSurfaces;
 use SEOCart\Tests\Support\SecretsHarness;
@@ -34,12 +35,15 @@ use WP_REST_Request;
  * null: the field is not there.
  *
  * The test commits, so it runs as a DatabaseTestCase: no WordPress factories. The acting user is
- * the site's first user, whose plugin capabilities a `user_has_cap` filter sets to exactly the
- * ones a test grants.
+ * an administrator the test creates and deletes, whose plugin capabilities a `user_has_cap` filter
+ * sets to exactly the ones a test grants. Not the site's first user: on a network that user is a
+ * super admin, whom WordPress grants every capability before the filter runs.
  *
  * @since 0.1.0
  */
 final class SecretSettingsSurfacesTest extends DatabaseTestCase {
+
+	use CreatesUsers;
 
 	/**
 	 * The secrets the tests write.
@@ -76,6 +80,15 @@ final class SecretSettingsSurfacesTest extends DatabaseTestCase {
 	 * @var OperationSurfaces
 	 */
 	private OperationSurfaces $surfaces;
+
+	/**
+	 * The acting user's id.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private int $userId = 0;
 
 	/**
 	 * The plugin capabilities the acting user holds.
@@ -135,13 +148,15 @@ final class SecretSettingsSurfacesTest extends DatabaseTestCase {
 			}
 		);
 
-		wp_set_current_user( 1 );
+		$this->userId = $this->createUser( 'administrator' );
+
+		wp_set_current_user( $this->userId );
 
 		$this->secrets->keys->initialize();
 	}
 
 	/**
-	 * Discards the surfaces and removes what the test wrote.
+	 * Discards the surfaces and removes what the test wrote, the acting user among it.
 	 *
 	 * @since 0.1.0
 	 */
@@ -149,6 +164,7 @@ final class SecretSettingsSurfacesTest extends DatabaseTestCase {
 		OperationSurfaces::discard();
 		SecretsHarness::removeAll();
 		wp_set_current_user( 0 );
+		$this->deleteCreatedUsers();
 
 		parent::tear_down();
 	}
@@ -193,12 +209,12 @@ final class SecretSettingsSurfacesTest extends DatabaseTestCase {
 
 		$this->assertSecretsAbsent( $get['printed']['item'] ?? array() );
 
-		$answer = $this->service->update( array( 'api_key' => self::SECRETS[0] ), Actor::user( 1 ) );
+		$answer = $this->service->update( array( 'api_key' => self::SECRETS[0] ), Actor::user( $this->userId ) );
 
 		$this->outputs[] = (string) wp_json_encode( $answer );
 
 		$this->assertSecretsAbsent( $answer );
-		$this->assertSecretsAbsent( $this->service->get( array(), Actor::user( 1 ) ) );
+		$this->assertSecretsAbsent( $this->service->get( array(), Actor::user( $this->userId ) ) );
 
 		$schema          = rest_do_request( new WP_REST_Request( 'OPTIONS', '/seocart/v1/settings' ) )->get_data();
 		$this->outputs[] = (string) wp_json_encode( $schema );
@@ -235,7 +251,7 @@ final class SecretSettingsSurfacesTest extends DatabaseTestCase {
 		$this->assertStringStartsWith( 'authorization.denied: ', (string) $command['failure'] );
 
 		try {
-			$this->service->update( array( 'api_key' => self::SECRETS[0] ), Actor::user( 1 ) );
+			$this->service->update( array( 'api_key' => self::SECRETS[0] ), Actor::user( $this->userId ) );
 			$this->fail( 'The service stored a secret for a user who may not manage secrets.' );
 		} catch ( CodedException $refused ) {
 			$this->outputs[] = $refused->getMessage() . ' ' . wp_json_encode( $refused->context() );

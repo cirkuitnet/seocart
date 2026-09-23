@@ -14,10 +14,10 @@ namespace SEOCart\Tests\Unit\Support\Error;
 use Brain\Monkey;
 use Brain\Monkey\Functions;
 use PHPUnit\Framework\TestCase;
-use SEOCart\Support\Error\ErrorCode;
 use SEOCart\Support\Error\ErrorDefinition;
 use SEOCart\Support\Error\ErrorTable;
 use SEOCart\Support\SupportError;
+use SEOCart\Tests\Support\ErrorCatalogs;
 use SEOCart\Tests\Unit\Support\PhpSource;
 
 /**
@@ -28,7 +28,8 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * - Every code src/ can raise has exactly one row. A code is raised through
  *   CodedException::raise() or built by CodedException::because(), and both accept only a case
  *   of an ErrorCode enum, so the codes src/ can raise are the cases of the ErrorCode enums
- *   declared under src/. This test finds every such enum, composes them all into one table —
+ *   declared under src/. This test finds every such enum with ErrorCatalogs, the one search the
+ *   kernel's list of catalogs is held to as well, composes them all into one table —
  *   which fails for a case with no row or two, and for a code two catalogs declare — and
  *   checks every row: a 4xx or 5xx status, a message, and placeholders equal to the row's
  *   declared context keys.
@@ -83,7 +84,7 @@ final class ErrorTableTotalityTest extends TestCase {
 	 * @since 0.1.0
 	 */
 	public function test_every_catalog_under_src_composes_into_one_table(): void {
-		$catalogs = self::catalogs();
+		$catalogs = ErrorCatalogs::under( 'src' );
 
 		$this->assertContains( SupportError::class, array_keys( $catalogs ), 'The search for catalogs did not find the shared kernel\'s own; it cannot be trusted to find the others.' );
 
@@ -107,7 +108,7 @@ final class ErrorTableTotalityTest extends TestCase {
 
 		$problems = array();
 
-		foreach ( ErrorTable::compose( ...array_keys( self::catalogs() ) )->definitions() as $row ) {
+		foreach ( ErrorTable::compose( ...array_keys( ErrorCatalogs::under( 'src' ) ) )->definitions() as $row ) {
 			$problems = array_merge( $problems, self::problemsWith( $row ) );
 		}
 
@@ -123,7 +124,7 @@ final class ErrorTableTotalityTest extends TestCase {
 		$used   = self::codesReferencedIn( 'src' );
 		$unused = array();
 
-		foreach ( self::catalogs() as $catalog => $file ) {
+		foreach ( ErrorCatalogs::under( 'src' ) as $catalog => $file ) {
 			foreach ( $catalog::cases() as $case ) {
 				$key = $catalog . '::' . $case->name;
 
@@ -208,36 +209,6 @@ PHP;
 			),
 			array_map( static fn( array $reference ): array => array( $reference['class'], $reference['constant'] ), PhpSource::constantReferences( $source ) )
 		);
-	}
-
-	/**
-	 * Finds every error catalog declared under src/.
-	 *
-	 * Every enum under src/ is loaded — enums are plain PHP — and kept when it implements
-	 * ErrorCode, directly or through another interface.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return array<class-string<ErrorCode>, string> The catalogs, each with the file that declares it.
-	 */
-	private static function catalogs(): array {
-		$catalogs = array();
-
-		foreach ( PhpSource::files( 'src' ) as $file => $source ) {
-			if ( ! str_contains( $source, 'enum ' ) ) {
-				continue;
-			}
-
-			foreach ( PhpSource::declarations( $source ) as $class ) {
-				if ( enum_exists( $class ) && is_subclass_of( $class, ErrorCode::class ) ) {
-					$catalogs[ $class ] = $file;
-				}
-			}
-		}
-
-		ksort( $catalogs );
-
-		return $catalogs;
 	}
 
 	/**

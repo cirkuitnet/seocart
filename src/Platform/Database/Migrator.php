@@ -322,7 +322,7 @@ final class Migrator {
 			);
 		}
 
-		$codeHead = self::codeHead( $chain );
+		$codeHead = $this->codeHead();
 
 		return new MigrationStatus( $codeHead, $appliedHead, self::ids( $outstanding ), $failed, $running, self::blocksWrites( $outstanding, $appliedHead, $codeHead ) );
 	}
@@ -351,7 +351,7 @@ final class Migrator {
 			}
 		}
 
-		return self::blocksWrites( $outstanding, $schemaHead, self::codeHead( $chain ) );
+		return self::blocksWrites( $outstanding, $schemaHead, $this->codeHead() );
 	}
 
 	/**
@@ -721,14 +721,15 @@ final class Migrator {
 	}
 
 	/**
-	 * Returns the newest registered migration id.
+	 * Returns the newest registered migration id: the schema head this code expects. Sends nothing.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param Migration[] $chain The chain, in id order.
-	 * @return string The id of its last migration.
+	 * @return string The id of the chain's last migration.
 	 */
-	private static function codeHead( array $chain ): string {
+	public function codeHead(): string {
+		$chain = $this->chain();
+
 		return $chain[ count( $chain ) - 1 ]->id();
 	}
 

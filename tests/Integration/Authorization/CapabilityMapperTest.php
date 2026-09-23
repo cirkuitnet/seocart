@@ -22,8 +22,9 @@ use WP_UnitTestCase;
 /**
  * The mapper hooked to `map_meta_cap`, checked the way every consumer checks: with user_can().
  *
- * The kernel does not hook the mapper yet, so each test hooks it itself; the hook is removed
- * again after the test. Roles are reloaded from the database around each test, because
+ * The kernel hooks the production mapper when it boots. Each test removes every `map_meta_cap`
+ * callback and hooks a mapper of its own, so it checks that mapper alone; the hooks are restored
+ * after the test. Roles are reloaded from the database around each test, because
  * WordPress keeps role changes in the WP_Roles object as well as in the rolled-back option.
  *
  * @since 0.1.0
@@ -42,7 +43,7 @@ final class CapabilityMapperTest extends WP_UnitTestCase {
 	private CapabilityMapper $mapper;
 
 	/**
-	 * Hooks a fresh mapper and reloads the roles.
+	 * Replaces every capability mapping with a fresh mapper, and reloads the roles.
 	 *
 	 * @since 0.1.0
 	 */
@@ -50,6 +51,8 @@ final class CapabilityMapperTest extends WP_UnitTestCase {
 		parent::set_up();
 
 		self::reloadRoles();
+
+		remove_all_filters( 'map_meta_cap' );
 
 		$this->mapper = new CapabilityMapper( new CapabilityDeclaration() );
 

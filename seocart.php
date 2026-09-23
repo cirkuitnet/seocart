@@ -20,8 +20,11 @@
  */
 
 /*
- * This file does three things and nothing else: it checks the PHP and WordPress
- * versions, registers the class autoloader, and hooks the kernel to `plugins_loaded`.
+ * This file does five things and nothing else: it checks the PHP and WordPress
+ * versions, registers the class autoloader, hooks the kernel to `plugins_loaded`, and
+ * registers the kernel's activation and deactivation hooks. The last two must be
+ * registered here, at file scope: WordPress activates a plugin in a request where it
+ * includes the plugin file after `plugins_loaded` has already fired.
  * It must stay parsable by PHP versions older than the supported floor, so that an
  * unsupported site sees a notice instead of a parse error. No translation call, no
  * database access and no object construction may happen at file scope.
@@ -152,3 +155,5 @@ spl_autoload_register(
 );
 
 add_action( 'plugins_loaded', array( 'SEOCart\\Platform\\Kernel\\Kernel', 'boot' ) );
+register_activation_hook( __FILE__, array( 'SEOCart\\Platform\\Kernel\\Kernel', 'activate' ) );
+register_deactivation_hook( __FILE__, array( 'SEOCart\\Platform\\Kernel\\Kernel', 'deactivate' ) );

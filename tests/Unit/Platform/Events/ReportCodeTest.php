@@ -16,6 +16,7 @@ use SEOCart\Platform\Database\ReportCode as DatabaseReportCode;
 use SEOCart\Platform\Events\ReportCode;
 use SEOCart\Support\Error\ErrorCode;
 use SEOCart\Support\Error\ErrorTable;
+use SEOCart\Tests\Support\ErrorCatalogs;
 use SEOCart\Tests\Unit\Support\PhpSource;
 
 /**
@@ -41,19 +42,7 @@ final class ReportCodeTest extends TestCase {
 	 * @since 0.1.0
 	 */
 	public function test_no_reported_code_is_an_error_table_code(): void {
-		$catalogs = array();
-
-		foreach ( PhpSource::files( 'src' ) as $source ) {
-			if ( ! str_contains( $source, 'enum ' ) ) {
-				continue;
-			}
-
-			foreach ( PhpSource::declarations( $source ) as $class ) {
-				if ( enum_exists( $class ) && is_subclass_of( $class, ErrorCode::class ) ) {
-					$catalogs[] = $class;
-				}
-			}
-		}
+		$catalogs = array_keys( ErrorCatalogs::under( 'src' ) );
 
 		$this->assertNotSame( array(), $catalogs, 'The search for error catalogs found none; it cannot be trusted.' );
 

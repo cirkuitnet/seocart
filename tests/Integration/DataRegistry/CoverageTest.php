@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\DataRegistry;
 
+use SEOCart\Platform\Authorization\OptionGrantLedger;
 use SEOCart\Platform\Database\LockMode;
 use SEOCart\Platform\Database\LockService;
 use SEOCart\Platform\Database\MigrationReport;
@@ -22,8 +23,12 @@ use SEOCart\Platform\Database\Schema\ColumnSpec;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\DataRegistry\DataRegistry;
 use SEOCart\Platform\DataRegistry\OwnedData;
-use SEOCart\Tests\Support\DatabaseTestCase;
+use SEOCart\Platform\Kernel\BootOption;
+use SEOCart\Platform\Kernel\Lifecycle;
+use SEOCart\Platform\Settings\Setting;
+use SEOCart\Platform\Settings\Settings;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
+use SEOCart\Tests\Support\KernelTestCase;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- These tests read information_schema and the options table directly, and drop the base class's fixture table, on purpose.
 
@@ -37,11 +42,11 @@ use SEOCart\Tests\Support\Doubles\FrozenClock;
  * production list, what construction already enforces: ColumnSpec refuses a `pii` column
  * without privacy handling, and the registry refuses an unknown retention id.
  *
- * The options check reads the options table for every `seocart_` option and requires each to
- * be registered. Nothing activates the plugin in the test site yet, so there is nothing of ours
- * to find today; the test first plants an unregistered option and requires the scan to find it,
- * so an empty result cannot pass by accident. It becomes the real check the day activation
- * writes options.
+ * The options check activates the plugin on the test site for real, through the kernel's
+ * lifecycle, then reads the options table for every `seocart_` option: each must be registered,
+ * and must autoload exactly when its declaration says so. It first plants an unregistered option
+ * and requires the scan to find it, so an empty result cannot pass by accident. The kernel's test
+ * base removes what the activation wrote, tables, options and roles, after each test.
  *
  * Every test names its planted violation.
  *
@@ -49,7 +54,7 @@ use SEOCart\Tests\Support\Doubles\FrozenClock;
  *
  * @group contract
  */
-final class CoverageTest extends DatabaseTestCase {
+final class CoverageTest extends KernelTestCase {
 
 	/**
 	 * The instant the frozen clock shows while migrating.
@@ -208,30 +213,60 @@ final class CoverageTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Tests that every `seocart_` option in the options table is registered.
+	 * Tests that every `seocart_` option the activated plugin writes is registered, and autoloads exactly as declared.
 	 *
-	 * Nothing activates the plugin in the test site yet, so today the only option the scan finds
-	 * is the one planted here to prove it looks; see the class description.
+	 * The plugin is activated on the test site through the kernel's lifecycle, the way WordPress
+	 * activates it; see the class description.
 	 *
 	 * Planted violations: an unregistered `seocart_` option left in the options table; the scan's
-	 * pattern broken, so that it no longer finds the planted option.
+	 * pattern broken, so that it no longer finds the planted option; an option the activation writes
+	 * that no module registers (`add_option( 'seocart_planted', 'x', '', false );` in
+	 * Lifecycle::installSite()); the boot record declared as not autoloading in OwnedData.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_every_plugin_option_is_registered(): void {
-		$registered = OwnedData::registry()->optionNames();
+	public function test_every_option_the_activated_plugin_writes_is_registered_and_autoloads_as_declared(): void {
+		$registry   = OwnedData::registry();
+		$registered = $registry->optionNames();
 
 		$this->assertNotContains( self::PLANTED_OPTION, $registered, 'The planted option must be one the registry does not know.' );
 
 		add_option( self::PLANTED_OPTION, 'planted', '', false );
 
 		try {
-			$this->assertContains( self::PLANTED_OPTION, $this->pluginOptions(), 'The scan did not find an unregistered option planted for it, so an empty result would prove nothing.' );
+			$this->assertArrayHasKey( self::PLANTED_OPTION, $this->pluginOptions(), 'The scan did not find an unregistered option planted for it, so an empty result would prove nothing.' );
 		} finally {
 			delete_option( self::PLANTED_OPTION );
 		}
 
-		$this->assertSame( array(), array_values( array_diff( $this->pluginOptions(), $registered ) ), 'These plugin options are in the options table, but no module registers them.' );
+		$this->container()->get( Lifecycle::class )->activate();
+
+		$stored = $this->pluginOptions();
+
+		$this->assertArrayHasKey( BootOption::NAME, $stored, 'The activation wrote no boot record, so the scan saw nothing it wrote.' );
+
+		$grants = array_values(
+			array_unique(
+				array_map(
+					static fn( Setting $setting ): string => $setting->optionName(),
+					array_filter( Settings::registry()->all(), static fn( Setting $setting ): bool => OptionGrantLedger::GROUP === $setting->group() )
+				)
+			)
+		);
+
+		$this->assertCount( 1, $grants, 'The settings registry declares no one document for the capability installer\'s record.' );
+		$this->assertArrayHasKey( $grants[0], $stored, 'The activation recorded no capability grant, so the scan saw nothing of the ledger.' );
+		$this->assertSame( array(), array_values( array_diff( array_keys( $stored ), $registered ) ), 'These plugin options are in the options table, but no module registers them.' );
+
+		foreach ( $registry->options() as $option ) {
+			if ( isset( $stored[ $option->name() ] ) ) {
+				$this->assertSame(
+					$option->autoloads(),
+					in_array( $stored[ $option->name() ], wp_autoload_values_to_autoload(), true ),
+					"The option {$option->name()} is stored with autoload '{$stored[ $option->name() ]}', which its declaration does not say."
+				);
+			}
+		}
 	}
 
 	/**
@@ -266,21 +301,26 @@ final class CoverageTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Lists the names of every option in the options table that starts with `seocart_`.
+	 * Lists every option in the options table that starts with `seocart_`, with how it autoloads.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return list<string> Option names.
+	 * @return array<string, string> The `autoload` column, keyed by option name.
 	 */
 	private function pluginOptions(): array {
 		global $wpdb;
 
-		return array_map(
-			'strval',
-			(array) $wpdb->get_col(
-				$wpdb->prepare( 'SELECT option_name FROM %i WHERE option_name LIKE %s', $wpdb->options, $wpdb->esc_like( 'seocart_' ) . '%' )
-			)
+		$options = array();
+		$rows    = (array) $wpdb->get_results(
+			$wpdb->prepare( 'SELECT option_name, autoload FROM %i WHERE option_name LIKE %s', $wpdb->options, $wpdb->esc_like( 'seocart_' ) . '%' ),
+			ARRAY_A
 		);
+
+		foreach ( $rows as $row ) {
+			$options[ (string) $row['option_name'] ] = (string) $row['autoload'];
+		}
+
+		return $options;
 	}
 
 	/**

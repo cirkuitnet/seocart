@@ -38,9 +38,19 @@ use WP_UnitTestCase;
  * such as one from a WordPress function registered as the callback. G2, the autoloaded-option
  * budget, arrives with the settings registry that creates the option it measures.
  *
- * Each test names the planted violation that must turn it red. Every plant goes into
- * SEOCart\Platform\Kernel\Kernel::boot(), directly after `self::$booted = true;`, and is
- * reverted afterwards.
+ * Each test names the planted violation that must turn it red. Unless it says otherwise, a plant
+ * goes into SEOCart\Platform\Kernel\Kernel::boot(), directly after `self::$booted = true;`, and
+ * is reverted afterwards.
+ *
+ * The site the probe serves has never been activated, so the boot record does not exist there.
+ * That is the case the kernel's laziness exists for: reading the absent option would cost the
+ * query WordPress spends to learn that it is absent. Two plants prove the kernel pays for neither
+ * its record nor its services on an idle request:
+ *
+ * - `self::container()->get( BootOption::class )->read();` (with its `use`) in Kernel::boot():
+ *   G1's total goes up by that one query;
+ * - `$container->get( \SEOCart\Platform\Database\Migrator::class );` in Modules::subscribe(): G3's
+ *   plugin share lists the database module's files.
  *
  * @since 0.1.0
  *
@@ -60,13 +70,33 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	private const G1_PLUGIN_QUERIES = 0;
 
 	/**
-	 * G3: plugin PHP files an idle request may load.
+	 * G3: files of the plugin's own code an idle request may load: the main file and the kernel's
+	 * three (the kernel, its container and the module wiring), with a margin of two.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var int
 	 */
-	private const G3_MAX_PLUGIN_FILES = 15;
+	private const G3_MAX_PLUGIN_FILES = 6;
+
+	/**
+	 * G3: files of the libraries bundled under `vendor-scoped/` an idle request may load. The rest
+	 * of the whole budget, until a bundled library states its own number.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const G3_MAX_LIBRARY_FILES = 9;
+
+	/**
+	 * G3: plugin PHP files an idle request may load in all: the plugin's share and the libraries'.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const G3_MAX_FILES = self::G3_MAX_PLUGIN_FILES + self::G3_MAX_LIBRARY_FILES;
 
 	/**
 	 * G3: bytes of plugin PHP an idle request may parse.
@@ -162,10 +192,11 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	/**
 	 * Tests G3: the plugin loads few files, and small ones.
 	 *
-	 * Planted violation for the file count: create fifteen files `src/Planted/P01.php` to
-	 * `src/Planted/P15.php`, each holding only `<?php`, and plant
+	 * Planted violation for the plugin's share: create three files `src/Planted/P01.php` to
+	 * `src/Planted/P03.php`, each holding only `<?php`, and plant
 	 * `foreach ( glob( dirname( __DIR__, 2 ) . '/Planted/P*.php' ) as $planted ) { require $planted; }`.
-	 * With the main file and the kernel that makes seventeen.
+	 * With the main file and the kernel's three that makes seven. Fifteen such files overrun the
+	 * whole budget as well.
 	 *
 	 * Planted violation for the byte count: create `src/Planted/Big.php` holding `<?php //`
 	 * followed by 260,000 characters on the same line, and plant
@@ -176,15 +207,28 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_g3_idle_request_loads_few_plugin_files(): void {
-		$files  = self::measurement()['files'];
-		$report = "\n" . BootstrapProbes::describeFiles( $files ) . "\n";
+		$files     = self::measurement()['files'];
+		$report    = "\n" . BootstrapProbes::describeFiles( $files ) . "\n";
+		$libraries = array_filter( array_keys( $files ), static fn( string $path ): bool => str_starts_with( $path, 'vendor-scoped/' ) );
 
 		$this->assertArrayHasKey( 'seocart.php', $files, 'The probe did not see the main plugin file, so a small count would prove nothing.' . $report );
 
 		$this->assertLessThanOrEqual(
 			self::G3_MAX_PLUGIN_FILES,
+			count( $files ) - count( $libraries ),
+			'G3, files of the plugin\'s own code loaded on an idle request. An eager service graph looks like this:' . $report
+		);
+
+		$this->assertLessThanOrEqual(
+			self::G3_MAX_LIBRARY_FILES,
+			count( $libraries ),
+			'G3, files of bundled libraries loaded on an idle request:' . $report
+		);
+
+		$this->assertLessThanOrEqual(
+			self::G3_MAX_FILES,
 			count( $files ),
-			'G3, plugin PHP files loaded on an idle request. An eager service graph looks like this:' . $report
+			'G3, plugin PHP files loaded on an idle request:' . $report
 		);
 
 		$this->assertLessThanOrEqual(
@@ -199,7 +243,8 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 *
 	 * Planted violation:
 	 * `for ( $planted = 0; $planted < 25; $planted++ ) { add_action( 'wp_footer', array( self::class, 'hasBooted' ), $planted ); }`.
-	 * With the `plugins_loaded` registration that makes twenty-six. The failure must list them.
+	 * With the kernel's own four registrations (`plugins_loaded`, the activation and deactivation
+	 * hooks and `map_meta_cap`) that makes twenty-nine. The failure must list them.
 	 *
 	 * @since 0.1.0
 	 */

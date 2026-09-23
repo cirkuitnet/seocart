@@ -16,7 +16,7 @@ use SEOCart\Platform\Database\DatabaseError;
 use SEOCart\Platform\Database\ReportCode;
 use SEOCart\Support\Error\ErrorCode;
 use SEOCart\Support\Error\ErrorTable;
-use SEOCart\Tests\Unit\Support\PhpSource;
+use SEOCart\Tests\Support\ErrorCatalogs;
 
 /**
  * Keeps the reporter vocabulary apart from the error table.
@@ -40,7 +40,7 @@ final class ReportCodeTest extends TestCase {
 	 * @since 0.1.0
 	 */
 	public function test_no_reported_code_is_an_error_table_code(): void {
-		$catalogs = self::catalogs();
+		$catalogs = array_keys( ErrorCatalogs::under( 'src' ) );
 
 		$this->assertContains( DatabaseError::class, $catalogs, 'The search for catalogs did not find the Database module\'s own; it cannot be trusted to find the others.' );
 
@@ -66,32 +66,5 @@ final class ReportCodeTest extends TestCase {
 		foreach ( ReportCode::cases() as $code ) {
 			$this->assertMatchesRegularExpression( '/^database\.[a-z][a-z0-9_]*$/', $code->value );
 		}
-	}
-
-	/**
-	 * Finds every error catalog declared under src/.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return list<class-string> The catalogs.
-	 */
-	private static function catalogs(): array {
-		$catalogs = array();
-
-		foreach ( PhpSource::files( 'src' ) as $source ) {
-			if ( ! str_contains( $source, 'enum ' ) ) {
-				continue;
-			}
-
-			foreach ( PhpSource::declarations( $source ) as $class ) {
-				if ( enum_exists( $class ) && is_subclass_of( $class, ErrorCode::class ) ) {
-					$catalogs[] = $class;
-				}
-			}
-		}
-
-		sort( $catalogs );
-
-		return $catalogs;
 	}
 }

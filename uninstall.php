@@ -8,9 +8,15 @@
  * confirmation, a grace period, and a verified, resumable job — not a side effect of this
  * file.
  *
- * The repository bootstrap creates no tables, options, roles or scheduled jobs, so there
- * is nothing to clean up yet. All destructive cleanup the plugin ever performs on
- * uninstall belongs in this file; `register_uninstall_hook()` is never used.
+ * So this file removes nothing. The plugin's tables stay, and so do its options: among
+ * them the boot record, which keeps the installation's identity, so a store that is
+ * reinstalled is recognised as the same store rather than as a copy of it. The plugin's
+ * roles and the capabilities it granted stay too, as merchants may have assigned them.
+ * WordPress deletes only a deactivated plugin, and deactivation is where the plugin stops
+ * any work it has scheduled, so nothing of it runs after this point.
+ *
+ * All destructive cleanup the plugin ever performs on uninstall belongs in this file;
+ * `register_uninstall_hook()` is never used.
  *
  * @package SEOCart
  * @since   0.1.0
