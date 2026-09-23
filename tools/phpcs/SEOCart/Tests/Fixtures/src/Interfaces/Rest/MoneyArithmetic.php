@@ -23,7 +23,6 @@ $pair  = TaxedMoney::fromNet( $net, $rate, $mode ); // Expect: SEOCart.DRY.Money
 $pair  = TaxedMoney::fromGross( $gross, $rate, $mode ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
 $local = $context->convertToQuote( $total ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
 $local = $context->convertToQuoteMoney( $total, $mode ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
-$home  = $context->convertToBase( $local, 2, $mode ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
 $home  = $context->convertToBaseMoney( $local, $mode ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
 $owed  = $paid->negate(); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall
 $safe  = $order?->total()?->Add( $fee ); // Expect: SEOCart.DRY.MoneyArithmeticInInterfaces.MethodCall

@@ -82,7 +82,6 @@ final class MoneyArithmeticInInterfacesSniff implements Sniff {
 	public $arithmeticMethods = array(
 		'add',
 		'allocate',
-		'convertToBase',
 		'convertToBaseMoney',
 		'convertToQuote',
 		'convertToQuoteMoney',
@@ -260,10 +259,10 @@ final class MoneyArithmeticInInterfacesSniff implements Sniff {
 	}
 
 	/**
-	 * Determines whether an operand's last token closes a Money accessor: `->amount()` or `->amount`.
+	 * Determines whether an operand's last token closes a Money accessor: `->minorUnits()` or `->minorUnits`.
 	 *
-	 * Parentheses that only group are looked into, `( $total->amount() )`. Those of a call or
-	 * of a language construct are not: `strlen( (string) $total->amount() )` is a length.
+	 * Parentheses that only group are looked into, `( $total->minorUnits() )`. Those of a call or
+	 * of a language construct are not: `strlen( (string) $total->minorUnits() )` is a length.
 	 *
 	 * @since 0.1.0
 	 *

@@ -35,13 +35,46 @@ final class ConversionContextTest extends TestCase {
 	use MoneyAssertions;
 
 	/**
-	 * The fingerprint of self::usdToEur(), as sha256 printed it for the canonical form in the test below.
+	 * The fingerprint of self::usdToEur(), as the system's sha256 tool printed it.
+	 *
+	 * It is the digest of this canonical form, nine lines joined by line feeds:
+	 *
+	 *     seocart.conversion_context.v1
+	 *     base_currency=USD
+	 *     quote_currency=EUR
+	 *     direction=base_to_quote
+	 *     rate=0.920000
+	 *     rate_scale=6
+	 *     source=manual
+	 *     source_version=42
+	 *     quoted_at=2026-09-22T10:00:00Z
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
 	private const USD_TO_EUR_FINGERPRINT = '3ef430e2be2847403eae6b04374914eea068b9034f4d650a167f3c16b62061e3';
+
+	/**
+	 * The fingerprint of the US dollar's identity context, as the system's sha256 tool printed it.
+	 *
+	 * It is the digest of this canonical form, nine lines joined by line feeds:
+	 *
+	 *     seocart.conversion_context.v1
+	 *     base_currency=USD
+	 *     quote_currency=USD
+	 *     direction=base_to_quote
+	 *     rate=1.000000000000
+	 *     rate_scale=12
+	 *     source=identity
+	 *     source_version=0
+	 *     quoted_at=1970-01-01T00:00:00Z
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const USD_IDENTITY_FINGERPRINT = 'fe0febd5a60e94f730d905bc2c95c527e4a54901c5b2f22e480556eda6e49130';
 
 	/**
 	 * Tests the fields a context keeps, the quoted instant in UTC and to the second.
@@ -71,17 +104,13 @@ final class ConversionContextTest extends TestCase {
 	}
 
 	/**
-	 * Tests the canonical form and its SHA-256 fingerprint against values computed outside PHP.
+	 * Tests the SHA-256 fingerprint against the digest of the documented canonical form, computed outside PHP.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_the_fingerprint_is_the_sha256_of_the_documented_canonical_form(): void {
 		$context = self::usdToEur();
 
-		$this->assertSame(
-			"seocart.conversion_context.v1\nbase_currency=USD\nquote_currency=EUR\ndirection=base_to_quote\nrate=0.920000\nrate_scale=6\nsource=manual\nsource_version=42\nquoted_at=2026-09-22T10:00:00Z",
-			$context->canonicalForm()
-		);
 		$this->assertSame( self::USD_TO_EUR_FINGERPRINT, $context->fingerprint() );
 		$this->assertMatchesRegularExpression( '/^[0-9a-f]{64}$/', $context->fingerprint() );
 	}
@@ -169,13 +198,13 @@ final class ConversionContextTest extends TestCase {
 	}
 
 	/**
-	 * Tests the identity context of data storage §3.10.
+	 * Tests the identity context: one currency converted to itself.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_the_identity_context_converts_an_amount_to_itself(): void {
 		$usd      = Currency::of( 'USD' );
-		$identity = ConversionContext::identity( $usd, new \DateTimeImmutable( '2026-01-01 00:00:00', new \DateTimeZone( 'UTC' ) ) );
+		$identity = ConversionContext::identity( $usd );
 
 		$this->assertTrue( $identity->baseCurrency()->equals( $identity->quoteCurrency() ) );
 		$this->assertSame( '1.000000000000', $identity->rate()->toString() );
@@ -184,6 +213,83 @@ final class ConversionContextTest extends TestCase {
 		$this->assertSame( 0, $identity->sourceVersion() );
 		$this->assertMoneyEquals( Money::of( 1234, $usd ), $identity->convertToQuoteMoney( Money::of( 1234, $usd ), RoundingMode::HalfUp ) );
 		$this->assertMoneyEquals( Money::of( -1234, $usd ), $identity->convertToBaseMoney( Money::of( -1234, $usd ), RoundingMode::TowardZero ) );
+	}
+
+	/**
+	 * Tests that a currency has one identity context, whenever and wherever it is built.
+	 *
+	 * The expected fingerprint is a constant computed outside PHP, so the test passes only if the
+	 * identity context is quoted at the fixed instant it documents, on whatever day it runs. The
+	 * second call is made under another default time zone, on the other side of the date line.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_identity_context_is_the_same_on_every_day(): void {
+		$default = date_default_timezone_get();
+
+		try {
+			$first = ConversionContext::identity( Currency::of( 'USD' ) );
+
+			// phpcs:ignore WordPress.DateTime.RestrictedFunctions.timezone_change_date_default_timezone_set -- The test proves the identity context ignores the time zone; the finally block restores it.
+			date_default_timezone_set( 'Pacific/Kiritimati' );
+
+			$second = ConversionContext::identity( Currency::of( 'USD' ) );
+		} finally {
+			// phpcs:ignore WordPress.DateTime.RestrictedFunctions.timezone_change_date_default_timezone_set -- Restores the zone the test changed.
+			date_default_timezone_set( $default );
+		}
+
+		$this->assertSame( '1970-01-01T00:00:00+00:00', $first->quotedAt()->format( DATE_ATOM ) );
+		$this->assertSame( self::USD_IDENTITY_FINGERPRINT, $first->fingerprint() );
+		$this->assertSame( $first->fingerprint(), $second->fingerprint() );
+		$this->assertNotSame( $first->fingerprint(), ConversionContext::identity( Currency::of( 'EUR' ) )->fingerprint(), 'Each currency has its own identity context.' );
+	}
+
+	/**
+	 * Tests that a context from a currency to itself must have a rate of exactly 1, at any scale.
+	 *
+	 * Otherwise 100 US dollars would convert to 200 US dollars.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @dataProvider data_same_currency_rates
+	 *
+	 * @param string $rate     The rate.
+	 * @param bool   $accepted Whether the context is accepted.
+	 */
+	public function test_a_same_currency_context_has_a_rate_of_exactly_one( string $rate, bool $accepted ): void {
+		$usd   = Currency::of( 'USD' );
+		$built = null;
+
+		try {
+			$built = new ConversionContext( $usd, $usd, 'base_to_quote', Decimal::of( $rate ), Decimal::of( $rate )->scale(), 'manual', 1, new \DateTimeImmutable( '@0' ) );
+		} catch ( \InvalidArgumentException $refused ) {
+			$this->assertFalse( $accepted, 'A rate of exactly 1 was refused: ' . $rate );
+			$this->assertSame( 'A conversion from a currency to itself has a rate of exactly 1.', $refused->getMessage() );
+
+			return;
+		}
+
+		$this->assertTrue( $accepted, 'A same-currency context was accepted at the rate ' . $rate );
+		$this->assertMoneyEquals( Money::of( 10000, $usd ), $built->convertToQuoteMoney( Money::of( 10000, $usd ), RoundingMode::HalfUp ) );
+	}
+
+	/**
+	 * Provides same-currency rates and whether each is accepted.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, array{string, bool}> Test cases.
+	 */
+	public static function data_same_currency_rates(): array {
+		return array(
+			'two'              => array( '2.000000', false ),
+			'just below one'   => array( '0.999999', false ),
+			'just above one'   => array( '1.000000000001', false ),
+			'one, at scale 0'  => array( '1', true ),
+			'one, at scale 6'  => array( '1.000000', true ),
+			'one, at scale 12' => array( '1.000000000000', true ),
+		);
 	}
 
 	/**
@@ -234,8 +340,8 @@ final class ConversionContextTest extends TestCase {
 		$this->assertMoneyEquals( Money::of( 1000, $usd ), $context->convertToBaseMoney( Money::of( 920, $eur ), RoundingMode::HalfUp ) );
 		$this->assertMoneyEquals( Money::of( 109, $usd ), $context->convertToBaseMoney( Money::of( 100, $eur ), RoundingMode::HalfUp ), '1.00 ÷ 0.92 = 1.0869…' );
 		$this->assertMoneyEquals( Money::of( 108, $usd ), $context->convertToBaseMoney( Money::of( 100, $eur ), RoundingMode::TowardZero ) );
-		$this->assertSame( '1.086957', $context->convertToBase( Money::of( 100, $eur ), 6, RoundingMode::HalfUp )->toString() );
-		$this->assertSame( '-1.086956', $context->convertToBase( Money::of( -100, $eur ), 6, RoundingMode::TowardZero )->toString() );
+		$this->assertMoneyEquals( Money::of( -109, $usd ), $context->convertToBaseMoney( Money::of( -100, $eur ), RoundingMode::HalfUp ), 'Symmetric below zero.' );
+		$this->assertMoneyEquals( Money::of( -108, $usd ), $context->convertToBaseMoney( Money::of( -100, $eur ), RoundingMode::TowardZero ) );
 	}
 
 	/**

@@ -18,9 +18,9 @@ defined( 'ABSPATH' ) || exit;
  * where and when.
  *
  * This class owns one fact: what a conversion between two currencies was based on, as the
- * immutable `conversion_contexts` row records it (target architecture §21.2), and the
- * conversion arithmetic at that rate. An order references its context, so a refund months
- * later converts at the original rate, and a report never re-converts at today's.
+ * immutable `conversion_contexts` row records it, and the conversion arithmetic at that
+ * rate. An order references its context, so a refund months later converts at the original
+ * rate, and a report never re-converts at today's.
  *
  * The rate reads "1 unit of the base currency = rate units of the quote currency"; the only
  * direction is `base_to_quote`, stored anyway because an inverted rate is the most common
@@ -44,6 +44,10 @@ defined( 'ABSPATH' ) || exit;
  * `quoted_at` is a `DATETIME` without fractional seconds, so the context keeps whole seconds
  * and drops any fraction when it is created; the value it holds is the value storage returns,
  * and a context read back from its row has the same fingerprint.
+ *
+ * A context whose base and quote currency are the same is an identity: its rate is exactly 1,
+ * at any scale, and any other rate is refused. identity() builds the one identity context a
+ * currency has.
  *
  * @since 0.1.0
  */
@@ -136,10 +140,11 @@ final class ConversionContext {
 	 * @since 0.1.0
 	 *
 	 * @throws \InvalidArgumentException When the direction is not base_to_quote; the rate is
-	 *                                   zero or negative; the rate scale is outside 0 to 12 or
-	 *                                   differs from the rate's own scale; the source is not
-	 *                                   1 to 32 characters of a-z, 0-9, '_', '.' and '-'; or
-	 *                                   the source version is negative.
+	 *                                   zero or negative; the base and quote currency are the
+	 *                                   same and the rate is not exactly 1; the rate scale is
+	 *                                   outside 0 to 12 or differs from the rate's own scale;
+	 *                                   the source is not 1 to 32 characters of a-z, 0-9, '_',
+	 *                                   '.' and '-'; or the source version is negative.
 	 *
 	 * @param Currency           $base_currency  The currency one unit of which the rate prices.
 	 * @param Currency           $quote_currency The currency the rate is expressed in.
@@ -169,6 +174,10 @@ final class ConversionContext {
 			throw new \InvalidArgumentException( 'An exchange rate must be greater than zero.' );
 		}
 
+		if ( $base_currency->equals( $quote_currency ) && ! $rate->equals( Decimal::ofUnscaled( 1, 0 ) ) ) {
+			throw new \InvalidArgumentException( 'A conversion from a currency to itself has a rate of exactly 1.' );
+		}
+
 		if ( $rate_scale < 0 || $rate_scale > self::MAXIMUM_RATE_SCALE || $rate->scale() !== $rate_scale ) {
 			throw new \InvalidArgumentException( 'An exchange rate is written with exactly rate_scale fractional digits, and rate_scale is from 0 to 12.' );
 		}
@@ -195,17 +204,18 @@ final class ConversionContext {
 	 * Returns the identity context of a currency: an amount converted to itself.
 	 *
 	 * An order in the base currency references this context, so reporting, refunds and the
-	 * admin never branch on "no conversion" (data storage §3.10): rate 1.000000000000 at scale
-	 * 12, source 'identity', source version 0.
+	 * admin never branch on "no conversion": rate 1.000000000000 at scale 12, source
+	 * 'identity', source version 0, quoted at the Unix epoch. The instant is fixed, not the
+	 * time of the call, so a currency has one identity context with one fingerprint for the
+	 * life of the store, and every base-currency order finds the same row by that fingerprint.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param Currency           $currency  The currency, both base and quote.
-	 * @param \DateTimeImmutable $quoted_at When the identity context was created.
+	 * @param Currency $currency The currency, both base and quote.
 	 * @return self The identity context.
 	 */
-	public static function identity( Currency $currency, \DateTimeImmutable $quoted_at ): self {
-		return new self( $currency, $currency, self::DIRECTION_BASE_TO_QUOTE, Decimal::of( '1.000000000000' ), self::MAXIMUM_RATE_SCALE, 'identity', 0, $quoted_at );
+	public static function identity( Currency $currency ): self {
+		return new self( $currency, $currency, self::DIRECTION_BASE_TO_QUOTE, Decimal::of( '1.000000000000' ), self::MAXIMUM_RATE_SCALE, 'identity', 0, new \DateTimeImmutable( '@0' ) );
 	}
 
 	/**
@@ -303,7 +313,7 @@ final class ConversionContext {
 	 *
 	 * @return string Nine lines joined by a line feed.
 	 */
-	public function canonicalForm(): string {
+	private function canonicalForm(): string {
 		return implode(
 			"\n",
 			array(
@@ -368,7 +378,7 @@ final class ConversionContext {
 	 * @param RoundingMode $mode  How the quotient loses the digits beyond that scale.
 	 * @return Decimal The amount in base major units.
 	 */
-	public function convertToBase( Money $quote, int $scale, RoundingMode $mode ): Decimal {
+	private function convertToBase( Money $quote, int $scale, RoundingMode $mode ): Decimal {
 		CurrencyMismatchException::assertSameCurrency( $this->quoteCurrency, $quote->currency() );
 
 		return $quote->toDecimal()->divide( $this->rate, $scale, $mode );
