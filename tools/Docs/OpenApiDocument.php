@@ -123,7 +123,7 @@ final class OpenApiDocument implements Generator {
 	 */
 	public function generate( string $current ): GenerationResult {
 		try {
-			$document = $this->document();
+			$document = $this->document( $this->registry->all() );
 		} catch ( \LogicException $exception ) {
 			throw new \RuntimeException( $exception->getMessage(), 0, $exception );
 		}
@@ -137,16 +137,17 @@ final class OpenApiDocument implements Generator {
 	 * @since 0.1.0
 	 *
 	 * @throws \RuntimeException When two different resources share a name.
-	 * @throws \LogicException   When an operation is declared wrong, or declares a code the error
-	 *                           table does not have.
 	 *
+	 * @param OperationDefinition[] $definitions The operations.
 	 * @return array<string, mixed> The document.
+	 *
+	 * @phpstan-param list<OperationDefinition> $definitions
 	 */
-	private function document(): array {
+	private function document( array $definitions ): array {
 		$paths      = array();
 		$components = array();
 
-		foreach ( $this->registry->all() as $definition ) {
+		foreach ( $definitions as $definition ) {
 			$rest = $definition->rest();
 
 			if ( null === $rest ) {
