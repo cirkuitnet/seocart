@@ -126,3 +126,12 @@ installation record. The rest is the skeleton and the checks that keep it releas
   with `store.unavailable` (HTTP 503) and says so in an admin notice. When the site's
   address changes, or the site looks like a copy, Safe Mode stops the copy from acting as
   the store until an administrator confirms it.
+- Background jobs on the bundled Action Scheduler, not yet wired into the plugin. A job
+  with a key is queued once; a failing job is retried, then recorded as failed and
+  counted; jobs run on WP-Cron, from `wp seocart jobs run` and from a short tick on admin
+  requests; `wp seocart jobs status` reports them; and cleanup touches only the plugin's
+  own jobs, never another plugin's. The first jobs deliver missed events, prune the event
+  outbox and apply database migrations a little at a time. A request that publishes
+  events ends its response before their listeners run, or, where the server cannot end
+  it early, hands their delivery to the job runner. The main file now loads the bundled
+  Action Scheduler so that it takes part in choosing the newest copy on the site.
