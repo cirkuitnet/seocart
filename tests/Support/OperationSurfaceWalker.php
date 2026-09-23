@@ -15,6 +15,7 @@ use SEOCart\Application\Operations\CliBinding;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Interfaces\Operations\RestAdapter;
+use SEOCart\Platform\Database\Cli\MigrateCommand;
 use SEOCart\Tests\Unit\Support\PhpSource;
 use WP_REST_Server;
 
@@ -45,21 +46,19 @@ final class OperationSurfaceWalker {
 	 *
 	 * Keyed by the command as WP_CLI::add_command() names it, each with the class that implements it
 	 * and the reason it has no definition. A module that adds a maintenance command adds exactly one
-	 * entry here, in the same change as its class, for example:
-	 *
-	 *     'seocart migrate' => array(
-	 *         'class'  => 'SEOCart\\Platform\\Database\\Cli\\MigrateCommand',
-	 *         'reason' => 'Applies schema migrations: operational tooling with no REST route or ability.',
-	 *     ),
-	 *
-	 * The contract test fails until the class is listed, and fails again if the class goes away
-	 * while its entry stays. Empty until the first maintenance command is on this branch.
+	 * entry here, in the same change as its class. The contract test fails until the class is
+	 * listed, and fails again if the class goes away while its entry stays.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var array<string, array{class: string, reason: string}>
 	 */
-	public const MAINTENANCE_COMMANDS = array();
+	public const MAINTENANCE_COMMANDS = array(
+		'seocart migrate' => array(
+			'class'  => MigrateCommand::class,
+			'reason' => 'Applies the pending schema and data migrations: a maintenance tool for operators, with no REST route or ability twin.',
+		),
+	);
 
 	/**
 	 * Checks the plugin's REST routes against the registry.

@@ -9,3 +9,57 @@ Every failure a client can cause is reported with one of these codes, on every s
 - HTTP status: 400
 - Message: {currency} is not a currency code that SEOCart supports.
 - Values: `currency`
+
+## `database.duplicate_key`
+
+- HTTP status: 409
+- Message: The record already exists: the database refused a duplicate value for a unique key (error {errno}, SQLSTATE {sqlstate}).
+- Values: `errno`, `sqlstate`
+
+## `database.forbidden_in_transaction`
+
+- HTTP status: 500
+- Message: Work of the kind {kind} is not allowed while a database transaction is open ({detail}).
+- Values: `kind`, `detail`
+
+## `database.lock_lost`
+
+- HTTP status: 500
+- Message: The lock {name} ({mode}) is no longer held by this process ({reason}).
+- Values: `name`, `mode`, `reason`
+
+## `database.lock_not_acquired`
+
+- HTTP status: 503
+- Message: Another process holds the lock {name}; gave up after waiting {waited} milliseconds. Try again later.
+- Values: `name`, `waited`
+
+## `database.migration_failed`
+
+- HTTP status: 500
+- Message: Database migration {migration_id} failed with {error_code}: {detail}
+- Values: `migration_id`, `error_code`, `detail`
+
+## `database.query_failed`
+
+- HTTP status: 500
+- Message: The database refused a statement with error {errno} (SQLSTATE {sqlstate}).
+- Values: `errno`, `sqlstate`
+
+## `database.transaction_depth`
+
+- HTTP status: 500
+- Message: Database transactions were nested more than {max_depth} levels deep.
+- Values: `max_depth`
+
+## `database.transaction_lost`
+
+- HTTP status: 503
+- Message: The database transaction could not be completed safely ({reason}). Try again.
+- Values: `reason`
+
+## `database.transaction_retryable`
+
+- HTTP status: 503
+- Message: The database ended the operation to resolve a conflict with another request (error {errno}, SQLSTATE {sqlstate}). Try again.
+- Values: `errno`, `sqlstate`
