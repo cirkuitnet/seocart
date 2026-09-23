@@ -4,6 +4,12 @@
 
 Every failure a client can cause is reported with one of these codes, on every surface: the REST API answers with the HTTP status shown, an ability returns the error, and a WP-CLI command prints `<code>: <message>` and exits with a non-zero status. In a message, `{name}` stands for a value the error fills in.
 
+## `authorization.denied`
+
+- HTTP status: 403
+- Message: Sorry, you are not allowed to do that. It requires the {capability} capability.
+- Values: `capability`
+
 ## `currency.unknown`
 
 - HTTP status: 400
