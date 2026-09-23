@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Platform\Settings;
 
 use SEOCart\Platform\Authorization\OptionGrantLedger;
+use SEOCart\Platform\Secrets\SecretKeys;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -41,10 +42,12 @@ final class Settings {
 		return new SettingsRegistry(
 			array_merge(
 				InternationalSettings::settings(),
-				OptionGrantLedger::settings()
+				OptionGrantLedger::settings(),
+				SecretKeys::settings()
 			),
 			array(
 				OptionGrantLedger::GROUP => OptionGrantLedger::PURPOSE,
+				SecretKeys::GROUP        => SecretKeys::PURPOSE,
 			)
 		);
 	}

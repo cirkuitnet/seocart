@@ -16,6 +16,8 @@ use SEOCart\Application\Operations\CliBinding;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Application\Operations\WriteMethod;
+use SEOCart\Platform\Authorization\AuthorizationError;
+use SEOCart\Platform\Secrets\SecretVault;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\ResourceSchema;
 
@@ -35,6 +37,10 @@ defined( 'ABSPATH' ) || exit;
  * to change) and by `wp seocart settings get|update`, and have no ability: changing settings is
  * never exposed to agents. They are the only way settings reach a client; no setting is ever
  * registered with WordPress's own settings API, whose REST endpoint checks `manage_options` alone.
+ *
+ * An exposed secret is an input of the change and never part of any output: the output schema
+ * leaves it out and the service never reads it back. A change that names one also needs
+ * `seocart_manage_secrets`, so it declares the refusal and the codes sealing can end in.
  *
  * Declarations are data: building a definition reads the settings declarations and nothing else.
  *
@@ -128,7 +134,9 @@ final class SettingsOperations {
 		foreach ( $settings->exposed() as $setting ) {
 			$input[] = self::field( $setting->field(), false );
 
-			foreach ( $setting->errors() as $code ) {
+			$codes = $setting->isSecret() ? array_merge( $setting->errors(), array( AuthorizationError::Denied ), SecretVault::SEAL_ERRORS ) : $setting->errors();
+
+			foreach ( $codes as $code ) {
 				if ( ! in_array( $code, $errors, true ) ) {
 					$errors[] = $code;
 				}

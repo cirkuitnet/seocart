@@ -89,6 +89,54 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The database ended the operation to resolve a conflict with another request (error {errno}, SQLSTATE {sqlstate}). Try again.
 - Values: `errno`, `sqlstate`
 
+## `secrets.encryption_key_invalid`
+
+- HTTP status: 500
+- Message: SEOCART_ENCRYPTION_KEY is defined in wp-config.php, but it is not the base64 encoding of 32 bytes.
+- Values: none
+
+## `secrets.key_unavailable`
+
+- HTTP status: 500
+- Message: The data key {key_id} cannot be used: SEOCART_ENCRYPTION_KEY is missing or is not the key that protected it, or its stored form is damaged.
+- Values: `key_id`
+
+## `secrets.keys_damaged`
+
+- HTTP status: 500
+- Message: SEOCart's stored data keys are damaged or missing, although secrets were sealed with them. Nothing was replaced: restore the seocart_data_keys option from a backup.
+- Values: none
+
+## `secrets.no_cipher`
+
+- HTTP status: 500
+- Message: Secrets cannot be sealed or opened: this server provides neither PHP's sodium extension nor the sodium_compat library WordPress ships.
+- Values: none
+
+## `secrets.not_initialized`
+
+- HTTP status: 500
+- Message: Secrets cannot be stored yet: no data key has been created. Deactivate and activate SEOCart to create one.
+- Values: none
+
+## `secrets.rotation_pending`
+
+- HTTP status: 409
+- Message: The data key {key_id} still seals stored secrets. Run wp seocart secrets rekey until it is retired, then rotate again.
+- Values: `key_id`
+
+## `secrets.unknown_key`
+
+- HTTP status: 500
+- Message: A stored secret was sealed with the data key {key_id}, which this site does not have.
+- Values: `key_id`
+
+## `secrets.unreadable`
+
+- HTTP status: 500
+- Message: The stored secret {record} cannot be opened: it was changed, or copied from another record. Enter it again.
+- Values: `record`
+
 ## `settings.stored_value_invalid`
 
 - HTTP status: 500

@@ -13,7 +13,12 @@ namespace SEOCart\Tests\Integration\Settings;
 
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Authorization\Authorizer;
+use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Secrets\EncryptionKey;
+use SEOCart\Platform\Secrets\SecretKeys;
+use SEOCart\Platform\Secrets\SecretVault;
 use SEOCart\Platform\Settings\InternationalSettings;
 use SEOCart\Platform\Settings\Settings;
 use SEOCart\Platform\Settings\SettingsOperations;
@@ -79,17 +84,16 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 
 		parent::set_up();
 
-		$this->store    = new SettingsStore(
-			Settings::registry(),
-			new Database(
-				$wpdb,
-				true,
-				static function ( string $code ): void {
-					throw new \LogicException( 'The database wrapper reported ' . $code ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- a test failure, never rendered.
-				}
-			)
+		$database       = new Database(
+			$wpdb,
+			true,
+			static function ( string $code ): void {
+				throw new \LogicException( 'The database wrapper reported ' . $code ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- a test failure, never rendered.
+			}
 		);
-		$this->service  = new SettingsService( Settings::registry(), $this->store );
+		$this->store    = new SettingsStore( Settings::registry(), $database );
+		$keys           = new SecretKeys( Settings::registry(), $this->store, $database, EncryptionKey::fromValue( null ) );
+		$this->service  = new SettingsService( Settings::registry(), $this->store, new Authorizer( new CapabilityDeclaration() ), new SecretVault( Settings::registry(), $this->store, $keys ), $database );
 		$this->surfaces = new OperationSurfaces( self::registry(), $this->service );
 	}
 

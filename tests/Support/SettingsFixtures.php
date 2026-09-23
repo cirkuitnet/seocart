@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support;
 
+use SEOCart\Platform\Secrets\SecretKeys;
 use SEOCart\Platform\Settings\Setting;
 use SEOCart\Platform\Settings\SettingsRegistry;
 use SEOCart\Support\Currency;
@@ -27,6 +28,10 @@ use SEOCart\Support\SupportError;
  * settings, one of them without a default. Every option name starts with `seocart_fixture_`, so a
  * test that commits can remove them all. Their texts are plain strings rather than gettext calls,
  * so no fixture text can reach the plugin's translation template.
+ *
+ * withSecrets() adds secrets shaped like a gateway's: two exposed scalar secrets, and an internal
+ * document that holds a secret beside an ordinary setting; and the data keys document the vault
+ * needs, whose option, `seocart_data_keys`, is the plugin's own and does not start with the prefix.
  *
  * @since 0.1.0
  */
@@ -58,6 +63,33 @@ final class SettingsFixtures {
 	 * @var string
 	 */
 	public const DOCUMENT = 'fixture_document';
+
+	/**
+	 * The group of the exposed secrets.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const SECRETS = 'fixture_gateway';
+
+	/**
+	 * The group of the internal document that holds a secret.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const VAULT = 'fixture_vault';
+
+	/**
+	 * What the internal document that holds a secret holds.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const VAULT_PURPOSE = 'The webhook endpoint of the fixture gateway and the secret it signs with.';
 
 	/**
 	 * The start of every fixture option name.
@@ -95,6 +127,87 @@ final class SettingsFixtures {
 	 */
 	public static function registry(): SettingsRegistry {
 		return new SettingsRegistry( array_merge( self::scalars(), self::document() ), array( self::DOCUMENT => self::DOCUMENT_PURPOSE ) );
+	}
+
+	/**
+	 * Returns a registry of the exposed scalars, the secrets and the data keys document.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return SettingsRegistry The registry.
+	 */
+	public static function withSecrets(): SettingsRegistry {
+		return new SettingsRegistry(
+			array_merge( self::scalars(), self::secrets(), SecretKeys::settings() ),
+			array(
+				self::VAULT       => self::VAULT_PURPOSE,
+				SecretKeys::GROUP => SecretKeys::PURPOSE,
+			)
+		);
+	}
+
+	/**
+	 * Declares the secrets: two exposed scalars, and a document that holds one beside an ordinary setting.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<Setting> The settings.
+	 */
+	public static function secrets(): array {
+		return array(
+			Setting::scalar(
+				group: self::SECRETS,
+				field: new FieldSpec(
+					name: 'api_key',
+					type: FieldType::String,
+					description: 'Key the fixture gateway signs its calls with.',
+					label: static fn(): string => 'API key',
+					example: 'sk_test_example',
+					max_length: 60,
+					privacy: Privacy::Secret
+				),
+				exposed: true
+			),
+			Setting::scalar(
+				group: self::SECRETS,
+				field: new FieldSpec(
+					name: 'webhook_secret',
+					type: FieldType::String,
+					description: 'Secret the fixture gateway signs its webhooks with.',
+					label: static fn(): string => 'Webhook secret',
+					example: 'whsec_example',
+					max_length: 60,
+					privacy: Privacy::Secret
+				),
+				exposed: true
+			),
+			Setting::inDocument(
+				group: self::VAULT,
+				field: new FieldSpec(
+					name: 'signing_secret',
+					type: FieldType::String,
+					description: 'Secret the fixture endpoint verifies deliveries with.',
+					label: static fn(): string => 'Signing secret',
+					example: 'sign_example',
+					max_length: 80,
+					privacy: Privacy::Secret
+				),
+				exposed: false
+			),
+			Setting::inDocument(
+				group: self::VAULT,
+				field: new FieldSpec(
+					name: 'endpoint',
+					type: FieldType::String,
+					description: 'Address the fixture gateway delivers webhooks to.',
+					label: static fn(): string => 'Endpoint',
+					example: 'https://shop.example/hooks',
+					default_value: 'https://shop.example/hooks',
+					max_length: 200
+				),
+				exposed: false
+			),
+		);
 	}
 
 	/**

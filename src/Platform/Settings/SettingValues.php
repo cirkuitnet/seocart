@@ -22,7 +22,7 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Checks a value against its setting before it is written, and reads a stored value back.
  *
- * This class owns one fact: which values a setting can hold. The store runs check() on every
+ * This class owns one fact: which values a setting can hold. The store runs forStorage() on every
  * write, whoever the writer is, and fromStorage() on every read, so an option edited by hand, or
  * left behind by a declaration that has since changed, is reported rather than used.
  *
@@ -35,6 +35,12 @@ defined( 'ABSPATH' ) || exit;
  * A value that breaks the field's constraints can only come from the plugin's own code — a client's
  * would have been refused by the surface — so check() refuses it with an \InvalidArgumentException.
  * The setting's own check may raise one of its declared codes, which reach the client.
+ *
+ * A secret has two forms. check() judges the plain text, before it is sealed. What the store
+ * writes and reads is the sealed form, which forStorage() and fromStorage() accept only in the
+ * shape a sealed value has — a version tag, such as `v1`, and colon-separated base64url parts —
+ * so a secret cannot reach the options table as plain text by mistake. Which sealed forms exist,
+ * and how they are opened, is the secrets module's business, not this class's.
  *
  * Nothing here calls WordPress.
  *
@@ -59,6 +65,15 @@ final class SettingValues {
 	 * @var string
 	 */
 	private const INTEGER_PATTERN = '/^-?(?:0|[1-9][0-9]*)\z/';
+
+	/**
+	 * The shape of a sealed secret: a version tag, then colon-separated base64url parts.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const SEALED_PATTERN = '/^[a-z][0-9]+(?::[A-Za-z0-9_-]+)+\z/';
 
 	/**
 	 * Cannot be called: the class is used through its static functions only.
@@ -93,6 +108,30 @@ final class SettingValues {
 	}
 
 	/**
+	 * Checks a value about to be stored: the plain value of a setting, or the sealed form of a secret.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \InvalidArgumentException When the value does not fit the field, or a secret is not sealed.
+	 * @phpstan-throws \InvalidArgumentException|CodedException
+	 *
+	 * @param Setting $setting The setting.
+	 * @param mixed   $value   The value, sealed when the setting is a secret.
+	 * @return int|string The value to store.
+	 */
+	public static function forStorage( Setting $setting, mixed $value ): int|string {
+		if ( ! $setting->isSecret() ) {
+			return self::check( $setting, $value );
+		}
+
+		if ( ! is_string( $value ) || 1 !== preg_match( self::SEALED_PATTERN, $value ) ) {
+			throw new \InvalidArgumentException( sprintf( 'The value given for the secret %1$s is not sealed; a secret is stored sealed, never as plain text.', $setting->name() ) );
+		}
+
+		return $value;
+	}
+
+	/**
 	 * Reads a value as the options table or a document holds it.
 	 *
 	 * @since 0.1.0
@@ -111,7 +150,7 @@ final class SettingValues {
 		}
 
 		try {
-			return self::check( $setting, $stored );
+			return self::forStorage( $setting, $stored );
 		} catch ( \InvalidArgumentException | CodedException ) {
 			// Why the value is refused is not the reader's to know; which option holds it is.
 			CodedException::raise( SettingsError::StoredValueInvalid, array( 'option' => $setting->optionName() ) );

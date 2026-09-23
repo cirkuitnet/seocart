@@ -146,6 +146,40 @@ final class SettingValuesTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a secret's plain text is judged by its field, and only its sealed shape is stored or read.
+	 *
+	 * Planted violation: in SettingValues::forStorage(), return `self::check( $setting, $value )` for
+	 * every setting. The plain text then passes as a value to store.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_secret_is_stored_and_read_only_in_its_sealed_shape(): void {
+		$api_key = SettingsFixtures::withSecrets()->setting( 'api_key' );
+		$sealed  = 'v1:0123456789abcdef:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:AAAA';
+
+		$this->assertSame( 'sk_test_plain', SettingValues::check( $api_key, 'sk_test_plain' ), 'The plain text is not judged by the field.' );
+		$this->assertSame( $sealed, SettingValues::forStorage( $api_key, $sealed ) );
+		$this->assertSame( $sealed, SettingValues::fromStorage( $api_key, $sealed ) );
+
+		foreach ( array( 'sk_test_plain', '', 'v1:', 'v1:has space', 'v1:line' . "\n" . 'break', 42 ) as $plain ) {
+			try {
+				SettingValues::forStorage( $api_key, $plain );
+				$this->fail( 'A secret that is not sealed was accepted for storage.' );
+			} catch ( \InvalidArgumentException $refused ) {
+				$this->assertStringNotContainsString( 'sk_test_plain', $refused->getMessage(), 'The refusal repeats the secret.' );
+			}
+
+			try {
+				SettingValues::fromStorage( $api_key, $plain );
+				$this->fail( 'A stored secret that is not sealed was read.' );
+			} catch ( CodedException $reported ) {
+				$this->assertSame( SettingsError::StoredValueInvalid, $reported->errorCode() );
+				$this->assertSame( array( 'option' => 'seocart_fixture_gateway_api_key' ), $reported->context() );
+			}
+		}
+	}
+
+	/**
 	 * Tests that a stored value its setting cannot hold is reported with the option's name, and never used.
 	 *
 	 * @since 0.1.0

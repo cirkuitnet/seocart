@@ -17,6 +17,7 @@ use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Interfaces\Operations\RestAdapter;
 use SEOCart\Platform\Database\Cli\MigrateCommand;
 use SEOCart\Platform\Events\Cli\OutboxCommand;
+use SEOCart\Platform\Secrets\Cli\SecretsCommand;
 use SEOCart\Tests\Unit\Support\PhpSource;
 use WP_REST_Server;
 
@@ -62,6 +63,10 @@ final class OperationSurfaceWalker {
 		'seocart outbox'  => array(
 			'class'  => OutboxCommand::class,
 			'reason' => 'Drains, reports on and prunes the event outbox: a maintenance tool for operators, with no REST route or ability twin.',
+		),
+		'seocart secrets' => array(
+			'class'  => SecretsCommand::class,
+			'reason' => 'Reports on the data keys (status), creates a new one (rotate) and re-seals the stored secrets with it (rekey): key management for operators on the server, which no REST route or ability may offer.',
 		),
 	);
 

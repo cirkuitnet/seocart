@@ -347,6 +347,98 @@ final class SettingsStoreTest extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Tests that a read of what is stored goes past a cache that lags behind the database.
+	 *
+	 * The cache is made to hold an older value, as a persistent cache could after another request
+	 * wrote. values() is served the cached value; valuesAsStored() and documentAsStored() read the
+	 * table, and cache nothing.
+	 *
+	 * Planted violation: in SettingsStore::storedValues(), ignore `$as_stored`. valuesAsStored() is
+	 * then served the cached value.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_read_of_what_is_stored_goes_past_the_cache(): void {
+		$weight = SettingsFixtures::registry()->setting( 'weight_unit' );
+
+		$this->store->writeScalars( array( 'weight_unit' => 'lb' ) );
+		$this->assertSame( 'lb', $this->store->value( 'weight_unit' ) );
+
+		wp_cache_set( $weight->optionName(), 'oz', 'options' );
+
+		$this->assertSame( array( 'weight_unit' => 'oz' ), $this->store->values( array( $weight ) ), 'The cache was not stale, so the test proves nothing.' );
+		$this->assertSame( array( 'weight_unit' => 'lb' ), $this->store->valuesAsStored( array( $weight ) ) );
+		$this->assertSame( 'oz', wp_cache_get( $weight->optionName(), 'options' ), 'Reading what is stored cached it.' );
+	}
+
+	/**
+	 * Tests that an independent setting is swapped only while it holds the value read.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_scalar_is_swapped_only_while_it_holds_the_value_read(): void {
+		$this->store->writeScalars( array( 'weight_unit' => 'lb' ) );
+
+		$this->assertFalse( $this->store->swapScalar( 'weight_unit', 'kg', 'oz' ), 'A swap from a value the option no longer holds went through.' );
+		$this->assertSame( array( 'seocart_fixture_scalars_weight_unit' => array( 'lb', 'off' ) ), self::rows( 'seocart_fixture_scalars_weight_unit' ) );
+		$this->assertTrue( $this->store->swapScalar( 'weight_unit', 'lb', 'oz' ) );
+		$this->assertSame( 'oz', $this->store->value( 'weight_unit' ) );
+
+		try {
+			$this->store->swapScalar( 'weight_unit', 'oz', 'stone' );
+			$this->fail( 'A swap to a value the setting refuses went through.' );
+		} catch ( \InvalidArgumentException $refused ) {
+			$this->assertSame( 'oz', $this->store->value( 'weight_unit' ) );
+		}
+	}
+
+	/**
+	 * Tests that a document is read under a lock only inside a transaction, where the lock would last.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_document_is_read_under_a_lock_only_inside_a_transaction(): void {
+		foreach ( array( 'documentForShare', 'documentForUpdate' ) as $read ) {
+			try {
+				$this->store->$read( SettingsFixtures::DOCUMENT );
+				$this->fail( "{$read}() read outside a transaction." );
+			} catch ( \LogicException ) {
+				$this->addToAssertionCount( 1 );
+			}
+		}
+	}
+
+	/**
+	 * Tests that the stored text of one setting is read past a broken neighbour, and past the cache.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_settings_stored_text_is_read_past_its_neighbours(): void {
+		$this->assertNull( $this->store->storedText( 'account' ) );
+		$this->assertNull( $this->store->storedText( 'weight_unit' ) );
+
+		$this->store->replaceDocument( SettingsFixtures::DOCUMENT, 0, array( 'account' => 'acct_1' ) );
+		$this->store->writeScalars( array( 'weight_unit' => 'lb' ) );
+
+		self::storeRaw( 'seocart_fixture_scalars_hold_minutes', 'many' );
+
+		global $wpdb;
+
+		$wpdb->update( $wpdb->options, array( 'option_value' => '{"version":1,"values":{"account":"acct_1","retries":99}}' ), array( 'option_name' => 'seocart_fixture_document' ) );
+		wp_cache_set( 'seocart_fixture_scalars_weight_unit', 'oz', 'options' );
+
+		$this->assertSame( 'acct_1', $this->store->storedText( 'account' ), 'A broken neighbour hid the text.' );
+		$this->assertFalse( $this->store->storedText( 'retries' ), 'A number was read as text.' );
+		$this->assertNull( $this->store->storedText( 'mode' ) );
+		$this->assertSame( 'lb', $this->store->storedText( 'weight_unit' ), 'The cache was read.' );
+		$this->assertSame( 'many', $this->store->storedText( 'hold_minutes' ) );
+
+		$wpdb->update( $wpdb->options, array( 'option_value' => 'not json' ), array( 'option_name' => 'seocart_fixture_document' ) );
+
+		$this->assertFalse( $this->store->storedText( 'account' ) );
+	}
+
+	/**
 	 * Tests that an option holding something its setting cannot hold is reported by name, never used.
 	 *
 	 * @since 0.1.0

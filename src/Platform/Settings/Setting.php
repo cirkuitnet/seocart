@@ -14,6 +14,7 @@ namespace SEOCart\Platform\Settings;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Error\ErrorCode;
 use SEOCart\Support\Schema\FieldSpec;
+use SEOCart\Support\Schema\FieldType;
 use SEOCart\Support\Schema\Privacy;
 use SEOCart\Support\Schema\SchemaException;
 
@@ -40,17 +41,22 @@ defined( 'ABSPATH' ) || exit;
  *   value to store, and it refuses a value by raising one of the error codes declared with it, or
  *   an \InvalidArgumentException for a value no client can send.
  *
+ * A field of the privacy class Privacy::Secret makes the setting a secret: text that is stored
+ * sealed, never as plain text, and that no read ever returns. Its field and its check describe
+ * the plain text, which is checked before it is sealed; the option holds the sealed form.
+ *
  * What the constructors refuse, so that a wrong declaration cannot be registered:
  *
  * - a group that is not snake_case, or the group `boot`, whose option name is the kernel's;
  * - an option name longer than the options table holds;
  * - a required or nullable field: a setting always has a value, the stored one or its default;
- * - an exposed setting without a default, which a read could not answer;
+ * - an exposed setting without a default, which a read could not answer, unless it is a secret,
+ *   which no read returns;
+ * - a secret with a default, which would be a secret written in the code, or that is not text;
  * - a default the setting would refuse, or would store as another value: every site that never
  *   saved the setting reads its default, so the default obeys the same rules as a write (the
  *   check is pure, so running it here costs nothing but the check);
- * - a personal-data or secret field: those need the privacy handling that comes with them, and
- *   no setting declared so far needs it.
+ * - a personal-data field: it needs the exporter and eraser handling that no setting has yet.
  *
  * Declarations are data: constructing a setting performs no I/O, calls no WordPress function and
  * translates nothing.
@@ -177,12 +183,18 @@ final class Setting {
 			SchemaException::raise( 'The setting %1$s is declared required or nullable; a setting always has a value, the stored one or its default, so declare neither.', $name );
 		}
 
-		if ( $exposed && null === $field->defaultValue() ) {
+		$secret = Privacy::Secret === $field->privacy();
+
+		if ( $exposed && ! $secret && null === $field->defaultValue() ) {
 			SchemaException::raise( 'The setting %1$s is exposed but has no default, so a read of a site that never saved it would have nothing to return.', $name );
 		}
 
-		if ( Privacy::Pii === $field->privacy() || Privacy::Secret === $field->privacy() ) {
-			SchemaException::raise( 'The setting %1$s holds personal data or a secret, which needs privacy handling that settings do not have yet.', $name );
+		if ( $secret && ( null !== $field->defaultValue() || FieldType::String !== $field->type() ) ) {
+			SchemaException::raise( 'The secret %1$s must be text without a default: a default would be a secret written in the code.', $name );
+		}
+
+		if ( Privacy::Pii === $field->privacy() ) {
+			SchemaException::raise( 'The setting %1$s holds personal data, which needs exporter and eraser handling that settings do not have yet.', $name );
 		}
 
 		foreach ( $errors as $index => $code ) {
@@ -330,6 +342,32 @@ final class Setting {
 		return Storage::Scalar === $this->storage
 			? self::OPTION_PREFIX . $this->group . '_' . $this->field->name()
 			: self::OPTION_PREFIX . $this->group;
+	}
+
+	/**
+	 * Tells whether the setting is a secret: stored sealed, and returned by no read.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool True when its field's privacy class is Privacy::Secret.
+	 */
+	public function isSecret(): bool {
+		return Privacy::Secret === $this->field->privacy();
+	}
+
+	/**
+	 * Returns the name that identifies the setting's value wherever it is stored.
+	 *
+	 * A sealed secret is bound to this name, so a sealed value copied into another setting does
+	 * not open there.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string The option name, a slash, and the setting's name, such as
+	 *                `seocart_data_keys/active_data_key`.
+	 */
+	public function recordName(): string {
+		return $this->optionName() . '/' . $this->field->name();
 	}
 
 	/**

@@ -52,6 +52,8 @@ defined( 'ABSPATH' ) || exit;
  *   stored back: two writers editing a shared list at once would each store the other's stale
  *   copy. The next reader rebuilds them. Inside a transaction all three are deleted again after
  *   the commit, and on a rollback, so no reader is served the value it replaced.
+ * - A secret is stored and returned in its sealed form only: the store refuses a secret that is
+ *   not sealed, and never opens one. Sealing and opening belong to the secrets module.
  *
  * Every write is checked in full before anything is written, so a write refused for one value
  * writes none of the others.
@@ -103,6 +105,27 @@ final class SettingsStore {
 	 * @var string
 	 */
 	private const READ_ROW = 'SELECT option_value FROM %i WHERE option_name = %s';
+
+	/**
+	 * The statement that reads a document's row and holds a shared lock on it until the transaction ends.
+	 *
+	 * The lock lets other readers through and makes every writer of the row wait. The syntax is the
+	 * one MySQL and MariaDB both accept.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const READ_ROW_FOR_SHARE = 'SELECT option_value FROM %i WHERE option_name = %s LOCK IN SHARE MODE';
+
+	/**
+	 * The statement that reads a document's row and holds an exclusive lock on it until the transaction ends.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const READ_ROW_FOR_UPDATE = 'SELECT option_value FROM %i WHERE option_name = %s FOR UPDATE';
 
 	/**
 	 * The object-cache group core keeps options in.
@@ -178,13 +201,51 @@ final class SettingsStore {
 	 * @phpstan-param list<Setting> $settings
 	 */
 	public function values( array $settings ): array {
+		return $this->read( $settings, false );
+	}
+
+	/**
+	 * Reads settings from the database, past the object cache, and caches nothing.
+	 *
+	 * For a writer that must decide on what is committed now rather than on what a cache
+	 * remembers, such as the re-sealing that retires a data key only when no stored secret names it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException With SettingsError::StoredValueInvalid when an option holds a value its
+	 *                        setting cannot hold.
+	 *
+	 * @param Setting[] $settings Settings of the registry.
+	 * @return array<string, int|string|null> Each value, keyed by setting name, as values() returns it.
+	 *
+	 * @phpstan-param list<Setting> $settings
+	 */
+	public function valuesAsStored( array $settings ): array {
+		return $this->read( $settings, true );
+	}
+
+	/**
+	 * Reads settings, through the object cache or past it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException With SettingsError::StoredValueInvalid when an option holds a value its
+	 *                        setting cannot hold.
+	 *
+	 * @param Setting[] $settings  Settings of the registry.
+	 * @param bool      $as_stored Whether to read the database past the object cache.
+	 * @return array<string, int|string|null> Each value, keyed by setting name.
+	 *
+	 * @phpstan-param list<Setting> $settings
+	 */
+	private function read( array $settings, bool $as_stored ): array {
 		$groups = array();
 
 		foreach ( $settings as $setting ) {
 			$groups[ $setting->group() ] = true;
 		}
 
-		$stored    = $this->storedValues( array_keys( $groups ) );
+		$stored    = $this->storedValues( array_keys( $groups ), $as_stored );
 		$documents = array();
 		$values    = array();
 
@@ -245,7 +306,7 @@ final class SettingsStore {
 				throw new \InvalidArgumentException( 'The setting ' . $setting->name() . ' is stored in a document; write it with replaceDocument().' );
 			}
 
-			$checked[ $setting->optionName() ] = SettingValues::toOption( SettingValues::check( $setting, $value ) );
+			$checked[ $setting->optionName() ] = SettingValues::toOption( SettingValues::forStorage( $setting, $value ) );
 		}
 
 		$table = $this->database->prefix() . 'options';
@@ -258,6 +319,40 @@ final class SettingsStore {
 			$this->forget( $option );
 			$this->settle( $option );
 		}
+	}
+
+	/**
+	 * Replaces an independent setting's value, only if it still holds exactly the value read.
+	 *
+	 * The compare-and-swap of one option, for a writer that must not overwrite a value written
+	 * after it read, such as the job that re-seals secrets under a new key.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \InvalidArgumentException When the name is not a scalar setting, or the new value does
+	 *                                   not fit it.
+	 * @phpstan-throws \InvalidArgumentException|CodedException
+	 *
+	 * @param string     $name        The setting's name.
+	 * @param int|string $read        The value the writer read, as values() returned it.
+	 * @param int|string $replacement The value to store instead.
+	 * @return bool True when the value was replaced; false when the option no longer held the value read.
+	 */
+	public function swapScalar( string $name, int|string $read, int|string $replacement ): bool {
+		$setting = $this->registry->setting( $name );
+
+		if ( Storage::Scalar !== $setting->storage() ) {
+			throw new \InvalidArgumentException( 'The setting ' . $setting->name() . ' is stored in a document; replace it with replaceDocument().' );
+		}
+
+		$option  = $setting->optionName();
+		$written = maybe_serialize( SettingValues::toOption( SettingValues::forStorage( $setting, $replacement ) ) );
+		$swapped = 1 === $this->database->execute( self::COMPARE_AND_SWAP, $this->database->prefix() . 'options', $written, $option, maybe_serialize( SettingValues::toOption( $read ) ) );
+
+		$this->forget( $option );
+		$this->settle( $option );
+
+		return $swapped;
 	}
 
 	/**
@@ -275,7 +370,7 @@ final class SettingsStore {
 	public function document( string $group ): SettingsDocument {
 		$option = $this->documentOption( $group );
 
-		return $this->decode( $group, $this->storedValues( array( $group ) )[ $option ] );
+		return $this->decode( $group, $this->storedValues( array( $group ), false )[ $option ] );
 	}
 
 	/**
@@ -296,6 +391,113 @@ final class SettingsStore {
 		$row = $this->readRow( $this->documentOption( $group ) );
 
 		return $this->decode( $group, null === $row ? false : maybe_unserialize( $row ) );
+	}
+
+	/**
+	 * Reads a group's document from the database and keeps it from changing until the transaction ends.
+	 *
+	 * For a writer whose write depends on the document staying as it read it, such as a secret
+	 * sealed with the data key the document names: until the caller's transaction ends, every writer
+	 * of the document waits. Caches nothing.
+	 *
+	 * A group that is not a document is refused with an \InvalidArgumentException, and an option
+	 * that does not hold a document the group can hold with SettingsError::StoredValueInvalid.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open, so the lock would end at once.
+	 * @phpstan-throws \LogicException|\InvalidArgumentException|CodedException
+	 *
+	 * @param string $group The group.
+	 * @return SettingsDocument The document: version 0 and no values when it was never written.
+	 */
+	public function documentForShare( string $group ): SettingsDocument {
+		return $this->lockedDocument( $group, self::READ_ROW_FOR_SHARE );
+	}
+
+	/**
+	 * Reads a group's document from the database and keeps every other transaction from reading it for share or writing it until this one ends.
+	 *
+	 * For a writer that must know nothing writes, or holds the document for share, while it decides:
+	 * the retirement of a data key waits for every secret being sealed or re-sealed. Caches nothing.
+	 *
+	 * A group that is not a document is refused with an \InvalidArgumentException, and an option
+	 * that does not hold a document the group can hold with SettingsError::StoredValueInvalid.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open, so the lock would end at once.
+	 * @phpstan-throws \LogicException|\InvalidArgumentException|CodedException
+	 *
+	 * @param string $group The group.
+	 * @return SettingsDocument The document: version 0 and no values when it was never written.
+	 */
+	public function documentForUpdate( string $group ): SettingsDocument {
+		return $this->lockedDocument( $group, self::READ_ROW_FOR_UPDATE );
+	}
+
+	/**
+	 * Returns the text one setting is stored as, past the cache, without checking it or anything stored beside it.
+	 *
+	 * For code that must account for every stored value even when the store cannot read it as a
+	 * setting: the re-sealing counts the secrets a data key still seals from the header of their
+	 * sealed text, so a secret whose document holds a broken neighbour is still counted.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $name The setting's name.
+	 * @return string|false|null The stored text; null when nothing is stored for it; false when
+	 *                           something is, but not as text: its option is not text, or its
+	 *                           document is not a JSON document.
+	 */
+	public function storedText( string $name ): string|false|null {
+		$setting = $this->registry->setting( $name );
+		$row     = $this->readRow( $setting->optionName() );
+
+		if ( null === $row ) {
+			return null;
+		}
+
+		$stored = maybe_unserialize( $row );
+
+		if ( Storage::Scalar === $setting->storage() ) {
+			return is_string( $stored ) ? $stored : false;
+		}
+
+		$data = is_string( $stored ) ? json_decode( $stored, true ) : null;
+
+		if ( ! is_array( $data ) || ! is_array( $data['values'] ?? null ) ) {
+			return false;
+		}
+
+		if ( ! array_key_exists( $name, $data['values'] ) ) {
+			return null;
+		}
+
+		return is_string( $data['values'][ $name ] ) ? $data['values'][ $name ] : false;
+	}
+
+	/**
+	 * Reads a group's document with a locking read.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open.
+	 * @phpstan-throws \LogicException|\InvalidArgumentException|CodedException
+	 *
+	 * @param string $group     The group.
+	 * @param string $statement READ_ROW_FOR_SHARE or READ_ROW_FOR_UPDATE.
+	 * @return SettingsDocument The document.
+	 */
+	private function lockedDocument( string $group, string $statement ): SettingsDocument {
+		if ( 0 === $this->database->depth() ) {
+			throw new \LogicException( 'The document ' . $group . ' can be read under a lock only inside a transaction.' );
+		}
+
+		$option = $this->documentOption( $group );
+		$row    = $this->database->fetchValue( $statement, $this->database->prefix() . 'options', $option );
+
+		return $this->decode( $group, null === $row ? false : maybe_unserialize( (string) $row ) );
 	}
 
 	/**
@@ -327,7 +529,7 @@ final class SettingsStore {
 
 		foreach ( $settings as $setting ) {
 			if ( array_key_exists( $setting->name(), $values ) ) {
-				$checked[ $setting->name() ] = SettingValues::check( $setting, $values[ $setting->name() ] );
+				$checked[ $setting->name() ] = SettingValues::forStorage( $setting, $values[ $setting->name() ] );
 			}
 		}
 
@@ -375,21 +577,22 @@ final class SettingsStore {
 	/**
 	 * Returns what every option of the given groups holds, as get_option() would.
 	 *
-	 * Normally the options are primed with one query and read through the object cache. While
-	 * this store has writes pending in an open transaction, each option is read from the database
-	 * instead and nothing is cached: priming and get_option() may load `alloptions`, and when a site
-	 * has no autoloaded option at all, core's fallback caches every option in it, the uncommitted
-	 * ones included.
+	 * Normally the options are primed with one query and read through the object cache. When the
+	 * caller asks for what is stored, and while this store has writes pending in an open
+	 * transaction, each option is read from the database instead and nothing is cached: priming and
+	 * get_option() may load `alloptions`, and when a site has no autoloaded option at all, core's
+	 * fallback caches every option in it, the uncommitted ones included.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string[] $groups The groups.
+	 * @param string[] $groups    The groups.
+	 * @param bool     $as_stored Whether to read the database past the object cache.
 	 * @return array<string, mixed> What each option holds, false when it does not exist, keyed by
 	 *                              option name.
 	 *
 	 * @phpstan-param list<string> $groups
 	 */
-	private function storedValues( array $groups ): array {
+	private function storedValues( array $groups, bool $as_stored ): array {
 		$options = array();
 
 		foreach ( $groups as $group ) {
@@ -398,7 +601,7 @@ final class SettingsStore {
 			}
 		}
 
-		if ( array() !== $this->written && 0 !== $this->database->depth() ) {
+		if ( $as_stored || ( array() !== $this->written && 0 !== $this->database->depth() ) ) {
 			foreach ( array_keys( $options ) as $option ) {
 				$row = $this->readRow( $option );
 

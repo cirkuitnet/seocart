@@ -17,6 +17,7 @@ use SEOCart\Platform\Authorization\OptionGrantLedger;
 use SEOCart\Platform\Database\Schema\Classification;
 use SEOCart\Platform\DataRegistry\OptionDefinition;
 use SEOCart\Platform\DataRegistry\OwnedData;
+use SEOCart\Platform\Secrets\SecretKeys;
 use SEOCart\Platform\Settings\InternationalSettings;
 use SEOCart\Platform\Settings\Setting;
 use SEOCart\Platform\Settings\Settings;
@@ -33,7 +34,7 @@ use SEOCart\Tests\Support\SettingsFixtures;
 /**
  * The registry and the settings it is built from.
  *
- * The production list is pinned by name: the two options the plugin stores so far, with the
+ * The production list is pinned by name: the three options the plugin stores so far, with the
  * settings each holds. Every rule the constructors enforce has a case that breaks it.
  *
  * @since 0.1.0
@@ -41,11 +42,11 @@ use SEOCart\Tests\Support\SettingsFixtures;
 final class SettingsRegistryTest extends TestCase {
 
 	/**
-	 * Tests that the production list holds the base currency and the grant record, and exposes the base currency only.
+	 * Tests that the production list holds the base currency, the grant record and the data keys, and exposes the base currency only.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_production_list_holds_the_base_currency_and_the_grant_record(): void {
+	public function test_the_production_list_holds_the_base_currency_the_grant_record_and_the_data_keys(): void {
 		$registry = Settings::registry();
 		$roles    = ( new CapabilityDeclaration() )->roles();
 		$options  = array_map( static fn( array $settings ): array => array_map( static fn( Setting $setting ): string => $setting->name(), $settings ), $registry->options() );
@@ -54,6 +55,7 @@ final class SettingsRegistryTest extends TestCase {
 			array(
 				'seocart_international_base_currency' => array( InternationalSettings::BASE_CURRENCY ),
 				'seocart_capability_grants'           => $roles,
+				'seocart_data_keys'                   => array( SecretKeys::ACTIVE, SecretKeys::RETIRING, SecretKeys::CANARY ),
 			),
 			$options
 		);
@@ -66,6 +68,38 @@ final class SettingsRegistryTest extends TestCase {
 			$this->assertSame( Storage::Document, $setting->storage() );
 			$this->assertFalse( $setting->isExposed(), 'The grant record is internal.' );
 		}
+
+		foreach ( $registry->group( SecretKeys::GROUP ) as $setting ) {
+			$this->assertSame( Storage::Document, $setting->storage() );
+			$this->assertFalse( $setting->isExposed(), 'The data keys are internal.' );
+			$this->assertTrue( $setting->isSecret(), 'A data key slot is not classified secret.' );
+		}
+	}
+
+	/**
+	 * Tests that a secret is text without a default, may be exposed without one, and names its record.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_secret_is_text_without_a_default_and_names_its_record(): void {
+		$secret = Setting::scalar(
+			'gateway',
+			self::field(
+				'api_key',
+				array(
+					'privacy'       => Privacy::Secret,
+					'default_value' => null,
+				)
+			),
+			true
+		);
+		$slot   = Settings::registry()->setting( SecretKeys::CANARY );
+
+		$this->assertTrue( $secret->isSecret() );
+		$this->assertTrue( $secret->isExposed() );
+		$this->assertSame( 'seocart_gateway_api_key/api_key', $secret->recordName() );
+		$this->assertSame( 'seocart_data_keys/secrets_canary', $slot->recordName() );
+		$this->assertFalse( Setting::scalar( 'gateway', self::field( 'mode' ), true )->isSecret() );
 	}
 
 	/**
@@ -122,6 +156,7 @@ final class SettingsRegistryTest extends TestCase {
 			array(
 				'seocart_international_base_currency' => array( 'Settings', 'ISO 4217 code of the currency the store keeps its accounts in, in upper case.', false, Classification::Public ),
 				'seocart_capability_grants'           => array( 'Settings', OptionGrantLedger::PURPOSE, false, Classification::Public ),
+				'seocart_data_keys'                   => array( 'Settings', SecretKeys::PURPOSE, false, Classification::Secret ),
 			),
 			self::described( Settings::registry()->optionDefinitions() )
 		);
@@ -206,8 +241,24 @@ final class SettingsRegistryTest extends TestCase {
 			),
 			'a nullable field'                      => array( static fn() => Setting::scalar( 'g', self::field( 'a', array( 'nullable' => true ) ), false ), 'required or nullable' ),
 			'an exposed setting without a default'  => array( static fn() => Setting::scalar( 'g', self::field( 'a', array( 'default_value' => null ) ), true ), 'exposed but has no default' ),
-			'a personal-data setting'               => array( static fn() => Setting::scalar( 'g', self::field( 'a', array( 'privacy' => Privacy::Pii ) ), false ), 'personal data or a secret' ),
-			'a secret setting'                      => array( static fn() => Setting::scalar( 'g', self::field( 'a', array( 'privacy' => Privacy::Secret ) ), false ), 'personal data or a secret' ),
+			'a personal-data setting'               => array( static fn() => Setting::scalar( 'g', self::field( 'a', array( 'privacy' => Privacy::Pii ) ), false ), 'holds personal data' ),
+			'a secret with a default'               => array( static fn() => Setting::scalar( 'g', self::field( 'a', array( 'privacy' => Privacy::Secret ) ), false ), 'must be text without a default' ),
+			'a secret that is not text'             => array(
+				static fn() => Setting::scalar(
+					'g',
+					self::field(
+						'a',
+						array(
+							'privacy'       => Privacy::Secret,
+							'type'          => FieldType::Integer,
+							'example'       => 1,
+							'default_value' => null,
+						)
+					),
+					false
+				),
+				'must be text without a default',
+			),
 			'error codes without a check'           => array( static fn() => Setting::scalar( 'g', self::field( 'a' ), false, null, array( SupportError::UnknownCurrency ) ), 'no check that could raise them' ),
 			'an error code twice'                   => array( static fn() => Setting::scalar( 'g', self::field( 'a' ), false, static fn( int|string $value ): int|string => $value, array( SupportError::UnknownCurrency, SupportError::UnknownCurrency ) ), 'distinct cases' ),
 			'an option name the table cannot hold'  => array( static fn() => Setting::scalar( str_repeat( 'g', 170 ), self::field( 'a_rather_long_setting_name' ), false ), 'longer than the 191 characters' ),
