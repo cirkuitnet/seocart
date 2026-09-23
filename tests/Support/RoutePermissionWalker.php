@@ -17,13 +17,16 @@ use WP_REST_Server;
 /**
  * Walks the routes of a booted REST server and reports every violation of the permission rules.
  *
- * Every route whose namespace, or whose path, starts with `seocart` is examined. Each of its
- * endpoints must be guarded by the plugin's permission-callback type, and the route must have
- * a schema. "Went through the shared factory" is checked structurally: the callback must be a
- * PermissionCallback. Any other callable, whether `__return_true`, a closure, a function name
- * or an array callable, is a violation whatever it returns, because it escapes the one
- * permission path. The public-read marker is a PermissionCallback too, and it is a violation
- * on any endpoint that accepts POST, PUT, PATCH or DELETE.
+ * Every route whose namespace, or whose path, starts with `seocart` in any letter case is
+ * examined: WordPress matches routes without regard to case, so `SEOCart/v1` serves a request
+ * for `seocart/v1` and is the plugin's too. Each of its endpoints must be guarded by the
+ * plugin's permission-callback type, and the route must have a schema. "Went through the
+ * shared factory" is checked structurally: the callback must be a PermissionCallback, which
+ * cannot be built for a capability the plugin does not declare. Any other callable, whether
+ * `__return_true`, a closure, a function name or an array callable, is a violation whatever it
+ * returns, because it escapes the one permission path. The public-read marker is a
+ * PermissionCallback too, and it is allowed only on an endpoint whose every method is GET or
+ * HEAD: an allow-list, so a method nobody thought of, such as LINK, is refused as well.
  *
  * The one route that is skipped is the namespace index core registers for every namespace,
  * `/<namespace>`, served by WP_REST_Server::get_namespace_index(): it is core's, and core gives
@@ -55,13 +58,13 @@ final class RoutePermissionWalker {
 	public const RULE_FOREIGN_CALLBACK = 'permission-callback-not-the-plugin-type';
 
 	/**
-	 * Rule: an endpoint that changes state is marked as a public read.
+	 * Rule: an endpoint marked as a public read accepts a method other than GET or HEAD.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const RULE_PUBLIC_READ_ON_WRITE = 'public-read-on-a-mutating-method';
+	public const RULE_PUBLIC_READ_BEYOND_GET = 'public-read-on-a-method-other-than-get-or-head';
 
 	/**
 	 * Rule: a route has no schema.
@@ -73,7 +76,7 @@ final class RoutePermissionWalker {
 	public const RULE_MISSING_SCHEMA = 'schema-missing';
 
 	/**
-	 * The prefix of every namespace, and every route path, that the walk examines.
+	 * The prefix of every namespace, and every route path, that the walk examines, in any letter case.
 	 *
 	 * @since 0.1.0
 	 *
@@ -82,13 +85,13 @@ final class RoutePermissionWalker {
 	private const PLUGIN_PREFIX = 'seocart';
 
 	/**
-	 * The HTTP methods that change state.
+	 * The only HTTP methods a public-read endpoint may accept.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var list<string>
 	 */
-	private const MUTATING_METHODS = array( 'POST', 'PUT', 'PATCH', 'DELETE' );
+	private const PUBLIC_READ_METHODS = array( 'GET', 'HEAD' );
 
 	/**
 	 * Walks every route of a booted server.
@@ -96,15 +99,17 @@ final class RoutePermissionWalker {
 	 * @since 0.1.0
 	 *
 	 * @param WP_REST_Server $server A server on which `rest_api_init` has run.
-	 * @return array{routes_examined: int, plugin_routes: list<string>, violations: list<array{route: string, method: string, rule: string, message: string}>}
-	 *         How many routes the server has in all, which of them were walked, and what is wrong with them.
+	 * @return array{routes_visited: int, plugin_routes: list<string>, violations: list<array{route: string, method: string, rule: string, message: string}>}
+	 *         How many routes the walk looked at, which of them it checked as the plugin's, and what is wrong with them.
 	 */
 	public function walk( WP_REST_Server $server ): array {
-		$routes        = $server->get_routes();
+		$visited       = 0;
 		$plugin_routes = array();
 		$violations    = array();
 
-		foreach ( $routes as $route => $handlers ) {
+		foreach ( $server->get_routes() as $route => $handlers ) {
+			++$visited;
+
 			$route           = (string) $route;
 			$options         = $server->get_route_options( $route );
 			$route_namespace = is_array( $options ) && isset( $options['namespace'] ) ? (string) $options['namespace'] : '';
@@ -134,9 +139,9 @@ final class RoutePermissionWalker {
 		}
 
 		return array(
-			'routes_examined' => count( $routes ),
-			'plugin_routes'   => $plugin_routes,
-			'violations'      => $violations,
+			'routes_visited' => $visited,
+			'plugin_routes'  => $plugin_routes,
+			'violations'     => $violations,
 		);
 	}
 
@@ -186,13 +191,13 @@ final class RoutePermissionWalker {
 					'is guarded by ' . self::describeCallback( $callback ) . ", which is not the plugin's permission-callback type and escapes the one permission path whatever it returns",
 					'use PermissionCallback::requiring() or PermissionCallback::requiringOn(), or PermissionCallback::publicRead() for a read that is public on purpose.'
 				);
-			} elseif ( $callback->isPublicRead() && in_array( $method, self::MUTATING_METHODS, true ) ) {
+			} elseif ( $callback->isPublicRead() && ! in_array( strtoupper( (string) $method ), self::PUBLIC_READ_METHODS, true ) ) {
 				$violations[] = self::violation(
 					$route,
 					$method,
-					self::RULE_PUBLIC_READ_ON_WRITE,
-					'changes state but is marked PermissionCallback::publicRead()',
-					"require the capability the operation declares, with PermissionCallback::requiring( '<capability>' ); the public-read marker is for GET only."
+					self::RULE_PUBLIC_READ_BEYOND_GET,
+					'is marked PermissionCallback::publicRead(), which allows GET and HEAD only',
+					"require the capability the operation declares, with PermissionCallback::requiring( '<capability>' ), or serve the public read on GET."
 				);
 			}
 		}
@@ -225,16 +230,18 @@ final class RoutePermissionWalker {
 	 * Tells whether a route belongs to the plugin.
 	 *
 	 * The path is checked as well as the namespace, so an endpoint added through the
-	 * `rest_endpoints` filter, which carries no namespace, is walked too.
+	 * `rest_endpoints` filter, which carries no namespace, is walked too. Both comparisons ignore
+	 * letter case, as WordPress does when it matches a request to a route.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param string $route           The route, with its leading slash.
 	 * @param string $route_namespace The namespace it was registered in, or an empty string.
-	 * @return bool True for a route in a `seocart*` namespace or under a `/seocart*` path.
+	 * @return bool True for a route in a `seocart*` namespace or under a `/seocart*` path, in any letter case.
 	 */
 	private static function isPluginRoute( string $route, string $route_namespace ): bool {
-		return str_starts_with( $route_namespace, self::PLUGIN_PREFIX ) || str_starts_with( ltrim( $route, '/' ), self::PLUGIN_PREFIX );
+		return 0 === strncasecmp( $route_namespace, self::PLUGIN_PREFIX, strlen( self::PLUGIN_PREFIX ) )
+			|| 0 === strncasecmp( ltrim( $route, '/' ), self::PLUGIN_PREFIX, strlen( self::PLUGIN_PREFIX ) );
 	}
 
 	/**

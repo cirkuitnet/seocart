@@ -23,9 +23,9 @@ use WP_UnitTestCase;
  *
  * The real walk boots a fresh REST server exactly as a request does, so every route the plugin
  * registers on `rest_api_init` is walked. It fails, naming route, method, rule and fix, when an
- * endpoint of a `seocart*` namespace has no permission callback, has one that is not the
- * plugin's PermissionCallback type, or uses the public-read marker for POST, PUT, PATCH or
- * DELETE, and when a route has no schema.
+ * endpoint of a `seocart*` namespace, in any letter case, has no permission callback, has one
+ * that is not the plugin's PermissionCallback type, or uses the public-read marker for a method
+ * other than GET or HEAD, and when a route has no schema.
  *
  * The self-tests keep their planted violations as permanent fixtures, in the namespace
  * `seocart-walker-selftest/v1`, which the walker selects like any plugin namespace. The route
@@ -49,6 +49,15 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 	private const SELFTEST_NAMESPACE = 'seocart-walker-selftest/v1';
 
 	/**
+	 * The plugin's namespace spelt in another letter case, for the fixture that must not escape the walk.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const UPPERCASE_NAMESPACE = 'SEOCart/v1';
+
+	/**
 	 * Discards the REST server, so the next test boots one without these fixtures.
 	 *
 	 * @since 0.1.0
@@ -70,6 +79,9 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 	 * `add_action( 'rest_api_init', static function (): void { register_rest_route( 'seocart/v1', '/planted', array( 'methods' => 'POST', 'callback' => '__return_null', 'permission_callback' => '__return_true' ) ); } );`.
 	 * The failure must name `POST /seocart/v1/planted` twice: for the callback and for the missing schema.
 	 *
+	 * Planted violation for the count of visited routes: in RoutePermissionWalker::walk(), add
+	 * `if ( $visited > 10 ) { break; }` directly after `++$visited;`.
+	 *
 	 * @since 0.1.0
 	 */
 	public function test_the_plugins_own_routes_pass_the_walk(): void {
@@ -81,7 +93,7 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 
 		$walk = ( new RoutePermissionWalker() )->walk( $server );
 
-		$this->assertSame( count( $server->get_routes() ), $walk['routes_examined'], 'The walker did not look at every route of the server.' );
+		$this->assertSame( count( $server->get_routes() ), $walk['routes_visited'], 'The walker stopped before it had looked at every route of the server.' );
 		$this->assertSame(
 			array(),
 			$walk['violations'],
@@ -91,6 +103,14 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 
 	/**
 	 * Tests that every planted violation is reported, and nothing else.
+	 *
+	 * Planted violations in the walker, each of which must make this test fail:
+	 * - in isPluginRoute(), compare with `str_starts_with()`, which is case-sensitive: the
+	 *   `SEOCart/v1` fixture is no longer reported;
+	 * - in checkEndpoint(), replace the public-read allow-list with a list of the methods that
+	 *   change state, `! in_array( …, self::PUBLIC_READ_METHODS, true )` becoming
+	 *   `in_array( …, array( 'POST', 'PUT', 'PATCH', 'DELETE' ), true )`: the LINK fixture is no
+	 *   longer reported.
 	 *
 	 * @since 0.1.0
 	 */
@@ -113,10 +133,12 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 				array( $route . '/function-name', 'GET', RoutePermissionWalker::RULE_FOREIGN_CALLBACK ),
 				array( $route . '/array-callable', 'PUT', RoutePermissionWalker::RULE_FOREIGN_CALLBACK ),
 				array( $route . '/missing-callback', 'POST', RoutePermissionWalker::RULE_MISSING_CALLBACK ),
-				array( $route . '/public-read-delete', 'DELETE', RoutePermissionWalker::RULE_PUBLIC_READ_ON_WRITE ),
-				array( $route . '/public-read-editable', 'POST', RoutePermissionWalker::RULE_PUBLIC_READ_ON_WRITE ),
-				array( $route . '/public-read-editable', 'PUT', RoutePermissionWalker::RULE_PUBLIC_READ_ON_WRITE ),
-				array( $route . '/public-read-editable', 'PATCH', RoutePermissionWalker::RULE_PUBLIC_READ_ON_WRITE ),
+				array( $route . '/public-read-delete', 'DELETE', RoutePermissionWalker::RULE_PUBLIC_READ_BEYOND_GET ),
+				array( $route . '/public-read-editable', 'POST', RoutePermissionWalker::RULE_PUBLIC_READ_BEYOND_GET ),
+				array( $route . '/public-read-editable', 'PUT', RoutePermissionWalker::RULE_PUBLIC_READ_BEYOND_GET ),
+				array( $route . '/public-read-editable', 'PATCH', RoutePermissionWalker::RULE_PUBLIC_READ_BEYOND_GET ),
+				array( $route . '/public-read-link', 'LINK', RoutePermissionWalker::RULE_PUBLIC_READ_BEYOND_GET ),
+				array( '/' . self::UPPERCASE_NAMESPACE . '/uppercase-namespace', 'POST', RoutePermissionWalker::RULE_FOREIGN_CALLBACK ),
 				array( $route . '/no-schema', 'GET', RoutePermissionWalker::RULE_MISSING_SCHEMA ),
 				array( $route . '/added-by-filter', 'POST', RoutePermissionWalker::RULE_FOREIGN_CALLBACK ),
 				array( $route . '/added-by-filter', 'POST', RoutePermissionWalker::RULE_MISSING_SCHEMA ),
@@ -142,10 +164,23 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 
 		wp_set_current_user( 0 );
 
-		foreach ( array( 'POST /return-true', 'PUT /array-callable', 'POST /missing-callback', 'DELETE /public-read-delete', 'PATCH /public-read-editable' ) as $endpoint ) {
+		$route     = '/' . self::SELFTEST_NAMESPACE;
+		$endpoints = array(
+			'POST ' . $route . '/return-true',
+			'PUT ' . $route . '/array-callable',
+			'POST ' . $route . '/missing-callback',
+			'DELETE ' . $route . '/public-read-delete',
+			'PATCH ' . $route . '/public-read-editable',
+			'LINK ' . $route . '/public-read-link',
+			'POST /' . self::UPPERCASE_NAMESPACE . '/uppercase-namespace',
+			// WordPress matches routes without regard to case, so the plugin's own spelling reaches it too.
+			'POST /' . strtolower( self::UPPERCASE_NAMESPACE ) . '/uppercase-namespace',
+		);
+
+		foreach ( $endpoints as $endpoint ) {
 			list( $method, $path ) = explode( ' ', $endpoint );
 
-			$status = rest_do_request( new WP_REST_Request( $method, '/' . self::SELFTEST_NAMESPACE . $path ) )->get_status();
+			$status = rest_do_request( new WP_REST_Request( $method, $path ) )->get_status();
 
 			$this->assertSame( 200, $status, "{$endpoint}: the plant did not let a visitor through, so it does not show what the walker guards against." );
 		}
@@ -225,7 +260,17 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 			)
 		);
 		self::registerRoute( '/public-read-editable', array( self::endpoint( WP_REST_Server::EDITABLE, PermissionCallback::publicRead() ) ) );
+		self::registerRoute( '/public-read-link', array( self::endpoint( 'LINK', PermissionCallback::publicRead() ) ) );
 		self::registerRoute( '/no-schema', array( self::endpoint( 'GET', PermissionCallback::requiring( 'seocart_view_orders' ) ) ), false );
+
+		register_rest_route(
+			self::UPPERCASE_NAMESPACE,
+			'/uppercase-namespace',
+			array(
+				self::endpoint( 'POST', '__return_true' ),
+				'schema' => array( self::class, 'schema' ),
+			)
+		);
 
 		self::registerCompliantRoutes();
 	}
@@ -239,14 +284,14 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 		self::registerRoute(
 			'/compliant',
 			array(
-				self::endpoint( 'GET', PermissionCallback::publicRead() ),
+				self::endpoint( 'GET, HEAD', PermissionCallback::publicRead() ),
 				self::endpoint( 'POST', PermissionCallback::requiring( 'seocart_manage_catalog' ) ),
 			)
 		);
 		self::registerRoute(
 			'/compliant/(?P<id>[\d]+)',
 			array(
-				self::endpoint( WP_REST_Server::DELETABLE, PermissionCallback::requiringOn( 'seocart_selftest_view_widget', 'id' ) ),
+				self::endpoint( WP_REST_Server::DELETABLE, PermissionCallback::requiringOn( 'seocart_view_order', 'id' ) ),
 			)
 		);
 	}
@@ -308,7 +353,7 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array{routes_examined: int, plugin_routes: list<string>, violations: list<array{route: string, method: string, rule: string, message: string}>} The walk.
+	 * @return array{routes_visited: int, plugin_routes: list<string>, violations: list<array{route: string, method: string, rule: string, message: string}>} The walk.
 	 */
 	private function walkPlantedRoutes(): array {
 		add_action( 'rest_api_init', array( self::class, 'registerPlantedRoutes' ) );

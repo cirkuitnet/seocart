@@ -122,13 +122,57 @@ final class CapabilityMapperTest extends WP_UnitTestCase {
 	public function test_a_meta_capability_resolves_per_resource_and_an_unresolvable_one_denies(): void {
 		$administrator = self::factory()->user->create( array( 'role' => 'administrator' ) );
 
+		$this->registerOrderResolver();
+
+		get_role( 'administrator' )->add_cap( 'seocart_view_orders' );
+		get_role( 'administrator' )->add_cap( 'seocart_view_order' );
+
+		$this->assertTrue( user_can( $administrator, 'seocart_view_order', 42 ), 'The resolvable resource.' );
+		$this->assertFalse( user_can( $administrator, 'seocart_view_order', 7 ), 'A resource the resolver cannot resolve.' );
+		$this->assertFalse( user_can( $administrator, 'seocart_view_order' ), 'No resource at all.' );
+
+		get_role( 'administrator' )->remove_cap( 'seocart_view_orders' );
+
+		$this->assertFalse( user_can( $administrator, 'seocart_view_order', 42 ), 'The resolver names a primitive the role no longer holds.' );
+	}
+
+	/**
+	 * Tests that a resolver naming a core capability admits nobody, not even users who hold it.
+	 *
+	 * Every subscriber holds `read`, so a resolver that answered `read` would open the resource
+	 * to every customer; the first assertion shows that without the mapper, it would.
+	 *
+	 * Planted violation: in CapabilityMapper::map(), change the check on each resolved primitive
+	 * to `! is_string( $primitive ) || ( $this->declaration->isPluginCapability( $primitive ) && ! $this->declaration->isPrimitive( $primitive ) )`.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_resolver_naming_a_core_capability_admits_nobody(): void {
+		$subscriber = self::factory()->user->create( array( 'role' => 'subscriber' ) );
+
+		$this->registerOrderResolver();
+
+		$this->assertTrue( user_can( $subscriber, 'read' ), 'The subscriber does not hold read, so the denial below would prove nothing.' );
+		$this->assertFalse( user_can( $subscriber, 'seocart_view_order', 43 ), 'A resolver answer of read admitted a subscriber.' );
+		$this->assertFalse( user_can( $subscriber, 'seocart_view_order', 44 ), 'A resolver answer of exist admitted a subscriber.' );
+	}
+
+	/**
+	 * Registers the test resolver for `seocart_view_order`.
+	 *
+	 * Resource 42 needs the order-viewing primitive; resources 43 and 44 are answered, wrongly,
+	 * with core's `read` and `exist`; nothing else resolves.
+	 *
+	 * @since 0.1.0
+	 */
+	private function registerOrderResolver(): void {
 		$this->mapper->registerMetaCapability(
-			'seocart_selftest_view_widget',
+			'seocart_view_order',
 			static function (): MetaCapabilityResolver {
 				return new class() implements MetaCapabilityResolver {
 
 					/**
-					 * Knows one resource, 42, which needs the order-viewing primitive.
+					 * Maps the three known resources.
 					 *
 					 * @since 0.1.0
 					 *
@@ -137,22 +181,17 @@ final class CapabilityMapperTest extends WP_UnitTestCase {
 					 * @return list<string>|null The primitives, or null for any other resource.
 					 */
 					public function primitivesFor( int $userId, array $args ): ?array {
-						return 42 === ( $args[0] ?? null ) ? array( 'seocart_view_orders' ) : null;
+						$answers = array(
+							42 => array( 'seocart_view_orders' ),
+							43 => array( 'read' ),
+							44 => array( 'exist' ),
+						);
+
+						return $answers[ $args[0] ?? 0 ] ?? null;
 					}
 				};
 			}
 		);
-
-		get_role( 'administrator' )->add_cap( 'seocart_view_orders' );
-		get_role( 'administrator' )->add_cap( 'seocart_selftest_view_widget' );
-
-		$this->assertTrue( user_can( $administrator, 'seocart_selftest_view_widget', 42 ), 'The resolvable resource.' );
-		$this->assertFalse( user_can( $administrator, 'seocart_selftest_view_widget', 7 ), 'A resource the resolver cannot resolve.' );
-		$this->assertFalse( user_can( $administrator, 'seocart_selftest_view_widget' ), 'No resource at all.' );
-
-		get_role( 'administrator' )->remove_cap( 'seocart_view_orders' );
-
-		$this->assertFalse( user_can( $administrator, 'seocart_selftest_view_widget', 42 ), 'The resolver names a primitive the role no longer holds.' );
 	}
 
 	/**

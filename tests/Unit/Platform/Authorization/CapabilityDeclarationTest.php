@@ -164,15 +164,35 @@ final class CapabilityDeclarationTest extends TestCase {
 	}
 
 	/**
-	 * Tests that meta capabilities are declared apart, and never granted to a role.
+	 * Tests that meta capabilities are declared apart, as security.md §4.4 names them, and never granted to a role.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_meta_capabilities_are_never_primitives_nor_granted(): void {
 		$this->assertSame(
-			array( 'edit_seocart_product', 'read_seocart_product', 'delete_seocart_product' ),
-			$this->declaration->metaCapabilities()
+			array( 'seocart_view_order', 'seocart_edit_order', 'seocart_refund_order', 'seocart_view_customer' ),
+			$this->declaration->pluginMetaCapabilities(),
+			'The meta capabilities the plugin maps itself.'
 		);
+
+		$this->assertSame(
+			array_merge( ProductCapabilities::metaCapabilities(), $this->declaration->pluginMetaCapabilities() ),
+			$this->declaration->metaCapabilities(),
+			'Every meta capability: the product post type\'s, which core maps, then the plugin\'s own.'
+		);
+
+		foreach ( ProductCapabilities::metaCapabilities() as $meta ) {
+			$this->assertTrue( $this->declaration->isMetaCapability( $meta ), $meta );
+			$this->assertFalse( $this->declaration->isPluginMetaCapability( $meta ), $meta . ' is core\'s to map, not a resolver\'s.' );
+		}
+
+		foreach ( $this->declaration->pluginMetaCapabilities() as $meta ) {
+			$this->assertTrue( $this->declaration->isPluginMetaCapability( $meta ), $meta );
+			$this->assertTrue( $this->declaration->isPluginCapability( $meta ), $meta . ' is outside the plugin\'s namespace, so the mapper would never see it.' );
+		}
+
+		$this->assertFalse( $this->declaration->isMetaCapability( 'seocart_view_orders' ), 'A primitive is not a meta capability.' );
+		$this->assertFalse( $this->declaration->isMetaCapability( 'edit_post' ), 'Core\'s own meta capability is not the plugin\'s.' );
 
 		foreach ( $this->declaration->metaCapabilities() as $meta ) {
 			$this->assertTrue( $this->declaration->isMetaCapability( $meta ), $meta );

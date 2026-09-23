@@ -24,9 +24,9 @@ use WP_UnitTestCase;
 /**
  * Registers test routes guarded by each kind of PermissionCallback and dispatches requests to them.
  *
- * The one map_meta_cap callback is hooked with a test meta capability,
- * `seocart_selftest_view_widget`, whose resolver knows one resource, 42, and records every
- * identifier it is asked about.
+ * The one map_meta_cap callback is hooked with a test resolver for the declared meta capability
+ * `seocart_view_order`, which knows one resource, 42, and records every identifier it is asked
+ * about. What a callback may be built for is proven by the unit test of the same name.
  *
  * @since 0.1.0
  */
@@ -65,7 +65,7 @@ final class PermissionCallbackTest extends WP_UnitTestCase {
 		self::$resolved = array();
 
 		$mapper = new CapabilityMapper( new CapabilityDeclaration() );
-		$mapper->registerMetaCapability( 'seocart_selftest_view_widget', array( self::class, 'widgetResolver' ) );
+		$mapper->registerMetaCapability( 'seocart_view_order', array( self::class, 'widgetResolver' ) );
 
 		add_filter( 'map_meta_cap', array( $mapper, 'map' ), 10, 4 );
 		add_action( 'rest_api_init', array( self::class, 'registerRoutes' ) );
@@ -168,45 +168,16 @@ final class PermissionCallbackTest extends WP_UnitTestCase {
 	 */
 	public function test_with_policy_returns_a_narrowed_copy(): void {
 		$administrator = self::factory()->user->create( array( 'role' => 'administrator' ) );
-		$original      = PermissionCallback::requiring( 'read' );
+		$original      = PermissionCallback::requiring( 'seocart_manage_catalog' );
 		$narrowed      = $original->withPolicy( self::policy( false ) );
 		$request       = new WP_REST_Request( 'GET', '/' . self::NAMESPACE . '/any' );
 
+		get_role( 'administrator' )->add_cap( 'seocart_manage_catalog' );
 		wp_set_current_user( $administrator );
 
 		$this->assertNotSame( $original, $narrowed );
 		$this->assertTrue( $original( $request ), 'Adding a policy changed the original.' );
 		$this->assertFalse( $narrowed( $request ) );
-	}
-
-	/**
-	 * Tests that a callback cannot be built without a capability or a resource parameter.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @dataProvider emptyNames
-	 *
-	 * @param callable(): PermissionCallback $build Builds a callback with an empty name.
-	 */
-	public function test_empty_names_are_refused( callable $build ): void {
-		$this->expectException( \InvalidArgumentException::class );
-
-		$build();
-	}
-
-	/**
-	 * Provides constructions with an empty name.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return array<string, array{callable(): PermissionCallback}>
-	 */
-	public function emptyNames(): array {
-		return array(
-			'empty capability'         => array( static fn(): PermissionCallback => PermissionCallback::requiring( '' ) ),
-			'blank capability'         => array( static fn(): PermissionCallback => PermissionCallback::requiringOn( ' ', 'id' ) ),
-			'empty resource parameter' => array( static fn(): PermissionCallback => PermissionCallback::requiringOn( 'seocart_selftest_view_widget', '' ) ),
-		);
 	}
 
 	/**
@@ -217,8 +188,8 @@ final class PermissionCallbackTest extends WP_UnitTestCase {
 	public static function registerRoutes(): void {
 		$routes = array(
 			'/capability'              => array( 'POST', PermissionCallback::requiring( 'seocart_manage_catalog' ) ),
-			'/widgets/(?P<id>[\w-]+)'  => array( 'GET', PermissionCallback::requiringOn( 'seocart_selftest_view_widget', 'id' ) ),
-			'/widgets-without-id'      => array( 'GET', PermissionCallback::requiringOn( 'seocart_selftest_view_widget', 'id' ) ),
+			'/widgets/(?P<id>[\w-]+)'  => array( 'GET', PermissionCallback::requiringOn( 'seocart_view_order', 'id' ) ),
+			'/widgets-without-id'      => array( 'GET', PermissionCallback::requiringOn( 'seocart_view_order', 'id' ) ),
 			'/public'                  => array( 'GET', PermissionCallback::publicRead() ),
 			'/denied-by-policy'        => array( 'POST', PermissionCallback::requiring( 'seocart_manage_catalog' )->withPolicy( self::policy( false ) ) ),
 			'/allowed-by-policy'       => array( 'POST', PermissionCallback::requiring( 'seocart_manage_catalog' )->withPolicy( self::policy( true ) ) ),

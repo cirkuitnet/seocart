@@ -17,15 +17,17 @@ defined( 'ABSPATH' ) || exit;
  * The one declaration of what may be granted, and to which role.
  *
  * This class owns one fact: the plugin's capabilities and the bundles its roles carry. The
- * installer grants from it, the map_meta_cap callback denies whatever it does not declare,
- * and the ownership registry and the deletion job read the same lists, so no second copy of
- * the vocabulary exists anywhere.
+ * installer grants from it, the map_meta_cap callback denies whatever it does not declare, a
+ * permission callback refuses to be built for anything it does not declare, and the ownership
+ * registry and the deletion job read the same lists, so no second copy of the vocabulary
+ * exists anywhere.
  *
- * Primitives are what roles are granted. Meta capabilities are resolved per resource and are
- * never role-assignable: the product post type's three are declared by ProductCapabilities and
- * mapped by core; the plugin's own arrive with the modules that register their resolvers with
- * CapabilityMapper. A capability that is in the plugin's namespace and is neither is unknown,
- * and unknown means denied.
+ * Primitives are what roles are granted. Meta capabilities are checked on one resource and are
+ * never role-assignable. The product post type's three are declared by ProductCapabilities and
+ * mapped by core. The plugin's own are declared here and mapped by the resolvers that modules
+ * register with CapabilityMapper; until a module registers one, it is denied. A capability that
+ * is in the plugin's namespace and is neither a primitive nor a meta capability is unknown, and
+ * unknown means denied.
  *
  * No code ever asks whether a user has one of these roles. A role exists only to make a set of
  * capabilities assignable, and a merchant may edit or replace it.
@@ -137,6 +139,21 @@ final class CapabilityDeclaration {
 		'seocart_manage_appearance'    => self::GROUP_STORE,
 		'seocart_view_reports'         => self::GROUP_STORE,
 		'seocart_manage_integrations'  => self::GROUP_STORE,
+	);
+
+	/**
+	 * The meta capabilities the plugin maps itself: each is checked on one resource, through the
+	 * resolver its module registers with CapabilityMapper, and is denied until one is registered.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<string>
+	 */
+	private const PLUGIN_META_CAPABILITIES = array(
+		'seocart_view_order',
+		'seocart_edit_order',
+		'seocart_refund_order',
+		'seocart_view_customer',
 	);
 
 	/**
@@ -263,26 +280,49 @@ final class CapabilityDeclaration {
 	}
 
 	/**
-	 * Returns the meta capabilities this declaration knows: the product post type's.
+	 * Returns every meta capability: the product post type's, then the plugin's own.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @return list<string> The meta capabilities.
 	 */
 	public function metaCapabilities(): array {
-		return ProductCapabilities::metaCapabilities();
+		return array_merge( ProductCapabilities::metaCapabilities(), self::PLUGIN_META_CAPABILITIES );
 	}
 
 	/**
-	 * Tells whether a capability is one of the product post type's meta capabilities.
+	 * Tells whether a capability is a declared meta capability, the product post type's or the plugin's own.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param string $capability A capability name.
-	 * @return bool True for a meta capability of the product post type.
+	 * @return bool True for a declared meta capability.
 	 */
 	public function isMetaCapability( string $capability ): bool {
-		return in_array( $capability, ProductCapabilities::metaCapabilities(), true );
+		return in_array( $capability, $this->metaCapabilities(), true );
+	}
+
+	/**
+	 * Returns the meta capabilities the plugin maps itself, through CapabilityMapper's resolvers.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<string> The meta capabilities, without the product post type's, which core maps.
+	 */
+	public function pluginMetaCapabilities(): array {
+		return self::PLUGIN_META_CAPABILITIES;
+	}
+
+	/**
+	 * Tells whether a capability is one the plugin maps itself, through a resolver.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $capability A capability name.
+	 * @return bool True for a declared meta capability that is not the product post type's.
+	 */
+	public function isPluginMetaCapability( string $capability ): bool {
+		return in_array( $capability, self::PLUGIN_META_CAPABILITIES, true );
 	}
 
 	/**

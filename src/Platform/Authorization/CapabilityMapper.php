@@ -27,16 +27,20 @@ defined( 'ABSPATH' ) || exit;
  * For a capability in the plugin's namespace (CapabilityDeclaration::isPluginCapability()):
  *
  * - a declared primitive passes through unchanged;
- * - a registered meta capability is resolved by its module's resolver, and denied when the
- *   resource cannot be resolved or the resolver names a capability the plugin never declared;
+ * - one of the plugin's declared meta capabilities with a registered resolver maps to the
+ *   primitives the resolver names. It is denied when the resolver cannot resolve the resource,
+ *   when building or asking the resolver fails, and when the answer names anything but declared
+ *   plugin primitives: a core capability such as `read` would admit every customer;
  * - anything else is denied with `do_not_allow`, which core honours even for a multisite super
- *   admin. That covers an unknown name, a meta capability nobody registered, and one of the
- *   product post type's meta capabilities checked while the post type is not registered.
+ *   admin. That covers an unknown name, a declared meta capability no module has registered a
+ *   resolver for yet, and one of the product post type's meta capabilities checked while the
+ *   post type is not registered.
  *
- * Every other capability, core's and other plugins', is left exactly as it came. Core maps the
- * product post type's meta capabilities itself, through ProductCapabilities::map(), before this
- * filter sees them, and the filter then sees `edit_post`, `read_post` or `delete_post`, which
- * it leaves alone.
+ * Every other capability, core's and other plugins', is left exactly as it came, and so is
+ * anything that is not a capability name at all: a foreign bug such as `current_user_can( null )`
+ * stays core's to answer and never becomes an exception here. Core maps the product post type's
+ * meta capabilities itself, through ProductCapabilities::map(), before this filter sees them,
+ * and the filter then sees `edit_post`, `read_post` or `delete_post`, which it leaves alone.
  *
  * Resolvers are registered as factories and built on first use, so hooking the mapper costs an
  * idle request nothing beyond the objects themselves.
@@ -97,24 +101,15 @@ final class CapabilityMapper {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string                             $capability The meta capability, in the plugin's namespace.
-	 * @param callable(): MetaCapabilityResolver $factory Builds the resolver on the first check that needs it.
+	 * @param string                             $capability One of CapabilityDeclaration::pluginMetaCapabilities().
+	 * @param callable(): MetaCapabilityResolver $factory    Builds the resolver on the first check that needs it.
 	 *
-	 * @throws \InvalidArgumentException When the name is outside the plugin's namespace, is already a
-	 *                                   primitive or one of the product post type's meta capabilities,
-	 *                                   or already has a resolver.
+	 * @throws \InvalidArgumentException When the capability is not one of the plugin's declared meta
+	 *                                   capabilities, or already has a resolver.
 	 */
 	public function registerMetaCapability( string $capability, callable $factory ): void {
-		if ( ! $this->declaration->isPluginCapability( $capability ) ) {
-			throw new \InvalidArgumentException( 'A meta capability must be named in the plugin\'s namespace.' );
-		}
-
-		if ( $this->declaration->isPrimitive( $capability ) ) {
-			throw new \InvalidArgumentException( 'A primitive capability, which roles are granted, cannot also be a meta capability.' );
-		}
-
-		if ( $this->declaration->isMetaCapability( $capability ) ) {
-			throw new \InvalidArgumentException( 'The product post type\'s meta capabilities are mapped by core, not by a resolver.' );
+		if ( ! $this->declaration->isPluginMetaCapability( $capability ) ) {
+			throw new \InvalidArgumentException( 'Only a meta capability that CapabilityDeclaration declares for the plugin to map can have a resolver.' );
 		}
 
 		if ( isset( $this->factories[ $capability ] ) ) {
@@ -139,16 +134,22 @@ final class CapabilityMapper {
 	/**
 	 * Filters `map_meta_cap`: maps a plugin capability to primitives, or denies it.
 	 *
+	 * The parameters are not typed: the values arrive from whatever called current_user_can() and
+	 * from the filters that ran before this one, and a wrong type there is someone else's bug,
+	 * which must not turn a capability check into an exception.
+	 *
 	 * @since 0.1.0
 	 *
-	 * @param string[]          $caps   The primitives core mapped the capability to.
-	 * @param string            $cap    The capability being checked.
-	 * @param int               $userId The user being checked.
-	 * @param array<int, mixed> $args   What followed the capability in the check, the resource first.
-	 * @return string[] The primitives the user must hold, or `do_not_allow` alone.
+	 * @param mixed $caps   The primitives core mapped the capability to: string[] from core.
+	 * @param mixed $cap    The capability being checked: a string from any correct caller.
+	 * @param mixed $userId The user being checked: an int from core.
+	 * @param mixed $args   What followed the capability in the check, the resource first: an array from core.
+	 * @return mixed `$caps` unchanged for anything that is not a plugin capability or is a plugin
+	 *               primitive; otherwise the declared primitives the user must hold, or
+	 *               `do_not_allow` alone.
 	 */
-	public function map( array $caps, string $cap, int $userId, array $args ): array {
-		if ( ! $this->declaration->isPluginCapability( $cap ) || $this->declaration->isPrimitive( $cap ) ) {
+	public function map( $caps, $cap, $userId, $args ) {
+		if ( ! is_string( $cap ) || ! $this->declaration->isPluginCapability( $cap ) || $this->declaration->isPrimitive( $cap ) ) {
 			return $caps;
 		}
 
@@ -156,15 +157,20 @@ final class CapabilityMapper {
 			return array( self::DENY );
 		}
 
-		$primitives = $this->resolver( $cap )->primitivesFor( $userId, $args );
+		try {
+			$primitives = $this->resolver( $cap )->primitivesFor( is_numeric( $userId ) ? (int) $userId : 0, is_array( $args ) ? $args : array() );
+		} catch ( \Throwable $failure ) {
+			// A resolver that cannot answer has not granted anything. The logger arrives with the logging module.
+			return array( self::DENY );
+		}
 
 		if ( null === $primitives || array() === $primitives ) {
 			return array( self::DENY );
 		}
 
 		foreach ( $primitives as $primitive ) {
-			// A resolver may name core primitives, but never a plugin capability that is not a declared primitive.
-			if ( $this->declaration->isPluginCapability( $primitive ) && ! $this->declaration->isPrimitive( $primitive ) ) {
+			// @phpstan-ignore function.alreadyNarrowedType (A resolver is module code; an answer of the wrong type must deny, not throw.)
+			if ( ! is_string( $primitive ) || ! $this->declaration->isPrimitive( $primitive ) ) {
 				return array( self::DENY );
 			}
 		}

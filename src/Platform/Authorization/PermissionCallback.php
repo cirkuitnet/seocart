@@ -30,14 +30,24 @@ defined( 'ABSPATH' ) || exit;
  *
  * Three kinds exist:
  *
- * - requiring(): a primitive capability, or a meta capability checked without a resource;
- * - requiringOn(): a meta capability checked on the resource a request parameter names. When
- *   the request names no usable resource, the answer is false without asking anyone;
+ * - requiring(): one of the plugin's declared primitives;
+ * - requiringOn(): one of the declared meta capabilities, checked on the resource a request
+ *   parameter names. When the request names no usable resource, the answer is false without
+ *   asking anyone;
  * - publicRead(): the named marker for a route that is public on purpose. It checks nothing,
  *   so "intentionally public" is a written decision rather than an omission, and the walker
- *   refuses it on any route that accepts POST, PUT, PATCH or DELETE.
+ *   refuses it on any endpoint that accepts a method other than GET or HEAD.
+ *
+ * A callback is checked against CapabilityDeclaration when it is built, and cannot be built
+ * for anything else. A core capability such as `exist` or `read` would admit every visitor or
+ * every customer, and a primitive checked "on a resource" would ignore the resource, so both
+ * are refused. A public write is not one of the kinds on purpose: the Store API defines its own,
+ * which cannot exist without a RequestPolicy.
  *
  * Any kind can be narrowed further with withPolicy(), the seam described by RequestPolicy.
+ *
+ * The class is final because the walker recognises the plugin's callbacks with `instanceof`: a
+ * subclass could override __invoke() and still pass for one.
  *
  * @since 0.1.0
  */
@@ -84,17 +94,21 @@ final class PermissionCallback {
 	}
 
 	/**
-	 * Creates a callback that requires a capability.
+	 * Creates a callback that requires one of the plugin's primitives.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string $capability The capability the current user must hold.
+	 * @param string $capability A primitive CapabilityDeclaration declares.
 	 * @return self The callback.
 	 *
-	 * @throws \InvalidArgumentException When the capability name is empty.
+	 * @throws \InvalidArgumentException When the capability is not a declared plugin primitive.
 	 */
 	public static function requiring( string $capability ): self {
-		return new self( self::nonEmpty( $capability ), null );
+		if ( ! ( new CapabilityDeclaration() )->isPrimitive( $capability ) ) {
+			throw new \InvalidArgumentException( 'PermissionCallback::requiring() accepts only a primitive capability that CapabilityDeclaration declares.' );
+		}
+
+		return new self( $capability, null );
 	}
 
 	/**
@@ -102,14 +116,23 @@ final class PermissionCallback {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string $capability        The meta capability the current user must hold on the resource.
+	 * @param string $capability        A meta capability CapabilityDeclaration declares.
 	 * @param string $resourceParameter The request parameter that carries the resource identifier.
 	 * @return self The callback.
 	 *
-	 * @throws \InvalidArgumentException When either name is empty.
+	 * @throws \InvalidArgumentException When the capability is not a declared meta capability, or
+	 *                                   the parameter name is empty.
 	 */
 	public static function requiringOn( string $capability, string $resourceParameter ): self {
-		return new self( self::nonEmpty( $capability ), self::nonEmpty( $resourceParameter ) );
+		if ( ! ( new CapabilityDeclaration() )->isMetaCapability( $capability ) ) {
+			throw new \InvalidArgumentException( 'PermissionCallback::requiringOn() accepts only a meta capability that CapabilityDeclaration declares; a primitive would ignore the resource.' );
+		}
+
+		if ( '' === trim( $resourceParameter ) ) {
+			throw new \InvalidArgumentException( 'PermissionCallback::requiringOn() needs the name of the request parameter that carries the resource.' );
+		}
+
+		return new self( $capability, $resourceParameter );
 	}
 
 	/**
@@ -224,23 +247,5 @@ final class PermissionCallback {
 		}
 
 		return is_string( $value ) && '' !== trim( $value ) ? $value : null;
-	}
-
-	/**
-	 * Refuses an empty name.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $name What was given.
-	 * @return string The name.
-	 *
-	 * @throws \InvalidArgumentException When the name is empty.
-	 */
-	private static function nonEmpty( string $name ): string {
-		if ( '' === trim( $name ) ) {
-			throw new \InvalidArgumentException( 'A permission callback needs a capability name, and a resource parameter name when it checks a resource.' );
-		}
-
-		return $name;
 	}
 }

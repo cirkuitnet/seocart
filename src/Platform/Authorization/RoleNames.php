@@ -42,15 +42,18 @@ final class RoleNames {
 	/**
 	 * Filters `gettext_with_context_default`: translates a shipped role's name in the plugin's domain.
 	 *
+	 * The parameters are not typed: another filter on the same hook may hand on a value of the
+	 * wrong type, and that bug must not become an exception on every screen that translates.
+	 *
 	 * @since 0.1.0
 	 *
-	 * @param string $translation What core's text domain made of the text.
-	 * @param string $text        The text being translated.
-	 * @param string $context     The gettext context.
-	 * @return string The plugin's translation for one of its role names; otherwise the translation unchanged.
+	 * @param mixed $translation What core's text domain made of the text: a string from core.
+	 * @param mixed $text        The text being translated: a string from core.
+	 * @param mixed $context     The gettext context: a string from core.
+	 * @return mixed The plugin's translation for one of its role names; otherwise `$translation` unchanged.
 	 */
-	public static function translate( string $translation, string $text, string $context ): string {
-		if ( self::CONTEXT !== $context ) {
+	public static function translate( $translation, $text, $context ) {
+		if ( ! is_string( $translation ) || ! is_string( $text ) || self::CONTEXT !== $context ) {
 			return $translation;
 		}
 
