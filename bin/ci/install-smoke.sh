@@ -110,12 +110,40 @@ site_wp() {
 	wp --path="$site" "$@"
 }
 
+# Prints what the built-in server left behind when a request fails: whether it is still
+# running or how it ended, and the end of its log and of the debug log. Cleanup deletes
+# $work, so without this a failed request leaves no record of why.
+server_evidence() {
+	if kill -0 "$server_pid" 2>/dev/null; then
+		printf 'install-smoke: the built-in server (pid %s) is still running.\n' "$server_pid" >&2
+	else
+		# A status above 128 is 128 plus the signal that ended it: 139 is SIGSEGV.
+		server_status=0
+		wait "$server_pid" 2>/dev/null || server_status=$?
+		printf 'install-smoke: the built-in server (pid %s) exited with status %s.\n' "$server_pid" "$server_status" >&2
+		server_pid=''
+	fi
+
+	printf 'install-smoke: the end of the server log:\n' >&2
+	tail -n 40 "$work/server.log" >&2 || true
+	printf 'install-smoke: the end of the debug log:\n' >&2
+	tail -n 20 "$log" >&2 2>/dev/null || true
+}
+
 # Loads WordPress once through WP-CLI and once over HTTP. Both must succeed.
 exercise() {
 	site_wp eval 'echo "WordPress ", get_bloginfo( "version" ), " loaded.", PHP_EOL;'
 
-	http_status=$(curl -sS -o "$work/response.html" -w '%{http_code}' "$url/") || fail "no HTTP response from $url/ ($1)."
-	[ "$http_status" = 200 ] || fail "$url/ answered HTTP $http_status, expected 200 ($1)."
+	if ! http_status=$(curl -sS -o "$work/response.html" -w '%{http_code}' "$url/"); then
+		server_evidence
+		fail "no HTTP response from $url/ ($1)."
+	fi
+
+	if [ "$http_status" != 200 ]; then
+		server_evidence
+		fail "$url/ answered HTTP $http_status, expected 200 ($1)."
+	fi
+
 	printf 'GET %s/ -> %s\n' "$url" "$http_status"
 }
 
@@ -138,7 +166,10 @@ prove_the_log_is_live() {
 	# exists for one request and is gone before the plugin under test is installed.
 	mkdir -p "$site/wp-content/mu-plugins"
 	printf '<?php\ntrigger_error( "%s-http", E_USER_NOTICE );\n' "$canary" >"$site/wp-content/mu-plugins/$canary.php"
-	curl -sS -o /dev/null "$url/" || fail "no HTTP response from $url/ (canary request)."
+	if ! curl -sS -o /dev/null "$url/"; then
+		server_evidence
+		fail "no HTTP response from $url/ (canary request)."
+	fi
 	rm -f "$site/wp-content/mu-plugins/$canary.php"
 	grep -q -- "$canary-http" "$log" ||
 		fail "a notice raised during a web request did not reach $log, so an empty log would prove nothing."
