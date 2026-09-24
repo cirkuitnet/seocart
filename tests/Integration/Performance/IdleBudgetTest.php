@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Performance;
 
+use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Tests\Support\BootstrapProbes;
 use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\LibraryShare;
@@ -42,7 +43,9 @@ use WP_UnitTestCase;
  *
  * The plugin bundles Action Scheduler and requires it from its main file, so every request
  * also loads the library and its hooks. G3 and G4 state that share apart from the plugin's own,
- * with budgets of its own (LibraryShare decides which is which); G1 covers both. The library
+ * with budgets of its own (LibraryShare decides which is which); G1 covers both. Registering the
+ * product post type makes WordPress itself add a hook for it, which is neither the plugin's
+ * registration nor the library's, so G4 states that share apart too. The library
  * finishes a one-time setup of its data store on its first queue run, and until then every
  * request reads that setup's state: the integration suite reinstalls WordPress and never runs
  * the queue, so tests/Support/library-prime-probe.php runs that setup once, as WP-Cron would,
@@ -62,6 +65,13 @@ use WP_UnitTestCase;
  * - `$container->get( \SEOCart\Platform\Database\Migrator::class );` in Modules::subscribe(): G3's
  *   plugin share lists the database module's files.
  *
+ * Two more prove the product post type costs no query and builds nothing on an idle request:
+ *
+ * - `$container->get( \SEOCart\Catalog\Application\ProductRepository::class );` in
+ *   Modules::subscribe(): G3's plugin share lists the catalog's and the database module's files;
+ * - `get_option( 'seocart_planted_option' );` as the first line of ProductPostType::register(),
+ *   which runs on `init`: G1's total goes up by that one query.
+ *
  * @since 0.1.0
  *
  * @group performance
@@ -80,15 +90,21 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	private const G1_PLUGIN_QUERIES = 0;
 
 	/**
-	 * G3: files of the plugin's own code an idle request may load: the main file and the kernel's
-	 * three (the kernel, its container and the module wiring), with a margin of two. Wiring every
-	 * module added no file: each hook's callback loads what it needs when it fires.
+	 * G3: files of the plugin's own code an idle request may load. Six are loaded, with a margin
+	 * of two:
+	 *
+	 * - the main file and the kernel's three: the kernel, its container and the module wiring;
+	 * - the product post type's registration, which runs on `init`, and the capability map it
+	 *   merges into its arguments: src/Catalog/Infrastructure/ProductPostType.php and
+	 *   src/Platform/Authorization/ProductCapabilities.php.
+	 *
+	 * Every other hook's callback loads what it needs when it fires.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var int
 	 */
-	private const G3_MAX_PLUGIN_FILES = 6;
+	private const G3_MAX_PLUGIN_FILES = 8;
 
 	/**
 	 * G3: bytes of plugin PHP an idle request may parse.
@@ -110,15 +126,16 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 * - `wp_abilities_api_categories_init` and `wp_abilities_api_init`, which register the
 	 *   operations' abilities when the Abilities API initialises;
 	 * - `seocart_job`, which runs one of the plugin's jobs for whichever copy of Action Scheduler
-	 *   fires it.
+	 *   fires it;
+	 * - `init`, which registers the product post type.
 	 *
-	 * A site of a network adds NETWORK_PLUGIN_HOOKS.
+	 * That is nine, with a margin of three. A site of a network adds NETWORK_PLUGIN_HOOKS.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var int
 	 */
-	private const G4_MAX_PLUGIN_HOOKS = 8;
+	private const G4_MAX_PLUGIN_HOOKS = 12;
 
 	/**
 	 * G4 on a site of a network: the hooks a network adds to an idle request — `wp_initialize_site`,
@@ -130,6 +147,17 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 * @var int
 	 */
 	private const NETWORK_PLUGIN_HOOKS = 3;
+
+	/**
+	 * G4, the product post type's share: hook registrations WordPress adds when the plugin registers
+	 * its post type. There is one, `future_seocart_product @5 _future_post_hook`, which publishes a
+	 * scheduled product when its time comes.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const G4_MAX_POST_TYPE_HOOKS = 1;
 
 	/**
 	 * G3, the bundled Action Scheduler's share: library PHP files an idle request may load.
@@ -243,7 +271,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 * Planted violation for the plugin's share: create three files `src/Planted/P01.php` to
 	 * `src/Planted/P03.php`, each holding only `<?php`, and plant
 	 * `foreach ( glob( dirname( __DIR__, 2 ) . '/Planted/P*.php' ) as $planted ) { require $planted; }`.
-	 * With the main file and the kernel's three that makes seven.
+	 * With the six stated files that makes nine.
 	 *
 	 * Planted violation for the byte count: create `src/Planted/Big.php` holding `<?php //`
 	 * followed by 260,000 characters on the same line, and plant
@@ -304,8 +332,9 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	/**
 	 * Tests G4: the plugin registers the hooks it states, and no more.
 	 *
-	 * Planted violation: `add_action( 'wp_footer', array( self::class, 'hasBooted' ) );`. With the
-	 * eight stated registrations that makes nine. The failure must list them.
+	 * Planted violation:
+	 * `for ( $planted = 0; $planted < 4; $planted++ ) { add_action( 'wp_footer', array( self::class, 'hasBooted' ), 100 + $planted ); }`.
+	 * With the nine stated registrations that makes thirteen. The failure must list them.
 	 *
 	 * @since 0.1.0
 	 */
@@ -319,6 +348,28 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 			self::G4_MAX_PLUGIN_HOOKS + ( is_multisite() ? self::NETWORK_PLUGIN_HOOKS : 0 ),
 			count( $hooks ),
 			'G4, hook registrations made by SEOCart on an idle request:' . $report
+		);
+	}
+
+	/**
+	 * Tests G4's post-type share: registering the product post type makes WordPress add the one hook it was measured to add.
+	 *
+	 * Planted violation: add `'register_meta_box_cb' => 'strlen',` to the arguments in
+	 * ProductPostType::arguments(). WordPress then also hooks `add_meta_boxes_seocart_product`,
+	 * which makes two. The failure must list them.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_g4_registering_the_product_post_type_adds_the_measured_share_of_wordpress_hooks(): void {
+		$hooks  = self::hookShares()['post_type'];
+		$report = "\n  " . implode( "\n  ", $hooks ) . "\n";
+
+		$this->assertNotSame( array(), $hooks, 'The probe saw no hook WordPress adds for the product post type, so a small count would prove nothing.' );
+
+		$this->assertLessThanOrEqual(
+			self::G4_MAX_POST_TYPE_HOOKS,
+			count( $hooks ),
+			'G4, hook registrations WordPress added for the product post type on an idle request:' . $report
 		);
 	}
 
@@ -346,16 +397,26 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Returns the idle request's hook registrations, split into the plugin's own and the bundled library's.
+	 * Returns the idle request's hook registrations, split into the plugin's own, WordPress's for the product post type, and the bundled library's.
+	 *
+	 * What loading the plugin added and is not the plugin's own is the library's, except the
+	 * registrations on a hook WordPress names after the product post type, such as
+	 * `future_seocart_product`: those are the post type's.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array{plugin: list<string>, library: list<string>} One line per registration.
+	 * @return array{plugin: list<string>, library: list<string>, post_type: list<string>} One line per registration.
 	 */
 	private static function hookShares(): array {
 		$measurements = self::measurements();
+		$shares       = LibraryShare::splitHooks( $measurements['with_plugin']['hooks'], $measurements['with_plugin']['all_hooks'], $measurements['without_plugin']['all_hooks'] );
+		$pattern      = '/^[a-z_]+_' . preg_quote( ProductCapabilities::POST_TYPE, '/' ) . ' @/';
 
-		return LibraryShare::splitHooks( $measurements['with_plugin']['hooks'], $measurements['with_plugin']['all_hooks'], $measurements['without_plugin']['all_hooks'] );
+		return array(
+			'plugin'    => $shares['plugin'],
+			'library'   => array_values( array_filter( $shares['library'], static fn( string $line ): bool => 1 !== preg_match( $pattern, $line ) ) ),
+			'post_type' => array_values( array_filter( $shares['library'], static fn( string $line ): bool => 1 === preg_match( $pattern, $line ) ) ),
+		);
 	}
 
 	/**

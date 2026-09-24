@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\DataRegistry;
 
+use SEOCart\Catalog\Infrastructure\CatalogTables;
+use SEOCart\Catalog\Infrastructure\Migrations\CreateCatalogTables;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Migrations\PlatformBootstrapMigration;
 use SEOCart\Platform\Database\Schema\Classification;
@@ -63,6 +65,7 @@ final class OwnedData {
 			new Contribution( options: array( new OptionDefinition( BootOption::NAME, 'Kernel', 'The installation record: the plugin version and schema head the site was installed to, how locks are held, the install identity and address Safe Mode compares with, and the recorded Safe Mode reason.', true, Classification::Public ) ) ),
 			new Contribution( tables: array( SecretKeysTable::definition() ), migrations: array( new CreateSecretKeysMigration() ) ),
 			new Contribution( tables: array( LogsTable::definition() ), migrations: array( new CreateLogsMigration() ) ),
+			new Contribution( tables: CatalogTables::all(), migrations: array( new CreateCatalogTables() ) ),
 			new Contribution( jobGroups: array( JobQueue::GROUP => 'Jobs' ) ),
 		);
 	}

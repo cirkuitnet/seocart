@@ -11,7 +11,9 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Kernel;
 
+use SEOCart\Catalog\Infrastructure\ProductPostType;
 use SEOCart\Platform\Authorization\CapabilityInstaller;
+use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Exception\MigrationFailed;
 use SEOCart\Platform\Database\LockProbe;
@@ -46,7 +48,9 @@ defined( 'ABSPATH' ) || exit;
  *    migrations remain after the time budget, the migration job is queued to finish them;
  * 4. the secrets get their first data key and canary, which later runs keep;
  * 5. the plugin's recurring jobs are scheduled, those that have no run waiting;
- * 6. the lock mode, probed again, and the plugin version are recorded last, so a run that died
+ * 6. the site's rewrite rules are rebuilt with the product post type's, the one flush the plugin
+ *    makes: never on `init`, where it would cost every request;
+ * 7. the lock mode, probed again, and the plugin version are recorded last, so a run that died
  *    part-way is run again. The version is recorded only when it is newer than the recorded one:
  *    an older node of a rolling deployment that handles an activation must not record its own
  *    version over a newer one, or the newer node would install again on its next request.
@@ -81,7 +85,8 @@ defined( 'ABSPATH' ) || exit;
  * Deactivation and uninstallation remove nothing: tables, options, roles and capabilities stay.
  * Deactivation cancels the plugin's own waiting jobs, and only those, because Action Scheduler
  * reschedules a recurring job whether or not anything handles it; activation schedules them
- * again. Deleting a site of a network cancels that site's jobs, and is the one explicit act that
+ * again. It also rebuilds the rewrite rules without the product post type's, so the product
+ * permalinks do not outlive the plugin; activation adds them back. Deleting a site of a network cancels that site's jobs, and is the one explicit act that
  * drops the site's plugin tables.
  *
  * @since 0.1.0
@@ -216,7 +221,7 @@ final class Lifecycle {
 	}
 
 	/**
-	 * Runs on the deactivation hook: cancels the plugin's own waiting jobs, and removes nothing.
+	 * Runs on the deactivation hook: cancels the plugin's own waiting jobs, takes the product permalinks out of the rewrite rules, and removes no store data.
 	 *
 	 * No table, option, role or capability is touched: deactivating a store plugin must never cost
 	 * the store its data. A network deactivation cancels the current site's jobs; a failure to
@@ -226,6 +231,7 @@ final class Lifecycle {
 	 */
 	public function deactivate(): void {
 		$this->cancelJobs();
+		$this->flushRewriteRulesWithoutProducts();
 	}
 
 	/**
@@ -259,6 +265,7 @@ final class Lifecycle {
 
 		$this->initializeSecrets();
 		$this->scheduleJobs( static fn( JobQueue $queue ): mixed => $queue->ensureRecurring() );
+		$this->flushRewriteRules();
 
 		$mode    = LockProbe::run( $this->container->get( Database::class ) );
 		$version = SEOCART_VERSION;
@@ -503,6 +510,51 @@ final class Lifecycle {
 				)
 			);
 		}
+	}
+
+	/**
+	 * Rebuilds the site's rewrite rules, so the product post type's permalinks and archive resolve.
+	 *
+	 * The request that activates the plugin passed `init` before the plugin was loaded, so the
+	 * post type is registered here when it is not yet. Inside switch_to_blog() nothing is flushed:
+	 * WordPress's rewrite object still holds the first site's permalink settings there, and
+	 * WordPress rebuilds a new site's rules itself, with every registered post type, while it
+	 * creates the site.
+	 *
+	 * @since 0.1.0
+	 */
+	private function flushRewriteRules(): void {
+		if ( is_multisite() && ms_is_switched() ) {
+			return;
+		}
+
+		if ( ! post_type_exists( ProductCapabilities::POST_TYPE ) ) {
+			ProductPostType::register();
+		}
+
+		flush_rewrite_rules( false );
+	}
+
+	/**
+	 * Rebuilds the site's rewrite rules without the product post type's. Runs at deactivation.
+	 *
+	 * The plugin is still loaded in the request that deactivates it, and its `init` registered
+	 * the post type, whose rules would be written again by any flush while it is registered; so
+	 * it is unregistered first. Inside switch_to_blog() nothing is flushed, for the reason
+	 * flushRewriteRules() gives.
+	 *
+	 * @since 0.1.0
+	 */
+	private function flushRewriteRulesWithoutProducts(): void {
+		if ( is_multisite() && ms_is_switched() ) {
+			return;
+		}
+
+		if ( post_type_exists( ProductCapabilities::POST_TYPE ) ) {
+			unregister_post_type( ProductCapabilities::POST_TYPE );
+		}
+
+		flush_rewrite_rules( false );
 	}
 
 	/**

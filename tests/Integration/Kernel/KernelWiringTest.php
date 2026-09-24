@@ -16,10 +16,10 @@ use WP_UnitTestCase;
 
 /**
  * The kernel's wiring, as a request really boots it: on an idle front-end request the plugin adds
- * exactly the hooks listed here and loads four files, and the hooks of the admin, WP-CLI, cron and
+ * exactly the hooks listed here and loads six files, and the hooks of the admin, WP-CLI, cron and
  * a network appear in their own kind of request only. The idle request's hooks are the kernel's
- * own four, the REST routes', the two of the abilities and the job runner's: eight, and eleven
- * on a network. Every one of them builds nothing until it fires.
+ * own four, the REST routes', the two of the abilities, the job runner's and the product post
+ * type's: nine, and twelve on a network. Every one of them builds nothing until it fires.
  *
  * Every request is booted in a child process of its own (tests/Support/idle-request-probe.php for
  * the idle request, tests/Support/kernel-hooks-probe.php for the others), because the kernel
@@ -47,19 +47,19 @@ final class KernelWiringTest extends WP_UnitTestCase {
 	private const MODULES = 'closure at src/Platform/Kernel/Modules.php';
 
 	/**
-	 * Tests the idle front-end request: exactly the kernel's hooks, and its four files.
+	 * Tests the idle front-end request: exactly the kernel's hooks, and its six files.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_an_idle_request_costs_the_listed_hooks_and_four_files(): void {
+	public function test_an_idle_request_costs_the_listed_hooks_and_six_files(): void {
 		$report = ChildProcessProbe::run( dirname( __DIR__, 2 ) . '/Support/idle-request-probe.php', array( 'with-plugin' ) );
 
 		$this->assertTrue( $report['plugin_loaded'], 'The probe did not load SEOCart, so the lists prove nothing.' );
 		$this->assertSame( self::expectedHooks( 'front' ), self::describe( $report['hooks'] ) );
 		$this->assertSame(
-			array( 'seocart.php', 'src/Platform/Kernel/Container.php', 'src/Platform/Kernel/Kernel.php', 'src/Platform/Kernel/Modules.php' ),
+			array( 'seocart.php', 'src/Catalog/Infrastructure/ProductPostType.php', 'src/Platform/Authorization/ProductCapabilities.php', 'src/Platform/Kernel/Container.php', 'src/Platform/Kernel/Kernel.php', 'src/Platform/Kernel/Modules.php' ),
 			array_keys( $report['files'] ),
-			'An idle request loads the main file, the kernel, the container and the module wiring, and nothing else.'
+			'An idle request loads the main file, the kernel, the container, the module wiring and the product post type\'s registration with its capability map, and nothing else.'
 		);
 	}
 
@@ -115,6 +115,7 @@ final class KernelWiringTest extends WP_UnitTestCase {
 			'wp_abilities_api_categories_init @10 ' . self::MODULES,
 			'wp_abilities_api_init @10 ' . self::MODULES,
 			'seocart_job @10 ' . self::MODULES,
+			'init @10 SEOCart\\Catalog\\Infrastructure\\ProductPostType::register',
 		);
 
 		if ( 'admin' === $context ) {

@@ -20,6 +20,42 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: Sorry, you are not allowed to do that. It requires the {capability} capability.
 - Values: `capability`
 
+## `catalog.currency_not_base`
+
+- HTTP status: 400
+- Message: A product price must be in the store's base currency, {base_currency}, not {currency}.
+- Values: `currency`, `base_currency`
+
+## `catalog.post_not_product`
+
+- HTTP status: 400
+- Message: Post {post_id} is not a product.
+- Values: `post_id`
+
+## `catalog.post_rejected`
+
+- HTTP status: 400
+- Message: WordPress did not save the product's post ({wordpress_code}).
+- Values: `wordpress_code`
+
+## `catalog.product_not_found`
+
+- HTTP status: 404
+- Message: Product {product_id} does not exist.
+- Values: `product_id`
+
+## `catalog.sku_invalid`
+
+- HTTP status: 400
+- Message: The SKU "{sku}" is not valid: a SKU has 1 to 64 characters and no control characters.
+- Values: `sku`
+
+## `catalog.sku_taken`
+
+- HTTP status: 409
+- Message: Another product already uses the SKU "{sku}".
+- Values: `sku`
+
 ## `currency.unknown`
 
 - HTTP status: 400

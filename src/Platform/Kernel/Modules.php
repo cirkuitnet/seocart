@@ -16,6 +16,15 @@ defined( 'ABSPATH' ) || exit;
 
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\Operations;
+use SEOCart\Catalog\Application\PostGateway;
+use SEOCart\Catalog\Application\ProductRepository;
+use SEOCart\Catalog\Application\Query\Sellability;
+use SEOCart\Catalog\Domain\CatalogError;
+use SEOCart\Catalog\Domain\Event\ProductDeleted;
+use SEOCart\Catalog\Domain\Event\ProductSaved;
+use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
+use SEOCart\Catalog\Infrastructure\ProductPostType;
+use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
 use SEOCart\Interfaces\Operations\AbilitiesAdapter;
 use SEOCart\Interfaces\Operations\CliAdapter;
 use SEOCart\Interfaces\Operations\ErrorTranslator;
@@ -60,6 +69,8 @@ use SEOCart\Platform\Jobs\JobQueue;
 use SEOCart\Platform\Jobs\JobRunner;
 use SEOCart\Platform\Jobs\RunnerTriggers;
 use SEOCart\Platform\Kernel\Cli\SafeModeCommand;
+use SEOCart\Platform\Localization\PostLocales;
+use SEOCart\Platform\Localization\SiteLocale;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Platform\Logging\FallbackLog;
 use SEOCart\Platform\Logging\Level;
@@ -76,6 +87,7 @@ use SEOCart\Platform\Secrets\SecretsCanary;
 use SEOCart\Platform\Secrets\SecretsError;
 use SEOCart\Platform\Secrets\SecretsStatus;
 use SEOCart\Platform\Secrets\SecretVault;
+use SEOCart\Platform\Settings\InternationalSettings;
 use SEOCart\Platform\Settings\SecretSealer;
 use SEOCart\Platform\Settings\Setting;
 use SEOCart\Platform\Settings\Settings;
@@ -83,6 +95,7 @@ use SEOCart\Platform\Settings\SettingsError;
 use SEOCart\Platform\Settings\SettingsService;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Support\Clock;
+use SEOCart\Support\Currency;
 use SEOCart\Support\Error\ErrorTable;
 use SEOCart\Support\IdGenerator;
 use SEOCart\Support\Schema\FieldSpec;
@@ -103,7 +116,8 @@ use SEOCart\Support\SystemIdGenerator;
  * adds hooks whose callbacks resolve a service when the hook fires. Neither builds a service,
  * reads an option, translates or computes an address. Hooks that only matter in the admin, on the
  * command line, in a cron run or on a network are added only there. An idle front-end request
- * gets these hooks, and loads no file but the main file, the kernel, the container and this one:
+ * gets these hooks, and loads no file but the main file, the kernel, the container and this one,
+ * and the two the product post type's registration loads on `init`:
  *
  * - `plugins_loaded` and the activation and deactivation hooks, from the main file;
  * - `map_meta_cap`, the one capability mapper, which returns before it resolves anything for a
@@ -112,7 +126,8 @@ use SEOCart\Support\SystemIdGenerator;
  * - `wp_abilities_api_categories_init` and `wp_abilities_api_init`, which register the
  *   operations' abilities when the Abilities API initialises;
  * - JOB_HOOK, which Action Scheduler fires to run one of the plugin's jobs, wherever its queue
- *   runs — another plugin's runner included.
+ *   runs — another plugin's runner included;
+ * - `init`, which registers the product post type.
  *
  * Every service that reports what it does not throw is given the one Reporter, which resolves
  * the logger on its first report; the operation invoker and the error translator get its
@@ -136,6 +151,7 @@ final class Modules {
 	 */
 	public const ERROR_CATALOGS = array(
 		AuthorizationError::class,
+		CatalogError::class,
 		DatabaseError::class,
 		KernelError::class,
 		SecretsError::class,
@@ -144,13 +160,16 @@ final class Modules {
 	);
 
 	/**
-	 * Every domain event class, from which the event catalog is built. None exists yet.
+	 * Every domain event class, from which the event catalog is built.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var list<class-string>
 	 */
-	public const EVENT_CLASSES = array();
+	public const EVENT_CLASSES = array(
+		ProductDeleted::class,
+		ProductSaved::class,
+	);
 
 	/**
 	 * What every plugin capability contains, which the capability mapper's filter checks first.
@@ -212,6 +231,7 @@ final class Modules {
 		self::secretsRegister( $container );
 		self::eventsRegister( $container );
 		self::jobsRegister( $container );
+		self::catalogRegister( $container );
 		self::kernelRegister( $container );
 	}
 
@@ -231,6 +251,7 @@ final class Modules {
 		self::authorizationSubscribe( $container, $admin || $cli );
 		self::operationsSubscribe( $container );
 		self::jobsSubscribe( $container, $cron || $ajax || $cli );
+		self::catalogSubscribe();
 		self::kernelSubscribe( $container, $admin, $ajax, $cli, $cron, is_multisite() );
 	}
 
@@ -637,6 +658,41 @@ final class Modules {
 				$priority
 			);
 		}
+	}
+
+	/**
+	 * The catalog module: the product repository, the sellability query, the product post gateway and the locale of a post.
+	 *
+	 * The repository reads the store's base currency from the settings when it reads or writes a
+	 * price, never when it is built. Without a multilingual plugin every post has the site's locale.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container The container.
+	 */
+	private static function catalogRegister( Container $container ): void {
+		$container->bind(
+			ProductRepository::class,
+			static fn( Container $c ): ProductRepository => new MysqlProductRepository(
+				$c->get( Database::class ),
+				static fn(): Currency => Currency::of( (string) $c->get( SettingsStore::class )->value( InternationalSettings::BASE_CURRENCY ) )
+			)
+		);
+		$container->bind( Sellability::class, static fn( Container $c ): Sellability => new Sellability( $c->get( ProductRepository::class ) ) );
+		$container->bind( PostGateway::class, static fn( Container $c ): PostGateway => new WordPressPostGateway( $c->get( TransactionManager::class ) ) );
+		$container->bind( PostLocales::class, static fn(): PostLocales => new SiteLocale() );
+	}
+
+	/**
+	 * The catalog module's hook: the product post type, registered on every request's `init`.
+	 *
+	 * The callback is the registration itself, which loads its own file and the capability map,
+	 * builds nothing from the container and sends no query.
+	 *
+	 * @since 0.1.0
+	 */
+	private static function catalogSubscribe(): void {
+		add_action( 'init', array( ProductPostType::class, 'register' ) );
 	}
 
 	/**
