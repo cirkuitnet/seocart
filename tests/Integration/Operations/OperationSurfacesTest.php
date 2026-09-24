@@ -14,6 +14,8 @@ namespace SEOCart\Tests\Integration\Operations;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\Operations;
+use SEOCart\Interfaces\Operations\RestAdapter;
+use SEOCart\Inventory\Application\InventoryOperations;
 use SEOCart\Platform\Authorization\PermissionCallback;
 use SEOCart\Platform\Kernel\Kernel;
 use SEOCart\Platform\Kernel\Modules;
@@ -56,11 +58,34 @@ use WP_UnitTestCase;
  * test_the_plugins_routes_and_abilities_resolve_to_its_operations reports both settings routes as
  * guarded by seocart_manage_inventory while their operations declare seocart_manage_settings.
  *
+ * Planted violation for one endpoint per address: in Modules::kernelSubscribe(), register a second,
+ * hand-written POST endpoint at `/stock-items/(?P<variant_id>[^/]+)/adjustments` on `rest_api_init`,
+ * guarded by PermissionCallback::requiring( 'seocart_manage_inventory' ).
+ * test_the_plugins_routes_and_abilities_resolve_to_its_operations names it twice: an endpoint that
+ * is not the operation's own, and two endpoints at one address.
+ *
+ * Planted violation for the endpoint's callback: in Modules::kernelSubscribe(), add a
+ * `rest_endpoints` filter that replaces the callback of the stock adjustment's endpoint with
+ * `__return_null`, keeping its marker, guard and arguments.
+ * test_the_plugins_routes_and_abilities_resolve_to_its_operations reports a callback that is not
+ * the REST adapter's own. Remove that check from OperationSurfaceWalker::bindingViolations(), and
+ * test_an_operation_route_whose_callback_was_replaced_is_reported fails for both replacements: the
+ * marker, the guard and the URL-only validation all still pass.
+ *
  * @group contract
  *
  * @since 0.1.0
  */
 final class OperationSurfacesTest extends WP_UnitTestCase {
+
+	/**
+	 * The stock adjustment's route, as the REST server lists it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const STOCK_ROUTE = '/seocart/v1/stock-items/(?P<variant_id>[^/]+)/adjustments';
 
 	/**
 	 * Discards the REST server and the Abilities registries.
@@ -85,6 +110,7 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 
 		$this->assertArrayHasKey( '/wp/v2/posts', $server->get_routes(), 'The server was not booted the way a request boots it.' );
 		$this->assertArrayHasKey( '/seocart/v1/settings', $server->get_routes(), 'The kernel registered no operation route, so a clean walk would prove nothing.' );
+		$this->assertArrayHasKey( self::STOCK_ROUTE, $server->get_routes(), 'The kernel registered no route with a resource id, so the URL-only check would prove nothing.' );
 		$this->assertSame( array(), OperationSurfaceWalker::restViolations( $server, Operations::registry() ) );
 		$this->assertSame( array(), OperationSurfaceWalker::abilityViolations( self::abilityNames(), Operations::registry() ) );
 	}
@@ -224,10 +250,134 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 		add_action( 'rest_api_init', array( self::class, 'registerMisguardedSettingsRoute' ), 20 );
 
 		$this->assertSame(
-			array( 'The REST route PATCH /seocart/v1/settings is guarded by seocart_manage_inventory, but ' . SettingsOperations::UPDATE . ' declares ' . SettingsOperations::CAPABILITY . '.' ),
+			array(
+				'The REST route PATCH /seocart/v1/settings is guarded by seocart_manage_inventory, but ' . SettingsOperations::UPDATE . ' declares ' . SettingsOperations::CAPABILITY . '.',
+				'The REST route PATCH /seocart/v1/settings is served by an endpoint that is not ' . SettingsOperations::UPDATE . "'s own.",
+				'The REST route PATCH /seocart/v1/settings has 2 endpoints, but exactly one, the operation\'s own, may serve ' . SettingsOperations::UPDATE . '.',
+			),
 			OperationSurfaceWalker::restViolations( rest_get_server(), Operations::registry() )
 		);
 		$this->assertSame( array(), ( new RoutePermissionWalker() )->walk( rest_get_server() )['violations'], 'The route walk alone passes the endpoint: its callback is of the plugin\'s type.' );
+	}
+
+	/**
+	 * Tests that a second endpoint at an operation's address is reported, even when it is guarded as the operation declares.
+	 *
+	 * The walk over the real routes sees two endpoints at the stock adjustment's method and route:
+	 * the one the adapter registered and a hand-written one with the same guard, which a request
+	 * could reach without the declaration.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_second_endpoint_at_an_operations_address_is_reported(): void {
+		OperationSurfaces::discard();
+		add_action( 'rest_api_init', array( self::class, 'registerSecondStockEndpoint' ), 20 );
+
+		$address = 'POST ' . self::STOCK_ROUTE;
+
+		$this->assertSame(
+			array(
+				"The REST route {$address} is served by an endpoint that is not " . InventoryOperations::ADJUST_STOCK . "'s own.",
+				"The REST route {$address} has 2 endpoints, but exactly one, the operation's own, may serve " . InventoryOperations::ADJUST_STOCK . '.',
+			),
+			OperationSurfaceWalker::restViolations( rest_get_server(), Operations::registry() )
+		);
+		$this->assertSame( array(), ( new RoutePermissionWalker() )->walk( rest_get_server() )['violations'], "The route walk alone passes the endpoint: its guard is of the plugin's type." );
+	}
+
+	/**
+	 * Tests that an operation's endpoint that would accept its route parameter outside the URL is reported.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_operation_route_accepting_its_parameter_outside_the_url_is_reported(): void {
+		$registry = self::fixtureRegistry();
+		$surfaces = new OperationSurfaces( $registry );
+
+		add_filter(
+			'rest_endpoints',
+			static function ( array $endpoints ): array {
+				foreach ( $endpoints as $route => $handlers ) {
+					foreach ( array_keys( $handlers ) as $key ) {
+						if ( is_int( $key ) && str_contains( (string) $route, '/fixture-stock/' ) ) {
+							unset( $endpoints[ $route ][ $key ]['args']['item_id']['validate_callback'] );
+						}
+					}
+				}
+
+				return $endpoints;
+			}
+		);
+
+		$this->assertSame(
+			array( 'The REST route POST /seocart/v1/fixture-stock/(?P<item_id>[^/]+)/adjustments accepts item_id outside the URL, but ' . FixtureStockOperation::ID . ' reads it from the URL only.' ),
+			OperationSurfaceWalker::restViolations( $surfaces->server(), $registry )
+		);
+	}
+
+	/**
+	 * Tests that an operation's sole endpoint whose callback was replaced is reported, though it keeps the marker, the guard and the URL-only validation.
+	 *
+	 * The walk over the real routes sees the stock adjustment's one endpoint with everything the
+	 * adapter registered except its callback, which is either a closure of its own or the adapter's
+	 * callback for the settings update: the marker alone would pass both for the operation's own.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @dataProvider replacedCallbacks
+	 *
+	 * @param string $replacement Which callback takes the endpoint's place: `a closure` or `another operation's`.
+	 */
+	public function test_an_operation_route_whose_callback_was_replaced_is_reported( string $replacement ): void {
+		OperationSurfaces::discard();
+
+		$original = self::stockEndpoint()['callback'];
+
+		add_filter(
+			'rest_endpoints',
+			static function ( array $endpoints ) use ( $replacement ): array {
+				$callback = static fn(): array => array();
+
+				if ( "another operation's" === $replacement ) {
+					foreach ( $endpoints['/seocart/v1/settings'] as $key => $handler ) {
+						if ( is_int( $key ) && SettingsOperations::UPDATE === ( $handler[ RestAdapter::OPERATION_KEY ] ?? null ) ) {
+							$callback = $handler['callback'];
+						}
+					}
+				}
+
+				foreach ( array_keys( $endpoints[ self::STOCK_ROUTE ] ) as $key ) {
+					if ( is_int( $key ) ) {
+						$endpoints[ self::STOCK_ROUTE ][ $key ]['callback'] = $callback;
+					}
+				}
+
+				return $endpoints;
+			}
+		);
+
+		$endpoint = self::stockEndpoint();
+
+		$this->assertNotSame( $original, $endpoint['callback'], 'The callback was not replaced, so the walk would prove nothing.' );
+		$this->assertSame( InventoryOperations::ADJUST_STOCK, $endpoint[ RestAdapter::OPERATION_KEY ], 'The endpoint lost its marker, so the marker check alone would report it.' );
+		$this->assertSame(
+			array( 'The REST route POST ' . self::STOCK_ROUTE . " is served by a callback that is not the REST adapter's own for " . InventoryOperations::ADJUST_STOCK . '.' ),
+			OperationSurfaceWalker::restViolations( rest_get_server(), Operations::registry() )
+		);
+	}
+
+	/**
+	 * Names the callbacks that replace the stock adjustment's.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, array{string}> The replacements.
+	 */
+	public static function replacedCallbacks(): array {
+		return array(
+			'a closure of its own'                  => array( 'a closure' ),
+			"the adapter's callback for the update" => array( "another operation's" ),
+		);
 	}
 
 	/**
@@ -244,7 +394,11 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 		$surfaces = new OperationSurfaces( $registry );
 
 		$this->assertSame(
-			array( 'The REST route POST /seocart/v1/fixture-stock/(?P<item_id>[^/]+)/adjustments is guarded by seocart_edit_order on delta, but ' . FixtureStockOperation::ID . ' declares seocart_edit_order on item_id.' ),
+			array(
+				'The REST route POST /seocart/v1/fixture-stock/(?P<item_id>[^/]+)/adjustments is guarded by seocart_edit_order on delta, but ' . FixtureStockOperation::ID . ' declares seocart_edit_order on item_id.',
+				'The REST route POST /seocart/v1/fixture-stock/(?P<item_id>[^/]+)/adjustments is served by an endpoint that is not ' . FixtureStockOperation::ID . "'s own.",
+				'The REST route POST /seocart/v1/fixture-stock/(?P<item_id>[^/]+)/adjustments has 2 endpoints, but exactly one, the operation\'s own, may serve ' . FixtureStockOperation::ID . '.',
+			),
 			OperationSurfaceWalker::restViolations( $surfaces->server(), $registry )
 		);
 	}
@@ -322,6 +476,25 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 					'methods'             => 'PATCH',
 					'callback'            => '__return_null',
 					'permission_callback' => PermissionCallback::requiring( 'seocart_manage_inventory' ),
+				),
+			)
+		);
+	}
+
+	/**
+	 * Registers a second, hand-written endpoint at the stock adjustment's address, guarded as the operation declares. Hooked to `rest_api_init`, after the kernel.
+	 *
+	 * @since 0.1.0
+	 */
+	public static function registerSecondStockEndpoint(): void {
+		register_rest_route(
+			'seocart/v1',
+			'/stock-items/(?P<variant_id>[^/]+)/adjustments',
+			array(
+				array(
+					'methods'             => 'POST',
+					'callback'            => '__return_null',
+					'permission_callback' => PermissionCallback::requiring( InventoryOperations::CAPABILITY ),
 				),
 			)
 		);
@@ -413,5 +586,20 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 		FixtureStockOperation::register( $registry );
 
 		return $registry;
+	}
+
+	/**
+	 * Returns the stock adjustment's one endpoint, as the REST server lists it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, mixed> The endpoint.
+	 */
+	private static function stockEndpoint(): array {
+		$handlers = array_values( rest_get_server()->get_routes()[ self::STOCK_ROUTE ] ?? array() );
+
+		self::assertCount( 1, $handlers, 'The stock adjustment does not have exactly one endpoint.' );
+
+		return $handlers[0];
 	}
 }

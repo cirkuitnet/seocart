@@ -16,6 +16,8 @@ use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
 use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
+use SEOCart\Platform\Authorization\Authorizer;
+use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
@@ -81,7 +83,8 @@ final class SweepHoldsJobTest extends JobsTestCase {
 			new Publisher( $this->db, $this->outbox, new HookBridge( $this->reporter() ), new EventCatalog( Modules::EVENT_CLASSES ), $this->correlation, new RecordingWake() ),
 			new SequentialIdGenerator( 1 ),
 			FrozenClock::at( '2026-09-24 12:00:00' ),
-			$this->correlation
+			$this->correlation,
+			new Authorizer( new CapabilityDeclaration() )
 		);
 
 		$this->wire( array( SweepHolds::class ), static fn( string $handlerClass ): JobHandler => SweepHolds::class === $handlerClass ? new SweepHolds( $service ) : throw new \LogicException( $handlerClass . ' is not the sweep.' ) );

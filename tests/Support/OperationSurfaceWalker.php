@@ -11,7 +11,11 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support;
 
+use Closure;
+use ReflectionFunction;
+use ReflectionMethod;
 use SEOCart\Application\Operations\CliBinding;
+use SEOCart\Application\Operations\CompiledOperation;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Interfaces\Operations\RestAdapter;
@@ -46,6 +50,17 @@ use WP_REST_Server;
  * which a callback for another capability also is; the comparison with the definition is made
  * here, against the definition itself rather than the permission factory, so a factory that
  * guards a route wrongly is caught as well.
+ *
+ * An operation's address must be served by exactly one endpoint, and that endpoint must be the
+ * operation's own: the one the REST adapter registered, which carries the operation's id under
+ * RestAdapter::OPERATION_KEY. A second endpoint at the same method and route, however it is
+ * guarded, is a hand-written surface the declaration does not describe. The marker is only an
+ * array key, which any endpoint can carry, so the endpoint's callback must also be the adapter's
+ * own for that operation: the closure written in RestAdapter::register(), bound to an adapter and
+ * holding that operation. An endpoint whose callback was replaced, even by the adapter's callback
+ * for another operation, is not the operation's. The operation's own endpoint must also read each
+ * route parameter from the URL only: its argument carries the adapter's validation, which refuses
+ * the parameter in the query or the body.
  *
  * The REST walk reuses RoutePermissionWalker's decision of which routes are the plugin's, so the
  * two walks cannot disagree about that.
@@ -120,6 +135,7 @@ final class OperationSurfaceWalker {
 
 		$registered = array();
 		$guards     = array();
+		$endpoints  = array();
 		$routes     = $server->get_routes();
 
 		foreach ( ( new RoutePermissionWalker() )->walk( $server )['plugin_routes'] as $route ) {
@@ -129,9 +145,20 @@ final class OperationSurfaceWalker {
 					$registered[ $address ] = true;
 
 					if ( isset( $definitions[ $address ] ) ) {
-						$guards = array_merge( $guards, self::guardViolations( $address, $handler['permission_callback'] ?? null, $definitions[ $address ] ) );
+						$endpoints[ $address ] = ( $endpoints[ $address ] ?? 0 ) + 1;
+						$guards                = array_merge(
+							$guards,
+							self::guardViolations( $address, $handler['permission_callback'] ?? null, $definitions[ $address ] ),
+							self::bindingViolations( $address, $handler, $definitions[ $address ] )
+						);
 					}
 				}
+			}
+		}
+
+		foreach ( $endpoints as $address => $count ) {
+			if ( $count > 1 ) {
+				$guards[] = "The REST route {$address} has {$count} endpoints, but exactly one, the operation's own, may serve {$definitions[ $address ]->id()}.";
 			}
 		}
 
@@ -276,6 +303,69 @@ final class OperationSurfaceWalker {
 		$guard = $callback instanceof PermissionCallback ? self::describeGuard( $callback->capability(), $callback->resourceParameter() ) : 'a callback that is not a PermissionCallback';
 
 		return array( "The REST route {$address} is guarded by {$guard}, but {$definition->id()} declares " . self::describeGuard( $definition->capability(), $definition->resourceField() ) . '.' );
+	}
+
+	/**
+	 * Checks that an endpoint at an operation's address is the operation's own, and reads its route parameters from the URL only.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string               $address    The endpoint's method and route.
+	 * @param array<string, mixed> $handler    The endpoint, as the REST server lists it.
+	 * @param OperationDefinition  $definition The operation declared at that address.
+	 * @return list<string> One message per way the endpoint differs, or none.
+	 */
+	private static function bindingViolations( string $address, array $handler, OperationDefinition $definition ): array {
+		if ( ( $handler[ RestAdapter::OPERATION_KEY ] ?? null ) !== $definition->id() ) {
+			return array( "The REST route {$address} is served by an endpoint that is not {$definition->id()}'s own." );
+		}
+
+		$violations = array();
+
+		if ( ! self::isAdapterCallback( $handler['callback'] ?? null, $definition ) ) {
+			$violations[] = "The REST route {$address} is served by a callback that is not the REST adapter's own for {$definition->id()}.";
+		}
+
+		$parameters = null === $definition->rest() ? array() : $definition->rest()->pathParameters();
+
+		foreach ( $parameters as $name ) {
+			if ( ( $handler['args'][ $name ]['validate_callback'] ?? null ) !== array( RestAdapter::class, 'validatePathParameter' ) ) {
+				$violations[] = "The REST route {$address} accepts {$name} outside the URL, but {$definition->id()} reads it from the URL only.";
+			}
+		}
+
+		return $violations;
+	}
+
+	/**
+	 * Tells whether a callback is the one the REST adapter registers for an operation.
+	 *
+	 * Identified by what cannot be copied along with the marker: the adapter serves every operation
+	 * with the one closure written in RestAdapter::register(), bound to the adapter and holding the
+	 * compiled operation it runs. A callback from anywhere else fails the first check, and the
+	 * adapter's callback for another operation fails the last.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param mixed               $callback   The endpoint's `callback`.
+	 * @param OperationDefinition $definition The operation declared at the endpoint's address.
+	 * @return bool True when the callback is the adapter's own for that operation.
+	 */
+	private static function isAdapterCallback( $callback, OperationDefinition $definition ): bool {
+		if ( ! $callback instanceof Closure ) {
+			return false;
+		}
+
+		$closure   = new ReflectionFunction( $callback );
+		$register  = new ReflectionMethod( RestAdapter::class, 'register' );
+		$operation = $closure->getClosureUsedVariables()['operation'] ?? null;
+
+		return $closure->getFileName() === $register->getFileName()
+			&& $closure->getStartLine() > $register->getStartLine()
+			&& $closure->getEndLine() < $register->getEndLine()
+			&& $closure->getClosureThis() instanceof RestAdapter
+			&& $operation instanceof CompiledOperation
+			&& $operation->definition()->id() === $definition->id();
 	}
 
 	/**

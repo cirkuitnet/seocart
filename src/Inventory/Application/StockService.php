@@ -23,6 +23,7 @@ use SEOCart\Inventory\Domain\ReclaimedRows;
 use SEOCart\Inventory\Domain\StockLevel;
 use SEOCart\Inventory\Domain\StockRepository;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\EventPublisher;
@@ -121,6 +122,15 @@ final class StockService {
 	private CorrelationId $correlation;
 
 	/**
+	 * The capability check of the operations this service performs.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var Authorizer
+	 */
+	private Authorizer $authorizer;
+
+	/**
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
@@ -131,14 +141,16 @@ final class StockService {
 	 * @param IdGenerator        $ids         Mints hold ids and reclaim tokens.
 	 * @param Clock              $clock       Says when an event happened.
 	 * @param CorrelationId      $correlation The request's correlation id.
+	 * @param Authorizer         $authorizer  The capability check of the operations it performs.
 	 */
-	public function __construct( StockRepository $stock, TransactionManager $tx, EventPublisher $events, IdGenerator $ids, Clock $clock, CorrelationId $correlation ) {
+	public function __construct( StockRepository $stock, TransactionManager $tx, EventPublisher $events, IdGenerator $ids, Clock $clock, CorrelationId $correlation, Authorizer $authorizer ) {
 		$this->stock       = $stock;
 		$this->tx          = $tx;
 		$this->events      = $events;
 		$this->ids         = $ids;
 		$this->clock       = $clock;
 		$this->correlation = $correlation;
+		$this->authorizer  = $authorizer;
 	}
 
 	/**
@@ -309,6 +321,42 @@ final class StockService {
 				return $adjustment;
 			},
 			RetryPolicy::deadlocks()
+		);
+	}
+
+	/**
+	 * Performs `inventory.adjust_stock`: authorizes the actor, adjusts, and returns the stock level by wire name.
+	 *
+	 * The operation's surfaces call this, through the operation invoker, with the input it
+	 * prepared: the variant from the URL on REST, from the input on the ability and the command.
+	 * It only translates: the check is the Authorizer's, and the adjustment is adjust()'s.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `authorization.denied` when the actor may not manage inventory; the codes adjust() raises.
+	 *
+	 * @param array<string, mixed> $input The prepared input: variant_id, delta, reason and, optionally, expected_on_hand.
+	 * @param Actor                $actor Who adjusts.
+	 * @return array<string, int> The stock level after the change, keyed by wire name.
+	 */
+	public function adjustStock( array $input, Actor $actor ): array {
+		$this->authorizer->authorize( $actor, InventoryOperations::CAPABILITY );
+
+		$adjustment = $this->adjust(
+			(int) $input['variant_id'],
+			(int) $input['delta'],
+			LedgerReason::from( (string) $input['reason'] ),
+			$actor,
+			isset( $input['expected_on_hand'] ) ? (int) $input['expected_on_hand'] : null
+		);
+
+		return array(
+			'variant_id'      => $adjustment->level->variantId,
+			'on_hand'         => $adjustment->level->onHand,
+			'allocated'       => $adjustment->level->allocated,
+			'held'            => $adjustment->level->held,
+			'available'       => $adjustment->level->available(),
+			'ledger_entry_id' => $adjustment->ledgerEntryId,
 		);
 	}
 

@@ -21,6 +21,8 @@ use SEOCart\Inventory\Domain\Event\StockReserved;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Authorization\Authorizer;
+use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Doubles\FakeStockRepository;
@@ -85,7 +87,7 @@ final class StockServiceTest extends TestCase {
 		$this->tx      = new FakeTransactionManager();
 		$this->stock   = new FakeStockRepository( $this->tx );
 		$this->events  = new RecordingEventPublisher( $this->tx );
-		$this->service = new StockService( $this->stock, $this->tx, $this->events, new SequentialIdGenerator(), FrozenClock::at( '2026-09-24 12:00:00' ), new CorrelationId( new SequentialIdGenerator( 9000 ) ) );
+		$this->service = new StockService( $this->stock, $this->tx, $this->events, new SequentialIdGenerator(), FrozenClock::at( '2026-09-24 12:00:00' ), new CorrelationId( new SequentialIdGenerator( 9000 ) ), new Authorizer( new CapabilityDeclaration() ) );
 	}
 
 	/**

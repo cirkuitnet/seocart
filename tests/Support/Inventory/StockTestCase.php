@@ -20,6 +20,8 @@ use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Authorization\Authorizer;
+use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Cli\Doctor\CheckResult;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
@@ -203,7 +205,7 @@ abstract class StockTestCase extends DatabaseTestCase {
 	protected function serviceOver( Database $db, IdGenerator $ids ): StockService {
 		$publisher = new Publisher( $db, new Outbox( $db ), $this->bridge, new EventCatalog( Modules::EVENT_CLASSES ), $this->correlation, new RecordingWake() );
 
-		return new StockService( new MysqlStockRepository( $db ), $db, $publisher, $ids, FrozenClock::at( self::NOW ), $this->correlation );
+		return new StockService( new MysqlStockRepository( $db ), $db, $publisher, $ids, FrozenClock::at( self::NOW ), $this->correlation, new Authorizer( new CapabilityDeclaration() ) );
 	}
 
 	/**

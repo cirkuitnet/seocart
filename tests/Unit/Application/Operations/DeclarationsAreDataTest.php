@@ -24,8 +24,9 @@ use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
  *
  * - call no WordPress function at all, gettext included (each one is counted by name);
  * - touch `$wpdb` in no way;
- * - open no file but the class files of the declaration mechanism, the capability declaration and
- *   the fixture — no settings file, no container, no kernel, no database layer.
+ * - open no file but the class files of the declaration mechanism, the capability declaration, the
+ *   stock adjustment's declaration with the two enums it reads, and the fixture — no settings file,
+ *   no service, no container, no kernel, no database layer.
  *
  * The probe can also add an operation whose factory translates a string, reads an option and reads
  * a file; the second test runs it that way and requires each of the three to be reported, so a
@@ -38,7 +39,14 @@ use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
 final class DeclarationsAreDataTest extends TestCase {
 
 	/**
-	 * The only files the build may open: the class files these directories hold.
+	 * The only files the build may open: the class files these directories hold, and these class files.
+	 *
+	 * The inventory module keeps its services beside its declarations, so its declaration files are
+	 * listed one by one: a declaration that loads the stock service or the stock repository is
+	 * reported, not allowed with its directory.
+	 *
+	 * Planted violation: in InventoryOperations::adjustStock(), call class_exists( StockService::class ).
+	 * The first test reports that the build opened src/Inventory/Application/StockService.php.
 	 *
 	 * @since 0.1.0
 	 *
@@ -50,6 +58,9 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Platform/Authorization/',
 		'src/Platform/Settings/',
 		'src/Platform/Secrets/',
+		'src/Inventory/Application/InventoryOperations.php',
+		'src/Inventory/Application/InventoryError.php',
+		'src/Inventory/Domain/LedgerReason.php',
 		'tests/Fixtures/Operations/',
 	);
 

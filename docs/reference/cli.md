@@ -36,3 +36,23 @@ wp seocart settings update [--base_currency=<base_currency>] [--format=<format>]
 
 - `[--base_currency=<base_currency>]`: ISO 4217 code of the currency the store keeps its accounts in, in upper case. Text.
 - `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart stock adjust`
+
+Changes the units on hand of one variant by a signed amount, records the change in the stock ledger with its reason, and returns the stock level after it.
+
+```sh
+wp seocart stock adjust <variant_id> --delta=<delta> --reason=<reason> [--expected_on_hand=<expected_on_hand>] [--format=<format>]
+```
+
+- Operation: `inventory.adjust_stock`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.item_missing` (404), `stock.zero_delta` (400), `stock.on_hand_conflict` (409), `stock.adjustment_below_zero` (409), `authorization.denied` (403), `store.unavailable` (503)
+
+### Arguments
+
+- `<variant_id>`: The id of the variant whose stock is adjusted. An integer of at least 1.
+- `--delta=<delta>`: The change of the units on hand: positive for units that arrived, negative for units that left; never 0. An integer from -1000000 to 1000000.
+- `--reason=<reason>`: Why the units on hand changed. One of `received`, `recount`, `damaged`, `returned`, `correction`.
+- `[--expected_on_hand=<expected_on_hand>]`: The units on hand the client last read. When given, the change applies only while the variant still has exactly that many, so a repeated request cannot apply it twice. An integer of at least 0.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.

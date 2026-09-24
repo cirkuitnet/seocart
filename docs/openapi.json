@@ -166,6 +166,147 @@
                     }
                 }
             }
+        },
+        "/stock-items/{variant_id}/adjustments": {
+            "post": {
+                "operationId": "inventory.adjust_stock",
+                "summary": "Changes the units on hand of one variant by a signed amount, records the change in the stock ledger with its reason, and returns the stock level after it.",
+                "description": "Requires the capability `seocart_manage_inventory`.",
+                "parameters": [
+                    {
+                        "name": "variant_id",
+                        "in": "path",
+                        "required": true,
+                        "description": "The id of the variant whose stock is adjusted.",
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "examples": [
+                                42
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "delta": {
+                                        "type": "integer",
+                                        "minimum": -1000000,
+                                        "maximum": 1000000,
+                                        "description": "The change of the units on hand: positive for units that arrived, negative for units that left; never 0.",
+                                        "examples": [
+                                            5
+                                        ]
+                                    },
+                                    "reason": {
+                                        "type": "string",
+                                        "enum": [
+                                            "received",
+                                            "recount",
+                                            "damaged",
+                                            "returned",
+                                            "correction"
+                                        ],
+                                        "description": "Why the units on hand changed.",
+                                        "examples": [
+                                            "received"
+                                        ]
+                                    },
+                                    "expected_on_hand": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "description": "The units on hand the client last read. When given, the change applies only while the variant still has exactly that many, so a repeated request cannot apply it twice.",
+                                        "examples": [
+                                            12
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "delta",
+                                    "reason"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the StockLevel resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StockLevel"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`stock.zero_delta`: An adjustment of zero units changes nothing. To confirm a count, adjust by the difference you found.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_inventory`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_inventory`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`stock.item_missing`: Variant {variant_id} has no stock item.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`stock.on_hand_conflict`: Variant {variant_id}: you expected {expected} on hand, but there are {on_hand}, so the adjustment was not applied. Read the stock again, then repeat the adjustment if it is still needed.\n\n`stock.adjustment_below_zero`: Variant {variant_id} has {on_hand} on hand, so a change of {delta} would take it below zero.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     },
     "components": {
@@ -227,6 +368,62 @@
                 },
                 "required": [
                     "base_currency"
+                ]
+            },
+            "StockLevel": {
+                "type": "object",
+                "properties": {
+                    "variant_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "The id of the variant whose stock is adjusted.",
+                        "examples": [
+                            42
+                        ]
+                    },
+                    "on_hand": {
+                        "type": "integer",
+                        "description": "The units physically in stock after the change.",
+                        "examples": [
+                            17
+                        ]
+                    },
+                    "allocated": {
+                        "type": "integer",
+                        "description": "The units promised to accepted orders.",
+                        "examples": [
+                            2
+                        ]
+                    },
+                    "held": {
+                        "type": "integer",
+                        "description": "The units held by checkouts, expired holds included until they are reclaimed.",
+                        "examples": [
+                            3
+                        ]
+                    },
+                    "available": {
+                        "type": "integer",
+                        "description": "The units that may still be promised: on hand, less allocated, less held. Negative when fewer units were counted than are promised or held.",
+                        "examples": [
+                            12
+                        ]
+                    },
+                    "ledger_entry_id": {
+                        "type": "integer",
+                        "description": "The id of the stock ledger entry that records the change.",
+                        "examples": [
+                            381
+                        ]
+                    }
+                },
+                "required": [
+                    "variant_id",
+                    "on_hand",
+                    "allocated",
+                    "held",
+                    "available",
+                    "ledger_entry_id"
                 ]
             }
         }

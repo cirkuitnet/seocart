@@ -731,7 +731,8 @@ final class Modules {
 				$c->get( EventPublisher::class ),
 				$c->get( IdGenerator::class ),
 				$c->get( Clock::class ),
-				$c->get( CorrelationId::class )
+				$c->get( CorrelationId::class ),
+				$c->get( Authorizer::class )
 			)
 		);
 		$container->bind( SweepHolds::class, static fn( Container $c ): SweepHolds => new SweepHolds( $c->get( StockService::class ) ) );

@@ -4,4 +4,28 @@
 
 SEOCart registers an ability for each operation that declares one, in the ability category `seocart`. An ability runs the same application service as the operation's REST route and WP-CLI command, with the same input schema, permission check and error codes. It is exposed to agents and other clients only when its operation allows it, and an operation that is destructive, moves money or reads personal data in bulk never does.
 
-SEOCart has no abilities yet.
+## `seocart/adjust-stock`
+
+Changes the units on hand of one variant by a signed amount, records the change in the stock ledger with its reason, and returns the stock level after it.
+
+- Operation: `inventory.adjust_stock`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.item_missing` (404), `stock.zero_delta` (400), `stock.on_hand_conflict` (409), `stock.adjustment_below_zero` (409), `authorization.denied` (403), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `true`, idempotent `false`
+- Exposed to agents: no
+
+### Input
+
+- `variant_id` (required): The id of the variant whose stock is adjusted. An integer of at least 1.
+- `delta` (required): The change of the units on hand: positive for units that arrived, negative for units that left; never 0. An integer from -1000000 to 1000000.
+- `reason` (required): Why the units on hand changed. One of `received`, `recount`, `damaged`, `returned`, `correction`.
+- `expected_on_hand`: The units on hand the client last read. When given, the change applies only while the variant still has exactly that many, so a repeated request cannot apply it twice. An integer of at least 0.
+
+### Output
+
+- `variant_id` (always): The id of the variant whose stock is adjusted. An integer of at least 1.
+- `on_hand` (always): The units physically in stock after the change. An integer.
+- `allocated` (always): The units promised to accepted orders. An integer.
+- `held` (always): The units held by checkouts, expired holds included until they are reclaimed. An integer.
+- `available` (always): The units that may still be promised: on hand, less allocated, less held. Negative when fewer units were counted than are promised or held. An integer.
+- `ledger_entry_id` (always): The id of the stock ledger entry that records the change. An integer.
