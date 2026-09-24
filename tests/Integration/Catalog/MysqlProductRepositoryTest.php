@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Catalog;
 
+use SEOCart\Catalog\Application\UpdatingMark;
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\Product;
@@ -43,6 +44,8 @@ use SEOCart\Tests\Support\Catalog\CatalogTestCase;
  *   test_leaving_updating_is_conditional overwrites a marker that is not `updating`.
  * - In MysqlProductRepository::restoreMark(), drop `AND updated_at = %s` (and its argument):
  *   test_a_restore_puts_back_only_its_own_mark restores over a mark of another instant.
+ * - In MysqlProductRepository::remark(), write `updated_at = UTC_TIMESTAMP(6)`:
+ *   test_every_instant_is_later_than_the_rows_last_one sees a mark earlier than the row's last instant.
  *
  * @since 0.1.0
  */
@@ -208,26 +211,82 @@ final class MysqlProductRepositoryTest extends CatalogTestCase {
 	}
 
 	/**
-	 * Tests that marking returns the instant it wrote, inside a transaction only, and that a second mark writes a later one.
+	 * Tests that marking returns the marker it replaced and the instant it wrote, inside a transaction only.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_marking_returns_the_instant_it_wrote(): void {
+	public function test_marking_returns_the_marker_it_replaced_and_the_instant_it_wrote(): void {
 		$productId = (int) $this->storedProduct()->id();
 		$first     = $this->mark( $productId );
 		$stored    = $this->productRow( $productId );
 
-		$this->assertMatchesRegularExpression( '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}$/', (string) $first, 'The instant is not written to the microsecond.' );
-		$this->assertSame( $first, $stored['updated_at'] ?? null );
+		$this->assertInstanceOf( UpdatingMark::class, $first );
+		$this->assertSame( GenerationState::Complete, $first->before, 'The mark replaced the stored marker.' );
+		$this->assertMatchesRegularExpression( '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}$/', $first->markedAt, 'The instant is not written to the microsecond.' );
+		$this->assertSame( $first->markedAt, $stored['updated_at'] ?? null );
 		$this->assertSame( 'updating', $stored['generation_state'] ?? null );
 
 		$second = $this->mark( $productId );
 
-		$this->assertNotSame( $first, $second, 'Marking an updating product again writes a new instant.' );
+		$this->assertInstanceOf( UpdatingMark::class, $second );
+		$this->assertSame( GenerationState::Updating, $second->before, 'A second mark replaces the first.' );
+		$this->assertNotSame( $first->markedAt, $second->markedAt, 'Marking an updating product again writes a new instant.' );
 		$this->assertNull( $this->mark( $productId + 1000 ), 'There is no such product.' );
 
 		$this->expectException( \LogicException::class );
 		$this->products->markUpdating( $productId );
+	}
+
+	/**
+	 * Tests that every marker write moves the row's instant forward, even when the row's last instant is ahead of the database clock.
+	 *
+	 * A row whose instant is a day ahead stands for two writes in one microsecond, and for a
+	 * database clock that stepped back: in both, the clock alone would not move the instant.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_every_instant_is_later_than_the_rows_last_one(): void {
+		$productId = (int) $this->storedProduct()->id();
+
+		$this->db->execute( 'UPDATE %i SET updated_at = UTC_TIMESTAMP(6) + INTERVAL 1 DAY WHERE id = %d', $this->catalogTable( CatalogTables::PRODUCTS ), $productId );
+
+		$ahead = (string) ( $this->productRow( $productId )['updated_at'] ?? '' );
+		$mark  = $this->mark( $productId );
+
+		$this->assertInstanceOf( UpdatingMark::class, $mark );
+		$this->assertGreaterThan( $ahead, $mark->markedAt, 'The mark did not move the instant forward.' );
+
+		$this->db->transaction( fn(): bool => $this->products->relock( $productId ) );
+
+		$relocked = (string) ( $this->productRow( $productId )['updated_at'] ?? '' );
+
+		$this->assertGreaterThan( $mark->markedAt, $relocked, 'The relock did not move the instant forward.' );
+		$this->assertFalse( $this->products->restoreMark( $productId, $mark->before, $mark->markedAt ), 'A restore took the relock\'s mark for its own.' );
+		$this->assertTrue( $this->db->transaction( fn(): bool => $this->products->leaveUpdating( $productId, GenerationState::Complete ) ) );
+		$this->assertGreaterThan( $relocked, (string) ( $this->productRow( $productId )['updated_at'] ?? '' ), 'Settling did not move the instant forward.' );
+	}
+
+	/**
+	 * Tests that the window's relock marks the product again with a new instant, inside a transaction only.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_relock_marks_again_with_a_new_instant(): void {
+		$productId = (int) $this->storedProduct()->id();
+		$mark      = $this->mark( $productId );
+
+		$this->assertInstanceOf( UpdatingMark::class, $mark );
+		$this->assertTrue( $this->db->transaction( fn(): bool => $this->products->relock( $productId ) ) );
+
+		$row = $this->productRow( $productId );
+
+		$this->assertSame( 'updating', $row['generation_state'] ?? null );
+		$this->assertNotSame( $mark->markedAt, $row['updated_at'] ?? null, 'The relock did not write a new instant, so a committed window would pass for the mark before it.' );
+		$this->assertFalse( $this->products->restoreMark( $productId, $mark->before, $mark->markedAt ), 'A restore took back a mark a committed window had renewed.' );
+		$this->assertFalse( $this->db->transaction( fn(): bool => $this->products->relock( $productId + 1000 ) ), 'There is no such product.' );
+
+		$this->expectException( \LogicException::class );
+		$this->products->relock( $productId );
 	}
 
 	/**
@@ -255,7 +314,7 @@ final class MysqlProductRepositoryTest extends CatalogTestCase {
 	 */
 	public function test_a_restore_puts_back_only_its_own_mark(): void {
 		$productId = (int) $this->storedProduct()->id();
-		$markedAt  = (string) $this->mark( $productId );
+		$markedAt  = (string) $this->mark( $productId )?->markedAt;
 
 		$this->assertFalse( $this->products->restoreMark( $productId, GenerationState::Complete, '2000-01-01 00:00:00.000000' ), 'A restore changed a mark of another instant.' );
 		$this->assertSame( 'updating', $this->productRow( $productId )['generation_state'] ?? null );
@@ -271,10 +330,10 @@ final class MysqlProductRepositoryTest extends CatalogTestCase {
 	 * @since 0.1.0
 	 *
 	 * @param int $productId The product's id.
-	 * @return string|null The instant the mark wrote, or null when there is no such product.
+	 * @return UpdatingMark|null The mark, or null when there is no such product.
 	 */
-	private function mark( int $productId ): ?string {
-		return $this->db->transaction( fn(): ?string => $this->products->markUpdating( $productId ) );
+	private function mark( int $productId ): ?UpdatingMark {
+		return $this->db->transaction( fn(): ?UpdatingMark => $this->products->markUpdating( $productId ) );
 	}
 
 	/**

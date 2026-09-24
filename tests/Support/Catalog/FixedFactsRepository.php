@@ -132,6 +132,20 @@ final class FixedFactsRepository implements ProductRepository {
 	 *
 	 * @throws \LogicException Always.
 	 *
+	 * @param int $productId Unused.
+	 * @return never
+	 */
+	public function relock( int $productId ): never {
+		throw new \LogicException( 'A sellability reader writes nothing.' );
+	}
+
+	/**
+	 * Not used by a reader.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
 	 * @param int             $productId Unused.
 	 * @param GenerationState $to        Unused.
 	 * @return never

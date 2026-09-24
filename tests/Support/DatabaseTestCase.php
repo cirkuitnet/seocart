@@ -67,6 +67,15 @@ abstract class DatabaseTestCase extends WP_UnitTestCase {
 	private const WAITING_DEADLINE_MS = 5000;
 
 	/**
+	 * How long awaitProbeWaiting() gives a probe process, which boots WordPress first, before it fails the test, in milliseconds.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const PROBE_DEADLINE_MS = 30000;
+
+	/**
 	 * How long awaitWaiting() watches B's socket between two looks at the process list, in milliseconds.
 	 *
 	 * @since 0.1.0
@@ -354,6 +363,115 @@ abstract class DatabaseTestCase extends WP_UnitTestCase {
 
 			if ( hrtime( true ) >= $deadline ) {
 				$this->fail( sprintf( 'The server did not show B waiting (%s) within %d ms; last seen: %s.', $state, self::WAITING_DEADLINE_MS, (string) wp_json_encode( $row ) ) );
+			}
+		}
+	}
+
+	/**
+	 * Runs another connection's side once, at the moment wpdb's connection is about to send its nth statement of a shape.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string   $pattern A regular expression over the statement.
+	 * @param callable $then    The other side. It runs inside WordPress's `query` filter, before the statement leaves.
+	 * @param int      $nth     Optional. Which matching statement to run before: 1 for the first. Default 1.
+	 * @return object{fired: bool, seen: int} Whether the other side ran, and how many matching statements were sent.
+	 */
+	protected function beforeStatement( string $pattern, callable $then, int $nth = 1 ): object {
+		$barrier = new class() {
+
+			/**
+			 * Whether the other side ran.
+			 *
+			 * @var bool
+			 */
+			public bool $fired = false;
+
+			/**
+			 * How many matching statements were sent.
+			 *
+			 * @var int
+			 */
+			public int $seen = 0;
+		};
+
+		add_filter(
+			'query',
+			static function ( string $query ) use ( $pattern, $then, $nth, $barrier ): string {
+				if ( 1 === preg_match( $pattern, $query ) ) {
+					++$barrier->seen;
+
+					if ( ! $barrier->fired && $nth === $barrier->seen ) {
+						$barrier->fired = true;
+
+						$then();
+					}
+				}
+
+				return $query;
+			}
+		);
+
+		return $barrier;
+	}
+
+	/**
+	 * Returns once the server shows a probe process's statement waiting, and fails the test otherwise.
+	 *
+	 * The probe's connection is not one of this process's, so the statement is looked for by its
+	 * text among every thread of the MySQL user; only the probe sends it while this runs. Between
+	 * two looks it waits on the probe's output, never on a pause: a probe that ends first was
+	 * never blocked, and fails the test with what it printed. The deadline fails the test too; it
+	 * is longer than awaitWaiting()'s because the probe boots WordPress before it can wait.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param RunningProbe $probe The probe process.
+	 * @param string       $sql   The statement the probe sends, exactly as the server receives it.
+	 * @param string       $state The process-list state of the wait: `User lock` for GET_LOCK,
+	 *                            `updating` for an UPDATE waiting for a row lock.
+	 */
+	protected function awaitProbeWaiting( RunningProbe $probe, string $sql, string $state ): void {
+		if ( ! $this->awaitProbeWaitingOrEnd( $probe, $sql, $state ) ) {
+			$this->fail( sprintf( "The probe ended before the server showed it waiting (%s) on: %s\nIts report: %s\nIts output:\n%s", $state, $sql, $probe->reportSoFar(), $probe->output() ) );
+		}
+	}
+
+	/**
+	 * Returns once the server shows a probe process's statement waiting, or once the probe has ended, and tells which.
+	 *
+	 * For a test whose probe may or may not have to wait, and which judges the outcome by what the
+	 * probe left behind. Like awaitProbeWaiting(), it looks at the server and waits on the probe's
+	 * output between two looks, never on a pause; the deadline fails the test.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param RunningProbe $probe The probe process.
+	 * @param string       $sql   The statement the probe sends, exactly as the server receives it.
+	 * @param string       $state The process-list state of the wait.
+	 * @return bool True when the server showed the probe waiting; false when the probe ended first.
+	 */
+	protected function awaitProbeWaitingOrEnd( RunningProbe $probe, string $sql, string $state ): bool {
+		global $wpdb;
+
+		$this->observer ??= $this->secondConnection();
+
+		$query    = (string) $wpdb->prepare( 'SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE COMMAND = %s AND INFO = %s AND STATE = %s', 'Query', $sql, $state );
+		$deadline = hrtime( true ) + self::PROBE_DEADLINE_MS * 1000000;
+
+		while ( true ) {
+			$waiting = '0' !== $this->observer->fetchValue( $query );
+
+			if ( $probe->watch( self::WAITING_LOOK_MS ) ) {
+				return false;
+			}
+
+			if ( $waiting ) {
+				return true;
+			}
+
+			if ( hrtime( true ) >= $deadline ) {
+				$this->fail( sprintf( 'The server did not show the probe waiting (%s) within %d ms on: %s', $state, self::PROBE_DEADLINE_MS, $sql ) );
 			}
 		}
 	}

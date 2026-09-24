@@ -23,7 +23,8 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * - The generation marker's column is named in a string, where SQL is written, by two files only:
  *   the table declaration and the product repository. No other class can select or filter on it.
  * - Inside the repository, the marker is compared with a value only in the statements that write
- *   it: the creation of a product, markUpdating(), leaveUpdating() and restoreMark(). The two
+ *   it: the creation of a product, markUpdating() and relock() through remark(), leaveUpdating()
+ *   and restoreMark(). The two
  *   reads that name it only select it: sellabilityFacts(), the one fetch the rule is fed by, and
  *   load(), which carries it as state.
  * - The marker's states are compared in PHP (`===`, `!==`, `==`, `!=`, a `case` or a `match`
@@ -93,7 +94,7 @@ final class SellabilityIsOneRuleTest extends TestCase {
 	 *
 	 * @var list<string>
 	 */
-	private const MARKER_WRITES = array( 'insertProduct', 'markUpdating', 'leaveUpdating', 'restoreMark' );
+	private const MARKER_WRITES = array( 'insertProduct', 'markUpdating', 'remark', 'leaveUpdating', 'restoreMark' );
 
 	/**
 	 * The repository's reads that select the marker.

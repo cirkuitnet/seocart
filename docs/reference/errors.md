@@ -56,6 +56,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: Another product already uses the SKU "{sku}".
 - Values: `sku`
 
+## `catalog.write_conflict`
+
+- HTTP status: 409
+- Message: The product of post {post_id} was changed by another save while this one was being written; nothing was saved. Try again.
+- Values: `post_id`
+
 ## `currency.unknown`
 
 - HTTP status: 400

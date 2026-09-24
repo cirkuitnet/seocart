@@ -424,54 +424,6 @@ abstract class StockTestCase extends DatabaseTestCase {
 	}
 
 	/**
-	 * Runs B's side once, at the moment connection A is about to send its first statement of a shape.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string   $pattern A regular expression over A's statement, such as shapeOf()'s.
-	 * @param callable $then    B's side. It runs inside WordPress's `query` filter, before A's statement leaves.
-	 * @param int      $nth     Optional. Which matching statement to run before: 1 for the first. Default 1.
-	 * @return object{fired: bool, seen: int} Whether B's side ran, and how many matching statements A sent.
-	 */
-	protected function beforeStatement( string $pattern, callable $then, int $nth = 1 ): object {
-		$barrier = new class() {
-
-			/**
-			 * Whether B's side ran.
-			 *
-			 * @var bool
-			 */
-			public bool $fired = false;
-
-			/**
-			 * How many matching statements A sent.
-			 *
-			 * @var int
-			 */
-			public int $seen = 0;
-		};
-
-		add_filter(
-			'query',
-			static function ( string $query ) use ( $pattern, $then, $nth, $barrier ): string {
-				if ( 1 === preg_match( $pattern, $query ) ) {
-					++$barrier->seen;
-
-					if ( ! $barrier->fired && $nth === $barrier->seen ) {
-						$barrier->fired = true;
-
-						$then();
-					}
-				}
-
-				return $query;
-			}
-		);
-
-		return $barrier;
-	}
-
-	/**
 	 * Tells whether B's asynchronous statement is waiting in the server, or has answered.
 	 *
 	 * Asks the server's process list, as awaitWaiting() does, and watches B's socket between two

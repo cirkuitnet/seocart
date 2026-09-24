@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Catalog\Infrastructure;
 
 use SEOCart\Catalog\Domain\CatalogError;
+use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Catalog\Application\PostGateway;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\TransactionManager;
@@ -36,7 +37,17 @@ defined( 'ABSPATH' ) || exit;
  * insert, as soon as core has the new id, by a one-shot listener that runs first on the
  * `clean_post_cache` core fires right after its INSERT and before it caches the post or fires a
  * save hook. Where cache invalidation is suspended core fires no such action, and the insert is
- * registered after core returns.
+ * registered after core returns. An update first cleans the post's cache, because
+ * wp_update_post() merges the given fields into the post it reads, and a copy cached before the
+ * window would put back fields another writer has changed since.
+ *
+ * With WP_DEBUG on, the callbacks other plugins or the theme hooked to the hooks core fires
+ * inside a product write (`save_post`, `save_post_seocart_product`, `wp_insert_post` and
+ * `transition_post_status`) are reported once per request, as
+ * `catalog.foreign_save_post_listener`: they run inside the product's transaction window, where
+ * a slow call or a statement that ends the transaction costs the save its atomicity. Core's
+ * callbacks and the plugin's own are not reported. The report goes to the log, never to a
+ * client.
  *
  * @since 0.1.0
  */
@@ -52,14 +63,47 @@ final class WordPressPostGateway implements PostGateway {
 	private TransactionManager $transactions;
 
 	/**
+	 * Receives a machine code and context for anything reported rather than thrown, or null to report nothing.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var (callable(string, array<string, mixed>): void)|null
+	 */
+	private $report;
+
+	/**
+	 * Whether other plugins' callbacks on the write's hooks are looked for: WP_DEBUG.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var bool
+	 */
+	private bool $debug;
+
+	/**
+	 * Whether they were reported in this request.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var bool
+	 */
+	private bool $reported = false;
+
+	/**
 	 * Creates the gateway. Does nothing else.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param TransactionManager $transactions The transaction a write takes part in.
+	 * @param callable|null      $report       Optional. Receives a machine code (string) and its context (array). Default null.
+	 * @param bool               $debug        Optional. Whether to look for other plugins' callbacks, as WP_DEBUG does. Default false.
+	 *
+	 * @phpstan-param (callable(string, array<string, mixed>): void)|null $report
 	 */
-	public function __construct( TransactionManager $transactions ) {
+	public function __construct( TransactionManager $transactions, ?callable $report = null, bool $debug = false ) {
 		$this->transactions = $transactions;
+		$this->report       = $report;
+		$this->debug        = $debug;
 	}
 
 	/**
@@ -77,12 +121,17 @@ final class WordPressPostGateway implements PostGateway {
 	public function write( array $postarr ): int {
 		$id = isset( $postarr['ID'] ) ? (int) $postarr['ID'] : 0;
 
+		$this->reportForeignListeners();
+
 		if ( $id > 0 ) {
 			if ( ProductCapabilities::POST_TYPE !== get_post_type( $id ) ) {
 				CodedException::raise( CatalogError::PostNotProduct, array( 'post_id' => $id ) );
 			}
 
 			$this->forgetOnRollback( $id );
+
+			// wp_update_post() merges the fields it is given into the post it reads: the row this window sees, not a copy cached earlier.
+			clean_post_cache( $id );
 
 			$result = wp_update_post( wp_slash( $postarr ), true, false );
 		} else {
@@ -131,6 +180,100 @@ final class WordPressPostGateway implements PostGateway {
 		}
 
 		return $result;
+	}
+
+	/**
+	 * Reports, once per request and under WP_DEBUG only, the callbacks of other plugins on the hooks core fires inside a product write.
+	 *
+	 * @since 0.1.0
+	 */
+	private function reportForeignListeners(): void {
+		global $wp_filter;
+
+		if ( ! $this->debug || $this->reported || null === $this->report ) {
+			return;
+		}
+
+		$foreign = array();
+
+		foreach ( array( 'save_post', 'save_post_' . ProductCapabilities::POST_TYPE, 'wp_insert_post', 'transition_post_status' ) as $hook ) {
+			$registered = $wp_filter[ $hook ] ?? null;
+
+			if ( ! $registered instanceof \WP_Hook ) {
+				continue;
+			}
+
+			foreach ( $registered->callbacks as $priority => $callbacks ) {
+				foreach ( $callbacks as $callback ) {
+					$described = self::foreignCallback( $callback['function'] );
+
+					if ( null !== $described ) {
+						$foreign[] = sprintf( '%s @%d %s', $hook, (int) $priority, $described );
+					}
+				}
+			}
+		}
+
+		if ( array() === $foreign ) {
+			return;
+		}
+
+		$this->reported = true;
+
+		( $this->report )( ReportCode::ForeignSaveListener->value, array( 'callbacks' => implode( '; ', $foreign ) ) );
+	}
+
+	/**
+	 * Describes a callback when it belongs to neither WordPress nor this plugin.
+	 *
+	 * A callback belongs to WordPress when it is defined in PHP itself or under `wp-includes` or
+	 * `wp-admin`, and to this plugin when it is defined in the plugin's shipped code: `src`, the
+	 * bundled libraries and the main file.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param mixed $callback The callback as WordPress stores it.
+	 * @return string|null Its name and where it is defined, or null when it is WordPress's, the plugin's or not a callback.
+	 */
+	private static function foreignCallback( mixed $callback ): ?string {
+		try {
+			if ( $callback instanceof \Closure || ( is_string( $callback ) && ! str_contains( $callback, '::' ) ) ) {
+				$reflection = new \ReflectionFunction( $callback );
+				$name       = $callback instanceof \Closure ? 'closure' : $callback;
+			} elseif ( is_array( $callback ) && isset( $callback[0], $callback[1] ) ) {
+				$reflection = new \ReflectionMethod( $callback[0], (string) $callback[1] );
+				$name       = ( is_object( $callback[0] ) ? get_class( $callback[0] ) . '->' : $callback[0] . '::' ) . $callback[1];
+			} elseif ( is_string( $callback ) ) {
+				$reflection = new \ReflectionMethod( $callback );
+				$name       = $callback;
+			} elseif ( is_object( $callback ) ) {
+				$reflection = new \ReflectionMethod( $callback, '__invoke' );
+				$name       = get_class( $callback ) . '->__invoke';
+			} else {
+				return null;
+			}
+		} catch ( \ReflectionException $unknown ) {
+			return null;
+		}
+
+		$file = $reflection->getFileName();
+
+		if ( false === $file ) {
+			return null;
+		}
+
+		$file    = wp_normalize_path( $file );
+		$plugin  = wp_normalize_path( dirname( __DIR__, 3 ) ) . '/';
+		$core    = wp_normalize_path( ABSPATH );
+		$ignored = array( $core . 'wp-includes/', $core . 'wp-admin/', $plugin . 'src/', $plugin . 'vendor-scoped/', $plugin . 'seocart.php' );
+
+		foreach ( $ignored as $prefix ) {
+			if ( str_starts_with( $file, $prefix ) ) {
+				return null;
+			}
+		}
+
+		return sprintf( '%s in %s:%d', $name, plugin_basename( $file ), (int) $reflection->getStartLine() );
 	}
 
 	/**

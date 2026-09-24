@@ -35,8 +35,10 @@ defined( 'ABSPATH' ) || exit;
  *
  * Two ways a product begins. firstBinding() is the store binding a post for the first time: the
  * product starts `updating`, with its default variant at the first generation, which is also the
- * generation it publishes. reconciled() is the store finding a product post it did not write: the
- * product starts `incomplete`, without a variant, and publishes no generation.
+ * generation it publishes, or without a variant when the first save names no SKU. reconciled() is
+ * the store finding a product post it did not write: the product starts `incomplete`, without a
+ * variant, and publishes no generation. A product without a variant is given one by
+ * giveDefaultVariant() on a later save.
  *
  * The variants and bindings are written only through this root, and the events it records are
  * released by the service that saved it.
@@ -143,19 +145,19 @@ final class Product {
 	}
 
 	/**
-	 * Returns a product being bound to its first post: `updating`, with its default variant published.
+	 * Returns a product being bound to its first post: `updating`, with its default variant published when it has one.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param string             $uuid    The product's public identifier, from the IdGenerator.
 	 * @param int                $postId  The post, which becomes the source binding.
 	 * @param Locale             $locale  The locale of the post's content.
-	 * @param Variant            $variant The default variant, not yet stored.
+	 * @param Variant|null       $variant The default variant, not yet stored, or null when the first save names no SKU.
 	 * @param \DateTimeImmutable $at      When the post is bound.
 	 * @return self The product, not yet stored.
 	 */
-	public static function firstBinding( string $uuid, int $postId, Locale $locale, Variant $variant, \DateTimeImmutable $at ): self {
-		return new self( null, $uuid, $postId, array( new ProductPostBinding( $postId, $locale, $at ) ), GenerationState::Updating, $variant->generation(), $variant );
+	public static function firstBinding( string $uuid, int $postId, Locale $locale, ?Variant $variant, \DateTimeImmutable $at ): self {
+		return new self( null, $uuid, $postId, array( new ProductPostBinding( $postId, $locale, $at ) ), GenerationState::Updating, $variant?->generation() ?? self::NO_GENERATION, $variant );
 	}
 
 	/**
@@ -216,6 +218,24 @@ final class Product {
 		if ( null !== $this->defaultVariant && null !== $variantId ) {
 			$this->defaultVariant = $this->defaultVariant->withId( $variantId );
 		}
+	}
+
+	/**
+	 * Gives a product without a variant its default variant, which it then publishes.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When the product already has a default variant.
+	 *
+	 * @param Variant $variant The default variant, not yet stored.
+	 */
+	public function giveDefaultVariant( Variant $variant ): void {
+		if ( null !== $this->defaultVariant ) {
+			throw new \LogicException( sprintf( 'Product %s already has its default variant.', $this->uuid ) );
+		}
+
+		$this->defaultVariant   = $variant;
+		$this->activeGeneration = $variant->generation();
 	}
 
 	/**

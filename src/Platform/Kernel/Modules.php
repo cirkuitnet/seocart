@@ -18,6 +18,7 @@ use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\Operations;
 use SEOCart\Catalog\Application\PostGateway;
 use SEOCart\Catalog\Application\ProductRepository;
+use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\Event\ProductDeleted;
@@ -677,10 +678,11 @@ final class Modules {
 	}
 
 	/**
-	 * The catalog module: the product repository, the sellability query, the product post gateway and the locale of a post.
+	 * The catalog module: the product repository, the sellability query, the product post gateway, the locale of a post and the product write.
 	 *
-	 * The repository reads the store's base currency from the settings when it reads or writes a
-	 * price, never when it is built. Without a multilingual plugin every post has the site's locale.
+	 * The repository and the write read the store's base currency from the settings when they
+	 * need it, never when they are built. Without a multilingual plugin every post has the site's
+	 * locale. The gateway reports other plugins' save listeners under WP_DEBUG.
 	 *
 	 * @since 0.1.0
 	 *
@@ -689,14 +691,43 @@ final class Modules {
 	private static function catalogRegister( Container $container ): void {
 		$container->bind(
 			ProductRepository::class,
-			static fn( Container $c ): ProductRepository => new MysqlProductRepository(
-				$c->get( Database::class ),
-				static fn(): Currency => Currency::of( (string) $c->get( SettingsStore::class )->value( InternationalSettings::BASE_CURRENCY ) )
-			)
+			static fn( Container $c ): ProductRepository => new MysqlProductRepository( $c->get( Database::class ), self::baseCurrency( $c ) )
 		);
 		$container->bind( Sellability::class, static fn( Container $c ): Sellability => new Sellability( $c->get( ProductRepository::class ) ) );
-		$container->bind( PostGateway::class, static fn( Container $c ): PostGateway => new WordPressPostGateway( $c->get( TransactionManager::class ) ) );
+		$container->bind( PostGateway::class, static fn( Container $c ): PostGateway => new WordPressPostGateway( $c->get( TransactionManager::class ), $c->get( Reporter::class ), defined( 'WP_DEBUG' ) && WP_DEBUG ) );
 		$container->bind( PostLocales::class, static fn(): PostLocales => new SiteLocale() );
+		$container->bind(
+			SaveProduct::class,
+			static fn( Container $c ): SaveProduct => new SaveProduct(
+				$c->get( ProductRepository::class ),
+				$c->get( PostGateway::class ),
+				$c->get( StockService::class ),
+				$c->get( TransactionManager::class ),
+				array( $c->get( LockService::class ), 'withLock' ),
+				$c->get( EventPublisher::class ),
+				$c->get( Sellability::class ),
+				$c->get( PostLocales::class ),
+				$c->get( Clock::class ),
+				$c->get( IdGenerator::class ),
+				self::baseCurrency( $c ),
+				$c->get( Reporter::class )
+			)
+		);
+	}
+
+	/**
+	 * Returns the store's base currency, read from its setting when it is asked for.
+	 *
+	 * Owns one fact: where every catalog service gets the base currency. It is the setting, read
+	 * when a service asks for it, never when the service is built, so building one sends no query.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container The container the settings store comes from.
+	 * @return \Closure(): Currency The reader.
+	 */
+	private static function baseCurrency( Container $container ): \Closure {
+		return static fn(): Currency => Currency::of( (string) $container->get( SettingsStore::class )->value( InternationalSettings::BASE_CURRENCY ) );
 	}
 
 	/**

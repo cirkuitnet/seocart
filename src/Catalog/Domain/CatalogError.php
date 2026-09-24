@@ -75,6 +75,13 @@ enum CatalogError: string implements ErrorCode {
 	case ProductNotFound = 'catalog.product_not_found';
 
 	/**
+	 * Another write bound the post, or changed the product's generation marker, while this save was writing.
+	 *
+	 * @since 0.1.0
+	 */
+	case WriteConflict = 'catalog.write_conflict';
+
+	/**
 	 * Returns the catalog's rows.
 	 *
 	 * @since 0.1.0
@@ -130,6 +137,14 @@ enum CatalogError: string implements ErrorCode {
 					/* translators: %1$s: A product ID. */
 					__( 'Product %1$s does not exist.', 'seocart' ),
 				array( 'product_id' )
+			),
+			new ErrorDefinition(
+				self::WriteConflict,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: A post ID. */
+					__( 'The product of post %1$s was changed by another save while this one was being written; nothing was saved. Try again.', 'seocart' ),
+				array( 'post_id' )
 			),
 		);
 	}

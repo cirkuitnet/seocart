@@ -23,9 +23,9 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: the contract of product storage as the catalog's services see it. A variant, a
  * price and a binding are written only through their product, in the caller's unit of work;
  * there is no separate variant repository. The generation marker is written by save() only when
- * it creates a product. After that it changes only through markUpdating(), leaveUpdating() and
- * restoreMark(), the statements a product write relies on for its recovery, and
- * sellabilityFacts() is the one read of it that decides a sale.
+ * it creates a product. After that it changes only through markUpdating(), relock(),
+ * leaveUpdating() and restoreMark(), the statements a product write relies on for its recovery,
+ * and sellabilityFacts() is the one read of it that decides a sale.
  *
  * @since 0.1.0
  */
@@ -79,21 +79,40 @@ interface ProductRepository {
 	public function save( Product $product ): void;
 
 	/**
-	 * Marks a product `updating`, whatever its marker was, and returns the instant the mark was written.
+	 * Marks a product `updating`, whatever its marker was, and returns the marker it replaced and the instant of the mark.
 	 *
-	 * Run it inside the transaction that commits the mark: the instant is read back under the row
-	 * lock the mark took, to the microsecond, so it names this mark and no later one. A write that
-	 * is rolled back hands it to restoreMark().
+	 * Run it inside the transaction that commits the mark: the marker is read under the row lock
+	 * the mark then takes, and the instant is read back under that lock, to the microsecond, so
+	 * it names this mark and no later one; every instant is later than the row's last one. A write
+	 * that is rolled back hands both to restoreMark().
 	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \LogicException When no transaction is open.
 	 *
 	 * @param int $productId The product's id.
-	 * @return string|null The `updated_at` the mark wrote, such as `2026-09-25 10:00:00.123456`; null when
-	 *                     there is no such product.
+	 * @return UpdatingMark|null The mark; null when there is no such product.
 	 */
-	public function markUpdating( int $productId ): ?string;
+	public function markUpdating( int $productId ): ?UpdatingMark;
+
+	/**
+	 * Marks a product `updating` again as the first statement of a write's window, which takes the product's row lock.
+	 *
+	 * Two windows of one product serialise on this lock, even should the product's named lock
+	 * that saves take turns on be lost. It writes the mark again, with a new
+	 * instant, so a window that is committed by anyone, even a listener that ends the
+	 * transaction early, leaves the product `updating` rather than under another save's
+	 * settled marker, and leaves a mark restoreMark() cannot mistake for the one made before
+	 * the window. A rollback of the window undoes it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open.
+	 *
+	 * @param int $productId The product's id.
+	 * @return bool True when the product exists and was marked; false when there is no such product.
+	 */
+	public function relock( int $productId ): bool;
 
 	/**
 	 * Settles a product's marker at the end of a write: one conditional statement, which changes the marker only while it is `updating`.

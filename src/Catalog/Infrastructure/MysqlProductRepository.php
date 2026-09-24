@@ -13,6 +13,7 @@ namespace SEOCart\Catalog\Infrastructure;
 
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Application\ProductRepository;
+use SEOCart\Catalog\Application\UpdatingMark;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\ProductPostBinding;
@@ -36,7 +37,8 @@ defined( 'ABSPATH' ) || exit;
  * sellability rule is fed by. It is the only class that reads or writes `generation_state`, and
  * it decides a sale on it in one place, sellabilityFacts(); the other reads load the marker as
  * state, and the only statements that change it are the creation of a product, markUpdating(),
- * leaveUpdating() and restoreMark().
+ * relock(), leaveUpdating() and restoreMark(). Every write of a product's `updated_at` moves it
+ * strictly forward, so the instant of a mark identifies that mark.
  *
  * A SKU collision is the `sku` key doing its job. When a variant write breaks a unique key, a
  * locking read asks whether another variant holds the SKU; a locking read sees the newest
@@ -57,6 +59,19 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @var string
 	 */
 	private const DATETIME = 'Y-m-d H:i:s';
+
+	/**
+	 * The instant a statement writes into a product's `updated_at`: now, or one microsecond after the row's last instant when that is later.
+	 *
+	 * A marker is identified by its instant, so no two writes of one row may share one: two
+	 * statements in the same microsecond, or a database clock that steps back, would otherwise
+	 * let a restore take a newer mark for its own.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const NEXT_INSTANT = 'GREATEST( UTC_TIMESTAMP(6), updated_at + INTERVAL 1 MICROSECOND )';
 
 	/**
 	 * The connection.
@@ -153,33 +168,47 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
-	 * Marks a product `updating`, whatever its marker was, and returns the instant the mark was written.
+	 * Marks a product `updating`, whatever its marker was, and returns the marker it replaced and the instant of the mark.
+	 *
+	 * Three statements: a locking read of the marker, the mark, and the read of the instant it
+	 * wrote. The lock is held until the transaction ends, so both reads are this mark's.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \LogicException When no transaction is open, so the instant read back might be another writer's.
+	 * @throws \LogicException When no transaction is open, so the reads might be another writer's.
 	 *
 	 * @param int $productId The product's id.
-	 * @return string|null The `updated_at` the mark wrote, to the microsecond; null when there is no such product.
+	 * @return UpdatingMark|null The mark; null when there is no such product.
 	 */
-	public function markUpdating( int $productId ): ?string {
-		if ( 0 === $this->db->depth() ) {
-			throw new \LogicException( 'Mark a product inside the transaction that commits the mark, so that the instant read back is the one this mark wrote.' );
-		}
+	public function markUpdating( int $productId ): ?UpdatingMark {
+		$this->requireTransaction( __FUNCTION__ );
 
-		$marked = $this->db->execute(
-			'UPDATE %i SET generation_state = %s, updated_at = UTC_TIMESTAMP(6) WHERE id = %d',
-			$this->table( CatalogTables::PRODUCTS ),
-			GenerationState::Updating->value,
-			$productId
-		);
+		$before = $this->db->fetchValue( 'SELECT generation_state FROM %i WHERE id = %d FOR UPDATE', $this->table( CatalogTables::PRODUCTS ), $productId );
 
-		if ( 1 !== $marked ) {
+		if ( null === $before || 1 !== $this->remark( $productId ) ) {
 			return null;
 		}
 
-		// The mark holds the row until the transaction ends, so this reads the instant it wrote.
-		return (string) $this->db->fetchValue( 'SELECT updated_at FROM %i WHERE id = %d', $this->table( CatalogTables::PRODUCTS ), $productId );
+		return new UpdatingMark(
+			GenerationState::fromStored( (string) $before ),
+			(string) $this->db->fetchValue( 'SELECT updated_at FROM %i WHERE id = %d', $this->table( CatalogTables::PRODUCTS ), $productId )
+		);
+	}
+
+	/**
+	 * Marks a product `updating` again as the first statement of a write's window, taking its row lock.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open.
+	 *
+	 * @param int $productId The product's id.
+	 * @return bool True when the product exists and was marked.
+	 */
+	public function relock( int $productId ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->remark( $productId );
 	}
 
 	/**
@@ -193,7 +222,7 @@ final class MysqlProductRepository implements ProductRepository {
 	 */
 	public function leaveUpdating( int $productId, GenerationState $to ): bool {
 		return 1 === $this->db->execute(
-			'UPDATE %i SET generation_state = %s, updated_at = UTC_TIMESTAMP(6) WHERE id = %d AND generation_state = %s',
+			'UPDATE %i SET generation_state = %s, updated_at = ' . self::NEXT_INSTANT . ' WHERE id = %d AND generation_state = %s',
 			$this->table( CatalogTables::PRODUCTS ),
 			$to->value,
 			$productId,
@@ -213,7 +242,7 @@ final class MysqlProductRepository implements ProductRepository {
 	 */
 	public function restoreMark( int $productId, GenerationState $before, string $markedAt ): bool {
 		return 1 === $this->db->execute(
-			'UPDATE %i SET generation_state = %s, updated_at = UTC_TIMESTAMP(6) WHERE id = %d AND generation_state = %s AND updated_at = %s',
+			'UPDATE %i SET generation_state = %s, updated_at = ' . self::NEXT_INSTANT . ' WHERE id = %d AND generation_state = %s AND updated_at = %s',
 			$this->table( CatalogTables::PRODUCTS ),
 			$before->value,
 			$productId,
@@ -410,9 +439,9 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @param Product $product   The product.
 	 */
 	private function updateProduct( int $productId, Product $product ): void {
-		// The row always changes, because updated_at keeps microseconds: no changed row means no row.
+		// The row always changes, because updated_at only moves forward: no changed row means no row.
 		$changed = $this->db->execute(
-			'UPDATE %i SET source_post_id = ' . self::placeholder( $product->sourcePostId() ) . ', active_variant_generation = %d, variant_count = %d, enabled_variant_count = %d, updated_at = UTC_TIMESTAMP(6) WHERE id = %d',
+			'UPDATE %i SET source_post_id = ' . self::placeholder( $product->sourcePostId() ) . ', active_variant_generation = %d, variant_count = %d, enabled_variant_count = %d, updated_at = ' . self::NEXT_INSTANT . ' WHERE id = %d',
 			...self::given(
 				$this->table( CatalogTables::PRODUCTS ),
 				$product->sourcePostId(),
@@ -594,6 +623,42 @@ final class MysqlProductRepository implements ProductRepository {
 			}
 
 			CodedException::raise( CatalogError::SkuTaken, array( 'sku' => $sku->toString() ) );
+		}
+	}
+
+	/**
+	 * Writes the `updating` mark with a new instant: one statement.
+	 *
+	 * The instant is always later than the row's last one, so the row always changes and the
+	 * answer counts it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $productId The product's id.
+	 * @return int The rows changed: 1, or 0 when there is no such product.
+	 */
+	private function remark( int $productId ): int {
+		return $this->db->execute(
+			'UPDATE %i SET generation_state = %s, updated_at = ' . self::NEXT_INSTANT . ' WHERE id = %d',
+			$this->table( CatalogTables::PRODUCTS ),
+			GenerationState::Updating->value,
+			$productId
+		);
+	}
+
+	/**
+	 * Refuses a marker statement outside a transaction.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open.
+	 *
+	 * @param string $method The statement's method, for the message.
+	 */
+	private function requireTransaction( string $method ): void {
+		if ( 0 === $this->db->depth() ) {
+			// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- A developer's message naming one of this class's methods; it is never rendered.
+			throw new \LogicException( sprintf( '%s() runs inside a transaction: the mark must be read under the lock it takes, and committed or rolled back with the write it belongs to.', $method ) );
 		}
 	}
 

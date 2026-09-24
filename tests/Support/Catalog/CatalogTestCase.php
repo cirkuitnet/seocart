@@ -45,13 +45,13 @@ use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 abstract class CatalogTestCase extends DatabaseTestCase {
 
 	/**
-	 * The base currency of the repository under test.
+	 * The base currency of the repository under test, and of every catalog service a test builds.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	protected const BASE_CURRENCY = 'USD';
+	public const BASE_CURRENCY = 'USD';
 
 	/**
 	 * The locale the fixtures bind posts in.
