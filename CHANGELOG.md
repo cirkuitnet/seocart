@@ -12,19 +12,21 @@ under `[Unreleased]`. The release process moves those entries under the new vers
 
 ## [Unreleased]
 
-This is the repository bootstrap. **The plugin has no store features yet:** it has no
-products, cart, checkout, orders or payments, and it registers no REST route, block, admin
-screen, scheduled job or WP-CLI command. Activation installs the foundation the features
-will be built on: the plugin's database tables, its roles and capabilities, and one
-installation record. The rest is the skeleton and the checks that keep it releasable.
+This is the platform foundation. **The plugin has no store features yet:** it has no
+products, cart, checkout, orders, payments, blocks or admin screens. It registers the store
+settings route (`GET` and `PATCH`) and its two WP-CLI commands, the `wp seocart` maintenance
+commands, three Site Health tests and its own background jobs. Activation installs the
+plugin's database tables, its roles and capabilities, one installation record, a data key
+for secret settings and the recurring jobs. The rest is the skeleton and the checks that
+keep it releasable.
 
 ### Added
 
 - The plugin main file, `seocart.php`. It checks the PHP and WordPress versions, registers a
   PSR-4 autoloader for the `SEOCart\` namespace, and hooks the kernel to `plugins_loaded`.
   On a site below PHP 8.3 or WordPress 7.1 it shows an admin notice and does not load.
-- A kernel, `SEOCart\Platform\Kernel\Kernel`, that boots once per request and registers
-  nothing yet.
+- A kernel, `SEOCart\Platform\Kernel\Kernel`, that boots once per request and builds each
+  module only when it is first used.
 - An `uninstall.php` that deletes nothing. Uninstalling preserves store data by design.
 - The planned directory layout under `src/`, `assets/`, `templates/`,
   `languages/` and `tests/`.
@@ -69,7 +71,7 @@ installation record. The rest is the skeleton and the checks that keep it releas
   and gross, frozen exchange rates with a fingerprint, locales, addresses, date ranges,
   time-ordered identifiers, and one table of error codes with its HTTP status and
   translatable message per code.
-- The database layer, `SEOCart\Platform\Database`, not yet wired into the plugin. It has
+- The database layer, `SEOCart\Platform\Database`. It has
   three parts:
     - A transaction wrapper that nests with savepoints, refuses to commit after `$wpdb`
       reconnects or after a commit it did not send, and re-runs a deadlocked unit of work.
@@ -83,41 +85,39 @@ installation record. The rest is the skeleton and the checks that keep it releas
 - The operations mechanism: one declaration per operation compiles its REST route, its
   ability, its WP-CLI command, its permission check, the privacy rules of its fields, and
   the generated OpenAPI document and reference pages (`docs/openapi.json`,
-  `docs/reference/`). No operation is declared yet.
-- A data registry, not yet wired into the plugin. It lists every table, migration, option,
-  capability, role and job group the plugin owns, the privacy handling of each
-  personal-data column, and the retention policies. Tests fail when a site holds a plugin
-  table, column or option that nothing registered.
+  `docs/reference/`). The first operations read and change the store settings.
+- A data registry. It lists every table, migration, option, capability, role and job group
+  the plugin owns, the privacy handling of each personal-data column, and the retention
+  policies. Tests fail when a site holds a plugin table, column or option that nothing
+  registered.
 - One documented error shape for the REST API, abilities and WP-CLI commands: every error
   carries `status`, `details` and `correlation_id`. Internal failures, such as database
   errors, reach a client only as a generic message with the correlation id, and their
   details go to the error log. Every operation response is sent with
   `Cache-Control: no-store, private`, plus `Vary: Cookie` when the request was
   cookie-authenticated.
-- Domain events and a transactional outbox, not yet wired into the plugin. An event that
-  must not be lost is stored in the same transaction as the change that raised it and is
-  delivered after the commit, at least once, as a `seocart_` action, with each listener
-  contained so one failure cannot stop the others. A delivery that fails is retried after
-  1, 4, 16 and 60 minutes, then parked. `wp seocart outbox drain|status|prune` runs and
-  inspects delivery.
-- A typed settings registry, not yet wired into the plugin. Every plugin option is declared
+- Domain events and a transactional outbox. An event that must not be lost is stored in the
+  same transaction as the change that raised it and is delivered after the commit, at least
+  once, as a `seocart_` action, with each listener contained so one failure cannot stop the
+  others. A delivery that fails is retried after 1, 4, 16 and 60 minutes, then parked. `wp
+seocart outbox drain|status|prune` runs and inspects delivery.
+- A typed settings registry. Every plugin option is declared
   once, listed in the data registry and written only through the settings store, and none
   is autoloaded. An independent setting has an option of its own; settings that belong
   together share one versioned document saved by compare-and-swap. The first settings are
   the store's base currency (default USD) and the capability installer's per-site record of
   what it has granted.
-- Encrypted secret settings, not yet wired into the plugin. A setting classed as secret is
-  sealed with XChaCha20-Poly1305 under a random data key, which `SEOCART_ENCRYPTION_KEY`
-  in `wp-config.php` wraps when it is defined; the WordPress salts are never used. A
-  canary record, a Site Health test and `wp seocart secrets status|rotate|rekey` report,
-  rotate and re-seal the keys. No read, error, log line or command ever prints a secret.
-- A logger and `wp seocart doctor`, not yet wired into the plugin. Log lines go to a new
-  `logs` table, kept 30 days, each with the correlation id of the request that caused it.
-  Personal data is redacted and secrets are dropped according to the plugin's own data
-  declarations, card numbers are removed from every line, and a line written by work that
-  is later rolled back is still kept. `wp seocart doctor` checks the schema, the
-  migrations, the locks and the event outbox without changing anything, and exits
-  non-zero when it finds a problem.
+- Encrypted secret settings. A setting classed as secret is sealed with XChaCha20-Poly1305
+  under a random data key, which `SEOCART_ENCRYPTION_KEY` in `wp-config.php` wraps when it
+  is defined; the WordPress salts are never used. A canary record, a Site Health test and
+  `wp seocart secrets status|rotate|rekey` report, rotate and re-seal the keys. No read,
+  error, log line or command ever prints a secret.
+- A logger and `wp seocart doctor`. Log lines go to a new `logs` table, kept 30 days, each
+  with the correlation id of the request that caused it. Personal data is redacted and
+  secrets are dropped according to the plugin's own data declarations, card numbers are
+  removed from every line, and a line written by work that is later rolled back is still
+  kept. `wp seocart doctor` checks the schema, the migrations, the locks and the event
+  outbox without changing anything, and exits non-zero when it finds a problem.
 - Installation. Activating the plugin installs it on the current site (and on each new site
   of a network as it is created): its database tables, the store roles and capabilities,
   and one small installation record, the only option the plugin autoloads. Deactivating and
@@ -126,16 +126,26 @@ installation record. The rest is the skeleton and the checks that keep it releas
   with `store.unavailable` (HTTP 503) and says so in an admin notice. When the site's
   address changes, or the site looks like a copy, Safe Mode stops the copy from acting as
   the store until an administrator confirms it.
-- Background jobs on the bundled Action Scheduler, not yet wired into the plugin. A job
-  with a key is queued once; a failing job is retried, then recorded as failed and
-  counted; jobs run on WP-Cron, from `wp seocart jobs run` and from a short tick on admin
-  requests; `wp seocart jobs status` reports them; and cleanup touches only the plugin's
-  own jobs, never another plugin's. The first jobs deliver missed events, prune the event
-  outbox and apply database migrations a little at a time. A request that publishes
-  events ends its response before their listeners run, or, where the server cannot end
-  it early, hands their delivery to the job runner. The main file now loads the bundled
-  Action Scheduler so that it takes part in choosing the newest copy on the site.
+- Background jobs on the bundled Action Scheduler. A job with a key is queued once; a
+  failing job is retried, then recorded as failed and counted; jobs run on WP-Cron, from `wp
+seocart jobs run` and from a short tick on admin requests; `wp seocart jobs status`
+  reports them; and cleanup touches only the plugin's own jobs, never another plugin's. The
+  first jobs deliver missed events, prune the event outbox and apply database migrations a
+  little at a time. A request that publishes events ends its response before their listeners
+  run, or, where the server cannot end it early, hands their delivery to the job runner. The
+  main file now loads the bundled Action Scheduler so that it takes part in choosing the
+  newest copy on the site.
 - `wp seocart doctor` now checks background jobs: that a runner has started one recently,
   that a supported copy of Action Scheduler with its own store is in control, and that
   none has failed. `--residue` also lists the plugin's leftover jobs. Log lines past
   their retention period are deleted by a daily job.
+- The foundation modules now run in the plugin. `GET`/`PATCH /seocart/v1/settings` and
+  `wp seocart settings get|update` read and change the store settings for users with
+  `seocart_manage_settings`. `wp seocart migrate|safe-mode|outbox|jobs|doctor|secrets` are
+  available. Background jobs run on WP-Cron, from admin requests and from
+  `wp seocart jobs run`. Site Health shows SEOCart's database schema, stored secrets and
+  background jobs. When the stored secrets can't be opened, Safe Mode turns on and says why.
+  Deactivating cancels the plugin's own background jobs and changes nothing else. An idle
+  front-end request still runs no plugin query.
+- An operation whose input or output holds personal data or a secret can't be exposed to
+  agents.
