@@ -173,3 +173,10 @@ seocart jobs run` and from a short tick on admin requests; `wp seocart jobs stat
   on REST takes the variant from the URL only, and accepts an optional `expected_on_hand` so a
   retried request cannot apply twice. The ability is marked destructive and is not offered to
   agents.
+- A product write service that saves a product's post and its commerce fields (SKU, a price
+  in the store's base currency, a compare-at price and a weight) in one database
+  transaction, gives the product's variant its stock item, and records
+  `seocart_product_saved` through the outbox. A save that fails leaves a live product on
+  sale as it was; a save cut short by a crash, a lost connection or another plugin ending
+  the transaction leaves the product unsellable until it is saved again; a save without a
+  price leaves the product incomplete. Nothing calls the service yet.
