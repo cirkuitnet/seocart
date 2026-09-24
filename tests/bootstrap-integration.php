@@ -21,6 +21,7 @@ use Composer\Autoload\ClassLoader;
 use SEOCart\Tests\Support\AutoloaderWatch;
 use SEOCart\Tests\Support\ErrorRecorder;
 use SEOCart\Tests\Support\PluginOwnership;
+use SEOCart\Tests\Support\TestDatabasePrefix;
 
 $seocart_tests_plugin_dir  = dirname( __DIR__ );
 $seocart_tests_load_plugin = '0' !== getenv( 'SEOCART_TESTS_LOAD_PLUGIN' );
@@ -65,6 +66,37 @@ if ( false === $seocart_tests_library || ! is_dir( $seocart_tests_library ) ) {
 	fwrite( STDERR, PHP_EOL . 'SEOCart integration tests cannot start: the wp-phpunit library is not installed. Run `composer install`.' . PHP_EOL . PHP_EOL );
 
 	exit( 1 );
+}
+
+/*
+ * WordPress is installed once per run, by the process that gets here first (the same process
+ * that, further down, sets WP_TESTS_SKIP_INSTALL so a child process never repeats either step).
+ * That installing process is also the one that must start from an empty database, and it must do
+ * so before wp-phpunit's own bootstrap runs, for a reason its own installer cannot fix from
+ * inside itself: wp-phpunit's install.php boots WordPress (`require ABSPATH . 'wp-settings.php'`)
+ * against the database exactly as a previous run left it, and only after that drops and recreates
+ * the tables WordPress's own installer knows about. A killed previous run can leave, in that same
+ * database: a deleted site's own tables; the main site's plugin tables, which the boot above
+ * reads as already installed; pending scheduled actions; and, subtlest, a role a plugin granted
+ * on an earlier run, which that pre-drop boot reads into memory and `populate_roles()` then
+ * writes back into the freshly emptied options table before anything of ours runs again.
+ *
+ * The configuration template already says this database is "used by nothing else: installing the
+ * test site DROPS ITS TABLES"; this drops every table of the configured prefix, not only the ones
+ * WordPress's own installer would have dropped anyway, which is the same hazard extended to the
+ * rest of what a run can leave behind. It runs here, before wp-phpunit's bootstrap is required at
+ * all, so nothing below it — not that pre-drop boot, not a test — ever reads a previous run's
+ * state. $wpdb does not exist yet at this point, so the connection is a plain one, with the
+ * configuration's own settings.
+ */
+if ( '1' !== getenv( 'WP_TESTS_SKIP_INSTALL' ) ) {
+	try {
+		TestDatabasePrefix::dropAll( TestDatabasePrefix::readConfig( $seocart_tests_config ) );
+	} catch ( \Throwable $e ) {
+		fwrite( STDERR, PHP_EOL . 'SEOCart integration tests cannot start: ' . $e->getMessage() . PHP_EOL . PHP_EOL );
+
+		exit( 1 );
+	}
 }
 
 // The WordPress test library needs the polyfills and looks for them where WordPress core keeps them.
@@ -118,8 +150,8 @@ require $seocart_tests_library . '/includes/bootstrap.php';
 ErrorRecorder::stop();
 
 /*
- * WordPress is installed once per run, by the process that gets here first. A child process
- * started by a test inherits this variable and boots against the database as it stands.
- * Reinstalling from a child would drop the tables underneath the test that is waiting for it.
+ * A child process started by a test inherits this variable and boots against the database as
+ * the installing process above left it. Reinstalling — or dropping every table of the prefix
+ * again — from a child would pull the tables out from under the test that is waiting for it.
  */
 putenv( 'WP_TESTS_SKIP_INSTALL=1' );
