@@ -44,10 +44,12 @@ final class CompilerCallSitesTest extends TestCase {
 	 * @var array<string, string>
 	 */
 	private const DIALECTS = array(
-		'restArguments'   => 'src/Application/Operations/CompiledOperation.php',
-		'wordPressSchema' => 'src/Application/Operations/CompiledOperation.php',
-		'cliSynopsis'     => 'src/Application/Operations/CompiledOperation.php',
-		'openApiSchema'   => 'tools/Docs/OpenApiDocument.php',
+		'restArguments'      => 'src/Application/Operations/CompiledOperation.php',
+		'wordPressSchema'    => 'src/Application/Operations/CompiledOperation.php',
+		'cliSynopsis'        => 'src/Application/Operations/CompiledOperation.php',
+		'openApiSchema'      => 'tools/Docs/OpenApiDocument.php',
+		// The one core-shaped REST resource with a property of the plugin's: the product post type's `seocart`.
+		'restObjectProperty' => 'src/Catalog/Interfaces/Rest/ProductCommerceSchema.php',
 	);
 
 	/**

@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Catalog;
 
 use SEOCart\Catalog\Infrastructure\ProductPostType;
+use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Kernel\Lifecycle;
 use SEOCart\Tests\Support\KernelTestCase;
@@ -153,8 +154,8 @@ final class ProductPostTypeTest extends KernelTestCase {
 		$this->assertTrue( $type->show_in_rest );
 		$this->assertSame( 'seocart-products', $type->rest_base );
 		$this->assertSame( 'wp/v2', $type->rest_namespace );
-		$this->assertFalse( $type->rest_controller_class, 'Core serves the type with its own controller until the plugin has one.' );
-		$this->assertSame( \WP_REST_Posts_Controller::class, get_class( $type->get_rest_controller() ) );
+		$this->assertSame( ProductPostsController::class, $type->rest_controller_class, 'The plugin serves the type with its own controller.' );
+		$this->assertInstanceOf( ProductPostsController::class, $type->get_rest_controller() );
 		$this->assertTrue( $type->map_meta_cap );
 		$this->assertFalse( $type->can_export );
 		$this->assertFalse( $type->delete_with_user );

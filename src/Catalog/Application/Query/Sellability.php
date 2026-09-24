@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Catalog\Application\Query;
 
 use SEOCart\Catalog\Application\ProductRepository;
+use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\Sellability as SellabilityRule;
 use SEOCart\Catalog\Domain\SellabilityReason;
 
@@ -23,7 +24,8 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: how a reader gets a verdict. It reads every variant's facts with the
  * repository's one fetch and judges each with the domain's one rule, so a REST response, a cart
  * and a checkout all see the same verdict for the same variant. A variant no row has is
- * `unknown_variant`.
+ * `unknown_variant`. A post with no variant to judge, because no product is bound to it or its
+ * product has none yet, gets the rule's verdict on that without a fetch.
  *
  * @since 0.1.0
  */
@@ -79,5 +81,24 @@ final class Sellability {
 		}
 
 		return $verdicts;
+	}
+
+	/**
+	 * Returns the verdict on the default variant of a post's product, or on the post itself when there is no variant to judge.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Product|null $product        The product bound to the post, as loaded, or null when none is.
+	 * @param bool         $canReadPrivate Whether the reader may read private products.
+	 * @return SellabilityReason The verdict: from the one fetch when the product has a default variant, one query; otherwise none.
+	 */
+	public function ofProduct( ?Product $product, bool $canReadPrivate ): SellabilityReason {
+		$variantId = $product?->defaultVariant()?->id();
+
+		if ( null === $variantId ) {
+			return SellabilityRule::withoutVariant( $product?->generation() );
+		}
+
+		return $this->of( array( $variantId ), $canReadPrivate )[ $variantId ];
 	}
 }

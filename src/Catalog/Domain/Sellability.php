@@ -93,4 +93,23 @@ final class Sellability {
 
 		return self::PUBLISHED === $facts->postStatus ? SellabilityReason::Sellable : SellabilityReason::NotPublished;
 	}
+
+	/**
+	 * Returns the verdict on a post that has no variant to judge: it is not bound to a product, or its product has no variant yet.
+	 *
+	 * The same order holds: a product without a variant is incomplete, or `updating` while a save
+	 * writes it; a post no product is bound to has no binding.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param GenerationState|null $generation The marker of the post's product, or null when no product is bound to the post.
+	 * @return SellabilityReason Never Sellable.
+	 */
+	public static function withoutVariant( ?GenerationState $generation ): SellabilityReason {
+		if ( null === $generation ) {
+			return SellabilityReason::NoBinding;
+		}
+
+		return GenerationState::Updating === $generation ? SellabilityReason::Updating : SellabilityReason::Incomplete;
+	}
 }

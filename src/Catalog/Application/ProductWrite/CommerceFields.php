@@ -87,6 +87,18 @@ final class CommerceFields {
 	public const WEIGHT_MAX_GRAMS = 2147483647;
 
 	/**
+	 * The largest amount a price field takes, in minor units: 2^53 - 1, the largest integer every JSON reader, the block editor's among them, holds exactly.
+	 *
+	 * A larger number would reach the server already rounded, or be rounded again on its way back
+	 * to a client, so it is refused rather than stored.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	public const AMOUNT_MAX_MINOR = 9007199254740991;
+
+	/**
 	 * Returns every commerce field, in wire order.
 	 *
 	 * @since 0.1.0
@@ -111,6 +123,7 @@ final class CommerceFields {
 				example: 1999,
 				nullable: true,
 				minimum: 0,
+				maximum: self::AMOUNT_MAX_MINOR,
 				privacy: Privacy::Financial
 			),
 			new FieldSpec(
@@ -130,6 +143,7 @@ final class CommerceFields {
 				example: 2499,
 				nullable: true,
 				minimum: 0,
+				maximum: self::AMOUNT_MAX_MINOR,
 				privacy: Privacy::Financial
 			),
 			new FieldSpec(

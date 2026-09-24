@@ -34,9 +34,13 @@ defined( 'ABSPATH' ) || exit;
  * - cliSynopsis(), WP-CLI: a list of positional and `--name=<value>` arguments, `optional` per
  *   argument, a text default, the allowed values as `options`, and the `--format` option every
  *   command prints its result with.
+ * - restObjectProperty(), one object-valued property of a WordPress core-shaped REST resource,
+ *   such as a post type's: `context` on the property and on each of its properties, `readonly`
+ *   on the ones a client cannot write, `additionalProperties: false`, and no `required` at all,
+ *   because such a resource is written by partial updates.
  *
- * In the three JSON dialects a nullable field has the type list [type, "null"]; none of them uses
- * the `nullable` keyword of OpenAPI 3.0. A uuid is a string with `format: uuid` in all three.
+ * In the four JSON dialects a nullable field has the type list [type, "null"]; none of them uses
+ * the `nullable` keyword of OpenAPI 3.0. A uuid is a string with `format: uuid` in all four.
  *
  * Nothing here calls WordPress. The texts are the machine descriptions, in English.
  *
@@ -52,6 +56,24 @@ final class JsonSchemaCompiler {
 	 * @var string
 	 */
 	public const WORDPRESS_SCHEMA_DRAFT = 'http://json-schema.org/draft-04/schema#';
+
+	/**
+	 * The contexts of a core-shaped REST resource in which a property is sent: every one but `embed`.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<string>
+	 */
+	private const REST_CONTEXTS = array( 'view', 'edit' );
+
+	/**
+	 * The context of a property sent only to a client that may edit the resource.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<string>
+	 */
+	private const REST_EDIT_CONTEXT = array( 'edit' );
 
 	/**
 	 * The option through which every operation command prints its result.
@@ -132,6 +154,63 @@ final class JsonSchemaCompiler {
 	 */
 	public static function openApiSchema( array $fields ): array {
 		return self::objectSchema( $fields, true );
+	}
+
+	/**
+	 * Compiles fields into one object-valued property of a WordPress core-shaped REST resource.
+	 *
+	 * WordPress filters a response by the `context` of each property, nested ones included, skips
+	 * a `readonly` property when it derives a route's arguments from the schema, and validates a
+	 * written object against its properties. So the property and each of its properties carry
+	 * their contexts, `view` and `edit` (a property in $edit_only has `edit` alone), each name in
+	 * $read_only is `readonly`, and a written object with any other key is refused. No field may
+	 * be required: a client updates such a resource by sending only what it changes.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws SchemaException When a field is required, or a listed name is not one of the fields.
+	 *
+	 * @param string      $description The property's machine description.
+	 * @param FieldSpec[] $fields      Its fields, in the order they are sent.
+	 * @param string[]    $read_only   The names of the fields a client cannot write.
+	 * @param string[]    $edit_only   The names of the fields sent in the `edit` context only.
+	 * @return array<string, mixed> The property's schema.
+	 *
+	 * @phpstan-param list<FieldSpec> $fields
+	 * @phpstan-param list<string>    $read_only
+	 * @phpstan-param list<string>    $edit_only
+	 */
+	public static function restObjectProperty( string $description, array $fields, array $read_only, array $edit_only ): array {
+		$properties = array();
+
+		foreach ( $fields as $field ) {
+			if ( $field->isRequired() ) {
+				SchemaException::raise( 'The field %1$s is required, but a property of a core-shaped REST resource is written partially, so none of its fields can be.', $field->name() );
+			}
+
+			$property            = self::keywords( $field );
+			$property['context'] = in_array( $field->name(), $edit_only, true ) ? self::REST_EDIT_CONTEXT : self::REST_CONTEXTS;
+
+			if ( in_array( $field->name(), $read_only, true ) ) {
+				$property['readonly'] = true;
+			}
+
+			$properties[ $field->name() ] = $property;
+		}
+
+		foreach ( array_merge( $read_only, $edit_only ) as $name ) {
+			if ( ! isset( $properties[ $name ] ) ) {
+				SchemaException::raise( 'The name %1$s is listed as read-only or edit-only, but it is not one of the fields.', $name );
+			}
+		}
+
+		return array(
+			'description'          => $description,
+			'type'                 => 'object',
+			'context'              => self::REST_CONTEXTS,
+			'properties'           => $properties,
+			'additionalProperties' => false,
+		);
 	}
 
 	/**

@@ -22,6 +22,8 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  *
  * - The generation marker's column is named in a string, where SQL is written, by two files only:
  *   the table declaration and the product repository. No other class can select or filter on it.
+ *   The one other file that spells the name declares the REST field that sends the marker to an
+ *   editor: a wire name in a field declaration, never SQL.
  * - Inside the repository, the marker is compared with a value only in the statements that write
  *   it: the creation of a product, markUpdating() and relock() through remark(), leaveUpdating()
  *   and restoreMark(). The two
@@ -88,6 +90,15 @@ final class SellabilityIsOneRuleTest extends TestCase {
 	private const REPOSITORY = 'src/Catalog/Infrastructure/MysqlProductRepository.php';
 
 	/**
+	 * The file that declares the marker's REST field: the wire name, in a FieldSpec, never in SQL.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const WIRE = 'src/Catalog/Interfaces/Rest/ProductCommerceSchema.php';
+
+	/**
 	 * The repository's statements that write the marker, and may compare it with a value.
 	 *
 	 * @since 0.1.0
@@ -131,7 +142,11 @@ final class SellabilityIsOneRuleTest extends TestCase {
 		}
 
 		$this->assertArrayHasKey( self::REPOSITORY, $naming, 'The search did not find the repository\'s SQL on the marker, so an empty result would prove nothing.' );
-		$this->assertSame( array( self::DECLARATION, self::REPOSITORY ), array_keys( $naming ), 'Only the repository may read or write the generation marker; a reader asks Query\\Sellability.' );
+		$named = array_keys( $naming );
+
+		sort( $named );
+
+		$this->assertSame( array( self::DECLARATION, self::REPOSITORY, self::WIRE ), $named, 'Only the repository may read or write the generation marker; a reader asks Query\\Sellability.' );
 	}
 
 	/**

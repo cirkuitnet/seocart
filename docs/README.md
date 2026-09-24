@@ -6,11 +6,12 @@ plugin's own help screens.
 
 ## Working on the plugin
 
-| Document                         | What it covers                                                                                                       |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| [development.md](development.md) | Setting up a working copy: requirements, Composer and npm, Strauss, the test database, disposable sites              |
-| [testing.md](testing.md)         | The test layers, every gate command, the planted-violation rule and the determinism rules                            |
-| [releasing.md](releasing.md)     | Versioning, how the release zip is built, the WordPress.org gates, and the manual deployment to the plugin directory |
+| Document                                                                     | What it covers                                                                                                       |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| [development.md](development.md)                                             | Setting up a working copy: requirements, Composer and npm, Strauss, the test database, disposable sites              |
+| [testing.md](testing.md)                                                     | The test layers, every gate command, the planted-violation rule and the determinism rules                            |
+| [releasing.md](releasing.md)                                                 | Versioning, how the release zip is built, the WordPress.org gates, and the manual deployment to the plugin directory |
+| [maintenance/rest-posts-controller.md](maintenance/rest-posts-controller.md) | What the product's REST controller overrides or reproduces of WordPress core, to check against each WordPress major  |
 
 The contribution process is in [CONTRIBUTING.md](../CONTRIBUTING.md). The definition of done
 is the [pull request template](../.github/pull_request_template.md), and that file is its

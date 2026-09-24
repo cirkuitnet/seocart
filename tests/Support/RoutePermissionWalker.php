@@ -32,6 +32,18 @@ use WP_REST_Server;
  * `/<namespace>`, served by WP_REST_Server::get_namespace_index(): it is core's, and core gives
  * it no permission callback and no schema.
  *
+ * A post type's `wp/v2` base is walked apart, by walkPostTypeBase(): its routes are core-shaped,
+ * served by WordPress's controllers for the type, so their permission callbacks are the
+ * controllers' own methods. There the rule is ownership and core's mapping. Every endpoint under
+ * the base must be guarded by a method of one of the post type's three controllers, the posts
+ * controller and the autosave and revision controllers core builds from it, compared by identity;
+ * the posts controller must be the plugin's class, and the other two core's own classes. And the
+ * method must be the one core guards that route and HTTP method with: on each route core
+ * registers, the expected controller's `get_items_`, `create_item_`, `get_item_`, `update_item_`
+ * or `delete_item_permissions_check`. A closure, `__return_true`, a function name or any other
+ * object is a violation, and so are core's default controller, a check of the wrong kind, such
+ * as a write guarded by a read check, and a route core does not register.
+ *
  * The walk also returns the plugin routes it examined, so that the operations module can add
  * its own check over the same list: that every route resolves to one operation definition, and is
  * guarded by the capability that definition declares. This walk does not know the definitions, so
@@ -76,6 +88,72 @@ final class RoutePermissionWalker {
 	 * @var string
 	 */
 	public const RULE_MISSING_SCHEMA = 'schema-missing';
+
+	/**
+	 * Rule: a post type's `wp/v2` base is not served by the plugin's controller class.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const RULE_FOREIGN_CONTROLLER = 'post-type-controller-not-the-plugins';
+
+	/**
+	 * Rule: an endpoint under a post type's `wp/v2` base is guarded by something other than one of the post type's controllers.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const RULE_NOT_THE_TYPES_CONTROLLER = 'permission-callback-not-the-post-types-controller';
+
+	/**
+	 * Rule: an endpoint under a post type's `wp/v2` base is guarded by another check than the one core guards it with, or is on a route core does not register.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const RULE_WRONG_CHECK = 'permission-callback-not-the-endpoints-check';
+
+	/**
+	 * The routes core registers under a post type's base, by the part after the base: which of the three controllers guards each, and whether it names one item.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<string, array{0: string, 1: string}>
+	 */
+	private const BASE_ROUTES = array(
+		''                                           => array( 'posts', 'collection' ),
+		'/(?P<id>[\d]+)'                             => array( 'posts', 'item' ),
+		'/(?P<id>[\d]+)/autosaves'                   => array( 'autosaves', 'collection' ),
+		'/(?P<parent>[\d]+)/autosaves/(?P<id>[\d]+)' => array( 'revisions', 'item' ),
+		'/(?P<parent>[\d]+)/revisions'               => array( 'revisions', 'collection' ),
+		'/(?P<parent>[\d]+)/revisions/(?P<id>[\d]+)' => array( 'revisions', 'item' ),
+	);
+
+	/**
+	 * The permission check core guards each HTTP method with, on a collection route and on an item route.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<string, array<string, string>>
+	 */
+	private const CHECKS = array(
+		'collection' => array(
+			'GET'  => 'get_items_permissions_check',
+			'HEAD' => 'get_items_permissions_check',
+			'POST' => 'create_item_permissions_check',
+		),
+		'item'       => array(
+			'GET'    => 'get_item_permissions_check',
+			'HEAD'   => 'get_item_permissions_check',
+			'POST'   => 'update_item_permissions_check',
+			'PUT'    => 'update_item_permissions_check',
+			'PATCH'  => 'update_item_permissions_check',
+			'DELETE' => 'delete_item_permissions_check',
+		),
+	);
 
 	/**
 	 * The prefix of every namespace, and every route path, that the walk examines, in any letter case.
@@ -145,6 +223,128 @@ final class RoutePermissionWalker {
 			'plugin_routes'  => $plugin_routes,
 			'violations'     => $violations,
 		);
+	}
+
+	/**
+	 * Walks every route under a post type's `wp/v2` base of a booted server.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param WP_REST_Server $server          A server on which `rest_api_init` has run.
+	 * @param string         $postType        The post type.
+	 * @param string         $controllerClass The class that must serve it.
+	 * @return array{routes: list<string>, violations: list<array{route: string, method: string, rule: string, message: string}>}
+	 *         The routes under the base, and what is wrong with them.
+	 */
+	public function walkPostTypeBase( WP_REST_Server $server, string $postType, string $controllerClass ): array {
+		$type = get_post_type_object( $postType );
+
+		if ( ! $type instanceof \WP_Post_Type ) {
+			return array(
+				'routes'     => array(),
+				'violations' => array( self::violation( $postType, '*', self::RULE_FOREIGN_CONTROLLER, 'is not a registered post type', 'register it before the REST server is built.' ) ),
+			);
+		}
+
+		$base        = '/' . ( ! empty( $type->rest_namespace ) ? $type->rest_namespace : 'wp/v2' ) . '/' . ( ! empty( $type->rest_base ) ? $type->rest_base : $type->name );
+		$controllers = array(
+			'posts'     => $type->get_rest_controller(),
+			'autosaves' => $type->get_autosave_rest_controller(),
+			'revisions' => $type->get_revisions_rest_controller(),
+		);
+		$owners      = array_values( array_filter( $controllers ) );
+		$routes      = array();
+		$violations  = self::foreignControllers( $base, $controllers, $controllerClass );
+
+		foreach ( $server->get_routes() as $route => $handlers ) {
+			$route = (string) $route;
+
+			// WordPress matches routes without regard to letter case, so the comparison ignores it too.
+			if ( 0 !== strcasecmp( $route, $base ) && 0 !== strncasecmp( $route, $base . '/', strlen( $base ) + 1 ) ) {
+				continue;
+			}
+
+			$routes[] = $route;
+			$expected = self::BASE_ROUTES[ substr( $route, strlen( $base ) ) ] ?? null;
+
+			foreach ( $handlers as $handler ) {
+				$callback = $handler['permission_callback'] ?? null;
+				$owner    = is_array( $callback ) && isset( $callback[0] ) && is_object( $callback[0] ) ? $callback[0] : null;
+
+				foreach ( array_keys( (array) ( $handler['methods'] ?? array() ) ) as $method ) {
+					$method = strtoupper( (string) $method );
+
+					if ( null === $owner || ! in_array( $owner, $owners, true ) ) {
+						$violations[] = self::violation(
+							$route,
+							$method,
+							self::RULE_NOT_THE_TYPES_CONTROLLER,
+							'is guarded by ' . self::describeCallback( $callback ) . ", which is not a method of one of the post type's controllers",
+							"leave the routes at the post type's base to its controllers, whose permission methods decide through its mapped capabilities."
+						);
+
+						continue;
+					}
+
+					$check = null === $expected ? null : ( self::CHECKS[ $expected[1] ][ $method ] ?? null );
+					$given = (string) ( $callback[1] ?? '' );
+
+					if ( null !== $check && $controllers[ $expected[0] ] === $owner && $check === $given ) {
+						continue;
+					}
+
+					$violations[] = self::violation(
+						$route,
+						$method,
+						self::RULE_WRONG_CHECK,
+						'is guarded by ' . self::describeCallback( $callback ) . ( null === $check ? ', on a route or method core does not register at the base' : ', where core guards it with ' . get_class( (object) $controllers[ $expected[0] ] ) . '::' . $check . '()' ),
+						"leave the routes at the post type's base as core registers them, each guarded by the check core gives it."
+					);
+				}
+			}
+		}
+
+		return array(
+			'routes'     => $routes,
+			'violations' => $violations,
+		);
+	}
+
+	/**
+	 * Checks the classes of a post type's three controllers: the posts controller the plugin's, the other two core's own.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string               $base            The post type's base, for the message.
+	 * @param array<string, mixed> $controllers     The posts, autosave and revision controllers, keyed so.
+	 * @param string               $controllerClass The class that must serve the posts.
+	 * @return list<array{route: string, method: string, rule: string, message: string}> A violation per controller of another class.
+	 */
+	private static function foreignControllers( string $base, array $controllers, string $controllerClass ): array {
+		$classes    = array(
+			'posts'     => $controllerClass,
+			'autosaves' => \WP_REST_Autosaves_Controller::class,
+			'revisions' => \WP_REST_Revisions_Controller::class,
+		);
+		$violations = array();
+
+		foreach ( $classes as $role => $class ) {
+			$controller = $controllers[ $role ] ?? null;
+
+			if ( is_object( $controller ) && get_class( $controller ) === $class ) {
+				continue;
+			}
+
+			$violations[] = self::violation(
+				$base,
+				'*',
+				self::RULE_FOREIGN_CONTROLLER,
+				'is served by ' . ( is_object( $controller ) ? get_class( $controller ) : 'no controller' ) . ' for its ' . $role . ', not by ' . $class,
+				'posts' === $role ? "give the post type's registration `rest_controller_class`, and let nothing replace it." : "leave the post type's " . $role . ' controller to core.'
+			);
+		}
+
+		return $violations;
 	}
 
 	/**

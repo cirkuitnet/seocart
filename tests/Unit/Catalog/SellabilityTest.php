@@ -158,4 +158,16 @@ final class SellabilityTest extends TestCase {
 	private static function facts( array $facts ): SellabilityFacts {
 		return new SellabilityFacts( 7, 3, $facts['generation'], $facts['activeGeneration'], $facts['variantGeneration'], $facts['variantEnabled'], $facts['sourcePostId'], $facts['boundPostId'], $facts['postStatus'], $facts['hasBasePrice'] );
 	}
+
+	/**
+	 * Tests the verdict on a post with no variant to judge: never sellable, and in the rule's order.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_post_without_a_variant_is_never_sellable(): void {
+		$this->assertSame( SellabilityReason::NoBinding, Sellability::withoutVariant( null ), 'A post no product is bound to has no binding.' );
+		$this->assertSame( SellabilityReason::Incomplete, Sellability::withoutVariant( GenerationState::Incomplete ) );
+		$this->assertSame( SellabilityReason::Updating, Sellability::withoutVariant( GenerationState::Updating ), 'A product being saved is reported as such.' );
+		$this->assertSame( SellabilityReason::Incomplete, Sellability::withoutVariant( GenerationState::Complete ), 'A product without a variant is not whole, whatever its marker says.' );
+	}
 }

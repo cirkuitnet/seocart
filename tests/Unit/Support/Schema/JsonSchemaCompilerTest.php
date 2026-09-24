@@ -229,6 +229,71 @@ final class JsonSchemaCompilerTest extends TestCase {
 	}
 
 	/**
+	 * Tests the property of a core-shaped REST resource: contexts on it and on each of its properties, `readonly` where listed, no other key accepted.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_rest_object_property(): void {
+		$this->assertSame(
+			array(
+				'description'          => 'The adjustment.',
+				'type'                 => 'object',
+				'context'              => array( 'view', 'edit' ),
+				'properties'           => array(
+					'reason' => array(
+						'type'        => 'string',
+						'enum'        => array( 'recount', 'damage' ),
+						'default'     => 'recount',
+						'description' => 'Why the level changed.',
+						'context'     => array( 'view', 'edit' ),
+					),
+					'count'  => array(
+						'type'        => 'integer',
+						'minimum'     => 1,
+						'default'     => 1,
+						'description' => 'How many times.',
+						'context'     => array( 'view', 'edit' ),
+						'readonly'    => true,
+					),
+					'note'   => array(
+						'type'        => array( 'string', 'null' ),
+						'maxLength'   => 50,
+						'description' => 'A note.',
+						'context'     => array( 'edit' ),
+						'readonly'    => true,
+					),
+				),
+				'additionalProperties' => false,
+			),
+			JsonSchemaCompiler::restObjectProperty( 'The adjustment.', self::optionalFields(), array( 'count', 'note' ), array( 'note' ) )
+		);
+	}
+
+	/**
+	 * Tests that the property of a core-shaped resource refuses a required field, which a partial update could not honour.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_rest_object_property_refuses_a_required_field(): void {
+		$this->expectException( SchemaException::class );
+		$this->expectExceptionMessage( 'The field item_id is required' );
+
+		JsonSchemaCompiler::restObjectProperty( 'The adjustment.', self::fields(), array(), array() );
+	}
+
+	/**
+	 * Tests that the property of a core-shaped resource refuses a listed name that is not one of its fields.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_rest_object_property_refuses_an_unknown_listed_name(): void {
+		$this->expectException( SchemaException::class );
+		$this->expectExceptionMessage( 'The name missing is listed as read-only or edit-only' );
+
+		JsonSchemaCompiler::restObjectProperty( 'The adjustment.', self::optionalFields(), array(), array( 'missing' ) );
+	}
+
+	/**
 	 * Tests each difference between the dialects on its own, and that they differ nowhere else.
 	 *
 	 * @since 0.1.0
@@ -286,6 +351,20 @@ final class JsonSchemaCompilerTest extends TestCase {
 			$this->assertSame( $argument, $wordpress['properties'][ $name ], "{$name}: the REST argument and the WordPress property differ beyond `required`." );
 			$this->assertSame( $argument, $property, "{$name}: the REST argument and the OpenAPI property differ beyond `required` and `examples`." );
 		}
+
+		// The property of a core-shaped resource differs from the REST arguments by `context` and `readonly` only, and carries no `required`.
+		$optional = JsonSchemaCompiler::restArguments( self::optionalFields() );
+		$resource = JsonSchemaCompiler::restObjectProperty( 'The adjustment.', self::optionalFields(), array( 'count' ), array() );
+
+		$this->assertArrayNotHasKey( 'required', $resource );
+
+		foreach ( $resource['properties'] as $name => $property ) {
+			$argument = $optional[ $name ];
+
+			unset( $argument['required'], $property['context'], $property['readonly'] );
+
+			$this->assertSame( $argument, $property, "{$name}: the REST argument and the core-shaped property differ beyond `required`, `context` and `readonly`." );
+		}
 	}
 
 	/**
@@ -331,6 +410,17 @@ final class JsonSchemaCompilerTest extends TestCase {
 			),
 			array()
 		);
+	}
+
+	/**
+	 * Returns the fields of the representative set that are not required.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<FieldSpec> The fields.
+	 */
+	private static function optionalFields(): array {
+		return array_values( array_filter( self::fields(), static fn( FieldSpec $field ): bool => ! $field->isRequired() ) );
 	}
 
 	/**

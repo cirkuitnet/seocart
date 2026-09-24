@@ -17,6 +17,8 @@ use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
+use SEOCart\Catalog\Interfaces\Admin\ProductEditorPanel;
+use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Events\EventPublisher;
 use SEOCart\Platform\Localization\PostLocales;
@@ -27,7 +29,8 @@ use SEOCart\Tests\Support\KernelContainer;
 /**
  * The production container resolves each catalog port to its production class, and building them
  * sends no query: the repository and the product write read the base currency when they first
- * need it. The product write's collaborators from other modules, the stock service and the event
+ * need it, and the REST controller resolves the product write only on its first write. The
+ * product write's collaborators from other modules, the stock service and the event
  * publisher, are resolved before the count: the job queue behind the publisher reads its lock
  * mode when it is built, which is that module's cost, not the catalog's.
  *
@@ -53,7 +56,7 @@ final class CatalogWiringTest extends DatabaseTestCase {
 
 		$log = $this->captureQueries(
 			static function () use ( $container, &$resolved ): void {
-				foreach ( array( ProductRepository::class, Sellability::class, PostGateway::class, PostLocales::class, SaveProduct::class ) as $port ) {
+				foreach ( array( ProductRepository::class, Sellability::class, PostGateway::class, PostLocales::class, SaveProduct::class, ProductPostsController::class, ProductEditorPanel::class ) as $port ) {
 					$resolved[ $port ] = get_class( $container->get( $port ) );
 				}
 			}
@@ -61,11 +64,13 @@ final class CatalogWiringTest extends DatabaseTestCase {
 
 		$this->assertSame(
 			array(
-				ProductRepository::class => MysqlProductRepository::class,
-				Sellability::class       => Sellability::class,
-				PostGateway::class       => WordPressPostGateway::class,
-				PostLocales::class       => SiteLocale::class,
-				SaveProduct::class       => SaveProduct::class,
+				ProductRepository::class      => MysqlProductRepository::class,
+				Sellability::class            => Sellability::class,
+				PostGateway::class            => WordPressPostGateway::class,
+				PostLocales::class            => SiteLocale::class,
+				SaveProduct::class            => SaveProduct::class,
+				ProductPostsController::class => ProductPostsController::class,
+				ProductEditorPanel::class     => ProductEditorPanel::class,
 			),
 			$resolved
 		);

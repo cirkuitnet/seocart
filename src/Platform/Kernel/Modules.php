@@ -26,6 +26,8 @@ use SEOCart\Catalog\Domain\Event\ProductSaved;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Catalog\Infrastructure\ProductPostType;
 use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
+use SEOCart\Catalog\Interfaces\Admin\ProductEditorPanel;
+use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
 use SEOCart\Interfaces\Operations\AbilitiesAdapter;
 use SEOCart\Interfaces\Operations\CliAdapter;
 use SEOCart\Interfaces\Operations\ErrorTranslator;
@@ -48,6 +50,7 @@ use SEOCart\Platform\Authorization\CapabilityInstaller;
 use SEOCart\Platform\Authorization\CapabilityMapper;
 use SEOCart\Platform\Authorization\GrantLedger;
 use SEOCart\Platform\Authorization\OptionGrantLedger;
+use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Authorization\RoleNames;
 use SEOCart\Platform\Cli\Doctor\Doctor;
 use SEOCart\Platform\Cli\DoctorCommand;
@@ -133,7 +136,8 @@ use SEOCart\Support\SystemIdGenerator;
  * - `plugins_loaded` and the activation and deactivation hooks, from the main file;
  * - `map_meta_cap`, the one capability mapper, which returns before it resolves anything for a
  *   capability that is not the plugin's;
- * - `rest_api_init`, which registers the operations' routes when a REST server is built;
+ * - `rest_api_init`, which installs the product controller and registers the operations'
+ *   routes when a REST server is built;
  * - `wp_abilities_api_categories_init` and `wp_abilities_api_init`, which register the
  *   operations' abilities when the Abilities API initialises;
  * - JOB_HOOK, which Action Scheduler fires to run one of the plugin's jobs, wherever its queue
@@ -268,7 +272,7 @@ final class Modules {
 		self::authorizationSubscribe( $container, $admin || $cli );
 		self::operationsSubscribe( $container );
 		self::jobsSubscribe( $container, $cron || $ajax || $cli );
-		self::catalogSubscribe();
+		self::catalogSubscribe( $container, $admin );
 		self::kernelSubscribe( $container, $admin, $ajax, $cli, $cron, is_multisite() );
 	}
 
@@ -678,11 +682,11 @@ final class Modules {
 	}
 
 	/**
-	 * The catalog module: the product repository, the sellability query, the product post gateway, the locale of a post and the product write.
+	 * The catalog module: the product repository, the sellability query, the product post gateway, the locale of a post, the product write, the product's REST controller and the editor's panel.
 	 *
-	 * The repository and the write read the store's base currency from the settings when they
-	 * need it, never when they are built. Without a multilingual plugin every post has the site's
-	 * locale. The gateway reports other plugins' save listeners under WP_DEBUG.
+	 * The repository, the write and the panel read the store's base currency from the settings
+	 * when they need it, never when they are built. Without a multilingual plugin every post has
+	 * the site's locale. The gateway reports other plugins' save listeners under WP_DEBUG.
 	 *
 	 * @since 0.1.0
 	 *
@@ -713,6 +717,38 @@ final class Modules {
 				$c->get( Reporter::class )
 			)
 		);
+		$container->bind(
+			ProductPostsController::class,
+			static fn( Container $c ): ProductPostsController => new ProductPostsController(
+				ProductCapabilities::POST_TYPE,
+				static fn(): SaveProduct => $c->get( SaveProduct::class ),
+				$c->get( ProductRepository::class ),
+				$c->get( Sellability::class ),
+				$c->get( PostGateway::class ),
+				$c->get( ErrorTranslator::class ),
+				array( $c->get( Reporter::class ), 'unexpected' )
+			)
+		);
+		$container->bind( ProductEditorPanel::class, static fn( Container $c ): ProductEditorPanel => new ProductEditorPanel( SEOCART_PLUGIN_FILE, self::baseCurrency( $c ) ) );
+	}
+
+	/**
+	 * Puts the container's product controller into the product post type's controller slot. Runs whenever a REST server is built.
+	 *
+	 * WordPress would build the controller itself, from the post type's `rest_controller_class`,
+	 * with the post type's name only. The kernel's `rest_api_init` callback calls this first, before
+	 * core registers its routes at priority 99, so get_rest_controller() returns the instance built
+	 * here with its services, and core's autosave and revision controllers, which take that as their
+	 * parent when their routes are registered, use it too. The container builds the controller only
+	 * when the post type is registered with it as its class. It adds no hook of its own, so an idle
+	 * request pays nothing for it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container The container.
+	 */
+	private static function catalogRestInit( Container $container ): void {
+		ProductPostsController::install( ProductCapabilities::POST_TYPE, static fn(): ProductPostsController => $container->get( ProductPostsController::class ) );
 	}
 
 	/**
@@ -731,15 +767,29 @@ final class Modules {
 	}
 
 	/**
-	 * The catalog module's hook: the product post type, registered on every request's `init`.
+	 * The catalog module's hooks: the product post type, registered on every request's `init`, and in the admin the product editor's panel.
 	 *
-	 * The callback is the registration itself, which loads its own file and the capability map,
-	 * builds nothing from the container and sends no query.
+	 * The registration callback is the registration itself, which loads its own file and the
+	 * capability map, builds nothing from the container and sends no query. The panel is enqueued
+	 * on `enqueue_block_editor_assets`, which only the admin fires, and only for the product
+	 * editor.
 	 *
 	 * @since 0.1.0
+	 *
+	 * @param Container $container The container.
+	 * @param bool      $admin     Whether this is an admin request.
 	 */
-	private static function catalogSubscribe(): void {
+	private static function catalogSubscribe( Container $container, bool $admin ): void {
 		add_action( 'init', array( ProductPostType::class, 'register' ) );
+
+		if ( $admin ) {
+			add_action(
+				'enqueue_block_editor_assets',
+				static function () use ( $container ): void {
+					$container->get( ProductEditorPanel::class )->enqueue();
+				}
+			);
+		}
 	}
 
 	/**
@@ -825,7 +875,8 @@ final class Modules {
 		};
 
 		/*
-		 * The routes are registered whenever a REST server is built. The site is reconciled only
+		 * The routes are registered whenever a REST server is built, after the catalog has put its
+		 * product controller where core looks for it. The site is reconciled only
 		 * when the request is served by the REST API: a REST server built inside another request,
 		 * such as a front-end page that preloads a route, must not install the plugin there, and
 		 * an admin, command-line or cron request reconciles on its own hook.
@@ -833,6 +884,7 @@ final class Modules {
 		add_action(
 			'rest_api_init',
 			static function () use ( $container ): void {
+				self::catalogRestInit( $container );
 				$container->get( RestAdapter::class )->register();
 
 				if ( wp_is_serving_rest_request() ) {

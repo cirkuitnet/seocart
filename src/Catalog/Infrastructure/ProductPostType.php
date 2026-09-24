@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Catalog\Infrastructure;
 
+use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 
 defined( 'ABSPATH' ) || exit;
@@ -21,7 +22,9 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: the post type's registration arguments. Its name and its capabilities come from
  * ProductCapabilities, merged in unchanged, so neither is restated here. It is public and shown
  * in the REST API at `wp/v2/seocart-products`, where the block editor, autosaves, revisions and
- * other plugins' REST fields expect it. It supports no custom fields, so its editor offers no box
+ * other plugins' REST fields expect it, served by the plugin's own ProductPostsController, which
+ * saves the post and its commerce data in one request; naming the class loads nothing, and the
+ * class loads only when a REST server is built. It supports no custom fields, so its editor offers no box
  * where commerce data could be written to post meta; it is left out of WordPress's export, which
  * would carry the post without its variants, prices and stock; and deleting a user deletes none
  * of it.
@@ -71,17 +74,18 @@ final class ProductPostType {
 	public static function arguments(): array {
 		return array_merge(
 			array(
-				'labels'           => self::labels(),
-				'description'      => __( 'The products your store sells.', 'seocart' ),
-				'public'           => true,
-				'hierarchical'     => false,
-				'show_in_rest'     => true,
-				'rest_base'        => self::REST_BASE,
-				'menu_icon'        => 'dashicons-products',
-				'supports'         => self::SUPPORTS,
-				'has_archive'      => true,
-				'can_export'       => false,
-				'delete_with_user' => false,
+				'labels'                => self::labels(),
+				'description'           => __( 'The products your store sells.', 'seocart' ),
+				'public'                => true,
+				'hierarchical'          => false,
+				'show_in_rest'          => true,
+				'rest_base'             => self::REST_BASE,
+				'rest_controller_class' => ProductPostsController::class,
+				'menu_icon'             => 'dashicons-products',
+				'supports'              => self::SUPPORTS,
+				'has_archive'           => true,
+				'can_export'            => false,
+				'delete_with_user'      => false,
 			),
 			ProductCapabilities::registrationArguments()
 		);

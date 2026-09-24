@@ -12,8 +12,12 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Authorization;
 
 use SEOCart\Application\Operations\Operations;
+use SEOCart\Catalog\Infrastructure\ProductPostType;
+use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
 use SEOCart\Interfaces\Operations\RestAdapter;
 use SEOCart\Platform\Authorization\PermissionCallback;
+use SEOCart\Platform\Authorization\ProductCapabilities;
+use SEOCart\Tests\Support\Doubles\SubclassedAutosavesController;
 use SEOCart\Tests\Support\KernelHooks;
 use SEOCart\Tests\Support\RoutePermissionWalker;
 use WP_REST_Request;
@@ -22,7 +26,7 @@ use WP_REST_Server;
 use WP_UnitTestCase;
 
 /**
- * The route walker: one real walk over the plugin's own routes, and its self-tests.
+ * The route walker: one real walk over the plugin's own routes, one over the product post type's `wp/v2` base, and their self-tests.
  *
  * The real walk boots a fresh REST server exactly as a request does, so every route the plugin
  * registers on `rest_api_init` is walked. It fails, naming route, method, rule and fix, when an
@@ -35,6 +39,13 @@ use WP_UnitTestCase;
  * without a permission callback makes WordPress report an incorrect usage of
  * register_rest_route(); the tests that register it expect exactly that, instead of silencing
  * the notice for the whole suite.
+ *
+ * The product's base, `/wp/v2/seocart-products`, is walked by ownership and core's mapping: every
+ * endpoint under it must be guarded by a method of one of the post type's three controllers, the
+ * very check core guards that route and method with, and the posts controller must be
+ * ProductPostsController, the other two core's own classes. The two carried plants are
+ * self-tests here, the post type served by core's default controller and a `__return_true`
+ * route at the base, and so are a write guarded by a read check and a foreign autosave class.
  *
  * @group contract
  *
@@ -242,6 +253,214 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 		$this->assertEqualsCanonicalizing( array( $route . '/compliant', $route . '/compliant/(?P<id>[\d]+)' ), $walk['plugin_routes'] );
 		$this->assertNotContains( $route, $walk['plugin_routes'], 'The namespace index core registers was walked.' );
 		$this->assertNotContains( '/wp/v2/posts', $walk['plugin_routes'], 'A core route was walked.' );
+	}
+
+	/**
+	 * Tests that every endpoint at the product's `wp/v2` base is guarded by one of its controllers, the plugin's.
+	 *
+	 * Planted violation: in ProductPostType::arguments(), drop `rest_controller_class`: the base is
+	 * served by core's default controller, and the walk reports it (the self-test below plants the
+	 * same through `register_post_type_args`).
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_product_base_is_served_by_the_plugins_controllers(): void {
+		self::registerProductType();
+
+		$server = self::bootRestServer();
+		$walk   = ( new RoutePermissionWalker() )->walkPostTypeBase( $server, ProductCapabilities::POST_TYPE, ProductPostsController::class );
+		$base   = '/wp/v2/' . ProductPostType::REST_BASE;
+
+		$this->assertSame( array(), $walk['violations'], "The product's base breaks the ownership rule:\n" . RoutePermissionWalker::describe( $walk['violations'] ) . "\n" );
+		$this->assertContains( $base, $walk['routes'] );
+		$this->assertContains( $base . '/(?P<id>[\d]+)', $walk['routes'] );
+		$this->assertContains( $base . '/(?P<id>[\d]+)/autosaves', $walk['routes'], 'The autosave routes were not walked.' );
+		$this->assertContains( $base . '/(?P<parent>[\d]+)/revisions', $walk['routes'], 'The revision routes were not walked.' );
+	}
+
+	/**
+	 * Tests that the product post type served by core's default controller is reported: the first carried plant.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_product_base_served_by_cores_controller_is_reported(): void {
+		$without = static function ( array $args, string $name ): array {
+			if ( ProductCapabilities::POST_TYPE === $name ) {
+				unset( $args['rest_controller_class'] );
+			}
+
+			return $args;
+		};
+
+		add_filter( 'register_post_type_args', $without, 10, 2 );
+		ProductPostType::register();
+
+		try {
+			$walk = ( new RoutePermissionWalker() )->walkPostTypeBase( self::bootRestServer(), ProductCapabilities::POST_TYPE, ProductPostsController::class );
+		} finally {
+			remove_filter( 'register_post_type_args', $without, 10 );
+			ProductPostType::register();
+		}
+
+		$this->assertSame(
+			array( array( '/wp/v2/' . ProductPostType::REST_BASE, '*', RoutePermissionWalker::RULE_FOREIGN_CONTROLLER ) ),
+			array_map( static fn( array $violation ): array => array( $violation['route'], $violation['method'], $violation['rule'] ), $walk['violations'] )
+		);
+		$this->assertStringContainsString( 'WP_REST_Posts_Controller', $walk['violations'][0]['message'] ?? '' );
+	}
+
+	/**
+	 * Tests that a `__return_true` route at the product's base is reported: the second carried plant.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_return_true_route_at_the_product_base_is_reported(): void {
+		self::registerProductType();
+
+		add_action(
+			'rest_api_init',
+			static function (): void {
+				register_rest_route(
+					'wp/v2',
+					'/' . ProductPostType::REST_BASE . '/planted',
+					array(
+						'methods'             => 'GET',
+						'callback'            => '__return_null',
+						'permission_callback' => '__return_true',
+					)
+				);
+			}
+		);
+
+		$walk = ( new RoutePermissionWalker() )->walkPostTypeBase( self::bootRestServer(), ProductCapabilities::POST_TYPE, ProductPostsController::class );
+
+		$this->assertSame(
+			array( array( '/wp/v2/' . ProductPostType::REST_BASE . '/planted', 'GET', RoutePermissionWalker::RULE_NOT_THE_TYPES_CONTROLLER ) ),
+			array_map( static fn( array $violation ): array => array( $violation['route'], $violation['method'], $violation['rule'] ), $walk['violations'] )
+		);
+		$this->assertStringContainsString( "the function '__return_true'", $walk['violations'][0]['message'] ?? '' );
+	}
+
+	/**
+	 * Tests that a write endpoint at the product's base guarded by the controller's own read check is reported.
+	 *
+	 * The route is guarded by a genuine method of the genuine controller, so ownership alone would
+	 * pass it: the check is of the wrong kind, on a route core does not register.
+	 *
+	 * Planted violation: in Modules::catalogRestInit(), after the controller is installed, register
+	 * `/seocart-products/(?P<id>[\d]+)/planted` for POST, guarded by
+	 * `array( get_post_type_object( 'seocart_product' )->get_rest_controller(), 'get_item_permissions_check' )`:
+	 * the walk of the product's base fails on it.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_write_guarded_by_a_read_check_is_reported(): void {
+		self::registerProductType();
+
+		add_action(
+			'rest_api_init',
+			static function (): void {
+				register_rest_route(
+					'wp/v2',
+					'/' . ProductPostType::REST_BASE . '/(?P<id>[\d]+)/planted',
+					array(
+						'methods'             => 'POST',
+						'callback'            => '__return_null',
+						'permission_callback' => array( get_post_type_object( ProductCapabilities::POST_TYPE )?->get_rest_controller(), 'get_item_permissions_check' ),
+					)
+				);
+			},
+			100
+		);
+
+		$walk = ( new RoutePermissionWalker() )->walkPostTypeBase( self::bootRestServer(), ProductCapabilities::POST_TYPE, ProductPostsController::class );
+
+		$this->assertSame(
+			array( array( '/wp/v2/' . ProductPostType::REST_BASE . '/(?P<id>[\d]+)/planted', 'POST', RoutePermissionWalker::RULE_WRONG_CHECK ) ),
+			array_map( static fn( array $violation ): array => array( $violation['route'], $violation['method'], $violation['rule'] ), $walk['violations'] )
+		);
+	}
+
+	/**
+	 * Tests that the product's update guarded by the controller's read check instead of its update check is reported, method by method.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_update_guarded_by_the_read_check_is_reported(): void {
+		self::registerProductType();
+
+		$item = '/wp/v2/' . ProductPostType::REST_BASE . '/(?P<id>[\d]+)';
+
+		add_filter(
+			'rest_endpoints',
+			static function ( array $endpoints ) use ( $item ): array {
+				foreach ( $endpoints[ $item ] ?? array() as $index => $endpoint ) {
+					// Before the server normalises them, the methods are the string the route was registered with.
+					$methods = is_array( $endpoint ) ? $endpoint['methods'] ?? '' : '';
+					$update  = is_array( $methods ) ? isset( $methods['PUT'] ) : str_contains( (string) $methods, 'PUT' );
+
+					if ( $update && is_array( $endpoint['permission_callback'] ?? null ) ) {
+						$endpoints[ $item ][ $index ]['permission_callback'] = array( $endpoint['permission_callback'][0], 'get_item_permissions_check' );
+					}
+				}
+
+				return $endpoints;
+			}
+		);
+
+		$walk = ( new RoutePermissionWalker() )->walkPostTypeBase( self::bootRestServer(), ProductCapabilities::POST_TYPE, ProductPostsController::class );
+
+		$this->assertSame(
+			array(
+				array( $item, 'POST', RoutePermissionWalker::RULE_WRONG_CHECK ),
+				array( $item, 'PUT', RoutePermissionWalker::RULE_WRONG_CHECK ),
+				array( $item, 'PATCH', RoutePermissionWalker::RULE_WRONG_CHECK ),
+			),
+			array_map( static fn( array $violation ): array => array( $violation['route'], $violation['method'], $violation['rule'] ), $walk['violations'] )
+		);
+		$this->assertStringContainsString( 'update_item_permissions_check', $walk['violations'][0]['message'] ?? '' );
+	}
+
+	/**
+	 * Tests that an autosave controller of another class than core's is reported.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_autosave_controller_of_another_class_is_reported(): void {
+		$subclassed = static function ( array $args, string $name ): array {
+			if ( ProductCapabilities::POST_TYPE === $name ) {
+				$args['autosave_rest_controller_class'] = SubclassedAutosavesController::class;
+			}
+
+			return $args;
+		};
+
+		add_filter( 'register_post_type_args', $subclassed, 10, 2 );
+		ProductPostType::register();
+
+		try {
+			$walk = ( new RoutePermissionWalker() )->walkPostTypeBase( self::bootRestServer(), ProductCapabilities::POST_TYPE, ProductPostsController::class );
+		} finally {
+			remove_filter( 'register_post_type_args', $subclassed, 10 );
+			ProductPostType::register();
+		}
+
+		$this->assertSame(
+			array( array( '/wp/v2/' . ProductPostType::REST_BASE, '*', RoutePermissionWalker::RULE_FOREIGN_CONTROLLER ) ),
+			array_map( static fn( array $violation ): array => array( $violation['route'], $violation['method'], $violation['rule'] ), $walk['violations'] )
+		);
+		$this->assertStringContainsString( SubclassedAutosavesController::class, $walk['violations'][0]['message'] ?? '' );
+	}
+
+	/**
+	 * Registers the product post type as the kernel does on `init`, when another test has unregistered it.
+	 *
+	 * @since 0.1.0
+	 */
+	private static function registerProductType(): void {
+		if ( ! post_type_exists( ProductCapabilities::POST_TYPE ) ) {
+			ProductPostType::register();
+		}
 	}
 
 	/**

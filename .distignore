@@ -49,6 +49,7 @@ Thumbs.db
 /phpcs.xml
 /phpunit.xml
 /playwright.config.ts
+/webpack.config.js
 /tsconfig.json
 /README.md
 /CONTRIBUTING.md

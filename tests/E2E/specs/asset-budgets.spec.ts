@@ -1,12 +1,13 @@
 /**
- * The performance-budget spec: every template here loads none of the plugin's own bytes.
+ * The performance-budget spec: every template that is not the plugin's loads none of its bytes,
+ * and the plugin's own admin screen loads only its own script, within its budget.
  *
  * Covers: the front page and one ordinary published post, both logged out and logged in as an
  * administrator (the admin bar must not pull plugin assets either), and three non-plugin admin
- * screens: the dashboard, the edit-post screen for an ordinary post, and General Settings.
- * SEOCart has no admin screen of its own yet, so a non-zero ceiling on a plugin's own admin
- * screen has no case to cover here; when one ships, its budget is read from budget.json's
- * rules, the way bin/check-asset-budget.js already reads them for the build.
+ * screens: the dashboard, the edit-post screen for an ordinary post, and General Settings. The
+ * plugin's first admin screen is the product editor, whose Commerce panel is one script; its
+ * ceiling is read from budget.json's rules through fileBudgetBytes(), the way
+ * bin/check-asset-budget.js reads them for the build, never restated here.
  */
 
 import { test, expect } from '../fixtures';
@@ -14,6 +15,7 @@ import {
 	describeAssetByteReport,
 	type AssetBytes,
 } from '../fixtures/asset-bytes';
+import { fileBudgetBytes } from '../support/budget';
 
 /**
  * Measures one template, prints its report unconditionally (so the byte total and the plugin
@@ -128,6 +130,50 @@ test.describe( 'Asset byte budgets', () => {
 					`post=${ postId }&action=edit`
 				)
 		);
+	} );
+
+	test( 'the product editor loads only the Commerce panel, within its budget', async ( {
+		admin,
+		assetBytes,
+		pluginBasePath,
+	} ) => {
+		const report = await assetBytes.measure(
+			'product editor (post-new.php, a product)',
+			() =>
+				admin.visitAdminPage(
+					'post-new.php',
+					'post_type=seocart_product'
+				)
+		);
+		const buildBase = `${ pluginBasePath }build/`;
+		const files = report.hits.map( ( hit ) => {
+			const path = new URL( hit.url ).pathname;
+
+			return path.startsWith( buildBase )
+				? path.slice( buildBase.length )
+				: path;
+		} );
+		const budgets = files.map( ( file ) => fileBudgetBytes( file ) );
+		const description = describeAssetByteReport(
+			report,
+			budgets.reduce< number >(
+				( total, budget ) => total + ( budget ?? 0 ),
+				0
+			)
+		);
+
+		// eslint-disable-next-line no-console
+		console.log( description );
+
+		expect( files, description ).toEqual( [ 'admin/product-editor.js' ] );
+
+		report.hits.forEach( ( hit, index ) => {
+			expect( budgets[ index ], description ).toBeDefined();
+			expect( hit.bytes, description ).toBeGreaterThan( 0 );
+			expect( hit.bytes, description ).toBeLessThanOrEqual(
+				budgets[ index ] ?? 0
+			);
+		} );
 	} );
 
 	test( 'General Settings (options-general.php) loads no plugin bytes', async ( {
