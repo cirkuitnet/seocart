@@ -68,8 +68,8 @@ keep it releasable.
 - The shared kernel under `SEOCart\Support`: exact money in integer minor units with
   checked overflow and largest-remainder allocation, fixed-scale decimals without floats or
   PHP extensions, the ISO 4217 currencies with their minor units, amounts carrying net, tax
-  and gross, frozen exchange rates with a fingerprint, locales, addresses, date ranges,
-  time-ordered identifiers, and one table of error codes with its HTTP status and
+  and gross, frozen exchange rates with a fingerprint, locales, addresses, time-ordered
+  identifiers, and one table of error codes with its HTTP status and
   translatable message per code.
 - The database layer, `SEOCart\Platform\Database`. It has
   three parts:
