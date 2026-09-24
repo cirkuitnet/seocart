@@ -73,6 +73,15 @@ From many, fast and cheap to few, slow and high in value:
   WCAG 2.2 AA. They complement a manual keyboard and screen-reader pass; they do not replace
   it.
 
+The `assetBytes` fixture (`tests/E2E/fixtures/asset-bytes.ts`) asserts the performance budgets
+in `budget.json`: it records every response one page load causes, attributes each to the
+plugin by URL (the plugin's own directory under `wp-content/plugins/`, read from the site
+rather than assumed), and sums the transferred (compressed) bytes.
+`tests/E2E/specs/asset-budgets.spec.ts` holds the front page, an ordinary post and the
+non-plugin admin screens to a budget of zero, and `npm run test:e2e -- asset-budgets` runs it
+against the site in `WP_BASE_URL`. The attribution and summing logic also has its own
+selftest, `tests/E2E/selftest/asset-bytes.spec.ts`, which needs no site.
+
 ## Commands
 
 The script names below are defined in `composer.json` and `package.json`. Those two files are
