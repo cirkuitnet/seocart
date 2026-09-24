@@ -12,8 +12,9 @@ under `[Unreleased]`. The release process moves those entries under the new vers
 
 ## [Unreleased]
 
-This is the platform foundation. **The plugin has no store features yet:** it has no
-products, cart, checkout, orders, payments, blocks or admin screens. It registers the store
+This is the platform foundation and the start of the catalog. **The plugin cannot sell
+anything yet:** it registers a product post type, but nothing prices or stocks a product so
+far, and it has no cart, checkout, orders, payments, blocks or admin screens of its own. It registers the store
 settings route (`GET` and `PATCH`) and its two WP-CLI commands, the `wp seocart` maintenance
 commands, three Site Health tests and its own background jobs. Activation installs the
 plugin's database tables, its roles and capabilities, one installation record, a data key
@@ -149,3 +150,8 @@ seocart jobs run` and from a short tick on admin requests; `wp seocart jobs stat
   front-end request still runs no plugin query.
 - An operation whose input or output holds personal data or a secret can't be exposed to
   agents.
+- The `seocart_product` post type, served at `wp/v2/seocart-products` by WordPress's own
+  controller for now, and the catalog's tables for products, the posts they are bound to,
+  variants and prices. Nothing writes a product yet, so a product post created now is not
+  yet a product and cannot be sold. Deactivating the plugin removes the product permalinks;
+  reactivating adds them back.
