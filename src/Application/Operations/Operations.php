@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Application\Operations;
 
+use SEOCart\Platform\Settings\SettingsOperations;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -22,8 +24,6 @@ defined( 'ABSPATH' ) || exit;
  * operation, naming the id and the static method that returns the definition:
  *
  *     $registry->add( 'inventory.adjust_stock', array( AdjustStockOperation::class, 'definition' ) );
- *
- * The list is empty until the first module declares an operation.
  *
  * @since 0.1.0
  */
@@ -37,6 +37,11 @@ final class Operations {
 	 * @return OperationRegistry The registry.
 	 */
 	public static function registry(): OperationRegistry {
-		return new OperationRegistry();
+		$registry = new OperationRegistry();
+
+		$registry->add( SettingsOperations::GET, array( SettingsOperations::class, 'get' ) );
+		$registry->add( SettingsOperations::UPDATE, array( SettingsOperations::class, 'update' ) );
+
+		return $registry;
 	}
 }

@@ -48,6 +48,8 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Support/',
 		'src/Application/Operations/',
 		'src/Platform/Authorization/',
+		'src/Platform/Settings/',
+		'src/Platform/Secrets/',
 		'tests/Fixtures/Operations/',
 	);
 

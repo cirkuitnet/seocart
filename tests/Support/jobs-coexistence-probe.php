@@ -38,6 +38,7 @@ use SEOCart\Platform\Jobs\JobRunner;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\Jobs\RecordingJob;
+use SEOCart\Tests\Support\KernelHooks;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- The probe ages and reads Action Scheduler's rows directly, to see what the queue did.
 
@@ -79,6 +80,8 @@ $seocart_probe_handlers    = new JobHandlers( array( RecordingJob::class ), stat
 $seocart_probe_queue       = new ActionSchedulerQueue( $seocart_probe_db, $seocart_probe_locks, $seocart_probe_handlers, $seocart_probe_correlation, $seocart_probe_report );
 $seocart_probe_runner      = new JobRunner( $seocart_probe_handlers, $seocart_probe_queue, $seocart_probe_correlation, new SequentialIdGenerator( 1000 ), $seocart_probe_report );
 
+// In place of the kernel's own runner, which the plugin hooked when it booted.
+KernelHooks::detach( JobRunner::HOOK );
 add_action( JobRunner::HOOK, array( $seocart_probe_runner, 'run' ) );
 
 $seocart_probe_before  = $seocart_probe_queue->report();

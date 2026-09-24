@@ -17,7 +17,9 @@ use WP_UnitTestCase;
 /**
  * The kernel's wiring, as a request really boots it: on an idle front-end request the plugin adds
  * exactly the hooks listed here and loads four files, and the hooks of the admin, WP-CLI, cron and
- * a network appear in their own kind of request only.
+ * a network appear in their own kind of request only. The idle request's hooks are the kernel's
+ * own four, the REST routes', the two of the abilities and the job runner's: eight, and eleven
+ * on a network. Every one of them builds nothing until it fires.
  *
  * Every request is booted in a child process of its own (tests/Support/idle-request-probe.php for
  * the idle request, tests/Support/kernel-hooks-probe.php for the others), because the kernel
@@ -109,9 +111,14 @@ final class KernelWiringTest extends WP_UnitTestCase {
 			'activate_' . $plugin . ' @10 SEOCart\\Platform\\Kernel\\Kernel::activate',
 			'deactivate_' . $plugin . ' @10 SEOCart\\Platform\\Kernel\\Kernel::deactivate',
 			'map_meta_cap @10 ' . self::MODULES,
+			'rest_api_init @10 ' . self::MODULES,
+			'wp_abilities_api_categories_init @10 ' . self::MODULES,
+			'wp_abilities_api_init @10 ' . self::MODULES,
+			'seocart_job @10 ' . self::MODULES,
 		);
 
 		if ( 'admin' === $context ) {
+			$hooks[] = 'admin_init @10 ' . self::MODULES;
 			$hooks[] = 'admin_init @10 ' . self::MODULES;
 			$hooks[] = 'admin_notices @10 ' . self::MODULES;
 			$hooks[] = 'network_admin_notices @10 ' . self::MODULES;
@@ -124,7 +131,12 @@ final class KernelWiringTest extends WP_UnitTestCase {
 			$hooks[] = 'gettext_with_context_default @10 SEOCart\\Platform\\Authorization\\RoleNames::translate';
 		}
 
+		if ( 'admin' === $context || 'cron' === $context ) {
+			$hooks[] = 'site_status_tests @10 ' . self::MODULES;
+		}
+
 		if ( 'cli' === $context ) {
+			$hooks[] = 'cli_init @10 ' . self::MODULES;
 			$hooks[] = 'cli_init @10 ' . self::MODULES;
 		}
 
@@ -132,8 +144,14 @@ final class KernelWiringTest extends WP_UnitTestCase {
 			$hooks[] = 'init @10 ' . self::MODULES;
 		}
 
+		if ( 'cli' === $context || 'cron' === $context ) {
+			$hooks[] = 'action_scheduler_run_queue @5 ' . self::MODULES;
+			$hooks[] = 'action_scheduler_ensure_recurring_actions @10 ' . self::MODULES;
+		}
+
 		if ( is_multisite() ) {
 			$hooks[] = 'wp_initialize_site @20 ' . self::MODULES;
+			$hooks[] = 'wp_uninitialize_site @5 ' . self::MODULES;
 			$hooks[] = 'wpmu_drop_tables @10 ' . self::MODULES;
 		}
 

@@ -16,9 +16,11 @@ defined( 'ABSPATH' ) || exit;
 /**
  * The answers SafeMode::status() gives.
  *
- * Owns one fact: the reasons Safe Mode can be on. Four of them are recorded in the boot record
- * when something decides them (recordable()); the other two are worked out on each request, from
- * the SEOCART_SAFE_MODE constant and from comparing the recorded address with the current one.
+ * Owns one fact: the reasons Safe Mode can be on. Three of them are the reason an operator or the
+ * installation records in the boot record (recordable()). A canary failure is recorded too, but
+ * apart from that reason, by the secrets canary, so that neither ends the other. The other two are
+ * worked out on each request, from the SEOCART_SAFE_MODE constant and from comparing the recorded
+ * address with the current one.
  * The backing values are what the boot record stores and what `wp seocart safe-mode status` prints.
  *
  * @since 0.1.0
@@ -75,13 +77,13 @@ enum SafeModeStatus: string {
 	case Rebuilt = 'rebuilt';
 
 	/**
-	 * Returns the reasons that are recorded in the boot record rather than worked out per request.
+	 * Returns the reasons an operator or the installation records in the boot record.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return list<self> Manual, Canary, Copy and Rebuilt.
+	 * @return list<self> Manual, Copy and Rebuilt.
 	 */
 	public static function recordable(): array {
-		return array( self::Manual, self::Canary, self::Copy, self::Rebuilt );
+		return array( self::Manual, self::Copy, self::Rebuilt );
 	}
 }

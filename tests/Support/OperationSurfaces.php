@@ -34,7 +34,10 @@ use WP_REST_Response;
 use WP_REST_Server;
 
 /**
- * Wires the three operation adapters the way the kernel will, and records what the command line prints.
+ * Wires the three operation adapters the way the kernel does, and records what the command line prints.
+ *
+ * The kernel's own adapters, which it hooked when the plugin booted, are taken off first
+ * (KernelHooks), so the surfaces hold this registry's operations only.
  *
  * The REST routes are registered on `rest_api_init` of a freshly booted server; the abilities on the
  * init hooks of fresh Abilities registries, which WordPress otherwise builds once per process; the
@@ -186,6 +189,8 @@ final class OperationSurfaces {
 		);
 
 		self::discard();
+
+		KernelHooks::detach( 'rest_api_init', 'wp_abilities_api_categories_init', 'wp_abilities_api_init' );
 
 		$abilities = new AbilitiesAdapter( $this->registry, $this->invoker );
 

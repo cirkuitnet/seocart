@@ -186,6 +186,17 @@ final class PermissionCallback {
 	}
 
 	/**
+	 * Returns the request parameter that names the resource the capability is checked on.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string|null The parameter, or null for a check without a resource.
+	 */
+	public function resourceParameter(): ?string {
+		return $this->resourceParameter;
+	}
+
+	/**
 	 * Answers the REST server: may the current request run?
 	 *
 	 * @since 0.1.0

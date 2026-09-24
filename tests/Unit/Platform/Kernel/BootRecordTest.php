@@ -78,7 +78,11 @@ final class BootRecordTest extends TestCase {
 		$this->assertSame( '2026-09-23T11:00:00Z', $read->adoptedAt() );
 		$this->assertSame( array( 'gateway.stripe' => true ), $read->killSwitches() );
 		$this->assertSame( '2026-09-22T09:00:00Z', $read->installedAt() );
+		$this->assertTrue( $read->canaryFailed() );
+		$this->assertSame( '2026-09-23T12:00:00Z', $read->canaryFailedSince() );
 		$this->assertSame( $json, $read->toJson() );
+		$this->assertFalse( BootRecord::fromJson( $read->withCanaryFailure( null )->toJson() )->canaryFailed(), 'The canary\'s end was not recorded.' );
+		$this->assertSame( SafeModeStatus::Copy, $read->withCanaryFailure( null )->safeModeReason(), 'The canary\'s end changed the recorded reason.' );
 	}
 
 	/**
@@ -125,6 +129,8 @@ final class BootRecordTest extends TestCase {
 			'a hash that is not a hash'     => array( '{"v":1,"rev":1,"lock_mode":"get_lock","home_hash":"shop.example.org","home_shown":"' . SiteAddress::encode( 'https://shop.example.org' ) . '"}' ),
 			'a hash without its address'    => array( '{"v":1,"rev":1,"lock_mode":"get_lock","home_hash":"' . str_repeat( 'a', 64 ) . '"}' ),
 			'an empty version'              => array( '{"v":1,"rev":1,"lock_mode":"get_lock","plugin_version":""}' ),
+			'a canary entry without a time' => array( '{"v":1,"rev":1,"lock_mode":"get_lock","canary":true}' ),
+			'the canary as a reason'        => array( '{"v":1,"rev":1,"lock_mode":"get_lock","safe_mode":{"reason":"canary","since":"2026-09-23T10:00:00Z"}}' ),
 		);
 	}
 
@@ -171,6 +177,8 @@ final class BootRecordTest extends TestCase {
 		$unreadableHash = BootRecord::fromJson( $newer . '"home_hash":{"sha256":"' . str_repeat( 'a', 64 ) . '"},"home_shown":"' . $shown . '"}' );
 
 		$this->assertNull( $readable->safeModeReason(), 'A newer shape whose address this version reads is not in Safe Mode for that.' );
+		$this->assertFalse( $readable->canaryFailed(), 'A newer shape without a canary entry has no canary failure.' );
+		$this->assertTrue( BootRecord::fromJson( $newer . '"canary":{"failed_at":1}}' )->canaryFailed(), 'A canary entry this version cannot read must count as a failure.' );
 		$this->assertSame( SafeModeStatus::Manual, $unreadable->safeModeReason(), 'A newer shape without an address this version can read must keep Safe Mode on.' );
 		$this->assertSame( SafeModeStatus::Manual, $unreadableHash->safeModeReason(), 'A newer shape with an address this version cannot read must keep Safe Mode on.' );
 
@@ -219,7 +227,8 @@ final class BootRecordTest extends TestCase {
 			->withHomeUrl( str_repeat( 'u', BootRecord::MAX_URL_BYTES ) )
 			->withSafeMode( SafeModeStatus::Rebuilt, $long )
 			->withAdoptedAt( $long )
-			->withInstalledAt( $long );
+			->withInstalledAt( $long )
+			->withCanaryFailure( str_repeat( 't', 32 ) );
 
 		for ( $i = 0; $i < BootRecord::MAX_KILL_SWITCHES; ++$i ) {
 			$kill[ 'k' . str_pad( (string) $i, 63, '0', STR_PAD_LEFT ) ] = true;
@@ -248,6 +257,17 @@ final class BootRecordTest extends TestCase {
 	}
 
 	/**
+	 * Tests that the canary entry holds a time and no more.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_canary_time_over_its_cap_is_refused(): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		BootRecord::absent()->withCanaryFailure( str_repeat( 't', 33 ) );
+	}
+
+	/**
 	 * Tests that only a recordable reason, with its time, is recorded.
 	 *
 	 * @since 0.1.0
@@ -255,7 +275,7 @@ final class BootRecordTest extends TestCase {
 	public function test_only_a_recordable_reason_with_its_time_is_recorded(): void {
 		$this->assertNull( self::full()->withSafeMode( null, null )->safeModeReason() );
 
-		foreach ( array( array( SafeModeStatus::UrlChanged, '2026-09-23T10:00:00Z' ), array( SafeModeStatus::Manual, null ) ) as $case ) {
+		foreach ( array( array( SafeModeStatus::UrlChanged, '2026-09-23T10:00:00Z' ), array( SafeModeStatus::Canary, '2026-09-23T10:00:00Z' ), array( SafeModeStatus::Manual, null ) ) as $case ) {
 			try {
 				BootRecord::absent()->withSafeMode( $case[0], $case[1] );
 				$this->fail( 'Safe Mode recorded ' . $case[0]->value . ( null === $case[1] ? ' without a time' : '' ) . '.' );
@@ -303,6 +323,7 @@ final class BootRecordTest extends TestCase {
 			->withSafeMode( SafeModeStatus::Copy, '2026-09-23T10:00:00Z' )
 			->withAdoptedAt( '2026-09-23T11:00:00Z' )
 			->withKillSwitches( array( 'gateway.stripe' => true ) )
-			->withInstalledAt( '2026-09-22T09:00:00Z' );
+			->withInstalledAt( '2026-09-22T09:00:00Z' )
+			->withCanaryFailure( '2026-09-23T12:00:00Z' );
 	}
 }

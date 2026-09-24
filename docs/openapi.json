@@ -21,5 +21,214 @@
             }
         }
     ],
-    "paths": {}
+    "paths": {
+        "/settings": {
+            "get": {
+                "operationId": "settings.get_settings",
+                "summary": "Returns every store setting, with its saved value or, when it was never saved, its default.",
+                "description": "Requires the capability `seocart_manage_settings`.",
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the Settings resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Settings"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_settings`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_settings`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "`settings.stored_value_invalid`: The option {option} holds a value SEOCart cannot use. Save the setting again to replace it.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "operationId": "settings.update_settings",
+                "summary": "Changes the store settings the request names, checking every value before saving any, and returns every store setting.",
+                "description": "Requires the capability `seocart_manage_settings`.",
+                "requestBody": {
+                    "required": false,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "base_currency": {
+                                        "type": "string",
+                                        "description": "ISO 4217 code of the currency the store keeps its accounts in, in upper case.",
+                                        "examples": [
+                                            "EUR"
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the Settings resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Settings"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`currency.unknown`: {currency} is not a currency code that SEOCart supports.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_settings`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_settings`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "`settings.stored_value_invalid`: The option {option} holds a value SEOCart cannot use. Save the setting again to replace it.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "Error": {
+                "type": "object",
+                "description": "An error. WordPress writes it as its code, its message and its data; the data members are the same for every error of these routes, including WordPress's own refusal of a request that does not match the input schema or of a user who lacks the capability, but not its refusal of a JSONP callback, which it sends before any route is matched.",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "The error code: one of those in docs/reference/errors.md, or a code of the WordPress REST API such as `rest_invalid_param` or `rest_forbidden`."
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "What went wrong, for people, in the language of the site. An internal error has a generic message."
+                    },
+                    "data": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "integer",
+                                "description": "The HTTP status of the error."
+                            },
+                            "details": {
+                                "type": "object",
+                                "description": "The values the message was built from, keyed by name. For an error WordPress raised, such as its refusal of a request that does not match the input schema, every other member of its data under the name WordPress gave it, such as `params`. Always an object, and empty for an internal error."
+                            },
+                            "correlation_id": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ],
+                                "description": "The identifier of the request the error happened in, which the site's log records with the error; null when the request has none."
+                            }
+                        },
+                        "required": [
+                            "status",
+                            "details",
+                            "correlation_id"
+                        ]
+                    }
+                },
+                "required": [
+                    "code",
+                    "message",
+                    "data"
+                ]
+            },
+            "Settings": {
+                "type": "object",
+                "properties": {
+                    "base_currency": {
+                        "type": "string",
+                        "description": "ISO 4217 code of the currency the store keeps its accounts in, in upper case.",
+                        "examples": [
+                            "EUR"
+                        ]
+                    }
+                },
+                "required": [
+                    "base_currency"
+                ]
+            }
+        }
+    }
 }

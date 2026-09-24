@@ -12,7 +12,7 @@ Adjusts the stock level of one fixture item by a signed change.
 - Capability: `seocart_manage_inventory`
 - Error codes: `fixture_stock.insufficient` (409)
 - Annotations: readonly `false`, destructive `false`, idempotent `false`
-- Exposed to agents: yes
+- Exposed to agents: no
 
 ### Input
 

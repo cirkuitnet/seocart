@@ -20,6 +20,8 @@ use SEOCart\Application\Operations\WriteMethod;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
+use SEOCart\Support\Schema\Privacy;
+use SEOCart\Support\Schema\ResourceSchema;
 use SEOCart\Support\Schema\SchemaException;
 use SEOCart\Support\SupportError;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockError;
@@ -54,7 +56,7 @@ final class OperationDefinitionTest extends TestCase {
 		$this->assertSame( array( FixtureStockError::Insufficient ), $definition->errors() );
 		$this->assertFalse( $definition->annotations()->isReadOnly() );
 		$this->assertSame( array( FixtureStockService::class, 'adjust' ), $definition->service() );
-		$this->assertTrue( $definition->isAgentExposed() );
+		$this->assertFalse( $definition->isAgentExposed(), 'The fixture carries personal data and a secret, so it may not be exposed to agents.' );
 	}
 
 	/**
@@ -255,6 +257,17 @@ final class OperationDefinitionTest extends TestCase {
 	public static function neverExposedVariants(): array {
 		$destructive = new Annotations( read_only: false, destructive: true, idempotent: false );
 		$on_resource = 'is checked on one resource, so what it can reach cannot be told from its declaration, and it is never exposed to agents';
+		$shareable   = self::shareableFields();
+		$never_pass  = ': personal data and secrets never pass through an agent';
+		$contact     = static fn( Privacy $privacy ): FieldSpec => new FieldSpec(
+			name: 'contact',
+			type: FieldType::String,
+			description: 'Who to ask about the change.',
+			label: static fn(): string => 'Contact',
+			example: 'someone@example.com',
+			privacy: $privacy
+		);
+		$output_with = static fn( FieldSpec $field ): ResourceSchema => new ResourceSchema( $shareable['output']->name(), array_merge( $shareable['output']->fields(), array( $field ) ) );
 
 		return array(
 			'destructive'                 => array( array( 'annotations' => $destructive ), 'is destructive, and a destructive operation is never exposed to agents' ),
@@ -319,11 +332,40 @@ final class OperationDefinitionTest extends TestCase {
 			'exports orders'              => array( array( 'capability' => 'seocart_export_orders' ), 'requires seocart_export_orders' ),
 			'reads personal data'         => array( array( 'capability' => 'seocart_view_customer_pii' ), 'requires seocart_view_customer_pii' ),
 			'exposed without an ability'  => array( array( 'ability' => null ), 'is exposed to agents but has no ability' ),
+			'the fixture as declared'     => array( array(), 'its input field note is pii' . $never_pass ),
+			'personal data in the output' => array(
+				array(
+					'input'  => $shareable['input'],
+					'output' => $output_with( $contact( Privacy::Pii ) ),
+				),
+				'its output field contact is pii' . $never_pass,
+			),
+			'a secret in the output'      => array(
+				array(
+					'input'  => $shareable['input'],
+					'output' => $output_with( $contact( Privacy::Secret ) ),
+				),
+				'its output field contact is secret' . $never_pass,
+			),
+			'personal data in the input'  => array(
+				array(
+					'input'  => array_merge( $shareable['input'], array( $contact( Privacy::Pii ) ) ),
+					'output' => $shareable['output'],
+				),
+				'its input field contact is pii' . $never_pass,
+			),
+			'a secret in the input'       => array(
+				array(
+					'input'  => array_merge( $shareable['input'], array( $contact( Privacy::Secret ) ) ),
+					'output' => $shareable['output'],
+				),
+				'its input field contact is secret' . $never_pass,
+			),
 		);
 	}
 
 	/**
-	 * Tests that agent exposure is refused for a destructive operation, one that moves money, and one that reads personal data in bulk.
+	 * Tests that agent exposure is refused for a destructive operation, one that moves money, one that reads personal data in bulk, and one whose input or output has a personal-data or secret field.
 	 *
 	 * @since 0.1.0
 	 *
@@ -337,6 +379,17 @@ final class OperationDefinitionTest extends TestCase {
 		$this->expectExceptionMessage( $expected_message );
 
 		self::variant( $overrides + array( 'agent_exposed' => true ) );
+	}
+
+	/**
+	 * Tests that an operation whose input and output carry no personal data and no secret may be exposed to agents.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_operation_with_only_shareable_fields_may_be_exposed_to_agents(): void {
+		$definition = self::variant( self::shareableFields() + array( 'agent_exposed' => true ) );
+
+		$this->assertTrue( $definition->isAgentExposed() );
 	}
 
 	/**
@@ -455,6 +508,23 @@ final class OperationDefinitionTest extends TestCase {
 		);
 
 		return new OperationDefinition( ...$arguments );
+	}
+
+	/**
+	 * Returns the fixture's input fields and output schema without their personal-data and secret fields.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array{input: list<FieldSpec>, output: ResourceSchema} Named constructor arguments.
+	 */
+	private static function shareableFields(): array {
+		$fixture   = FixtureStockOperation::definition();
+		$shareable = static fn( FieldSpec $field ): bool => ! in_array( $field->privacy(), array( Privacy::Pii, Privacy::Secret ), true );
+
+		return array(
+			'input'  => array_values( array_filter( $fixture->input(), $shareable ) ),
+			'output' => new ResourceSchema( $fixture->output()->name(), array_values( array_filter( $fixture->output()->fields(), $shareable ) ) ),
+		);
 	}
 
 	/**

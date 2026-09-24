@@ -15,6 +15,7 @@ use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Support\Error\ErrorCode;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
+use SEOCart\Support\Schema\Privacy;
 use SEOCart\Support\Schema\ResourceSchema;
 use SEOCart\Support\Schema\SchemaException;
 
@@ -52,9 +53,9 @@ defined( 'ABSPATH' ) || exit;
  * - an operation that moves money — it requires a primitive of the plugin's money group, or a
  *   meta capability in MONEY_META_CAPABILITIES — without the `destructive` annotation;
  * - agent exposure for an operation that is destructive, moves money or reads personal data in
- *   bulk (a primitive of the money or data-sensitivity group), or that requires a meta capability,
- *   whose reach cannot be told from its declaration. Those are never exposed; the check fails
- *   closed.
+ *   bulk (a primitive of the money or data-sensitivity group), that requires a meta capability,
+ *   whose reach cannot be told from its declaration, or whose input or output has a personal-data
+ *   or secret field. Those are never exposed; the check fails closed.
  *
  * @since 0.1.0
  */
@@ -313,7 +314,7 @@ final class OperationDefinition {
 		}
 
 		if ( $agent_exposed ) {
-			self::checkAgentExposure( $id, $capability, $annotations, $ability );
+			self::checkAgentExposure( $id, $capability, $annotations, $ability, $input, $output );
 		}
 
 		$this->id            = $id;
@@ -669,14 +670,19 @@ final class OperationDefinition {
 	 * @since 0.1.0
 	 *
 	 * @throws SchemaException When the operation has no ability, requires a meta capability, requires
-	 *                         a primitive of the money or data-sensitivity group, or is destructive.
+	 *                         a primitive of the money or data-sensitivity group, is destructive, or
+	 *                         has a personal-data or secret field in its input or its output.
 	 *
-	 * @param string      $id          The operation id, for messages.
-	 * @param string      $capability  The capability.
-	 * @param Annotations $annotations The annotations.
-	 * @param string|null $ability     The ability slug, or null.
+	 * @param string         $id          The operation id, for messages.
+	 * @param string         $capability  The capability.
+	 * @param Annotations    $annotations The annotations.
+	 * @param string|null    $ability     The ability slug, or null.
+	 * @param FieldSpec[]    $input       The input fields.
+	 * @param ResourceSchema $output      The output schema.
+	 *
+	 * @phpstan-param list<FieldSpec> $input
 	 */
-	private static function checkAgentExposure( string $id, string $capability, Annotations $annotations, ?string $ability ): void {
+	private static function checkAgentExposure( string $id, string $capability, Annotations $annotations, ?string $ability, array $input, ResourceSchema $output ): void {
 		$declaration = new CapabilityDeclaration();
 
 		if ( null === $ability ) {
@@ -695,6 +701,19 @@ final class OperationDefinition {
 
 		if ( $annotations->isDestructive() ) {
 			SchemaException::raise( 'The operation %1$s is destructive, and a destructive operation is never exposed to agents.', $id );
+		}
+
+		$carried = array(
+			'input'  => $input,
+			'output' => $output->fields(),
+		);
+
+		foreach ( $carried as $side => $fields ) {
+			foreach ( $fields as $field ) {
+				if ( Privacy::Pii === $field->privacy() || Privacy::Secret === $field->privacy() ) {
+					SchemaException::raise( 'The operation %1$s is exposed to agents, but its %2$s field %3$s is %4$s: personal data and secrets never pass through an agent.', $id, $side, $field->name(), $field->privacy()->value );
+				}
+			}
 		}
 	}
 }

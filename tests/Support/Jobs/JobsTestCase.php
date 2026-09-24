@@ -30,6 +30,7 @@ use SEOCart\Platform\Jobs\JobRunner;
 use SEOCart\Platform\Jobs\RunnerTriggers;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Tests\Support\DatabaseTestCase;
+use SEOCart\Tests\Support\KernelHooks;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\Events\ThingHappened;
 use SEOCart\Tests\Support\Events\ThingNoticed;
@@ -46,7 +47,8 @@ use SEOCart\Tests\Support\Events\ThingNoticed;
  *
  * The handlers are the fixture ones (RecordingJob, RecurringJob), resolved with the test's
  * correlation id; a test that needs other handlers calls wire(). The runner's hook is
- * registered as the kernel registers it; `$this->paused` pauses the runner and the triggers.
+ * registered as the kernel registers it, in place of the kernel's own runner, which the plugin
+ * hooked when it booted; `$this->paused` pauses the runner and the triggers.
  * The lock service holds its locks in table mode, so a SecondConnection can hold one too. The
  * `locks` and `outbox` tables are created, and dropped by the base class.
  *
@@ -184,6 +186,8 @@ abstract class JobsTestCase extends DatabaseTestCase {
 		if ( isset( $this->runner ) ) {
 			remove_action( JobRunner::HOOK, array( $this->runner, 'run' ) );
 		}
+
+		KernelHooks::detach( JobRunner::HOOK );
 
 		$locks          = $this->locks();
 		$this->handlers = new JobHandlers( $classes, $resolve ?? fn( string $handlerClass ): object => new $handlerClass( $this->correlation ) );
@@ -393,26 +397,6 @@ abstract class JobsTestCase extends DatabaseTestCase {
 	 * @since 0.1.0
 	 */
 	private function purgeActions(): void {
-		global $wpdb;
-
-		$actions = $wpdb->prefix . 'actionscheduler_actions';
-		$ids     = $wpdb->get_col(
-			$wpdb->prepare(
-				'SELECT a.action_id FROM %i a LEFT JOIN %i g ON g.group_id = a.group_id WHERE a.hook IN ( %s, %s ) OR g.slug IN ( %s, %s )',
-				$actions,
-				$wpdb->prefix . 'actionscheduler_groups',
-				JobRunner::HOOK,
-				self::OTHER_HOOK,
-				JobQueue::GROUP,
-				self::OTHER_GROUP
-			)
-		);
-
-		foreach ( array_chunk( array_map( 'intval', $ids ), 500 ) as $chunk ) {
-			$list = implode( ',', $chunk );
-
-			$wpdb->query( "DELETE FROM {$actions} WHERE action_id IN ( {$list} )" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- integers only.
-			$wpdb->query( "DELETE FROM {$wpdb->prefix}actionscheduler_logs WHERE action_id IN ( {$list} )" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- integers only.
-		}
+		PluginActions::purge( array( JobRunner::HOOK, self::OTHER_HOOK ), array( JobQueue::GROUP, self::OTHER_GROUP ) );
 	}
 }

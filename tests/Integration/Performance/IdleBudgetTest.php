@@ -81,7 +81,8 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 
 	/**
 	 * G3: files of the plugin's own code an idle request may load: the main file and the kernel's
-	 * three (the kernel, its container and the module wiring), with a margin of two.
+	 * three (the kernel, its container and the module wiring), with a margin of two. Wiring every
+	 * module added no file: each hook's callback loads what it needs when it fires.
 	 *
 	 * @since 0.1.0
 	 *
@@ -99,13 +100,36 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	private const G3_MAX_PLUGIN_BYTES = 250 * 1024;
 
 	/**
-	 * G4: hook registrations the plugin may make on an idle request.
+	 * G4: hook registrations the plugin may make on an idle request, each one stated:
+	 *
+	 * - `plugins_loaded`, which boots the kernel, and the activation and deactivation hooks, from
+	 *   the main file;
+	 * - `map_meta_cap`, the one capability mapper;
+	 * - `rest_api_init`, which registers the operations' routes when a REST server is built, and
+	 *   reconciles the site on a request the REST API serves;
+	 * - `wp_abilities_api_categories_init` and `wp_abilities_api_init`, which register the
+	 *   operations' abilities when the Abilities API initialises;
+	 * - `seocart_job`, which runs one of the plugin's jobs for whichever copy of Action Scheduler
+	 *   fires it.
+	 *
+	 * A site of a network adds NETWORK_PLUGIN_HOOKS.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var int
 	 */
-	private const G4_MAX_PLUGIN_HOOKS = 25;
+	private const G4_MAX_PLUGIN_HOOKS = 8;
+
+	/**
+	 * G4 on a site of a network: the hooks a network adds to an idle request — `wp_initialize_site`,
+	 * which installs a new site, `wp_uninitialize_site`, which cancels a deleted site's jobs, and
+	 * `wpmu_drop_tables`, which drops its tables.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const NETWORK_PLUGIN_HOOKS = 3;
 
 	/**
 	 * G3, the bundled Action Scheduler's share: library PHP files an idle request may load.
@@ -278,12 +302,10 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Tests G4: the plugin registers few hooks.
+	 * Tests G4: the plugin registers the hooks it states, and no more.
 	 *
-	 * Planted violation:
-	 * `for ( $planted = 0; $planted < 25; $planted++ ) { add_action( 'wp_footer', array( self::class, 'hasBooted' ), $planted ); }`.
-	 * With the kernel's own four registrations (`plugins_loaded`, the activation and deactivation
-	 * hooks and `map_meta_cap`) that makes twenty-nine. The failure must list them.
+	 * Planted violation: `add_action( 'wp_footer', array( self::class, 'hasBooted' ) );`. With the
+	 * eight stated registrations that makes nine. The failure must list them.
 	 *
 	 * @since 0.1.0
 	 */
@@ -294,7 +316,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 		$this->assertNotSame( array(), $hooks, 'The probe did not see even the plugins_loaded registration, so a small count would prove nothing.' );
 
 		$this->assertLessThanOrEqual(
-			self::G4_MAX_PLUGIN_HOOKS,
+			self::G4_MAX_PLUGIN_HOOKS + ( is_multisite() ? self::NETWORK_PLUGIN_HOOKS : 0 ),
 			count( $hooks ),
 			'G4, hook registrations made by SEOCart on an idle request:' . $report
 		);

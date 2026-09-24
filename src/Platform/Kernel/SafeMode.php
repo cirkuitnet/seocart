@@ -23,7 +23,10 @@ defined( 'ABSPATH' ) || exit;
  * be in both, and their remedies differ. The status is worked out on first use from, in order:
  *
  * 1. a recorded canary failure — the stored credentials cannot be decrypted, so none of them can
- *    be trusted; nothing but a passing canary clears it, not even SEOCART_SAFE_MODE set to false;
+ *    be trusted; nothing but a passing canary clears it (recordCanary()), not even
+ *    SEOCART_SAFE_MODE set to false. It is recorded apart from the reason below, so that neither
+ *    ends the other: when the canary opens again, a manual switch, a copy or a rebuilt record is
+ *    still on;
  * 2. SEOCART_SAFE_MODE set to true, which forces Safe Mode on;
  * 3. a missing record: nothing to compare with, so off (the next installation run rebuilds one);
  * 4. a site marked as a copy, or one whose record was lost and rebuilt: on until someone adopts
@@ -153,50 +156,51 @@ final class SafeMode {
 	}
 
 	/**
-	 * Records a reason for Safe Mode. Idempotent; a recorded canary failure is never replaced by a lesser reason.
+	 * Records the reason an operator or the installation decided on. Idempotent. A canary failure is
+	 * recorded apart from it, by recordCanary(), and outranks it while it lasts.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \InvalidArgumentException When the reason is not one of SafeModeStatus::recordable().
 	 *
-	 * @param SafeModeStatus $reason Manual, Canary, Copy or Rebuilt.
+	 * @param SafeModeStatus $reason Manual, Copy or Rebuilt.
 	 */
 	public function enter( SafeModeStatus $reason ): void {
 		if ( ! in_array( $reason, SafeModeStatus::recordable(), true ) ) {
-			throw new \InvalidArgumentException( 'Safe Mode records only Manual, Canary, Copy or Rebuilt; the other statuses are worked out, not recorded.' );
+			throw new \InvalidArgumentException( 'Safe Mode records only Manual, Copy or Rebuilt as its reason; recordCanary() records a canary failure, and the other statuses are worked out, not recorded.' );
 		}
 
 		$since = $this->now();
 
 		$this->bootOption->mutate(
-			static function ( BootRecord $record ) use ( $reason, $since ): BootRecord {
-				$recorded = $record->safeModeReason();
-
-				if ( $record->isAbsent() || $reason === $recorded || SafeModeStatus::Canary === $recorded ) {
-					return $record;
-				}
-
-				return $record->withSafeMode( $reason, $since );
-			}
+			static fn( BootRecord $record ): BootRecord => $record->isAbsent() || $reason === $record->safeModeReason() ? $record : $record->withSafeMode( $reason, $since )
 		);
 	}
 
 	/**
-	 * Clears the recorded reason, whatever it is. The recorded address stays, so a changed address still counts.
+	 * Records what the secrets canary found: a failure enters Safe Mode for it, and a pass ends a
+	 * recorded canary failure and nothing else.
 	 *
-	 * This is how a passing canary ends a canary failure.
+	 * The failure is recorded apart from the reason an operator or the installation recorded, so a
+	 * pass leaves that reason, and Safe Mode with it, as it was. The kernel calls this on every admin
+	 * request with the canary's outcome; the write is conditional and happens only when it changes
+	 * the record, so a request that finds what the record already says writes nothing.
 	 *
 	 * @since 0.1.0
+	 *
+	 * @param bool $opened Whether the canary opened.
 	 */
-	public function exit(): void {
+	public function recordCanary( bool $opened ): void {
+		$since = $opened ? null : $this->now();
+
 		$this->bootOption->mutate(
-			static fn( BootRecord $record ): BootRecord => $record->isAbsent() || null === $record->safeModeReason() ? $record : $record->withSafeMode( null, null )
+			static fn( BootRecord $record ): BootRecord => $record->isAbsent() || $opened !== $record->canaryFailed() ? $record : $record->withCanaryFailure( $since )
 		);
 	}
 
 	/**
-	 * Confirms that this site is the store: records the current address and clears every recorded
-	 * reason but a canary failure, which adopting an address does not repair.
+	 * Confirms that this site is the store: records the current address and clears the recorded
+	 * reason. A canary failure stays, as adopting an address does not repair it.
 	 *
 	 * The time of adoption is recorded, so a payment gateway can ask for its credentials to be
 	 * confirmed again before it goes live.
@@ -213,9 +217,7 @@ final class SafeMode {
 					return $record;
 				}
 
-				$adopted = $record->withHomeUrl( $url )->withAdoptedAt( $time );
-
-				return SafeModeStatus::Canary === $record->safeModeReason() ? $adopted : $adopted->withSafeMode( null, null );
+				return $record->withHomeUrl( $url )->withAdoptedAt( $time )->withSafeMode( null, null );
 			}
 		);
 	}
@@ -249,11 +251,11 @@ final class SafeMode {
 	 * @return SafeModeStatus The status.
 	 */
 	private function decide( BootRecord $record ): SafeModeStatus {
-		$reason = $record->safeModeReason();
-
-		if ( SafeModeStatus::Canary === $reason ) {
+		if ( $record->canaryFailed() ) {
 			return SafeModeStatus::Canary;
 		}
+
+		$reason = $record->safeModeReason();
 
 		if ( true === $this->forced ) {
 			return SafeModeStatus::Constant;

@@ -13,8 +13,7 @@ namespace SEOCart\Tests\Support\Logging;
 
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\Operations;
-use SEOCart\Platform\Settings\Setting;
-use SEOCart\Platform\Settings\Settings;
+use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Support\Schema\FieldSpec;
 
 /**
@@ -48,16 +47,13 @@ final class DeclaredFields {
 	}
 
 	/**
-	 * Returns the fields of the production operations and of every setting.
+	 * Returns the fields of the production operations and of every setting, as the kernel collects them for the production redactor.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @return list<FieldSpec> The fields.
 	 */
 	public static function production(): array {
-		return array_merge(
-			self::ofOperations( Operations::registry() ),
-			array_map( static fn( Setting $setting ): FieldSpec => $setting->field(), Settings::registry()->all() )
-		);
+		return Modules::declaredFields( Operations::registry() );
 	}
 }

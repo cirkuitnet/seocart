@@ -337,6 +337,8 @@ final class OperationResponseHeadersTest extends WP_UnitTestCase {
 
 		$routes = array_keys( $found );
 
+		$declared = array_values( array_unique( $declared ) );
+
 		sort( $routes );
 		sort( $declared );
 

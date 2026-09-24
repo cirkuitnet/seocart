@@ -4,4 +4,35 @@
 
 Each command runs one SEOCart operation, with the same application service, input validation, permission check and error codes as the operation's REST route and ability. Run it as a user who holds the capability it names, with `--user=<login>`. A failure prints `<code>: <message>` and ends with a non-zero exit status. Maintenance commands are not operations; `wp help seocart` lists them.
 
-SEOCart has no operation commands yet.
+## `wp seocart settings get`
+
+Returns every store setting, with its saved value or, when it was never saved, its default.
+
+```sh
+wp seocart settings get [--format=<format>]
+```
+
+- Operation: `settings.get_settings`
+- Capability: `seocart_manage_settings`
+- Error codes: `settings.stored_value_invalid` (500)
+
+### Arguments
+
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart settings update`
+
+Changes the store settings the request names, checking every value before saving any, and returns every store setting.
+
+```sh
+wp seocart settings update [--base_currency=<base_currency>] [--format=<format>]
+```
+
+- Operation: `settings.update_settings`
+- Capability: `seocart_manage_settings`
+- Error codes: `settings.stored_value_invalid` (500), `currency.unknown` (400), `store.unavailable` (503)
+
+### Arguments
+
+- `[--base_currency=<base_currency>]`: ISO 4217 code of the currency the store keeps its accounts in, in upper case. Text.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.

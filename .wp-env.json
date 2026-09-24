@@ -2,5 +2,8 @@
 	"core": null,
 	"mappings": {
 		"wp-content/plugins/seocart": "."
+	},
+	"lifecycleScripts": {
+		"afterStart": "wp-env run cli wp config has SEOCART_ENCRYPTION_KEY || wp-env run cli -- wp eval --skip-wordpress \"WP_CLI::runcommand( 'config set SEOCART_ENCRYPTION_KEY ' . base64_encode( random_bytes( 32 ) ) );\""
 	}
 }

@@ -11,16 +11,19 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Operations;
 
+use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\Operations;
-use SEOCart\Interfaces\Operations\CliAdapter;
-use SEOCart\Interfaces\Operations\OperationInvoker;
 use SEOCart\Platform\Authorization\PermissionCallback;
+use SEOCart\Platform\Kernel\Kernel;
+use SEOCart\Platform\Kernel\Modules;
+use SEOCart\Platform\Settings\SettingsOperations;
 use SEOCart\Tests\Fixtures\Operations\Cli\FixtureMaintenanceCommand;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
-use SEOCart\Tests\Support\Doubles\TableErrorTranslator;
+use SEOCart\Tests\Support\KernelHooks;
 use SEOCart\Tests\Support\OperationSurfaces;
 use SEOCart\Tests\Support\OperationSurfaceWalker;
+use SEOCart\Tests\Support\RoutePermissionWalker;
 use WP_Ability;
 use WP_UnitTestCase;
 
@@ -28,23 +31,30 @@ use WP_UnitTestCase;
  * One declaration per operation, on every surface, in both directions.
  *
  * The first tests walk what the plugin itself registers — the routes of a REST server booted as a
- * request boots it, and the abilities WordPress holds — against the production registry. The
- * command half is split in two:
+ * request boots it, on which the kernel registered the operations' routes, and the abilities
+ * WordPress holds — against the production registry. The command half is split in two:
  *
- * - the operation commands: the commands the command adapter registers for the production registry
- *   must be exactly the registry's commands. Real WP-CLI registrations are not observed yet: the
- *   suite runs without WP-CLI, so the recorded list is the adapter's alone until the kernel
- *   registers every command through a recording `add_command`, which then feeds this walk;
+ * - the operation commands: the commands the kernel registers, through the same function
+ *   `cli_init` calls, given a recorder in place of WP_CLI::add_command(), must be exactly the
+ *   registry's commands;
  * - the maintenance commands: OperationSurfaceWalker::MAINTENANCE_COMMANDS must list exactly the
- *   command classes under the `Cli/` directories of src/, each with its reason. They are checked
- *   against that class search only, never against the registered list.
+ *   command classes under the `Cli/` directories of src/, each with its reason, and the kernel
+ *   must register every one of them.
  *
- * The plugin registers no operation yet, so the operation walks find nothing on either side; they
- * are the gate for the first operation and for the kernel's wiring. The self-tests register the
+ * The walks see real addresses: the settings routes and commands. The self-tests register the
  * fixture through the adapters and must find nothing wrong, then plant each violation — a route,
  * an ability and a command that no operation declares, an operation whose surfaces are not
- * registered, an unlisted command class and a listed one that is gone — and require each to be
- * reported.
+ * registered, a route at an operation's address guarded by another capability, an unlisted
+ * command class and a listed one that is gone — and require each to be reported.
+ *
+ * Planted violation for the kernel's registration: in Modules::MAINTENANCE_COMMANDS, remove the
+ * `seocart migrate` line. test_the_kernel_registers_every_command reports that the maintenance
+ * command is listed but not registered.
+ *
+ * Planted violation for the guard: in PermissionFactory::forRest(), return
+ * PermissionCallback::requiring( 'seocart_manage_inventory' ) for every operation.
+ * test_the_plugins_routes_and_abilities_resolve_to_its_operations reports both settings routes as
+ * guarded by seocart_manage_inventory while their operations declare seocart_manage_settings.
  *
  * @group contract
  *
@@ -74,19 +84,21 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 		$server = rest_get_server();
 
 		$this->assertArrayHasKey( '/wp/v2/posts', $server->get_routes(), 'The server was not booted the way a request boots it.' );
+		$this->assertArrayHasKey( '/seocart/v1/settings', $server->get_routes(), 'The kernel registered no operation route, so a clean walk would prove nothing.' );
 		$this->assertSame( array(), OperationSurfaceWalker::restViolations( $server, Operations::registry() ) );
 		$this->assertSame( array(), OperationSurfaceWalker::abilityViolations( self::abilityNames(), Operations::registry() ) );
 	}
 
 	/**
-	 * Tests that the commands registered for the production registry are exactly its operation commands.
+	 * Tests that the kernel registers exactly the production registry's operation commands, and every maintenance command.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_plugins_operation_commands_resolve_to_its_operations(): void {
+	public function test_the_kernel_registers_every_command(): void {
 		$commands = array();
 
-		( new CliAdapter( Operations::registry(), self::invoker() ) )->register(
+		Modules::registerCommands(
+			Kernel::container(),
 			static function ( string $name ) use ( &$commands ): void {
 				$commands[] = $name;
 			},
@@ -94,7 +106,14 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 			static function (): void {}
 		);
 
+		$this->assertContains( 'seocart settings get', $commands, 'The kernel registered no operation command, so a clean walk would prove nothing.' );
 		$this->assertSame( array(), OperationSurfaceWalker::commandViolations( $commands, Operations::registry(), OperationSurfaceWalker::MAINTENANCE_COMMANDS ) );
+
+		foreach ( array_keys( OperationSurfaceWalker::MAINTENANCE_COMMANDS ) as $maintenance ) {
+			$this->assertContains( $maintenance, $commands, "The maintenance command {$maintenance} is listed, but the kernel does not register it." );
+		}
+
+		$this->assertSame( count( $commands ), count( array_unique( $commands ) ), 'A command is registered twice.' );
 	}
 
 	/**
@@ -194,6 +213,43 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Tests that an endpoint at an operation's address, guarded by another declared capability, is
+	 * reported in the walk over the real routes: a caller with that capability would reach the
+	 * operation's service.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_operation_route_guarded_by_another_capability_is_reported(): void {
+		OperationSurfaces::discard();
+		add_action( 'rest_api_init', array( self::class, 'registerMisguardedSettingsRoute' ), 20 );
+
+		$this->assertSame(
+			array( 'The REST route PATCH /seocart/v1/settings is guarded by seocart_manage_inventory, but ' . SettingsOperations::UPDATE . ' declares ' . SettingsOperations::CAPABILITY . '.' ),
+			OperationSurfaceWalker::restViolations( rest_get_server(), Operations::registry() )
+		);
+		$this->assertSame( array(), ( new RoutePermissionWalker() )->walk( rest_get_server() )['violations'], 'The route walk alone passes the endpoint: its callback is of the plugin\'s type.' );
+	}
+
+	/**
+	 * Tests that an endpoint at an operation's address that checks the operation's meta capability
+	 * on another request parameter is reported: it asks about another resource.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_operation_route_checking_another_resource_is_reported(): void {
+		add_action( 'rest_api_init', array( self::class, 'registerRouteOnAnotherResource' ), 20 );
+
+		$registry = new OperationRegistry();
+		$registry->add( FixtureStockOperation::ID, array( self::class, 'metaCapabilityDefinition' ) );
+		$surfaces = new OperationSurfaces( $registry );
+
+		$this->assertSame(
+			array( 'The REST route POST /seocart/v1/fixture-stock/(?P<item_id>[^/]+)/adjustments is guarded by seocart_edit_order on delta, but ' . FixtureStockOperation::ID . ' declares seocart_edit_order on item_id.' ),
+			OperationSurfaceWalker::restViolations( $surfaces->server(), $registry )
+		);
+	}
+
+	/**
 	 * Tests that an operation whose route, ability and command were never registered is reported, so
 	 * a walk over an empty surface cannot pass for a clean one.
 	 *
@@ -201,6 +257,7 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 	 */
 	public function test_an_operation_not_registered_is_reported(): void {
 		OperationSurfaces::discard();
+		KernelHooks::detach( 'rest_api_init', 'wp_abilities_api_categories_init', 'wp_abilities_api_init' );
 
 		$registry = self::fixtureRegistry();
 
@@ -252,6 +309,69 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Registers a second endpoint at the settings update's address, guarded by the inventory capability. Hooked to `rest_api_init`, after the kernel.
+	 *
+	 * @since 0.1.0
+	 */
+	public static function registerMisguardedSettingsRoute(): void {
+		register_rest_route(
+			'seocart/v1',
+			'/settings',
+			array(
+				array(
+					'methods'             => 'PATCH',
+					'callback'            => '__return_null',
+					'permission_callback' => PermissionCallback::requiring( 'seocart_manage_inventory' ),
+				),
+			)
+		);
+	}
+
+	/**
+	 * Registers a second endpoint at the fixture's address that checks its meta capability on the `delta` parameter. Hooked to `rest_api_init`, after the adapter.
+	 *
+	 * @since 0.1.0
+	 */
+	public static function registerRouteOnAnotherResource(): void {
+		register_rest_route(
+			'seocart/v1',
+			'/fixture-stock/(?P<item_id>[^/]+)/adjustments',
+			array(
+				array(
+					'methods'             => 'POST',
+					'callback'            => '__return_null',
+					'permission_callback' => PermissionCallback::requiringOn( 'seocart_edit_order', 'delta' ),
+				),
+			)
+		);
+	}
+
+	/**
+	 * Declares the fixture's route with a meta capability checked on its `item_id` parameter.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function metaCapabilityDefinition(): OperationDefinition {
+		$fixture = FixtureStockOperation::definition();
+
+		return new OperationDefinition(
+			id: $fixture->id(),
+			label: $fixture->label(),
+			summary: $fixture->summary(),
+			input: $fixture->input(),
+			output: $fixture->output(),
+			capability: 'seocart_edit_order',
+			resource_field: 'item_id',
+			errors: $fixture->errors(),
+			annotations: $fixture->annotations(),
+			service: $fixture->service(),
+			rest: $fixture->rest()
+		);
+	}
+
+	/**
 	 * Registers an ability no operation declares. Hooked to `wp_abilities_api_init`, after the adapter.
 	 *
 	 * @since 0.1.0
@@ -293,21 +413,5 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 		FixtureStockOperation::register( $registry );
 
 		return $registry;
-	}
-
-	/**
-	 * Returns an invoker whose services are never resolved.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return OperationInvoker The invoker.
-	 */
-	private static function invoker(): OperationInvoker {
-		return new OperationInvoker(
-			static function ( string $class_name ): object {
-				throw new \LogicException( 'No service is resolved while commands are registered: ' . $class_name ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- a test double's message, never rendered.
-			},
-			new TableErrorTranslator()
-		);
 	}
 }

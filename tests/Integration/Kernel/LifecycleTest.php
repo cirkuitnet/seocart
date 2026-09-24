@@ -22,10 +22,18 @@ use SEOCart\Platform\Kernel\BootRecord;
 use SEOCart\Platform\Kernel\Container;
 use SEOCart\Platform\Kernel\GateState;
 use SEOCart\Platform\Kernel\Lifecycle;
+use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Platform\Kernel\SafeMode;
 use SEOCart\Platform\Kernel\SafeModeStatus;
 use SEOCart\Platform\Kernel\SchemaGate;
+use SEOCart\Platform\Jobs\Handlers\MigrationAttempt;
+use SEOCart\Platform\Jobs\JobHandlers;
+use SEOCart\Platform\Jobs\RunnerTriggers;
+use SEOCart\Platform\Secrets\SecretsCanary;
+use SEOCart\Tests\Support\Jobs\PluginActions;
+use SEOCart\Tests\Support\Migrations\MarksRowsInBatches;
 use SEOCart\Tests\Support\KernelContainer;
+use SEOCart\Tests\Support\KernelHooks;
 use SEOCart\Tests\Support\KernelTestCase;
 use SEOCart\Tests\Support\Migrations\CreatesTestTable;
 
@@ -50,6 +58,13 @@ use SEOCart\Tests\Support\Migrations\CreatesTestTable;
  * - In BootOption::mutate(), remove the `isNewerShape()` return: the same test's adoption fails.
  * - In Lifecycle::installSite(), record the version whatever the recorded one is:
  *   test_an_older_version_activated_after_a_newer_one_keeps_the_newer_version fails.
+ * - In Lifecycle::installSite(), leave out initializeSecrets(): test_activation_gives_the_secrets_a_key_and_schedules_the_recurring_jobs
+ *   finds a canary that does not open.
+ * - In Lifecycle::installSite(), leave out ensureRecurring(): the same test finds a recurring job without a run.
+ * - In Lifecycle::deactivate(), leave out cancelJobs(): test_deactivation_cancels_the_plugins_jobs finds them waiting.
+ * - In Lifecycle::queueIfIncomplete(), return at once: test_an_incomplete_migration_queues_the_migration_job_once
+ *   finds no job; queue `new \SEOCart\Platform\Jobs\Job( MigrationAttempt::name() )`, without its key, instead
+ *   of MigrationAttempt::job(): the same test finds two.
  * - In Lifecycle::identity(), leave out `->withLockMode( ... )`: the first write is refused, and
  *   test_the_first_write_records_the_lock_mode finds no record. With BootRecord::toJson()'s lock-mode
  *   check removed as well, the record is written without one, and the same test fails on it.
@@ -199,6 +214,169 @@ final class LifecycleTest extends KernelTestCase {
 		wp_cache_flush();
 
 		$this->assertSame( GateState::SchemaNewer, $this->container()->get( SchemaGate::class )->state(), 'A schema head this version cannot read opened the gate.' );
+	}
+
+	/**
+	 * Tests the installation's last two steps: the secrets get a data key whose canary opens, and
+	 * every recurring job has a run waiting.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_activation_gives_the_secrets_a_key_and_schedules_the_recurring_jobs(): void {
+		$container = $this->container();
+
+		$container->get( Lifecycle::class )->activate();
+
+		$this->assertTrue( $container->get( SecretsCanary::class )->check()->ok(), 'The secrets have no key whose canary opens.' );
+
+		$pending   = implode( "\n", PluginActions::pending() );
+		$recurring = array_keys( $container->get( JobHandlers::class )->recurring() );
+
+		$this->assertNotSame( array(), $recurring, 'No handler recurs, so the check would prove nothing.' );
+
+		foreach ( $recurring as $handler ) {
+			$this->assertStringContainsString( '"' . $handler . '"', $pending, "The recurring job {$handler} has no run waiting." );
+		}
+	}
+
+	/**
+	 * Tests an activation that runs before Action Scheduler has started, as the first activation on
+	 * a site where no other plugin runs a copy of the library does: it schedules no job, and the
+	 * library's first queue run, which WP-Cron fires, has the kernel's repair schedule every
+	 * recurring job.
+	 *
+	 * The library schedules that queue run on the next request of any kind, so a site that serves
+	 * only REST or cron requests gets its recurring jobs from the next WP-Cron run, without an
+	 * admin request.
+	 *
+	 * Planted violation: in Modules::subscribe(), pass `$ajax || $cli` to jobsSubscribe(), leaving
+	 * WP-Cron out. The queue run schedules nothing.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_activation_before_the_library_starts_leaves_the_recurring_jobs_to_its_first_queue_run(): void {
+		global $wp_actions;
+
+		$started = $wp_actions['action_scheduler_init'] ?? null;
+
+		unset( $wp_actions['action_scheduler_init'] );
+
+		try {
+			$this->container()->get( Lifecycle::class )->activate();
+		} finally {
+			$wp_actions['action_scheduler_init'] = $started; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Puts back the counter the test took away.
+		}
+
+		$this->assertSame( array(), PluginActions::pending(), 'An activation before the library started scheduled a job, so the queue run would prove nothing.' );
+
+		add_filter( 'wp_doing_cron', '__return_true' );
+		KernelHooks::detach( ...array_keys( RunnerTriggers::CRON_REPAIR_HOOKS ) );
+		Modules::subscribe( $this->container() );
+
+		$repairs = KernelHooks::callbacks( 'action_scheduler_run_queue' );
+
+		$this->assertNotSame( array(), $repairs, 'The kernel added nothing to the library\'s queue run on a WP-Cron request.' );
+
+		foreach ( $repairs as $repair ) {
+			$repair( 'WP Cron' );
+		}
+
+		$pending = implode( "\n", PluginActions::pending() );
+
+		foreach ( array_keys( $this->container()->get( JobHandlers::class )->recurring() ) as $handler ) {
+			$this->assertStringContainsString( '"' . $handler . '"', $pending, "The first queue run did not schedule the recurring job {$handler}." );
+		}
+	}
+
+	/**
+	 * Tests that deactivation cancels the plugin's waiting jobs, which activation schedules again.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_deactivation_cancels_the_plugins_jobs(): void {
+		$lifecycle = $this->container()->get( Lifecycle::class );
+
+		$lifecycle->activate();
+
+		$this->assertNotSame( array(), PluginActions::pending(), 'Activation scheduled nothing, so the check would prove nothing.' );
+
+		$lifecycle->deactivate();
+
+		$this->assertSame( array(), PluginActions::pending(), 'Deactivation left the plugin\'s jobs waiting.' );
+
+		$lifecycle->activate();
+
+		$this->assertNotSame( array(), PluginActions::pending(), 'Reactivation did not schedule the recurring jobs again.' );
+	}
+
+	/**
+	 * Tests the scheduled half of a migration attempt: when a request's attempt stops at its time
+	 * budget with data left to migrate, the migration job is queued, and a later attempt at the same
+	 * gap queues nothing more.
+	 *
+	 * The newer code brings a schema migration the store cannot trade without, which closes the
+	 * gate and makes a page load attempt the migrations, and a data migration after it, which the
+	 * attempt's budget stops after one batch. The second attempt is the Retry link's.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_incomplete_migration_queues_the_migration_job_once(): void {
+		$this->container()->get( Lifecycle::class )->activate();
+
+		for ( $id = 0; $id < 10; $id++ ) {
+			$this->insertRow( $id );
+		}
+
+		$marks  = new MarksRowsInBatches( '20990101_0009_kernel_marks', self::ROWS, 10, 3 );
+		$report = $this->reporter();
+		$newer  = $this->container(
+			array(
+				Migrator::class  => static fn( Container $c ): Migrator => KernelContainer::migrator( $c, array( new PlatformBootstrapMigration(), new CreatesTestTable( '20990101_0008_kernel_gate', 'kernel_gate', false ), $marks ), $report ),
+				Lifecycle::class => static fn( Container $c ): Lifecycle => new Lifecycle( $c, $report, 0 ),
+			)
+		);
+
+		$newer->get( Lifecycle::class )->reconcile();
+		$newer->get( Lifecycle::class )->retryMigration();
+
+		$this->assertSame( 2, $marks->batches, 'Each attempt should have run one batch before its budget ran out.' );
+
+		$queued = array_values( array_filter( PluginActions::pending(), static fn( string $args ): bool => str_contains( $args, '"' . MigrationAttempt::name() . '"' ) ) );
+
+		$this->assertCount( 1, $queued, 'The migration job must be queued once, however many requests see the gap.' );
+	}
+
+	/**
+	 * Tests a site whose gate is open while migrations that let the store trade are outstanding, as
+	 * after an activation that ran before Action Scheduler started and so could queue nothing: a
+	 * request that reconciles queues the migration job, once however many do, and runs no batch
+	 * itself.
+	 *
+	 * Planted violation: in Lifecycle::reconcile(), drop the branch for an open gate. Nothing is queued.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_open_gate_with_migrations_outstanding_queues_the_migration_job_once(): void {
+		$this->container()->get( Lifecycle::class )->activate();
+
+		$marks  = new MarksRowsInBatches( '20990101_0009_kernel_marks', self::ROWS, 10, 3 );
+		$report = $this->reporter();
+		$newer  = $this->container(
+			array(
+				Migrator::class => static fn( Container $c ): Migrator => KernelContainer::migrator( $c, array( new PlatformBootstrapMigration(), $marks ), $report ),
+			)
+		);
+
+		$this->assertSame( GateState::Ready, $newer->get( SchemaGate::class )->state(), 'The gate is closed, so the open-gate case would not be tested.' );
+
+		$newer->get( Lifecycle::class )->reconcile();
+		$newer->get( Lifecycle::class )->reconcile();
+
+		$this->assertSame( 0, $marks->batches, 'A request with the gate open ran a migration batch itself.' );
+
+		$queued = array_values( array_filter( PluginActions::pending(), static fn( string $args ): bool => str_contains( $args, '"' . MigrationAttempt::name() . '"' ) ) );
+
+		$this->assertCount( 1, $queued, 'The migration job must be queued once, however many requests see the outstanding migrations.' );
 	}
 
 	/**

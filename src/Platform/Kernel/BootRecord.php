@@ -35,15 +35,18 @@ defined( 'ABSPATH' ) || exit;
  *   against. The address is kept as SiteAddress stores it, a hash and a base64url copy for
  *   display, so that a search-replace over a copied database cannot rewrite it or any part of
  *   it: no field holds the address, or a fragment of it, as text;
- * - `safe_mode`: null, or the recorded reason and since when;
+ * - `safe_mode`: null, or the reason an operator or the installation recorded, and since when;
  * - `adopted_at`: when the merchant last confirmed that a changed address is the same store;
- * - `kill`: reserved for per-subsystem switches, capped at 64 entries; nothing writes it yet.
+ * - `kill`: reserved for per-subsystem switches, capped at 64 entries; nothing writes it yet;
+ * - `canary`: null, or since when the secrets canary has failed. It is kept apart from
+ *   `safe_mode`, so that a canary failure and its end never change the reason recorded there.
  *
  * During a rolling deployment an older and a newer version share one record. A newer version may
  * add keys without raising `v`; this version keeps keys it does not know and writes them back. A
  * newer version that changes the shape raises `v`, and this version then reads the record as far
- * as it understands it — a field it cannot read counts as missing, and a Safe Mode entry or an
- * address it cannot read counts as a manual switch, so it never takes a copy for the store —
+ * as it understands it — a field it cannot read counts as missing, a Safe Mode entry or an
+ * address it cannot read counts as a manual switch, so it never takes a copy for the store, and a
+ * canary entry it cannot read counts as a failure —
  * and never writes it: isNewerShape() says so, and toJson() refuses. The newer version's fields
  * and the installation's identity survive. Only a text that is not a record at all, or a record
  * of this shape with a malformed field, is corrupt, and only that is ever replaced.
@@ -111,6 +114,16 @@ final class BootRecord {
 	private const MAX_TEXT_BYTES = 191;
 
 	/**
+	 * The longest time the canary entry holds, in bytes: formatTime() writes 20, and the budget has
+	 * no room for more than a time.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const MAX_TIME_BYTES = 32;
+
+	/**
 	 * A stored address hash: SiteAddress::hash() writes SHA-256 in lower-case hexadecimal.
 	 *
 	 * @since 0.1.0
@@ -135,7 +148,7 @@ final class BootRecord {
 	 *
 	 * @var list<string>
 	 */
-	private const KEYS = array( 'v', 'rev', 'plugin_version', 'schema_head', 'lock_mode', 'install_uuid', 'home_hash', 'home_shown', 'safe_mode', 'adopted_at', 'kill', 'installed_at' );
+	private const KEYS = array( 'v', 'rev', 'plugin_version', 'schema_head', 'lock_mode', 'install_uuid', 'home_hash', 'home_shown', 'safe_mode', 'adopted_at', 'kill', 'installed_at', 'canary' );
 
 	/**
 	 * Whether this stands for a record that does not exist.
@@ -255,6 +268,24 @@ final class BootRecord {
 	private ?string $installedAt = null;
 
 	/**
+	 * Whether the secrets canary has failed and not opened since.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var bool
+	 */
+	private bool $canaryFailed = false;
+
+	/**
+	 * When the secrets canary failed; null when it has not, or when a newer shape's entry could not be read.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string|null
+	 */
+	private ?string $canaryFailedSince = null;
+
+	/**
 	 * Whether the stored record is of a newer shape than this version reads, which this version never writes.
 	 *
 	 * @since 0.1.0
@@ -364,6 +395,9 @@ final class BootRecord {
 		// A Safe Mode entry a newer shape wrote and this version cannot read keeps Safe Mode on.
 		list( $record->safeModeReason, $record->safeModeSince ) = self::field( static fn(): array => self::readSafeMode( $data ), $newer, array( SafeModeStatus::Manual, null ) );
 
+		// A canary entry a newer shape wrote and this version cannot read counts as a failure.
+		list( $record->canaryFailed, $record->canaryFailedSince ) = self::field( static fn(): array => self::readCanary( $data ), $newer, array( true, null ) );
+
 		// So does a newer shape whose address this version cannot read: it could not tell a copy from the store.
 		if ( $newer && null === $record->homeHash && null === $record->safeModeReason ) {
 			$record->safeModeReason = SafeModeStatus::Manual;
@@ -413,6 +447,7 @@ final class BootRecord {
 			'adopted_at'     => $this->adoptedAt,
 			'kill'           => (object) $this->killSwitches,
 			'installed_at'   => $this->installedAt,
+			'canary'         => $this->canaryFailed ? array( 'since' => (string) $this->canaryFailedSince ) : null,
 		) + $this->extra;
 
 		$json = wp_json_encode( $data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
@@ -781,6 +816,44 @@ final class BootRecord {
 	}
 
 	/**
+	 * Tells whether the secrets canary has failed and not opened since.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool True while a failure is recorded.
+	 */
+	public function canaryFailed(): bool {
+		return $this->canaryFailed;
+	}
+
+	/**
+	 * Returns when the secrets canary failed.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string|null The time, or null when no failure is recorded or its time could not be read.
+	 */
+	public function canaryFailedSince(): ?string {
+		return $this->canaryFailedSince;
+	}
+
+	/**
+	 * Returns a copy recording a failure of the secrets canary, or clearing it. The Safe Mode reason is left as it is.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string|null $since When the canary failed, or null to record that it opens again.
+	 * @return self The copy.
+	 */
+	public function withCanaryFailure( ?string $since ): self {
+		$copy                    = $this->present();
+		$copy->canaryFailed      = null !== $since;
+		$copy->canaryFailedSince = null === $since ? null : self::argumentText( $since, 'canary.since', self::MAX_TIME_BYTES );
+
+		return $copy;
+	}
+
+	/**
 	 * Returns a copy that stands for a record that exists.
 	 *
 	 * @since 0.1.0
@@ -902,6 +975,30 @@ final class BootRecord {
 		}
 
 		return array( $reason, self::readText( $entry, 'since', self::MAX_TEXT_BYTES ) );
+	}
+
+	/**
+	 * Reads the canary entry: null, or the time the canary failed.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \UnexpectedValueException When the entry is not a time.
+	 *
+	 * @param array<array-key, mixed> $data The decoded record.
+	 * @return array{0: bool, 1: string|null} Whether it failed, and when.
+	 */
+	private static function readCanary( array $data ): array {
+		$entry = $data['canary'] ?? null;
+
+		if ( null === $entry ) {
+			return array( false, null );
+		}
+
+		if ( ! is_array( $entry ) || ! is_string( $entry['since'] ?? null ) ) {
+			throw new \UnexpectedValueException( 'The boot record\'s canary entry is not the time the canary failed.' );
+		}
+
+		return array( true, self::readText( $entry, 'since', self::MAX_TIME_BYTES ) );
 	}
 
 	/**

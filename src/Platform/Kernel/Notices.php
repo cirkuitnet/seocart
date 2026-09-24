@@ -147,6 +147,15 @@ final class Notices {
 	private \Closure $lifecycle;
 
 	/**
+	 * Returns the likely cause of a failing secrets canary, translated, or null when it opens.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var \Closure(): (string|null)
+	 */
+	private \Closure $canaryCause;
+
+	/**
 	 * Creates the notices. Reads nothing.
 	 *
 	 * @since 0.1.0
@@ -154,15 +163,20 @@ final class Notices {
 	 * @param SchemaGate           $gate       The schema gate.
 	 * @param SafeMode             $safeMode   Safe Mode.
 	 * @param BootOption           $bootOption The boot record.
-	 * @param callable():Migrator  $migrator   Returns the migrator.
-	 * @param callable():Lifecycle $lifecycle  Returns the lifecycle.
+	 * @param callable():Migrator  $migrator    Returns the migrator.
+	 * @param callable():Lifecycle $lifecycle   Returns the lifecycle.
+	 * @param callable             $canaryCause Returns the likely cause of a failing secrets canary,
+	 *                                          translated, or null when the canary opens.
+	 *
+	 * @phpstan-param callable(): (string|null) $canaryCause
 	 */
-	public function __construct( SchemaGate $gate, SafeMode $safeMode, BootOption $bootOption, callable $migrator, callable $lifecycle ) {
-		$this->gate       = $gate;
-		$this->safeMode   = $safeMode;
-		$this->bootOption = $bootOption;
-		$this->migrator   = \Closure::fromCallable( $migrator );
-		$this->lifecycle  = \Closure::fromCallable( $lifecycle );
+	public function __construct( SchemaGate $gate, SafeMode $safeMode, BootOption $bootOption, callable $migrator, callable $lifecycle, callable $canaryCause ) {
+		$this->gate        = $gate;
+		$this->safeMode    = $safeMode;
+		$this->bootOption  = $bootOption;
+		$this->migrator    = \Closure::fromCallable( $migrator );
+		$this->lifecycle   = \Closure::fromCallable( $lifecycle );
+		$this->canaryCause = \Closure::fromCallable( $canaryCause );
 	}
 
 	/**
@@ -270,33 +284,10 @@ final class Notices {
 			return;
 		}
 
-		$state = $this->gate->state();
+		$message = (string) $this->describeGate();
 
-		if ( GateState::NotInstalled === $state ) {
-			$message = esc_html__( 'SEOCart is finishing its installation; reload this page.', 'seocart' );
-		} elseif ( GateState::SchemaNewer === $state ) {
-			$message = sprintf(
-				/* translators: 1: The migration id the database was updated to. 2: The newest migration id this version of SEOCart knows. */
-				esc_html__( 'This database was updated by a newer version of SEOCart (schema %1$s; this version knows up to %2$s). Install that version or restore the backup taken with it; downgrades are not supported.', 'seocart' ),
-				'<code>' . esc_html( (string) $this->bootOption->read()->schemaHead() ) . '</code>',
-				'<code>' . esc_html( ( $this->migrator )()->codeHead() ) . '</code>'
-			);
-		} else {
-			$message = sprintf(
-				/* translators: %s: The command that applies the pending migrations. */
-				esc_html__( 'SEOCart is updating its database; the store refuses changes until it finishes. Run %s to do it now.', 'seocart' ),
-				'<code>wp seocart migrate</code>'
-			);
-
-			$failed = ( $this->migrator )()->status()->failed();
-
-			if ( null !== $failed ) {
-				$message .= ' ' . sprintf(
-					/* translators: %s: The id of the migration that failed. */
-					esc_html__( 'The migration %s failed.', 'seocart' ),
-					'<code>' . esc_html( $failed ) . '</code>'
-				) . ' ' . self::link( self::actionUrl( self::RETRY_ACTION, array() ), __( 'Retry', 'seocart' ) );
-			}
+		if ( GateState::CodeNewer === $this->gate->state() && null !== ( $this->migrator )()->status()->failed() ) {
+			$message .= ' ' . self::link( self::actionUrl( self::RETRY_ACTION, array() ), __( 'Retry', 'seocart' ) );
 		}
 
 		wp_admin_notice(
@@ -344,12 +335,14 @@ final class Notices {
 				break;
 
 			case SafeModeStatus::Canary:
-				$message = sprintf(
-					/* translators: 1: The name of the encryption key constant. 2: The command that shows the state of the stored credentials. */
-					esc_html__( 'SEOCart cannot decrypt its stored credentials: %1$s or the database restore changed. Safe Mode is on; see %2$s.', 'seocart' ),
-					'<code>SEOCART_ENCRYPTION_KEY</code>',
-					'<code>wp seocart secrets status</code>'
-				);
+				$cause   = ( $this->canaryCause )();
+				$message = esc_html__( 'SEOCart is in Safe Mode because it cannot open its stored credentials.', 'seocart' )
+					. ( null === $cause ? '' : ' ' . esc_html( $cause ) )
+					. ' ' . sprintf(
+						/* translators: %s: The command that shows the state of the stored credentials. */
+						esc_html__( 'No live payments, mail or background jobs run until they open again; see %s.', 'seocart' ),
+						'<code>wp seocart secrets status</code>'
+					);
 				break;
 
 			case SafeModeStatus::Constant:
@@ -384,6 +377,52 @@ final class Notices {
 				'type' => 'warning',
 			)
 		);
+	}
+
+	/**
+	 * Says why the store refuses changes, in the words the degraded-mode notice and Site Health both use.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string|null Escaped HTML, or null when the schema gate lets writes through.
+	 */
+	public function describeGate(): ?string {
+		if ( ! $this->gate->writesBlocked() ) {
+			return null;
+		}
+
+		$state = $this->gate->state();
+
+		if ( GateState::NotInstalled === $state ) {
+			return esc_html__( 'SEOCart is finishing its installation; reload this page.', 'seocart' );
+		}
+
+		if ( GateState::SchemaNewer === $state ) {
+			return sprintf(
+				/* translators: 1: The migration id the database was updated to. 2: The newest migration id this version of SEOCart knows. */
+				esc_html__( 'This database was updated by a newer version of SEOCart (schema %1$s; this version knows up to %2$s). Install that version or restore the backup taken with it; downgrades are not supported.', 'seocart' ),
+				'<code>' . esc_html( (string) $this->bootOption->read()->schemaHead() ) . '</code>',
+				'<code>' . esc_html( ( $this->migrator )()->codeHead() ) . '</code>'
+			);
+		}
+
+		$message = sprintf(
+			/* translators: %s: The command that applies the pending migrations. */
+			esc_html__( 'SEOCart is updating its database; the store refuses changes until it finishes. Run %s to do it now.', 'seocart' ),
+			'<code>wp seocart migrate</code>'
+		);
+
+		$failed = ( $this->migrator )()->status()->failed();
+
+		if ( null !== $failed ) {
+			$message .= ' ' . sprintf(
+				/* translators: %s: The id of the migration that failed. */
+				esc_html__( 'The migration %s failed.', 'seocart' ),
+				'<code>' . esc_html( $failed ) . '</code>'
+			);
+		}
+
+		return $message;
 	}
 
 	/**

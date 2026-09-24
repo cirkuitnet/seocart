@@ -168,8 +168,7 @@ final class FixtureStockOperation {
 			service: array( FixtureStockService::class, 'adjust' ),
 			rest: new RestBinding( self::ROUTE, WriteMethod::Post ),
 			ability: 'fixture-adjust-stock',
-			cli: new CliBinding( array( 'fixture-stock', 'adjust' ), array( 'item_id' ) ),
-			agent_exposed: true
+			cli: new CliBinding( array( 'fixture-stock', 'adjust' ), array( 'item_id' ) )
 		);
 	}
 

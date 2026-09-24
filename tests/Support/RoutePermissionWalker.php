@@ -33,7 +33,9 @@ use WP_REST_Server;
  * it no permission callback and no schema.
  *
  * The walk also returns the plugin routes it examined, so that the operations module can add
- * its own check, that every route resolves to one operation definition, over the same list.
+ * its own check over the same list: that every route resolves to one operation definition, and is
+ * guarded by the capability that definition declares. This walk does not know the definitions, so
+ * a PermissionCallback for another declared capability passes here and is caught there.
  *
  * @since 0.1.0
  */

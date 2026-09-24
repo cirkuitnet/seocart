@@ -15,6 +15,7 @@ use SEOCart\Application\Operations\CliBinding;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Interfaces\Operations\RestAdapter;
+use SEOCart\Platform\Authorization\PermissionCallback;
 use SEOCart\Platform\Cli\DoctorCommand;
 use SEOCart\Platform\Database\Cli\MigrateCommand;
 use SEOCart\Platform\Events\Cli\OutboxCommand;
@@ -38,6 +39,13 @@ use WP_REST_Server;
  * under the `Cli/` directories of src/ in both directions (maintenanceViolations()): an unlisted
  * class fails, and so does a listed class that is gone. They are never required to be registered,
  * and a registered one is never taken for an unresolved operation command (commandViolations()).
+ *
+ * A route at an operation's address must also be guarded as that operation declares: by a
+ * PermissionCallback for the definition's capability, checked on the definition's resource field
+ * when it names one. RoutePermissionWalker only checks that a callback is of the plugin's type,
+ * which a callback for another capability also is; the comparison with the definition is made
+ * here, against the definition itself rather than the permission factory, so a factory that
+ * guards a route wrongly is caught as well.
  *
  * The REST walk reuses RoutePermissionWalker's decision of which routes are the plugin's, so the
  * two walks cannot disagree about that.
@@ -92,31 +100,42 @@ final class OperationSurfaceWalker {
 	 *
 	 * @param WP_REST_Server    $server   A server on which `rest_api_init` has run.
 	 * @param OperationRegistry $registry The operations that should be registered.
-	 * @return list<string> One message per route without an operation and per operation route not registered.
+	 * @return list<string> One message per route without an operation, per operation route not
+	 *                      registered, and per endpoint at an operation's address guarded otherwise
+	 *                      than the operation declares.
 	 */
 	public static function restViolations( WP_REST_Server $server, OperationRegistry $registry ): array {
-		$declared = array();
+		$declared    = array();
+		$definitions = array();
 
 		foreach ( $registry->all() as $definition ) {
 			$rest = $definition->rest();
 
 			if ( null !== $rest ) {
-				$declared[ $definition->httpMethod() . ' ' . RestAdapter::serverRoute( $rest ) ] = $definition->id();
+				$address                 = $definition->httpMethod() . ' ' . RestAdapter::serverRoute( $rest );
+				$declared[ $address ]    = $definition->id();
+				$definitions[ $address ] = $definition;
 			}
 		}
 
 		$registered = array();
+		$guards     = array();
 		$routes     = $server->get_routes();
 
 		foreach ( ( new RoutePermissionWalker() )->walk( $server )['plugin_routes'] as $route ) {
 			foreach ( $routes[ $route ] as $handler ) {
 				foreach ( array_keys( (array) ( $handler['methods'] ?? array() ) ) as $method ) {
-					$registered[ $method . ' ' . $route ] = true;
+					$address                = $method . ' ' . $route;
+					$registered[ $address ] = true;
+
+					if ( isset( $definitions[ $address ] ) ) {
+						$guards = array_merge( $guards, self::guardViolations( $address, $handler['permission_callback'] ?? null, $definitions[ $address ] ) );
+					}
 				}
 			}
 		}
 
-		return self::compare( $declared, $registered, 'the REST route' );
+		return array_merge( self::compare( $declared, $registered, 'the REST route' ), $guards );
 	}
 
 	/**
@@ -233,6 +252,47 @@ final class OperationSurfaceWalker {
 		}
 
 		return $classes;
+	}
+
+	/**
+	 * Checks that an endpoint at an operation's address is guarded as the operation declares.
+	 *
+	 * The capability and the resource parameter must both be the definition's: the same capability
+	 * checked on another parameter, or without the resource, is another check. A policy added with
+	 * PermissionCallback::withPolicy() can only narrow what the callback allows, so it is not compared.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string              $address    The endpoint's method and route.
+	 * @param mixed               $callback   The endpoint's `permission_callback`.
+	 * @param OperationDefinition $definition The operation declared at that address.
+	 * @return list<string> One message when the endpoint is guarded otherwise, or none.
+	 */
+	private static function guardViolations( string $address, $callback, OperationDefinition $definition ): array {
+		if ( $callback instanceof PermissionCallback && $definition->capability() === $callback->capability() && $definition->resourceField() === $callback->resourceParameter() ) {
+			return array();
+		}
+
+		$guard = $callback instanceof PermissionCallback ? self::describeGuard( $callback->capability(), $callback->resourceParameter() ) : 'a callback that is not a PermissionCallback';
+
+		return array( "The REST route {$address} is guarded by {$guard}, but {$definition->id()} declares " . self::describeGuard( $definition->capability(), $definition->resourceField() ) . '.' );
+	}
+
+	/**
+	 * Names a permission check for a message.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string|null $capability The capability, or null for the public-read marker.
+	 * @param string|null $parameter  The request parameter naming the resource, or null for none.
+	 * @return string For example `seocart_manage_settings` or `seocart_edit_order on item_id`.
+	 */
+	private static function describeGuard( ?string $capability, ?string $parameter ): string {
+		if ( null === $capability ) {
+			return 'the public-read marker';
+		}
+
+		return null === $parameter ? $capability : "{$capability} on {$parameter}";
 	}
 
 	/**

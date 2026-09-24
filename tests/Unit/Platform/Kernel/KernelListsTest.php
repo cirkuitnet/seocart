@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Unit\Platform\Kernel;
 
 use PHPUnit\Framework\TestCase;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
+use SEOCart\Platform\Jobs\JobRunner;
 use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Support\Error\ErrorTable;
 use SEOCart\Support\Events\DomainEvent;
@@ -35,6 +36,7 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  *   leave it out of Modules::EVENT_CLASSES: the event list differs from the search.
  * - Call `Kernel::container()` from any other file under src/: the entry-point rule fails.
  * - Change Modules::CAPABILITY_PREFIX: it no longer equals the declaration's.
+ * - Change Modules::JOB_HOOK: it no longer equals the runner's hook.
  *
  * @since 0.1.0
  *
@@ -82,6 +84,15 @@ final class KernelListsTest extends TestCase {
 	 */
 	public function test_the_capability_prefix_is_the_declarations(): void {
 		$this->assertSame( CapabilityDeclaration::PREFIX, Modules::CAPABILITY_PREFIX );
+	}
+
+	/**
+	 * Tests that the hook the kernel adds for the plugin's jobs is the one the runner and the queue use.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_job_hook_is_the_runners(): void {
+		$this->assertSame( JobRunner::HOOK, Modules::JOB_HOOK );
 	}
 
 	/**

@@ -15,8 +15,13 @@ use SEOCart\Application\Operations\CompiledOperation;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Interfaces\Operations\AbilitiesAdapter;
+use SEOCart\Support\Schema\FieldSpec;
+use SEOCart\Support\Schema\Privacy;
+use SEOCart\Support\Schema\ResourceSchema;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
 use SEOCart\Tests\Support\OperationSurfaces;
+use SEOCart\Tests\Support\OperationSurfaceWalker;
+use WP_Ability;
 use WP_UnitTestCase;
 
 /**
@@ -66,27 +71,32 @@ final class AbilitiesAdapterTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Tests that an operation that allows agents is public, and so shown in the REST API.
+	 * Tests that an operation that allows agents is public, and so shown in the REST API, and that
+	 * its ability resolves to it in the walk over the abilities.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_an_operation_that_allows_agents_is_public(): void {
-		$this->register( array( FixtureStockOperation::class, 'definition' ) );
+		$registry = $this->register( array( self::class, 'exposedDefinition' ) );
 
 		$ability = wp_get_ability( FixtureStockOperation::ABILITY );
+		$names   = array_values( array_map( static fn( WP_Ability $registered ): string => $registered->get_name(), wp_get_abilities() ) );
 
 		$this->assertNotNull( $ability );
 		$this->assertTrue( $ability->get_meta_item( 'public' ) );
 		$this->assertTrue( $ability->get_meta_item( 'show_in_rest' ) );
+		$this->assertContains( FixtureStockOperation::ABILITY, $names );
+		$this->assertSame( array(), OperationSurfaceWalker::abilityViolations( $names, $registry ) );
 	}
 
 	/**
-	 * Tests that agent exposure is off unless the declaration allows it.
+	 * Tests that agent exposure is off unless the declaration allows it: the fixture, which carries
+	 * personal data and a secret, does not.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_agent_exposure_is_off_by_default(): void {
-		$this->register( array( self::class, 'unexposedDefinition' ) );
+		$this->register( array( FixtureStockOperation::class, 'definition' ) );
 
 		$ability = wp_get_ability( FixtureStockOperation::ABILITY );
 
@@ -108,27 +118,29 @@ final class AbilitiesAdapterTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Declares the fixture without agent exposure.
+	 * Declares the fixture without its personal-data and secret fields, exposed to agents.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @return OperationDefinition The definition.
 	 */
-	public static function unexposedDefinition(): OperationDefinition {
-		$fixture = FixtureStockOperation::definition();
+	public static function exposedDefinition(): OperationDefinition {
+		$fixture   = FixtureStockOperation::definition();
+		$shareable = static fn( FieldSpec $field ): bool => ! in_array( $field->privacy(), array( Privacy::Pii, Privacy::Secret ), true );
 
 		return new OperationDefinition(
 			id: $fixture->id(),
 			label: $fixture->label(),
 			summary: $fixture->summary(),
-			input: $fixture->input(),
-			output: $fixture->output(),
+			input: array_values( array_filter( $fixture->input(), $shareable ) ),
+			output: new ResourceSchema( $fixture->output()->name(), array_values( array_filter( $fixture->output()->fields(), $shareable ) ) ),
 			capability: $fixture->capability(),
 			resource_field: null,
 			errors: $fixture->errors(),
 			annotations: $fixture->annotations(),
 			service: $fixture->service(),
-			ability: 'fixture-adjust-stock'
+			ability: 'fixture-adjust-stock',
+			agent_exposed: true
 		);
 	}
 
@@ -138,13 +150,16 @@ final class AbilitiesAdapterTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 *
 	 * @param callable $factory Builds the operation's definition.
+	 * @return OperationRegistry The registry that holds it.
 	 *
 	 * @phpstan-param callable(): OperationDefinition $factory
 	 */
-	private function register( callable $factory ): void {
+	private function register( callable $factory ): OperationRegistry {
 		$registry = new OperationRegistry();
 		$registry->add( FixtureStockOperation::ID, $factory );
 
 		new OperationSurfaces( $registry );
+
+		return $registry;
 	}
 }

@@ -11,16 +11,73 @@
  * @package SEOCart
  */
 
-/**
- * Various utilities for WP-CLI commands.
- */
-class WP_CLI {
+namespace {
 
 	/**
-	 * Halts script execution with a specific return code.
-	 *
-	 * @param int $return_code The exit status.
-	 * @return never
+	 * Various utilities for WP-CLI commands.
 	 */
-	public static function halt( $return_code ) {}
+	class WP_CLI {
+
+		/**
+		 * Halts script execution with a specific return code.
+		 *
+		 * @param int $return_code The exit status.
+		 * @return never
+		 */
+		public static function halt( $return_code ) {}
+
+		/**
+		 * Registers a command to WP-CLI.
+		 *
+		 * @param string               $name     Name for the command, such as `seocart migrate`.
+		 * @param callable|object|string $callable The command's implementation.
+		 * @param array<string, mixed> $args     Optional. The command's documentation and synopsis.
+		 * @return bool True on success, false on deferred registration.
+		 */
+		public static function add_command( $name, $callable, $args = array() ) {}
+
+		/**
+		 * Displays informational message without prefix.
+		 *
+		 * @param string $message The message.
+		 * @return void
+		 */
+		public static function log( $message ) {}
+
+		/**
+		 * Displays an error message prefixed with "Error: " and exits the script.
+		 *
+		 * @param string|\WP_Error|\Exception|\Throwable $message The message.
+		 * @param bool|int                               $exit    Optional. True defaults to exit(1). Default true.
+		 * @return void|never
+		 */
+		public static function error( $message, $exit = true ) {}
+	}
+}
+
+namespace WP_CLI {
+
+	/**
+	 * Output one or more items in a given format (e.g. table, JSON).
+	 */
+	class Formatter {
+
+		/**
+		 * Creates the formatter.
+		 *
+		 * @param array<string, mixed> $assoc_args Output format arguments.
+		 * @param string[]|null        $fields     Optional. The fields to display. Default null.
+		 * @param string|false         $prefix     Optional. The prefix of the fields. Default false.
+		 */
+		public function __construct( &$assoc_args, $fields = null, $prefix = false ) {}
+
+		/**
+		 * Displays a single item according to the output arguments.
+		 *
+		 * @param array<string, mixed>|object $item            The item.
+		 * @param bool                        $ascii_pre_colorized Optional. Default false.
+		 * @return void
+		 */
+		public function display_item( $item, $ascii_pre_colorized = false ) {}
+	}
 }

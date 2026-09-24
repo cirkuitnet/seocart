@@ -11,7 +11,10 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Authorization;
 
+use SEOCart\Application\Operations\Operations;
+use SEOCart\Interfaces\Operations\RestAdapter;
 use SEOCart\Platform\Authorization\PermissionCallback;
+use SEOCart\Tests\Support\KernelHooks;
 use SEOCart\Tests\Support\RoutePermissionWalker;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -71,12 +74,13 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 	/**
 	 * Tests that the plugin's own routes break no rule, on a server that was really booted.
 	 *
-	 * The plugin registers no route yet, so the walk finds none; the assertions before it make
-	 * sure that an empty walk means an empty route table for the plugin, not a server that was
-	 * never booted or a walker that looked at nothing.
+	 * The routes are the ones the kernel registered on `rest_api_init` when the plugin booted. The
+	 * walk must see every route the production operations declare, so a clean walk cannot come
+	 * from an empty route table, a server that was never booted or a walker that looked at nothing.
 	 *
-	 * Planted violation: in Kernel::boot(), directly after `self::$booted = true;`, add
-	 * `add_action( 'rest_api_init', static function (): void { register_rest_route( 'seocart/v1', '/planted', array( 'methods' => 'POST', 'callback' => '__return_null', 'permission_callback' => '__return_true' ) ); } );`.
+	 * Planted violation: in the kernel's `rest_api_init` closure in Modules::kernelSubscribe(),
+	 * after the adapter registers its routes, add
+	 * `register_rest_route( 'seocart/v1', '/planted', array( 'methods' => 'POST', 'callback' => '__return_null', 'permission_callback' => '__return_true' ) );`.
 	 * The failure must name `POST /seocart/v1/planted` twice: for the callback and for the missing schema.
 	 *
 	 * Planted violation for the count of visited routes: in RoutePermissionWalker::walk(), add
@@ -92,6 +96,12 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 		$this->assertArrayHasKey( '/wp/v2/posts', $server->get_routes(), 'The server has none of core\'s routes, so it was not booted the way a request boots it.' );
 
 		$walk = ( new RoutePermissionWalker() )->walk( $server );
+
+		foreach ( Operations::registry()->all() as $definition ) {
+			if ( null !== $definition->rest() ) {
+				$this->assertContains( RestAdapter::serverRoute( $definition->rest() ), $walk['plugin_routes'], 'The walk did not see a route the kernel registers, so a clean walk would prove nothing.' );
+			}
+		}
 
 		$this->assertSame( count( $server->get_routes() ), $walk['routes_visited'], 'The walker stopped before it had looked at every route of the server.' );
 		$this->assertSame(
@@ -222,6 +232,7 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_compliant_routes_pass(): void {
+		KernelHooks::detach( 'rest_api_init' );
 		add_action( 'rest_api_init', array( self::class, 'registerCompliantRoutes' ) );
 
 		$walk  = ( new RoutePermissionWalker() )->walk( self::bootRestServer() );
@@ -356,6 +367,8 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 	 * @return array{routes_visited: int, plugin_routes: list<string>, violations: list<array{route: string, method: string, rule: string, message: string}>} The walk.
 	 */
 	private function walkPlantedRoutes(): array {
+		// The self-tests walk their fixtures alone: without the kernel's routes, whose namespace would hide the fixture spelt in capitals.
+		KernelHooks::detach( 'rest_api_init' );
 		add_action( 'rest_api_init', array( self::class, 'registerPlantedRoutes' ) );
 		add_filter( 'rest_endpoints', array( self::class, 'addEndpointThroughFilter' ) );
 

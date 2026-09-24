@@ -16,6 +16,7 @@ use SEOCart\Platform\DataRegistry\OwnedData;
 use SEOCart\Platform\Kernel\BootOption;
 use SEOCart\Platform\Kernel\BootRecord;
 use SEOCart\Platform\Kernel\Container;
+use SEOCart\Tests\Support\Jobs\PluginActions;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- This base class reads and restores committed options around each test on purpose.
 
@@ -25,9 +26,9 @@ use SEOCart\Platform\Kernel\Container;
  * Owns one fact: how a test that really installs the plugin leaves the site as it found it. An
  * installation commits the plugin's tables, which DatabaseTestCase drops, and options, which it
  * does not: the boot record and any other `seocart_` option, and the roles option the capability
- * installer writes. So the plugin's options are removed before and after every test, the roles
- * option is restored to the text it had before the test, and the in-memory roles are rebuilt
- * from it.
+ * installer writes, and the jobs it schedules. So the plugin's options and its jobs are removed
+ * before and after every test, the roles option is restored to the text it had before the test,
+ * and the in-memory roles are rebuilt from it.
  *
  * Tests get the production container with their own connection and a recording reporter
  * (container()), a record written through the real writer (plantRecord()), and the stored text
@@ -57,6 +58,7 @@ abstract class KernelTestCase extends DatabaseTestCase {
 		parent::set_up();
 
 		$this->deleteRecord();
+		PluginActions::purge();
 		$this->rolesBefore = $this->storedOption( $this->rolesOption() );
 
 		self::reloadRoles();
@@ -71,6 +73,7 @@ abstract class KernelTestCase extends DatabaseTestCase {
 		global $wpdb;
 
 		$this->deleteRecord();
+		PluginActions::purge();
 
 		if ( null === $this->rolesBefore ) {
 			$wpdb->delete( $wpdb->options, array( 'option_name' => $this->rolesOption() ) );

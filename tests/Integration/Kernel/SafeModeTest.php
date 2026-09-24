@@ -13,26 +13,37 @@ namespace SEOCart\Tests\Integration\Kernel;
 
 use SEOCart\Platform\Events\DrainOptions;
 use SEOCart\Platform\Events\DrainReport;
+use SEOCart\Platform\Database\LockService;
 use SEOCart\Platform\Events\OutboxDrainer;
+use SEOCart\Platform\Jobs\ActionSchedulerQueue;
+use SEOCart\Platform\Jobs\JobRunner;
+use SEOCart\Platform\Jobs\RunnerTriggers;
+use SEOCart\Platform\Kernel\Container;
 use SEOCart\Platform\Kernel\BootOption;
 use SEOCart\Platform\Kernel\BootRecord;
 use SEOCart\Platform\Kernel\Cli\SafeModeCommand;
 use SEOCart\Platform\Kernel\GateState;
 use SEOCart\Platform\Kernel\Lifecycle;
+use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Platform\Kernel\Notices;
 use SEOCart\Platform\Kernel\SafeMode;
 use SEOCart\Platform\Kernel\SafeModeStatus;
 use SEOCart\Platform\Kernel\SchemaGate;
 use SEOCart\Platform\Kernel\SiteAddress;
+use SEOCart\Platform\Secrets\SecretKeys;
+use SEOCart\Platform\Settings\Settings;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
+use SEOCart\Tests\Support\KernelHooks;
 use SEOCart\Tests\Support\KernelTestCase;
 
 /**
  * A copy of a store must not act as the store: Safe Mode turns on when the address changes, and
  * only the merchant, an operator or the constant ends it — never for a credentials failure.
  *
- * Its effect is tested on the outbox drainer the kernel wires, which Safe Mode pauses; the job
- * runner takes the same switch when the jobs module is wired.
+ * Its effect is tested on the outbox drainer and the job runner the kernel wires, which Safe Mode
+ * pauses. The secrets canary the kernel runs on every admin request enters Safe Mode when the
+ * stored credentials cannot be opened, the notice names the likely cause, and a passing canary
+ * ends that and only that.
  *
  * Planted violations, one at a time, each put back afterwards:
  *
@@ -53,6 +64,11 @@ use SEOCart\Tests\Support\KernelTestCase;
  * - In SafeMode::isActive(), plant `return false;`: every test that expects Safe Mode on fails, the
  *   drainer's among them.
  * - In Modules::eventsRegister(), leave the drainer's pause switch out: the copy delivers its events.
+ * - In Modules::jobsRegister(), leave the runner's pause switch out: the copy runs its jobs.
+ * - In the kernel's second `admin_init` closure in Modules::kernelSubscribe(), leave out the
+ *   canary: a copy whose credentials cannot be opened stays out of Safe Mode.
+ * - In SafeMode::recordCanary(), clear any recorded reason on a pass: a manual switch ends when
+ *   the canary passes.
  * - In SafeMode::decide(), move the `false === $this->forced` check above the one for a copy or a
  *   rebuilt record: test_the_constant_cannot_clear_a_copy_or_a_rebuilt_record fails.
  * - In SafeMode::decide(), return a recorded manual switch before comparing the address, as it once
@@ -364,7 +380,7 @@ final class SafeModeTest extends KernelTestCase {
 	public function test_a_canary_failure_survives_everything_but_its_own_end(): void {
 		$this->plantRecord( self::installedRecord() );
 
-		$this->safeMode()->enter( SafeModeStatus::Canary );
+		$this->safeMode()->recordCanary( false );
 
 		$this->assertSame( SafeModeStatus::Canary, $this->safeMode()->status() );
 		$this->assertTrue( $this->safeMode( false )->isActive(), 'SEOCART_SAFE_MODE set to false cleared a canary failure.' );
@@ -374,9 +390,37 @@ final class SafeModeTest extends KernelTestCase {
 
 		$this->assertSame( SafeModeStatus::Canary, $this->safeMode()->status(), 'A lesser reason or an adoption replaced a canary failure.' );
 
-		$this->safeMode()->exit();
+		$this->safeMode()->recordCanary( true );
 
 		$this->assertSame( SafeModeStatus::Off, $this->safeMode()->status() );
+	}
+
+	/**
+	 * Tests that a canary failure and its end leave the recorded reason as it was: a manual switch,
+	 * and a copy that SEOCART_SAFE_MODE set to false cannot clear, are still on once the canary
+	 * opens again.
+	 *
+	 * Planted violation: in SafeMode::recordCanary(), write
+	 * `$record->withCanaryFailure( $since )->withSafeMode( null, null )`. The canary's end also ends
+	 * the manual switch.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_canary_failure_and_its_end_leave_the_recorded_reason_alone(): void {
+		foreach ( array( SafeModeStatus::Manual, SafeModeStatus::Copy ) as $reason ) {
+			$this->plantRecord( self::installedRecord() );
+			$this->safeMode()->enter( $reason );
+
+			$this->safeMode()->recordCanary( false );
+
+			$this->assertSame( SafeModeStatus::Canary, $this->safeMode( false )->status(), "A canary failure over {$reason->value} is not reported as one." );
+
+			$this->safeMode()->recordCanary( true );
+
+			$this->assertSame( $reason, $this->safeMode()->status(), "The canary's end ended {$reason->value}." );
+		}
+
+		$this->assertSame( SafeModeStatus::Copy, $this->safeMode( false )->status(), 'SEOCART_SAFE_MODE set to false cleared a copy once the canary opened.' );
 	}
 
 	/**
@@ -423,6 +467,69 @@ final class SafeModeTest extends KernelTestCase {
 		$running = $this->container()->get( OutboxDrainer::class )->drain( DrainOptions::command( 1 ) );
 
 		$this->assertNotSame( DrainReport::SKIPPED_PAUSED, $running->skipped, 'The drainer stayed paused after the site was adopted.' );
+	}
+
+	/**
+	 * Tests the effect on jobs: the job runner the kernel wires runs nothing while Safe Mode is on,
+	 * and runs again once the site is adopted.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_wired_job_runner_pauses_while_safe_mode_is_on(): void {
+		$this->container()->get( Lifecycle::class )->activate();
+		$this->moveSiteTo( 'https://copy.example.net' );
+
+		$this->assertTrue( $this->container()->get( JobRunner::class )->runDue( 1, 'test' )['paused'], 'A copy of the store ran its jobs.' );
+
+		$this->safeMode()->adopt();
+
+		$this->assertFalse( $this->container()->get( JobRunner::class )->runDue( 1, 'test' )['paused'], 'The runner stayed paused after the site was adopted.' );
+	}
+
+	/**
+	 * Tests the secrets canary on an admin request: data keys that are gone enter Safe Mode, and the
+	 * notice names the likely cause.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_failing_canary_enters_safe_mode_and_the_notice_names_its_cause(): void {
+		global $wpdb;
+
+		$this->container()->get( Lifecycle::class )->activate();
+
+		// The data keys document is gone while the key registry still lists a key: the keys are damaged.
+		$wpdb->delete( $wpdb->options, array( 'option_name' => Settings::registry()->group( SecretKeys::GROUP )[0]->optionName() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- The test removes the option as a lost backup would.
+		wp_cache_flush();
+
+		$this->runKernelAdminInit();
+
+		$this->assertSame( SafeModeStatus::Canary, $this->safeMode()->status(), 'A site whose credentials cannot be opened is not in Safe Mode.' );
+
+		ob_start();
+		$this->container()->get( \SEOCart\Platform\Kernel\Notices::class )->render();
+		$html = (string) ob_get_clean();
+
+		$this->assertStringContainsString( 'cannot open its stored credentials', $html );
+		$this->assertStringContainsString( esc_html( 'SEOCart\'s stored data keys are damaged or missing' ), $html, 'The notice does not name the likely cause.' );
+	}
+
+	/**
+	 * Tests that a passing canary ends a recorded canary failure, and leaves any other reason alone.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_passing_canary_ends_a_canary_failure_and_nothing_else(): void {
+		$this->container()->get( Lifecycle::class )->activate();
+		$this->safeMode()->recordCanary( false );
+
+		$this->runKernelAdminInit();
+
+		$this->assertSame( SafeModeStatus::Off, $this->safeMode()->status(), 'A canary that opens did not end the canary failure.' );
+
+		$this->safeMode()->enter( SafeModeStatus::Manual );
+		$this->runKernelAdminInit();
+
+		$this->assertSame( SafeModeStatus::Manual, $this->safeMode()->status(), 'A canary that opens ended a manual switch.' );
 	}
 
 	/**
@@ -500,6 +607,42 @@ final class SafeModeTest extends KernelTestCase {
 
 		$wpdb->update( $wpdb->options, array( 'option_value' => $text ), array( 'option_name' => BootOption::NAME ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- The test edits the row as a search-replace tool would, past every cache.
 		wp_cache_flush();
+	}
+
+	/**
+	 * Runs what the kernel does on `admin_init` of an admin request, and nothing else hooked there.
+	 *
+	 * The jobs tick the kernel defers to the end of the request is paused: it would run when this
+	 * process ends, after the test's tables are gone.
+	 *
+	 * @since 0.1.0
+	 */
+	private function runKernelAdminInit(): void {
+		$report = $this->reporter();
+
+		wp_set_current_user( 1 );
+		set_current_screen( 'dashboard' );
+		KernelHooks::detach( 'admin_init' );
+		Modules::subscribe(
+			$this->container(
+				array(
+					RunnerTriggers::class => static fn( Container $c ): RunnerTriggers => new RunnerTriggers(
+						$c->get( JobRunner::class ),
+						$c->get( ActionSchedulerQueue::class ),
+						$c->get( OutboxDrainer::class ),
+						$c->get( LockService::class ),
+						$report,
+						static fn(): bool => true
+					),
+				)
+			)
+		);
+
+		foreach ( KernelHooks::callbacks( 'admin_init' ) as $callback ) {
+			$callback();
+		}
+
+		set_current_screen( 'front' );
 	}
 
 	/**
