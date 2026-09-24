@@ -104,6 +104,7 @@ the source of truth. Run `composer list` or `npm run` to see them with their des
 | `composer test:concurrency`              | The integration suite, group `concurrency`                                                                      |
 | `composer test:migration`                | The integration suite, group `migration`                                                                        |
 | `composer test:performance`              | The integration suite, group `performance`: query counts, autoload size and the idle-request budget             |
+| `composer test:query-plans`              | `test:performance` with the query-plan run switched on: the medium reference dataset and the query-plan gate    |
 | `composer test:contracts`                | Group `contract` in both suites: the DRY derivation checks                                                      |
 | `composer test:contracts:unit`           | The unit half of that group; fails when the group selects no test                                               |
 | `composer test:reference-fixtures`       | Group `reference-fixture` in both suites: hand-authored input and expected-output scenarios                     |
@@ -154,6 +155,37 @@ is expected until the wave that adds the first test of that group.
   `tests/Integration/Performance/IdleBudgetTest.php` states.
 - **The WordPress.org gates** are described in [releasing.md](releasing.md).
 
+## Reference datasets and query plans
+
+`tests/Support/Seed/ReferenceSeed.php` writes a reference dataset: products with their posts
+(every second one also in a second locale), variants, base-currency prices, stock items with
+a ledger of merchant movements, and a share of live and expired holds. It is deterministic: a
+fixed RNG seed and one anchor time give byte-identical rows. It writes the tables directly
+with multi-row `INSERT`s, for speed, so a seeded store is checked rather than trusted:
+`wp seocart doctor` must pass, and the catalog must answer `sellable` for every seeded variant.
+It is test infrastructure and is not in the release zip. It measures scale; the hand-built
+representative catalogue of the [one-seed rule](#determinism-rules) is another thing.
+
+| Dataset  | Products | Where it runs                                                                 |
+| -------- | -------- | ----------------------------------------------------------------------------- |
+| `small`  | 200      | Every integration run (`tests/Integration/Performance/ReferenceSeedTest.php`) |
+| `medium` | 10,000   | The query-plan gate; it must be written in three minutes or less              |
+| `large`  | 100,000  | Scale questions by hand; never a gate                                         |
+
+`composer test:query-plans` runs the `performance` group with the query-plan run switched on.
+That run seeds `medium` into its test database, prints how long seeding took, runs the
+plugin's reads over a recording `wpdb`, and `EXPLAIN`s each plugin `SELECT` once for each length
+of IN list it was sent with. It fails when
+a plan reads a table of 10,000 rows or more with a full scan, or expects to examine more than
+5,000 of its rows, unless the query is listed in `tests/query-plan-allow-list.json` with the
+reason its plan is accepted; and it fails on a listed query that the run no longer sends or
+that now keeps the rule; and it fails when the catalog's or the inventory's source writes a
+`SELECT` the run did not send. Give it a test database of its own: the seed refuses a store that
+already has products, and `WP_PHPUNIT__TESTS_CONFIG` names the configuration to use. CI runs it
+as the informational `query-plans` job. To seed a disposable development site by hand, run
+`SEOCART_SEED_DISPOSABLE=1 SEOCART_SEED_DATASET=medium wp eval-file tests/Support/Seed/seed-site.php`
+from the checkout; it refuses a site whose environment type is not `local` or `development`.
+
 ## The planted-violation rule
 
 **A gate that cannot fail is worthless.** When you add or change a check — a sniff, a lint
@@ -189,7 +221,8 @@ A test that can fail because of when or where it ran is a defect in the test.
   behind in the database, the object cache or a global.
 - **One seed.** The representative catalogue under `tests/Fixtures/Seed/` is the one seed for
   PHPUnit, for Playwright and for reference scenarios, so that "a representative store" means
-  the same thing in every layer.
+  the same thing in every layer. The generated
+  [reference datasets](#reference-datasets-and-query-plans) are for measuring scale, not for it.
 - **Strict PHPUnit.** `phpunit.xml.dist` fails a run on a warning, on a risky test, on
   unexpected output and on a test that asserts nothing. Do not relax those settings to make a
   test pass.

@@ -7,7 +7,7 @@
 #
 # Job graph (arrows are `needs`):
 #
-#   lint-php ------+-> static-analysis --+-> integration-tests (PHP x WordPress), integration-tests-multisite
+#   lint-php ------+-> static-analysis --+-> integration-tests (PHP x WordPress), integration-tests-multisite, query-plans
 #                  +-> unit-tests -------+-> package: build -> packaging-validate
 #                  +-> dry-gates         |                       -> plugin-check
 #                  +-> docs-drift        |                       -> install-smoke
@@ -18,7 +18,7 @@
 # Required checks for branch protection on main: lint-php, workflow-lint, static-analysis,
 # dry-gates, docs-drift, wporg-gates, every unit-tests cell, the "WordPress 7.1"
 # integration-tests cells, js-lint-test, and the four "package / …" jobs. The WordPress
-# nightly cells and the multisite cell are informational.
+# nightly cells, the multisite cell and the query-plans job are informational.
 #
 # The local setup action owns the development PHP version and Composer installation.
 # bin/ci/check-workflows.sh keeps these steps in the action and checks action pins.
@@ -197,6 +197,22 @@ jobs:
             php: '8.4'
             wp: '7.1'
             multisite: true
+            allow-failure: true
+
+    # The query plans of the plugin's reads on the medium reference dataset: `composer
+    # test:query-plans` seeds it into the cell's own database, prints how long seeding took, and
+    # EXPLAINs every plugin SELECT the reads send (docs/testing.md). Informational, like the
+    # multisite cell: it is not among the required checks, and a failure is reported without
+    # failing the workflow.
+    query-plans:
+        name: query-plans
+        needs:
+            - static-analysis
+            - unit-tests
+        uses: ./.github/workflows/reusable-integration-tests.yml
+        with:
+            wp: '7.1'
+            script: test:query-plans
             allow-failure: true
 
     js-lint-test:

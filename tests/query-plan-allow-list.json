@@ -1,0 +1,20 @@
+{
+	"about": "Plugin SELECTs whose plans may break the query-plan rule, each with the reason its plan is accepted. Copy an entry's id and statement from the report of `composer test:query-plans`. That run fails on an entry whose query it no longer sends, or whose query keeps the rule.",
+	"entries": [
+		{
+			"id": "ec63742afd5e",
+			"statement": "SELECT i.variant_id, i.held, COALESCE( SUM( h.quantity ), ? ) AS rows_sum FROM {prefix}seocart_stock_items i LEFT JOIN {prefix}seocart_stock_holds h ON h.variant_id = i.variant_id GROUP BY i.variant_id, i.held HAVING i.held <> rows_sum ORDER BY i.variant_id LIMIT ?",
+			"reason": "Doctor's stock check compares every item's held with the sum of its hold rows, so it reads every stock item by design; each item's holds are read by the variant_expires index. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+		},
+		{
+			"id": "10e1377f068f",
+			"statement": "SELECT i.variant_id, i.on_hand, COALESCE( SUM( l.delta ), ? ) AS ledger_sum, ( SELECT n.on_hand_after FROM {prefix}seocart_stock_ledger n WHERE n.variant_id = i.variant_id ORDER BY n.id DESC LIMIT ? ) AS newest FROM {prefix}seocart_stock_items i LEFT JOIN {prefix}seocart_stock_ledger l ON l.variant_id = i.variant_id GROUP BY i.variant_id, i.on_hand HAVING ledger_sum <> i.on_hand OR ( newest IS NOT NULL AND newest <> i.on_hand ) ORDER BY i.variant_id LIMIT ?",
+			"reason": "Doctor's stock check compares every item's on_hand with the sum of its ledger and with its newest entry, so it reads every stock item by design; each item's ledger rows are read by the variant_created index. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+		},
+		{
+			"id": "6bdef5970bc2",
+			"statement": "SELECT i.variant_id, i.allocated, COALESCE( SUM( a.quantity - a.posted_quantity ), ? ) AS open_sum FROM {prefix}seocart_stock_items i LEFT JOIN {prefix}seocart_stock_allocations a ON a.variant_id = i.variant_id AND a.state = ? GROUP BY i.variant_id, i.allocated HAVING i.allocated <> open_sum ORDER BY i.variant_id LIMIT ?",
+			"reason": "Doctor's stock check compares every item's allocated with its open allocations, so it reads every stock item by design; each item's allocations are read by the variant_state index. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+		}
+	]
+}

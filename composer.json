@@ -108,6 +108,10 @@
 		"test:concurrency": "@test:integration --group concurrency --fail-on-empty-test-suite",
 		"test:migration": "@test:integration --group migration --fail-on-empty-test-suite",
 		"test:performance": "@test:integration --group performance --fail-on-empty-test-suite",
+		"test:query-plans": [
+			"@putenv SEOCART_QUERY_PLANS=1",
+			"@test:performance"
+		],
 		"test:contracts": [
 			"@test:contracts:unit",
 			"@test:integration --group contract --fail-on-empty-test-suite"

@@ -2,9 +2,12 @@
 # version, on a real MySQL 8.4 server. WordPress Playground and SQLite are not a
 # correctness oracle for this plugin, so there is no cell without MySQL.
 #
-# Reusable because two workflows run it: ci.yml (the PHP x WordPress matrix) and
-# nightly.yml (WordPress nightly). Every command below is one of the repository's own
-# scripts, so the same cell runs on a developer machine with the same two lines.
+# Reusable because two workflows run it: ci.yml (the PHP x WordPress matrix, the multisite
+# cell and the query-plan cell) and nightly.yml (WordPress nightly). Every command below is
+# one of the repository's own scripts, so the same cell runs on a developer machine with the
+# same two lines. A cell runs the whole suite unless its caller names another Composer script;
+# only then does the script's name join the cell's name, so the names of the existing cells,
+# some of them required checks, do not change.
 
 name: Integration tests (reusable)
 
@@ -30,6 +33,11 @@ on:
                 required: false
                 type: boolean
                 default: false
+            script:
+                description: 'The Composer script that runs the tests, for example "test:query-plans". Left out, the whole integration suite.'
+                required: false
+                type: string
+                default: test:integration
 
 permissions:
     contents: read
@@ -45,7 +53,7 @@ env:
 
 jobs:
     integration:
-        name: PHP ${{ inputs.php || '(development version)' }}, WordPress ${{ inputs.wp }}${{ inputs.multisite && ', multisite' || '' }}
+        name: PHP ${{ inputs.php || '(development version)' }}, WordPress ${{ inputs.wp }}${{ inputs.multisite && ', multisite' || '' }}${{ inputs.script != 'test:integration' && format(', {0}', inputs.script) || '' }}
         runs-on: ubuntu-24.04
         timeout-minutes: 20
         continue-on-error: ${{ inputs.allow-failure }}
@@ -93,6 +101,7 @@ jobs:
 
             # The child processes some tests start inherit WP_MULTISITE, so they boot the same network.
             - name: Run the integration suite
-              run: composer test:integration
+              run: composer "$TEST_SCRIPT"
               env:
+                  TEST_SCRIPT: ${{ inputs.script }}
                   WP_MULTISITE: ${{ inputs.multisite && '1' || '0' }}
