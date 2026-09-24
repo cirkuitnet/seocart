@@ -18,6 +18,7 @@ use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Application\Operations\WriteMethod;
 use SEOCart\Platform\Database\DatabaseError;
 use SEOCart\Platform\Database\Exception\QueryFailed;
+use SEOCart\Platform\Rest\ErrorShape;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
 use SEOCart\Tests\Support\OperationSurfaces;
 use WP_Error;
@@ -188,8 +189,8 @@ final class ErrorShapeTest extends WP_UnitTestCase {
 		$this->assertSame( 'rest_invalid_param', $invalid['code'] );
 		$this->assertExactlyTheMembers( $invalid['data'], 'rest_invalid_param' );
 		$this->assertSame( OperationSurfaces::CORRELATION_ID, $invalid['data']['correlation_id'] );
-		$this->assertSame( array( 'params', 'details' ), array_keys( (array) $invalid['data']['details'] ), 'WordPress\'s params and its own details move into the details, under their names.' );
-		$this->assertArrayHasKey( 'delta', ( (array) $invalid['data']['details'] )['details'], 'WordPress\'s account of the invalid parameter is kept.' );
+		$this->assertSame( array( 'params', 'param_codes' ), array_keys( (array) $invalid['data']['details'] ), 'WordPress\'s params stay at their name; its own details are flattened into param_codes, so nothing named details nests inside details.' );
+		$this->assertArrayHasKey( 'delta', ( (array) $invalid['data']['details'] )[ ErrorShape::PARAM_CODES ], 'WordPress\'s error code for the invalid parameter is kept.' );
 
 		$missing = $surfaces->rest( 'POST', $route, array( 'reason' => 'recount' ) )->get_data();
 

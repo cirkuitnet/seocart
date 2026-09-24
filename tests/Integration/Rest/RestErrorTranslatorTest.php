@@ -21,8 +21,11 @@ use SEOCart\Support\Error\ErrorDefinition;
 use SEOCart\Support\Error\ErrorTable;
 use SEOCart\Support\SupportError;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockError;
+use SEOCart\Tests\Support\OperationSurfaces;
 use SEOCart\Tests\Unit\Support\Error\Fixtures\FixtureError;
 use WP_Error;
+use WP_REST_Request;
+use WP_REST_Response;
 use WP_UnitTestCase;
 
 /**
@@ -72,6 +75,17 @@ final class RestErrorTranslatorTest extends WP_UnitTestCase {
 	 * @var list<array{error: CodedException, correlation_id: string|null}>
 	 */
 	private array $reported = array();
+
+	/**
+	 * Resets WordPress's REST server, for the one test that dispatches a real request.
+	 *
+	 * @since 0.1.0
+	 */
+	public function tear_down(): void {
+		OperationSurfaces::discard();
+
+		parent::tear_down();
+	}
 
 	/**
 	 * Tests every member of a public error, as data and as the REST body.
@@ -251,6 +265,7 @@ final class RestErrorTranslatorTest extends WP_UnitTestCase {
 		$forbidden = $translator->conform( new WP_Error( 'rest_forbidden', 'Sorry, you are not allowed to do that.', array( 'status' => 401 ) ) );
 
 		$this->assertSame( '{"code":"rest_forbidden","message":"Sorry, you are not allowed to do that.","data":{"status":401,"details":{},"correlation_id":"req-7f3a9c"}}', self::body( $forbidden ) );
+		$this->assertInstanceOf( \stdClass::class, $forbidden->get_error_data()['details'], 'The details are an object, never an array, even when they hold nothing.' );
 
 		$invalid = $translator->conform(
 			new WP_Error(
@@ -271,9 +286,34 @@ final class RestErrorTranslatorTest extends WP_UnitTestCase {
 		);
 
 		$this->assertSame(
-			'{"code":"rest_invalid_param","message":"Invalid parameter(s): delta","data":{"status":400,"details":{"params":{"delta":"delta is not of type integer."},"details":{"delta":{"code":"rest_invalid_type","message":"delta is not of type integer.","data":{"param":"delta"}}}},"correlation_id":"req-7f3a9c"}}',
+			'{"code":"rest_invalid_param","message":"Invalid parameter(s): delta","data":{"status":400,"details":{"params":{"delta":"delta is not of type integer."},"param_codes":{"delta":"rest_invalid_type"}},"correlation_id":"req-7f3a9c"}}',
 			self::body( $invalid ),
-			'WordPress\'s params and its own details move into the details, under their names.'
+			'WordPress\'s params stay at their name; its own details are flattened into param_codes, so nothing named details ever nests inside details.'
+		);
+		$this->assertArrayNotHasKey( 'details', (array) $invalid->get_error_data()['details'], 'WordPress\'s own details member does not survive under its own name.' );
+
+		$patterned = $translator->conform(
+			new WP_Error(
+				'rest_invalid_param',
+				'Invalid parameter(s): sku',
+				array(
+					'status'  => 400,
+					'params'  => array( 'sku' => 'sku does not match pattern ^[A-Z0-9-]+$.' ),
+					'details' => array(
+						'sku' => array(
+							'code'    => 'rest_invalid_pattern',
+							'message' => 'sku does not match pattern ^[A-Z0-9-]+$.',
+							'data'    => null,
+						),
+					),
+				)
+			)
+		);
+
+		$this->assertSame(
+			'{"status":400,"details":{"params":{"sku":"sku does not match pattern ^[A-Z0-9-]+$."},"param_codes":{"sku":"rest_invalid_pattern"}},"correlation_id":"req-7f3a9c"}',
+			wp_json_encode( $patterned->get_error_data() ),
+			'A pattern violation is conformed the same way as any other kind: the conforming step is not a per-code patch.'
 		);
 
 		$missing = $translator->conform(
@@ -319,6 +359,90 @@ final class RestErrorTranslatorTest extends WP_UnitTestCase {
 		$this->assertSame( array( 'first', 'second' ), $conformed->get_error_codes() );
 		$this->assertSame( '{"status":409,"details":{},"correlation_id":"req-7f3a9c"}', wp_json_encode( $conformed->get_error_data( 'second' ) ), 'Every code gets the members.' );
 		$this->assertSame( 'Second.', $conformed->get_error_message( 'second' ) );
+	}
+
+	/**
+	 * Tests that a `validate_callback` returning `false` — which WordPress records only in `params`,
+	 * never in its own `details` — never leaves `param_codes` present but empty: the member is
+	 * omitted. A mixed batch, one parameter false and the other a WP_Error, keeps `param_codes` for
+	 * the one WordPress gave a code, omits the other, and `params` still names both.
+	 *
+	 * Planted violation: in ErrorShape::reshaped(), always assign `details[param_codes]` once
+	 * WordPress's own `details` member is present, instead of only when it is not empty — the
+	 * "false only" case below fails, printing `"param_codes":[]`.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_false_validate_callback_omits_param_codes(): void {
+		add_action( 'rest_api_init', array( self::class, 'registerValidateFalseRoutes' ) );
+
+		$server     = rest_get_server();
+		$translator = $this->translator();
+
+		$false_only = new WP_REST_Request( 'POST', '/fixture-validate-false/v1/one' );
+		$false_only->set_body_params( array( 'a' => 'x' ) );
+
+		$only = $translator->conform( $server->dispatch( $false_only )->as_error() );
+
+		$this->assertSame(
+			'{"status":400,"details":{"params":{"a":"Invalid parameter."}},"correlation_id":"req-7f3a9c"}',
+			wp_json_encode( $only->get_error_data() ),
+			'A validate_callback that returns false gets no param_codes entry, and the member itself is omitted rather than emitted empty.'
+		);
+
+		$mixed_request = new WP_REST_Request( 'POST', '/fixture-validate-false/v1/two' );
+		$mixed_request->set_body_params(
+			array(
+				'a' => 'x',
+				'b' => 'y',
+			)
+		);
+
+		$mixed = $translator->conform( $server->dispatch( $mixed_request )->as_error() );
+
+		$this->assertSame(
+			'{"status":400,"details":{"params":{"a":"Invalid parameter.","b":"b is refused."},"param_codes":{"b":"fixture_refused"}},"correlation_id":"req-7f3a9c"}',
+			wp_json_encode( $mixed->get_error_data() ),
+			'A mixed batch keeps param_codes only for the parameter WordPress gave a code, and still names both parameters in params.'
+		);
+	}
+
+	/**
+	 * Registers two routes: one arg whose `validate_callback` always returns `false`, and — on the
+	 * second route — a second arg whose `validate_callback` always returns a WP_Error. Hooked to
+	 * `rest_api_init`.
+	 *
+	 * @since 0.1.0
+	 */
+	public static function registerValidateFalseRoutes(): void {
+		register_rest_route(
+			'fixture-validate-false/v1',
+			'/one',
+			array(
+				'methods'             => 'POST',
+				'args'                => array(
+					'a' => array( 'validate_callback' => static fn(): bool => false ),
+				),
+				'callback'            => static fn(): WP_REST_Response => new WP_REST_Response( array( 'ok' => true ) ),
+				'permission_callback' => '__return_true',
+			)
+		);
+
+		register_rest_route(
+			'fixture-validate-false/v1',
+			'/two',
+			array(
+				'methods'             => 'POST',
+				'args'                => array(
+					'a' => array( 'validate_callback' => static fn(): bool => false ),
+					'b' => array(
+						'validate_callback' => static fn(): WP_Error => new WP_Error( 'fixture_refused', 'b is refused.' ),
+					),
+				),
+				'callback'            => static fn(): WP_REST_Response => new WP_REST_Response( array( 'ok' => true ) ),
+				'permission_callback' => '__return_true',
+			)
+		);
 	}
 
 	/**

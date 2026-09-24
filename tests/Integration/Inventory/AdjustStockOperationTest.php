@@ -12,12 +12,14 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Inventory;
 
 use SEOCart\Application\Operations\OperationRegistry;
+use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Inventory\Application\InventoryOperations;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\AuthorizationError;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Authorization\CapabilityInstaller;
 use SEOCart\Platform\Rest\CachePolicy;
+use SEOCart\Platform\Rest\ErrorShape;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\CreatesUsers;
 use SEOCart\Tests\Support\Doubles\InMemoryGrantLedger;
@@ -345,6 +347,160 @@ final class AdjustStockOperationTest extends StockTestCase {
 
 			$this->assertSame( CachePolicy::CACHE_CONTROL, $response->get_headers()['Cache-Control'] ?? null );
 		}
+	}
+
+	/**
+	 * Tests that every error WordPress itself raises on the route — never one the service raised —
+	 * carries the documented shape: exactly the three members, `details` always an object, and
+	 * WordPress's own per-parameter `details` flattened once under `param_codes`, never nested
+	 * under `details` itself. Covers a missing parameter, an invalid one of every kind the schema
+	 * can refuse (type, enum, minimum, maximum), the URL-only refusal, a visitor (401), a user
+	 * without the capability (403), and WordPress's own batch endpoint (`rest_batch_not_allowed`).
+	 * None of these reach the service, so stock is unchanged throughout.
+	 *
+	 * Planted violations: comment out the flattening step in ErrorShape::reshaped() — the invalid
+	 * parameter cases below fail, naming the nested `details.details` key the assertion refuses; or
+	 * add an extra top-level member to invalid-parameter data in ErrorShape — the same cases fail on
+	 * the exact-keys assertion in assertFlattened().
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_every_wordpress_refusal_on_the_route_has_the_documented_shape(): void {
+		$variant = self::variant();
+		$b       = $this->secondConnection();
+		$route   = '/stock-items/' . $variant . '/adjustments';
+
+		$this->stockItem( $variant, 5 );
+
+		$visitor = $this->surfaces->rest( 'POST', $route, self::input( 1 ) );
+
+		$this->assertSame( 401, $visitor->get_status() );
+		self::assertShaped( $visitor->get_data()['data'], 401, array() );
+
+		wp_set_current_user( $this->createUser( 'subscriber' ) );
+
+		$forbidden = $this->surfaces->rest( 'POST', $route, self::input( 1 ) );
+
+		$this->assertSame( 403, $forbidden->get_status() );
+		self::assertShaped( $forbidden->get_data()['data'], 403, array() );
+
+		wp_set_current_user( $this->createUser( 'administrator' ) );
+
+		$missing = $this->surfaces->rest( 'POST', $route, array( 'delta' => 1 ) );
+
+		$this->assertSame( 400, $missing->get_status() );
+		$this->assertSame( 'rest_missing_callback_param', $missing->as_error()->get_error_code() );
+		self::assertShaped( $missing->get_data()['data'], 400, array( 'params' => array( 'reason' ) ) );
+
+		$type = $this->surfaces->rest(
+			'POST',
+			$route,
+			array(
+				'delta'  => 'not-a-number',
+				'reason' => 'received',
+			)
+		);
+
+		self::assertFlattened( $type->get_data()['data'], 400, 'delta', 'rest_invalid_type' );
+
+		$enum = $this->surfaces->rest(
+			'POST',
+			$route,
+			array(
+				'delta'  => 1,
+				'reason' => 'not-a-real-reason',
+			)
+		);
+
+		self::assertFlattened( $enum->get_data()['data'], 400, 'reason', 'rest_not_in_enum' );
+
+		$maximum = $this->surfaces->rest(
+			'POST',
+			$route,
+			array(
+				'delta'  => 1000001,
+				'reason' => 'received',
+			)
+		);
+
+		self::assertFlattened( $maximum->get_data()['data'], 400, 'delta', 'rest_out_of_bounds' );
+
+		$minimum = $this->surfaces->rest( 'POST', '/stock-items/0/adjustments', self::input( 1 ) );
+
+		self::assertFlattened( $minimum->get_data()['data'], 400, 'variant_id', 'rest_out_of_bounds' );
+
+		$urlOnly = $this->surfaces->rest( 'POST', $route, array( 'variant_id' => self::variant() ) + self::input( 1 ) );
+
+		self::assertFlattened( $urlOnly->get_data()['data'], 400, 'variant_id', 'rest_invalid_param' );
+
+		$batch = new WP_REST_Request( 'POST', '/batch/v1' );
+		$batch->set_header( 'Content-Type', 'application/json' );
+		$batch->set_body(
+			(string) wp_json_encode(
+				array(
+					'requests' => array(
+						array(
+							'method' => 'POST',
+							'path'   => '/' . RestBinding::NAMESPACE . $route,
+							'body'   => self::input( 1 ),
+						),
+					),
+				)
+			)
+		);
+
+		$batched = rest_do_request( $batch )->get_data();
+		$sub     = $batched['responses'][0]['body'];
+
+		$this->assertSame( 'rest_batch_not_allowed', $sub['code'] );
+		self::assertShaped( $sub['data'], 400, array() );
+
+		$this->assertSame( 5, $this->committedItem( $b, $variant )['on_hand'] ?? null, 'A refusal adjusted stock.' );
+		$this->assertCount( 1, $this->committedLedger( $b, $variant ), 'A refusal wrote to the ledger.' );
+	}
+
+	/**
+	 * Asserts that error data has exactly the three documented members, `details` an object.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param mixed                $data    The `data` of an error body.
+	 * @param int                  $status  The status it must carry.
+	 * @param array<string, mixed> $details The details it must carry.
+	 */
+	private static function assertShaped( $data, int $status, array $details ): void {
+		\PHPUnit\Framework\Assert::assertIsArray( $data );
+		\PHPUnit\Framework\Assert::assertSame( array( 'status', 'details', 'correlation_id' ), array_keys( $data ), 'The data has exactly the three members: none missing, none extra.' );
+		\PHPUnit\Framework\Assert::assertSame( $status, $data['status'] );
+		\PHPUnit\Framework\Assert::assertInstanceOf( \stdClass::class, $data['details'], 'The details are an object, never an array, even when they hold nothing.' );
+		\PHPUnit\Framework\Assert::assertSame( $details, (array) $data['details'] );
+	}
+
+	/**
+	 * Asserts that an invalid-parameter error is flattened: the data has exactly the three
+	 * documented members, `details` has exactly `params` and `param_codes` — nothing named
+	 * `details` nests inside `details`, nothing extra — and `param_codes` carries WordPress's error
+	 * code for the parameter.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param mixed  $data   The `data` of an error body.
+	 * @param int    $status The status it must carry.
+	 * @param string $param  The invalid parameter's name.
+	 * @param string $code   The error code WordPress gave it.
+	 */
+	private static function assertFlattened( $data, int $status, string $param, string $code ): void {
+		\PHPUnit\Framework\Assert::assertIsArray( $data );
+		\PHPUnit\Framework\Assert::assertSame( array( 'status', 'details', 'correlation_id' ), array_keys( $data ), 'The data has exactly the three members: none missing, none extra.' );
+		\PHPUnit\Framework\Assert::assertSame( $status, $data['status'] );
+		\PHPUnit\Framework\Assert::assertInstanceOf( \stdClass::class, $data['details'] );
+
+		$details = (array) $data['details'];
+
+		\PHPUnit\Framework\Assert::assertSame( array( 'params', ErrorShape::PARAM_CODES ), array_keys( $details ), 'The details of an invalid-parameter refusal are exactly params and param_codes: nothing named details, nothing extra.' );
+		\PHPUnit\Framework\Assert::assertSame( $code, ( (array) $details[ ErrorShape::PARAM_CODES ] )[ $param ] ?? null );
+		\PHPUnit\Framework\Assert::assertIsString( $data['correlation_id'] );
+		\PHPUnit\Framework\Assert::assertNotSame( '', $data['correlation_id'], 'The correlation id is a non-empty string.' );
 	}
 
 	/**

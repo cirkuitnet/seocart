@@ -332,7 +332,7 @@
                             },
                             "details": {
                                 "type": "object",
-                                "description": "The values the message was built from, keyed by name. For an error WordPress raised, such as its refusal of a request that does not match the input schema, every other member of its data under the name WordPress gave it, such as `params`. Always an object, and empty for an internal error."
+                                "description": "The values the message was built from, keyed by name. For an error WordPress raised, such as its refusal of a request that does not match the input schema, every other member of its data under the name WordPress gave it, such as `params`; WordPress's own per-parameter `details` is flattened into `param_codes`, one code for each parameter WordPress gave a code, omitted when there is none, so nothing named `details` ever nests inside `details`. Always an object, and empty for an internal error."
                             },
                             "correlation_id": {
                                 "type": [
