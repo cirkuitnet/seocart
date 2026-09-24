@@ -12,11 +12,12 @@ under `[Unreleased]`. The release process moves those entries under the new vers
 
 ## [Unreleased]
 
-This is the platform foundation and the start of the catalog. **The plugin cannot sell
-anything yet:** it registers a product post type, but nothing prices or stocks a product so
-far, and it has no cart, checkout, orders, payments, blocks or admin screens of its own. It registers the store
-settings route (`GET` and `PATCH`) and its two WP-CLI commands, the `wp seocart` maintenance
-commands, three Site Health tests and its own background jobs. Activation installs the
+This is the platform foundation, the start of the catalog and stock. **The plugin cannot sell
+anything yet:** it registers a product post type and keeps stock per variant, but nothing
+prices a product so far, and it has no cart, checkout, orders, payments, blocks or admin
+screens of its own. It registers the store settings route (`GET` and `PATCH`) and its two
+WP-CLI commands, the stock adjustment route, ability and command, the `wp seocart`
+maintenance commands, three Site Health tests and its own background jobs. Activation installs the
 plugin's database tables, its roles and capabilities, one installation record, a data key
 for secret settings and the recurring jobs. The rest is the skeleton and the checks that
 keep it releasable.
@@ -165,4 +166,10 @@ seocart jobs run` and from a short tick on admin requests; `wp seocart jobs stat
   needs its units and by a sweep every five minutes. Adjusting on-hand stock writes a ledger
   entry and fires `seocart_stock_adjusted`; reclaiming an expired hold fires
   `seocart_stock_hold_expired`. `wp seocart doctor` checks that every stock counter agrees
-  with its rows. No screen, route or command uses stock yet.
+  with its rows.
+- Stock adjustment, the first store operation offered on every surface from one
+  declaration: `POST /seocart/v1/stock-items/{variant_id}/adjustments`, the ability
+  `seocart/adjust-stock` and `wp seocart stock adjust`. It needs `seocart_manage_inventory`,
+  on REST takes the variant from the URL only, and accepts an optional `expected_on_hand` so a
+  retried request cannot apply twice. The ability is marked destructive and is not offered to
+  agents.
