@@ -596,45 +596,13 @@ final class OutboxTest extends OutboxTestCase {
 	}
 
 	/**
-	 * After a fatal error elsewhere in the request, the end-of-request drain delivers nothing; a later drain does.
-	 *
-	 * Planted violation: in OutboxDrainer::drainAtShutdown(), drop the check for a fatal error.
-	 *
-	 * @since 0.1.0
-	 */
-	public function test_after_a_fatal_error_the_end_of_request_drain_delivers_nothing(): void {
-		$b         = $this->secondConnection();
-		$drainer   = $this->drainer();
-		$publisher = new Publisher( $this->db, $this->outbox, $this->bridge, $this->catalog, $this->correlation, array( $drainer, 'scheduleAtShutdown' ) );
-
-		$this->listen( self::HAPPENED );
-		$this->db->transaction( fn() => $publisher->publish( new ThingHappened( 3 ) ) );
-
-		$log = $this->captureQueries(
-			fn() => $drainer->drainAtShutdown(
-				array(
-					'type'    => E_ERROR,
-					'message' => 'A fatal error elsewhere in the request.',
-					'file'    => __FILE__,
-					'line'    => __LINE__,
-				)
-			)
-		);
-
-		$this->assertQueryCount( 0, $log, 'The end-of-request drain after a fatal error' );
-		$this->assertSame( array(), $this->fired );
-		$this->assertSame( array(), $this->outboxIds( $b, "state <> 'pending' OR attempts <> 0" ), 'The row waits, untouched.' );
-		$this->assertSame( 1, $drainer->drain( DrainOptions::command() )->dispatched, 'A later drain delivers it.' );
-	}
-
-	/**
 	 * The sites that published in one request share the end-of-request budget: the second site gets what the first left.
 	 *
 	 * The drainer's clock is the test's; each delivery moves it 750 ms on. The main site's two
 	 * events take 1.5 of the 2 seconds, so the second site's drain delivers one of its three
 	 * events and stops.
 	 *
-	 * Planted violation: in OutboxDrainer::drainAtShutdown(), give each site a fresh budget
+	 * Planted violation: in OutboxDrainer::drainAtEndOfRequest(), give each site a fresh budget
 	 * (`$this->drain( $options )`). The second site then delivers all three.
 	 *
 	 * @since 0.1.0
@@ -646,6 +614,7 @@ final class OutboxTest extends OutboxTestCase {
 
 		global $wpdb;
 
+		$main = get_current_blog_id();
 		$site = wp_insert_site(
 			array(
 				'domain' => 'example.org',
@@ -662,7 +631,7 @@ final class OutboxTest extends OutboxTestCase {
 				return $now;
 			}
 		);
-		$publisher = new Publisher( $this->db, $this->outbox, $this->bridge, $this->catalog, $this->correlation, array( $drainer, 'scheduleAtShutdown' ) );
+		$publisher = new Publisher( $this->db, $this->outbox, $this->bridge, $this->catalog, $this->correlation, static function (): void {} );
 
 		$this->listen(
 			self::HAPPENED,
@@ -686,7 +655,7 @@ final class OutboxTest extends OutboxTestCase {
 
 			restore_current_blog();
 
-			$drainer->drainAtShutdown();
+			$drainer->drainAtEndOfRequest( array( $main, $site ) );
 
 			$this->assertSame( array( 1, 2, 11 ), array_column( $this->fired, 'thing' ), 'The second site delivered only what the shared budget left room for.' );
 		} finally {
@@ -710,17 +679,14 @@ final class OutboxTest extends OutboxTestCase {
 	}
 
 	/**
-	 * The wake sends nothing; the drain at the end of the request delivers what the request stored, once.
-	 *
-	 * Planted violation: in OutboxDrainer::drainAtShutdown(), keep the remembered sites after
-	 * draining. The second call then sends statements.
+	 * The drain at the end of the request delivers what the request stored, once.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_wake_sends_nothing_and_the_drain_at_the_end_of_the_request_delivers(): void {
+	public function test_the_drain_at_the_end_of_the_request_delivers_what_was_published(): void {
 		$b         = $this->secondConnection();
 		$drainer   = $this->drainer();
-		$publisher = new Publisher( $this->db, $this->outbox, $this->bridge, $this->catalog, $this->correlation, array( $drainer, 'scheduleAtShutdown' ) );
+		$publisher = new Publisher( $this->db, $this->outbox, $this->bridge, $this->catalog, $this->correlation, static function (): void {} );
 
 		$this->listen( self::HAPPENED );
 
@@ -733,11 +699,10 @@ final class OutboxTest extends OutboxTestCase {
 		$this->assertQueryCount( 5, $log, 'A unit of work that stores one event: four transaction statements and the INSERT' );
 		$this->assertSame( array(), $this->fired, 'Nothing is delivered at COMMIT.' );
 
-		$drainer->drainAtShutdown();
+		$drainer->drainAtEndOfRequest( array( get_current_blog_id() ) );
 
 		$this->assertSame( array( array( self::HAPPENED, 3 ) ), $this->heard() );
 		$this->assertSame( Outbox::DISPATCHED, $this->outboxRow( $b, (int) $this->fired[0]['outbox_id'] )['state'] );
-		$this->assertQueryCount( 0, $this->captureQueries( fn() => $drainer->drainAtShutdown() ), 'A second end-of-request drain with nothing published' );
 	}
 
 	/**
@@ -763,7 +728,7 @@ final class OutboxTest extends OutboxTestCase {
 		$this->assertIsInt( $site );
 
 		$drainer   = $this->drainer();
-		$publisher = new Publisher( $this->db, $this->outbox, $this->bridge, $this->catalog, $this->correlation, array( $drainer, 'scheduleAtShutdown' ) );
+		$publisher = new Publisher( $this->db, $this->outbox, $this->bridge, $this->catalog, $this->correlation, static function (): void {} );
 
 		$this->listen( self::HAPPENED );
 
@@ -781,7 +746,7 @@ final class OutboxTest extends OutboxTestCase {
 
 			$this->db->transaction( fn() => $publisher->publish( new ThingHappened( 12 ) ) );
 
-			$drainer->drainAtShutdown();
+			$drainer->drainAtEndOfRequest( array( $site, 1 ) );
 
 			$this->assertSame( 1, get_current_blog_id(), 'The drain restored the current site.' );
 			$this->assertSame( array( 11, 12 ), array_column( $this->fired, 'thing' ) );

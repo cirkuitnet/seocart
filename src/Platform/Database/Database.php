@@ -486,24 +486,6 @@ final class Database implements TransactionManager {
 	}
 
 	/**
-	 * Describes the connection for Site Health and `doctor`. Sends nothing.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return array{wpdb_class: string, identity_check: bool, thread_id: int, server_version: string} The facts.
-	 */
-	public function connectionReport(): array {
-		$connection = $this->connection();
-
-		return array(
-			'wpdb_class'     => get_class( $this->wpdb ),
-			'identity_check' => $this->checksIdentity,
-			'thread_id'      => $this->threadId(),
-			'server_version' => $connection instanceof \mysqli ? (string) mysqli_get_server_info( $connection ) : '', // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_get_server_info -- read from the handshake, as wpdb::db_server_info() does, without assuming a handle.
-		);
-	}
-
-	/**
 	 * Runs the outermost level: BEGIN, the work, the checks and COMMIT.
 	 *
 	 * The after-commit callbacks are returned, not run: transaction() runs them once it has left

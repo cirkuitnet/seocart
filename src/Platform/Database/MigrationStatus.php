@@ -33,15 +33,6 @@ final class MigrationStatus {
 	private string $codeHead;
 
 	/**
-	 * The id of the newest migration the database records as applied, or null.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string|null
-	 */
-	private ?string $appliedHead;
-
-	/**
 	 * The declared migrations not yet applied, in order.
 	 *
 	 * @since 0.1.0
@@ -83,15 +74,13 @@ final class MigrationStatus {
 	 * @since 0.1.0
 	 *
 	 * @param string      $codeHead      The newest declared migration.
-	 * @param string|null $appliedHead   The newest applied migration.
 	 * @param string[]    $pending       The declared migrations not yet applied.
 	 * @param string|null $failed        The first failed migration.
 	 * @param string|null $running       The first running migration.
 	 * @param bool        $writesBlocked Whether commerce writes must be refused.
 	 */
-	public function __construct( string $codeHead, ?string $appliedHead, array $pending, ?string $failed, ?string $running, bool $writesBlocked ) {
+	public function __construct( string $codeHead, array $pending, ?string $failed, ?string $running, bool $writesBlocked ) {
 		$this->codeHead      = $codeHead;
-		$this->appliedHead   = $appliedHead;
 		$this->pending       = $pending;
 		$this->failed        = $failed;
 		$this->running       = $running;
@@ -107,17 +96,6 @@ final class MigrationStatus {
 	 */
 	public function codeHead(): string {
 		return $this->codeHead;
-	}
-
-	/**
-	 * Returns the newest migration the database records as applied.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return string|null The id, or null when none is applied.
-	 */
-	public function appliedHead(): ?string {
-		return $this->appliedHead;
 	}
 
 	/**

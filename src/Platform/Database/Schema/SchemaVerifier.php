@@ -144,40 +144,6 @@ final class SchemaVerifier {
 	}
 
 	/**
-	 * Tells whether a plugin table has a column. Guards a migration's explicit ALTER.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $table  The table's unprefixed name.
-	 * @param string $column The column name.
-	 * @return bool True when the column exists.
-	 */
-	public function hasColumn( string $table, string $column ): bool {
-		return '0' !== (string) $this->db->fetchValue(
-			'SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s',
-			$this->db->table( $table ),
-			$column
-		);
-	}
-
-	/**
-	 * Tells whether a plugin table has an index. Guards a migration's explicit ALTER.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $table The table's unprefixed name.
-	 * @param string $index The index name; `PRIMARY` for the primary key.
-	 * @return bool True when the index exists.
-	 */
-	public function hasIndex( string $table, string $index ): bool {
-		return '0' !== (string) $this->db->fetchValue(
-			'SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND INDEX_NAME = %s',
-			$this->db->table( $table ),
-			$index
-		);
-	}
-
-	/**
 	 * Normalizes a column type for comparison.
 	 *
 	 * @since 0.1.0

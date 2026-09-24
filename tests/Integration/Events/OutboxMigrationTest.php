@@ -30,8 +30,9 @@ use SEOCart\Tests\Support\Doubles\FrozenClock;
  * The outbox table is created exactly as declared, after the bootstrap, and a second run changes nothing.
  *
  * Planted violation: at the end of CreateOutboxMigration::up(), drop the `claim_token` index
- * (`$operations->alter( 'outbox', 'DROP INDEX claim_token' )`), so the table no longer has an
- * index its declaration names. The migrator's post-condition then fails the migration.
+ * directly (`$this->db->execute( 'ALTER TABLE %i DROP INDEX claim_token', ... )`), so the table
+ * no longer has an index its declaration names. The migrator's post-condition then fails the
+ * migration.
  *
  * @since 0.1.0
  *

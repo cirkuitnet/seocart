@@ -90,7 +90,7 @@ final class SettingsOperationsTest extends TestCase {
 		$this->assertNull( $update->abilityName() );
 		$this->assertSame( 'seocart_manage_settings', $update->capability() );
 		$this->assertTrue( $update->annotations()->isDestructive(), 'A change overwrites the setting it replaces.' );
-		$this->assertTrue( $update->annotations()->isIdempotent() );
+		$this->assertTrue( $update->annotations()->toArray()['idempotent'] );
 		$this->assertSame( array( SettingsError::StoredValueInvalid, SupportError::UnknownCurrency ), $update->errors() );
 		$this->assertSame( array( SettingsService::class, 'update' ), $update->service() );
 		$this->assertSame( array( 'base_currency' ), self::names( $update->input() ) );

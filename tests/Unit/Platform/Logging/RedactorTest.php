@@ -294,9 +294,9 @@ final class RedactorTest extends TestCase {
 
 		$this->assertSame( 'email=' . Redactor::REDACTED . '  note: ' . Redactor::REDACTED . '  user id 42 kept', $written['message'] );
 		$this->assertSame( 'caused by shopper_email=' . Redactor::REDACTED . ' and ', $written['previous']['message'] );
-		$this->assertSame( '{"order":"SC-1001","note":"' . Redactor::REDACTED . '"}', $redactor->text( '{"order":"SC-1001","note":"Ring twice"}' ), 'JSON in free text keeps its shape.' );
-		$this->assertSame( 'footnote=kept; notes: kept', $redactor->text( 'footnote=kept; notes: kept' ), 'Only a whole declared name is a pair.' );
-		$this->assertSame( 'Jane Doe lives at 1 Main Street', $redactor->text( 'Jane Doe lives at 1 Main Street' ), 'Nothing else in prose is guessed at.' );
+		$this->assertSame( '{"order":"SC-1001","note":"' . Redactor::REDACTED . '"}', self::redactedText( $redactor, '{"order":"SC-1001","note":"Ring twice"}' ), 'JSON in free text keeps its shape.' );
+		$this->assertSame( 'footnote=kept; notes: kept', self::redactedText( $redactor, 'footnote=kept; notes: kept' ), 'Only a whole declared name is a pair.' );
+		$this->assertSame( 'Jane Doe lives at 1 Main Street', self::redactedText( $redactor, 'Jane Doe lives at 1 Main Street' ), 'Nothing else in prose is guessed at.' );
 
 		$json = (string) json_encode( $written );
 
@@ -309,7 +309,7 @@ final class RedactorTest extends TestCase {
 	 * Tests that a declared pair is found however its name is written: percent-encoded, in single quotes, as PHP prints an array, or as the last part of a bracketed name.
 	 *
 	 * The redactor is the production one, and `active_data_key` is the production secret that
-	 * holds the data key. Each form is checked through text() and inside an exception message.
+	 * holds the data key. Each form is checked as free text and inside an exception message.
 	 *
 	 * Planted violations: in Redactor::declaredName(), skip the percent-decoding (the encoded
 	 * names survive); match bare words only (the quoted and bracketed names survive).
@@ -332,7 +332,7 @@ final class RedactorTest extends TestCase {
 		);
 
 		foreach ( $written as $form => list( $text, $expected ) ) {
-			$this->assertSame( $expected, $redactor->text( $text ), "Through text(): {$form}." );
+			$this->assertSame( $expected, self::redactedText( $redactor, $text ), "Through line(): {$form}." );
 
 			$message = $redactor->context( array( 'exception' => new \RuntimeException( 'Could not seal. ' . $text ) ) )['exception']['message'];
 
@@ -341,7 +341,7 @@ final class RedactorTest extends TestCase {
 		}
 
 		// Planted violation: make PAIR_VALUE's quantifiers greedy (the engine runs out of stack, and the text becomes the placeholder).
-		$this->assertSame( ' kept', $redactor->text( 'active_data_key="' . str_repeat( 'SECRETVALUE ', 2000 ) . '" kept' ), 'A long quoted value is read, and removed whole.' );
+		$this->assertSame( ' kept', self::redactedText( $redactor, 'active_data_key="' . str_repeat( 'SECRETVALUE ', 2000 ) . '" kept' ), 'A long quoted value is read, and removed whole.' );
 	}
 
 	/**
@@ -537,7 +537,7 @@ final class RedactorTest extends TestCase {
 				return array( $text, SeededCases::int( $random, 30, 70 ) );
 			},
 			function ( string $text, int $limit ) use ( $redactor ): void {
-				$result = $redactor->text( $text, $limit );
+				$result = self::redactedText( $redactor, $text, $limit );
 
 				$this->assertLessThanOrEqual( $limit, mb_strlen( $result ) );
 				$this->assertFalse( CardNumbers::contains( $result ), 'A card-shaped run reached the output.' );
@@ -545,7 +545,7 @@ final class RedactorTest extends TestCase {
 			}
 		);
 
-		$this->assertSame( '?(', $redactor->text( "\xC3\x28" ), 'In invalid UTF-8, every byte outside ASCII becomes a question mark.' );
+		$this->assertSame( '?(', self::redactedText( $redactor, "\xC3\x28" ), 'In invalid UTF-8, every byte outside ASCII becomes a question mark.' );
 	}
 
 	/**
@@ -646,8 +646,22 @@ final class RedactorTest extends TestCase {
 
 		$this->assertSame( 'Data too long for column ?: ? at row ?', $server( 6000 ), 'A literal of thirty thousand characters is replaced.' );
 		$this->assertSame( 'Data too long for column ?: ?', $server( 20000 ), 'A literal longer than what is read is replaced to the end.' );
-		$this->assertSame( 'key ', $redactor->text( 'key api_key="sk_planted_value and the rest of it' ) );
-		$this->assertSame( 'the note="[redacted]"', $redactor->text( 'the note="Ring twice, then again' ) );
+		$this->assertSame( 'key ', self::redactedText( $redactor, 'key api_key="sk_planted_value and the rest of it' ) );
+		$this->assertSame( 'the note="[redacted]"', self::redactedText( $redactor, 'the note="Ring twice, then again' ) );
+	}
+
+	/**
+	 * Redacts one free text through line(), the one entry point that reads the free-text policy.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Redactor $redactor  The redactor.
+	 * @param string   $text      The text.
+	 * @param int      $maxLength Optional. The most characters the result keeps. Default Redactor::STRING_LENGTH.
+	 * @return string The redacted text.
+	 */
+	private static function redactedText( Redactor $redactor, string $text, int $maxLength = Redactor::STRING_LENGTH ): string {
+		return $redactor->line( $text, $maxLength, array() )['message'];
 	}
 
 	/**

@@ -755,41 +755,6 @@ final class BootRecord {
 	}
 
 	/**
-	 * Returns the kill switches.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return array<string, true> The switched-off subsystems, keyed by id.
-	 */
-	public function killSwitches(): array {
-		return $this->killSwitches;
-	}
-
-	/**
-	 * Returns a copy with other kill switches.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @throws \InvalidArgumentException When an id is malformed, a value is not true, or there are
-	 *                                   more than MAX_KILL_SWITCHES.
-	 *
-	 * @param array<string, true> $switches The switched-off subsystems, keyed by id.
-	 * @return self The copy.
-	 */
-	public function withKillSwitches( array $switches ): self {
-		$problem = self::killSwitchProblem( $switches );
-
-		if ( null !== $problem ) {
-			throw new \InvalidArgumentException( $problem );
-		}
-
-		$copy               = $this->present();
-		$copy->killSwitches = $switches;
-
-		return $copy;
-	}
-
-	/**
 	 * Returns when the site was first installed.
 	 *
 	 * @since 0.1.0

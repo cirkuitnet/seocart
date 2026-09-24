@@ -208,7 +208,7 @@ final class OperationRegistryTest extends TestCase {
 			static fn(): OperationDefinition => self::copy(
 				'fixture_stock.replace_stock',
 				array(
-					'rest'    => new RestBinding( FixtureStockOperation::ROUTE, WriteMethod::Put ),
+					'rest'    => new RestBinding( FixtureStockOperation::ROUTE, WriteMethod::Patch ),
 					'ability' => 'fixture-replace-stock',
 					'cli'     => new CliBinding( array( 'fixture-stock', 'replace' ), array( 'item_id' ) ),
 				)

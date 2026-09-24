@@ -134,24 +134,6 @@ final class RetentionCatalog {
 	}
 
 	/**
-	 * Returns what a policy does.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @throws \InvalidArgumentException When the catalog does not declare the policy.
-	 *
-	 * @param string $id A policy id.
-	 * @return string One or two sentences, for the generated schema reference and the retention settings.
-	 */
-	public function rule( string $id ): string {
-		if ( ! $this->has( $id ) ) {
-			throw new \InvalidArgumentException( sprintf( 'No retention policy is called "%s".', $id ) );
-		}
-
-		return self::POLICIES[ $id ]['rule'];
-	}
-
-	/**
 	 * Returns a policy's default periods.
 	 *
 	 * @since 0.1.0

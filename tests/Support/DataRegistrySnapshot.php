@@ -113,7 +113,6 @@ final class DataRegistrySnapshot {
 
 		foreach ( $registry->retention()->ids() as $policy ) {
 			$retention[ $policy ] = array(
-				'rule'     => $registry->retention()->rule( $policy ),
 				'defaults' => $registry->retention()->defaults( $policy ),
 			);
 		}

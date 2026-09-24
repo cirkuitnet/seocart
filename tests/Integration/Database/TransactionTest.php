@@ -71,8 +71,6 @@ final class TransactionTest extends DatabaseTestCase {
 		$this->assertSame( '2', $this->db->fetchValue( 'SELECT COUNT(*) FROM %i', $this->rowsTable() ) );
 		$this->assertSame( 0, $this->db->depth() );
 		$this->assertSame( $this->db->prefix() . 'seocart_' . self::ROWS, $this->rowsTable() );
-		$this->assertSame( 'wpdb', $this->db->connectionReport()['wpdb_class'] );
-		$this->assertSame( $this->db->threadId(), $this->db->connectionReport()['thread_id'] );
 	}
 
 	/**

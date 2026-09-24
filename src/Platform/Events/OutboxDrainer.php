@@ -40,16 +40,14 @@ defined( 'ABSPATH' ) || exit;
  * run in priority order, then in the order they were added. A listener reads current state
  * and keys its side effect on the envelope's outbox id; it never replays events as a log.
  *
- * Who drains: the request that published, at its end. Publisher's wake only notes the site
- * and, once per process, registers its end-of-request work: no query and no I/O at commit
- * time. At the end of the request, drainAtEndOfRequest() drains every site that published,
- * within the shutdown bounds. The listeners run after the response has been built, but the
- * client's connection stays open until the shutdown work is done unless the wake ends the
- * response first. scheduleAtShutdown() is the wake that does not: registering
- * drainAtShutdown(), it adds up to the drain's budget (2 seconds) of latency to the request
- * that published. The wake the plugin binds ends the response first where the server can,
- * and elsewhere hands the drain to a background job. `wp seocart outbox drain` and the job
- * runner call drain() with bounds of their own.
+ * Who drains: the request that published, at its end. Publisher's wake, the jobs module's
+ * EventWake, notes the site and, once per process, registers its own end-of-request work: no
+ * query and no I/O at commit time. At the end of the request, drainAtEndOfRequest() drains
+ * every site that published, within the shutdown bounds. The listeners run after the response
+ * has been built, but the client's connection stays open until the shutdown work is done
+ * unless the wake ends the response first, which it does where the server can; elsewhere it
+ * hands the drain to a background job instead of calling drainAtEndOfRequest() itself.
+ * `wp seocart outbox drain` and the job runner call drain() with bounds of their own.
  *
  * A fatal error in a listener cannot be caught. When the drain runs from a request's main
  * code (the command, a job), a shutdown handler registered at the first drain puts the row
@@ -231,24 +229,6 @@ final class OutboxDrainer {
 	private $clock;
 
 	/**
-	 * The sites whose requests published events since the last drain at shutdown, as keys.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var array<int, true>
-	 */
-	private array $sites = array();
-
-	/**
-	 * Whether drainAtShutdown() is registered.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var bool
-	 */
-	private bool $wakeRegistered = false;
-
-	/**
 	 * The rows whose listeners are running right now in this process, for the fatal-error handler.
 	 *
 	 * @since 0.1.0
@@ -322,51 +302,7 @@ final class OutboxDrainer {
 	}
 
 	/**
-	 * Wakes the drainer for the end of this request. Publisher calls it after a commit that stored events.
-	 *
-	 * Notes the current site and, the first time in the process, registers drainAtShutdown().
-	 * No query, no hook, no I/O: nothing can be lost between the commit and the drain, because
-	 * the rows are already committed and any later drain delivers them.
-	 *
-	 * @since 0.1.0
-	 */
-	public function scheduleAtShutdown(): void {
-		$this->sites[ get_current_blog_id() ] = true;
-
-		if ( $this->wakeRegistered ) {
-			return;
-		}
-
-		$this->wakeRegistered = true;
-
-		register_shutdown_function( array( $this, 'drainAtShutdown' ) );
-	}
-
-	/**
-	 * Drains, at the end of the request, the outbox of every site that published. Registered by scheduleAtShutdown().
-	 *
-	 * After a fatal error in the request nothing is drained: the rows wait for the next wake, and
-	 * a row left leased by the fatal error is claimed again once its lease lapses. Otherwise the
-	 * sites are drained by drainAtEndOfRequest(). Nothing is ever thrown, because it is shutdown.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param array<string, mixed>|null $error Optional. The last error, as error_get_last() describes it.
-	 *                                         Default null, which reads error_get_last().
-	 */
-	public function drainAtShutdown( ?array $error = null ): void {
-		$sites       = array_keys( $this->sites );
-		$this->sites = array();
-
-		if ( array() === $sites || self::isFatal( $error ?? error_get_last() ) ) {
-			return;
-		}
-
-		$this->drainAtEndOfRequest( $sites );
-	}
-
-	/**
-	 * Drains the outbox of each site given, with the shutdown bounds. The end-of-request drain of every wake.
+	 * Drains the outbox of each site given, with the shutdown bounds. The end-of-request drain the wake calls.
 	 *
 	 * Each site is switched to when it is not the current one. The sites share one time budget:
 	 * each drain stops at the deadline the first one started with, so a request that published

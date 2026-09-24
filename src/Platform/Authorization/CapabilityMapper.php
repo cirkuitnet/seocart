@@ -120,18 +120,6 @@ final class CapabilityMapper {
 	}
 
 	/**
-	 * Tells whether a meta capability has a registered resolver.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $capability A capability name.
-	 * @return bool True once registerMetaCapability() has accepted it.
-	 */
-	public function isRegisteredMetaCapability( string $capability ): bool {
-		return isset( $this->factories[ $capability ] );
-	}
-
-	/**
 	 * Filters `map_meta_cap`: maps a plugin capability to primitives, or denies it.
 	 *
 	 * The parameters are not typed: the values arrive from whatever called current_user_can() and

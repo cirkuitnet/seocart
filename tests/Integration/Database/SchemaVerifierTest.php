@@ -131,21 +131,16 @@ final class SchemaVerifierTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Tests the ALTER guards a migration uses.
+	 * Tests that hasTable() reads the live table.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_has_column_and_has_index_read_the_live_table(): void {
+	public function test_has_table_reads_the_live_table(): void {
 		$this->createShape( self::MATCHING );
 
 		$verifier = new SchemaVerifier( $this->db );
 
 		$this->assertTrue( $verifier->hasTable( 'test_shape' ) );
-		$this->assertTrue( $verifier->hasColumn( 'test_shape', 'note' ) );
-		$this->assertFalse( $verifier->hasColumn( 'test_shape', 'missing' ) );
-		$this->assertTrue( $verifier->hasIndex( 'test_shape', 'a_b' ) );
-		$this->assertTrue( $verifier->hasIndex( 'test_shape', 'PRIMARY' ) );
-		$this->assertFalse( $verifier->hasIndex( 'test_shape', 'missing' ) );
 		$this->assertFalse( $verifier->hasTable( 'test_absent' ) );
 	}
 

@@ -106,7 +106,7 @@ final class LoggerTest extends LogsTestCase {
 	 * value, a nested context value, an integer or an exception message, while a number that
 	 * fails the checksum is kept.
 	 *
-	 * Planted violation: in Redactor::text(), return the text before CardNumbers::scrub() (the
+	 * Planted violation: in Redactor::kept(), return the text before CardNumbers::scrub() (the
 	 * message and every string value keep the card).
 	 *
 	 * @since 0.1.0

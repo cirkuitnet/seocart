@@ -33,23 +33,9 @@ enum WriteMethod: string {
 	case Post = 'POST';
 
 	/**
-	 * Replaces a resource.
-	 *
-	 * @since 0.1.0
-	 */
-	case Put = 'PUT';
-
-	/**
 	 * Changes part of a resource.
 	 *
 	 * @since 0.1.0
 	 */
 	case Patch = 'PATCH';
-
-	/**
-	 * Removes a resource.
-	 *
-	 * @since 0.1.0
-	 */
-	case Delete = 'DELETE';
 }

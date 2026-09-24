@@ -21,8 +21,8 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: the tables a structural migration promises, and how it gets there. After
  * up() the migrator compares every table tables() returns with the server's information_schema;
  * any difference fails the migration. up() runs again when a failed or interrupted migration
- * is resumed, so it must be idempotent: creates go through dbDelta, and an explicit ALTER is
- * guarded with SchemaVerifier::hasColumn() or hasIndex().
+ * is resumed, so it must be idempotent: creates go through dbDelta, which is naturally
+ * re-runnable.
  *
  * @since 0.1.0
  */
@@ -42,7 +42,7 @@ interface SchemaMigration extends Migration {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param SchemaOperations $operations Creates tables from declarations and runs explicit ALTERs.
+	 * @param SchemaOperations $operations Creates tables from their declarations.
 	 */
 	public function up( SchemaOperations $operations ): void;
 }

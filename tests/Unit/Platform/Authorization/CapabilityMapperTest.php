@@ -111,7 +111,6 @@ final class CapabilityMapperTest extends TestCase {
 	public function test_a_registered_meta_capability_maps_through_its_resolver(): void {
 		$this->mapper->registerMetaCapability( 'seocart_view_order', self::resolverFactory( array( 42 => array( 'seocart_view_orders', 'seocart_view_customer_pii' ) ) ) );
 
-		$this->assertTrue( $this->mapper->isRegisteredMetaCapability( 'seocart_view_order' ) );
 		$this->assertSame( array( 'seocart_view_orders', 'seocart_view_customer_pii' ), $this->mapper->map( array( 'seocart_view_order' ), 'seocart_view_order', 3, array( 42 ) ) );
 	}
 

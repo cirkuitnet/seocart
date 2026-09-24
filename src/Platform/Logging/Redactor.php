@@ -430,23 +430,6 @@ final class Redactor {
 	}
 
 	/**
-	 * Makes a text safe to log: valid UTF-8, the free-text policy applied, no card-shaped number, and no longer than a limit.
-	 *
-	 * The text is read up to READ_LENGTH characters, as one line would read it.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $text      The text.
-	 * @param int    $maxLength Optional. The most characters the result has. Default STRING_LENGTH.
-	 * @return string The text.
-	 */
-	public function text( string $text, int $maxLength = self::STRING_LENGTH ): string {
-		$this->startReading();
-
-		return $this->kept( $text, $maxLength );
-	}
-
-	/**
 	 * Redacts a log line's context.
 	 *
 	 * The context is read as one line would read it: its strings share one budget of

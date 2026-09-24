@@ -11,9 +11,15 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Jobs;
 
+use SEOCart\Platform\Database\Schema\DdlGenerator;
+use SEOCart\Platform\Database\Schema\PlatformTables;
+use SEOCart\Platform\Database\Schema\SchemaVerifier;
+use SEOCart\Platform\Database\SchemaOperations;
+use SEOCart\Platform\Events\DrainOptions;
 use SEOCart\Platform\Events\EventCatalog;
 use SEOCart\Platform\Events\EventEnvelope;
 use SEOCart\Platform\Events\HookBridge;
+use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Events\Publisher;
 use SEOCart\Platform\Jobs\EventWake;
 use SEOCart\Platform\Jobs\Handlers\OutboxCatchUp;
@@ -108,6 +114,60 @@ final class EventWakeTest extends JobsTestCase {
 		$this->assertSame( array( 'response ended', 'delivered 1', 'delivered 2' ), $this->order );
 		$this->assertSame( array( 'dispatched', 'dispatched' ), $this->outboxStates() );
 		$this->assertSame( array(), $this->actions(), 'A request that drains at its end queues no job.' );
+	}
+
+	/**
+	 * Tests that on a network the wake tracks every site whose request published, not only the current one.
+	 *
+	 * Planted violation: in EventWake::__invoke(), record get_main_site_id() instead of
+	 * get_current_blog_id(); the network site's row is never delivered.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_wake_tracks_every_site_that_published_on_a_network(): void {
+		if ( ! is_multisite() ) {
+			$this->markTestSkipped( 'Needs a multisite test run (WP_MULTISITE=1).' );
+		}
+
+		global $wpdb;
+
+		$main = get_current_blog_id();
+		$site = wp_insert_site(
+			array(
+				'domain' => 'example.org',
+				'path'   => '/seocart-wake-network/',
+			)
+		);
+
+		$this->assertIsInt( $site );
+
+		$wake = $this->wake( static fn(): bool => true );
+
+		try {
+			switch_to_blog( $site );
+
+			$operations = new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) );
+
+			( new CreateOutboxMigration() )->up( $operations );
+			$operations->createTable( PlatformTables::locks() );
+
+			$this->publish( $wake, 11 );
+
+			restore_current_blog();
+
+			$this->publish( $wake, 12 );
+
+			$wake->atShutdown();
+
+			$this->assertSame( $main, get_current_blog_id(), 'The wake restored the current site.' );
+			$this->assertSame( array( 'delivered 11', 'delivered 12' ), $this->order, 'Both sites\' rows were dispatched.' );
+		} finally {
+			foreach ( array( 'outbox', 'locks' ) as $table ) {
+				$wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', $wpdb->get_blog_prefix( $site ) . 'seocart_' . $table ) );
+			}
+
+			wp_delete_site( $site );
+		}
 	}
 
 	/**
@@ -245,7 +305,7 @@ final class EventWakeTest extends JobsTestCase {
 	}
 
 	/**
-	 * Tests that after a fatal error the wake neither ends the response, nor drains, nor queues.
+	 * Tests that after a fatal error the wake neither ends the response, nor drains, nor queues; the row waits for a later drain.
 	 *
 	 * Planted violation: in atShutdown(), drop the check for a fatal error.
 	 *
@@ -275,6 +335,10 @@ final class EventWakeTest extends JobsTestCase {
 		$this->assertSame( 0, $ended );
 		$this->assertSame( array(), $this->order );
 		$this->assertSame( array(), $this->actions() );
+
+		$this->drainer()->drain( DrainOptions::command() );
+
+		$this->assertSame( array( 'delivered 1' ), $this->order, 'The row waited, untouched, and a later drain delivered it.' );
 	}
 
 	/**

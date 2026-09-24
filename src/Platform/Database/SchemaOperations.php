@@ -19,14 +19,15 @@ use SEOCart\Platform\Database\Schema\TableDefinition;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Creates tables from their declarations and runs the explicit ALTERs a contract step needs.
+ * Creates tables from their declarations.
  *
  * Owns one fact: how a declaration becomes DDL on this server. A table that does not exist is
  * created with the generated CREATE TABLE, sent through Database, so a failure keeps its error
  * number (the bootstrap relies on seeing 1050 when two runners race). A table that exists is
  * handed to dbDelta with the same statement, which adds any missing column or index and does
- * nothing when the table already matches. dbDelta cannot drop, retype or rename; that is
- * alter(). What any of this did is never taken on trust: the migrator verifies the result.
+ * nothing when the table already matches. dbDelta cannot drop, retype or rename a column; no
+ * migration needs that yet. What any of this did is never taken on trust: the migrator
+ * verifies the result.
  *
  * @since 0.1.0
  */
@@ -106,34 +107,6 @@ final class SchemaOperations {
 		foreach ( $definitions as $definition ) {
 			$this->createTable( $definition );
 		}
-	}
-
-	/**
-	 * Runs one explicit ALTER TABLE, for the changes dbDelta cannot make.
-	 *
-	 * Re-runnable only if the caller guards it, with verifier()->hasColumn() or hasIndex().
-	 *
-	 * @since 0.1.0
-	 *
-	 * @throws QueryFailed When the server refuses it.
-	 *
-	 * @param string $table  The table's unprefixed name.
-	 * @param string $clause Everything after `ALTER TABLE name`, for example "DROP COLUMN `legacy`".
-	 */
-	public function alter( string $table, string $clause ): void {
-		// The clause is migration code, not input; a percent sign in it is literal.
-		$this->db->execute( 'ALTER TABLE %i ' . str_replace( '%', '%%', $clause ), $this->db->table( $table ) );
-	}
-
-	/**
-	 * Returns the verifier, so a migration can guard an explicit ALTER.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return SchemaVerifier The verifier.
-	 */
-	public function verifier(): SchemaVerifier {
-		return $this->verifier;
 	}
 
 	/**

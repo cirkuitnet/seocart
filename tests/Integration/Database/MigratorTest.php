@@ -102,7 +102,6 @@ final class MigratorTest extends DatabaseTestCase {
 		$status = $this->migrator( array( new PlatformBootstrapMigration() ) )->status();
 
 		$this->assertFalse( $status->writesBlocked() );
-		$this->assertSame( PlatformBootstrapMigration::ID, $status->appliedHead() );
 		$this->assertSame( array(), $status->pending() );
 	}
 
@@ -619,8 +618,7 @@ final class MigratorTest extends DatabaseTestCase {
 		$migrator = $this->migrator( $chain );
 		$status   = $migrator->status();
 
-		$this->assertSame( $marks->id(), $status->running() );
-		$this->assertNotSame( $status->codeHead(), $status->appliedHead(), 'The heads differ while the backfill runs.' );
+		$this->assertSame( $marks->id(), $status->running(), 'The backfill is still running.' );
 		$this->assertFalse( $status->writesBlocked(), 'A half-applicable backfill must not refuse writes.' );
 		$this->assertFalse( $migrator->writesBlocked( $a->id() ), 'The zero-query gate agrees.' );
 	}
@@ -687,7 +685,6 @@ final class MigratorTest extends DatabaseTestCase {
 
 		$status = $migrator->status();
 
-		$this->assertSame( $newer, $status->appliedHead() );
 		$this->assertSame( array(), $status->pending() );
 		$this->assertTrue( $status->writesBlocked(), 'The schema is newer than the code.' );
 		$this->assertTrue( $migrator->writesBlocked( $newer ), 'The zero-query gate agrees.' );

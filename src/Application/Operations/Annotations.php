@@ -99,17 +99,6 @@ final class Annotations {
 	}
 
 	/**
-	 * Tells whether repeating the operation with the same input has no further effect.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return bool True for an idempotent operation.
-	 */
-	public function isIdempotent(): bool {
-		return $this->idempotent;
-	}
-
-	/**
 	 * Returns the annotations under the keys the Abilities API reads from `meta.annotations`.
 	 *
 	 * @since 0.1.0

@@ -324,7 +324,7 @@ final class Migrator {
 
 		$codeHead = $this->codeHead();
 
-		return new MigrationStatus( $codeHead, $appliedHead, self::ids( $outstanding ), $failed, $running, self::blocksWrites( $outstanding, $appliedHead, $codeHead ) );
+		return new MigrationStatus( $codeHead, self::ids( $outstanding ), $failed, $running, self::blocksWrites( $outstanding, $appliedHead, $codeHead ) );
 	}
 
 	/**

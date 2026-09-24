@@ -162,7 +162,7 @@ $seocart_site_result['wp_cron_ran']      = $seocart_site_wp_cron();
 $seocart_site_status                     = $seocart_site_migrator->status();
 $seocart_site_result['migrations']       = array(
 	'code_head'      => $seocart_site_status->codeHead(),
-	'applied_head'   => $seocart_site_status->appliedHead(),
+	'applied_head'   => ( new MigrationsTableState( $seocart_site_db ) )->schemaHead(),
 	'writes_blocked' => $seocart_site_status->writesBlocked(),
 );
 

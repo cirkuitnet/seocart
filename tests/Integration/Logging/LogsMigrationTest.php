@@ -30,8 +30,8 @@ use SEOCart\Tests\Support\Doubles\FrozenClock;
  * The log table is created exactly as declared, after the bootstrap, and a second run changes nothing.
  *
  * Planted violation: at the end of CreateLogsMigration::up(), drop the `correlation_id` index
- * (`$operations->alter( 'logs', 'DROP INDEX correlation_id' )`); the migrator's post-condition
- * then fails the migration.
+ * directly (`$this->db->execute( 'ALTER TABLE %i DROP INDEX correlation_id', ... )`); the
+ * migrator's post-condition then fails the migration.
  *
  * @since 0.1.0
  *

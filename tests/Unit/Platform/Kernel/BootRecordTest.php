@@ -58,7 +58,11 @@ final class BootRecordTest extends TestCase {
 	 */
 	public function test_a_record_round_trips_and_begins_with_its_revision(): void {
 		$record = self::full()->withRev( 7 );
-		$json   = $record->toJson();
+		$data   = json_decode( $record->toJson(), true );
+
+		// Kill switches keep no fluent setter; a stored record's 'kill' key is read and written back as is.
+		$data['kill'] = array( 'gateway.stripe' => true );
+		$json         = (string) wp_json_encode( $data );
 
 		$this->assertStringStartsWith( '{"v":1,"rev":7,"plugin_version":', $json );
 
@@ -76,7 +80,6 @@ final class BootRecordTest extends TestCase {
 		$this->assertSame( SafeModeStatus::Copy, $read->safeModeReason() );
 		$this->assertSame( '2026-09-23T10:00:00Z', $read->safeModeSince() );
 		$this->assertSame( '2026-09-23T11:00:00Z', $read->adoptedAt() );
-		$this->assertSame( array( 'gateway.stripe' => true ), $read->killSwitches() );
 		$this->assertSame( '2026-09-22T09:00:00Z', $read->installedAt() );
 		$this->assertTrue( $read->canaryFailed() );
 		$this->assertSame( '2026-09-23T12:00:00Z', $read->canaryFailedSince() );
@@ -228,21 +231,28 @@ final class BootRecordTest extends TestCase {
 			->withSafeMode( SafeModeStatus::Rebuilt, $long )
 			->withAdoptedAt( $long )
 			->withInstalledAt( $long )
-			->withCanaryFailure( str_repeat( 't', 32 ) );
+			->withCanaryFailure( str_repeat( 't', 32 ) )
+			->withRev( PHP_INT_MAX );
 
 		for ( $i = 0; $i < BootRecord::MAX_KILL_SWITCHES; ++$i ) {
 			$kill[ 'k' . str_pad( (string) $i, 63, '0', STR_PAD_LEFT ) ] = true;
 		}
 
-		$json = $largest->withKillSwitches( $kill )->withRev( PHP_INT_MAX )->toJson();
+		// Kill switches keep no fluent setter; the largest record is built by decoding, adding the
+		// kill switches to the budget's byte count, and reading the record back.
+		$data         = json_decode( $largest->toJson(), true );
+		$data['kill'] = $kill;
+		$json         = (string) wp_json_encode( $data );
 
 		$this->assertLessThanOrEqual( BootRecord::MAX_BYTES, strlen( $json ), 'The caps allow a record over the budget.' );
+		$this->assertFalse( BootRecord::fromJson( $json )->isAbsent(), 'The largest record the caps allow is read back.' );
 
 		$kill['one-more'] = true;
+		$data['kill']     = $kill;
 
-		$this->expectException( \InvalidArgumentException::class );
+		$this->expectException( \UnexpectedValueException::class );
 
-		$largest->withKillSwitches( $kill );
+		BootRecord::fromJson( (string) wp_json_encode( $data ) );
 	}
 
 	/**
@@ -322,7 +332,6 @@ final class BootRecordTest extends TestCase {
 			->withHomeUrl( 'https://shop.example.org' )
 			->withSafeMode( SafeModeStatus::Copy, '2026-09-23T10:00:00Z' )
 			->withAdoptedAt( '2026-09-23T11:00:00Z' )
-			->withKillSwitches( array( 'gateway.stripe' => true ) )
 			->withInstalledAt( '2026-09-22T09:00:00Z' )
 			->withCanaryFailure( '2026-09-23T12:00:00Z' );
 	}

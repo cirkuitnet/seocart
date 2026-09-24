@@ -12,7 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Support\Doubles;
 
 /**
- * Stands in for OutboxDrainer::scheduleAtShutdown() in tests.
+ * Stands in for the wake a publisher calls after a commit that stores events.
  *
  * Owns one fact: how often a publisher woke a drainer. It never drains, which is also how a
  * test plays a process that dies right after COMMIT; so PHPUnit's own process never drains at

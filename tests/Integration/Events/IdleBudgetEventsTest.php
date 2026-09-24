@@ -58,7 +58,7 @@ final class IdleBudgetEventsTest extends OutboxTestCase {
 				$bridge      = new HookBridge( $this->reporter() );
 				$outbox      = new Outbox( $this->db );
 				$drainer     = new OutboxDrainer( $this->db, $outbox, $bridge, $catalog, new LockService( $this->db, LockMode::Table ), $correlation, $this->reporter() );
-				$publisher   = new Publisher( $this->db, $outbox, $bridge, $catalog, $correlation, array( $drainer, 'scheduleAtShutdown' ) );
+				$publisher   = new Publisher( $this->db, $outbox, $bridge, $catalog, $correlation, static function (): void {} );
 
 				$built = array( $catalog, $correlation, $bridge, $outbox, $drainer, $publisher );
 			}
@@ -90,18 +90,14 @@ final class IdleBudgetEventsTest extends OutboxTestCase {
 	}
 
 	/**
-	 * The wake costs no query and no hook; with delivery paused, the drain at the end of the request costs no query either.
+	 * With delivery paused, the drain at the end of the request costs no query.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_wake_costs_nothing(): void {
+	public function test_a_paused_drain_costs_nothing(): void {
 		$drainer = new OutboxDrainer( $this->db, $this->outbox, $this->bridge, $this->catalog, new LockService( $this->db, LockMode::Table ), $this->correlation, $this->reporter(), static fn(): bool => true );
-		$hooks   = self::callbackCount();
 
-		$this->assertQueryCount( 0, $this->captureQueries( fn() => $drainer->scheduleAtShutdown() ), 'The wake' );
-		$this->assertQueryCount( 0, $this->captureQueries( fn() => $drainer->scheduleAtShutdown() ), 'A second wake' );
-		$this->assertSame( $hooks, self::callbackCount() );
-		$this->assertQueryCount( 0, $this->captureQueries( fn() => $drainer->drainAtShutdown() ), 'A drain while delivery is paused' );
+		$this->assertQueryCount( 0, $this->captureQueries( fn() => $drainer->drainAtEndOfRequest( array( get_current_blog_id() ) ) ), 'A drain while delivery is paused' );
 	}
 
 	/**

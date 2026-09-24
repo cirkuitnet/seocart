@@ -283,24 +283,33 @@ final class BootOptionTest extends KernelTestCase {
 	public function test_the_record_cannot_outgrow_its_budget(): void {
 		global $wpdb;
 
+		// Kill switches keep no fluent setter; a record that carries them is built by decoding a
+		// stored record's text, setting its 'kill' key, and reading it back.
 		$largest = self::largestKillMap( BootRecord::MAX_KILL_SWITCHES );
-		$written = $this->plantRecord(
-			self::installedRecord( str_repeat( 'h', 191 ) )
-				->withHomeUrl( 'https://example.org/' . str_repeat( 'p', BootRecord::MAX_URL_BYTES - 20 ) )
-				->withKillSwitches( $largest )
-		);
+		$base    = self::installedRecord( str_repeat( 'h', 191 ) )
+			->withHomeUrl( 'https://example.org/' . str_repeat( 'p', BootRecord::MAX_URL_BYTES - 20 ) )
+			->withRev( 1 );
+		$data    = json_decode( $base->toJson(), true );
 
-		$this->assertSame( BootRecord::MAX_KILL_SWITCHES, count( $written->killSwitches() ) );
+		$data['kill'] = $largest;
+
+		$this->plantRecord( BootRecord::fromJson( (string) wp_json_encode( $data ) ) );
+
+		$stored = json_decode( (string) $this->storedRecord(), true );
+
+		$this->assertSame( BootRecord::MAX_KILL_SWITCHES, count( (array) $stored['kill'] ) );
 		$this->assertLessThanOrEqual( BootRecord::MAX_BYTES, (int) $wpdb->get_var( $wpdb->prepare( 'SELECT LENGTH( option_value ) FROM %i WHERE option_name = %s', $wpdb->options, BootOption::NAME ) ) );
 
 		$nineKilobytes = self::largestKillMap( 128 );
 
 		$this->assertGreaterThan( 9000, strlen( (string) wp_json_encode( $nineKilobytes ) ) );
 
+		$data['kill'] = $nineKilobytes;
+
 		try {
-			$this->changeRecord( static fn( BootRecord $record ): BootRecord => $record->withKillSwitches( $nineKilobytes ) );
+			$this->changeRecord( static fn(): BootRecord => BootRecord::fromJson( (string) wp_json_encode( $data ) ) );
 			$this->fail( 'A kill-switch map of 9 KB was accepted.' );
-		} catch ( \InvalidArgumentException $refused ) {
+		} catch ( \UnexpectedValueException $refused ) {
 			$this->assertStringContainsString( 'at most', $refused->getMessage() );
 		}
 

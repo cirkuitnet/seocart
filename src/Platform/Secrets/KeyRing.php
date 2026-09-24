@@ -83,17 +83,6 @@ final class KeyRing {
 	}
 
 	/**
-	 * Returns the retiring key's id.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return string|null The id, or null when no key is retiring.
-	 */
-	public function retiringId(): ?string {
-		return $this->retiringId;
-	}
-
-	/**
 	 * Returns the key a sealed value names, if it is the active or the retiring key.
 	 *
 	 * @since 0.1.0

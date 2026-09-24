@@ -71,7 +71,6 @@ final class RetentionCatalogTest extends TestCase {
 		foreach ( self::MODEL as $id => $defaults ) {
 			$this->assertTrue( $catalog->has( $id ), $id );
 			$this->assertSame( $defaults, $catalog->defaults( $id ), $id );
-			$this->assertNotSame( '', trim( $catalog->rule( $id ) ), $id . ' says what it does.' );
 		}
 	}
 
