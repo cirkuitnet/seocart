@@ -12,12 +12,13 @@ under `[Unreleased]`. The release process moves those entries under the new vers
 
 ## [Unreleased]
 
-This is the platform foundation, the start of the catalog and stock. **The plugin cannot sell
-anything yet:** it registers a product post type and keeps stock per variant, but nothing
-prices a product so far, and it has no cart, checkout, orders, payments, blocks or admin
-screens of its own. It registers the store settings route (`GET` and `PATCH`) and its two
-WP-CLI commands, the stock adjustment route, ability and command, the `wp seocart`
-maintenance commands, three Site Health tests and its own background jobs. Activation installs the
+This is the platform foundation and the start of the catalog and stock. **The plugin cannot
+sell anything yet:** a product can be created and priced in the block editor, and stock is
+kept per variant, but there is no cart, checkout, orders, payments, storefront blocks or
+admin screen of its own. It registers the store settings route (`GET` and `PATCH`) and its
+two WP-CLI commands, the stock adjustment route, ability and command, the product route at
+`wp/v2/seocart-products`, the `wp seocart` maintenance commands, three Site Health tests
+and its own background jobs. Activation installs the
 plugin's database tables, its roles and capabilities, one installation record, a data key
 for secret settings and the recurring jobs. The rest is the skeleton and the checks that
 keep it releasable.
@@ -179,4 +180,9 @@ seocart jobs run` and from a short tick on admin requests; `wp seocart jobs stat
   `seocart_product_saved` through the outbox. A save that fails leaves a live product on
   sale as it was; a save cut short by a crash, a lost connection or another plugin ending
   the transaction leaves the product unsellable until it is saved again; a save without a
-  price leaves the product incomplete. Nothing calls the service yet.
+  price leaves the product incomplete.
+- The block editor saves a product's title, content, SKU, price, compare-at price and
+  weight in one request: `wp/v2/seocart-products` is served by the plugin's own posts
+  controller, which adds a `seocart` object to product responses (with the product's sale
+  status), and a Commerce panel in the product editor edits it. Autosaves and restoring a
+  revision never touch the commerce fields.
