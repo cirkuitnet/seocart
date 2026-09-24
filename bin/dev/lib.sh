@@ -368,6 +368,35 @@ sc_password() {
 	sc_random 32 'A-Za-z0-9'
 }
 
+# sc_encryption_key — the base64 encoding of 32 random bytes from /dev/urandom, in the
+# format SEOCart\Platform\Secrets\EncryptionKey expects (src/Platform/Secrets/Cipher.php,
+# KEY_BYTES). Callers must never print it: it goes straight into wp-config.php, mode 600
+# from the start.
+sc_encryption_key() {
+	sc_key_value=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 | tr -d '\n')
+	if [ "${#sc_key_value}" -ne 44 ]; then
+		printf 'error: could not read or encode 32 random bytes from /dev/urandom\n' >&2
+		return 1
+	fi
+	printf '%s\n' "$sc_key_value"
+}
+
+# sc_wp_config_disposable_lines <encryption key> — the three lines that mark a disposable
+# instance development-only: `WP_ENVIRONMENT_TYPE`, so the reference seed's guard and the
+# plugin's developer-only checks recognise it; the encryption key, so the secrets module and
+# Site Health see one defined; and the reference seed's own env-var guard
+# (tests/Support/Seed/seed-site.php reads SEOCART_SEED_DISPOSABLE with getenv(), not a
+# constant, so it is set here with putenv() rather than define()) so `wp eval-file` seeds the
+# site without an extra variable on every call. Callers must write the result straight into
+# wp-config.php and never print it themselves.
+sc_wp_config_disposable_lines() {
+	cat <<EOF
+define( 'WP_ENVIRONMENT_TYPE', 'development' );
+define( 'SEOCART_ENCRYPTION_KEY', '$1' );
+putenv( 'SEOCART_SEED_DISPOSABLE=1' );
+EOF
+}
+
 # ---------------------------------------------------------------------------------------
 # MySQL. sc_sql is the ONLY function that starts the mysql client.
 # ---------------------------------------------------------------------------------------

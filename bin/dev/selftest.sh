@@ -35,15 +35,21 @@ checks=0
 failures=0
 output=$sandbox/selftest.out
 
+# SC_SELFTEST_CAPTURE, when set, also appends every ok/FAIL line to that file: a section
+# that must prove it never prints a secret sets it, then greps the file, then clears it.
+SC_SELFTEST_CAPTURE=
+
 passed() {
 	checks=$((checks + 1))
 	printf 'ok    %s\n' "$1"
+	[ -z "$SC_SELFTEST_CAPTURE" ] || printf 'ok    %s\n' "$1" >>"$SC_SELFTEST_CAPTURE"
 }
 
 failed() {
 	checks=$((checks + 1))
 	failures=$((failures + 1))
 	printf 'FAIL  %s\n' "$1"
+	[ -z "$SC_SELFTEST_CAPTURE" ] || printf 'FAIL  %s\n' "$1" >>"$SC_SELFTEST_CAPTURE"
 }
 
 # expect_exit <status> <description> <command> [<argument> ...] — output goes to $output.
@@ -218,6 +224,59 @@ if [ "$first" != "$second" ]; then
 	passed "two passwords differ"
 else
 	failed "two passwords differ"
+fi
+
+printf '\n== disposable-site markers (behavioural: proves no path here prints a key, not just that none is asked to)\n'
+key1_errfile=$sandbox/key1.stderr
+key2_errfile=$sandbox/key2.stderr
+key1=$(sc_encryption_key 2>"$key1_errfile")
+key2=$(sc_encryption_key 2>"$key2_errfile")
+expect_equal '' "$(cat "$key1_errfile" "$key2_errfile")" "sc_encryption_key: nothing on stderr, on either call"
+expect_equal 44 "${#key1}" "encryption key: length (base64 of 32 bytes)"
+case $key1 in
+	*[!A-Za-z0-9+/=]*)
+		failed "encryption key: base64 characters only"
+		;;
+	*)
+		passed "encryption key: base64 characters only"
+		;;
+esac
+if [ "$key1" != "$key2" ]; then
+	passed "two encryption keys differ"
+else
+	failed "two encryption keys differ"
+fi
+
+# This capture holds every ok/FAIL line the rest of this section prints (passed()/failed()
+# append to it while SC_SELFTEST_CAPTURE is set): the descriptions and, on a failure, the
+# "got/expected" text of every assertion below — including one that matches a pattern built
+# from key1, so a key that leaked into a message here, not just into a grep pattern, would
+# show. Searched afterwards for either raw key; finding one is the failure this proves against.
+disposable_capture=$sandbox/disposable-section.out
+: >"$disposable_capture"
+SC_SELFTEST_CAPTURE=$disposable_capture
+
+disposable_lines=$(sc_wp_config_disposable_lines "$key1")
+expect_equal 1 "$(printf '%s\n' "$disposable_lines" | grep -Fc "define( 'WP_ENVIRONMENT_TYPE', 'development' );")" "marks the environment type development, once"
+expect_equal 1 "$(printf '%s\n' "$disposable_lines" | grep -Fc "define( 'SEOCART_ENCRYPTION_KEY', '$key1' );")" "defines the generated encryption key, once"
+expect_equal 1 "$(printf '%s\n' "$disposable_lines" | grep -Fc "putenv( 'SEOCART_SEED_DISPOSABLE=1' );")" "marks the site disposable for the reference seed, once"
+expect_equal 3 "$(printf '%s\n' "$disposable_lines" | grep -c .)" "exactly the three lines, nothing else"
+
+SC_SELFTEST_CAPTURE=
+if grep -F -e "$key1" -e "$key2" "$disposable_capture" >/dev/null 2>&1; then
+	failed "this section's own reported output never contains a generated key"
+else
+	passed "this section's own reported output never contains a generated key"
+fi
+
+# A static guard for the one path a sandboxed self-test cannot exercise: provision-site.sh
+# needs a real WP-CLI and MySQL to run write_wp_config(), so nothing above ever calls it.
+# Anything that could put the key on the operator's screen — a message helper, or a bare
+# printf or echo — is refused wherever it also names the key's variable.
+if grep -nE 'sc_(info|warn|die)|printf|echo' "$SC_DEV_DIR/provision-site.sh" | grep -q 'encryption_key'; then
+	failed "provision-site.sh: the encryption key variable is never passed to sc_info, sc_warn, sc_die, printf or echo"
+else
+	passed "provision-site.sh: the encryption key variable is never passed to sc_info, sc_warn, sc_die, printf or echo"
 fi
 
 printf '\n== template rendering\n'

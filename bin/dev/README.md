@@ -31,8 +31,8 @@ printed by `--help`) keeps `wp_<slug>_` plus WooCommerce's longest table name in
 
 ## Prerequisites
 
-- WP-CLI 2.12 or newer, the `mysql` client, `php`, `curl`, `git`; `composer` and `npm` for
-  `new-worktree.sh`.
+- WP-CLI 2.12 or newer, the `mysql` client, `php`, `curl`, `git`, `base64`; `composer` and
+  `npm` for `new-worktree.sh`.
 - The integration site and the shared WordPress core checkout (paths: "Environment").
 - **One grant, run once by a MySQL administrator**, for the account named by `DB_USER` in
   the integration site's `wp-config.php`:
@@ -100,6 +100,19 @@ leave nothing behind.
   line. The provisioning account reaches the `mysql` client through a temporary option
   file (mode 600, removed by a trap); the administrator password reaches WP-CLI the same
   way.
+- **The instance is marked disposable and development-only.** `wp-config.php` carries three
+  lines nothing else in `bin/dev` writes:
+    - `define( 'WP_ENVIRONMENT_TYPE', 'development' );` — otherwise a fresh instance reports
+      `production`, which the reference seed's guard refuses and which turns off the plugin's
+      developer-only checks (strict transaction checks).
+    - `define( 'SEOCART_ENCRYPTION_KEY', '<base64 of 32 bytes from /dev/urandom>' );` — the
+      key `src/Platform/Secrets/EncryptionKey.php` reads. Generated fresh per instance, never
+      printed or logged, and never anywhere but this one mode-600 file; teardown removes it
+      with the rest of `wp-config.php`.
+    - `putenv( 'SEOCART_SEED_DISPOSABLE=1' );` — `tests/Support/Seed/seed-site.php` reads
+      `SEOCART_SEED_DISPOSABLE` with `getenv()`, not a constant, so it is set here with
+      `putenv()` rather than `define()`; `wp eval-file tests/Support/Seed/seed-site.php` then
+      seeds the instance without the caller passing that variable itself.
 - The smoke check runs on the server. If the site's public name does not answer from
   there (split DNS, TLS terminated elsewhere), it asks the machine's own addresses for the
   same URL; `SEOCART_DEV_SMOKE_CONNECT_TO=<address>` names one explicitly.

@@ -111,6 +111,9 @@ write_wp_config() {
 		salts="$salts
 define( '$salt_name', '$salt_value' );"
 	done
+	# Base64 of 32 bytes: also safe in a single-quoted PHP string (its alphabet is
+	# A-Za-z0-9+/=). Never printed: it reaches the file only through this substitution.
+	encryption_key=$(sc_encryption_key) || exit 1
 	# Mode 600 from the start: only PHP reads this file, and PHP runs as its owner. The
 	# web server itself, which runs as someone else, has no business reading it.
 	(
@@ -139,6 +142,10 @@ $salts
 define( 'WP_DEBUG', true );
 define( 'WP_DEBUG_LOG', '$debug_log' );
 define( 'WP_DEBUG_DISPLAY', false );
+
+// A disposable development site: the reference seed's guard and the plugin's
+// developer-only checks recognise it, and wp eval-file needs no extra variable to seed it.
+$(sc_wp_config_disposable_lines "$encryption_key")
 
 // Core updates would make this disposable copy diverge from the shared checkout.
 define( 'AUTOMATIC_UPDATER_DISABLED', true );
@@ -271,7 +278,7 @@ sc_validate_slug "$slug" || exit 2
 
 # Checks without side effects first: a refusal here leaves nothing behind.
 sc_require_wp_cli
-sc_require_commands mysql php curl sed
+sc_require_commands mysql php curl sed base64
 checkout=$(sc_resolve_checkout "$checkout_option")
 [ -f "$checkout/seocart.php" ] || sc_die "$checkout is not a SEOCart checkout: seocart.php is missing"
 core_dir=$SEOCART_DEV_WP_CORE_DIR
