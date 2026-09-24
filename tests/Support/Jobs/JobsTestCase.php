@@ -45,6 +45,21 @@ use SEOCart\Tests\Support\Events\ThingNoticed;
  * shared connection, so every action of the plugin's group, of OTHER_GROUP and of the plugin's
  * hook is deleted, with its log lines, before and after each test.
  *
+ * A run of the library's queue runner in a test is the run a fresh WP-Cron request makes, however
+ * long the test process has been running and whatever the queue held before the test:
+ *
+ * - Its stop is a count, not a clock. The library counts its time limit from when its one runner
+ *   was created, which in a test process was at bootstrap; late in a long run it would start one
+ *   action per run. For each test the runner stops after MAX_ACTIONS_PER_RUN actions instead of
+ *   when its time looks spent, so a run is never cut short by the process's age, and a job that
+ *   puts itself back due at once fails its test instead of hanging the suite. The filter is
+ *   removed after the test.
+ * - It sees only the actions the test stored. Every action already pending when the test starts
+ *   — the library's own, such as its migration hook, due a minute after the test site is
+ *   installed, or one another test left — is deferred for the test and put back after it.
+ *   Deferring leaves every group in reach of the library's runner, which some tests require;
+ *   limiting the runner to the plugin's group would not.
+ *
  * The handlers are the fixture ones (RecordingJob, RecurringJob), resolved with the test's
  * correlation id; a test that needs other handlers calls wire(). The runner's hook is
  * registered as the kernel registers it, in place of the kernel's own runner, which the plugin
@@ -73,6 +88,45 @@ abstract class JobsTestCase extends DatabaseTestCase {
 	 * @var string
 	 */
 	protected const OTHER_HOOK = 'another_plugin_task';
+
+	/**
+	 * How far an action pending before the test is deferred while it runs: past any test's reach.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const DEFERRAL_YEARS = 1000;
+
+	/**
+	 * How many actions one run of the library's queue runner may process in a jobs test before it stops.
+	 *
+	 * Far above what any test stores, and low enough that a job requeuing itself at once ends the
+	 * run within a second or two.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const MAX_ACTIONS_PER_RUN = 500;
+
+	/**
+	 * The filter that replaces the library's time-based stop with MAX_ACTIONS_PER_RUN, kept so tear_down() removes this one.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var \Closure|null
+	 */
+	private ?\Closure $runStop = null;
+
+	/**
+	 * The ids of the actions deferred for the test.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<int>
+	 */
+	private array $deferred = array();
 
 	/**
 	 * The request's correlation id, minting sequential ids from 1.
@@ -138,7 +192,7 @@ abstract class JobsTestCase extends DatabaseTestCase {
 	protected bool $paused = false;
 
 	/**
-	 * Creates the tables, wires the module and clears the queue.
+	 * Creates the tables, wires the module, clears the queue and gives the library's runner a fresh request's run.
 	 *
 	 * @since 0.1.0
 	 */
@@ -151,6 +205,10 @@ abstract class JobsTestCase extends DatabaseTestCase {
 		( new CreateOutboxMigration() )->up( $operations );
 
 		$this->purgeActions();
+		$this->deferPendingActions();
+
+		$this->runStop = static fn( $likely, $runner, $processed ): bool => (int) $processed >= self::MAX_ACTIONS_PER_RUN;
+		add_filter( 'action_scheduler_maximum_execution_time_likely_to_be_exceeded', $this->runStop, PHP_INT_MAX, 3 );
 
 		RecordingJob::reset();
 		RecurringJob::reset();
@@ -163,12 +221,18 @@ abstract class JobsTestCase extends DatabaseTestCase {
 	}
 
 	/**
-	 * Clears the queue.
+	 * Clears the queue, puts back the deferred actions and gives the library's runner its time limit back.
 	 *
 	 * @since 0.1.0
 	 */
 	public function tear_down(): void {
+		if ( null !== $this->runStop ) {
+			remove_filter( 'action_scheduler_maximum_execution_time_likely_to_be_exceeded', $this->runStop, PHP_INT_MAX );
+			$this->runStop = null;
+		}
+
 		$this->purgeActions();
+		$this->restoreDeferredActions();
 
 		parent::tear_down();
 	}
@@ -349,21 +413,15 @@ abstract class JobsTestCase extends DatabaseTestCase {
 	}
 
 	/**
-	 * Runs the library's own queue runner, the one WP-Cron fires, until it finds nothing due in any group.
+	 * Runs the library's own queue runner once, as WP-Cron runs it: until it finds nothing due in any group.
 	 *
-	 * The library's runner stops starting actions once its time limit is near, and counts that
-	 * limit from when its one instance was created, which in a long test process was long ago:
-	 * there each run starts one action. A WP-Cron request gets a fresh runner. So the runner is
-	 * run again until a run starts nothing.
+	 * One run is enough because the process's age never cuts a run short in a jobs test; it stops
+	 * after MAX_ACTIONS_PER_RUN actions (see the class).
 	 *
 	 * @since 0.1.0
 	 */
 	protected function runLibraryQueue(): void {
-		for ( $round = 0; $round < 50; $round++ ) {
-			if ( 0 === \ActionScheduler_QueueRunner::instance()->run( 'WP Cron' ) ) {
-				return;
-			}
-		}
+		\ActionScheduler_QueueRunner::instance()->run( 'WP Cron' );
 	}
 
 	/**
@@ -398,5 +456,36 @@ abstract class JobsTestCase extends DatabaseTestCase {
 	 */
 	private function purgeActions(): void {
 		PluginActions::purge( array( JobRunner::HOOK, self::OTHER_HOOK ), array( JobQueue::GROUP, self::OTHER_GROUP ) );
+	}
+
+	/**
+	 * Defers every action pending before the test by DEFERRAL_YEARS.
+	 *
+	 * @since 0.1.0
+	 */
+	private function deferPendingActions(): void {
+		global $wpdb;
+
+		$table          = $wpdb->prefix . 'actionscheduler_actions';
+		$this->deferred = array_map( 'intval', $wpdb->get_col( $wpdb->prepare( 'SELECT action_id FROM %i WHERE status = %s', $table, 'pending' ) ) );
+
+		foreach ( $this->deferred as $id ) {
+			$wpdb->query( $wpdb->prepare( 'UPDATE %i SET scheduled_date_gmt = scheduled_date_gmt + INTERVAL %d YEAR, scheduled_date_local = scheduled_date_local + INTERVAL %d YEAR WHERE action_id = %d', $table, self::DEFERRAL_YEARS, self::DEFERRAL_YEARS, $id ) );
+		}
+	}
+
+	/**
+	 * Puts each deferred action back to when it was due, unless the test moved it.
+	 *
+	 * @since 0.1.0
+	 */
+	private function restoreDeferredActions(): void {
+		global $wpdb;
+
+		foreach ( $this->deferred as $id ) {
+			$wpdb->query( $wpdb->prepare( 'UPDATE %i SET scheduled_date_gmt = scheduled_date_gmt - INTERVAL %d YEAR, scheduled_date_local = scheduled_date_local - INTERVAL %d YEAR WHERE action_id = %d AND scheduled_date_gmt > UTC_TIMESTAMP() + INTERVAL %d YEAR', $wpdb->prefix . 'actionscheduler_actions', self::DEFERRAL_YEARS, self::DEFERRAL_YEARS, $id, self::DEFERRAL_YEARS - 1 ) );
+		}
+
+		$this->deferred = array();
 	}
 }
