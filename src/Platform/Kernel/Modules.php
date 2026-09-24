@@ -30,6 +30,16 @@ use SEOCart\Interfaces\Operations\CliAdapter;
 use SEOCart\Interfaces\Operations\ErrorTranslator;
 use SEOCart\Interfaces\Operations\OperationInvoker;
 use SEOCart\Interfaces\Operations\RestAdapter;
+use SEOCart\Inventory\Application\InventoryError;
+use SEOCart\Inventory\Application\StockService;
+use SEOCart\Inventory\Domain\Event\StockAdjusted;
+use SEOCart\Inventory\Domain\Event\StockHoldExpired;
+use SEOCart\Inventory\Domain\Event\StockReservationReleased;
+use SEOCart\Inventory\Domain\Event\StockReserved;
+use SEOCart\Inventory\Domain\StockRepository;
+use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
+use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
+use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Authorization\AuthorizationError;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
@@ -153,6 +163,7 @@ final class Modules {
 		AuthorizationError::class,
 		CatalogError::class,
 		DatabaseError::class,
+		InventoryError::class,
 		KernelError::class,
 		SecretsError::class,
 		SettingsError::class,
@@ -169,6 +180,10 @@ final class Modules {
 	public const EVENT_CLASSES = array(
 		ProductDeleted::class,
 		ProductSaved::class,
+		StockAdjusted::class,
+		StockHoldExpired::class,
+		StockReserved::class,
+		StockReservationReleased::class,
 	);
 
 	/**
@@ -232,6 +247,7 @@ final class Modules {
 		self::eventsRegister( $container );
 		self::jobsRegister( $container );
 		self::catalogRegister( $container );
+		self::inventoryRegister( $container );
 		self::kernelRegister( $container );
 	}
 
@@ -380,7 +396,7 @@ final class Modules {
 		);
 		$container->bind( Reporter::class, static fn( Container $c ): Reporter => new Reporter( static fn(): Logger => $c->get( Logger::class ), $c->get( CorrelationId::class ), $c->get( FallbackLog::class ) ) );
 		$container->bind( LogRetention::class, static fn( Container $c ): LogRetention => new LogRetention( $c->get( Database::class ) ) );
-		$container->bind( Doctor::class, static fn( Container $c ): Doctor => new Doctor( $c->get( Database::class ), $c->get( DataRegistry::class ), $c->get( Migrator::class ), $c->get( Outbox::class ), $c->get( JobQueue::class ) ) );
+		$container->bind( Doctor::class, static fn( Container $c ): Doctor => new Doctor( $c->get( Database::class ), $c->get( DataRegistry::class ), $c->get( Migrator::class ), $c->get( Outbox::class ), $c->get( JobQueue::class ), $c->get( StockProjectionCheck::class ) ) );
 		$container->bind( DoctorCommand::class, static fn( Container $c ): DoctorCommand => new DoctorCommand( $c->get( Doctor::class ), self::commandOutput() ) );
 	}
 
@@ -693,6 +709,33 @@ final class Modules {
 	 */
 	private static function catalogSubscribe(): void {
 		add_action( 'init', array( ProductPostType::class, 'register' ) );
+	}
+
+	/**
+	 * The inventory module: the stock repository and service, the sweep of expired holds and the stock check of doctor.
+	 *
+	 * It adds no hook: the sweep runs through JOB_HOOK, and the check through doctor.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container The container.
+	 */
+	private static function inventoryRegister( Container $container ): void {
+		$container->bind( MysqlStockRepository::class, static fn( Container $c ): MysqlStockRepository => new MysqlStockRepository( $c->get( Database::class ) ) );
+		$container->bind( StockRepository::class, static fn( Container $c ): StockRepository => $c->get( MysqlStockRepository::class ) );
+		$container->bind(
+			StockService::class,
+			static fn( Container $c ): StockService => new StockService(
+				$c->get( StockRepository::class ),
+				$c->get( TransactionManager::class ),
+				$c->get( EventPublisher::class ),
+				$c->get( IdGenerator::class ),
+				$c->get( Clock::class ),
+				$c->get( CorrelationId::class )
+			)
+		);
+		$container->bind( SweepHolds::class, static fn( Container $c ): SweepHolds => new SweepHolds( $c->get( StockService::class ) ) );
+		$container->bind( StockProjectionCheck::class, static fn( Container $c ): StockProjectionCheck => new StockProjectionCheck( $c->get( MysqlStockRepository::class ) ) );
 	}
 
 	/**

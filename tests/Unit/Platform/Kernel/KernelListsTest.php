@@ -61,9 +61,9 @@ final class KernelListsTest extends TestCase {
 	}
 
 	/**
-	 * Tests that the event list is every domain event under src/. None exists there yet, so both
-	 * are empty; the search is first shown to find an event that implements DomainEvent only through
-	 * its base class, and to leave the abstract base out.
+	 * Tests that the event list is every domain event under src/. The search is first shown to find
+	 * an event that implements DomainEvent only through its base class, and to leave the abstract
+	 * base out, so a search that finds nothing cannot pass for one that found everything.
 	 *
 	 * @since 0.1.0
 	 */

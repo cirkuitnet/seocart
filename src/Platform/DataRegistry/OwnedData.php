@@ -13,6 +13,8 @@ namespace SEOCart\Platform\DataRegistry;
 
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\Migrations\CreateCatalogTables;
+use SEOCart\Inventory\Infrastructure\InventoryTables;
+use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Migrations\PlatformBootstrapMigration;
 use SEOCart\Platform\Database\Schema\Classification;
@@ -67,6 +69,7 @@ final class OwnedData {
 			new Contribution( tables: array( LogsTable::definition() ), migrations: array( new CreateLogsMigration() ) ),
 			new Contribution( tables: CatalogTables::all(), migrations: array( new CreateCatalogTables() ) ),
 			new Contribution( jobGroups: array( JobQueue::GROUP => 'Jobs' ) ),
+			new Contribution( tables: InventoryTables::all(), migrations: array( new CreateStockTablesMigration() ) ),
 		);
 	}
 }

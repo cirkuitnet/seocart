@@ -86,7 +86,7 @@ final class RetentionCatalog {
 			),
 		),
 		'stock_holds'      => array(
-			'rule'     => 'A checkout hold is deleted the period after it expires. No decision waits for the sweep: an expired hold is already ignored when stock is read.',
+			'rule'     => 'An expired checkout hold gives its units back and is deleted when it expires: by the sweep, or at once by a checkout that needs its units, so no decision waits for the sweep. The period is how long an expired hold may remain before doctor reports that the sweep is not keeping up.',
 			'defaults' => array( 'expired' => 'PT24H' ),
 		),
 		'carts'            => array(

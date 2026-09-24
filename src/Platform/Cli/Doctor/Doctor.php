@@ -25,10 +25,11 @@ defined( 'ABSPATH' ) || exit;
  * Holds every doctor check and runs them for the current site.
  *
  * Owns one fact: which checks doctor runs. checks() is the one list of the checks a healthy
- * store passes: the schema, the migrations, the locks, the outbox and the runner of background
- * jobs; residueChecks() is the list for a site whose store data was deleted. The command
- * prints them and Site Health can show the same list; a test holds both lists equal to the
- * Check classes that exist.
+ * store passes: the platform's own (the schema, the migrations, the locks, the outbox and the
+ * runner of background jobs), then the checks the modules contribute, which the kernel passes
+ * in; residueChecks() is the list for a site whose store data was deleted. The command prints
+ * them and Site Health can show the same list; a test holds both lists, as the kernel builds
+ * them, equal to the Check classes that exist.
  *
  * Every check is read-only. run() never throws: a check that cannot run, because a table is
  * missing or the database refuses, counts as failed with its error code, never its values.
@@ -83,22 +84,33 @@ final class Doctor {
 	private JobQueue $jobs;
 
 	/**
+	 * The checks the modules contribute, run after the platform's.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<Check>
+	 */
+	private array $moduleChecks;
+
+	/**
 	 * Creates the doctor. Sends nothing.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param Database     $db       The connection.
-	 * @param DataRegistry $registry What the plugin owns.
-	 * @param Migrator     $migrator The migrator, built from the registry's chain.
-	 * @param Outbox       $outbox   The outbox rows.
-	 * @param JobQueue     $jobs     The queue of background jobs.
+	 * @param Database     $db              The connection.
+	 * @param DataRegistry $registry        What the plugin owns.
+	 * @param Migrator     $migrator        The migrator, built from the registry's chain.
+	 * @param Outbox       $outbox          The outbox rows.
+	 * @param JobQueue     $jobs            The queue of background jobs.
+	 * @param Check        ...$moduleChecks The checks the modules contribute, in the order they run.
 	 */
-	public function __construct( Database $db, DataRegistry $registry, Migrator $migrator, Outbox $outbox, JobQueue $jobs ) {
-		$this->db       = $db;
-		$this->registry = $registry;
-		$this->migrator = $migrator;
-		$this->outbox   = $outbox;
-		$this->jobs     = $jobs;
+	public function __construct( Database $db, DataRegistry $registry, Migrator $migrator, Outbox $outbox, JobQueue $jobs, Check ...$moduleChecks ) {
+		$this->db           = $db;
+		$this->registry     = $registry;
+		$this->migrator     = $migrator;
+		$this->outbox       = $outbox;
+		$this->jobs         = $jobs;
+		$this->moduleChecks = array_values( $moduleChecks );
 	}
 
 	/**
@@ -109,13 +121,15 @@ final class Doctor {
 	 * @return list<Check> The checks.
 	 */
 	public function checks(): array {
-		return array(
+		$platform = array(
 			new SchemaCheck( $this->db, $this->registry ),
 			new MigrationsCheck( $this->migrator, $this->db, $this->registry ),
 			new LocksCheck( $this->db ),
 			new OutboxCheck( $this->outbox ),
 			new RunnerCheck( $this->jobs ),
 		);
+
+		return array_merge( $platform, $this->moduleChecks );
 	}
 
 	/**

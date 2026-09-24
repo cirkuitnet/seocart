@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Jobs;
 
+use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
 use SEOCart\Platform\Jobs\Handlers\JobHistoryCleanup;
 use SEOCart\Platform\Jobs\Handlers\MigrationAttempt;
 use SEOCart\Platform\Jobs\Handlers\OutboxCatchUp;
@@ -53,6 +54,7 @@ final class JobHandlers {
 		MigrationAttempt::class,
 		JobHistoryCleanup::class,
 		LogRetentionJob::class,
+		SweepHolds::class,
 	);
 
 	/**

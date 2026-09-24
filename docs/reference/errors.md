@@ -185,6 +185,49 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The {group} settings were changed by someone else after you read them, so your change was not saved. Read them again, then repeat your change.
 - Values: `group`
 
+## `stock.adjustment_below_zero`
+
+- HTTP status: 409
+- Message: Variant {variant_id} has {on_hand} on hand, so a change of {delta} would take it below zero.
+- Values: `variant_id`, `on_hand`, `delta`
+
+## `stock.delete_blocked`
+
+- HTTP status: 409
+- Message: Variant {variant_id} cannot be deleted while an order still has units of it allocated.
+- Values: `variant_id`
+
+## `stock.insufficient`
+
+- HTTP status: 409
+- Message: Variant {variant_id}: {requested} asked for, but only {available} available.
+- Values: `variant_id`, `requested`, `available`
+
+## `stock.item_missing`
+
+- HTTP status: 404
+- Message: Variant {variant_id} has no stock item.
+- Values: `variant_id`
+
+## `stock.on_hand_conflict`
+
+- HTTP status: 409
+- Message: Variant {variant_id}: you expected {expected} on hand, but there are {on_hand}, so the adjustment was not applied. Read the stock again, then repeat the adjustment if it is still needed.
+- Values: `variant_id`, `expected`, `on_hand`
+
+## `stock.projection_corrupt`
+
+- HTTP status: 500
+- Internal: a client receives the code, the status, a generic message and the correlation id. This message and its values go to the site's error log only.
+- Message: The held quantity of variant {variant_id} is lower than its holds add up to, so they cannot be given back. Run `wp seocart doctor` for the figures.
+- Values: `variant_id`
+
+## `stock.zero_delta`
+
+- HTTP status: 400
+- Message: An adjustment of zero units changes nothing. To confirm a count, adjust by the difference you found.
+- Values: none
+
 ## `store.unavailable`
 
 - HTTP status: 503

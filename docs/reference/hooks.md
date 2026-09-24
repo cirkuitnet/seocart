@@ -48,3 +48,77 @@ A product was saved: its post and its commerce rows, in one unit of work.
 - `sku` (string|null): The default variant's SKU, or null for a product saved without one.
 - `priceMinor` (int|null): The default variant's price in the store's base currency, in minor units, or null for none.
 - `currency` (string|null): The ISO 4217 code of that price's currency, or null when there is no price.
+
+## `seocart_stock_adjusted`
+
+Fires after a stock adjustment is committed: a merchant's change of on_hand, or the final entry of a deleted variant.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `variant`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_stock_adjusted', $callback, 10, 2 )`; the first argument is a `SEOCart\Inventory\Domain\Event\StockAdjusted`.
+
+### Event properties
+
+- `variantId` (int): The variant whose stock moved.
+- `delta` (int): The change of on_hand, positive or negative; 0 on a deleted variant's final entry.
+- `onHand` (int): The units on hand after the change.
+- `available` (int): on_hand − allocated − held after the change; may be negative.
+- `reason` (string): Why the stock moved, for example `received` or `variant_deleted`.
+- `actorType` (string): `user` for a person acting in person, `system` for a process acting on a user's authority.
+- `actorId` (int|null): The WordPress user on whose authority it moved, or null for none.
+- `ledgerEntryId` (int): The id of the ledger entry that records the change.
+
+## `seocart_stock_hold_expired`
+
+Fires after an expired checkout hold of one variant was reclaimed and its units given back.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `variant`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_stock_hold_expired', $callback, 10, 2 )`; the first argument is a `SEOCart\Inventory\Domain\Event\StockHoldExpired`.
+
+### Event properties
+
+- `holdId` (string): The id of the hold the row belonged to.
+- `variantId` (int): The variant whose units were held.
+- `quantity` (int): The units given back.
+- `expiredAt` (string): When the hold expired, UTC, `Y-m-d H:i:s`.
+
+## `seocart_stock_reservation_released`
+
+Fires after the rows of a checkout hold are released, naming the variants given back and the units of each.
+
+- Delivery: `after_commit`. Fires after commit.
+- Payload version: 1
+- Aggregate type: `variant`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_stock_reservation_released', $callback, 10, 2 )`; the first argument is a `SEOCart\Inventory\Domain\Event\StockReservationReleased`.
+
+### Event properties
+
+- `holdId` (string): The id of the hold released.
+- `reason` (string): Why it was released, for example `payment_declined` or `variant_deleted`.
+- `variantIds` (int[]): The variants given back, ascending.
+- `quantities` (int[]): The units given back of each, in the same order.
+
+## `seocart_stock_reserved`
+
+Fires after a checkout hold is committed, naming every variant it holds and the units of each.
+
+- Delivery: `after_commit`. Fires after commit.
+- Payload version: 1
+- Aggregate type: `variant`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_stock_reserved', $callback, 10, 2 )`; the first argument is a `SEOCart\Inventory\Domain\Event\StockReserved`.
+
+### Event properties
+
+- `holdId` (string): The hold's id, which releases it again.
+- `cartId` (int|null): The cart the hold was taken for, or null.
+- `orderId` (int|null): The order the hold was taken for, or null.
+- `variantIds` (int[]): The variants held, ascending.
+- `quantities` (int[]): The units held of each, in the same order.
+- `expiresAt` (string): When the hold expires, UTC, `Y-m-d H:i:s`.
