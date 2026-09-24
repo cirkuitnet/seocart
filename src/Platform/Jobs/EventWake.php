@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Platform\Jobs;
 
 use SEOCart\Platform\Events\OutboxDrainer;
+use SEOCart\Platform\Hooks\EndResponseEarlyFilter;
 use SEOCart\Platform\Jobs\Handlers\OutboxCatchUp;
 use SEOCart\Support\IdGenerator;
 
@@ -201,19 +202,17 @@ final class EventWake {
 		}
 
 		/**
-		 * Filters whether a request that published events ends its response before delivering them.
+		 * Filters whether this request ends its response before delivering.
 		 *
-		 * Ending it early means the client never waits for a listener, and that nothing written
-		 * after WordPress's `shutdown` action has run at PHP_INT_MAX (output, headers, cookies)
-		 * reaches the client. Return false on a site where something must write that late: the
-		 * request then hands the delivery to the job runner instead, as on a server that cannot
-		 * end a response early.
+		 * Declared by EndResponseEarlyFilter, which the hooks reference documents in full; this
+		 * comment does not repeat its value description or its default.
 		 *
 		 * @since 0.1.0
 		 *
-		 * @param bool $endEarly Whether to end the response before delivering. Default true.
+		 * @param bool $endEarly See EndResponseEarlyFilter.
 		 */
-		$endEarly = (bool) apply_filters( 'seocart_end_response_early', true );
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- Always seocart_end_response_early: EndResponseEarlyFilter::NAME.
+		$endEarly = (bool) apply_filters( EndResponseEarlyFilter::NAME, EndResponseEarlyFilter::defaultValue() );
 
 		try {
 			if ( $endEarly && true === ( $this->endResponse )() ) {
