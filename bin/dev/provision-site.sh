@@ -8,6 +8,10 @@ set -eu
 SC_DEV_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=bin/dev/lib.sh
 . "$SC_DEV_DIR/lib.sh"
+# The one place that pins the Polylang (free) version this script and bin/ci/download-polylang.sh
+# both install: POLYLANG_VERSION, read below by install_polylang().
+# shellcheck source=bin/ci/polylang-pin.env
+. "$SC_DEV_DIR/../ci/polylang-pin.env"
 
 usage() {
 	cat <<EOF
@@ -236,8 +240,11 @@ enable_pretty_permalinks() {
 	instance_wp rewrite flush >/dev/null || true
 }
 
+# Installs the pinned Polylang (free) version (bin/ci/polylang-pin.env), the same one
+# bin/ci/download-polylang.sh installs for CI and additionally verifies by checksum; this
+# WP-CLI install does not verify the download's bytes.
 install_polylang() {
-	instance_wp plugin install polylang --activate
+	instance_wp plugin install polylang --version="$POLYLANG_VERSION" --activate
 	instance_wp language core install en_GB de_DE
 	instance_wp eval-file "$SC_DEV_DIR/polylang-languages.php"
 }

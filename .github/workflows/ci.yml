@@ -7,7 +7,8 @@
 #
 # Job graph (arrows are `needs`):
 #
-#   lint-php ------+-> static-analysis --+-> integration-tests (PHP x WordPress), integration-tests-multisite, query-plans
+#   lint-php ------+-> static-analysis --+-> integration-tests (PHP x WordPress), integration-tests-multisite, query-plans,
+#                  |                     |    multilingual-conformance
 #                  +-> unit-tests -------+-> package: build -> packaging-validate
 #                  +-> dry-gates         |                       -> plugin-check
 #                  +-> docs-drift        |                       -> install-smoke
@@ -18,7 +19,10 @@
 # Required checks for branch protection on main: lint-php, workflow-lint, static-analysis,
 # dry-gates, docs-drift, wporg-gates, every unit-tests cell, the "WordPress 7.1"
 # integration-tests cells, integration-tests-multisite, query-plans, js-lint-test, and the
-# package jobs. The WordPress nightly cells are informational.
+# package jobs. The WordPress nightly cells are informational. multilingual-conformance must
+# pass like any other job (it is not allow-failure), but it is not a required check either,
+# because it downloads Polylang from wordpress.org at test time; the merge script still refuses
+# any merge whose checks did not all pass.
 #
 # The local setup action owns the development PHP version and Composer installation.
 # bin/ci/check-workflows.sh keeps these steps in the action and checks action pins.
@@ -209,6 +213,23 @@ jobs:
         with:
             wp: '7.1'
             script: test:query-plans
+
+    # The multilingual lifecycle conformance suite against a real Polylang (free), at the one
+    # pinned version bin/ci/polylang-pin.env states; this job verifies the download's checksum,
+    # and bin/dev/provision-site.sh --with-polylang installs the same version (unverified) for a
+    # developer's disposable site. It downloads Polylang from wordpress.org at test time, which
+    # is why it is not among the required checks above, even though a red run here fails this
+    # job like any other (it is not allow-failure).
+    multilingual-conformance:
+        name: multilingual-conformance
+        needs:
+            - static-analysis
+            - unit-tests
+        uses: ./.github/workflows/reusable-integration-tests.yml
+        with:
+            wp: '7.1'
+            script: test:multilingual-conformance
+            polylang: true
 
     js-lint-test:
         runs-on: ubuntu-24.04

@@ -229,12 +229,20 @@ A test that can fail because of when or where it ran is a defect in the test.
 
 ## Where the suites run
 
-| Suite or gate                         | On a development machine                                           | In continuous integration                                        |
-| ------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------- |
-| Static gates, unit, tool self-tests   | Anywhere PHP and Composer are installed                            | Every pull request, on each supported PHP version                |
-| JavaScript lint and unit              | Anywhere Node.js is installed                                      | Every pull request                                               |
-| Integration and its groups            | Against a dedicated MySQL database                                 | Every pull request, against a MySQL service                      |
-| Action Scheduler coexistence          | On a disposable site with WooCommerce active                       | A scheduled job, not a gate on every pull request                |
-| Multilingual conformance              | On a disposable site with Polylang (free) active                   | A scheduled job, and pull requests that touch the affected areas |
-| End-to-end and accessibility          | From any machine with a browser, against a disposable site         | A secondary job against a disposable site                        |
-| Packaging and the WordPress.org gates | `composer wporg:check`, `composer licenses:check`, the zip scripts | Every pull request and every release                             |
+| Suite or gate                         | On a development machine                                           | In continuous integration                                       |
+| ------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------- |
+| Static gates, unit, tool self-tests   | Anywhere PHP and Composer are installed                            | Every pull request, on each supported PHP version               |
+| JavaScript lint and unit              | Anywhere Node.js is installed                                      | Every pull request                                              |
+| Integration and its groups            | Against a dedicated MySQL database                                 | Every pull request, against a MySQL service                     |
+| Action Scheduler coexistence          | On a disposable site with WooCommerce active                       | A scheduled job, not a gate on every pull request               |
+| Multilingual conformance              | On a disposable site with Polylang (free) active                   | Every pull request and every push to main; not a required check |
+| End-to-end and accessibility          | From any machine with a browser, against a disposable site         | A secondary job against a disposable site                       |
+| Packaging and the WordPress.org gates | `composer wporg:check`, `composer licenses:check`, the zip scripts | Every pull request and every release                            |
+
+`bin/ci/polylang-pin.env` states the one Polylang (free) version, and its checksum, that both
+places install. To run the suite by hand: `sh bin/ci/download-polylang.sh <dir>` downloads
+that version, verifies it, and prints the path of `polylang.php` in `<dir>` on stdout. Then
+run `SEOCART_ML_ADAPTER=polylang SEOCART_ML_PLUGIN=<that path> composer
+test:multilingual-conformance` against a real MySQL database. Leave either variable unset, or
+point `SEOCART_ML_PLUGIN` at a path that is not readable, and every test in the group is
+silently skipped, not failed: check the run's `Skipped:` count against its `Tests:` count.

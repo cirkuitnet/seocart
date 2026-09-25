@@ -171,6 +171,10 @@ The script can also create a site with **WooCommerce active**, to exercise Actio
 coexistence, and a site with **Polylang (free) active**, for the multilingual conformance
 suite. Both plugins take over parts of a whole install, which is why they are only ever
 activated on a disposable site. The usage notes at the top of the script list the options.
+`bin/ci/polylang-pin.env` states the one Polylang version; the disposable site and the
+`multilingual-conformance` continuous integration job install the same version, though only
+the job's own download verifies its checksum. See docs/testing.md for how to run
+`composer test:multilingual-conformance` by hand and where it runs in continuous integration.
 A teardown script in `bin/dev/` removes the site, its databases and its database users, and
 leaves nothing behind.
 

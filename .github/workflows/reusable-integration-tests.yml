@@ -3,11 +3,11 @@
 # correctness oracle for this plugin, so there is no cell without MySQL.
 #
 # Reusable because two workflows run it: ci.yml (the PHP x WordPress matrix, the multisite
-# cell and the query-plan cell) and nightly.yml (WordPress nightly). Every command below is
-# one of the repository's own scripts, so the same cell runs on a developer machine with the
-# same two lines. A cell runs the whole suite unless its caller names another Composer script;
-# only then does the script's name join the cell's name, so the names of the existing cells,
-# some of them required checks, do not change.
+# cell, the query-plan cell and the multilingual-conformance cell) and nightly.yml (WordPress
+# nightly). Every command below is one of the repository's own scripts, so the same cell runs
+# on a developer machine with the same two lines. A cell runs the whole suite unless its
+# caller names another Composer script; only then does the script's name join the cell's
+# name, so the names of the existing cells, some of them required checks, do not change.
 
 name: Integration tests (reusable)
 
@@ -38,6 +38,11 @@ on:
                 required: false
                 type: string
                 default: test:integration
+            polylang:
+                description: 'Download Polylang (free) at the pinned version through bin/ci/download-polylang.sh, and export SEOCART_ML_ADAPTER and SEOCART_ML_PLUGIN for the test step.'
+                required: false
+                type: boolean
+                default: false
 
 permissions:
     contents: read
@@ -99,9 +104,57 @@ jobs:
               env:
                   WP_VERSION: ${{ inputs.wp }}
 
+            # bin/ci/polylang-pin.env names the one version this downloads and verifies;
+            # bin/dev/provision-site.sh --with-polylang installs the same one. The script's
+            # progress lines go to stderr, so its stdout is exactly the path to capture.
+            - name: Download Polylang and point the suite at it
+              if: ${{ inputs.polylang }}
+              run: |
+                  plugin=$(sh bin/ci/download-polylang.sh "$RUNNER_TEMP/polylang")
+                  {
+                      echo "SEOCART_ML_ADAPTER=polylang"
+                      echo "SEOCART_ML_PLUGIN=$plugin"
+                  } >>"$GITHUB_ENV"
+
             # The child processes some tests start inherit WP_MULTISITE, so they boot the same network.
             - name: Run the integration suite
+              if: ${{ !inputs.polylang }}
               run: composer "$TEST_SCRIPT"
+              env:
+                  TEST_SCRIPT: ${{ inputs.script }}
+                  WP_MULTISITE: ${{ inputs.multisite && '1' || '0' }}
+
+            # A skipped test is not a PHPUnit failure and PHPUnit's default summary prints no
+            # reason, so a wrong plugin path or a wrong SEOCART_ML_* variable above would
+            # otherwise leave this job green while covering nothing. This step reads PHPUnit's
+            # own "Tests: N" / "Skipped: N" summary and fails the job when every test in the
+            # group was skipped. `tee` streams the run's own output live (so a hang is visible)
+            # while also keeping a copy to grep; GitHub's default bash already runs with
+            # -o pipefail, stated here so the pipeline's status is composer's, not tee's, even
+            # if that default ever changes.
+            - name: Run the integration suite and confirm Polylang actually ran
+              if: ${{ inputs.polylang }}
+              run: |
+                  set -o pipefail
+                  log="$RUNNER_TEMP/multilingual-conformance.log"
+                  if composer "$TEST_SCRIPT" 2>&1 | tee "$log"; then
+                      status=0
+                  else
+                      status=$?
+                  fi
+                  if [ "$status" -eq 0 ]; then
+                      skipped=$(grep -Eo 'Skipped: [0-9]+' "$log" | tail -n1 | grep -Eo '[0-9]+') || skipped=0
+                      : "${skipped:=0}"
+                      if [ "$skipped" -gt 0 ]; then
+                          total=$(grep -Eo 'Tests: [0-9]+' "$log" | tail -n1 | grep -Eo '[0-9]+') || total=0
+                          : "${total:=0}"
+                          if [ "$total" -gt 0 ] && [ "$skipped" -eq "$total" ]; then
+                              echo "::error::every multilingual-conformance test was skipped ($skipped of $total); Polylang likely did not load."
+                              exit 1
+                          fi
+                      fi
+                  fi
+                  exit "$status"
               env:
                   TEST_SCRIPT: ${{ inputs.script }}
                   WP_MULTISITE: ${{ inputs.multisite && '1' || '0' }}

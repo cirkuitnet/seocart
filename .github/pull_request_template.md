@@ -37,7 +37,7 @@ marked "n/a" with one clause of why. An unexplained blank is an unfinished check
 - [ ] `npm run test:unit` passes, if the change touches JavaScript.
 - [ ] `npm run test:e2e` passes, if the change touches a user-facing flow. There is one cart and checkout flow to target.
 - [ ] `composer test:international` passes, if the change touches money, tax, currency, locale, caching or the catalog.
-- [ ] `composer test:multilingual-conformance` passes on a disposable site with Polylang (free) active, if the change touches Catalog, `product_posts`, search or Notification.
+- [ ] `composer test:multilingual-conformance` passes. Continuous integration runs it on every pull request, but it is not a required check; to check by hand, follow docs/testing.md's Polylang section exactly — running it without `SEOCART_ML_ADAPTER` and `SEOCART_ML_PLUGIN` set skips every test silently instead of failing.
 
 ### WordPress checks
 

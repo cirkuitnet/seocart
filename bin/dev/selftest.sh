@@ -128,6 +128,12 @@ for file in "$SC_DEV_DIR"/*.sh; do
 	expect_exit 0 "sh -n ${file##*/}" sh -n "$file"
 done
 
+printf '\n== the Polylang pin\n'
+polylang_pin=$SC_DEV_DIR/../ci/polylang-pin.env
+expect_path "$polylang_pin" "polylang-pin.env exists"
+expect_exit 0 "polylang-pin.env sources cleanly and sets both variables" \
+	sh -c '. "$1" && [ -n "${POLYLANG_VERSION:-}" ] && [ -n "${POLYLANG_SHA256:-}" ]' _ "$polylang_pin"
+
 printf '\n== arguments: usage and exit 2, before anything else happens\n'
 for name in check-residue provision-site provision-test-db teardown-site teardown-worktree; do
 	expect_exit 2 "$name: no argument" run_script "$name"
