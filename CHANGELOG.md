@@ -186,3 +186,4 @@ seocart jobs run` and from a short tick on admin requests; `wp seocart jobs stat
   controller, which adds a `seocart` object to product responses (with the product's sale
   status), and a Commerce panel in the product editor edits it. Autosaves and restoring a
   revision never touch the commerce fields.
+- A product post created by a path the plugin doesn't own (`wp post create`, an import, a duplicator, another plugin) becomes an incomplete product that can't be sold until it is saved through the product editor or the REST API. Trashing a product releases its checkout holds, and deleting its post deletes the product, its commerce rows and its stock item while keeping the stock ledger, or refuses the delete when that can't be done cleanly.
