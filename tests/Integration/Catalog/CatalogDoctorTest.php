@@ -63,15 +63,6 @@ use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 final class CatalogDoctorTest extends CatalogTestCase {
 
 	/**
-	 * The instant the settler's clock shows.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private const NOW = '2026-09-25 12:00:00';
-
-	/**
 	 * The stock repository over `$this->db`.
 	 *
 	 * @since 0.1.0
@@ -126,7 +117,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 			$this->db,
 			new RecordingEventPublisher( $this->db ),
 			new SequentialIdGenerator( 500000 ),
-			new FrozenClock( new \DateTimeImmutable( self::NOW, new \DateTimeZone( 'UTC' ) ) ),
+			new FrozenClock( $this->databaseNow() ),
 			new CorrelationId( new SequentialIdGenerator( 600000 ) ),
 			new Authorizer( new CapabilityDeclaration() )
 		);
@@ -149,7 +140,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 					return Locale::of( 'en_US' );
 				}
 			},
-			new FrozenClock( new \DateTimeImmutable( self::NOW, new \DateTimeZone( 'UTC' ) ) ),
+			new FrozenClock( $this->databaseNow() ),
 			new SequentialIdGenerator( 700000 )
 		);
 
@@ -165,7 +156,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 			$this->stock,
 			$reconciler,
 			$settler,
-			new FrozenClock( new \DateTimeImmutable( self::NOW, new \DateTimeZone( 'UTC' ) ) ),
+			new FrozenClock( $this->databaseNow() ),
 			$this->db,
 			static fn(): Currency => Currency::of( CatalogTestCase::BASE_CURRENCY ),
 			$this->withLock
@@ -677,7 +668,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		);
 
 		$settler = $this->newSettler();
-		$check   = new StuckUpdatingCheck( $this->products, new FrozenClock( new \DateTimeImmutable( self::NOW, new \DateTimeZone( 'UTC' ) ) ), $settler );
+		$check   = new StuckUpdatingCheck( $this->products, new FrozenClock( $this->databaseNow() ), $settler );
 		$result  = $check->run();
 
 		$this->assertFalse( $result->passed );
@@ -687,7 +678,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 
 		$this->assertCount( 1, $repair->changes );
 		$this->assertSame( GenerationState::Complete, $this->productRowState( $productId ), 'A fully recoverable product settles back to complete.' );
-		$this->assertTrue( ( new StuckUpdatingCheck( $this->products, new FrozenClock( new \DateTimeImmutable( self::NOW, new \DateTimeZone( 'UTC' ) ) ), $settler ) )->run()->passed );
+		$this->assertTrue( ( new StuckUpdatingCheck( $this->products, new FrozenClock( $this->databaseNow() ), $settler ) )->run()->passed );
 	}
 
 	/**
@@ -716,7 +707,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		);
 
 		$settler = $this->newSettler();
-		$check   = new StuckUpdatingCheck( $this->products, new FrozenClock( new \DateTimeImmutable( self::NOW, new \DateTimeZone( 'UTC' ) ) ), $settler );
+		$check   = new StuckUpdatingCheck( $this->products, new FrozenClock( $this->databaseNow() ), $settler );
 		$result  = $check->run();
 
 		$this->assertFalse( $result->passed );
@@ -834,7 +825,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 
 		$this->assertSame( '1', $b->fetchValue( "SELECT GET_LOCK( '" . $serverName . "', 5 )" ), 'The other connection must hold the product\'s own named lock.' );
 
-		$check  = new StuckUpdatingCheck( $this->products, new FrozenClock( new \DateTimeImmutable( self::NOW, new \DateTimeZone( 'UTC' ) ) ), $this->newSettler() );
+		$check  = new StuckUpdatingCheck( $this->products, new FrozenClock( $this->databaseNow() ), $this->newSettler() );
 		$result = $check->run();
 
 		$this->assertFalse( $result->passed );
@@ -1128,7 +1119,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 					return Locale::of( 'en_US' );
 				}
 			},
-			new FrozenClock( new \DateTimeImmutable( self::NOW, new \DateTimeZone( 'UTC' ) ) ),
+			new FrozenClock( $this->databaseNow() ),
 			new SequentialIdGenerator( 800000 )
 		);
 	}
@@ -1279,5 +1270,18 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		$parts[] = md5( (string) wp_json_encode( $this->db->fetchAll( 'SELECT * FROM %i ORDER BY id', $this->db->table( InventoryTables::LEDGER ) ) ) );
 
 		return implode( ':', $parts );
+	}
+
+	/**
+	 * Returns the database's current UTC time, the clock every stuck row in these tests is aged against.
+	 *
+	 * The checks' clock must agree with the rows' `UTC_TIMESTAMP()` ages, so it is read from the database rather than fixed.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return \DateTimeImmutable The database's time.
+	 */
+	private function databaseNow(): \DateTimeImmutable {
+		return new \DateTimeImmutable( (string) $this->db->fetchValue( 'SELECT UTC_TIMESTAMP(6)' ), new \DateTimeZone( 'UTC' ) );
 	}
 }
