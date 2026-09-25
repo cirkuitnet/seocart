@@ -28,6 +28,7 @@ use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Events\OutboxTable;
+use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\RunningProbe;
 use SEOCart\Tests\Support\SecondConnection;
@@ -84,8 +85,21 @@ abstract class ProductWriteTestCase extends CatalogTestCase {
 		( new CreateOutboxMigration() )->up( $operations );
 		( new CreateStockTablesMigration() )->up( $operations );
 
-		$this->services = ProductWrites::services( $this->db, $this->reporter() );
+		$this->services = ProductWrites::services( $this->db, $this->reporter(), false, null, $this->locales() );
 		$this->service  = $this->services->save;
+	}
+
+	/**
+	 * Returns the locale port the services are built over: null for the site's one locale, the production default.
+	 *
+	 * A test of several languages returns its own, before the services are built.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return PostLocales|null The port, or null.
+	 */
+	protected function locales(): ?PostLocales {
+		return null;
 	}
 
 	/**

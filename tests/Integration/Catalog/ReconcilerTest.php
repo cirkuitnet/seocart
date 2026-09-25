@@ -46,6 +46,8 @@ use SEOCart\Tests\Support\KernelContainer;
  *   fails, and so do the autosave and revision tests of the product endpoint.
  * - In PostLifecycle::boundPostWrittenElsewhere(), drop the return for a step into or out of
  *   the trash: the trash test fails, the trash reported as a write by another path.
+ * - In the same method, skip every write whose old or new status is the trash, whether or not
+ *   the status changed: the test of a post that stays in the trash fails, its edit unreported.
  * - In PostLifecycle::failed(), throw the failure: the closed-gate test fails.
  * - In PostLifecycle::failed(), report a site that is not installed too: the test of such a
  *   site fails.
@@ -272,6 +274,33 @@ final class ReconcilerTest extends ProductWriteTestCase {
 			$this->reports,
 			'A status change that is no trash step went unreported.'
 		);
+	}
+
+	/**
+	 * Tests that a write by another path to a bound post that stays in the trash is reported under WP_DEBUG: only a change of status into or out of the trash is a lifecycle step.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_write_to_a_post_that_stays_in_the_trash_is_reported(): void {
+		ProductWrites::services( $this->db, $this->reporter(), true )->attach();
+
+		$saved = $this->savedProduct();
+
+		$this->assertInstanceOf( \WP_Post::class, wp_trash_post( $saved->postId ) );
+		$this->assertSame( array(), $this->reports );
+
+		$this->assertIsInt(
+			wp_update_post(
+				array(
+					'ID'         => $saved->postId,
+					'post_title' => 'Edited in the trash',
+				),
+				true
+			)
+		);
+
+		$this->assertSame( 'trash', get_post_status( $saved->postId ) );
+		$this->assertSame( array( ReportCode::ForeignPostWrite->value ), array_column( $this->reports, 'code' ), 'A write to a trashed post was taken for a trash step.' );
 	}
 
 	/**

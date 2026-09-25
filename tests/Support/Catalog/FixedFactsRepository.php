@@ -14,7 +14,9 @@ namespace SEOCart\Tests\Support\Catalog;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\Product;
+use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Catalog\Domain\SellabilityFacts;
+use SEOCart\Support\Locale;
 
 /**
  * Answers sellabilityFacts() from a fixed list and records every set of ids it was asked about.
@@ -34,6 +36,15 @@ final class FixedFactsRepository implements ProductRepository {
 	 * @var list<list<int>>
 	 */
 	public array $asked = array();
+
+	/**
+	 * The locale and the ids of each fetch in a locale, in order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<array{0: string, 1: list<int>}>
+	 */
+	public array $askedIn = array();
 
 	/**
 	 * The facts held.
@@ -107,7 +118,7 @@ final class FixedFactsRepository implements ProductRepository {
 	 * @param int $productId Unused.
 	 * @return never
 	 */
-	public function lockForDelete( int $productId ): never {
+	public function lock( int $productId ): never {
 		throw new \LogicException( 'A sellability reader deletes nothing.' );
 	}
 
@@ -250,6 +261,21 @@ final class FixedFactsRepository implements ProductRepository {
 	 */
 	public function sellabilityFacts( int ...$variantIds ): array {
 		$this->asked[] = array_values( $variantIds );
+
+		return array_values( array_filter( $this->facts, static fn( SellabilityFacts $fact ): bool => in_array( $fact->variantId, $variantIds, true ) ) );
+	}
+
+	/**
+	 * Returns the fixed facts of the variants asked for, as the facts in a locale, and records the locale with the ids.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Locale $locale        The locale.
+	 * @param int    ...$variantIds The variants.
+	 * @return list<SellabilityFacts> Their facts.
+	 */
+	public function sellabilityFactsIn( Locale $locale, int ...$variantIds ): array {
+		$this->askedIn[] = array( $locale->toString(), array_values( $variantIds ) );
 
 		return array_values( array_filter( $this->facts, static fn( SellabilityFacts $fact ): bool => in_array( $fact->variantId, $variantIds, true ) ) );
 	}
@@ -474,5 +500,81 @@ final class FixedFactsRepository implements ProductRepository {
 	 */
 	public function settleIfUnchanged( int $productId, GenerationState $from, GenerationState $to, ?string $updatedAtMatch = null ): bool {
 		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by a reader.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $postId        Unused.
+	 * @param int ...$productIds Unused.
+	 * @return never
+	 */
+	public function lockWithPost( int $postId, int ...$productIds ): never {
+		throw new \LogicException( 'A sellability reader changes no binding.' );
+	}
+
+	/**
+	 * Not used by a reader.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int    $postId Unused.
+	 * @param Locale $locale Unused.
+	 * @return never
+	 */
+	public function moveBinding( int $postId, Locale $locale ): never {
+		throw new \LogicException( 'A sellability reader changes no binding.' );
+	}
+
+	/**
+	 * Not used by a reader.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int                $productId Unused.
+	 * @param ProductPostBinding $binding   Unused.
+	 * @return never
+	 */
+	public function addBinding( int $productId, ProductPostBinding $binding ): never {
+		throw new \LogicException( 'A sellability reader changes no binding.' );
+	}
+
+	/**
+	 * Not used by a reader.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $productId Unused.
+	 * @param int $postId    Unused.
+	 * @return never
+	 */
+	public function removeBinding( int $productId, int $postId ): never {
+		throw new \LogicException( 'A sellability reader changes no binding.' );
+	}
+
+	/**
+	 * Not used by a reader.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int      $productId  Unused.
+	 * @param int      $fromPostId Unused.
+	 * @param int|null $toPostId   Unused.
+	 * @return never
+	 */
+	public function promoteSource( int $productId, int $fromPostId, ?int $toPostId ): never {
+		throw new \LogicException( 'A sellability reader changes no binding.' );
 	}
 }

@@ -55,7 +55,7 @@ use SEOCart\Tests\Support\SecondConnection;
  * - In PostLifecycle::statusChanged(), release the product's default variant alone, as before:
  *   the test of every variant fails, the second variant's hold still held.
  * - Put back the reads under review in the delete: PostLifecycle::deleting() reads the product
- *   with findByPost(), MysqlProductRepository::lockForDelete() locks the product's row and then
+ *   with findByPost(), MysqlProductRepository::lock() locks the product's row and then
  *   reads it without FOR UPDATE, and delete() reads the variants without it: the test of a delete
  *   after a save fails, its event naming `SKU-1`. Either half alone keeps it green: the first
  *   statement is the lock, or every read after it is a locking read.

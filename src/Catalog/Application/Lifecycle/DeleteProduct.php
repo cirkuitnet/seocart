@@ -131,7 +131,7 @@ final class DeleteProduct {
 	public function delete( int $productId, Actor $actor ): void {
 		$this->transactions->transaction(
 			function () use ( $productId, $actor ): void {
-				$product = $this->products->lockForDelete( $productId );
+				$product = $this->products->lock( $productId );
 
 				if ( null === $product ) {
 					CodedException::raise( CatalogError::ProductNotFound, array( 'product_id' => $productId ) );

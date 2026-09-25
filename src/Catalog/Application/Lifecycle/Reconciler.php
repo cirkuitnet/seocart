@@ -149,7 +149,7 @@ final class Reconciler {
 						return false;
 					}
 
-					$this->products->save( Product::reconciled( $this->ids->generate(), $postId, $this->locales->localeOf( $postId ), $this->clock->now() ) );
+					$this->products->save( Product::reconciled( $this->ids->generate(), $postId, $this->locales->localeOf( $postId ) ?? $this->locales->siteLocale(), $this->clock->now() ) );
 
 					return true;
 				},

@@ -13,7 +13,9 @@ namespace SEOCart\Catalog\Application\Lifecycle;
 
 use SEOCart\Catalog\Application\PostGateway;
 use SEOCart\Catalog\Application\ProductRepository;
+use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\ReportCode;
+use SEOCart\Catalog\Domain\Sellability as SellabilityRule;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\ProductCapabilities;
@@ -21,6 +23,8 @@ use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Kernel\GateState;
 use SEOCart\Platform\Kernel\KernelError;
+use SEOCart\Platform\Localization\PostLocales;
+use SEOCart\Platform\Localization\TranslationWatcher;
 use SEOCart\Support\Error\CodedException;
 
 defined( 'ABSPATH' ) || exit;
@@ -34,22 +38,34 @@ defined( 'ABSPATH' ) || exit;
  *
  * - A post is written (`wp_after_insert_post`). An auto-draft is left alone: the first real save
  *   binds it. A write the plugin made itself, which reaches the hook through
- *   PostGateway::fireAfterInsert(), is left alone too. Any other write of a post no product is
- *   bound to gives it an `incomplete` product (Reconciler), so a post from a path the plugin does
- *   not own is never sold by default. A write to a post that is bound goes to
- *   boundPostWrittenElsewhere(), which holds the one decision about such writes.
+ *   PostGateway::fireAfterInsert(), is left alone too. Any other write brings the post's bindings
+ *   in step with its translation group (TranslationGroups): a post no product is bound to joins
+ *   the product its group presents, or gets an `incomplete` product of its own (Reconciler), so a
+ *   post from a path the plugin does not own is never sold by default. What such a write means
+ *   for a product it was bound to already is decided by boundPostWrittenElsewhere().
+ * - A multilingual plugin changes a post's language or translation group after the post's hooks,
+ *   or without writing it: once a product post has changed in the request, PostLocales tells this
+ *   class (translationsChanged()), and the group is reconciled again.
  * - A post goes to the trash (`transition_post_status`). The holds on every variant of its
- *   product are released, with the reason TRASH_REASON; the stock, the allocations and the
- *   product stay, and the product cannot be sold while its post is in the trash. Leaving the
+ *   product are released, with the reason TRASH_REASON, when it is the product's source post; the
+ *   stock, the allocations and the product stay, and the product cannot be sold while its post is
+ *   in the trash. A translation's post in the trash releases nothing: the product is still sold
+ *   through its source post, and in the translation's locale it is not published. Nor does the
+ *   source post's trash while another of the product's posts is published: the holds belong to
+ *   carts in that post's language. Leaving the
  *   trash re-holds nothing: whether the product can be sold follows the status the post gets back.
- * - A post is deleted (`pre_delete_post`, the one hook that can refuse). When it is the source
- *   post of a product with no other binding, the product is deleted with it (DeleteProduct); if
- *   that fails, the post's delete is refused, and the post and every row stay as they were.
- *   A post no product is bound to is deleted by WordPress alone.
+ * - A post is deleted (`pre_delete_post`, the one hook that can refuse). A post that is not its
+ *   product's source post takes only its binding with it. The source post of a product other
+ *   posts still present hands the source over to the oldest remaining published one, or the
+ *   oldest remaining one, recording ProductBindingPromoted: such a delete may come from a path
+ *   that cannot be refused. A user who may delete the source post but not edit it is refused,
+ *   since the hand-over is an edit of the product. The source post of a product with no other binding takes the product
+ *   with it (DeleteProduct). If any of it fails, the post's delete is refused, and the post and
+ *   every row stay as they were. A post no product is bound to is deleted by WordPress alone.
  *
- * The trash and the delete decide on the product as the last save that committed left it: their
- * first statement locks the post's binding and the product's row, which a save's window holds,
- * and every read after it is a locking read.
+ * The trash and the delete decide on the product as the last write that committed left it: they
+ * lock the product's row before anything else, as a save's window and every change of a binding
+ * do, and every read under that lock is a locking read (ProductRepository::lockByPost()).
  *
  * None of it ever throws into the path that changed the post: a failure is reported, and the
  * post is left unbound, its holds left to expire, or its delete refused. On a site where the
@@ -58,7 +74,7 @@ defined( 'ABSPATH' ) || exit;
  *
  * @since 0.1.0
  */
-final class PostLifecycle {
+final class PostLifecycle implements TranslationWatcher {
 
 	/**
 	 * The reason the holds of a trashed product's variants are released with.
@@ -88,13 +104,31 @@ final class PostLifecycle {
 	private ProductRepository $products;
 
 	/**
-	 * Binds a post the plugin did not write.
+	 * Brings a post's bindings in step with its translation group.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var Reconciler
+	 * @var TranslationGroups
 	 */
-	private Reconciler $reconciler;
+	private TranslationGroups $groups;
+
+	/**
+	 * Unlinks a deleted translation and hands the source over from a deleted source post.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var TranslationBindings
+	 */
+	private TranslationBindings $bindings;
+
+	/**
+	 * Tells of the changes a multilingual plugin makes later.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var PostLocales
+	 */
+	private PostLocales $locales;
 
 	/**
 	 * Deletes a product with its source post.
@@ -160,24 +194,37 @@ final class PostLifecycle {
 	private bool $writeReported = false;
 
 	/**
+	 * The posts whose delete this request let go on: a change the multilingual plugin makes to one of them as it goes is not reconciled.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<int, true>
+	 */
+	private array $leaving = array();
+
+	/**
 	 * Creates the lifecycle. Does nothing else.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param ProductRepository  $products     Loads the product a post is bound to.
-	 * @param Reconciler         $reconciler   Binds a post the plugin did not write.
-	 * @param DeleteProduct      $delete       Deletes a product with its source post.
-	 * @param StockService       $stock        Releases a trashed product's holds.
-	 * @param TransactionManager $transactions Runs the trash and delete work.
-	 * @param PostGateway        $posts        Tells the plugin's own writes from every other.
-	 * @param callable           $report       Receives a machine code (string) and its context (array).
-	 * @param bool               $debug        Optional. Whether to report writes to bound posts by other paths, as WP_DEBUG does. Default false.
+	 * @param ProductRepository   $products     Loads the product a post is bound to.
+	 * @param TranslationGroups   $groups       Brings a post's bindings in step with its translation group.
+	 * @param TranslationBindings $bindings     Unlinks a deleted translation, and hands a deleted source post's place over.
+	 * @param DeleteProduct       $delete       Deletes a product with its source post.
+	 * @param StockService        $stock        Releases a trashed product's holds.
+	 * @param TransactionManager  $transactions Runs each step in one unit of work.
+	 * @param PostGateway         $posts        Tells the plugin's own writes from every other.
+	 * @param PostLocales         $locales      Tells of the changes a multilingual plugin makes later.
+	 * @param callable            $report       Receives a machine code (string) and its context (array).
+	 * @param bool                $debug        Optional. Whether to report writes to bound posts by other paths, as WP_DEBUG does. Default false.
 	 *
 	 * @phpstan-param callable(string, array<string, mixed>): void $report
 	 */
-	public function __construct( ProductRepository $products, Reconciler $reconciler, DeleteProduct $delete, StockService $stock, TransactionManager $transactions, PostGateway $posts, callable $report, bool $debug = false ) {
+	public function __construct( ProductRepository $products, TranslationGroups $groups, TranslationBindings $bindings, DeleteProduct $delete, StockService $stock, TransactionManager $transactions, PostGateway $posts, PostLocales $locales, callable $report, bool $debug = false ) {
 		$this->products     = $products;
-		$this->reconciler   = $reconciler;
+		$this->groups       = $groups;
+		$this->bindings     = $bindings;
+		$this->locales      = $locales;
 		$this->delete       = $delete;
 		$this->stock        = $stock;
 		$this->transactions = $transactions;
@@ -187,7 +234,7 @@ final class PostLifecycle {
 	}
 
 	/**
-	 * Handles a product post that was written: binds it when no product is, and otherwise hands the write to boundPostWrittenElsewhere().
+	 * Handles a product post that was written: brings its bindings in step with its translation group, and hands a write to a bound post to boundPostWrittenElsewhere().
 	 *
 	 * Called on `wp_after_insert_post`, which a write by another path fires inside its own call,
 	 * and a write by the plugin fires after its transaction has committed, when the post is bound.
@@ -204,10 +251,35 @@ final class PostLifecycle {
 			return;
 		}
 
+		$this->locales->watch( $this );
+
 		try {
-			if ( ! $this->reconciler->reconcile( $postId ) ) {
+			if ( $this->reconcileGroup( $postId ) ) {
 				$this->boundPostWrittenElsewhere( $postId, $update, $status, $was );
 			}
+		} catch ( \Throwable $failure ) {
+			$this->failed( ReportCode::ReconcileFailed, $postId, $failure );
+		}
+	}
+
+	/**
+	 * Hears that a multilingual plugin changed a product post's language or translation group, and brings the bindings in step.
+	 *
+	 * A change made while a transaction is open belongs to a save in progress, which binds the post
+	 * itself; the change is left to it. So is a change to a post being deleted: the multilingual
+	 * plugin takes it out of its group as it goes, and it must not be given a product of its own.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId The product post.
+	 */
+	public function translationsChanged( int $postId ): void {
+		if ( 0 !== $this->transactions->depth() || isset( $this->leaving[ $postId ] ) ) {
+			return;
+		}
+
+		try {
+			$this->reconcileGroup( $postId );
 		} catch ( \Throwable $failure ) {
 			$this->failed( ReportCode::ReconcileFailed, $postId, $failure );
 		}
@@ -231,12 +303,14 @@ final class PostLifecycle {
 			return;
 		}
 
+		$this->locales->watch( $this );
+
 		try {
 			$this->transactions->transaction(
 				function () use ( $postId ): void {
 					$product = $this->products->lockByPost( $postId );
 
-					if ( null === $product || $postId !== $product->sourcePostId() ) {
+					if ( null === $product || $postId !== $product->sourcePostId() || $this->soldThroughAnother( $product, $postId ) ) {
 						return;
 					}
 
@@ -260,15 +334,15 @@ final class PostLifecycle {
 	 * post's product decides:
 	 *
 	 * - no product: nothing to do;
-	 * - the post is another binding of the product: the product stays;
-	 * - the post is the source post, and other bindings remain: the product stays;
+	 * - the post is another binding of the product, such as a translation's post: its binding
+	 *   goes, and the product stays in its other locales;
+	 * - the post is the source post, and other bindings remain: the source is handed over to the
+	 *   oldest remaining published post, or the oldest remaining one, and the post's binding goes;
 	 * - the post is the product's source post and its only binding: the product is deleted.
 	 *
-	 * The two middle branches keep their place for products presented by several posts, one per
-	 * language; while every product has one binding, no post reaches them. The product is read
-	 * under the locks of the post's binding and the product's row, the transaction's first
-	 * statement, with locking reads: a delete that waited for a save decides, and reports, on what
-	 * the save committed.
+	 * The product is read with ProductRepository::lockByPost(): its row locked first, then its
+	 * bindings and its default variant, every read a locking read. A delete that waited for a save
+	 * or for another binding's delete decides, and reports, on what that one committed.
 	 *
 	 * @since 0.1.0
 	 *
@@ -277,30 +351,31 @@ final class PostLifecycle {
 	 * @return bool|null Null to let WordPress delete the post; false to refuse the delete, which wp_delete_post() then returns.
 	 */
 	public function deleting( int $postId, int $userId ): ?bool {
+		$this->locales->watch( $this );
+
 		try {
 			$this->transactions->transaction(
 				function () use ( $postId, $userId ): void {
 					$product = $this->products->lockByPost( $postId );
+					$actor   = Actor::user( max( 0, $userId ) );
 
 					if ( null === $product ) {
 						return;
 					}
 
 					if ( $postId !== $product->sourcePostId() ) {
-						// Another binding of the product, such as a translation's post: the product
-						// stays, sold through its source post. Until products have more than one
-						// binding, no post reaches this branch.
+						$this->bindings->unlink( $postId );
+
 						return;
 					}
 
 					if ( count( $product->bindings() ) > 1 ) {
-						// The source post of a product that other posts still present: one of them
-						// becomes the source, and the product stays. Until products have more than
-						// one binding, no post reaches this branch.
+						$this->bindings->handOver( (int) $product->id(), $postId, $actor );
+
 						return;
 					}
 
-					$this->delete->delete( (int) $product->id(), Actor::user( max( 0, $userId ) ) );
+					$this->delete->delete( (int) $product->id(), $actor );
 				},
 				RetryPolicy::deadlocks()
 			);
@@ -314,17 +389,20 @@ final class PostLifecycle {
 			return false;
 		}
 
+		$this->leaving[ $postId ] = true;
+
 		return null;
 	}
 
 	/**
 	 * Decides what a write by another path does to a product post that is already bound: nothing to its product; under WP_DEBUG it is reported, once per request.
 	 *
-	 * A write that moves the post into the trash or out of it is not such a write, whichever path
-	 * makes it, the plugin's own REST delete included: it is a step of the post's lifecycle, which
-	 * statusChanged() handles, and it is neither reported nor, under the other reading below, able
-	 * to mark the product `incomplete`. A trashed product keeps its rows whole, so it is sold again
-	 * as it was once its post is published again.
+	 * A write that changes the post's status into the trash or out of it is not such a write,
+	 * whichever path makes it, the plugin's own REST delete included: it is a step of the post's
+	 * lifecycle, which statusChanged() handles, and it is neither reported nor, under the other
+	 * reading below, able to mark the product `incomplete`. A trashed product keeps its rows whole,
+	 * so it is sold again as it was once its post is published again. A write to a post that stays
+	 * in the trash is an editorial write like any other.
 	 *
 	 * Every other such write comes from Quick Edit, bulk edit, `wp post update`, a restored
 	 * revision, an autosave of a draft by its author, or another plugin. Two readings of what it
@@ -353,8 +431,8 @@ final class PostLifecycle {
 	 * @param string $was    The status the post had before the write; empty for a new post.
 	 */
 	private function boundPostWrittenElsewhere( int $postId, bool $update, string $status, string $was ): void {
-		if ( self::TRASH === $status || self::TRASH === $was ) {
-			// Into the trash or out of it: a lifecycle step, not an editorial write.
+		if ( $status !== $was && ( self::TRASH === $status || self::TRASH === $was ) ) {
+			// The status changed into the trash or out of it: a lifecycle step, not an editorial write.
 			return;
 		}
 
@@ -370,6 +448,43 @@ final class PostLifecycle {
 				'post_id' => $postId,
 				'update'  => $update,
 			)
+		);
+	}
+
+	/**
+	 * Tells whether a product is still sold through another of its posts: one that is published, or private.
+	 *
+	 * The holds on its variants then belong to carts in that post's language, which the trash of
+	 * one post must not empty.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Product $product The product.
+	 * @param int     $postId  The post that stops selling it.
+	 * @return bool True when another of its posts sells it.
+	 */
+	private function soldThroughAnother( Product $product, int $postId ): bool {
+		foreach ( $product->bindings() as $binding ) {
+			if ( $binding->postId() !== $postId && in_array( $this->posts->statusOf( $binding->postId() ), SellabilityRule::SELLING_STATUSES, true ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Brings a post's bindings in step with its translation group, in one unit of work.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId The product post.
+	 * @return bool True when the post presented a product before.
+	 */
+	private function reconcileGroup( int $postId ): bool {
+		return (bool) $this->transactions->transaction(
+			fn(): bool => $this->groups->reconcile( $postId ),
+			RetryPolicy::deadlocks()
 		);
 	}
 

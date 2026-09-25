@@ -15,6 +15,7 @@ use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\Sellability as SellabilityRule;
 use SEOCart\Catalog\Domain\SellabilityReason;
+use SEOCart\Support\Locale;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -26,6 +27,10 @@ defined( 'ABSPATH' ) || exit;
  * and a checkout all see the same verdict for the same variant. A variant no row has is
  * `unknown_variant`. A post with no variant to judge, because no product is bound to it or its
  * product has none yet, gets the rule's verdict on that without a fetch.
+ *
+ * A verdict in a locale judges the product's post in that locale, which a product without one
+ * does not have: it is `not_translated` there. Without a locale, the product's source post is
+ * judged.
  *
  * @since 0.1.0
  */
@@ -56,12 +61,14 @@ final class Sellability {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int[] $variantIds     The variants' ids.
-	 * @param bool  $canReadPrivate Whether the reader may read private products: the capability
-	 *                              `read_private_seocart_products`, checked by the caller.
+	 * @param int[]       $variantIds     The variants' ids.
+	 * @param bool        $canReadPrivate Whether the reader may read private products: the capability
+	 *                                    `read_private_seocart_products`, checked by the caller.
+	 * @param Locale|null $locale         Optional. The locale the variants are sold in, or null for the product's
+	 *                                    source post. Default null.
 	 * @return array<int, SellabilityReason> Each variant's verdict, keyed by its id, in the order asked; one query, none for no id.
 	 */
-	public function of( array $variantIds, bool $canReadPrivate ): array {
+	public function of( array $variantIds, bool $canReadPrivate, ?Locale $locale = null ): array {
 		$ids = array_values( array_unique( array_map( 'intval', $variantIds ) ) );
 
 		if ( array() === $ids ) {
@@ -70,7 +77,7 @@ final class Sellability {
 
 		$facts = array();
 
-		foreach ( $this->products->sellabilityFacts( ...$ids ) as $fact ) {
+		foreach ( null === $locale ? $this->products->sellabilityFacts( ...$ids ) : $this->products->sellabilityFactsIn( $locale, ...$ids ) as $fact ) {
 			$facts[ $fact->variantId ] = $fact;
 		}
 
@@ -90,15 +97,16 @@ final class Sellability {
 	 *
 	 * @param Product|null $product        The product bound to the post, as loaded, or null when none is.
 	 * @param bool         $canReadPrivate Whether the reader may read private products.
+	 * @param Locale|null  $locale         Optional. The locale of the post, or null for the product's source post. Default null.
 	 * @return SellabilityReason The verdict: from the one fetch when the product has a default variant, one query; otherwise none.
 	 */
-	public function ofProduct( ?Product $product, bool $canReadPrivate ): SellabilityReason {
+	public function ofProduct( ?Product $product, bool $canReadPrivate, ?Locale $locale = null ): SellabilityReason {
 		$variantId = $product?->defaultVariant()?->id();
 
 		if ( null === $variantId ) {
 			return SellabilityRule::withoutVariant( $product?->generation() );
 		}
 
-		return $this->of( array( $variantId ), $canReadPrivate )[ $variantId ];
+		return $this->of( array( $variantId ), $canReadPrivate, $locale )[ $variantId ];
 	}
 }

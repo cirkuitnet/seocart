@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Catalog\Infrastructure;
 
+use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Platform\Database\Schema\Classification;
 use SEOCart\Platform\Database\Schema\ColumnSpec;
 use SEOCart\Platform\Database\Schema\IndexSpec;
@@ -166,7 +167,7 @@ final class CatalogTables {
 			array(
 				new ColumnSpec( 'post_id', 'bigint unsigned', $public, 'The post; a post presents at most one product.' ),
 				new ColumnSpec( 'product_id', 'bigint unsigned', $public, 'The product it presents.' ),
-				new ColumnSpec( 'locale', 'varchar(20)', $public, 'The WordPress locale of the post\'s content, such as en_US; the site locale on a store in one language.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'locale', 'varchar(' . ProductPostBinding::LOCALE_MAX_LENGTH . ')', $public, 'The WordPress locale of the post\'s content, such as en_US; the site locale on a store in one language.', collation: 'ascii_bin' ),
 				new ColumnSpec( 'visibility_override', 'varchar(12)', $public, 'Where this post lists the product, when it differs from the product; not yet written.', nullable: true, collation: 'ascii_bin' ),
 				new ColumnSpec( 'linked_at', 'datetime', $public, 'When the post was bound to the product, UTC.' ),
 				new ColumnSpec( 'linked_by_adapter', 'varchar(32)', $public, 'The multilingual adapter that bound it; NULL when the store bound it itself.', nullable: true, collation: 'ascii_bin' ),

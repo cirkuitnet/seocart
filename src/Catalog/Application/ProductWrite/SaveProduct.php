@@ -11,17 +11,21 @@ declare( strict_types=1 );
 
 namespace SEOCart\Catalog\Application\ProductWrite;
 
+use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
 use SEOCart\Catalog\Application\PostGateway;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Application\UpdatingMark;
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\Product;
+use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Catalog\Domain\Sku;
 use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Catalog\Domain\VariantPrice;
 use SEOCart\Inventory\Application\StockService;
+use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Exception\DuplicateKey;
 use SEOCart\Platform\Database\Exception\LockNotAcquired;
@@ -34,6 +38,7 @@ use SEOCart\Support\Clock;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\IdGenerator;
+use SEOCart\Support\Locale;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -67,6 +72,14 @@ defined( 'ABSPATH' ) || exit;
  *   rollback leaves nothing, no post and no row. Two first saves of one post meet on the
  *   unique source post of a product: the second waits for the first to commit, then fails
  *   with `catalog.write_conflict`, and its window rolls back.
+ * - A first save of a post in another language, one that names the post it translates or whose
+ *   translation group presents a product already, does not create a product: the post joins
+ *   that product, in its locale, as the product's save does any update, and the multilingual
+ *   setup is told its language and group in the same window. The product's SKU, price and stock
+ *   stay the product's, whichever of its posts a save comes through. A save that names the post
+ *   it translates joins that post's product only when, under the product's lock, the post still
+ *   presents it and the actor may edit its source post; and a save that gives commerce fields
+ *   through a post that is not the product's source post, joining or not, needs the same.
  *
  * When the window fails, a refused save must not take a live product off sale, so the marker
  * the mark replaced is put back, with ProductRepository::restoreMark(), and only when the
@@ -254,6 +267,15 @@ final class SaveProduct {
 	private $report;
 
 	/**
+	 * Decides whether the actor may edit the product a save joins.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var Authorizer
+	 */
+	private Authorizer $authorizer;
+
+	/**
 	 * Creates the service. Does nothing else.
 	 *
 	 * @since 0.1.0
@@ -271,6 +293,7 @@ final class SaveProduct {
 	 * @param IdGenerator        $ids          Mints UUIDs.
 	 * @param callable           $baseCurrency Returns the store's base currency (a Currency).
 	 * @param callable           $report       Receives a machine code (string) and its context (array).
+	 * @param Authorizer         $authorizer   Decides whether the actor may edit the product a save joins.
 	 *
 	 * @phpstan-param callable(string, int, int, callable): mixed   $withLock
 	 * @phpstan-param callable(): Currency                          $baseCurrency
@@ -288,7 +311,8 @@ final class SaveProduct {
 		Clock $clock,
 		IdGenerator $ids,
 		callable $baseCurrency,
-		callable $report
+		callable $report,
+		Authorizer $authorizer
 	) {
 		$this->products     = $products;
 		$this->posts        = $posts;
@@ -302,14 +326,17 @@ final class SaveProduct {
 		$this->ids          = $ids;
 		$this->baseCurrency = $baseCurrency;
 		$this->report       = $report;
+		$this->authorizer   = $authorizer;
 	}
 
 	/**
 	 * Saves a product: binds its post the first time, and writes its post and commerce fields together.
 	 *
 	 * Coded failures: CatalogError::PostNotProduct, SkuInvalid and CurrencyNotBase before anything
-	 * is written; WriteConflict when another save of the product holds its lock for longer than
-	 * the wait; SkuTaken, PostRejected, ProductNotFound and WriteConflict from the window, after
+	 * is written, and for a save in another language LocaleUnsupported, LocaleFixed and
+	 * PostBoundElsewhere; WriteConflict when another save of the product holds its lock for longer
+	 * than the wait; SkuTaken, PostRejected, ProductNotFound and WriteConflict from the window, and
+	 * PostBoundElsewhere or LocaleTaken when a post cannot join the product it translates, after
 	 * which the product's marker is put back as the class description says; the kernel's
 	 * `store.unavailable` while the schema is being updated.
 	 *
@@ -338,12 +365,111 @@ final class SaveProduct {
 
 		$stored = null === $postId ? null : $this->products->findByPost( $postId );
 
-		if ( null === $stored?->defaultVariant() && null !== $commerce && array() !== $commerce->fields() && ! $commerce->has( CommerceFields::SKU ) ) {
+		if ( null === $stored ) {
+			$this->refuseLocale( $command );
+		} else {
+			$this->refuseTranslation( $stored, $command );
+		}
+
+		$joined = null === $stored ? $this->translatedProduct( $command ) : null;
+
+		if ( null === ( $stored ?? $joined )?->defaultVariant() && null !== $commerce && array() !== $commerce->fields() && ! $commerce->has( CommerceFields::SKU ) ) {
 			// A price or a weight belongs to the default variant, which cannot exist without a SKU.
 			CodedException::raise( CatalogError::SkuInvalid, array( 'sku' => '' ) );
 		}
 
-		return null === $stored ? $this->firstBind( $command, $base ) : $this->update( $stored, $command, $base );
+		if ( null !== $joined ) {
+			return $this->update( $joined, $command, $base, true );
+		}
+
+		return null === $stored ? $this->firstBind( $command, $base ) : $this->update( $stored, $command, $base, false );
+	}
+
+	/**
+	 * Refuses, before anything is written, a first save in a locale the site does not publish in.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param ProductSave $command The save of a post no product is bound to yet.
+	 */
+	private function refuseLocale( ProductSave $command ): void {
+		$locale = $command->locale();
+
+		if ( null !== $locale && ! $this->locales->publishesIn( $locale ) ) {
+			CodedException::raise( CatalogError::LocaleUnsupported, array( 'locale' => $locale->toString() ) );
+		}
+	}
+
+	/**
+	 * Refuses, before anything is written, a save of a bound post that names another locale, or another product's post as the one it translates, than the post presents.
+	 *
+	 * A save that repeats them, as a client that sends back what it read does, is no change.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Product     $stored  The product the post presents.
+	 * @param ProductSave $command The save.
+	 */
+	private function refuseTranslation( Product $stored, ProductSave $command ): void {
+		$postId  = (int) $command->postId();
+		$locale  = $command->locale();
+		$binding = $stored->bindingOf( $postId );
+
+		if ( null !== $locale && ! (bool) $binding?->locale()->equals( $locale ) ) {
+			CodedException::raise(
+				CatalogError::LocaleFixed,
+				array(
+					'post_id' => $postId,
+					'locale'  => $locale->toString(),
+				)
+			);
+		}
+
+		$translationOf = $command->translationOf();
+
+		if ( null !== $translationOf && $stored->id() !== $this->products->findByPost( $translationOf )?->id() ) {
+			CodedException::raise(
+				CatalogError::PostBoundElsewhere,
+				array(
+					'post_id'    => $postId,
+					'product_id' => (int) $stored->id(),
+				)
+			);
+		}
+	}
+
+	/**
+	 * Returns the product a post in another language presents: the product of the post the save names, or the one the post's translation group presents.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException CatalogError::PostNotProduct when the post the save names presents no product.
+	 *
+	 * @param ProductSave $command The save.
+	 * @return Product|null The product, or null when the post is not a translation of one.
+	 */
+	private function translatedProduct( ProductSave $command ): ?Product {
+		$translationOf = $command->translationOf();
+
+		if ( null !== $translationOf ) {
+			$product = $this->products->findByPost( $translationOf );
+
+			if ( null === $product ) {
+				CodedException::raise( CatalogError::PostNotProduct, array( 'post_id' => $translationOf ) );
+			}
+
+			return $product;
+		}
+
+		$postId = $command->postId();
+
+		if ( null === $postId ) {
+			return null;
+		}
+
+		$productId = TranslationGroups::productOfGroup( $this->products, $this->locales->translationsOf( $postId ) );
+
+		return null === $productId ? null : $this->products->find( $productId );
 	}
 
 	/**
@@ -361,8 +487,9 @@ final class SaveProduct {
 		$product = $this->transactions->transaction(
 			function () use ( $command, $base, $created ): Product {
 				$postId = $created || $this->hasPostFields( $command ) ? $this->posts->write( $this->postFields( $command ) ) : (int) $command->postId();
+				$locale = $command->locale() ?? $this->locales->localeOf( $postId ) ?? $this->locales->siteLocale();
 
-				$product = Product::firstBinding( $this->ids->generate(), $postId, $this->locales->localeOf( $postId ), null, $this->clock->now() );
+				$product = Product::firstBinding( $this->ids->generate(), $postId, $locale, null, $this->clock->now() );
 				$changed = $this->applyCommerce( $product, $command, $base );
 
 				try {
@@ -372,12 +499,34 @@ final class SaveProduct {
 					CodedException::raise( CatalogError::WriteConflict, array( 'post_id' => $postId ) );
 				}
 
+				$this->assign( $command, $postId, $locale, null );
+
 				return $this->finish( $product, $changed );
 			},
 			RetryPolicy::none()
 		);
 
-		return $this->result( $product, $created );
+		return $this->result( $product, (int) $product->sourcePostId(), $created );
+	}
+
+	/**
+	 * Tells the multilingual setup the locale and translation group of a post the window has bound, when the save gives either.
+	 *
+	 * It runs after the binding is written, so a binding the catalog refuses changes nothing in the
+	 * multilingual setup; a later failure rolls both back, since the setup keeps them in the
+	 * same database.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param ProductSave $command       The save.
+	 * @param int         $postId        The post, bound.
+	 * @param Locale      $locale        The locale it is bound in.
+	 * @param int|null    $translationOf The post whose translation group it joins, or null.
+	 */
+	private function assign( ProductSave $command, int $postId, Locale $locale, ?int $translationOf ): void {
+		if ( null !== $command->locale() || null !== $translationOf ) {
+			$this->locales->assign( $postId, $locale, $translationOf );
+		}
 	}
 
 	/**
@@ -393,22 +542,22 @@ final class SaveProduct {
 	 * @param Product     $stored  The product as it was read before the mark.
 	 * @param ProductSave $command The save.
 	 * @param Currency    $base    The store's base currency.
+	 * @param bool        $joining Whether the save's post joins the product as its post in another locale.
 	 * @return SaveResult The outcome.
 	 */
-	private function update( Product $stored, ProductSave $command, Currency $base ): SaveResult {
+	private function update( Product $stored, ProductSave $command, Currency $base, bool $joining ): SaveResult {
 		$productId = (int) $stored->id();
-		$postId    = (int) $command->postId();
 
 		try {
 			return ( $this->withLock )(
 				self::LOCK_PREFIX . $productId,
 				self::LOCK_TTL_SECONDS,
 				self::LOCK_WAIT_SECONDS,
-				fn(): SaveResult => $this->updateInTurn( $productId, $postId, $command, $base )
+				fn(): SaveResult => $this->updateInTurn( $productId, $command, $base, $joining )
 			);
 		} catch ( LockNotAcquired $busy ) {
 			// Another save of the product held the lock for the whole wait; nothing was written.
-			CodedException::raise( CatalogError::WriteConflict, array( 'post_id' => $postId ) );
+			CodedException::raise( CatalogError::WriteConflict, array( 'post_id' => (int) $command->postId() ) );
 		}
 	}
 
@@ -420,12 +569,14 @@ final class SaveProduct {
 	 * @throws \Throwable Whatever ended the window, after the mark is taken back when that can be trusted.
 	 *
 	 * @param int         $productId The product's id.
-	 * @param int         $postId    The post the save names.
 	 * @param ProductSave $command   The save.
 	 * @param Currency    $base      The store's base currency.
+	 * @param bool        $joining   Whether the save's post joins the product in another locale.
 	 * @return SaveResult The outcome.
 	 */
-	private function updateInTurn( int $productId, int $postId, ProductSave $command, Currency $base ): SaveResult {
+	private function updateInTurn( int $productId, ProductSave $command, Currency $base, bool $joining ): SaveResult {
+		$postId = (int) $command->postId();
+
 		$mark = $this->transactions->transaction(
 			fn(): ?UpdatingMark => $this->products->markUpdating( $productId ),
 			RetryPolicy::deadlocks()
@@ -437,20 +588,28 @@ final class SaveProduct {
 
 		try {
 			$product = $this->transactions->transaction(
-				function () use ( $command, $base, $productId, $postId ): Product {
+				function () use ( $command, $base, $productId, &$postId, $joining ): Product {
 					if ( ! $this->products->relock( $productId ) ) {
 						CodedException::raise( CatalogError::ProductNotFound, array( 'product_id' => $productId ) );
 					}
 
-					// Read again under the lock: the save applies its fields to the product as it is now.
-					$product = $this->products->findByPost( $postId );
+					if ( $joining ) {
+						$product = $this->joined( $productId, $command, $postId );
+					} else {
+						// Read again under the lock: the save applies its fields to the product as it is now.
+						$product = $this->products->findByPost( $postId );
 
-					if ( $productId !== $product?->id() ) {
-						CodedException::raise( CatalogError::WriteConflict, array( 'post_id' => $postId ) );
-					}
+						if ( $productId !== $product?->id() ) {
+							CodedException::raise( CatalogError::WriteConflict, array( 'post_id' => $postId ) );
+						}
 
-					if ( $this->hasPostFields( $command ) ) {
-						$this->posts->write( $this->postFields( $command ) );
+						if ( self::givesCommerce( $command ) && $postId !== $product->sourcePostId() ) {
+							$this->mayEdit( $product, $command->actor() );
+						}
+
+						if ( $this->hasPostFields( $command ) ) {
+							$this->posts->write( $this->postFields( $command ) );
+						}
 					}
 
 					$changed = $this->applyCommerce( $product, $command, $base );
@@ -467,7 +626,104 @@ final class SaveProduct {
 			throw $failure;
 		}
 
-		return $this->result( $product, false );
+		return $this->result( $product, $postId, $joining && null === $command->postId() );
+	}
+
+	/**
+	 * Writes the post of a save that joins a product in another locale, tells the multilingual setup its locale and group, and binds it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException CatalogError::PostBoundElsewhere or LocaleTaken when the post cannot join it; what
+	 *                        mayJoin() throws.
+	 *
+	 * @param int         $productId The product, locked.
+	 * @param ProductSave $command   The save.
+	 * @param int         $postId    Receives the post: the one the save names, or the one it creates.
+	 * @return Product The product, with the post's binding added.
+	 */
+	private function joined( int $productId, ProductSave $command, int &$postId ): Product {
+		$this->mayJoin( $productId, $command );
+
+		if ( null === $command->postId() || $this->hasPostFields( $command ) ) {
+			$postId = $this->posts->write( $this->postFields( $command ) );
+		}
+
+		$locale = $command->locale() ?? $this->locales->localeOf( $postId ) ?? $this->locales->siteLocale();
+
+		$this->products->addBinding( $productId, new ProductPostBinding( $postId, $locale, $this->clock->now() ) );
+		$this->assign( $command, $postId, $locale, $command->translationOf() );
+
+		// Read under the lock the window took: the product as it is now, with the post's binding.
+		$product = $this->products->find( $productId );
+
+		if ( null === $product ) {
+			CodedException::raise( CatalogError::ProductNotFound, array( 'product_id' => $productId ) );
+		}
+
+		return $product;
+	}
+
+	/**
+	 * Refuses, under the product's lock and before anything is written, a join the actor may not make: one that names a post that no longer presents the product, or that the actor may not edit the product through.
+	 *
+	 * A save that names the post it translates, or that joins with commerce fields, changes the
+	 * product the post joins, so it needs `edit_post` on that product's source post. The endpoint
+	 * asked the same question before the save began; asked again here, the answer holds for the
+	 * product as the join finds it, even if its source post changed in between. A save that joins
+	 * a translation group with no commerce field is left to the multilingual setup's authority.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException CatalogError::WriteConflict when the post the save names presents another product by now,
+	 *                        or none; `authorization.denied` when the actor may not edit the product.
+	 *
+	 * @param int         $productId The product, locked.
+	 * @param ProductSave $command   The save.
+	 */
+	private function mayJoin( int $productId, ProductSave $command ): void {
+		$translationOf = $command->translationOf();
+
+		if ( null === $translationOf && ! self::givesCommerce( $command ) ) {
+			return;
+		}
+
+		$product = $this->products->lock( $productId );
+
+		if ( null === $product || ( null !== $translationOf && null === $product->bindingOf( $translationOf ) ) ) {
+			CodedException::raise( CatalogError::WriteConflict, array( 'post_id' => (int) $translationOf ) );
+		}
+
+		$this->mayEdit( $product, $command->actor() );
+	}
+
+	/**
+	 * Refuses a save the actor may not make through a post that is not the product's source post: `edit_post` on the product's source post.
+	 *
+	 * The product's SKU, price and stock are one for all its posts, so whoever changes them through
+	 * a translation must be allowed to edit the product itself.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `authorization.denied` when the actor may not edit the product's source post.
+	 *
+	 * @param Product $product The product, locked.
+	 * @param Actor   $actor   On whose authority the save runs.
+	 */
+	private function mayEdit( Product $product, Actor $actor ): void {
+		$this->authorizer->authorize( $actor, ProductCapabilities::map()['edit_post'], (int) $product->sourcePostId() );
+	}
+
+	/**
+	 * Tells whether a save gives any commerce field.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param ProductSave $command The save.
+	 * @return bool True when it does.
+	 */
+	private static function givesCommerce( ProductSave $command ): bool {
+		return null !== $command->commerce() && array() !== $command->commerce()->fields();
 	}
 
 	/**
@@ -575,24 +831,26 @@ final class SaveProduct {
 	}
 
 	/**
-	 * Builds the result of a committed save, with the verdict read after the commit.
+	 * Builds the result of a committed save, with the verdict read after the commit: in the locale of the post the save came through.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param Product $product The saved product.
+	 * @param int     $postId  The post the save wrote or bound.
 	 * @param bool    $created Whether the save created the post.
 	 * @return SaveResult The result.
 	 */
-	private function result( Product $product, bool $created ): SaveResult {
+	private function result( Product $product, int $postId, bool $created ): SaveResult {
 		$variantId = $product->defaultVariant()?->id();
+		$locale    = $postId === $product->sourcePostId() ? null : $product->bindingOf( $postId )?->locale();
 
 		return new SaveResult(
 			(int) $product->id(),
-			(int) $product->sourcePostId(),
+			$postId,
 			$variantId,
 			$created,
 			$product->generation(),
-			null === $variantId ? null : ( $this->sellability->of( array( $variantId ), false )[ $variantId ] ?? null )
+			null === $variantId ? null : ( $this->sellability->of( array( $variantId ), false, $locale )[ $variantId ] ?? null )
 		);
 	}
 

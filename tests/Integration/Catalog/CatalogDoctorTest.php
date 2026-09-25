@@ -44,9 +44,9 @@ use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Support\Currency;
-use SEOCart\Support\Locale;
 use SEOCart\Tests\Support\Catalog\CatalogTestCase;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
+use SEOCart\Tests\Support\Doubles\OneLocale;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 
@@ -127,19 +127,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		$reconciler = new Reconciler(
 			$this->products,
 			$this->db,
-			new class() implements \SEOCart\Platform\Localization\PostLocales {
-				/**
-				 * Returns the fixture locale for every post.
-				 *
-				 * @param int $postId Unused.
-				 * @return Locale The fixture locale.
-				 */
-				public function localeOf( int $postId ): Locale {
-					unset( $postId );
-
-					return Locale::of( 'en_US' );
-				}
-			},
+			new OneLocale(),
 			new FrozenClock( $this->databaseNow() ),
 			new SequentialIdGenerator( 700000 )
 		);
@@ -1106,19 +1094,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		return new Reconciler(
 			$this->products,
 			$this->db,
-			new class() implements \SEOCart\Platform\Localization\PostLocales {
-				/**
-				 * Returns the fixture locale for every post.
-				 *
-				 * @param int $postId Unused.
-				 * @return Locale The fixture locale.
-				 */
-				public function localeOf( int $postId ): Locale {
-					unset( $postId );
-
-					return Locale::of( 'en_US' );
-				}
-			},
+			new OneLocale(),
 			new FrozenClock( $this->databaseNow() ),
 			new SequentialIdGenerator( 800000 )
 		);

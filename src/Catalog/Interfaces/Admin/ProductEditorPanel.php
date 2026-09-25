@@ -15,6 +15,7 @@ use SEOCart\Catalog\Application\ProductWrite\CommerceFields;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Interfaces\Rest\ProductCommerceSchema;
 use SEOCart\Platform\Authorization\ProductCapabilities;
+use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
@@ -28,8 +29,10 @@ defined( 'ABSPATH' ) || exit;
  * REST resource through the editor's own entity, so the block editor sends it in the same
  * request as the title and the content. Everything it shows comes from here, from the
  * declarations: each writable commerce field with its label, the base currency with its number
- * of decimal places, so an amount the merchant types becomes minor units without a float, and a
- * plain sentence for every verdict. The currency is not a field of the panel: a price is always in
+ * of decimal places, so an amount the merchant types becomes minor units without a float, a
+ * plain sentence for every verdict, and what a new translation's first save sends: the fields in
+ * which it names the post it translates and its locale, which the panel reads from the
+ * multilingual plugin's link, and the locale of each language code such a link may name. The currency is not a field of the panel: a price is always in
  * the base currency.
  *
  * The script is enqueued on `enqueue_block_editor_assets` only when the screen edits a product,
@@ -104,18 +107,29 @@ final class ProductEditorPanel {
 	private $baseCurrency;
 
 	/**
+	 * Names the languages a new translation's link may ask for.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var PostLocales
+	 */
+	private PostLocales $locales;
+
+	/**
 	 * Creates the panel. Reads nothing.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string   $pluginFile   The main plugin file.
-	 * @param callable $baseCurrency Returns the store's base currency (a Currency).
+	 * @param string      $pluginFile   The main plugin file.
+	 * @param callable    $baseCurrency Returns the store's base currency (a Currency).
+	 * @param PostLocales $locales      Names the languages a new translation's link may ask for.
 	 *
 	 * @phpstan-param callable(): Currency $baseCurrency
 	 */
-	public function __construct( string $pluginFile, callable $baseCurrency ) {
+	public function __construct( string $pluginFile, callable $baseCurrency, PostLocales $locales ) {
 		$this->pluginFile   = $pluginFile;
 		$this->baseCurrency = $baseCurrency;
+		$this->locales      = $locales;
 	}
 
 	/**
@@ -153,7 +167,8 @@ final class ProductEditorPanel {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array<string, mixed> The post type, the property, the panel's title, the base currency, the fields and the verdicts' sentences.
+	 * @return array<string, mixed> The post type, the property, the panel's title, the base currency, the fields, the verdicts' sentences,
+	 *                              and the two fields of a new translation's first save with the locale of each language code.
 	 */
 	public function settings(): array {
 		$base   = ( $this->baseCurrency )();
@@ -186,6 +201,11 @@ final class ProductEditorPanel {
 				'name'    => ProductCommerceSchema::SELLABILITY,
 				'label'   => $sellability,
 				'reasons' => self::reasons(),
+			),
+			'translation' => array(
+				'field'     => ProductCommerceSchema::TRANSLATION_OF,
+				'locale'    => ProductCommerceSchema::LOCALE,
+				'languages' => array_map( static fn( $locale ): string => $locale->toString(), $this->locales->languages() ),
 			),
 		);
 	}
@@ -250,6 +270,7 @@ final class ProductEditorPanel {
 			'sellable'              => __( 'For sale.', 'seocart' ),
 			'incomplete'            => __( 'Not for sale: the product needs a SKU and a price.', 'seocart' ),
 			'updating'              => __( 'Not for sale while it is being saved.', 'seocart' ),
+			'not_translated'        => __( 'Not for sale in this language: the product has no post in it.', 'seocart' ),
 			'no_binding'            => __( 'Not for sale until it is saved with a SKU and a price.', 'seocart' ),
 			'no_base_price'         => __( 'Not for sale: the product has no price.', 'seocart' ),
 			'not_active_generation' => __( 'Not for sale while its variants are being rebuilt.', 'seocart' ),

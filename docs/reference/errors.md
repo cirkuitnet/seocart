@@ -26,6 +26,30 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: A product price must be in the store's base currency, {base_currency}, not {currency}.
 - Values: `currency`, `base_currency`
 
+## `catalog.locale_fixed`
+
+- HTTP status: 409
+- Message: Post {post_id} presents its product in another locale than {locale}; change its language in the multilingual plugin.
+- Values: `post_id`, `locale`
+
+## `catalog.locale_taken`
+
+- HTTP status: 409
+- Message: Product {product_id} already has a post in {locale}.
+- Values: `product_id`, `locale`
+
+## `catalog.locale_unsupported`
+
+- HTTP status: 400
+- Message: The site does not publish in {locale}.
+- Values: `locale`
+
+## `catalog.post_bound_elsewhere`
+
+- HTTP status: 409
+- Message: Post {post_id} already presents product {product_id}.
+- Values: `post_id`, `product_id`
+
 ## `catalog.post_not_product`
 
 - HTTP status: 400
@@ -44,6 +68,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: Product {product_id} does not exist.
 - Values: `product_id`
 
+## `catalog.promotion_conflict`
+
+- HTTP status: 409
+- Message: Post {post_id} could not become the source post of product {product_id}: the source changed meanwhile, or the post does not present the product.
+- Values: `product_id`, `post_id`
+
 ## `catalog.sku_invalid`
 
 - HTTP status: 400
@@ -55,6 +85,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 409
 - Message: Another product already uses the SKU "{sku}".
 - Values: `sku`
+
+## `catalog.source_binding_kept`
+
+- HTTP status: 409
+- Message: Post {post_id} is its product's source post; make another of its posts the source first.
+- Values: `post_id`
 
 ## `catalog.write_conflict`
 

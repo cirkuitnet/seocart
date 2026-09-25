@@ -65,4 +65,11 @@ enum ReportCode: string {
 	 * @since 0.1.0
 	 */
 	case DeleteRefused = 'catalog.delete_refused';
+
+	/**
+	 * A post of a translation group could not join the product the group presents: it presents another product with commerce data of its own, or the product has a post in its locale already.
+	 *
+	 * @since 0.1.0
+	 */
+	case TranslationConflict = 'catalog.translation_conflict';
 }

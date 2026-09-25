@@ -22,6 +22,7 @@ use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\Sku;
 use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Support\Error\CodedException;
 
 defined( 'ABSPATH' ) || exit;
@@ -34,7 +35,9 @@ defined( 'ABSPATH' ) || exit;
  * created at zero. The post takes the original's title, content, excerpt and featured image, as a
  * draft, with no slug of its own until it is published; the variant takes its price, its
  * compare-at price and its weight. The copy is `complete` when the original has a price, and
- * cannot be sold until it is published.
+ * cannot be sold until it is published. The copy's post is in the language of the original's
+ * source post, while the site still publishes in it, and in no translation group: a copy is a
+ * product of its own, never a translation of the original.
  *
  * The SKU is the original's with `-copy`, then `-copy-2` up to `-copy-9`, each tried in turn while
  * another variant holds it; the original's part is shortened when the suffix would take the SKU
@@ -94,6 +97,15 @@ final class DuplicateProduct {
 	private PostGateway $posts;
 
 	/**
+	 * Tells whether the site still publishes in the original's locale.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var PostLocales
+	 */
+	private PostLocales $locales;
+
+	/**
 	 * Creates the service. Does nothing else.
 	 *
 	 * @since 0.1.0
@@ -101,11 +113,13 @@ final class DuplicateProduct {
 	 * @param ProductRepository $products Loads the original.
 	 * @param SaveProduct       $save     Saves the copy.
 	 * @param PostGateway       $posts    Reads the original's post and fires the copy's after-insert hook.
+	 * @param PostLocales       $locales  Tells whether the site still publishes in the original's locale.
 	 */
-	public function __construct( ProductRepository $products, SaveProduct $save, PostGateway $posts ) {
+	public function __construct( ProductRepository $products, SaveProduct $save, PostGateway $posts, PostLocales $locales ) {
 		$this->products = $products;
 		$this->save     = $save;
 		$this->posts    = $posts;
+		$this->locales  = $locales;
 	}
 
 	/**
@@ -138,16 +152,18 @@ final class DuplicateProduct {
 		}
 
 		$variant = $original->defaultVariant();
+		$locale  = $original->bindingOf( $postId )?->locale();
+		$locale  = null !== $locale && $this->locales->publishesIn( $locale ) ? $locale : null;
 
 		if ( null === $variant ) {
-			return $this->saved( new ProductSave( null, $fields, null, $actor ) );
+			return $this->saved( new ProductSave( null, $fields, null, $actor, null, $locale ) );
 		}
 
 		$sku = '';
 
 		foreach ( self::skus( $variant->sku() ) as $sku ) {
 			try {
-				return $this->saved( new ProductSave( null, $fields, self::commerce( $variant, $sku ), $actor ) );
+				return $this->saved( new ProductSave( null, $fields, self::commerce( $variant, $sku ), $actor, null, $locale ) );
 			} catch ( CodedException $refused ) {
 				if ( CatalogError::SkuTaken !== $refused->errorCode() ) {
 					throw $refused;

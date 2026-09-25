@@ -42,6 +42,21 @@ defined( 'ABSPATH' ) || exit;
  * row lock first, as a save's window does, reads the product with locking reads, then removes its
  * rows children first.
  *
+ * Every statement that locks catalog rows takes them in one order, whichever path sends it:
+ *
+ * 1. `products` rows, in ascending order of id when there are several: a save's mark and relock,
+ *    lock(), and lockWithPost() and lockByPost(), which name a post's product with a plain read,
+ *    lock it, and only then read the post's binding again with a locking read;
+ * 2. `product_posts` rows: the bindings a locking load reads, and every binding written, always
+ *    under its product's row lock, so a binding read under that lock stays as read;
+ * 3. `variants` and `variant_prices` rows: the default variant a locking load reads,
+ *    lockVariants(), a save's variant and price writes, and delete();
+ * 4. the inventory's rows, which its own service locks, after the catalog's.
+ *
+ * A binding that moved to another product between lockWithPost()'s plain read and its lock is
+ * followed to that product, whose row is then locked out of that order; the unit of work's
+ * deadlock retry covers that rare case, and a locking read decides every time.
+ *
  * A SKU collision is the `sku` key doing its job. When a variant write breaks a unique key, a
  * locking read asks whether another variant holds the SKU; a locking read sees the newest
  * committed row, whatever this transaction's snapshot is. If one does, the failure is
@@ -61,6 +76,15 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @var string
 	 */
 	private const DATETIME = 'Y-m-d H:i:s';
+
+	/**
+	 * The status of a published post, which a promotion prefers.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const PUBLISHED = 'publish';
 
 	/**
 	 * The instant a statement writes into a product's `updated_at`: now, or one microsecond after the row's last instant when that is later.
@@ -83,6 +107,15 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @var string
 	 */
 	private const LOCKING = ' FOR UPDATE';
+
+	/**
+	 * How often lockWithPost() follows a binding that moved to another product while it locked: a binding moves only under its product's lock, so twice is already rare.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const LOCK_ATTEMPTS = 3;
 
 	/**
 	 * The connection.
@@ -138,7 +171,7 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @return Product|null The product, or null when the post is bound to none.
 	 */
 	public function findByPost( int $postId ): ?Product {
-		return $this->loadWhere( $this->db->fetchValue( 'SELECT product_id FROM %i WHERE post_id = %d', $this->table( CatalogTables::PRODUCT_POSTS ), $postId ) );
+		return $this->loadWhere( $this->productOf( $postId, false ) );
 	}
 
 	/**
@@ -275,7 +308,7 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
-	 * Loads a product for its deletion, under its row lock: every read a locking read, the product's row first.
+	 * Loads a product under its row lock: every read a locking read, the product's row first.
 	 *
 	 * @since 0.1.0
 	 *
@@ -284,33 +317,74 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @param int $productId The product's id.
 	 * @return Product|null The product, or null when there is none with that id.
 	 */
-	public function lockForDelete( int $productId ): ?Product {
+	public function lock( int $productId ): ?Product {
 		$this->requireTransaction( __FUNCTION__ );
 
 		return $this->load( $productId, true );
 	}
 
 	/**
-	 * Loads the product a post is bound to, under the row locks of the binding and the product: one locking read takes both, then the product is read with locking reads.
+	 * Loads the product a post is bound to under its row lock, as lockWithPost() locks it.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \LogicException When no transaction is open.
+	 * @throws CodedException With CatalogError::WriteConflict when the post's binding keeps moving.
 	 *
 	 * @param int $postId The post's id.
 	 * @return Product|null The product, or null when the post is bound to none.
 	 */
 	public function lockByPost( int $postId ): ?Product {
+		foreach ( $this->lockWithPost( $postId ) as $product ) {
+			if ( null !== $product->bindingOf( $postId ) ) {
+				return $product;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Locks the rows of some products and of the product a post is bound to, in ascending order of id, then the post's binding, and loads each product with locking reads.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open.
+	 * @throws CodedException With CatalogError::WriteConflict when the post's binding keeps moving.
+	 *
+	 * @param int $postId        The post.
+	 * @param int ...$productIds Other products to lock with it.
+	 * @return array<int, Product> The products that exist, by id: the post's, when it presents one, among them.
+	 */
+	public function lockWithPost( int $postId, int ...$productIds ): array {
 		$this->requireTransaction( __FUNCTION__ );
 
-		$productId = $this->db->fetchValue(
-			'SELECT pp.product_id FROM %i pp JOIN %i p ON p.id = pp.product_id WHERE pp.post_id = %d FOR UPDATE',
-			$this->table( CatalogTables::PRODUCT_POSTS ),
-			$this->table( CatalogTables::PRODUCTS ),
-			$postId
-		);
+		// A read without a lock names the post's product, whose row is locked before its binding.
+		$current = self::intOrNull( $this->productOf( $postId, false ) );
+		$locked  = array();
 
-		return null === $productId ? null : $this->load( (int) $productId, true );
+		for ( $attempt = 0; $attempt < self::LOCK_ATTEMPTS; ++$attempt ) {
+			$ids = array_unique( array_merge( $productIds, null === $current ? array() : array( $current ) ) );
+
+			sort( $ids );
+
+			foreach ( $ids as $id ) {
+				if ( ! array_key_exists( $id, $locked ) ) {
+					$locked[ $id ] = $this->load( $id, true );
+				}
+			}
+
+			// Under the locks, a locking read of the binding names the product the post presents now.
+			$now = self::intOrNull( $this->productOf( $postId, true ) );
+
+			if ( null === $now || array_key_exists( $now, $locked ) ) {
+				return array_filter( $locked, static fn( ?Product $product ): bool => null !== $product );
+			}
+
+			$current = $now;
+		}
+
+		CodedException::raise( CatalogError::WriteConflict, array( 'post_id' => $postId ) );
 	}
 
 	/**
@@ -339,7 +413,7 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @throws \LogicException When no transaction is open, or the product was never stored.
 	 * @phpstan-throws \LogicException|CodedException
 	 *
-	 * @param Product $product The product, as lockForDelete() loaded it.
+	 * @param Product $product The product, as lock() loaded it.
 	 * @return array<int, string> The SKU of each variant deleted, by the variant's id, ascending.
 	 */
 	public function delete( Product $product ): array {
@@ -392,28 +466,208 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @return list<SellabilityFacts> One entry per variant that exists; none for an unknown id.
 	 */
 	public function sellabilityFacts( int ...$variantIds ): array {
+		return $this->facts( null, $variantIds );
+	}
+
+	/**
+	 * Reads, in one query, the facts Sellability judges each variant on in one locale.
+	 *
+	 * The same query as sellabilityFacts(), joined to the product's binding in the locale instead
+	 * of its source binding, through the `(product_id, locale)` key.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Locale $locale        The locale.
+	 * @param int    ...$variantIds The variants' ids.
+	 * @return list<SellabilityFacts> One entry per variant that exists; none for an unknown id.
+	 */
+	public function sellabilityFactsIn( Locale $locale, int ...$variantIds ): array {
+		return $this->facts( $locale, $variantIds );
+	}
+
+	/**
+	 * Moves a post's binding to another locale.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException With CatalogError::LocaleTaken when the product has a post in that locale.
+	 *
+	 * @param int    $postId The post.
+	 * @param Locale $locale The locale.
+	 * @return bool True when the binding moved; false when the post presents no product, or has that locale already.
+	 */
+	public function moveBinding( int $postId, Locale $locale ): bool {
+		try {
+			return 1 === $this->db->execute( 'UPDATE %i SET locale = %s WHERE post_id = %d', $this->table( CatalogTables::PRODUCT_POSTS ), $locale->toString(), $postId );
+		} catch ( DuplicateKey $taken ) {
+			CodedException::raise(
+				CatalogError::LocaleTaken,
+				array(
+					'product_id' => (int) $this->db->fetchValue( 'SELECT product_id FROM %i WHERE post_id = %d', $this->table( CatalogTables::PRODUCT_POSTS ), $postId ),
+					'locale'     => $locale->toString(),
+				)
+			);
+		}
+	}
+
+	/**
+	 * Binds a post to a product, in a locale.
+	 *
+	 * When a unique key refuses the row, a locking read of the post's binding tells which one:
+	 * the post is bound already, or the product has a post in the locale.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException With CatalogError::PostBoundElsewhere or CatalogError::LocaleTaken.
+	 *
+	 * @param int                $productId The product's id.
+	 * @param ProductPostBinding $binding   The binding.
+	 */
+	public function addBinding( int $productId, ProductPostBinding $binding ): void {
+		try {
+			$this->db->execute(
+				'INSERT INTO %i ( post_id, product_id, locale, linked_at, linked_by_adapter, created_at ) VALUES ( %d, %d, %s, %s, ' . self::placeholder( $binding->linkedByAdapter() ) . ', UTC_TIMESTAMP() )',
+				...self::given(
+					$this->table( CatalogTables::PRODUCT_POSTS ),
+					$binding->postId(),
+					$productId,
+					$binding->locale()->toString(),
+					self::formatInstant( $binding->linkedAt() ),
+					$binding->linkedByAdapter()
+				)
+			);
+		} catch ( DuplicateKey $taken ) {
+			$holder = $this->productOf( $binding->postId(), true );
+
+			if ( null !== $holder ) {
+				CodedException::raise(
+					CatalogError::PostBoundElsewhere,
+					array(
+						'post_id'    => $binding->postId(),
+						'product_id' => (int) $holder,
+					)
+				);
+			}
+
+			CodedException::raise(
+				CatalogError::LocaleTaken,
+				array(
+					'product_id' => $productId,
+					'locale'     => $binding->locale()->toString(),
+				)
+			);
+		}
+	}
+
+	/**
+	 * Removes a post's binding to a product, unless it is the product's source binding.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $productId The product's id.
+	 * @param int $postId    The post.
+	 * @return bool True when the binding was removed.
+	 */
+	public function removeBinding( int $productId, int $postId ): bool {
+		return 1 === $this->db->execute(
+			'DELETE pp FROM %i pp JOIN %i p ON p.id = pp.product_id WHERE pp.post_id = %d AND pp.product_id = %d AND NOT ( p.source_post_id <=> pp.post_id )',
+			$this->table( CatalogTables::PRODUCT_POSTS ),
+			$this->table( CatalogTables::PRODUCTS ),
+			$postId,
+			$productId
+		);
+	}
+
+	/**
+	 * Moves a product's source binding from one of its posts to another, in one conditional statement.
+	 *
+	 * The statement changes the row only while the source is still the post the caller read, so
+	 * two promotions of one product cannot both apply, and a promotion never names a post that is
+	 * not one of the product's bindings. With no post named, the statement picks the post itself,
+	 * in its own order: published bindings first, then by the time each was bound, then by post id.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int      $productId  The product's id.
+	 * @param int      $fromPostId The post that must be the source now.
+	 * @param int|null $toPostId   The post to promote, or null for the oldest remaining binding.
+	 * @return int|null The new source post, or null when nothing changed.
+	 */
+	public function promoteSource( int $productId, int $fromPostId, ?int $toPostId ): ?int {
+		if ( null !== $toPostId ) {
+			$changed = $this->db->execute(
+				'UPDATE %i SET source_post_id = %d, updated_at = ' . self::NEXT_INSTANT . ' WHERE id = %d AND source_post_id = %d'
+					. ' AND EXISTS ( SELECT 1 FROM %i pp WHERE pp.post_id = %d AND pp.product_id = %d )',
+				$this->table( CatalogTables::PRODUCTS ),
+				$toPostId,
+				$productId,
+				$fromPostId,
+				$this->table( CatalogTables::PRODUCT_POSTS ),
+				$toPostId,
+				$productId
+			);
+		} else {
+			$changed = $this->db->execute(
+				'UPDATE %i p JOIN ( SELECT pp.post_id FROM %i pp LEFT JOIN %i wp ON wp.ID = pp.post_id'
+					. ' WHERE pp.product_id = %d AND pp.post_id <> %d'
+					. ' ORDER BY ( wp.post_status = %s ) DESC, pp.linked_at, pp.post_id LIMIT 1 ) next ON 1 = 1'
+					. ' SET p.source_post_id = next.post_id, p.updated_at = ' . self::NEXT_INSTANT
+					. ' WHERE p.id = %d AND p.source_post_id = %d',
+				$this->table( CatalogTables::PRODUCTS ),
+				$this->table( CatalogTables::PRODUCT_POSTS ),
+				$this->db->prefix() . 'posts',
+				$productId,
+				$fromPostId,
+				self::PUBLISHED,
+				$productId,
+				$fromPostId
+			);
+		}
+
+		if ( 1 !== $changed ) {
+			return null;
+		}
+
+		return (int) $this->db->fetchValue( 'SELECT source_post_id FROM %i WHERE id = %d FOR UPDATE', $this->table( CatalogTables::PRODUCTS ), $productId );
+	}
+
+	/**
+	 * Reads the facts of variants, judged on the product's source binding or on its binding in a locale.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Locale|null $locale     The locale, or null for the source binding.
+	 * @param int[]       $variantIds The variants' ids.
+	 * @return list<SellabilityFacts> One entry per variant that exists.
+	 */
+	private function facts( ?Locale $locale, array $variantIds ): array {
 		$ids = array_values( array_unique( array_filter( $variantIds, static fn( int $id ): bool => $id > 0 ) ) );
 
 		if ( array() === $ids ) {
 			return array();
 		}
 
-		$rows = $this->db->fetchAll(
+		$binding = null === $locale ? 'pp.post_id = p.source_post_id AND pp.product_id = p.id' : 'pp.product_id = p.id AND pp.locale = %s';
+		$rows    = $this->db->fetchAll(
 			'SELECT v.id AS variant_id, v.is_enabled, v.generation, p.id AS product_id, p.generation_state, p.active_variant_generation, p.source_post_id, pp.post_id, wp.post_status,'
 				. ' EXISTS ( SELECT 1 FROM %i vp WHERE vp.variant_id = v.id AND vp.currency = %s ) AS has_base_price'
 				. ' FROM %i v'
 				. ' JOIN %i p ON p.id = v.product_id'
-				. ' LEFT JOIN %i pp ON pp.post_id = p.source_post_id AND pp.product_id = p.id'
+				. ' LEFT JOIN %i pp ON ' . $binding
 				. ' LEFT JOIN %i wp ON wp.ID = pp.post_id AND wp.post_type = %s'
 				. ' WHERE v.id IN ( ' . implode( ', ', array_fill( 0, count( $ids ), '%d' ) ) . ' )',
-			$this->table( CatalogTables::VARIANT_PRICES ),
-			$this->baseCurrency()->code(),
-			$this->table( CatalogTables::VARIANTS ),
-			$this->table( CatalogTables::PRODUCTS ),
-			$this->table( CatalogTables::PRODUCT_POSTS ),
-			$this->db->prefix() . 'posts',
-			ProductCapabilities::POST_TYPE,
-			...$ids
+			...array_merge(
+				array(
+					$this->table( CatalogTables::VARIANT_PRICES ),
+					$this->baseCurrency()->code(),
+					$this->table( CatalogTables::VARIANTS ),
+					$this->table( CatalogTables::PRODUCTS ),
+					$this->table( CatalogTables::PRODUCT_POSTS ),
+				),
+				null === $locale ? array() : array( $locale->toString() ),
+				array( $this->db->prefix() . 'posts', ProductCapabilities::POST_TYPE ),
+				$ids
+			)
 		);
 
 		$facts = array();
@@ -429,7 +683,8 @@ final class MysqlProductRepository implements ProductRepository {
 				self::intOrNull( $row['source_post_id'] ),
 				self::intOrNull( $row['post_id'] ),
 				null === $row['post_status'] ? null : (string) $row['post_status'],
-				1 === (int) $row['has_base_price']
+				1 === (int) $row['has_base_price'],
+				null === $locale || null !== $row['post_id']
 			);
 		}
 
@@ -763,7 +1018,7 @@ final class MysqlProductRepository implements ProductRepository {
 
 	/**
 	 * Reloads a product under its row lock, for a repair that must re-check the defect before it
-	 * writes: load()'s own locking read (the one lockForDelete() also uses), plus the exact stored
+	 * writes: load()'s own locking read (the one lock() also uses), plus the exact stored
 	 * `updated_at` the repair's compare-and-set must match, which the aggregate itself does not carry.
 	 *
 	 * @since 0.1.0
@@ -888,6 +1143,19 @@ final class MysqlProductRepository implements ProductRepository {
 	 */
 	private function loadWhere( mixed $productId ): ?Product {
 		return null === $productId ? null : $this->load( (int) $productId );
+	}
+
+	/**
+	 * Reads the product a post's binding names: a plain read, or a locking read that takes the binding's row lock and sees the newest committed row.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int  $postId  The post's id.
+	 * @param bool $locking Whether the read is a locking read.
+	 * @return mixed The product's id as the database returns it, or null when the post is bound to none.
+	 */
+	private function productOf( int $postId, bool $locking ): mixed {
+		return $this->db->fetchValue( 'SELECT product_id FROM %i WHERE post_id = %d' . ( $locking ? self::LOCKING : '' ), $this->table( CatalogTables::PRODUCT_POSTS ), $postId );
 	}
 
 	/**
@@ -1046,6 +1314,13 @@ final class MysqlProductRepository implements ProductRepository {
 
 		foreach ( $product->bindings() as $binding ) {
 			if ( in_array( $binding->postId(), $stored, true ) ) {
+				continue;
+			}
+
+			if ( $productStored ) {
+				// A stored product gaining a post: a refusal names the post or the locale that is taken.
+				$this->addBinding( $productId, $binding );
+
 				continue;
 			}
 

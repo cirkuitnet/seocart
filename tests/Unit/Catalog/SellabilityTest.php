@@ -49,12 +49,14 @@ final class SellabilityTest extends TestCase {
 			'boundPostId'       => null,
 			'postStatus'        => null,
 			'hasBasePrice'      => false,
+			'translated'        => false,
 		);
 
 		$repairs = array(
 			array(),
 			array( 'generation' => GenerationState::Updating ),
 			array( 'generation' => GenerationState::Complete ),
+			array( 'translated' => true ),
 			array(
 				'sourcePostId' => 42,
 				'boundPostId'  => 42,
@@ -75,7 +77,7 @@ final class SellabilityTest extends TestCase {
 		}
 
 		$this->assertSame(
-			array( 'unknown_variant', 'incomplete', 'updating', 'no_binding', 'no_base_price', 'not_active_generation', 'variant_disabled', 'not_published', 'private', 'sellable' ),
+			array( 'unknown_variant', 'incomplete', 'updating', 'not_translated', 'no_binding', 'no_base_price', 'not_active_generation', 'variant_disabled', 'not_published', 'private', 'sellable' ),
 			$verdicts
 		);
 		$this->assertEqualsCanonicalizing( array_map( static fn( SellabilityReason $reason ): string => $reason->value, SellabilityReason::cases() ), $verdicts, 'Every verdict is reachable.' );
@@ -156,7 +158,7 @@ final class SellabilityTest extends TestCase {
 	 * @return SellabilityFacts The facts.
 	 */
 	private static function facts( array $facts ): SellabilityFacts {
-		return new SellabilityFacts( 7, 3, $facts['generation'], $facts['activeGeneration'], $facts['variantGeneration'], $facts['variantEnabled'], $facts['sourcePostId'], $facts['boundPostId'], $facts['postStatus'], $facts['hasBasePrice'] );
+		return new SellabilityFacts( 7, 3, $facts['generation'], $facts['activeGeneration'], $facts['variantGeneration'], $facts['variantEnabled'], $facts['sourcePostId'], $facts['boundPostId'], $facts['postStatus'], $facts['hasBasePrice'], $facts['translated'] ?? true );
 	}
 
 	/**

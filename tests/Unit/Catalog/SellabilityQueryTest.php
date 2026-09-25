@@ -26,6 +26,7 @@ use SEOCart\Tests\Support\Catalog\FixedFactsRepository;
 /**
  * The query asks the repository once for every variant's facts, answers in the order asked with
  * each id once, and answers `unknown_variant` for an id with no facts; with no id it asks nothing.
+ * Asked in a locale, it fetches the facts in that locale instead.
  *
  * @since 0.1.0
  */
@@ -95,6 +96,29 @@ final class SellabilityQueryTest extends TestCase {
 
 		$this->assertSame( SellabilityReason::Sellable, ( new Sellability( $repository ) )->ofProduct( self::product( GenerationState::Complete, 70 ), false ) );
 		$this->assertSame( array( array( 70 ) ), $repository->asked );
+	}
+
+	/**
+	 * Tests that a verdict in a locale comes from the one fetch in that locale, and a product with no post there is `not_translated`.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_verdict_in_a_locale_comes_from_the_fetch_in_that_locale(): void {
+		$repository = new FixedFactsRepository(
+			new SellabilityFacts( 70, 7, GenerationState::Complete, 1, 1, true, 42, 43, 'publish', true ),
+			new SellabilityFacts( 71, 8, GenerationState::Complete, 1, 1, true, 44, null, null, true, false )
+		);
+
+		$this->assertSame(
+			array(
+				70 => SellabilityReason::Sellable,
+				71 => SellabilityReason::NotTranslated,
+			),
+			( new Sellability( $repository ) )->of( array( 70, 71 ), false, Locale::of( 'de_DE' ) )
+		);
+		$this->assertSame( array( array( 'de_DE', array( 70, 71 ) ) ), $repository->askedIn );
+		$this->assertSame( array(), $repository->asked, 'A verdict in a locale was read from the facts of the source post.' );
+		$this->assertSame( SellabilityReason::Sellable, ( new Sellability( $repository ) )->ofProduct( self::product( GenerationState::Complete, 70 ), false, Locale::of( 'de_DE' ) ) );
 	}
 
 	/**

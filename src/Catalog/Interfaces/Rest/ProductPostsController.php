@@ -22,6 +22,7 @@ use SEOCart\Catalog\Domain\Product;
 use SEOCart\Interfaces\Operations\ErrorTranslator;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Support\Locale;
 use WP_Error;
 use WP_Post;
 use WP_Post_Type;
@@ -37,7 +38,8 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: how a request to the product's `wp/v2` endpoint becomes one product save. A
  * create or an update is prepared by core's own prepare_item_for_database(), so every core
  * field rule and the `rest_pre_insert_seocart_product` filter apply, and the `seocart` object,
- * validated against ProductCommerceSchema by WordPress, becomes the save's commerce input. Then
+ * validated against ProductCommerceSchema by WordPress, becomes the save's commerce input, and its
+ * `locale` and `translation_of` the post's language and the post it translates. Then
  * SaveProduct writes the post and every commerce row in one transaction. Only after it has
  * committed does the rest of core's sequence run, in core's order and with core's hooks:
  * `rest_insert_seocart_product` on the reloaded post, featured media, template, terms and
@@ -51,11 +53,19 @@ defined( 'ABSPATH' ) || exit;
  * is the plugin's error, in its shape.
  *
  * A response is core's, with the `seocart` object added among the REST fields, before core's
- * context filter and `rest_prepare_seocart_product`: the commerce data, the verdict on the
- * default variant for the requesting user, and in the `edit` context the product's marker.
+ * context filter and `rest_prepare_seocart_product`: the commerce data, the post's locale among
+ * the product's posts and the product's source post when it is another, the verdict on the
+ * default variant for the requesting user in the post's locale, and in the `edit` context the
+ * product's marker.
  *
- * It overrides no permission method: reading and writing are decided by the product post type's
- * mapped capabilities, exactly as for core's controller. Deleting, listing and reading are
+ * Reading and writing are decided by the product post type's mapped capabilities, exactly as for
+ * core's controller. A create or an update that names, in `translation_of`, the post it
+ * translates also needs `edit_post` on the source post of that post's product, since the save
+ * joins that product and may change its commerce data; so does an update that gives commerce
+ * fields through a post that is not its product's source post, since the product's SKU, price
+ * and stock are one for all its posts. The check is core's meta capability, so `edit_others_*`
+ * applies, and it is made before anything is written. The save asks again under the product's
+ * lock. Deleting, listing and reading are
  * core's, unchanged. Core's autosave and revision controllers are built from this one: they
  * prepare posts with its prepare_item_for_database(), which knows no commerce field, and never
  * save a product, so an autosave or a revision restore cannot touch a commerce row.
@@ -393,6 +403,93 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 	}
 
 	/**
+	 * Checks core's permission to create a post, then the permission to join the product of the post the request names as the one it translates.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param WP_REST_Request $request The request.
+	 * @return true|WP_Error True when the request may go on, or the error.
+	 */
+	public function create_item_permissions_check( $request ) {
+		$allowed = parent::create_item_permissions_check( $request );
+
+		return true === $allowed ? $this->mayJoin( $request ) : $allowed;
+	}
+
+	/**
+	 * Checks core's permission to update the post, then the permission to join the product of the post the request names as the one it translates, and to change the commerce data of the product the post presents.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param WP_REST_Request $request The request.
+	 * @return true|WP_Error True when the request may go on, or the error.
+	 */
+	public function update_item_permissions_check( $request ) {
+		$allowed = parent::update_item_permissions_check( $request );
+		$allowed = true === $allowed ? $this->mayJoin( $request ) : $allowed;
+
+		return true === $allowed ? $this->mayChangeCommerce( $request ) : $allowed;
+	}
+
+	/**
+	 * Refuses a request that names, as the post it translates, a post whose product the user may not edit: `edit_post` on the product's source post.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param WP_REST_Request $request The request.
+	 * @return true|WP_Error True when it names none, or the user may edit that product; the error otherwise.
+	 */
+	private function mayJoin( WP_REST_Request $request ) {
+		$translationOf = self::translationOf( $request );
+
+		if ( null === $translationOf ) {
+			return true;
+		}
+
+		$source = $this->products?->findByPost( $translationOf )?->sourcePostId() ?? $translationOf;
+
+		if ( current_user_can( 'edit_post', $source ) ) {
+			return true;
+		}
+
+		return new WP_Error(
+			'rest_cannot_edit',
+			__( 'Sorry, you are not allowed to add a translation to that product.', 'seocart' ),
+			array( 'status' => rest_authorization_required_code() )
+		);
+	}
+
+	/**
+	 * Refuses a request that changes commerce fields through a post that is not its product's source post, when the user may not edit the product: `edit_post` on the product's source post.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param WP_REST_Request $request The request to update a post.
+	 * @return true|WP_Error True when it gives no commerce field, the post is its product's source post or presents
+	 *                       none, or the user may edit the product; the error otherwise.
+	 */
+	private function mayChangeCommerce( WP_REST_Request $request ) {
+		$given = array_intersect_key( self::writableValues( $request[ ProductCommerceSchema::PROPERTY ] ), CommerceFields::all() );
+
+		if ( array() === $given ) {
+			return true;
+		}
+
+		$postId = (int) $request['id'];
+		$source = $this->products?->findByPost( $postId )?->sourcePostId();
+
+		if ( null === $source || $source === $postId || current_user_can( 'edit_post', $source ) ) {
+			return true;
+		}
+
+		return new WP_Error(
+			'rest_cannot_edit',
+			__( 'Sorry, you are not allowed to change the commerce data of that product.', 'seocart' ),
+			array( 'status' => rest_authorization_required_code() )
+		);
+	}
+
+	/**
 	 * Saves the product: the post's fields core prepared and the `seocart` object, in one call.
 	 *
 	 * @since 0.1.0
@@ -408,13 +505,18 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 		}
 
 		$commerce = self::commerceInput( $request );
+		$locale   = self::localeOf( $request );
 
 		if ( $commerce instanceof WP_Error ) {
 			return $commerce;
 		}
 
+		if ( $locale instanceof WP_Error ) {
+			return $locale;
+		}
+
 		try {
-			$result = ( $this->save )()->save( new ProductSave( $before?->ID, (array) $prepared, $commerce, Actor::user( get_current_user_id() ) ) );
+			$result = ( $this->save )()->save( new ProductSave( $before?->ID, (array) $prepared, $commerce, Actor::user( get_current_user_id() ), self::translationOf( $request ), $locale ) );
 		} catch ( CodedException $refused ) {
 			return $this->errors->translate( $refused );
 		} catch ( \Throwable $failure ) {
@@ -526,14 +628,18 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 	 * @since 0.1.0
 	 *
 	 * @param WP_Post $post The post.
-	 * @return array<string, mixed> The commerce fields of the default variant, the verdict, and the product's marker.
+	 * @return array<string, mixed> The commerce fields of the default variant, the post's locale and source post, the verdict, and the product's marker.
 	 */
 	private function commerce( WP_Post $post ): array {
 		$product = null === $this->products ? null : $this->products->findByPost( $post->ID );
 		$values  = self::commerceValues( $product );
 		$type    = get_post_type_object( $this->post_type );
+		$source  = $product?->sourcePostId();
+		$locale  = $product?->bindingOf( $post->ID )?->locale();
 
-		$values[ ProductCommerceSchema::SELLABILITY ] = null === $this->sellability ? null : $this->sellability->ofProduct( $product, $type instanceof WP_Post_Type && current_user_can( $type->cap->read_private_posts ) )->value;
+		$values[ ProductCommerceSchema::LOCALE ]         = $locale?->toString();
+		$values[ ProductCommerceSchema::TRANSLATION_OF ] = null === $source || $source === $post->ID ? null : $source;
+		$values[ ProductCommerceSchema::SELLABILITY ]    = null === $this->sellability ? null : $this->sellability->ofProduct( $product, $type instanceof WP_Post_Type && current_user_can( $type->cap->read_private_posts ), $source === $post->ID ? null : $locale )->value;
 
 		if ( null !== $product ) {
 			$values[ ProductCommerceSchema::GENERATION_STATE ] = $product->generation()->value;
@@ -591,18 +697,66 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 		}
 
 		try {
-			return CommerceInput::fromArray( self::writableValues( $request[ ProductCommerceSchema::PROPERTY ] ) );
+			return CommerceInput::fromArray( array_diff_key( self::writableValues( $request[ ProductCommerceSchema::PROPERTY ] ), array_flip( ProductCommerceSchema::translation() ) ) );
 		} catch ( \InvalidArgumentException $invalid ) {
-			return new WP_Error(
-				'rest_invalid_param',
-				/* translators: %s: The name of the parameter. */
-				sprintf( __( 'Invalid parameter(s): %s', 'seocart' ), ProductCommerceSchema::PROPERTY ),
-				array(
-					'status' => 400,
-					'params' => array( ProductCommerceSchema::PROPERTY => $invalid->getMessage() ),
-				)
-			);
+			return self::invalid( $invalid );
 		}
+	}
+
+	/**
+	 * Returns the locale a request's `seocart` object gives the post, or the refusal of one that is no locale.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param WP_REST_Request $request The request.
+	 * @return Locale|WP_Error|null The locale, the refusal, or null when the request gives none.
+	 */
+	private static function localeOf( WP_REST_Request $request ): Locale|WP_Error|null {
+		$locale = self::writableValues( $request[ ProductCommerceSchema::PROPERTY ] )[ ProductCommerceSchema::LOCALE ] ?? null;
+
+		if ( null === $locale ) {
+			return null;
+		}
+
+		try {
+			return Locale::of( (string) $locale );
+		} catch ( \InvalidArgumentException $invalid ) {
+			return self::invalid( $invalid );
+		}
+	}
+
+	/**
+	 * Returns the post a request's `seocart` object says the post translates, or null when it names none.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param WP_REST_Request $request The request.
+	 * @return int|null The post, or null.
+	 */
+	private static function translationOf( WP_REST_Request $request ): ?int {
+		$translationOf = self::writableValues( $request[ ProductCommerceSchema::PROPERTY ] )[ ProductCommerceSchema::TRANSLATION_OF ] ?? null;
+
+		return null === $translationOf ? null : (int) $translationOf;
+	}
+
+	/**
+	 * Refuses a value of the `seocart` object as WordPress refuses an invalid parameter.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param \InvalidArgumentException $invalid Why the value does not fit its declaration.
+	 * @return WP_Error The refusal, with 400.
+	 */
+	private static function invalid( \InvalidArgumentException $invalid ): WP_Error {
+		return new WP_Error(
+			'rest_invalid_param',
+			/* translators: %s: The name of the parameter. */
+			sprintf( __( 'Invalid parameter(s): %s', 'seocart' ), ProductCommerceSchema::PROPERTY ),
+			array(
+				'status' => 400,
+				'params' => array( ProductCommerceSchema::PROPERTY => $invalid->getMessage() ),
+			)
+		);
 	}
 
 	/**

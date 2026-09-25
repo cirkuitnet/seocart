@@ -15,7 +15,9 @@ use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Application\UpdatingMark;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\Product;
+use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Platform\Database\TransactionManager;
+use SEOCart\Support\Locale;
 
 /**
  * Records every call of the product write in the step log, with the answers a test scripts.
@@ -162,7 +164,7 @@ final class ScriptedProductRepository implements ProductRepository {
 	 * @param int $productId Unused.
 	 * @return never
 	 */
-	public function lockForDelete( int $productId ): never {
+	public function lock( int $productId ): never {
 		throw new \LogicException( 'The product write deletes nothing.' );
 	}
 
@@ -551,5 +553,94 @@ final class ScriptedProductRepository implements ProductRepository {
 		}
 
 		$this->log->record( $step );
+	}
+
+	/**
+	 * Knows no facts in a locale either.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Locale $locale        Unused.
+	 * @param int    ...$variantIds Unused.
+	 * @return array{} None.
+	 */
+	public function sellabilityFactsIn( Locale $locale, int ...$variantIds ): array {
+		return array();
+	}
+
+	/**
+	 * Not used by the product write.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $postId        Unused.
+	 * @param int ...$productIds Unused.
+	 * @return never
+	 */
+	public function lockWithPost( int $postId, int ...$productIds ): never {
+		throw new \LogicException( 'The product write in these tests changes no binding.' );
+	}
+
+	/**
+	 * Not used by the product write.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int    $postId Unused.
+	 * @param Locale $locale Unused.
+	 * @return never
+	 */
+	public function moveBinding( int $postId, Locale $locale ): never {
+		throw new \LogicException( 'The product write in these tests changes no binding.' );
+	}
+
+	/**
+	 * Not used by the product write.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int                $productId Unused.
+	 * @param ProductPostBinding $binding   Unused.
+	 * @return never
+	 */
+	public function addBinding( int $productId, ProductPostBinding $binding ): never {
+		throw new \LogicException( 'The product write in these tests changes no binding.' );
+	}
+
+	/**
+	 * Not used by the product write.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $productId Unused.
+	 * @param int $postId    Unused.
+	 * @return never
+	 */
+	public function removeBinding( int $productId, int $postId ): never {
+		throw new \LogicException( 'The product write in these tests changes no binding.' );
+	}
+
+	/**
+	 * Not used by the product write.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int      $productId  Unused.
+	 * @param int      $fromPostId Unused.
+	 * @param int|null $toPostId   Unused.
+	 * @return never
+	 */
+	public function promoteSource( int $productId, int $fromPostId, ?int $toPostId ): never {
+		throw new \LogicException( 'The product write in these tests changes no binding.' );
 	}
 }

@@ -34,7 +34,6 @@ use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Exception\LockNotAcquired;
 use SEOCart\Platform\Database\Exception\QueryFailed;
 use SEOCart\Platform\Database\Exception\TransactionIntegrityLost;
-use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
@@ -47,6 +46,7 @@ use SEOCart\Tests\Support\Catalog\StepLog;
 use SEOCart\Tests\Support\Doubles\FakeStockRepository;
 use SEOCart\Tests\Support\Doubles\FakeTransactionManager;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
+use SEOCart\Tests\Support\Doubles\OneLocale;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 
@@ -516,26 +516,14 @@ final class SaveProductTest extends TestCase {
 			},
 			new LoggedEvents( $this->events, $this->log ),
 			new Sellability( $this->products ),
-			new class() implements PostLocales {
-
-				/**
-				 * Answers the store's one locale.
-				 *
-				 * @since 0.1.0
-				 *
-				 * @param int $postId Unused.
-				 * @return Locale The locale.
-				 */
-				public function localeOf( int $postId ): Locale {
-					return Locale::of( 'en_US' );
-				}
-			},
+			new OneLocale(),
 			$clock,
 			$ids,
 			static fn(): Currency => Currency::of( 'USD' ),
 			function ( string $code, array $context ): void {
 				$this->reports[] = array( $code, $context );
-			}
+			},
+			new Authorizer( new CapabilityDeclaration() )
 		);
 	}
 

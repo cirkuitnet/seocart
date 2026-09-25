@@ -114,7 +114,16 @@ final class SellabilityIsOneRuleTest extends TestCase {
 	 *
 	 * @var list<string>
 	 */
-	private const MARKER_READS = array( 'sellabilityFacts', 'load' );
+	private const MARKER_READS = array( self::FETCH, 'load' );
+
+	/**
+	 * The repository's one fetch of the facts, which sellabilityFacts() and sellabilityFactsIn() both send.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const FETCH = 'facts';
 
 	/**
 	 * Doctor's read-only statements that compare the marker with a value, never deciding
@@ -189,7 +198,7 @@ final class SellabilityIsOneRuleTest extends TestCase {
 
 		sort( $expected );
 
-		$this->assertContains( 'sellabilityFacts', $naming, 'The one fetch does not select the marker, so the rule is fed without it.' );
+		$this->assertContains( self::FETCH, $naming, 'The one fetch does not select the marker, so the rule is fed without it.' );
 		$this->assertSame( $expected, $naming, 'A repository method reads or writes the marker that is neither the fetch, the load nor a marker write.' );
 		$this->assertSame( array(), $tests, 'These repository methods compare the marker with a value; the verdict is Sellability\'s, from sellabilityFacts().' );
 	}

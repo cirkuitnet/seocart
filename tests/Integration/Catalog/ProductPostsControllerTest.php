@@ -222,6 +222,8 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 				'currency'         => self::BASE_CURRENCY,
 				'compare_at_minor' => null,
 				'weight_grams'     => null,
+				'locale'           => get_locale(),
+				'translation_of'   => null,
 				'sellability'      => 'sellable',
 			),
 			$view[ ProductCommerceSchema::PROPERTY ] ?? null
@@ -253,7 +255,7 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 	}
 
 	/**
-	 * Tests that a product post no product is bound to reports `no_binding` and nothing else.
+	 * Tests that a product post no product is bound to reports `no_binding`, no locale among a product's posts, and nothing else.
 	 *
 	 * The post is written as a writer that never fires `wp_after_insert_post` writes one, the
 	 * one way a product post stays unbound while the lifecycle is hooked.
@@ -264,7 +266,14 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 		$postId = $this->unboundPost();
 		$data   = $this->request( 'GET', '/' . $postId, array(), array( 'context' => 'edit' ) )->get_data();
 
-		$this->assertSame( array( 'sellability' => 'no_binding' ), $data[ ProductCommerceSchema::PROPERTY ] ?? null );
+		$this->assertSame(
+			array(
+				'locale'         => null,
+				'translation_of' => null,
+				'sellability'    => 'no_binding',
+			),
+			$data[ ProductCommerceSchema::PROPERTY ] ?? null
+		);
 	}
 
 	/**

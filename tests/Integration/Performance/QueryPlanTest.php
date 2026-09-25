@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Integration\Performance;
 
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\CatalogError;
+use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Catalog\Domain\Sku;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
@@ -24,6 +25,7 @@ use SEOCart\Platform\Settings\InternationalSettings;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Support\Locale;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\Jobs\PluginActions;
 use SEOCart\Tests\Support\QueryPlan\AllowList;
@@ -44,8 +46,9 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  * and fails when it took more than three minutes. The store must then be sound: doctor passes
  * and every seeded variant may be sold (SeedVerifier). Then the plugin's reads run over a
  * PlanRecorder: the catalog's lookups by post, by source post and by variant, its sellability
- * query, the reads of its write path and the locking reads of a trash and a delete, and every
- * read of the stock repository, doctor's
+ * query in a locale and without one, the reads of its write path, the locking reads of a trash
+ * and a delete, and the reads of a change of a product's posts, and every read of the stock
+ * repository, doctor's
  * projection checks and the sweep's search for expired holds included; the reads that must run
  * in a transaction, and the write path, run in one that is rolled back. Each plugin SELECT they
  * sent is explained once per query and IN-list length, and judged by QueryPlan's rule. The run
@@ -106,6 +109,15 @@ final class QueryPlanTest extends DatabaseTestCase {
 	 * @var int
 	 */
 	private const SEED_SECONDS = 180;
+
+	/**
+	 * A locale the sellability query is asked in: one the seed's second posts are in.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const SECOND_LOCALE = 'de_DE';
 
 	/**
 	 * The seed, while its rows are in the database.
@@ -332,6 +344,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 		// A page of 24 first: a query is explained with the values it was first sent with.
 		( new Sellability( $products ) )->of( $page, false );
 		( new Sellability( $products ) )->of( array( 5000 ), false );
+		( new Sellability( $products ) )->of( $page, false, Locale::of( self::SECOND_LOCALE ) );
 
 		$stock->levels( $page );
 		$stock->levels( array( 5000 ) );
@@ -369,6 +382,21 @@ final class QueryPlanTest extends DatabaseTestCase {
 						$this->assertSame( CatalogError::SkuTaken, $taken->errorCode() );
 					}
 
+					// A change of the product's posts: its second post locked with it, a binding refused
+					// because the post presents it already, and the source handed over to the second post.
+					$source = (int) $product->sourcePostId();
+					$second = $this->seed()->secondPostId( 5000 );
+
+					$this->assertArrayHasKey( (int) $product->id(), $products->lockWithPost( $second, (int) $product->id() ) );
+
+					try {
+						$products->addBinding( (int) $product->id(), new ProductPostBinding( $source, Locale::of( self::SECOND_LOCALE ), new \DateTimeImmutable() ) );
+					} catch ( CodedException $bound ) {
+						$this->assertSame( CatalogError::PostBoundElsewhere, $bound->errorCode() );
+					}
+
+					$this->assertSame( $second, $products->promoteSource( (int) $product->id(), $source, null ) );
+
 					// The lifecycle's locking reads: a trash's, then a delete's, and the deletion's own.
 					$locked = $products->lockByPost( (int) $product->sourcePostId() );
 
@@ -379,7 +407,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 					// The reconciler's own locking read of a post's type and status.
 					$products->lockedPostTypeAndStatus( (int) $locked->sourcePostId() );
 
-					$deleted = $products->lockForDelete( (int) $locked->id() );
+					$deleted = $products->lock( (int) $locked->id() );
 
 					$this->assertNotNull( $deleted );
 					$this->assertNotSame( array(), $products->delete( $deleted ) );

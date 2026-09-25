@@ -29,6 +29,15 @@ defined( 'ABSPATH' ) || exit;
 final class ProductPostBinding {
 
 	/**
+	 * The longest locale a binding holds, in characters; the stored column is declared with this length.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	public const LOCALE_MAX_LENGTH = 20;
+
+	/**
 	 * The post's id.
 	 *
 	 * @since 0.1.0

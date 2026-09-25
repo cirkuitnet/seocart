@@ -18,6 +18,7 @@ use SEOCart\Catalog\Interfaces\Admin\ProductEditorPanel;
 use SEOCart\Catalog\Interfaces\Rest\ProductCommerceSchema;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Support\Currency;
+use SEOCart\Tests\Support\Doubles\SeveralLocales;
 use WP_UnitTestCase;
 
 // phpcs:disable WordPress.WP.AlternativeFunctions -- The test writes a stand-in build into a temporary directory.
@@ -157,6 +158,19 @@ final class ProductEditorPanelTest extends WP_UnitTestCase {
 		$this->assertSame( array_map( static fn( SellabilityReason $reason ): string => $reason->value, SellabilityReason::cases() ), array_keys( $settings['sellability']['reasons'] ) );
 		$this->assertNotContains( '', $settings['sellability']['reasons'], 'A verdict has no sentence.' );
 		$this->assertNotContains( '', array_column( $settings['fields'], 'label' ), 'A field has no label.' );
+		$this->assertSame(
+			array(
+				'field'     => ProductCommerceSchema::TRANSLATION_OF,
+				'locale'    => ProductCommerceSchema::LOCALE,
+				'languages' => array(
+					'en'    => 'en_US',
+					'en-gb' => 'en_GB',
+					'de'    => 'de_DE',
+				),
+			),
+			$settings['translation'],
+			'A new translation is not given the fields and the languages its first save sends.'
+		);
 	}
 
 	/**
@@ -168,6 +182,6 @@ final class ProductEditorPanelTest extends WP_UnitTestCase {
 	 * @return ProductEditorPanel The panel.
 	 */
 	private function panel( string $pluginFile ): ProductEditorPanel {
-		return new ProductEditorPanel( $pluginFile, static fn(): Currency => Currency::of( 'JPY' ) );
+		return new ProductEditorPanel( $pluginFile, static fn(): Currency => Currency::of( 'JPY' ), new SeveralLocales() );
 	}
 }

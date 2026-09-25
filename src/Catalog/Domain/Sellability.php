@@ -20,9 +20,13 @@ defined( 'ABSPATH' ) || exit;
  * its source post, the variant has a price in the base currency, belongs to the generation the
  * product publishes and is enabled, and the source post is published, or private and the reader
  * may read private products. Otherwise the verdict is the first rule it fails, checked in this
- * order: unknown variant, incomplete, updating, no binding, no base price, not the active
- * generation, disabled, not published, private. So a product being written is reported as
- * `updating` whatever its post's status.
+ * order: unknown variant, incomplete, updating, not translated, no binding, no base price, not
+ * the active generation, disabled, not published, private. So a product being written is
+ * reported as `updating` whatever its post's status.
+ *
+ * Asked for a locale, the rule judges the product's post in that locale, and a product with no
+ * post there is `not_translated`: it is not shown in that locale. Asked for none, it judges the
+ * source post.
  *
  * This is the only place the rule is written. Readers reach it through Query\Sellability, and a
  * structural test keeps any other class from reading the marker to decide a sale.
@@ -39,6 +43,15 @@ final class Sellability {
 	 * @var string
 	 */
 	private const PUBLISHED = 'publish';
+
+	/**
+	 * The statuses of a post a product can be sold through, to someone: published, and private to those who may read private products.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<string>
+	 */
+	public const SELLING_STATUSES = array( self::PUBLISHED, self::PRIVATE_STATUS );
 
 	/**
 	 * The post status of a product only readers of private products may buy.
@@ -69,6 +82,10 @@ final class Sellability {
 
 		if ( GenerationState::Updating === $facts->generation ) {
 			return SellabilityReason::Updating;
+		}
+
+		if ( ! $facts->translated ) {
+			return SellabilityReason::NotTranslated;
 		}
 
 		if ( null === $facts->sourcePostId || null === $facts->boundPostId || null === $facts->postStatus ) {

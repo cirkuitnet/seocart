@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests ProductCommerceSchema: the `seocart` property is the commerce fields plus two read-only ones, compiled once
+ * Tests ProductCommerceSchema: the `seocart` property is the commerce fields, the two translation fields and two read-only ones, compiled once
  *
  * @package SEOCart
  * @since   0.1.0
@@ -20,7 +20,7 @@ use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\JsonSchemaCompiler;
 
 /**
- * The property is declared from CommerceFields unchanged and from the two enums, and compiled by
+ * The property is declared from CommerceFields unchanged, the two translation fields and the two enums, and compiled by
  * the compiler's dialect for a core-shaped resource, so a client reads the same bounds a save
  * checks, the read-only fields are never arguments, and the marker is sent to an editor only.
  *
@@ -32,19 +32,20 @@ use SEOCart\Support\Schema\JsonSchemaCompiler;
 final class ProductCommerceSchemaTest extends TestCase {
 
 	/**
-	 * Tests that the fields are the commerce fields, in their order, then the verdict and the marker, whose values are the enums' own.
+	 * Tests that the fields are the commerce fields, in their order, then the locale and the post translated, both writable, then the verdict and the marker, whose values are the enums' own.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_fields_are_the_commerce_fields_then_two_read_only_ones(): void {
+	public function test_the_fields_are_the_commerce_fields_the_translation_fields_then_two_read_only_ones(): void {
 		$fields = array();
 
 		foreach ( ProductCommerceSchema::fields() as $field ) {
 			$fields[ $field->name() ] = $field;
 		}
 
-		$this->assertSame( array_merge( array_keys( CommerceFields::all() ), array( ProductCommerceSchema::SELLABILITY, ProductCommerceSchema::GENERATION_STATE ) ), array_keys( $fields ) );
-		$this->assertSame( array_keys( CommerceFields::all() ), ProductCommerceSchema::writable() );
+		$this->assertSame( array_merge( array_keys( CommerceFields::all() ), array( ProductCommerceSchema::LOCALE, ProductCommerceSchema::TRANSLATION_OF, ProductCommerceSchema::SELLABILITY, ProductCommerceSchema::GENERATION_STATE ) ), array_keys( $fields ) );
+		$this->assertSame( array_merge( array_keys( CommerceFields::all() ), array( ProductCommerceSchema::LOCALE, ProductCommerceSchema::TRANSLATION_OF ) ), ProductCommerceSchema::writable() );
+		$this->assertTrue( $fields[ ProductCommerceSchema::LOCALE ]->isNullable() && $fields[ ProductCommerceSchema::TRANSLATION_OF ]->isNullable(), 'A post that presents no product has no locale and translates nothing.' );
 
 		$property = ProductCommerceSchema::property()['properties'];
 

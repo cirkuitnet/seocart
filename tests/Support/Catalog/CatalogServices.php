@@ -15,11 +15,14 @@ use SEOCart\Catalog\Application\Lifecycle\DeleteProduct;
 use SEOCart\Catalog\Application\Lifecycle\DuplicateProduct;
 use SEOCart\Catalog\Application\Lifecycle\PostLifecycle;
 use SEOCart\Catalog\Application\Lifecycle\Reconciler;
+use SEOCart\Catalog\Application\Lifecycle\TranslationBindings;
+use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Kernel\Modules;
+use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Tests\Support\KernelHooks;
 
 /**
@@ -50,6 +53,9 @@ final readonly class CatalogServices {
 	 * @param DeleteProduct          $delete     The product delete.
 	 * @param DuplicateProduct       $duplicate  The product copy.
 	 * @param PostLifecycle          $lifecycle  The post lifecycle.
+	 * @param TranslationBindings    $bindings   The commands that link, unlink and promote posts.
+	 * @param TranslationGroups      $groups     What keeps the bindings in step with translation groups.
+	 * @param PostLocales            $locales    The locale port every service shares.
 	 */
 	public function __construct(
 		public MysqlProductRepository $products,
@@ -59,7 +65,10 @@ final readonly class CatalogServices {
 		public Reconciler $reconciler,
 		public DeleteProduct $delete,
 		public DuplicateProduct $duplicate,
-		public PostLifecycle $lifecycle
+		public PostLifecycle $lifecycle,
+		public TranslationBindings $bindings,
+		public TranslationGroups $groups,
+		public PostLocales $locales
 	) {
 	}
 

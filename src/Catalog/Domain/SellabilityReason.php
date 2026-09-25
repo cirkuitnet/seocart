@@ -53,6 +53,13 @@ enum SellabilityReason: string {
 	case NoBinding = 'no_binding';
 
 	/**
+	 * The product has no post in the language the verdict was asked for, so it is not shown there.
+	 *
+	 * @since 0.1.0
+	 */
+	case NotTranslated = 'not_translated';
+
+	/**
 	 * The variant has no price in the store's base currency.
 	 *
 	 * @since 0.1.0

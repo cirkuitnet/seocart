@@ -21,11 +21,14 @@ use SEOCart\Catalog\Application\Lifecycle\DeleteProduct;
 use SEOCart\Catalog\Application\Lifecycle\DuplicateProduct;
 use SEOCart\Catalog\Application\Lifecycle\PostLifecycle;
 use SEOCart\Catalog\Application\Lifecycle\Reconciler;
+use SEOCart\Catalog\Application\Lifecycle\TranslationBindings;
+use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
 use SEOCart\Catalog\Application\PostGateway;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\CatalogError;
+use SEOCart\Catalog\Domain\Event\ProductBindingPromoted;
 use SEOCart\Catalog\Domain\Event\ProductDeleted;
 use SEOCart\Catalog\Domain\Event\ProductSaved;
 use SEOCart\Catalog\Infrastructure\Doctor\CatalogChecks;
@@ -89,6 +92,7 @@ use SEOCart\Platform\Jobs\JobQueue;
 use SEOCart\Platform\Jobs\JobRunner;
 use SEOCart\Platform\Jobs\RunnerTriggers;
 use SEOCart\Platform\Kernel\Cli\SafeModeCommand;
+use SEOCart\Platform\Localization\Polylang\PolylangLocales;
 use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Platform\Localization\SiteLocale;
 use SEOCart\Platform\Logging\CorrelationId;
@@ -193,6 +197,7 @@ final class Modules {
 	 * @var list<class-string>
 	 */
 	public const EVENT_CLASSES = array(
+		ProductBindingPromoted::class,
 		ProductDeleted::class,
 		ProductSaved::class,
 		StockAdjusted::class,
@@ -721,7 +726,7 @@ final class Modules {
 		);
 		$container->bind( Sellability::class, static fn( Container $c ): Sellability => new Sellability( $c->get( ProductRepository::class ) ) );
 		$container->bind( PostGateway::class, static fn( Container $c ): PostGateway => new WordPressPostGateway( $c->get( TransactionManager::class ), $c->get( Reporter::class ), defined( 'WP_DEBUG' ) && WP_DEBUG ) );
-		$container->bind( PostLocales::class, static fn(): PostLocales => new SiteLocale() );
+		$container->bind( PostLocales::class, static fn(): PostLocales => self::postLocales() );
 		$container->bind(
 			SaveProduct::class,
 			static fn( Container $c ): SaveProduct => new SaveProduct(
@@ -736,7 +741,8 @@ final class Modules {
 				$c->get( Clock::class ),
 				$c->get( IdGenerator::class ),
 				self::baseCurrency( $c ),
-				$c->get( Reporter::class )
+				$c->get( Reporter::class ),
+				$c->get( Authorizer::class )
 			)
 		);
 		$container->bind(
@@ -751,7 +757,7 @@ final class Modules {
 				array( $c->get( Reporter::class ), 'unexpected' )
 			)
 		);
-		$container->bind( ProductEditorPanel::class, static fn( Container $c ): ProductEditorPanel => new ProductEditorPanel( SEOCART_PLUGIN_FILE, self::baseCurrency( $c ) ) );
+		$container->bind( ProductEditorPanel::class, static fn( Container $c ): ProductEditorPanel => new ProductEditorPanel( SEOCART_PLUGIN_FILE, self::baseCurrency( $c ), $c->get( PostLocales::class ) ) );
 		$container->bind(
 			Reconciler::class,
 			static fn( Container $c ): Reconciler => new Reconciler( $c->get( ProductRepository::class ), $c->get( TransactionManager::class ), $c->get( PostLocales::class ), $c->get( Clock::class ), $c->get( IdGenerator::class ) )
@@ -779,21 +785,46 @@ final class Modules {
 		);
 		$container->bind(
 			DuplicateProduct::class,
-			static fn( Container $c ): DuplicateProduct => new DuplicateProduct( $c->get( ProductRepository::class ), $c->get( SaveProduct::class ), $c->get( PostGateway::class ) )
+			static fn( Container $c ): DuplicateProduct => new DuplicateProduct( $c->get( ProductRepository::class ), $c->get( SaveProduct::class ), $c->get( PostGateway::class ), $c->get( PostLocales::class ) )
+		);
+		$container->bind(
+			TranslationBindings::class,
+			static fn( Container $c ): TranslationBindings => new TranslationBindings( $c->get( ProductRepository::class ), $c->get( TransactionManager::class ), $c->get( EventPublisher::class ), $c->get( Clock::class ), $c->get( DeleteProduct::class ), $c->get( Authorizer::class ) )
+		);
+		$container->bind(
+			TranslationGroups::class,
+			static fn( Container $c ): TranslationGroups => new TranslationGroups( $c->get( ProductRepository::class ), $c->get( PostLocales::class ), $c->get( TranslationBindings::class ), $c->get( Reconciler::class ), $c->get( Reporter::class ) )
 		);
 		$container->bind(
 			PostLifecycle::class,
 			static fn( Container $c ): PostLifecycle => new PostLifecycle(
 				$c->get( ProductRepository::class ),
-				$c->get( Reconciler::class ),
+				$c->get( TranslationGroups::class ),
+				$c->get( TranslationBindings::class ),
 				$c->get( DeleteProduct::class ),
 				$c->get( StockService::class ),
 				$c->get( TransactionManager::class ),
 				$c->get( PostGateway::class ),
+				$c->get( PostLocales::class ),
 				$c->get( Reporter::class ),
 				defined( 'WP_DEBUG' ) && WP_DEBUG
 			)
 		);
+	}
+
+	/**
+	 * Returns the locale port for the site: Polylang's languages when Polylang is active, the site's one locale otherwise.
+	 *
+	 * Decided when a service first needs the port, never on an idle request: by then every plugin
+	 * is loaded, and Polylang's public functions exist exactly when it is active. Nothing is hooked
+	 * here; the Polylang adapter adds its one listener only once a product post changes.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return PostLocales The port.
+	 */
+	private static function postLocales(): PostLocales {
+		return function_exists( 'pll_get_post_language' ) ? new PolylangLocales() : new SiteLocale();
 	}
 
 	/**

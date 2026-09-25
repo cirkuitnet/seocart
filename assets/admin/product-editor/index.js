@@ -7,6 +7,11 @@
  * product is saved in one call. Only the fields the merchant changes are sent. Everything the panel
  * shows comes from what the plugin prints before this script: the fields and their labels, the
  * base currency and its decimal places, and a sentence for every verdict.
+ *
+ * On a new post opened from a multilingual plugin's "add translation" link, the first save also
+ * names the post it translates and the locale of the language the link asks for, in the fields
+ * the plugin names, so the new post joins that post's product in that locale in that same
+ * request rather than becoming a product of its own.
  */
 
 /**
@@ -23,7 +28,7 @@ import {
 	PluginDocumentSettingPanel,
 	store as editorStore,
 } from '@wordpress/editor';
-import { useState } from '@wordpress/element';
+import { useEffect, useState } from '@wordpress/element';
 import { __, sprintf } from '@wordpress/i18n';
 import { registerPlugin } from '@wordpress/plugins';
 /* eslint-enable import/no-unresolved, import/no-extraneous-dependencies */
@@ -32,6 +37,7 @@ import { registerPlugin } from '@wordpress/plugins';
  * Internal dependencies
  */
 import { formatAmount, parseAmount, parseWholeNumber } from './amount';
+import { translatedPost, translationLocale } from './translation';
 
 const settings = window.seocartProductEditor;
 
@@ -123,7 +129,7 @@ function CommerceField( { field, value, onChange, onInvalid } ) {
  * @return {Element|null} The panel.
  */
 function CommercePanel() {
-	const { postType, postId, saved, edits } = useSelect( ( select ) => {
+	const { postType, postId, isNew, saved, edits } = useSelect( ( select ) => {
 		const editor = select( editorStore );
 		const type = editor.getCurrentPostType();
 		const id = editor.getCurrentPostId();
@@ -132,6 +138,7 @@ function CommercePanel() {
 		return {
 			postType: type,
 			postId: id,
+			isNew: editor.isEditedPostNew(),
 			saved:
 				core.getEntityRecord( 'postType', type, id )?.[
 					settings.property
@@ -144,6 +151,33 @@ function CommercePanel() {
 	}, [] );
 	const { editEntityRecord } = useDispatch( coreStore );
 	const { lockPostSaving, unlockPostSaving } = useDispatch( editorStore );
+	const { translation } = settings;
+	const original = isNew
+		? translatedPost( window.location.search )
+		: undefined;
+	const locale =
+		original === undefined
+			? undefined
+			: translationLocale(
+					window.location.search,
+					translation.languages
+				);
+
+	useEffect( () => {
+		if ( postType === settings.postType && original !== undefined ) {
+			editEntityRecord( 'postType', postType, postId, {
+				[ settings.property ]: {
+					...edits,
+					[ translation.field ]: original,
+					...( locale === undefined
+						? {}
+						: { [ translation.locale ]: locale } ),
+				},
+			} );
+		}
+		// Once for the screen: the first save carries it, and the saved post then names its product's source.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [ postType, postId, original, locale ] );
 
 	if ( postType !== settings.postType ) {
 		return null;

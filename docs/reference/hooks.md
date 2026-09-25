@@ -14,6 +14,26 @@ Whether a request that published events ends its response before delivering them
 - Returning `true`: Ends the response before delivering, so the client never waits for a listener.
 - Returning `false`: Hands the delivery to the job runner instead, as on a server that cannot end a response early.
 
+## `seocart_product_binding_promoted`
+
+A product's source binding moved: another of its posts, in another locale, became the post that controls its existence.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `product`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_product_binding_promoted', $callback, 10, 2 )`; the first argument is a `SEOCart\Catalog\Domain\Event\ProductBindingPromoted`.
+
+### Event properties
+
+- `productId` (int): The product.
+- `fromPostId` (int): The post that was the source.
+- `fromLocale` (string): Its locale, such as en_US.
+- `toPostId` (int): The post that is the source now.
+- `toLocale` (string): Its locale.
+- `actorType` (string): `user` for a user in person, `system` for a process acting for one.
+- `actorId` (int|null): The user, or null when no one was logged in.
+
 ## `seocart_product_deleted`
 
 A product was deleted: its source post went, and its commerce rows with it.

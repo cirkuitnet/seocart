@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Catalog\Domain;
 
+use SEOCart\Catalog\Domain\Event\ProductBindingPromoted;
 use SEOCart\Catalog\Domain\Event\ProductDeleted;
 use SEOCart\Catalog\Domain\Event\ProductSaved;
 use SEOCart\Support\Currency;
@@ -337,6 +338,79 @@ final class Product {
 	 */
 	public function markDeleted( array $skus, \DateTimeImmutable $at ): void {
 		$this->recordThat( new ProductDeleted( $this->storedId(), $this->sourcePostIdOrFail(), $skus, $at ) );
+	}
+
+	/**
+	 * Records that another of the product's posts became its source post; the product must be loaded as it is after the move.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When the product is not stored, has no source post, or the post that was the source is not among its bindings.
+	 *
+	 * @param int                $fromPostId The post that was the source.
+	 * @param string             $actorType  `user` for a user in person, `system` for a process acting for one.
+	 * @param int|null           $actorId    The user, or null when no one was logged in.
+	 * @param \DateTimeImmutable $at         When the source moved.
+	 */
+	public function markPromoted( int $fromPostId, string $actorType, ?int $actorId, \DateTimeImmutable $at ): void {
+		$toPostId = $this->sourcePostIdOrFail();
+		$from     = $this->bindingOf( $fromPostId );
+		$to       = $this->bindingOf( $toPostId );
+
+		if ( null === $from || null === $to ) {
+			throw new \LogicException( sprintf( 'Product %s is bound neither to post %d nor to post %d as both source posts of a promotion.', $this->uuid, $fromPostId, $toPostId ) );
+		}
+
+		$this->recordThat( new ProductBindingPromoted( $this->storedId(), $fromPostId, $from->locale()->toString(), $toPostId, $to->locale()->toString(), $actorType, $actorId, $at ) );
+	}
+
+	/**
+	 * Tells whether the product holds nothing but its one post: no variant, so no SKU, no price and no stock, and no other binding.
+	 *
+	 * Such a product is what a reconciled post gets. It can give way to the product the post
+	 * turns out to translate, since nothing was ever sold or published for it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool True for an incomplete product without a variant, bound only to its source post.
+	 */
+	public function holdsNothing(): bool {
+		return GenerationState::Incomplete === $this->generation
+			&& null === $this->defaultVariant
+			&& 1 === count( $this->bindings )
+			&& $this->isBoundToItsSource();
+	}
+
+	/**
+	 * Tells whether the product holds commerce data: a default variant, with its SKU.
+	 *
+	 * A post that presents such a product is never moved onto another product by a change of its
+	 * translation group: the product's SKU, price and stock would lose it without a merchant asking.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool True when the product has a default variant.
+	 */
+	public function hasCommerceData(): bool {
+		return null !== $this->defaultVariant;
+	}
+
+	/**
+	 * Returns the product's binding to a post.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId The post.
+	 * @return ProductPostBinding|null The binding, or null when the post does not present the product.
+	 */
+	public function bindingOf( int $postId ): ?ProductPostBinding {
+		foreach ( $this->bindings as $binding ) {
+			if ( $binding->postId() === $postId ) {
+				return $binding;
+			}
+		}
+
+		return null;
 	}
 
 	/**

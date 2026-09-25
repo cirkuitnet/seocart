@@ -145,6 +145,30 @@ tests_add_filter(
 	}
 );
 
+/*
+ * The multilingual conformance suite runs against a real multilingual plugin, which is loaded
+ * only when it is asked for: with SEOCART_ML_ADAPTER=polylang and SEOCART_ML_PLUGIN naming
+ * Polylang's main file, Polylang is loaded where WordPress loads plugins, as an active plugin is.
+ * The suite gives the site its languages (Support\Localization\PolylangFixture). Any other value, or
+ * none, loads nothing.
+ */
+$seocart_tests_ml_plugin = (string) getenv( 'SEOCART_ML_PLUGIN' );
+
+if ( 'polylang' === getenv( 'SEOCART_ML_ADAPTER' ) ) {
+	if ( ! is_readable( $seocart_tests_ml_plugin ) ) {
+		fwrite( STDERR, PHP_EOL . 'SEOCART_ML_ADAPTER=polylang needs SEOCART_ML_PLUGIN, the path of polylang.php; none is readable at "' . $seocart_tests_ml_plugin . '".' . PHP_EOL . PHP_EOL );
+		exit( 1 );
+	}
+
+	tests_add_filter(
+		'muplugins_loaded',
+		static function () use ( $seocart_tests_ml_plugin ): void {
+			require_once $seocart_tests_ml_plugin;
+		},
+		PHP_INT_MAX
+	);
+}
+
 require $seocart_tests_library . '/includes/bootstrap.php';
 
 ErrorRecorder::stop();

@@ -15,6 +15,8 @@ use SEOCart\Catalog\Application\Lifecycle\DeleteProduct;
 use SEOCart\Catalog\Application\Lifecycle\DuplicateProduct;
 use SEOCart\Catalog\Application\Lifecycle\PostLifecycle;
 use SEOCart\Catalog\Application\Lifecycle\Reconciler;
+use SEOCart\Catalog\Application\Lifecycle\TranslationBindings;
+use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\GenerationState;
@@ -22,6 +24,7 @@ use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
 use SEOCart\Inventory\Application\StockService;
+use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\LockService;
 use SEOCart\Platform\Database\TransactionManager;
@@ -31,6 +34,7 @@ use SEOCart\Platform\Events\HookBridge;
 use SEOCart\Platform\Events\Outbox;
 use SEOCart\Platform\Events\Publisher;
 use SEOCart\Platform\Kernel\Container;
+use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Platform\Localization\SiteLocale;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Support\Clock;
@@ -113,15 +117,17 @@ final class ProductWrites {
 	 * @param callable                $report       Receives every report: a code (string) and its context (array).
 	 * @param bool                    $debug        Optional. Whether the gateway and the lifecycle report as under WP_DEBUG. Default false.
 	 * @param TransactionManager|null $transactions Optional. The lifecycle's transaction manager. Default the connection.
+	 * @param PostLocales|null        $locales      Optional. The locale port every service shares. Default the site's one locale.
 	 * @return CatalogServices The services.
 	 *
 	 * @phpstan-param callable(string, array<string, mixed>): void $report
 	 */
-	public static function services( Database $db, callable $report, bool $debug = false, ?TransactionManager $transactions = null ): CatalogServices {
+	public static function services( Database $db, callable $report, bool $debug = false, ?TransactionManager $transactions = null, ?PostLocales $locales = null ): CatalogServices {
 		$base         = static fn(): Currency => Currency::of( CatalogTestCase::BASE_CURRENCY );
 		$products     = new MysqlProductRepository( $db, $base );
 		$posts        = new WordPressPostGateway( $db, $report, $debug );
 		$transactions = $transactions ?? $db;
+		$locales      = $locales ?? new SiteLocale();
 		$container    = KernelContainer::build(
 			$db,
 			$report,
@@ -151,15 +157,18 @@ final class ProductWrites {
 			array( $container->get( LockService::class ), 'withLock' ),
 			$events,
 			new Sellability( $products ),
-			new SiteLocale(),
+			$locales,
 			$clock,
 			$ids,
 			$base,
-			$report
+			$report,
+			$container->get( Authorizer::class )
 		);
 
-		$reconciler = new Reconciler( $products, $transactions, new SiteLocale(), $clock, $ids );
+		$reconciler = new Reconciler( $products, $transactions, $locales, $clock, $ids );
 		$delete     = new DeleteProduct( $products, $stock, $transactions, $events, $clock );
+		$bindings   = new TranslationBindings( $products, $transactions, $events, $clock, $delete, $container->get( Authorizer::class ) );
+		$groups     = new TranslationGroups( $products, $locales, $bindings, $reconciler, $report );
 
 		return new CatalogServices(
 			$products,
@@ -168,8 +177,11 @@ final class ProductWrites {
 			$save,
 			$reconciler,
 			$delete,
-			new DuplicateProduct( $products, $save, $posts ),
-			new PostLifecycle( $products, $reconciler, $delete, $stock, $transactions, $posts, $report, $debug )
+			new DuplicateProduct( $products, $save, $posts, $locales ),
+			new PostLifecycle( $products, $groups, $bindings, $delete, $stock, $transactions, $posts, $locales, $report, $debug ),
+			$bindings,
+			$groups,
+			$locales
 		);
 	}
 

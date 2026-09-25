@@ -82,6 +82,48 @@ enum CatalogError: string implements ErrorCode {
 	case WriteConflict = 'catalog.write_conflict';
 
 	/**
+	 * The post already presents another product, so it cannot present this one too.
+	 *
+	 * @since 0.1.0
+	 */
+	case PostBoundElsewhere = 'catalog.post_bound_elsewhere';
+
+	/**
+	 * The product already has a post in that locale; a product has one post per locale.
+	 *
+	 * @since 0.1.0
+	 */
+	case LocaleTaken = 'catalog.locale_taken';
+
+	/**
+	 * The post is its product's source post, which is not unlinked until another of the product's posts is made the source.
+	 *
+	 * @since 0.1.0
+	 */
+	case SourceBindingKept = 'catalog.source_binding_kept';
+
+	/**
+	 * The product's source post changed while another was being made the source, or the post named does not present the product.
+	 *
+	 * @since 0.1.0
+	 */
+	case PromotionConflict = 'catalog.promotion_conflict';
+
+	/**
+	 * The locale is not one the site publishes in.
+	 *
+	 * @since 0.1.0
+	 */
+	case LocaleUnsupported = 'catalog.locale_unsupported';
+
+	/**
+	 * A save gave a post that presents a product another locale than the one it presents it in; a post's locale is given when it is first saved, and changed in the multilingual plugin.
+	 *
+	 * @since 0.1.0
+	 */
+	case LocaleFixed = 'catalog.locale_fixed';
+
+	/**
 	 * Returns the catalog's rows.
 	 *
 	 * @since 0.1.0
@@ -145,6 +187,54 @@ enum CatalogError: string implements ErrorCode {
 					/* translators: %1$s: A post ID. */
 					__( 'The product of post %1$s was changed by another save while this one was being written; nothing was saved. Try again.', 'seocart' ),
 				array( 'post_id' )
+			),
+			new ErrorDefinition(
+				self::PostBoundElsewhere,
+				409,
+				static fn(): string =>
+					/* translators: 1: A post ID. 2: A product ID. */
+					__( 'Post %1$s already presents product %2$s.', 'seocart' ),
+				array( 'post_id', 'product_id' )
+			),
+			new ErrorDefinition(
+				self::LocaleTaken,
+				409,
+				static fn(): string =>
+					/* translators: 1: A product ID. 2: A locale, such as de_DE. */
+					__( 'Product %1$s already has a post in %2$s.', 'seocart' ),
+				array( 'product_id', 'locale' )
+			),
+			new ErrorDefinition(
+				self::SourceBindingKept,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: A post ID. */
+					__( 'Post %1$s is its product\'s source post; make another of its posts the source first.', 'seocart' ),
+				array( 'post_id' )
+			),
+			new ErrorDefinition(
+				self::PromotionConflict,
+				409,
+				static fn(): string =>
+					/* translators: 1: A product ID. 2: A post ID. */
+					__( 'Post %2$s could not become the source post of product %1$s: the source changed meanwhile, or the post does not present the product.', 'seocart' ),
+				array( 'product_id', 'post_id' )
+			),
+			new ErrorDefinition(
+				self::LocaleUnsupported,
+				400,
+				static fn(): string =>
+					/* translators: %1$s: A locale, such as de_DE. */
+					__( 'The site does not publish in %1$s.', 'seocart' ),
+				array( 'locale' )
+			),
+			new ErrorDefinition(
+				self::LocaleFixed,
+				409,
+				static fn(): string =>
+					/* translators: 1: A post ID. 2: A locale, such as de_DE. */
+					__( 'Post %1$s presents its product in another locale than %2$s; change its language in the multilingual plugin.', 'seocart' ),
+				array( 'post_id', 'locale' )
 			),
 		);
 	}
