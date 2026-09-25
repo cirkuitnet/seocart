@@ -198,4 +198,15 @@ final class ScriptedPostGateway implements PostGateway {
 	public function postTypeOf( int $postId ): ?string {
 		return $this->types[ $postId ] ?? null;
 	}
+
+	/**
+	 * Returns the current site, as WordPress's own gateway does.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return int The current site's id.
+	 */
+	public function site(): int {
+		return get_current_blog_id();
+	}
 }

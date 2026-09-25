@@ -434,4 +434,15 @@ final class WordPressPostGateway implements PostGateway {
 
 		return false === $type ? null : $type;
 	}
+
+	/**
+	 * Returns the site whose posts the gateway reaches now: the site a network has switched to, if any.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return int The current site's id; 1 on a site that is not part of a network.
+	 */
+	public function site(): int {
+		return get_current_blog_id();
+	}
 }

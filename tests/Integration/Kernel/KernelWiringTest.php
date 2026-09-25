@@ -20,7 +20,8 @@ use WP_UnitTestCase;
  * a network appear in their own kind of request only. The idle request's hooks are the kernel's
  * own four, the REST routes', the two of the abilities, the job runner's, the product post
  * type's and the product lifecycle's three: twelve, and fifteen on a network. Every one of them
- * builds nothing until it fires.
+ * builds nothing until it fires. The lifecycle's fourth, on `deleted_post`, is added only once a
+ * product post's delete goes on, never on an idle request.
  *
  * Every request is booted in a child process of its own (tests/Support/idle-request-probe.php for
  * the idle request, tests/Support/kernel-hooks-probe.php for the others), because the kernel
@@ -33,6 +34,8 @@ use WP_UnitTestCase;
  * - In Modules::authorizationSubscribe(), remove the `map_meta_cap` filter: every list differs.
  * - In Modules::subscribe(), add `$container->get( \SEOCart\Platform\Database\Database::class );`:
  *   the idle request loads the database module's files, and the file list differs.
+ * - In Modules::catalogLifecycleHooks(), hook `deleted_post` with the other three: the idle
+ *   request names `deleted_post`, and the idle test fails.
  *
  * @since 0.1.0
  */
@@ -56,6 +59,7 @@ final class KernelWiringTest extends WP_UnitTestCase {
 		$report = ChildProcessProbe::run( dirname( __DIR__, 2 ) . '/Support/idle-request-probe.php', array( 'with-plugin' ) );
 
 		$this->assertTrue( $report['plugin_loaded'], 'The probe did not load SEOCart, so the lists prove nothing.' );
+		$this->assertSame( array(), preg_grep( '/^deleted_post /', self::describe( $report['hooks'] ) ), 'An idle request hooked `deleted_post`, which is added only once a delete of a product post goes on.' );
 		$this->assertSame( self::expectedHooks( 'front' ), self::describe( $report['hooks'] ) );
 		$this->assertSame(
 			array( 'seocart.php', 'src/Catalog/Infrastructure/ProductPostType.php', 'src/Platform/Authorization/ProductCapabilities.php', 'src/Platform/Kernel/Container.php', 'src/Platform/Kernel/Kernel.php', 'src/Platform/Kernel/Modules.php' ),

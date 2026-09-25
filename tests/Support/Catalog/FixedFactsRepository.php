@@ -533,6 +533,20 @@ final class FixedFactsRepository implements ProductRepository {
 	}
 
 	/**
+	 * Not used here.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int ...$postIds Unused.
+	 * @return never
+	 */
+	public function lockBindings( int ...$postIds ): never {
+		throw new \LogicException( 'A sellability reader changes no binding.' );
+	}
+
+	/**
 	 * Not used by a reader.
 	 *
 	 * @since 0.1.0

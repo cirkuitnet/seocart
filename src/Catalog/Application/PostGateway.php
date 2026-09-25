@@ -93,4 +93,13 @@ interface PostGateway {
 	 * @return string|null The post type, or null when there is no such post.
 	 */
 	public function postTypeOf( int $postId ): ?string;
+
+	/**
+	 * Returns the site whose posts the gateway reaches now: a post id names a post on one site only.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return int The current site's id; 1 on a site that is not part of a network.
+	 */
+	public function site(): int;
 }

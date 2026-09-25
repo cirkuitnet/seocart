@@ -388,6 +388,35 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
+	 * Locks the bindings of some posts, in ascending order of post id, and returns the product each presents now: one locking read of each binding.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open.
+	 *
+	 * @param int ...$postIds The posts.
+	 * @return array<int, int> The product each post presents, by post id; a post that presents none is left out.
+	 */
+	public function lockBindings( int ...$postIds ): array {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$postIds = array_unique( $postIds );
+		$bound   = array();
+
+		sort( $postIds );
+
+		foreach ( $postIds as $postId ) {
+			$productId = self::intOrNull( $this->productOf( $postId, true ) );
+
+			if ( null !== $productId ) {
+				$bound[ $postId ] = $productId;
+			}
+		}
+
+		return $bound;
+	}
+
+	/**
 	 * Locks every variant of a product until the transaction ends, and returns their ids: one locking read.
 	 *
 	 * @since 0.1.0

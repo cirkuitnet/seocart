@@ -219,6 +219,21 @@ interface ProductRepository {
 	public function lockWithPost( int $postId, int ...$productIds ): array;
 
 	/**
+	 * Locks the bindings of some posts, in ascending order of post id, and returns the product each presents now: a locking read, which sees every binding committed so far.
+	 *
+	 * Taken after the products' rows, as the lock order has it: a caller that locked the products
+	 * it planned to change reads here whether the posts it decided on still present those.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open.
+	 *
+	 * @param int ...$postIds The posts.
+	 * @return array<int, int> The product each post presents, by post id; a post that presents none is left out.
+	 */
+	public function lockBindings( int ...$postIds ): array;
+
+	/**
 	 * Locks every variant of a product until the transaction ends, and returns their ids: a locking read, which sees every variant committed so far.
 	 *
 	 * @since 0.1.0

@@ -11,18 +11,33 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Catalog;
 
+use SEOCart\Catalog\Application\Lifecycle\PostLifecycle;
 use SEOCart\Catalog\Application\ProductWrite\SaveResult;
 use SEOCart\Catalog\Domain\Event\ProductDeleted;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
+use SEOCart\Catalog\Infrastructure\Doctor\MissingSourceCheck;
+use SEOCart\Catalog\Infrastructure\Migrations\CreateCatalogTables;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
+use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Authorization\ProductCapabilities;
+use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\Schema\DdlGenerator;
+use SEOCart\Platform\Database\Schema\SchemaVerifier;
+use SEOCart\Platform\Database\SchemaOperations;
+use SEOCart\Platform\Database\TransactionManager;
+use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Events\OutboxTable;
+use SEOCart\Platform\Kernel\Container;
+use SEOCart\Platform\Logging\LogsTable;
+use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
 use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
+use SEOCart\Tests\Support\KernelContainer;
 use SEOCart\Tests\Support\SecondConnection;
 
 /**
@@ -33,12 +48,22 @@ use SEOCart\Tests\Support\SecondConnection;
  * - Leaving the trash re-holds nothing; the product can be sold again when its post is
  *   published again.
  * - Deleting the source post of a product with no other binding deletes the product in one
- *   transaction: its four tables' rows, its stock item, and its holds go; its ledger stays, with
- *   one final entry; ProductDeleted is stored with the SKUs. The same happens when WordPress's
- *   daily cron empties the trash.
- * - A delete the product's deletion cannot follow is refused, and the post and every row stay:
- *   when the deletion fails, and when the variant has an open allocation. A delete an earlier
+ *   transaction, once WordPress has deleted the post: its four tables' rows, its stock item, and
+ *   its holds go; its ledger stays, with one final entry; ProductDeleted is stored with the SKUs.
+ *   The same happens when WordPress's daily cron empties the trash, on no user's authority.
+ * - The delete is checked before WordPress deletes the post, writing nothing: an open allocation
+ *   refuses it, and the post and every row stay. A callback that refuses the delete after the
+ *   check leaves the post and every row as they were, and stores no event. A delete an earlier
  *   callback has refused is left alone, and revisions and attachments are not products.
+ * - A change that fails once the post is gone, as when an allocation was opened after the check,
+ *   keeps every row of the product, is reported as `catalog.delete_incomplete`, at error level by
+ *   the kernel's own lifecycle, and doctor reports the product, its source post missing. So is a
+ *   binding that went after the check while its product stays; a product deleted after the check
+ *   leaves nothing to report.
+ * - A callback that changes the post's type after the check does not keep the change from being
+ *   made, and on a network, a delete of another site's post with the same id, made inside this
+ *   delete, gets a check and a change of its own: each site's product goes with its post.
+ * - `deleted_post` is hooked once, and only once a check has let a product post's delete go on.
  * - The trash and the delete decide on the rows another writer committed while they waited:
  *   the deletion's event names the SKUs its variants had then, and no variant of a newer
  *   generation keeps its stock item, even in a transaction that read the product before.
@@ -48,8 +73,24 @@ use SEOCart\Tests\Support\SecondConnection;
  * Planted violations, each confirmed to fail a test here:
  * - In PostLifecycle::statusChanged(), drop the releaseVariants() call: the trash test fails,
  *   its hold still held.
- * - Delete the product on `deleted_post` instead of `pre_delete_post`, after WordPress has
- *   deleted the post: the refused-delete test fails, the post gone and the rows left orphaned.
+ * - In Modules::catalogLifecycleHooks(), make the change in `pre_delete_post`, calling deleted()
+ *   right after the check lets the delete go on: the test of a later refusal fails, the product
+ *   deleted while WordPress keeps its post.
+ * - In Modules::catalogLifecycleHooks(), add the `deleted_post` callback whenever
+ *   `pre_delete_post` runs: the test of the hook fails, a refused delete having hooked it.
+ * - In PostLifecycle::deleted(), throw the failure on in place of reporting it: the tests of a
+ *   failed change and of an allocation opened after the check fail, the failure reaching
+ *   wp_delete_post().
+ * - In Reporter::error(), write at warning level: the test of the kernel's lifecycle fails.
+ * - In PostLifecycle::key(), key a delete by its post alone: in a multisite run, the other site's
+ *   check takes this site's entry, and the test of a delete on another site fails, this site's
+ *   product left.
+ * - In Modules::catalogLifecycleHooks(), pass on to the lifecycle only the deleted posts whose
+ *   type reads as a product post's: the test of a type changed after the check fails.
+ * - In PostLifecycle::deleted(), return as before when the post's binding went, whatever became
+ *   of its product: the test of a binding gone after the check fails, nothing reported.
+ * - In PostLifecycle::check(), drop the product delete's preflight: the open-allocation test
+ *   fails, WordPress deleting the post.
  * - In Modules::catalogLifecycleHooks(), drop the check of an earlier callback's answer: the
  *   test of an earlier refusal fails.
  * - In PostLifecycle::statusChanged(), release the product's default variant alone, as before:
@@ -210,6 +251,7 @@ final class LifecycleTest extends ProductWriteTestCase {
 		$b     = $this->secondConnection();
 		$saved = $this->stocked( 3 );
 
+		wp_set_current_user( 0 );
 		wp_trash_post( $saved->postId );
 		update_post_meta( $saved->postId, '_wp_trash_meta_time', time() - ( DAY_IN_SECONDS * EMPTY_TRASH_DAYS ) - 60 );
 
@@ -281,41 +323,377 @@ final class LifecycleTest extends ProductWriteTestCase {
 	}
 
 	/**
-	 * Tests that a failure inside the product's deletion refuses the post's delete, and leaves the post and every row as they were.
+	 * Tests that a product's delete that fails once WordPress has deleted the post keeps every row of the product, reports the failure, and leaves the product for doctor to report.
 	 *
-	 * The deletion fails as its last statement, the delete of the product's row, is sent.
+	 * The check lets the delete go on; the change fails as its last statement, the delete of the
+	 * product's row, is sent, after WordPress deleted the post. The delete cannot be refused any
+	 * more, and the failure never reaches wp_delete_post().
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_a_failed_deletion_refuses_the_delete_and_keeps_everything(): void {
+	public function test_a_change_that_fails_once_the_post_is_gone_keeps_the_rows_and_is_reported(): void {
 		$b      = $this->secondConnection();
 		$saved  = $this->stocked( 3 );
 		$before = $this->everything( $b, $saved );
 
-		$this->beforeStatement(
-			'/^DELETE FROM `' . preg_quote( $this->catalogTable( CatalogTables::PRODUCTS ), '/' ) . '` WHERE id = /',
-			static function (): void {
-				throw new \RuntimeException( 'The deletion failed.' );
-			}
-		);
+		$this->failTheProductsDelete();
 
-		$this->assertFalse( wp_delete_post( $saved->postId, true ), 'WordPress deleted the post anyway.' );
+		$this->assertInstanceOf( \WP_Post::class, wp_delete_post( $saved->postId, true ), 'The delete was refused.' );
 
-		$this->assertInstanceOf( \WP_Post::class, get_post( $saved->postId ) );
-		$this->assertSame( $before, $this->everything( $b, $saved ) );
+		$this->assertNull( get_post( $saved->postId ), 'WordPress kept the post.' );
+		$this->assertSame( $before, $this->everything( $b, $saved ), 'A row of the product was changed.' );
 		$this->assertSame( 0, $this->db->depth() );
 		$this->assertSame(
 			array(
 				array(
-					'code'    => ReportCode::DeleteRefused->value,
+					'code'    => ReportCode::DeleteIncomplete->value,
 					'context' => array(
-						'post_id' => $saved->postId,
-						'error'   => \RuntimeException::class,
+						'post_id'    => $saved->postId,
+						'product_id' => $saved->productId,
+						'error'      => \RuntimeException::class,
 					),
 				),
 			),
 			$this->reports
 		);
+
+		$doctor = ( new MissingSourceCheck( $this->products ) )->run();
+
+		$this->assertFalse( $doctor->passed, 'Doctor did not report the product whose source post is gone.' );
+		$this->assertStringContainsString( 'product ' . $saved->productId . ' has no working source binding', $doctor->findings[0] ?? '' );
+	}
+
+	/**
+	 * Tests that an allocation opened between the check and the change keeps the product, and the change is reported: the delete cannot be refused any more.
+	 *
+	 * The allocation is committed from a second connection on `delete_post`, after the check and
+	 * before WordPress deletes the post's row, as an order placed in that moment would be.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_allocation_opened_after_the_check_keeps_the_product_and_is_reported(): void {
+		$b     = $this->secondConnection();
+		$saved = $this->stocked( 3 );
+
+		add_action(
+			'delete_post',
+			function ( $postId ) use ( $b, $saved ): void {
+				if ( $saved->postId === (int) $postId ) {
+					$b->query( sprintf( "INSERT INTO `%s` ( variant_id, order_id, order_line_id, quantity, state, created_at ) VALUES ( %d, 1, 1, 1, 'open', UTC_TIMESTAMP(6) )", $this->db->table( InventoryTables::ALLOCATIONS ), (int) $saved->variantId ) );
+				}
+			}
+		);
+
+		$this->assertInstanceOf( \WP_Post::class, wp_delete_post( $saved->postId, true ) );
+
+		$this->assertSame( 1, $this->committedCount( $b, CatalogTables::PRODUCTS, sprintf( 'id = %d', $saved->productId ) ), 'The product went with an open allocation.' );
+		$this->assertSame(
+			array(
+				'on_hand'   => 3,
+				'allocated' => 0,
+				'held'      => 0,
+			),
+			$this->committedItem( $b, (int) $saved->variantId ),
+			'The stock item was changed.'
+		);
+		$this->assertSame( 0, $this->committedCount( $b, OutboxTable::NAME, sprintf( "event_name = '%s'", ProductDeleted::eventName() ) ) );
+		$this->assertSame( array( ReportCode::DeleteIncomplete->value, 'stock.delete_blocked' ), array( $this->reports[0]['code'] ?? null, $this->reports[0]['context']['error'] ?? null ) );
+	}
+
+	/**
+	 * Tests that a binding that went between the check and the change, while its product stays, is reported, and the product is kept.
+	 *
+	 * The binding is deleted from a second connection on `delete_post`, after the check and before
+	 * WordPress deletes the post's row.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_binding_gone_after_the_check_is_reported_and_its_product_kept(): void {
+		$b     = $this->secondConnection();
+		$saved = $this->stocked( 3 );
+
+		add_action(
+			'delete_post',
+			function ( $postId ) use ( $b, $saved ): void {
+				if ( $saved->postId === (int) $postId ) {
+					$b->query( sprintf( 'DELETE FROM `%s` WHERE post_id = %d', $this->catalogTable( CatalogTables::PRODUCT_POSTS ), $saved->postId ) );
+				}
+			}
+		);
+
+		$this->assertInstanceOf( \WP_Post::class, wp_delete_post( $saved->postId, true ) );
+
+		$this->assertSame( 1, $this->committedCount( $b, CatalogTables::PRODUCTS, sprintf( 'id = %d', $saved->productId ) ), 'The product went.' );
+		$this->assertSame( 0, $this->committedCount( $b, OutboxTable::NAME, sprintf( "event_name = '%s'", ProductDeleted::eventName() ) ) );
+		$this->assertSame(
+			array(
+				array(
+					'code'    => ReportCode::DeleteIncomplete->value,
+					'context' => array(
+						'post_id'    => $saved->postId,
+						'product_id' => $saved->productId,
+						'error'      => 'catalog.write_conflict',
+					),
+				),
+			),
+			$this->reports
+		);
+	}
+
+	/**
+	 * Tests that a product another writer deleted between the check and the change leaves nothing to change and nothing to report.
+	 *
+	 * The product is deleted on `delete_post`, after the check and before WordPress deletes the
+	 * post's row, as a merchant's delete of the product elsewhere would.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_product_deleted_after_the_check_leaves_nothing_to_report(): void {
+		$b     = $this->secondConnection();
+		$saved = $this->stocked( 3 );
+
+		add_action(
+			'delete_post',
+			function ( $postId ) use ( $saved ): void {
+				if ( $saved->postId === (int) $postId ) {
+					$this->services->delete->delete( $saved->productId, Actor::user( 1 ) );
+				}
+			}
+		);
+
+		$this->assertInstanceOf( \WP_Post::class, wp_delete_post( $saved->postId, true ) );
+
+		$this->assertDeleted( $b, $saved );
+	}
+
+	/**
+	 * Tests that a callback that changes the post's type after the check does not keep the change from being made: the product goes with its post.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_type_changed_after_the_check_still_deletes_the_product(): void {
+		$b     = $this->secondConnection();
+		$saved = $this->stocked( 3 );
+
+		add_action(
+			'delete_post',
+			static function ( $postId, $post ) use ( $saved ): void {
+				if ( $saved->postId === (int) $postId && $post instanceof \WP_Post ) {
+					// A type that is not hierarchical, as the product post type is not: core reads it again after `deleted_post`.
+					$post->post_type = 'post';
+				}
+			},
+			10,
+			2
+		);
+
+		$this->assertInstanceOf( \WP_Post::class, wp_delete_post( $saved->postId, true ) );
+
+		$this->assertDeleted( $b, $saved );
+	}
+
+	/**
+	 * Tests that, on a network, a delete of another site's product post with the same id, made inside this delete between its check and its change, deletes each site's product with its post.
+	 *
+	 * The other site has the plugin's tables and a product post with this post's id. On
+	 * `delete_post`, after this delete's check, a callback switches to the other site and deletes
+	 * its post there, check and change, then switches back.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_delete_on_another_site_inside_this_delete_keeps_each_sites_change(): void {
+		if ( ! is_multisite() ) {
+			$this->markTestSkipped( 'Needs a multisite test run (WP_MULTISITE=1).' );
+		}
+
+		global $wpdb;
+
+		$b     = $this->secondConnection();
+		$saved = $this->stocked( 3 );
+		$main  = get_current_blog_id();
+		$site  = wp_insert_site(
+			array(
+				'domain' => 'example.org',
+				'path'   => '/seocart-delete-site/',
+			)
+		);
+
+		$this->assertIsInt( $site );
+
+		try {
+			switch_to_blog( $site );
+
+			$operations = new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) );
+
+			( new CreateCatalogTables() )->up( $operations );
+			( new CreateOutboxMigration() )->up( $operations );
+			( new CreateStockTablesMigration() )->up( $operations );
+
+			$other = wp_insert_post(
+				array(
+					'import_id'   => $saved->postId,
+					'post_type'   => ProductCapabilities::POST_TYPE,
+					'post_status' => 'publish',
+					'post_title'  => 'The other site\'s product',
+				),
+				true,
+				false
+			);
+
+			$this->assertSame( $saved->postId, $other, 'The other site gave its post another id.' );
+
+			$there = $this->save(
+				$other,
+				array(),
+				array(
+					'sku'         => 'SKU-THERE',
+					'price_minor' => 2500,
+				)
+			);
+
+			restore_current_blog();
+
+			add_action(
+				'delete_post',
+				static function ( $postId ) use ( $saved, $site, $main ): void {
+					if ( $saved->postId === (int) $postId && get_current_blog_id() === $main ) {
+						switch_to_blog( $site );
+						wp_delete_post( (int) $postId, true );
+						restore_current_blog();
+					}
+				}
+			);
+
+			$this->assertInstanceOf( \WP_Post::class, wp_delete_post( $saved->postId, true ) );
+			$this->assertSame( $main, get_current_blog_id() );
+			$this->assertDeleted( $b, $saved );
+
+			switch_to_blog( $site );
+
+			$this->assertNull( get_post( $other ), 'The other site kept its post.' );
+			$this->assertSame(
+				array( 0, 0, 1 ),
+				array(
+					$this->committedCount( $b, CatalogTables::PRODUCTS, sprintf( 'id = %d', $there->productId ) ),
+					$this->committedCount( $b, CatalogTables::PRODUCT_POSTS, sprintf( 'post_id = %d', $other ) ),
+					$this->committedCount( $b, OutboxTable::NAME, sprintf( "event_name = '%s'", ProductDeleted::eventName() ) ),
+				),
+				'The other site\'s product outlived its post.'
+			);
+
+			restore_current_blog();
+		} finally {
+			while ( ms_is_switched() ) {
+				restore_current_blog();
+			}
+
+			// phpcs:disable WordPress.DB.DirectDatabaseQuery -- The test drops the tables it gave the other site.
+			$tables = (array) $wpdb->get_col( $wpdb->prepare( 'SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE %s', $wpdb->esc_like( $wpdb->get_blog_prefix( $site ) . 'seocart_' ) . '%' ) );
+
+			foreach ( $tables as $table ) {
+				$wpdb->query( $wpdb->prepare( 'DROP TABLE IF EXISTS %i', (string) $table ) );
+			}
+			// phpcs:enable WordPress.DB.DirectDatabaseQuery
+
+			wp_delete_site( $site );
+		}
+	}
+
+	/**
+	 * Tests that the kernel's own lifecycle logs a change that fails once the post is gone as an error.
+	 *
+	 * The lifecycle is the production container's, so its failure goes where production sends it:
+	 * the reporter's error(), into the plugin's log. Its transactions are the connection's own, as
+	 * the tables are the test's.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_kernels_lifecycle_logs_a_failed_change_as_an_error(): void {
+		( new CreateLogsMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+
+		$b         = $this->secondConnection();
+		$saved     = $this->stocked( 3 );
+		$lifecycle = KernelContainer::build(
+			$this->db,
+			$this->reporter(),
+			// The site's schema gate is not asked: the test's tables are installed by the test, not by the migrator.
+			array( TransactionManager::class => static fn( Container $c ): TransactionManager => $c->get( Database::class ) )
+		)->get( PostLifecycle::class );
+
+		$this->assertNull( $lifecycle->deleting( $saved->postId, 1 ), 'The check refused the delete.' );
+
+		$this->failTheProductsDelete();
+
+		$lifecycle->deleted( $saved->postId );
+
+		$this->assertSame( 1, $this->committedCount( $b, CatalogTables::PRODUCTS, sprintf( 'id = %d', $saved->productId ) ), 'The product was deleted.' );
+		$this->assertSame(
+			array(
+				'level'        => 'error',
+				'machine_code' => ReportCode::DeleteIncomplete->value,
+			),
+			$this->db->fetchRow( 'SELECT level, machine_code FROM %i WHERE machine_code = %s', $this->db->table( LogsTable::NAME ), ReportCode::DeleteIncomplete->value )
+		);
+	}
+
+	/**
+	 * Tests that a delete a later `pre_delete_post` callback refuses, after the check let it go on, changes nothing and stores no event.
+	 *
+	 * The later callback is hooked at the same priority as the check, after it, as another
+	 * plugin's would be.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_delete_refused_after_the_check_changes_nothing(): void {
+		$b      = $this->secondConnection();
+		$saved  = $this->stocked( 3 );
+		$before = $this->everything( $b, $saved );
+
+		add_filter( 'pre_delete_post', '__return_false', PHP_INT_MAX );
+
+		$this->assertFalse( wp_delete_post( $saved->postId, true ), 'The later callback did not refuse the delete.' );
+
+		remove_filter( 'pre_delete_post', '__return_false', PHP_INT_MAX );
+
+		$this->assertInstanceOf( \WP_Post::class, get_post( $saved->postId ) );
+		$this->assertSame( $before, $this->everything( $b, $saved ), 'A row of the product was changed, or an event stored, for a delete WordPress refused.' );
+		$this->assertSame( SellabilityReason::Sellable, $this->verdict( (int) $saved->variantId ) );
+		$this->assertSame( array(), $this->reports );
+
+		// Asked again, with no one refusing, the delete goes on and deletes the product.
+		$this->assertInstanceOf( \WP_Post::class, wp_delete_post( $saved->postId, true ) );
+		$this->assertDeleted( $b, $saved );
+	}
+
+	/**
+	 * Tests that `deleted_post` is hooked once, and only once a check has let a product post's delete go on: not by a refusal, an earlier refusal or another post type's delete.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_deleted_post_is_hooked_once_a_delete_goes_on_and_only_once(): void {
+		$b        = $this->secondConnection();
+		$first    = $this->stocked( 3 );
+		$second   = $this->savedProduct( 'SKU-2', 'Second product' );
+		$baseline = self::deletedPostCallbacks();
+
+		add_filter( 'pre_delete_post', '__return_false' );
+		$this->assertFalse( wp_delete_post( $first->postId, true ) );
+		remove_filter( 'pre_delete_post', '__return_false' );
+
+		$b->query( sprintf( "INSERT INTO `%s` ( variant_id, order_id, order_line_id, quantity, state, created_at ) VALUES ( %d, 1, 1, 1, 'open', UTC_TIMESTAMP(6) )", $this->db->table( InventoryTables::ALLOCATIONS ), (int) $first->variantId ) );
+		$this->assertFalse( wp_delete_post( $first->postId, true ) );
+		$b->query( sprintf( 'DELETE FROM `%s` WHERE variant_id = %d', $this->db->table( InventoryTables::ALLOCATIONS ), (int) $first->variantId ) );
+
+		$this->assertNotFalse( wp_delete_post( $this->post( 'publish', 'page' ), true ) );
+
+		$this->assertSame( $baseline, self::deletedPostCallbacks(), 'A delete that did not go on, or not of a product post, hooked `deleted_post`.' );
+
+		$this->assertInstanceOf( \WP_Post::class, wp_delete_post( $first->postId, true ) );
+		$this->assertInstanceOf( \WP_Post::class, wp_delete_post( $second->postId, true ) );
+
+		$this->assertSame( $baseline + 1, self::deletedPostCallbacks(), 'Two deletes did not share one `deleted_post` callback.' );
+		$this->assertSame( 0, $this->committedCount( $b, CatalogTables::PRODUCTS, sprintf( 'id IN ( %d, %d )', $first->productId, $second->productId ) ) );
+		$this->assertSame( 2, $this->committedCount( $b, OutboxTable::NAME, sprintf( "event_name = '%s'", ProductDeleted::eventName() ) ) );
 	}
 
 	/**
@@ -392,6 +770,33 @@ final class LifecycleTest extends ProductWriteTestCase {
 		$this->assertSame( $before, $this->everything( $b, $saved ) );
 		$this->assertSame( SellabilityReason::Sellable, $this->verdict( (int) $saved->variantId ) );
 		$this->assertSame( array(), $this->reports );
+	}
+
+	/**
+	 * Makes the delete of a product's row fail, as the last statement of a product's delete is sent.
+	 *
+	 * @since 0.1.0
+	 */
+	private function failTheProductsDelete(): void {
+		$this->beforeStatement(
+			'/^DELETE FROM `' . preg_quote( $this->catalogTable( CatalogTables::PRODUCTS ), '/' ) . '` WHERE id = /',
+			static function (): void {
+				throw new \RuntimeException( 'The deletion failed.' );
+			}
+		);
+	}
+
+	/**
+	 * Counts the callbacks hooked to `deleted_post`, at every priority.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return int The callbacks.
+	 */
+	private static function deletedPostCallbacks(): int {
+		global $wp_filter;
+
+		return isset( $wp_filter['deleted_post'] ) ? array_sum( array_map( 'count', $wp_filter['deleted_post']->callbacks ) ) : 0;
 	}
 
 	/**

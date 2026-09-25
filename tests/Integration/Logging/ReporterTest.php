@@ -37,6 +37,7 @@ use WP_Error;
  * - __invoke has the `callable( string $code, array $context ): void` shape of the database
  *   layer, the migrator, the transaction guards, the event bridge and drainer, and the jobs
  *   runner, and a real Database reports through it.
+ * - error() has the same shape, and writes an error line: a failure a person must settle.
  * - unexpected() gets the invoker's non-coded failures, which reached the error log without a
  *   correlation id before; the line now carries the id the client was given.
  * - internal() gets the translator's internal failures, whose statement and server text were
@@ -45,7 +46,8 @@ use WP_Error;
  *
  * Planted violations: in Reporter::internal(), drop the scoped() call (the line carries the
  * request's own id, not the one the client was given); in Redactor::throwable(), write a
- * StatementDiagnostic's message as it is (the email and the card reach the line).
+ * StatementDiagnostic's message as it is (the email and the card reach the line); in
+ * Reporter::error(), write at warning level (the error test fails on the level).
  *
  * @since 0.1.0
  */
@@ -99,6 +101,43 @@ final class ReporterTest extends LogsTestCase {
 			array(
 				'exception' => \RuntimeException::class,
 				'message'   => 'A listener of the commit failed.',
+			),
+			self::context( $line )
+		);
+	}
+
+	/**
+	 * Tests that error() has the shape a module's reporter has, and writes an error line under the module's code, with its context and the correlation id.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_failure_a_person_must_settle_is_logged_as_an_error(): void {
+		$error = new \ReflectionMethod( Reporter::class, 'error' );
+
+		$this->assertSame(
+			array( 'string $code', 'array $context' ),
+			array_map( static fn( \ReflectionParameter $p ): string => (string) $p->getType() . ' $' . $p->getName(), $error->getParameters() )
+		);
+		$this->assertSame( 'void', (string) $error->getReturnType() );
+
+		$this->reporterOver( $this->logger() )->error(
+			'catalog.delete_incomplete',
+			array(
+				'post_id'    => 12,
+				'product_id' => 5,
+			)
+		);
+
+		$line = $this->onlyLine();
+
+		$this->assertSame(
+			array( 'catalog.delete_incomplete', 'catalog', 'error', SequentialIdGenerator::nth( 1 ) ),
+			array( $line['machine_code'], $line['channel'], $line['level'], $line['correlation_id'] )
+		);
+		$this->assertSame(
+			array(
+				'post_id'    => 12,
+				'product_id' => 5,
 			),
 			self::context( $line )
 		);

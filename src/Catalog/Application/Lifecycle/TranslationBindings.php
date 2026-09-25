@@ -39,6 +39,8 @@ defined( 'ABSPATH' ) || exit;
  * one order every path that touches the catalog's rows takes: the products' rows in ascending
  * order of id, then the post's binding (ProductRepository::lockWithPost()). A binding changes only
  * under its product's lock, so what the change reads under those locks is what it changes.
+ * Several changes made together, as a translation group's, lock every product they may change
+ * before the first of them (changeTogether()), never one product after another as each comes.
  *
  * A post already bound to a product that holds nothing but that post, as a reconciled post's
  * product does, can be linked to another product: that product gives way, deleted in the same
@@ -54,6 +56,15 @@ defined( 'ABSPATH' ) || exit;
  * @since 0.1.0
  */
 final class TranslationBindings {
+
+	/**
+	 * How many times changeTogether() reads its plan and locks it before it gives up on bindings that keep moving.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const PLAN_ATTEMPTS = 3;
 
 	/**
 	 * Locks, reads and writes the bindings.
@@ -207,6 +218,83 @@ final class TranslationBindings {
 	}
 
 	/**
+	 * Makes several changes of bindings as one unit of work that locks, before the first of them, the row of every product they may change, in ascending order of id.
+	 *
+	 * Each change, a link() or an unlink(), locks the rows it decides on. Made one after another in
+	 * one transaction, they would take a later product's row after an earlier one's, out of the
+	 * one order every path takes, and deadlock against a link() that takes the same two in order.
+	 * `$plan` reads what to change, names the products it may change and the posts whose bindings
+	 * decided them; those products' rows are locked in ascending order of id, then the posts'
+	 * bindings, and the change runs, every product lock it asks for already held.
+	 *
+	 * The plan is read before the locks, so a binding can move meanwhile onto a product the plan
+	 * did not name, which the change would then lock after the others, out of order. The bindings
+	 * are read again under the locks, and a post that presents such a product now ends the unit of
+	 * work before its first change: a unit of work of its own runs again, the plan read afresh, up
+	 * to PLAN_ATTEMPTS times in all, and then fails with `catalog.write_conflict`. One inside a
+	 * caller's transaction, which keeps its locks until it ends, cannot run again here, and fails at
+	 * once with `catalog.write_conflict`. Both run inside the unit of work, so a retry after a
+	 * deadlock reads the plan afresh too. A plan that names no product locks nothing.
+	 *
+	 * Runs in the caller's transaction, or in its own.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @template T
+	 *
+	 * @throws CodedException `catalog.write_conflict` when the bindings keep moving off the plan.
+	 * @throws \Throwable    What the plan or the change throws.
+	 *
+	 * @param int      $postId The post whose change it is, which a conflict names.
+	 * @param callable $plan   Reads what to change, and returns the products it may change, by id, the posts whose
+	 *                         bindings decided them, by id, and the change.
+	 * @return mixed What the change returned.
+	 *
+	 * @phpstan-param callable(): array{0: list<int>, 1: list<int>, 2: callable(): T} $plan
+	 * @phpstan-return T
+	 */
+	public function changeTogether( int $postId, callable $plan ): mixed {
+		$ownUnit = 0 === $this->transactions->depth();
+		$moved   = new \stdClass();
+
+		for ( $attempt = 1; $attempt <= self::PLAN_ATTEMPTS; ++$attempt ) {
+			$result = $this->transactions->transaction(
+				function () use ( $plan, $moved ): mixed {
+					list( $productIds, $postIds, $change ) = $plan();
+
+					if ( array() !== $productIds ) {
+						$productIds = array_values( array_unique( $productIds ) );
+
+						sort( $productIds );
+
+						foreach ( $productIds as $productId ) {
+							$this->products->lock( $productId );
+						}
+
+						if ( array() !== array_diff( $this->products->lockBindings( ...$postIds ), $productIds ) ) {
+							// Nothing is changed yet: the unit of work ends, and its locks go with it.
+							return $moved;
+						}
+					}
+
+					return $change();
+				},
+				RetryPolicy::deadlocks()
+			);
+
+			if ( $moved !== $result ) {
+				return $result;
+			}
+
+			if ( ! $ownUnit ) {
+				break;
+			}
+		}
+
+		CodedException::raise( CatalogError::WriteConflict, array( 'post_id' => $postId ) );
+	}
+
+	/**
 	 * Makes one of a product's posts its source post, and records ProductBindingPromoted.
 	 *
 	 * Runs in the caller's transaction, or in its own. Promoting the source itself changes nothing.
@@ -254,8 +342,8 @@ final class TranslationBindings {
 	 * `catalog.promotion_conflict` when the post is no longer the source, or no other post
 	 * presents the product.
 	 *
-	 * An actor with a user must be allowed to edit the source post that loses its place, else
-	 * `authorization.denied`.
+	 * The caller has asked authorizeHandOver() first, before WordPress deleted the post: once the
+	 * post is gone, whether its user could edit it can no longer be asked.
 	 *
 	 * @since 0.1.0
 	 *
@@ -271,9 +359,25 @@ final class TranslationBindings {
 			throw new \LogicException( 'A hand-over of the source post runs inside the transaction that locked the product.' );
 		}
 
-		$this->mayMoveSourceFrom( $postId, $actor );
 		$this->moveSource( $productId, $postId, null, $actor );
 		$this->products->removeBinding( $productId, $postId );
+	}
+
+	/**
+	 * Refuses, before a delete of a product's source post, a hand-over the actor may not make: one that moves the source away from a post the actor may not edit.
+	 *
+	 * Asked while the post still exists, under the product's lock, by the delete's check in
+	 * `pre_delete_post`; handOver() runs once WordPress has deleted the post.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `authorization.denied` when the actor's user may not edit the source post.
+	 *
+	 * @param int   $sourcePostId The product's source post, locked with the product.
+	 * @param Actor $actor        On whose authority the source moves.
+	 */
+	public function authorizeHandOver( int $sourcePostId, Actor $actor ): void {
+		$this->mayMoveSourceFrom( $sourcePostId, $actor );
 	}
 
 	/**

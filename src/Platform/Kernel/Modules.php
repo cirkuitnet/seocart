@@ -807,7 +807,8 @@ final class Modules {
 				$c->get( PostGateway::class ),
 				$c->get( PostLocales::class ),
 				$c->get( Reporter::class ),
-				defined( 'WP_DEBUG' ) && WP_DEBUG
+				defined( 'WP_DEBUG' ) && WP_DEBUG,
+				array( $c->get( Reporter::class ), 'error' )
 			)
 		);
 	}
@@ -893,11 +894,16 @@ final class Modules {
 	}
 
 	/**
-	 * Adds the product lifecycle's three callbacks: a product post written, changing status, and about to be deleted.
+	 * Adds the product lifecycle's three callbacks: a product post written, changing status, and about to be deleted; and a fourth, once a delete is let go on.
 	 *
 	 * Each callback returns at once for a post of another type, before it asks for the lifecycle.
 	 * `pre_delete_post` runs last, leaves alone a delete an earlier callback has already decided,
-	 * and passes on the lifecycle's answer: null lets WordPress delete the post, false refuses.
+	 * and passes on the lifecycle's check: null lets WordPress delete the post, false refuses. The
+	 * first time a check lets a delete go on, a `deleted_post` callback is added, once, which gives
+	 * the lifecycle every post WordPress then deletes, of any type, since a callback can change a
+	 * post's type after the check; the lifecycle acts only on a delete its check let go on. A
+	 * callback that refuses the delete after the check keeps `deleted_post` from coming, and
+	 * nothing is changed. An idle request hooks no `deleted_post` at all.
 	 * The kernel's callbacks resolve the container's lifecycle; the integration tests add their
 	 * own lifecycle through this same method.
 	 *
@@ -928,14 +934,32 @@ final class Modules {
 			10,
 			3
 		);
+		$deleted = null;
+
 		add_filter(
 			'pre_delete_post',
-			static function ( $check, $post ) use ( $lifecycle ) {
+			static function ( $check, $post ) use ( $lifecycle, &$deleted ) {
 				if ( null !== $check || ! $post instanceof \WP_Post || ProductCapabilities::POST_TYPE !== $post->post_type ) {
 					return $check;
 				}
 
-				return $lifecycle()->deleting( (int) $post->ID, get_current_user_id() );
+				$answer = $lifecycle()->deleting( (int) $post->ID, get_current_user_id() );
+
+				if ( null !== $answer ) {
+					return $answer;
+				}
+
+				// Hooked only once a check let a delete go on, never on an idle request; and again should it have been taken off.
+				// Every deleted post is passed on, whatever its type reads now: a callback may have changed it since the check.
+				$deleted ??= static function ( $postId ) use ( $lifecycle ): void {
+					$lifecycle()->deleted( (int) $postId );
+				};
+
+				if ( false === has_action( 'deleted_post', $deleted ) ) {
+					add_action( 'deleted_post', $deleted, 10, 1 );
+				}
+
+				return null;
 			},
 			PHP_INT_MAX,
 			2

@@ -599,6 +599,20 @@ final class ScriptedProductRepository implements ProductRepository {
 	}
 
 	/**
+	 * Not used here.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int ...$postIds Unused.
+	 * @return never
+	 */
+	public function lockBindings( int ...$postIds ): never {
+		throw new \LogicException( 'The product write in these tests changes no binding.' );
+	}
+
+	/**
 	 * Not used by the product write.
 	 *
 	 * @since 0.1.0

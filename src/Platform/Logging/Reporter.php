@@ -19,12 +19,15 @@ defined( 'ABSPATH' ) || exit;
  * Turns what a module reports into a log line.
  *
  * Owns one fact: how a report becomes a line. Modules report what they cannot throw through a
- * callable they are given, and each of the three shapes they use is a method here, so the
+ * callable they are given, and each of the four shapes they use is a method here, so the
  * kernel binds every module to one object:
  *
  * - __invoke( string $code, array $context ) is the shape of the database layer, the migrator,
  *   the transaction guards, the event bridge and drainer, and the jobs runner. The line is a
  *   warning: the work that found the problem carried on.
+ * - error( string $code, array $context ) has the same shape, for a failure a person must settle
+ *   because what came before it cannot be undone, as a product whose post WordPress deleted but
+ *   whose rows could not follow it. The line is an error.
  * - unexpected( \Throwable $failure, string $operationId ) is the operation invoker's, for a
  *   service that failed with something other than a coded error. The line is an error, under
  *   `operations.unexpected_failure`, with the operation id and the exception.
@@ -123,6 +126,18 @@ final class Reporter {
 	 */
 	public function __invoke( string $code, array $context ): void {
 		$this->write( Level::Warning, $code, 'Reported without stopping the work that found it.', $context );
+	}
+
+	/**
+	 * Reports a failure a person must settle, because what came before it cannot be undone: a code and its context.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string       $code    The module's report code, such as `catalog.delete_incomplete`.
+	 * @param array<mixed> $context What the module knows about it.
+	 */
+	public function error( string $code, array $context ): void {
+		$this->write( Level::Error, $code, 'Reported for a person to settle: what came before it cannot be undone.', $context );
 	}
 
 	/**

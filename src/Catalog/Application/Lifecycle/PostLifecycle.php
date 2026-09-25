@@ -13,6 +13,7 @@ namespace SEOCart\Catalog\Application\Lifecycle;
 
 use SEOCart\Catalog\Application\PostGateway;
 use SEOCart\Catalog\Application\ProductRepository;
+use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Catalog\Domain\Sellability as SellabilityRule;
@@ -33,8 +34,9 @@ defined( 'ABSPATH' ) || exit;
  * Keeps the catalog and the stock consistent with a product post, whichever path writes, trashes or deletes it.
  *
  * Owns one fact: what each change of a product post does to its product. The kernel calls it
- * from three WordPress hooks, on every request, because a post can change anywhere: in the
- * editor, from WP-CLI, in a cron run that empties the trash, or from another plugin.
+ * from three WordPress hooks on every request, and from `deleted_post` once a delete has gone on,
+ * because a post can change anywhere: in the editor, from WP-CLI, in a cron run that empties the
+ * trash, or from another plugin.
  *
  * - A post is written (`wp_after_insert_post`). An auto-draft is left alone: the first real save
  *   binds it. A write the plugin made itself, which reaches the hook through
@@ -54,21 +56,47 @@ defined( 'ABSPATH' ) || exit;
  *   source post's trash while another of the product's posts is published: the holds belong to
  *   carts in that post's language. Leaving the
  *   trash re-holds nothing: whether the product can be sold follows the status the post gets back.
- * - A post is deleted (`pre_delete_post`, the one hook that can refuse). A post that is not its
- *   product's source post takes only its binding with it. The source post of a product other
- *   posts still present hands the source over to the oldest remaining published one, or the
- *   oldest remaining one, recording ProductBindingPromoted: such a delete may come from a path
- *   that cannot be refused. A user who may delete the source post but not edit it is refused,
- *   since the hand-over is an edit of the product. The source post of a product with no other binding takes the product
- *   with it (DeleteProduct). If any of it fails, the post's delete is refused, and the post and
- *   every row stay as they were. A post no product is bound to is deleted by WordPress alone.
+ * - A post is deleted, in two steps. A post that is not its product's source post takes only its
+ *   binding with it. The source post of a product other posts still present hands the source
+ *   over to the oldest remaining published one, or the oldest remaining one, recording
+ *   ProductBindingPromoted: such a delete may come from a path that cannot be refused. The source
+ *   post of a product with no other binding takes the product with it (DeleteProduct). A post no
+ *   product is bound to is deleted by WordPress alone.
+ *   - The check, deleting(), on `pre_delete_post`, the one hook that can refuse: under the
+ *     product's lock, and writing nothing, it decides which of those the delete is and refuses
+ *     what would fail: a hand-over by a user who may not edit the source post, since it is an
+ *     edit of the product, and a product whose variant has an open allocation. A refusal refuses
+ *     the post's delete, and the post and every row stay as they were.
+ *   - The change, deleted(), on `deleted_post`, once WordPress has deleted the post: the
+ *     product is read again under its lock and the delete decided again, since the delete of
+ *     another of its posts can have run in between, leaving this post the product's only
+ *     binding, or its source post; the writes are made in one unit of work. A binding's removal
+ *     or a product's delete needs no authorization, and DeleteProduct refuses an open allocation
+ *     itself; a hand-over is made only when the check decided on it, and so authorized it. A
+ *     callback that refuses the delete after the check leaves everything as it was, since
+ *     `deleted_post` then never comes.
+ *
+ * The delete's trade-off: until WordPress has deleted the post, the plugin cannot know it will,
+ * so it changes nothing before; once WordPress has, the delete cannot be refused. A change that
+ * fails then, because an allocation was opened, the post moved to another product, now takes a
+ * hand-over the check did not authorize, or its binding went, between the check and the change,
+ * or because the database failed past its retries, is rolled back and
+ * reported at error level as `catalog.delete_incomplete`: the product stays, with its source post
+ * gone, and doctor reports it for a person to settle. A product deleted meanwhile leaves nothing
+ * to change, and nothing is reported. The check that refused on such a failure could lose a
+ * product's rows to a later callback's refusal; this never loses data, and leaves a reported
+ * orphan in that rare race.
+ *
+ * What the check decided is kept by site and post, since a post id names a post on one site
+ * only: a callback that switches to another site of a network and deletes a post with the same
+ * id there, between this delete's check and its change, gets a check and a change of its own.
  *
  * The trash and the delete decide on the product as the last write that committed left it: they
  * lock the product's row before anything else, as a save's window and every change of a binding
  * do, and every read under that lock is a locking read (ProductRepository::lockByPost()).
  *
  * None of it ever throws into the path that changed the post: a failure is reported, and the
- * post is left unbound, its holds left to expire, or its delete refused. On a site where the
+ * post is left unbound, its holds left to expire, its delete refused, or its product left. On a site where the
  * plugin is loaded but not installed there are no tables to keep consistent, and nothing is
  * done or reported.
  *
@@ -84,6 +112,33 @@ final class PostLifecycle implements TranslationWatcher {
 	 * @var string
 	 */
 	public const TRASH_REASON = 'post_trashed';
+
+	/**
+	 * A delete that takes only the post's binding: the post is not its product's source post.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const UNLINK = 'unlink';
+
+	/**
+	 * A delete that hands the product's source over to another of its posts.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const HAND_OVER = 'hand_over';
+
+	/**
+	 * A delete that takes the product with its only post.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const DELETE = 'delete';
 
 	/**
 	 * The status of a post that is in the trash.
@@ -194,13 +249,34 @@ final class PostLifecycle implements TranslationWatcher {
 	private bool $writeReported = false;
 
 	/**
-	 * The posts whose delete this request let go on: a change the multilingual plugin makes to one of them as it goes is not reconciled.
+	 * The posts whose delete this request let go on, by key(): a change the multilingual plugin makes to one of them as it goes is not reconciled.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var array<int, true>
+	 * @var array<string, true>
 	 */
 	private array $leaving = array();
+
+	/**
+	 * The deletes the check let go on in this request, by key(): which delete it is, of which product, on whose authority.
+	 *
+	 * An entry is taken when `deleted_post` comes for its post on its site; one whose delete a
+	 * later callback refused is never taken, and goes with the request.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<string, array{delete: string, product: int, actor: Actor}>
+	 */
+	private array $pending = array();
+
+	/**
+	 * Receives a machine code and context for a failure a person must settle, at error level.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var callable(string, array<string, mixed>): void
+	 */
+	private $alarm;
 
 	/**
 	 * Creates the lifecycle. Does nothing else.
@@ -217,10 +293,13 @@ final class PostLifecycle implements TranslationWatcher {
 	 * @param PostLocales         $locales      Tells of the changes a multilingual plugin makes later.
 	 * @param callable            $report       Receives a machine code (string) and its context (array).
 	 * @param bool                $debug        Optional. Whether to report writes to bound posts by other paths, as WP_DEBUG does. Default false.
+	 * @param callable|null       $alarm        Optional. Receives, at error level, a machine code (string) and its context (array)
+	 *                                          for a failure a person must settle. Default null, the reporter.
 	 *
 	 * @phpstan-param callable(string, array<string, mixed>): void $report
+	 * @phpstan-param (callable(string, array<string, mixed>): void)|null $alarm
 	 */
-	public function __construct( ProductRepository $products, TranslationGroups $groups, TranslationBindings $bindings, DeleteProduct $delete, StockService $stock, TransactionManager $transactions, PostGateway $posts, PostLocales $locales, callable $report, bool $debug = false ) {
+	public function __construct( ProductRepository $products, TranslationGroups $groups, TranslationBindings $bindings, DeleteProduct $delete, StockService $stock, TransactionManager $transactions, PostGateway $posts, PostLocales $locales, callable $report, bool $debug = false, ?callable $alarm = null ) {
 		$this->products     = $products;
 		$this->groups       = $groups;
 		$this->bindings     = $bindings;
@@ -231,6 +310,7 @@ final class PostLifecycle implements TranslationWatcher {
 		$this->posts        = $posts;
 		$this->report       = $report;
 		$this->debug        = $debug;
+		$this->alarm        = $alarm ?? $report;
 	}
 
 	/**
@@ -274,7 +354,7 @@ final class PostLifecycle implements TranslationWatcher {
 	 * @param int $postId The product post.
 	 */
 	public function translationsChanged( int $postId ): void {
-		if ( 0 !== $this->transactions->depth() || isset( $this->leaving[ $postId ] ) ) {
+		if ( 0 !== $this->transactions->depth() || isset( $this->leaving[ $this->key( $postId ) ] ) ) {
 			return;
 		}
 
@@ -328,21 +408,24 @@ final class PostLifecycle implements TranslationWatcher {
 	}
 
 	/**
-	 * Handles the deletion of a product post, before WordPress deletes it: deletes its product with it, or refuses the delete.
+	 * Checks the deletion of a product post, before WordPress deletes it: decides what it does to the product, refuses it when that would fail, and writes nothing.
 	 *
 	 * Called on `pre_delete_post`, after every earlier callback has let the delete go on. The
 	 * post's product decides:
 	 *
 	 * - no product: nothing to do;
-	 * - the post is another binding of the product, such as a translation's post: its binding
-	 *   goes, and the product stays in its other locales;
-	 * - the post is the source post, and other bindings remain: the source is handed over to the
-	 *   oldest remaining published post, or the oldest remaining one, and the post's binding goes;
-	 * - the post is the product's source post and its only binding: the product is deleted.
+	 * - the post is another binding of the product, such as a translation's post: its binding will
+	 *   go, and the product stay in its other locales;
+	 * - the post is the source post, and other bindings remain: the source will be handed over to
+	 *   the oldest remaining published post, or the oldest remaining one, and the post's binding go;
+	 *   refused unless the user may edit the post;
+	 * - the post is the product's source post and its only binding: the product will be deleted;
+	 *   refused while a variant has an open allocation.
 	 *
 	 * The product is read with ProductRepository::lockByPost(): its row locked first, then its
-	 * bindings and its default variant, every read a locking read. A delete that waited for a save
-	 * or for another binding's delete decides, and reports, on what that one committed.
+	 * bindings and its default variant, every read a locking read, in a unit of work that writes
+	 * nothing. What was decided is kept for deleted(), which the caller hooks to `deleted_post`
+	 * once a check has let a delete go on.
 	 *
 	 * @since 0.1.0
 	 *
@@ -353,30 +436,15 @@ final class PostLifecycle implements TranslationWatcher {
 	public function deleting( int $postId, int $userId ): ?bool {
 		$this->locales->watch( $this );
 
+		$key = $this->key( $postId );
+
+		unset( $this->pending[ $key ] );
+
+		$actor = Actor::user( max( 0, $userId ) );
+
 		try {
-			$this->transactions->transaction(
-				function () use ( $postId, $userId ): void {
-					$product = $this->products->lockByPost( $postId );
-					$actor   = Actor::user( max( 0, $userId ) );
-
-					if ( null === $product ) {
-						return;
-					}
-
-					if ( $postId !== $product->sourcePostId() ) {
-						$this->bindings->unlink( $postId );
-
-						return;
-					}
-
-					if ( count( $product->bindings() ) > 1 ) {
-						$this->bindings->handOver( (int) $product->id(), $postId, $actor );
-
-						return;
-					}
-
-					$this->delete->delete( (int) $product->id(), $actor );
-				},
+			$decided = $this->transactions->transaction(
+				fn(): ?array => $this->check( $postId, $actor ),
 				RetryPolicy::deadlocks()
 			);
 		} catch ( \Throwable $failure ) {
@@ -389,9 +457,154 @@ final class PostLifecycle implements TranslationWatcher {
 			return false;
 		}
 
-		$this->leaving[ $postId ] = true;
+		if ( is_array( $decided ) ) {
+			$this->pending[ $key ] = $decided;
+		}
+
+		$this->leaving[ $key ] = true;
 
 		return null;
+	}
+
+	/**
+	 * Makes, once WordPress has deleted a product post, the change its product now needs: the binding's removal, the hand-over, or the product's delete.
+	 *
+	 * Called on `deleted_post`, for any post of any type; only a post whose delete the check let go
+	 * on in this request, on the current site, is acted on, once. The product is read again under
+	 * its lock, and the delete decided again as the product stands now: the delete of another of
+	 * its posts, made between this one's check and its change, can have left this post its only
+	 * binding, so the product goes with it, or its source post no longer, so its binding alone
+	 * goes. Neither needs the check's authorization. A hand-over is made only when the check
+	 * decided on one, which it authorized; a post that presents another product now, or now needs
+	 * a hand-over the check did not decide on, is a failure. A failure cannot refuse the delete
+	 * any more: it is rolled back and reported at error level as `catalog.delete_incomplete`, and
+	 * the product stays for doctor to report. So is a post whose binding went meanwhile while its
+	 * product stays; a product deleted meanwhile leaves nothing to change, and nothing is reported.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId The post WordPress deleted.
+	 */
+	public function deleted( int $postId ): void {
+		$key     = $this->key( $postId );
+		$decided = $this->pending[ $key ] ?? null;
+
+		unset( $this->pending[ $key ] );
+
+		if ( null === $decided ) {
+			return;
+		}
+
+		try {
+			$this->transactions->transaction(
+				function () use ( $postId, $decided ): void {
+					$product = $this->products->lockByPost( $postId );
+
+					if ( null === $product ) {
+						if ( null === $this->products->find( $decided['product'] ) ) {
+							// Another request deleted the product meanwhile: nothing is left to change.
+							return;
+						}
+
+						// The post's binding went meanwhile, and its product stays.
+						CodedException::raise( CatalogError::WriteConflict, array( 'post_id' => $postId ) );
+					}
+
+					$delete = self::deleteOf( $product, $postId );
+
+					// The check authorized the hand-over it decided on, and no other.
+					if ( (int) $product->id() !== $decided['product'] || ( self::HAND_OVER === $delete && self::HAND_OVER !== $decided['delete'] ) ) {
+						CodedException::raise( CatalogError::WriteConflict, array( 'post_id' => $postId ) );
+					}
+
+					match ( $delete ) {
+						self::UNLINK    => $this->bindings->unlink( $postId ),
+						self::HAND_OVER => $this->bindings->handOver( $decided['product'], $postId, $decided['actor'] ),
+						default         => $this->delete->delete( $decided['product'], $decided['actor'] ),
+					};
+				},
+				RetryPolicy::deadlocks()
+			);
+		} catch ( \Throwable $failure ) {
+			if ( self::notInstalled( $failure ) ) {
+				return;
+			}
+
+			( $this->alarm )(
+				ReportCode::DeleteIncomplete->value,
+				array(
+					'post_id'    => $postId,
+					'product_id' => $decided['product'],
+					'error'      => $failure instanceof CodedException ? (string) $failure->errorCode()->value : get_class( $failure ),
+				)
+			);
+		}
+	}
+
+	/**
+	 * Returns the key of a post on the current site, which the deletes this request let go on are kept by.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId The post.
+	 * @return string The site's id and the post's, as `site:post`.
+	 */
+	private function key( int $postId ): string {
+		return $this->posts->site() . ':' . $postId;
+	}
+
+	/**
+	 * Decides what the delete of a product post does, under the product's lock, and refuses it when that would fail; writes nothing.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `authorization.denied` for a hand-over the actor may not make; `stock.delete_blocked` for a
+	 *                        product whose variant has an open allocation.
+	 *
+	 * @param int   $postId The product post.
+	 * @param Actor $actor  On whose authority it is deleted.
+	 * @return array{delete: string, product: int, actor: Actor}|null What the delete does, or null when the post presents no product.
+	 */
+	private function check( int $postId, Actor $actor ): ?array {
+		$product = $this->products->lockByPost( $postId );
+
+		if ( null === $product ) {
+			return null;
+		}
+
+		$productId = (int) $product->id();
+		$delete    = self::deleteOf( $product, $postId );
+
+		if ( self::HAND_OVER === $delete ) {
+			$this->bindings->authorizeHandOver( $postId, $actor );
+		}
+
+		if ( self::DELETE === $delete ) {
+			$this->delete->preflight( $productId );
+		}
+
+		return array(
+			'delete'  => $delete,
+			'product' => $productId,
+			'actor'   => $actor,
+		);
+	}
+
+	/**
+	 * Tells what the delete of one of a product's posts does to the product.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Product $product The product, locked.
+	 * @param int     $postId  One of its posts.
+	 * @return string UNLINK, HAND_OVER or DELETE.
+	 */
+	private static function deleteOf( Product $product, int $postId ): string {
+		if ( $postId !== $product->sourcePostId() ) {
+			return self::UNLINK;
+		}
+
+		return count( $product->bindings() ) > 1 ? self::HAND_OVER : self::DELETE;
 	}
 
 	/**
@@ -476,16 +689,16 @@ final class PostLifecycle implements TranslationWatcher {
 	/**
 	 * Brings a post's bindings in step with its translation group, in one unit of work.
 	 *
+	 * The reconciliation opens that unit itself, so it can start it again when a binding of the
+	 * group moves between its reading of the group and its locks.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @param int $postId The product post.
 	 * @return bool True when the post presented a product before.
 	 */
 	private function reconcileGroup( int $postId ): bool {
-		return (bool) $this->transactions->transaction(
-			fn(): bool => $this->groups->reconcile( $postId ),
-			RetryPolicy::deadlocks()
-		);
+		return $this->groups->reconcile( $postId );
 	}
 
 	/**

@@ -47,6 +47,14 @@ defined( 'ABSPATH' ) || exit;
  * one bound to another product with a SKU of its own, or one in a locale the product has a post
  * in already, is left as it is and reported once as `catalog.translation_conflict`.
  *
+ * A reconciliation is one unit of work that locks, before its first change, the row of every
+ * product it may change, in ascending order of id: the post's product, its group's owner and the
+ * product of each post in the group (TranslationBindings::changeTogether()). Its links and
+ * unlinks then find their product locks held, so it never locks one product's row after
+ * another's against a link that locks the same two in order. A post of the group whose binding
+ * moved onto another product between the reading and the locks makes it start again, before
+ * its first change, and read the group afresh.
+ *
  * Without a multilingual plugin every group is its post alone, and only the first rule applies;
  * disagreement() answers null for every post then, since keepsGroups() is false.
  *
@@ -123,9 +131,11 @@ final class TranslationGroups {
 	/**
 	 * Brings the bindings of a post, and of its translation group, in step with the group.
 	 *
-	 * Runs in the caller's transaction; each change runs in a nested one, which locks what it
-	 * decides on. It reads the post's group afresh, so it can be called for any one post at any
-	 * time, outside a request that wrote the post, as a repair of a binding that disagrees with
+	 * Runs as one unit of work, in the caller's transaction or in its own: it reads the post's
+	 * group, locks the row of every product the change may touch in ascending order of id, then
+	 * makes the change; in its own, it starts again when a binding of the group moved meanwhile,
+	 * and in the caller's it fails with `catalog.write_conflict` then. It reads the post's group afresh, so it can be called for any one post at
+	 * any time, outside a request that wrote the post, as a repair of a binding that disagrees with
 	 * the multilingual setup's group. It reads the same facts disagreement() classifies a post
 	 * by, so the two can never decide differently about what is wrong.
 	 *
@@ -137,13 +147,37 @@ final class TranslationGroups {
 	 * @return bool True when the post presented a product before.
 	 */
 	public function reconcile( int $postId ): bool {
-		$facts   = $this->facts( $postId );
+		return (bool) $this->bindings->changeTogether(
+			$postId,
+			function () use ( $postId ): array {
+				$facts = $this->facts( $postId );
+				$posts = array() === $facts['touches'] ? array() : array_values( array_unique( array_merge( array( $postId ), array_keys( $facts['group'] ) ) ) );
+
+				return array( $facts['touches'], $posts, fn(): bool => $this->apply( $postId, $facts ) );
+			}
+		);
+	}
+
+	/**
+	 * Makes the change reconcile() decided on from a post's facts, the products it may change locked already.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \Throwable What a change throws, other than the conflicts that are reported.
+	 *
+	 * @param int                  $postId The post.
+	 * @param array<string, mixed> $facts  What facts() read of it.
+	 * @return bool True when the post presented a product before.
+	 *
+	 * @phpstan-param array{product: ?\SEOCart\Catalog\Domain\Product, locale: ?Locale, group: array<int, Locale>, leftGroup: bool, owner: ?int, unlinks: list<int>, touches: list<int>} $facts
+	 */
+	private function apply( int $postId, array $facts ): bool {
 		$product = $facts['product'];
 		$locale  = $facts['locale'];
 		$group   = $facts['group'];
 
 		if ( null === $product ) {
-			$this->bindUnbound( $postId, $locale ?? $this->locales->siteLocale(), $group );
+			$this->bindUnbound( $postId, $locale ?? $this->locales->siteLocale(), $facts['owner'] );
 
 			return false;
 		}
@@ -166,7 +200,7 @@ final class TranslationGroups {
 			}
 
 			$this->bindings->unlink( $postId );
-			$this->bindUnbound( $postId, $locale, $group );
+			$this->bindUnbound( $postId, $locale, $owner );
 
 			return true;
 		}
@@ -284,31 +318,44 @@ final class TranslationGroups {
 
 	/**
 	 * Reads the facts a post's binding is judged by: its group, its locale, the product it
-	 * presents, whether it left its source post's group, its group's owner, and the product's
-	 * other bindings reconciling this post would unlink.
+	 * presents, whether it left its source post's group, its group's owner, the product's other
+	 * bindings reconciling this post would unlink, and the products a reconciliation may change.
 	 *
 	 * The one read reconcile() and disagreement() both use, so a post is classified the same way
 	 * whichever of them asks. A binding is only ever listed to unlink when its own post is still
 	 * given a language: one the setup gives none keeps its binding, whoever else is reconciled.
+	 * The products a reconciliation may change are the post's, the owner and each group post's,
+	 * ascending; none when the post has a product and no language, whose binding is left as it is.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param int $postId The post.
-	 * @return array{product: ?\SEOCart\Catalog\Domain\Product, locale: ?Locale, group: array<int, Locale>, leftGroup: bool, owner: ?int, unlinks: list<int>} The facts.
+	 * @return array{product: ?\SEOCart\Catalog\Domain\Product, locale: ?Locale, group: array<int, Locale>, leftGroup: bool, owner: ?int, unlinks: list<int>, touches: list<int>} The facts.
 	 */
 	private function facts( int $postId ): array {
-		$group   = $this->locales->translationsOf( $postId );
-		$locale  = $group[ $postId ] ?? $this->locales->localeOf( $postId );
-		$product = $this->products->findByPost( $postId );
+		$group     = $this->locales->translationsOf( $postId );
+		$locale    = $group[ $postId ] ?? $this->locales->localeOf( $postId );
+		$product   = $this->products->findByPost( $postId );
+		$presented = self::presented( $this->products, $group );
+		$owner     = self::ownerOf( $presented );
 
 		$leftGroup = false;
-		$owner     = null;
 		$unlinks   = array();
+		$touches   = array();
+
+		if ( null === $product || null !== $locale ) {
+			$touches = array_map( static fn( $member ): int => (int) $member->id(), array_filter( $presented ) );
+
+			array_push( $touches, (int) $product?->id(), (int) $owner );
+
+			$touches = array_values( array_unique( array_filter( $touches ) ) );
+
+			sort( $touches );
+		}
 
 		if ( null !== $product && null !== $locale ) {
 			$source    = $product->sourcePostId();
 			$leftGroup = null !== $source && $source !== $postId && ! isset( $group[ $source ] );
-			$owner     = self::productOfGroup( $this->products, $group );
 
 			foreach ( $product->bindings() as $binding ) {
 				$memberId = $binding->postId();
@@ -330,6 +377,7 @@ final class TranslationGroups {
 			'leftGroup' => $leftGroup,
 			'owner'     => $owner,
 			'unlinks'   => $unlinks,
+			'touches'   => $touches,
 		);
 	}
 
@@ -338,12 +386,11 @@ final class TranslationGroups {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int                $postId The post.
-	 * @param Locale             $locale Its locale.
-	 * @param array<int, Locale> $group  Its translation group.
+	 * @param int      $postId The post.
+	 * @param Locale   $locale Its locale.
+	 * @param int|null $owner  The product its translation group presents, productOfGroup()'s answer, or null.
 	 */
-	private function bindUnbound( int $postId, Locale $locale, array $group ): void {
-		$owner     = self::productOfGroup( $this->products, $group );
+	private function bindUnbound( int $postId, Locale $locale, ?int $owner ): void {
 		$conflicts = array();
 
 		if ( null !== $owner && $this->attempt( $owner, $postId, $locale, $conflicts ) ) {
@@ -406,12 +453,42 @@ final class TranslationGroups {
 	 * @return int|null The owning product, or null when no post of the group is a product's source post.
 	 */
 	public static function productOfGroup( ProductRepository $products, array $group ): ?int {
+		return self::ownerOf( self::presented( $products, $group ) );
+	}
+
+	/**
+	 * Reads the product each post of a group presents.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param ProductRepository  $products Reads which product each post presents.
+	 * @param array<int, Locale> $group    The group: the locale of each post, by post id.
+	 * @return array<int, \SEOCart\Catalog\Domain\Product|null> The product each post presents, or null, by post id.
+	 */
+	private static function presented( ProductRepository $products, array $group ): array {
+		$presented = array();
+
+		foreach ( array_keys( $group ) as $member ) {
+			$presented[ $member ] = $products->findByPost( $member );
+		}
+
+		return $presented;
+	}
+
+	/**
+	 * Applies productOfGroup()'s rule to the products a group's posts present.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param array<int, \SEOCart\Catalog\Domain\Product|null> $presented The product each post of the group presents, or null, by post id.
+	 * @return int|null The owning product, or null when no post of the group is a product's source post.
+	 */
+	private static function ownerOf( array $presented ): ?int {
 		$selling = array();
 		$holding = array();
 		$empty   = array();
 
-		foreach ( array_keys( $group ) as $member ) {
-			$product = $products->findByPost( $member );
+		foreach ( $presented as $member => $product ) {
 			$binding = $product?->bindingOf( $member );
 
 			if ( null === $product || null === $binding || $member !== $product->sourcePostId() ) {

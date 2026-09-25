@@ -13,6 +13,7 @@ namespace SEOCart\Catalog\Application\Lifecycle;
 
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Domain\CatalogError;
+use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\RetryPolicy;
@@ -43,7 +44,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * Catalog rows before inventory rows is the order every product write takes its locks in. Any
  * failure rolls the whole of it back, so a product is either deleted with its stock or left as it
- * was; the caller decides what a refusal means.
+ * was; the caller decides what a refusal means. preflight() asks, without writing, whether the
+ * delete would be refused, for a caller that must refuse before anything is written.
  *
  * @since 0.1.0
  */
@@ -111,6 +113,27 @@ final class DeleteProduct {
 		$this->transactions = $transactions;
 		$this->events       = $events;
 		$this->clock        = $clock;
+	}
+
+	/**
+	 * Refuses, without writing anything, a delete that delete() would refuse for the product's stock: a variant with an open allocation.
+	 *
+	 * Runs in the caller's transaction, which has locked the product; the product's variants are
+	 * read and locked, then their allocations, the catalog's rows before the inventory's.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open.
+	 * @throws CodedException  `stock.delete_blocked` when a variant has an open allocation.
+	 *
+	 * @param int $productId The product, locked.
+	 */
+	public function preflight( int $productId ): void {
+		$open = $this->stock->openAllocationVariants( $this->products->lockVariants( $productId ) );
+
+		if ( array() !== $open ) {
+			CodedException::raise( InventoryError::DeleteBlocked, array( 'variant_id' => $open[0] ) );
+		}
 	}
 
 	/**

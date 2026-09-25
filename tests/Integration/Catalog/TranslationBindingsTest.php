@@ -56,8 +56,13 @@ use SEOCart\Tests\Support\SecondConnection;
  *   source with one conditional statement and records ProductBindingPromoted.
  * - Deleting a translation's post removes its binding only. Deleting the source post of a product
  *   other posts present promotes the oldest published one, or the oldest one when none is
- *   published, and records the promotion. Trashing a translation's post releases nothing, nor does
- *   trashing the source post while a translation's post is published.
+ *   published, and records the promotion, once WordPress has deleted the post; a callback that
+ *   refuses the delete after the check leaves the source and the bindings as they were, and a
+ *   product a translation joined after the check is kept and reported, not deleted. The source
+ *   post and its translation's post deleted one inside the other's delete, in either order, take
+ *   the product with them, as one after the other would. Trashing
+ *   a translation's post releases nothing, nor does trashing the source post while a
+ *   translation's post is published.
  * - A product with no post in a locale is `not_translated` there; a translation's post is judged
  *   on its own status.
  * - A first save that names the post it translates, or whose group presents a product, joins that
@@ -77,6 +82,10 @@ use SEOCart\Tests\Support\SecondConnection;
  *   user. The cron run that empties the trash hands the source over on no one's authority.
  * - A group is owned by its product with commerce data, before any product that only holds more
  *   posts.
+ * - Several changes made together lock their products first; when a plan's posts present a
+ *   product it does not name, the unit of work runs again, three times in all in a unit of work
+ *   of its own and once inside a caller's, and then fails with `catalog.write_conflict`, before
+ *   any change.
  *
  * Planted violations, each confirmed to fail a test here:
  * - In SaveProduct::save(), never look for the product a post translates: a translation's first
@@ -112,6 +121,17 @@ use SEOCart\Tests\Support\SecondConnection;
  * - In TranslationBindings::mayMoveSourceFrom(), ask nothing: the delete of a source post by a
  *   user who may not edit it hands the source over, and the direct promotion is made; both tests
  *   fail.
+ * - In TranslationBindings::changeTogether(), read the plan one time more before giving up, or
+ *   read it again inside a caller's transaction: the test of a plan that never names its posts'
+ *   products fails on the count of plans read.
+ * - In Modules::catalogLifecycleHooks(), make the change in `pre_delete_post`, calling deleted()
+ *   right after the check lets the delete go on: the source is handed over before WordPress
+ *   deletes the post, and the tests of the hand-over's moment and of a later refusal fail.
+ * - In PostLifecycle::deleted(), drop the check that the delete is still the one decided on: the
+ *   product a translation joined after the check is deleted with it.
+ * - In PostLifecycle::deleted(), refuse every delete that differs from the one the check decided
+ *   on: both orders of the test of two posts deleted one inside the other fail, the product left
+ *   with a binding to a post that is gone.
  *
  * @since 0.1.0
  */
@@ -510,6 +530,159 @@ final class TranslationBindingsTest extends ProductRestTestCase {
 	}
 
 	/**
+	 * Tests that the source is handed over only once WordPress has deleted the source post: while WordPress deletes it, it is still the source.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_source_is_handed_over_once_wordpress_has_deleted_the_post(): void {
+		$b      = $this->secondConnection();
+		$saved  = $this->stocked();
+		$german = $this->unboundPost();
+		$during = array();
+
+		$this->link( $saved, $german, 'de_DE' );
+
+		// `delete_post` comes after every `pre_delete_post` callback, just before WordPress deletes the post's row.
+		add_action(
+			'delete_post',
+			function ( $postId ) use ( $saved, $german, $b, &$during ): void {
+				if ( $saved->postId === (int) $postId ) {
+					$during = array( $this->sourceOf( $german ), count( $this->promotions( $b ) ) );
+				}
+			}
+		);
+
+		$this->assertInstanceOf( \WP_Post::class, wp_delete_post( $saved->postId, true ) );
+
+		$this->assertSame( array( $saved->postId, 0 ), $during, 'The source was handed over before WordPress deleted its post.' );
+		$this->assertSame( $german, $this->sourceOf( $german ) );
+		$this->assertSame( array( $saved->postId, $german ), array( $this->promotions( $b )[0]['from_post_id'] ?? null, $this->promotions( $b )[0]['to_post_id'] ?? null ) );
+		$this->assertSame( array(), $this->reports );
+	}
+
+	/**
+	 * Tests that a product whose source post is deleted is kept, and the change reported, when a translation joined it between the check and the change: the check decided on a product with one post.
+	 *
+	 * The translation is linked on `delete_post`, after the check and before WordPress deletes the
+	 * post's row. The product it presents now must not go with the source post, and a hand-over was
+	 * not what the check authorized; the product stays for doctor to report.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_product_a_translation_joined_after_the_check_is_kept_and_reported(): void {
+		$b      = $this->secondConnection();
+		$saved  = $this->stocked();
+		$german = $this->unboundPost();
+
+		add_action(
+			'delete_post',
+			function ( $postId ) use ( $saved, $german ): void {
+				if ( $saved->postId === (int) $postId ) {
+					$this->link( $saved, $german, 'de_DE' );
+				}
+			}
+		);
+
+		$this->assertInstanceOf( \WP_Post::class, wp_delete_post( $saved->postId, true ) );
+
+		$this->assertSame( 1, $this->committedCount( $b, CatalogTables::PRODUCTS, sprintf( 'id = %d', $saved->productId ) ), 'The product went, with a translation still presenting it.' );
+		$this->assertSame( 0, $this->committedCount( $b, OutboxTable::NAME, sprintf( "event_name = '%s'", ProductDeleted::eventName() ) ) );
+		$this->assertSame( $saved->productId, $this->productOf( $german )?->id() );
+		$this->assertSame( array( ReportCode::DeleteIncomplete->value, CatalogError::WriteConflict->value ), array( $this->reports[0]['code'] ?? null, $this->reports[0]['context']['error'] ?? null ) );
+	}
+
+	/**
+	 * Returns the orders in which a product's two posts are deleted, one inside the other's delete.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, array{0: bool}> Whether the source post's delete is the outer one.
+	 */
+	public static function nestedDeletes(): array {
+		return array(
+			'the translation deleted inside the source\'s delete' => array( true ),
+			'the source deleted inside the translation\'s delete' => array( false ),
+		);
+	}
+
+	/**
+	 * Tests that a product's source post and its translation's post, one deleted inside the other's delete, take the product with them, as they would one after the other.
+	 *
+	 * The inner delete runs on `delete_post` of the outer one, after the outer check and before
+	 * WordPress deletes the outer post's row, as a callback that deletes a post's translations with
+	 * it would. By the outer change, the outer post is the product's only binding: its delete takes
+	 * the product.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @dataProvider nestedDeletes
+	 *
+	 * @param bool $sourceOuter Whether the source post's delete is the outer one.
+	 */
+	public function test_two_posts_of_a_product_deleted_one_inside_the_other_delete_the_product( bool $sourceOuter ): void {
+		$b      = $this->secondConnection();
+		$saved  = $this->stocked();
+		$german = $this->unboundPost();
+
+		$this->link( $saved, $german, 'de_DE' );
+
+		$outer = $sourceOuter ? $saved->postId : $german;
+		$inner = $sourceOuter ? $german : $saved->postId;
+
+		add_action(
+			'delete_post',
+			static function ( $postId ) use ( $outer, $inner ): void {
+				if ( $outer === (int) $postId ) {
+					wp_delete_post( $inner, true );
+				}
+			}
+		);
+
+		$this->assertInstanceOf( \WP_Post::class, wp_delete_post( $outer, true ) );
+
+		$this->assertNull( get_post( $inner ), 'The inner delete did not run.' );
+		$this->assertSame(
+			array( 0, 0, 0, 1 ),
+			array(
+				$this->committedCount( $b, CatalogTables::PRODUCTS, sprintf( 'id = %d', $saved->productId ) ),
+				$this->committedCount( $b, CatalogTables::PRODUCT_POSTS, sprintf( 'product_id = %d', $saved->productId ) ),
+				$this->committedCount( $b, CatalogTables::VARIANTS, sprintf( 'product_id = %d', $saved->productId ) ),
+				$this->committedCount( $b, OutboxTable::NAME, sprintf( "event_name = '%s'", ProductDeleted::eventName() ) ),
+			),
+			'The product outlived both its posts.'
+		);
+		$this->assertCount( $sourceOuter ? 0 : 1, $this->promotions( $b ), 'The source inside the translation\'s delete hands over to it first.' );
+		$this->assertSame( array(), $this->reports );
+	}
+
+	/**
+	 * Tests that a source post's delete a later `pre_delete_post` callback refuses, after the check let it go on, hands nothing over: the source and both bindings stay, and no promotion is recorded.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_source_delete_refused_after_the_check_hands_nothing_over(): void {
+		$b      = $this->secondConnection();
+		$saved  = $this->stocked();
+		$german = $this->unboundPost();
+
+		$this->link( $saved, $german, 'de_DE' );
+
+		$before = $this->catalogChecksums( $b );
+
+		add_filter( 'pre_delete_post', '__return_false', PHP_INT_MAX );
+
+		$this->assertFalse( wp_delete_post( $saved->postId, true ), 'The later callback did not refuse the delete.' );
+
+		remove_filter( 'pre_delete_post', '__return_false', PHP_INT_MAX );
+
+		$this->assertInstanceOf( \WP_Post::class, get_post( $saved->postId ) );
+		$this->assertSame( $saved->postId, $this->sourceOf( $german ), 'The source was handed over for a delete WordPress refused.' );
+		$this->assertSame( $before, $this->catalogChecksums( $b ) );
+		$this->assertSame( array(), $this->promotions( $b ) );
+		$this->assertSame( array(), $this->reports );
+	}
+
+	/**
 	 * Tests that deleting the source post when every other post is a draft promotes the oldest, and deleting the last post deletes the product.
 	 *
 	 * @since 0.1.0
@@ -895,6 +1068,41 @@ final class TranslationBindingsTest extends ProductRestTestCase {
 		$this->assertSame( 2, $this->committedCount( $b, CatalogTables::PRODUCT_POSTS, sprintf( 'product_id = %d', $saved->productId ) ) );
 		$this->assertSame( array(), $this->promotions( $b ) );
 		$this->assertSame( array( ReportCode::DeleteRefused->value, 'authorization.denied' ), array( $this->reports[0]['code'] ?? null, $this->reports[0]['context']['error'] ?? null ) );
+	}
+
+	/**
+	 * Tests that a plan whose posts present a product it never names is read again up to three times in its own unit of work, once inside a caller's, and then fails with a write conflict, before any change.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_plan_that_never_names_its_posts_products_gives_up_with_a_write_conflict(): void {
+		$saved   = $this->stocked();
+		$german  = $this->post();
+		$plans   = 0;
+		$changed = false;
+		$plan    = static function () use ( $saved, $german, &$plans, &$changed ): array {
+			++$plans;
+
+			return array(
+				array( $saved->productId ),
+				array( $saved->postId, $german ),
+				static function () use ( &$changed ): bool {
+					$changed = true;
+
+					return true;
+				},
+			);
+		};
+
+		$this->assertNotNull( $this->productOf( $german ), 'The German post has no product of its own for the plan to leave out.' );
+		$this->assertSame( CatalogError::WriteConflict, $this->refusal( fn() => $this->services->bindings->changeTogether( $saved->postId, $plan ) ) );
+		$this->assertSame( 3, $plans, 'The plan was not read three times in its own unit of work.' );
+
+		$plans = 0;
+
+		$this->assertSame( CatalogError::WriteConflict, $this->refusal( fn() => $this->db->transaction( fn() => $this->services->bindings->changeTogether( $saved->postId, $plan ) ) ) );
+		$this->assertSame( 1, $plans, 'The plan was read again inside the caller\'s transaction, whose locks stay.' );
+		$this->assertFalse( $changed, 'A change was made.' );
 	}
 
 	/**

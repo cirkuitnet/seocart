@@ -67,6 +67,13 @@ enum ReportCode: string {
 	case DeleteRefused = 'catalog.delete_refused';
 
 	/**
+	 * WordPress deleted a product post, and the product's rows could not be changed after it: the product, its source post gone, stays for doctor to report.
+	 *
+	 * @since 0.1.0
+	 */
+	case DeleteIncomplete = 'catalog.delete_incomplete';
+
+	/**
 	 * A post of a translation group could not join the product the group presents: it presents another product with commerce data of its own, or the product has a post in its locale already.
 	 *
 	 * @since 0.1.0

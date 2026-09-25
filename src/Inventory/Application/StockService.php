@@ -398,6 +398,35 @@ final class StockService {
 	}
 
 	/**
+	 * Returns the variants among some that have an open allocation: what deleteVariants() would refuse, read without writing anything.
+	 *
+	 * For a delete that must decide whether it can go on before it writes: a product post's delete
+	 * refuses in WordPress's `pre_delete_post` and writes only once the post is gone. Each variant's
+	 * allocations are read with a locking read, ascending, in the caller's transaction.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException           Outside a transaction, before any statement.
+	 * @throws \InvalidArgumentException When a variant id is below 1.
+	 *
+	 * @param int[] $variantIds The variants.
+	 * @return list<int> The variants with an open allocation, ascending.
+	 */
+	public function openAllocationVariants( array $variantIds ): array {
+		$this->requireCallersTransaction( __FUNCTION__ );
+
+		$open = array();
+
+		foreach ( self::variantIds( $variantIds ) as $variantId ) {
+			if ( $this->stock->hasOpenAllocation( $variantId ) ) {
+				$open[] = $variantId;
+			}
+		}
+
+		return $open;
+	}
+
+	/**
 	 * Removes the stock items of variants being deleted: called by the product delete, inside its transaction.
 	 *
 	 * Per variant, ascending: the item is locked; an open allocation refuses the whole delete with
