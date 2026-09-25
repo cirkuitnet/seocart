@@ -11,7 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Catalog\Infrastructure\Doctor;
 
-use SEOCart\Catalog\Application\Lifecycle\Reconciler;
+use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Platform\Cli\Doctor\CheckResult;
 use SEOCart\Platform\Cli\Doctor\Repairable;
@@ -25,8 +25,15 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: which product posts the reconciler never reached. A post written by a path that
  * fires `wp_after_insert_post` is reconciled inline, the moment it is written; this check exists
  * for the one path that escapes it — `wp_insert_post( …, false )`, which never fires that hook.
- * The repair runs the reconciler's own create branch on each: the merged Reconciler, never a copy,
- * so a post another writer bound in the meantime is left alone (its duplicate key is swallowed).
+ * The repair runs TranslationGroups::reconcile() on each, the merged service, never a copy: a post
+ * whose translation group already presents a product joins that product, exactly as a first save
+ * of a post in another language does; only a post whose group presents none, which is every post
+ * on a store with no multilingual plugin, falls back to the reconciler's create branch. A post
+ * another writer bound in the meantime is left alone (its duplicate key is swallowed).
+ *
+ * Binding a reconciled post into its group here, rather than always giving it a product of its
+ * own, is what keeps doctor's own translation-group check from finding, and then repairing away,
+ * the product a plain create would otherwise have left it presenting alone.
  *
  * @since 0.1.0
  */
@@ -60,13 +67,13 @@ final class UnboundPostCheck implements Repairable {
 	private ProductRepository $products;
 
 	/**
-	 * Binds a post to a new product.
+	 * Brings a post's bindings in step with its translation group, or gives it a product of its own.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var Reconciler
+	 * @var TranslationGroups
 	 */
-	private Reconciler $reconciler;
+	private TranslationGroups $groups;
 
 	/**
 	 * The post ids the last run() found, for repair() to act on.
@@ -82,12 +89,12 @@ final class UnboundPostCheck implements Repairable {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param ProductRepository $products   The products.
-	 * @param Reconciler        $reconciler Binds a post to a new product.
+	 * @param ProductRepository $products The products.
+	 * @param TranslationGroups $groups   Brings a post's bindings in step with its translation group, or gives it a product of its own.
 	 */
-	public function __construct( ProductRepository $products, Reconciler $reconciler ) {
-		$this->products   = $products;
-		$this->reconciler = $reconciler;
+	public function __construct( ProductRepository $products, TranslationGroups $groups ) {
+		$this->products = $products;
+		$this->groups   = $groups;
 	}
 
 	/**
@@ -131,7 +138,8 @@ final class UnboundPostCheck implements Repairable {
 	}
 
 	/**
-	 * Binds each post run() found through the reconciler's create branch.
+	 * Reconciles each post run() found: joins its translation group's product, or, when its group
+	 * presents none, gets a new incomplete product of its own.
 	 *
 	 * @since 0.1.0
 	 *
@@ -141,8 +149,8 @@ final class UnboundPostCheck implements Repairable {
 		$changes = array();
 
 		foreach ( $this->found as $postId ) {
-			if ( $this->reconciler->reconcile( $postId ) ) {
-				$changes[] = sprintf( 'bound post %d to a new, incomplete product.', $postId );
+			if ( false === $this->groups->reconcile( $postId ) ) {
+				$changes[] = sprintf( 'bound post %d to a product.', $postId );
 			}
 		}
 

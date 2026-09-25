@@ -771,7 +771,7 @@ final class Modules {
 			static fn( Container $c ): CatalogChecks => new CatalogChecks(
 				$c->get( ProductRepository::class ),
 				$c->get( StockService::class ),
-				$c->get( Reconciler::class ),
+				$c->get( TranslationGroups::class ),
 				$c->get( ProductSettler::class ),
 				$c->get( Clock::class ),
 				$c->get( TransactionManager::class ),

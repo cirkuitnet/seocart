@@ -839,6 +839,43 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
+	 * Lists `product_posts` bindings, every bound post with the product it presents and the
+	 * locale its binding names (doctor check 11).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId Only bindings whose post is above this id.
+	 * @param int $limit   The most to list.
+	 * @return list<array{post_id: int, product_id: int, locale: string}> The bindings, ascending by post id.
+	 */
+	public function boundPostBindings( int $afterId, int $limit ): array {
+		$args = array( $this->table( CatalogTables::PRODUCT_POSTS ) );
+		$sql  = 'SELECT post_id, product_id, locale FROM %i';
+
+		// No cursor on the first page: a bare ORDER BY … LIMIT lets EXPLAIN cost the scan by the
+		// limit alone, the way variantIds() and unboundPostIds() page their own first page.
+		if ( $afterId > 0 ) {
+			$sql   .= ' WHERE post_id > %d';
+			$args[] = $afterId;
+		}
+
+		$sql .= ' ORDER BY post_id LIMIT %d';
+
+		$args[] = $limit;
+
+		$rows = $this->db->fetchAll( $sql, ...$args );
+
+		return array_map(
+			static fn( array $row ): array => array(
+				'post_id'    => (int) $row['post_id'],
+				'product_id' => (int) $row['product_id'],
+				'locale'     => (string) $row['locale'],
+			),
+			$rows
+		);
+	}
+
+	/**
 	 * Lists complete products at their active generation with zero enabled variants, or whose
 	 * default variant has no price in the base currency (doctor check 5).
 	 *

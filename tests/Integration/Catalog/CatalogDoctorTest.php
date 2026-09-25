@@ -12,10 +12,14 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Catalog;
 
 use SEOCart\Catalog\Application\Doctor\ProductSettler;
+use SEOCart\Catalog\Application\Lifecycle\DeleteProduct;
 use SEOCart\Catalog\Application\Lifecycle\Reconciler;
+use SEOCart\Catalog\Application\Lifecycle\TranslationBindings;
+use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\GenerationState;
+use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\Doctor\CatalogChecks;
@@ -28,6 +32,7 @@ use SEOCart\Catalog\Infrastructure\Doctor\NoBindingCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\OrphanCommerceRowCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\OrphanStockItemCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\StuckUpdatingCheck;
+use SEOCart\Catalog\Infrastructure\Doctor\TranslationGroupCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\UnboundPostCheck;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
@@ -44,11 +49,13 @@ use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Support\Currency;
+use SEOCart\Support\Locale;
 use SEOCart\Tests\Support\Catalog\CatalogTestCase;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
 use SEOCart\Tests\Support\Doubles\OneLocale;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
+use SEOCart\Tests\Support\Doubles\SeveralLocales;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- Plants a violation of each row directly, as a crash, a foreign write or a refused delete would leave it, and reads checksums back.
 
@@ -124,10 +131,12 @@ final class CatalogDoctorTest extends CatalogTestCase {
 
 		$this->withLock = array( new LockService( $this->db, LockMode::GetLock ), 'withLock' );
 
+		$locales = new OneLocale();
+
 		$reconciler = new Reconciler(
 			$this->products,
 			$this->db,
-			new OneLocale(),
+			$locales,
 			new FrozenClock( $this->databaseNow() ),
 			new SequentialIdGenerator( 700000 )
 		);
@@ -139,10 +148,22 @@ final class CatalogDoctorTest extends CatalogTestCase {
 			array( new LockService( $this->db, LockMode::GetLock ), 'withLock' )
 		);
 
+		$events   = new RecordingEventPublisher( $this->db );
+		$delete   = new DeleteProduct( $this->products, $this->stock, $this->db, $events, new FrozenClock( $this->databaseNow() ) );
+		$bindings = new TranslationBindings(
+			$this->products,
+			$this->db,
+			$events,
+			new FrozenClock( $this->databaseNow() ),
+			$delete,
+			new Authorizer( new CapabilityDeclaration() )
+		);
+		$groups   = new TranslationGroups( $this->products, $locales, $bindings, $reconciler, $this->reporter() );
+
 		$this->catalogChecks = new CatalogChecks(
 			$this->products,
 			$this->stock,
-			$reconciler,
+			$groups,
 			$settler,
 			new FrozenClock( $this->databaseNow() ),
 			$this->db,
@@ -317,7 +338,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		$this->assertTrue( ( new DanglingBindingCheck( $this->products, $this->db, $this->withLock ) )->run()->passed );
 
 		// The post is unbound again: row 4 finds it and binds it to a new, incomplete product.
-		$unboundPost = ( new UnboundPostCheck( $this->products, $this->catalogChecksReconciler() ) )->run();
+		$unboundPost = ( new UnboundPostCheck( $this->products, $this->catalogChecksGroups() ) )->run();
 
 		$this->assertFalse( $unboundPost->passed );
 		$this->assertContains( $postId, $this->extractIds( $unboundPost->findings[0] ) );
@@ -333,7 +354,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 	public function test_row_4_unbound_post_repaired(): void {
 		$postId = $this->unboundPost();
 
-		$check  = new UnboundPostCheck( $this->products, $this->catalogChecksReconciler() );
+		$check  = new UnboundPostCheck( $this->products, $this->catalogChecksGroups() );
 		$result = $check->run();
 
 		$this->assertFalse( $result->passed );
@@ -348,7 +369,42 @@ final class CatalogDoctorTest extends CatalogTestCase {
 
 		$this->assertNotNull( $product );
 		$this->assertSame( GenerationState::Incomplete, $this->productRowState( (int) $product->id() ) );
-		$this->assertTrue( ( new UnboundPostCheck( $this->products, $this->catalogChecksReconciler() ) )->run()->passed );
+		$this->assertTrue( ( new UnboundPostCheck( $this->products, $this->catalogChecksGroups() ) )->run()->passed );
+	}
+
+	/**
+	 * Tests row 4's repair under a real multilingual setup: an unbound post in a product's group
+	 * joins that product, rather than getting a new, incomplete one of its own. A ruled departure
+	 * from a plain reconciler: TranslationGroups::reconcile() falls back to the reconciler only
+	 * when the group presents no product, so the other row 4 test, over OneLocale, is unchanged.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_row_4_an_unbound_post_in_a_group_joins_the_groups_product(): void {
+		$owner  = $this->storedProduct( 'SKU-ROW4GROUP' );
+		$german = $this->unboundPost();
+
+		$locales = new SeveralLocales( 'en_US', 'de_DE' );
+		$locales->assign( (int) $owner->sourcePostId(), Locale::of( 'en_US' ), null );
+		$locales->assign( $german, Locale::of( 'de_DE' ), (int) $owner->sourcePostId() );
+
+		$reconciler = new Reconciler( $this->products, $this->db, $locales, new FrozenClock( $this->databaseNow() ), new SequentialIdGenerator( 820000 ) );
+		$events     = new RecordingEventPublisher( $this->db );
+		$delete     = new DeleteProduct( $this->products, $this->stock, $this->db, $events, new FrozenClock( $this->databaseNow() ) );
+		$bindings   = new TranslationBindings( $this->products, $this->db, $events, new FrozenClock( $this->databaseNow() ), $delete, new Authorizer( new CapabilityDeclaration() ) );
+		$groups     = new TranslationGroups( $this->products, $locales, $bindings, $reconciler, $this->reporter() );
+
+		$check  = new UnboundPostCheck( $this->products, $groups );
+		$result = $check->run();
+
+		$this->assertFalse( $result->passed );
+
+		$repaired = $check->repair();
+
+		$this->assertCount( 1, $repaired->changes );
+		$this->assertSame( (int) $owner->id(), $this->products->findByPost( $german )?->id(), 'The unbound post was given a new product instead of joining its group\'s.' );
+
+		$this->assertTrue( ( new UnboundPostCheck( $this->products, $groups ) )->run()->passed, 'The second pass is not clean.' );
 	}
 
 	/**
@@ -1055,6 +1111,83 @@ final class CatalogDoctorTest extends CatalogTestCase {
 	}
 
 	/**
+	 * Tests that a second, non-source product_posts binding in another locale, written directly
+	 * the way the reference seed's own multi-locale storage fixture writes one, stays unreported
+	 * by the translation-group check while OneLocale is the locale port: OneLocale, like
+	 * SiteLocale, keeps no translation group at all, so PostLocales::translatesPosts() is false
+	 * and the check decides, from the port, that there is nothing to check.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_second_locale_binding_without_a_multilingual_plugin_stays_unreported(): void {
+		$product = $this->storedProduct( 'SKU-SECONDLOCALE' );
+		$second  = $this->unboundPost();
+
+		$this->products->addBinding(
+			(int) $product->id(),
+			new ProductPostBinding( $second, Locale::of( 'en_GB' ), new \DateTimeImmutable( '2026-09-25 10:00:00', new \DateTimeZone( 'UTC' ) ) )
+		);
+
+		$check = $this->checkNamed( TranslationGroupCheck::NAME );
+
+		$this->assertTrue( $check->run()->passed, 'A second-locale binding stored without a multilingual plugin must stay unreported.' );
+	}
+
+	/**
+	 * Tests that a stored locale that disagrees with a multilingual plugin's own language for the
+	 * post is still reported and repaired when the site currently publishes in one language: a
+	 * multilingual setup keeps translating posts, TranslationGroups::keepsGroups() true, whatever
+	 * PostLocales::languages() currently counts, unlike OneLocale and SiteLocale.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_one_language_multilingual_setup_still_reports_a_stale_locale(): void {
+		$product = $this->storedProduct( 'SKU-ONELANG' );
+		$post    = (int) $product->sourcePostId();
+
+		// A locale port that currently publishes in one language only, but is a real multilingual
+		// setup: it has never been told this post's language, so it falls back to its one
+		// published locale, en_GB — the stored binding still says en_US, the site's default when
+		// the product was first saved.
+		$locales    = new SeveralLocales( 'en_GB' );
+		$reconciler = new Reconciler( $this->products, $this->db, $locales, new FrozenClock( $this->databaseNow() ), new SequentialIdGenerator( 730000 ) );
+		$events     = new RecordingEventPublisher( $this->db );
+		$delete     = new DeleteProduct( $this->products, $this->stock, $this->db, $events, new FrozenClock( $this->databaseNow() ) );
+		$bindings   = new TranslationBindings( $this->products, $this->db, $events, new FrozenClock( $this->databaseNow() ), $delete, new Authorizer( new CapabilityDeclaration() ) );
+		$groups     = new TranslationGroups( $this->products, $locales, $bindings, $reconciler, $this->reporter() );
+
+		$check = new TranslationGroupCheck( $this->products, $groups, $this->db, $this->withLock );
+
+		$first = $check->run();
+
+		$this->assertFalse( $first->passed, 'A stored locale that disagrees must be reported even with one language.' );
+		$this->assertStringContainsString( (string) $post, implode( ' ', $first->findings ) );
+
+		$check->repair();
+
+		$this->assertSame( 'en_GB', $this->products->findByPost( $post )?->bindingOf( $post )?->locale()->toString() );
+		$this->assertTrue( $check->run()->passed, 'The second pass is not clean.' );
+	}
+
+	/**
+	 * Returns one of the catalog's checks by name, as CatalogChecks built it in set_up().
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $name The check's name.
+	 * @return \SEOCart\Platform\Cli\Doctor\Check The check.
+	 */
+	private function checkNamed( string $name ): \SEOCart\Platform\Cli\Doctor\Check {
+		foreach ( $this->catalogChecks->checks() as $check ) {
+			if ( $name === $check->name() ) {
+				return $check;
+			}
+		}
+
+		$this->fail( sprintf( 'No check named %s.', $name ) );
+	}
+
+	/**
 	 * Returns DoctorCommand's exit code for a set of results, the same rule it uses.
 	 *
 	 * @since 0.1.0
@@ -1098,6 +1231,23 @@ final class CatalogDoctorTest extends CatalogTestCase {
 			new FrozenClock( $this->databaseNow() ),
 			new SequentialIdGenerator( 800000 )
 		);
+	}
+
+	/**
+	 * Builds a fresh TranslationGroups over OneLocale, the way set_up() builds the one CatalogChecks uses.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return TranslationGroups The service.
+	 */
+	private function catalogChecksGroups(): TranslationGroups {
+		$locales    = new OneLocale();
+		$reconciler = new Reconciler( $this->products, $this->db, $locales, new FrozenClock( $this->databaseNow() ), new SequentialIdGenerator( 810000 ) );
+		$events     = new RecordingEventPublisher( $this->db );
+		$delete     = new DeleteProduct( $this->products, $this->stock, $this->db, $events, new FrozenClock( $this->databaseNow() ) );
+		$bindings   = new TranslationBindings( $this->products, $this->db, $events, new FrozenClock( $this->databaseNow() ), $delete, new Authorizer( new CapabilityDeclaration() ) );
+
+		return new TranslationGroups( $this->products, $locales, $bindings, $reconciler, $this->reporter() );
 	}
 
 	/**

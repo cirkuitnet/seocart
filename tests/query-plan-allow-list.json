@@ -20,6 +20,11 @@
 			"id": "ce19c78854a4",
 			"statement": "SELECT p.id FROM {prefix}seocart_products p LEFT JOIN {prefix}seocart_variants v ON v.product_id = p.id AND v.combination_hash = ? LEFT JOIN {prefix}seocart_variant_prices vp ON vp.variant_id = v.id AND vp.currency = ? WHERE p.generation_state = ? AND ( p.enabled_variant_count = ? OR v.id IS NULL OR vp.id IS NULL ) ORDER BY p.id LIMIT ?",
 			"reason": "Doctor's check for a complete product that is not actually whole starts from every complete product, found by the generation_state index, looking for zero enabled variants or a missing base-currency price; about half of a real catalog is complete, so the index legitimately hands back thousands of candidate rows before the LEFT JOINs narrow them. The default variant and its price are each then found by their own unique key. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+		},
+		{
+			"id": "873c08c669e1",
+			"statement": "SELECT post_id, product_id, locale FROM {prefix}seocart_product_posts WHERE post_id > ? ORDER BY post_id LIMIT ?",
+			"reason": "Doctor's translation-group check must ask the multilingual plugin about every bound post to find the ones its binding disagrees with, so it walks the whole product_posts table by its primary key, a page at a time; a cursor part-way through legitimately leaves thousands of rows ahead of it. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
 		}
 	]
 }

@@ -61,6 +61,21 @@ interface PostLocales {
 	public function translationsOf( int $postId ): array;
 
 	/**
+	 * Tells whether the setup keeps a translation group for a post at all.
+	 *
+	 * False for a store in one language (SiteLocale), whatever `languages()` names: a store may
+	 * publish in one language and still keep no group for any post, since there is nothing to
+	 * group a post with. True for a multilingual plugin's adapter, even on a site that currently
+	 * publishes in one language: a binding's stored locale can still disagree with the language
+	 * the plugin gives the post, and doctor's translation-group check must still catch that.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool True when translationsOf() answers a real group, not just a post alone.
+	 */
+	public function translatesPosts(): bool;
+
+	/**
 	 * Tells whether the site publishes in a locale.
 	 *
 	 * @since 0.1.0

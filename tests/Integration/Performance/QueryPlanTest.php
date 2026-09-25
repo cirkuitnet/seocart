@@ -356,6 +356,13 @@ final class QueryPlanTest extends DatabaseTestCase {
 		// the only place a real cursor reaches MysqlStockRepository::ITEM_VARIANT_IDS.
 		$stock->itemVariantIds( Dataset::Medium->products() - 1000, 20 );
 
+		// The translation-group check's own read of every bound post: its first page, no cursor,
+		// then a page part-way through the table. SeedVerifier's doctor run never reaches it,
+		// since it runs over SiteLocale, which keeps too few languages for the check to walk
+		// anything; this is the only place either shape of this statement is sent.
+		$products->boundPostBindings( 0, 500 );
+		$products->boundPostBindings( ReferenceSeed::FIRST_POST_ID + 7000, 500 );
+
 		$rollBack = new \RuntimeException( 'Rolled back on purpose: the reads that lock run in a transaction that changes nothing.' );
 
 		try {

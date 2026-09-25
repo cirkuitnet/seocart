@@ -80,6 +80,17 @@ final class SiteLocale implements PostLocales {
 	}
 
 	/**
+	 * Tells that a store in one language keeps no translation group.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool Always false.
+	 */
+	public function translatesPosts(): bool {
+		return false;
+	}
+
+	/**
 	 * Tells whether a locale is the site's.
 	 *
 	 * @since 0.1.0

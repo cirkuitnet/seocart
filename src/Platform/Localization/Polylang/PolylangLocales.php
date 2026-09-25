@@ -156,6 +156,17 @@ final class PolylangLocales implements PostLocales {
 	}
 
 	/**
+	 * Tells that Polylang keeps a translation group for every post it gives a language, whatever the site's current languages.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool Always true.
+	 */
+	public function translatesPosts(): bool {
+		return true;
+	}
+
+	/**
 	 * Tells whether a locale is one of Polylang's languages.
 	 *
 	 * @since 0.1.0

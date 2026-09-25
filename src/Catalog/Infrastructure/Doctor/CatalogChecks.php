@@ -12,7 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Catalog\Infrastructure\Doctor;
 
 use SEOCart\Catalog\Application\Doctor\ProductSettler;
-use SEOCart\Catalog\Application\Lifecycle\Reconciler;
+use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Cli\Doctor\Check;
@@ -23,7 +23,7 @@ use SEOCart\Support\Currency;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Builds the catalog's ten doctor checks, plus the reverse cross-module line (a stock item
+ * Builds the catalog's eleven doctor checks, plus the reverse cross-module line (a stock item
  * whose variant is gone), in a fixed order.
  *
  * Owns one fact: which checks the catalog contributes to doctor, and what each one is built from.
@@ -53,13 +53,13 @@ final class CatalogChecks {
 	private StockService $stock;
 
 	/**
-	 * Binds an unbound post to a new product.
+	 * Brings a post's bindings in step with its translation group, or gives an unbound one a product of its own.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var Reconciler
+	 * @var TranslationGroups
 	 */
-	private Reconciler $reconciler;
+	private TranslationGroups $groups;
 
 	/**
 	 * Re-settles one product, safely.
@@ -115,20 +115,20 @@ final class CatalogChecks {
 	 *
 	 * @param ProductRepository  $products     The products.
 	 * @param StockService       $stock        Reads and writes stock.
-	 * @param Reconciler         $reconciler   Binds an unbound post to a new product.
+	 * @param TranslationGroups  $groups       Brings a post's bindings in step with its translation group, or gives an unbound one a product of its own.
 	 * @param ProductSettler     $settler      Re-settles one product, safely.
 	 * @param Clock              $clock        Tells the time.
-	 * @param TransactionManager $transactions Runs the unit of work checks 3 and 6's repairs need.
+	 * @param TransactionManager $transactions Runs the unit of work checks 3, 6 and 11's repairs need.
 	 * @param callable           $baseCurrency Returns the store's base currency.
 	 * @param callable           $withLock     Takes a named lock, runs work while holding it and releases it.
 	 *
 	 * @phpstan-param callable(): Currency $baseCurrency
 	 * @phpstan-param callable(string, int, int, callable): mixed $withLock
 	 */
-	public function __construct( ProductRepository $products, StockService $stock, Reconciler $reconciler, ProductSettler $settler, Clock $clock, TransactionManager $transactions, callable $baseCurrency, callable $withLock ) {
+	public function __construct( ProductRepository $products, StockService $stock, TranslationGroups $groups, ProductSettler $settler, Clock $clock, TransactionManager $transactions, callable $baseCurrency, callable $withLock ) {
 		$this->products     = $products;
 		$this->stock        = $stock;
-		$this->reconciler   = $reconciler;
+		$this->groups       = $groups;
 		$this->settler      = $settler;
 		$this->clock        = $clock;
 		$this->transactions = $transactions;
@@ -148,7 +148,7 @@ final class CatalogChecks {
 			new NoBindingCheck( $this->products ),
 			new MissingSourceCheck( $this->products ),
 			new DanglingBindingCheck( $this->products, $this->transactions, $this->withLock ),
-			new UnboundPostCheck( $this->products, $this->reconciler ),
+			new UnboundPostCheck( $this->products, $this->groups ),
 			new IncompleteMismatchCheck( $this->products, $this->baseCurrency, $this->settler ),
 			new MissingStockItemCheck( $this->products, $this->stock, $this->transactions, $this->withLock ),
 			new StuckUpdatingCheck( $this->products, $this->clock, $this->settler ),
@@ -156,6 +156,7 @@ final class CatalogChecks {
 			new ForeignHooksCheck(),
 			new IncompleteCountCheck( $this->products ),
 			new OrphanStockItemCheck( $this->products, $this->stock ),
+			new TranslationGroupCheck( $this->products, $this->groups, $this->transactions, $this->withLock ),
 		);
 	}
 }

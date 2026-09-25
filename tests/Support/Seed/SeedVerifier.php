@@ -12,7 +12,10 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Support\Seed;
 
 use SEOCart\Catalog\Application\Doctor\ProductSettler;
+use SEOCart\Catalog\Application\Lifecycle\DeleteProduct;
 use SEOCart\Catalog\Application\Lifecycle\Reconciler;
+use SEOCart\Catalog\Application\Lifecycle\TranslationBindings;
+use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Infrastructure\Doctor\CatalogChecks;
@@ -135,6 +138,10 @@ final class SeedVerifier {
 		$locales    = new SiteLocale();
 		$reconciler = new Reconciler( $products, $db, $locales, new SystemClock(), new SequentialIdGenerator( 970000 ) );
 		$settler    = new ProductSettler( $products, $stock, $db, array( new LockService( $db, LockMode::GetLock ), 'withLock' ) );
+		$events     = new RecordingEventPublisher( $db );
+		$delete     = new DeleteProduct( $products, $stock, $db, $events, new SystemClock() );
+		$bindings   = new TranslationBindings( $products, $db, $events, new SystemClock(), $delete, new Authorizer( new CapabilityDeclaration() ) );
+		$groups     = new TranslationGroups( $products, $locales, $bindings, $reconciler, $report );
 
 		return new Doctor(
 			$db,
@@ -143,7 +150,7 @@ final class SeedVerifier {
 			new Outbox( $db ),
 			new ActionSchedulerQueue( $db, new LockService( $db, LockMode::Table ), new JobHandlers( JobHandlers::PRODUCTION, 'strval' ), new CorrelationId( new SequentialIdGenerator() ), $report ),
 			new StockProjectionCheck( new MysqlStockRepository( $db ) ),
-			...( new CatalogChecks( $products, $stock, $reconciler, $settler, new SystemClock(), $db, static fn(): Currency => Currency::of( $baseCurrency ), array( new LockService( $db, LockMode::GetLock ), 'withLock' ) ) )->checks()
+			...( new CatalogChecks( $products, $stock, $groups, $settler, new SystemClock(), $db, static fn(): Currency => Currency::of( $baseCurrency ), array( new LockService( $db, LockMode::GetLock ), 'withLock' ) ) )->checks()
 		);
 	}
 

@@ -16,10 +16,13 @@ use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\Event\ProductBindingPromoted;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
+use SEOCart\Catalog\Infrastructure\Doctor\TranslationGroupCheck;
 use SEOCart\Catalog\Interfaces\Rest\ProductCommerceSchema;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\ProductCapabilities;
+use SEOCart\Platform\Database\LockMode;
+use SEOCart\Platform\Database\LockService;
 use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Support\Error\CodedException;
@@ -571,6 +574,142 @@ final class MultilingualConformanceTest extends ProductRestTestCase {
 	 */
 	public function test_row_n_order_locale(): void {
 		$this->markTestSkipped( 'Out of scope: there are no orders yet.' );
+	}
+
+	/**
+	 * Tests doctor's translation-group check against Polylang: a binding a foreign write left
+	 * pointing at the wrong product is reported, --repair joins it to the post's real Polylang
+	 * group, and a second pass is clean.
+	 *
+	 * The foreign write is a real one: pll_save_post_translations() through the fixture's link(),
+	 * with the adapter's own set_object_terms listener removed first, exactly as a request that
+	 * loaded no product-post write, and so never armed the listener, would leave it — the gap
+	 * doctor's check is the safety net for.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_doctor_reports_and_repairs_a_binding_that_disagrees_with_polylangs_group(): void {
+		$source = $this->created( 'Shirt' );
+		$german = $this->inLanguage( 'de_DE', 'Hemd' );
+
+		remove_all_actions( 'set_object_terms' );
+
+		$this->plugin()->link( $source, $german );
+
+		$owner = (int) $this->productOf( $source );
+
+		$this->assertNotSame( $owner, $this->productOf( $german ), 'The listener heard the link though it was removed.' );
+
+		$check = $this->translationGroupCheck();
+		$first = $check->run();
+
+		$this->assertFalse( $first->passed );
+		$this->assertStringContainsString( (string) $german, implode( ' ', $first->findings ) );
+
+		$check->repair();
+
+		$this->assertSame( $owner, $this->productOf( $german ), 'The repair did not join the post to Polylang\'s real group.' );
+		$this->assertSame( 'de_DE', $this->products->findByPost( $german )?->bindingOf( $german )?->locale()->toString() );
+		$this->assertTrue( $this->translationGroupCheck()->run()->passed, 'The second pass is not clean.' );
+	}
+
+	/**
+	 * Tests that the repair drops this process's cached read of Polylang's group before it
+	 * re-checks a binding, so it never acts on a group another process changed while this one
+	 * still held a cached copy.
+	 *
+	 * Staleness needs a real second writer: the scan below reads the group once, through
+	 * Polylang's own functions, which this process's runtime cache then keeps; a second
+	 * connection then unlinks the translation directly in Polylang's own tables — the
+	 * `post_translations` term's serialized group, in `term_taxonomy.description`, and the
+	 * post's `term_relationships` row — never through Polylang's API, so nothing in this process
+	 * hears of the change or invalidates what it cached. The rows are read before they are
+	 * written, so this depends only on the stored shape, not on Polylang's internals.
+	 *
+	 * Plant: remove the `wp_cache_flush_runtime()` calls this test guards, and the assertion
+	 * below turns red — the repair joins the post using the group as this process cached it.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_repair_drops_its_cached_read_of_polylangs_group_before_reconciling(): void {
+		global $wpdb;
+
+		$source = $this->created( 'Shirt' );
+		$german = $this->inLanguage( 'de_DE', 'Hemd' );
+
+		remove_all_actions( 'set_object_terms' );
+
+		$this->plugin()->link( $source, $german );
+
+		$owner  = (int) $this->productOf( $source );
+		$before = $this->productOf( $german );
+
+		$this->assertNotSame( $owner, $before, 'The listener heard the link though it was removed.' );
+
+		// Step 1: the scan reads the group through Polylang's own functions, which this
+		// process's runtime cache then keeps.
+		$check = $this->translationGroupCheck();
+		$first = $check->run();
+
+		$this->assertFalse( $first->passed );
+
+		// Step 2: a second connection unlinks the translation directly in Polylang's own tables,
+		// bypassing every cache-invalidating hook a call through its API would fire.
+		$b  = $this->secondConnection();
+		$tt = $b->fetchRow(
+			sprintf(
+				"SELECT tt.term_taxonomy_id, tt.description FROM `%s` tr JOIN `%s` tt ON tt.term_taxonomy_id = tr.term_taxonomy_id WHERE tr.object_id = %d AND tt.taxonomy = 'post_translations'",
+				$wpdb->term_relationships,
+				$wpdb->term_taxonomy,
+				$german
+			)
+		);
+
+		$this->assertIsArray( $tt, 'Polylang did not group the translation under a post_translations term.' );
+
+		$group = unserialize( (string) $tt['description'], array( 'allowed_classes' => false ) );
+
+		$this->assertIsArray( $group, 'Polylang\'s group is not the serialized array of post ids by language this test expects.' );
+
+		$group = array_filter( $group, static fn( $memberId ): bool => (int) $memberId !== $german );
+
+		$b->query(
+			sprintf(
+				"UPDATE `%s` SET description = '%s' WHERE term_taxonomy_id = %d",
+				$wpdb->term_taxonomy,
+				addslashes( serialize( $group ) ),
+				(int) $tt['term_taxonomy_id']
+			)
+		);
+		$b->query(
+			sprintf(
+				'DELETE FROM `%s` WHERE object_id = %d AND term_taxonomy_id = %d',
+				$wpdb->term_relationships,
+				$german,
+				(int) $tt['term_taxonomy_id']
+			)
+		);
+
+		// Step 3: the repair, in this process, must not act on the group as it cached it.
+		$check->repair();
+
+		$this->assertSame( $before, $this->productOf( $german ), 'The repair joined the post using a cached, stale read of Polylang\'s group.' );
+	}
+
+	/**
+	 * Builds doctor's translation-group check as CatalogChecks builds it, over the test's services and the real Polylang adapter.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return TranslationGroupCheck The check.
+	 */
+	private function translationGroupCheck(): TranslationGroupCheck {
+		return new TranslationGroupCheck(
+			$this->services->products,
+			$this->services->groups,
+			$this->db,
+			array( new LockService( $this->db, LockMode::GetLock ), 'withLock' )
+		);
 	}
 
 	/**

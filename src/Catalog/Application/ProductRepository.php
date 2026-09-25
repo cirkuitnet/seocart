@@ -400,6 +400,18 @@ interface ProductRepository {
 	public function lockedPostTypeAndStatus( int $postId ): ?array;
 
 	/**
+	 * Lists `product_posts` bindings, every bound post with the product it presents and the
+	 * locale its binding names (doctor check 11).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId Only bindings whose post is above this id.
+	 * @param int $limit   The most to list.
+	 * @return list<array{post_id: int, product_id: int, locale: string}> The bindings, ascending by post id.
+	 */
+	public function boundPostBindings( int $afterId, int $limit ): array;
+
+	/**
 	 * Lists products at their active generation with zero enabled variants, or whose default
 	 * variant has no price in the base currency (doctor check 5).
 	 *

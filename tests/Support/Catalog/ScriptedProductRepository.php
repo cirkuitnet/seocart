@@ -411,6 +411,21 @@ final class ScriptedProductRepository implements ProductRepository {
 	 *
 	 * @throws \LogicException Always.
 	 *
+	 * @param int $afterId Unused.
+	 * @param int $limit   Unused.
+	 * @return never
+	 */
+	public function boundPostBindings( int $afterId, int $limit ): array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
 	 * @param string $baseCurrency Unused.
 	 * @param int    $afterId      Unused.
 	 * @param int    $limit        Unused.

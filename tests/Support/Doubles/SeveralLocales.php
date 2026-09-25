@@ -56,6 +56,16 @@ final class SeveralLocales implements PostLocales {
 	private array $groups = array();
 
 	/**
+	 * The posts the setup currently gives no language, as a real multilingual plugin can leave one
+	 * once it had a language: forgetLanguage() puts a post here.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<int, true>
+	 */
+	private array $noLanguage = array();
+
+	/**
 	 * The watcher, once one watches.
 	 *
 	 * @since 0.1.0
@@ -85,14 +95,18 @@ final class SeveralLocales implements PostLocales {
 	}
 
 	/**
-	 * Returns the post's locale, or the default one.
+	 * Returns the post's locale, or the default one; null once forgetLanguage() has been called for it.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param int $postId The post.
-	 * @return Locale The locale.
+	 * @return Locale|null The locale, or null.
 	 */
-	public function localeOf( int $postId ): Locale {
+	public function localeOf( int $postId ): ?Locale {
+		if ( isset( $this->noLanguage[ $postId ] ) ) {
+			return null;
+		}
+
 		return $this->locales[ $postId ] ?? $this->published[0];
 	}
 
@@ -116,15 +130,36 @@ final class SeveralLocales implements PostLocales {
 	 * @return array<int, Locale> The locales, by post.
 	 */
 	public function translationsOf( int $postId ): array {
-		$group = array( $postId => $this->localeOf( $postId ) );
+		$own = $this->localeOf( $postId );
+
+		if ( null === $own ) {
+			return array();
+		}
+
+		$group = array( $postId => $own );
 
 		foreach ( $this->groups[ $postId ] ?? array() as $member ) {
-			$group[ $member ] = $this->localeOf( $member );
+			$memberLocale = $this->localeOf( $member );
+
+			if ( null !== $memberLocale ) {
+				$group[ $member ] = $memberLocale;
+			}
 		}
 
 		ksort( $group );
 
 		return $group;
+	}
+
+	/**
+	 * Tells that this double, like a multilingual plugin's adapter, keeps a translation group for every post, however many languages are published in.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool Always true.
+	 */
+	public function translatesPosts(): bool {
+		return true;
 	}
 
 	/**
@@ -177,6 +212,27 @@ final class SeveralLocales implements PostLocales {
 		$this->assigned[] = array( $postId, $locale->toString(), $translationOf );
 
 		$this->place( $postId, $locale, $translationOf );
+	}
+
+	/**
+	 * Takes the language a post had away, as a multilingual plugin can leave a translation once
+	 * its own language is deleted: it keeps no group, and localeOf() answers null for it, without
+	 * telling the watcher.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId The post.
+	 */
+	public function forgetLanguage( int $postId ): void {
+		foreach ( $this->groups[ $postId ] ?? array() as $member ) {
+			if ( $member !== $postId ) {
+				$this->groups[ $member ] = array_values( array_diff( $this->groups[ $member ] ?? array(), array( $postId ) ) );
+			}
+		}
+
+		unset( $this->groups[ $postId ], $this->locales[ $postId ] );
+
+		$this->noLanguage[ $postId ] = true;
 	}
 
 	/**

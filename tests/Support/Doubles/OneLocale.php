@@ -99,6 +99,17 @@ final class OneLocale implements PostLocales {
 	}
 
 	/**
+	 * Tells that this double, like SiteLocale, keeps no translation group.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool Always false.
+	 */
+	public function translatesPosts(): bool {
+		return false;
+	}
+
+	/**
 	 * Tells whether a locale is the store's.
 	 *
 	 * @since 0.1.0
