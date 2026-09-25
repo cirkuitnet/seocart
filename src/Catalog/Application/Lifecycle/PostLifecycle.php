@@ -612,29 +612,19 @@ final class PostLifecycle implements TranslationWatcher {
 	 *
 	 * A write that changes the post's status into the trash or out of it is not such a write,
 	 * whichever path makes it, the plugin's own REST delete included: it is a step of the post's
-	 * lifecycle, which statusChanged() handles, and it is neither reported nor, under the other
-	 * reading below, able to mark the product `incomplete`. A trashed product keeps its rows whole,
-	 * so it is sold again as it was once its post is published again. A write to a post that stays
-	 * in the trash is an editorial write like any other.
+	 * lifecycle, which statusChanged() handles, and it is neither reported nor able to mark the
+	 * product `incomplete`. A trashed product keeps its rows whole, so it is sold again as it was
+	 * once its post is published again. A write to a post that stays in the trash is an editorial
+	 * write like any other.
 	 *
 	 * Every other such write comes from Quick Edit, bulk edit, `wp post update`, a restored
-	 * revision, an autosave of a draft by its author, or another plugin. Two readings of what it
-	 * means exist, and this method is the whole of the choice between them:
-	 *
-	 * - The product is left as it is (this method). Every one of those writes is the same
-	 *   wp_update_post() of the post's own fields. None of them can write a commerce row, because
-	 *   only the plugin's save writes those, and the one post field a sale depends on, the status,
-	 *   is read by the sellability rule on every path, so the product follows it anyway. A revision
-	 *   restore then restores editorial content only, an autosave never touches a commerce row, and
-	 *   a title fixed in Quick Edit leaves a live product on sale.
-	 * - The product is marked `incomplete`, as any product post the plugin did not write is: one
-	 *   conditional statement on the product's marker in place of the report. The product then
-	 *   cannot be sold until it is saved through the plugin again, after every such write,
-	 *   including a revision restore and a draft's autosave.
-	 *
-	 * Taking the other reading is a change to this method alone, and to the tests that pin the
-	 * first: a Quick Edit leaves a complete product on sale, and an autosave or a revision restore
-	 * changes no catalog row.
+	 * revision, an autosave of a draft by its author, or another plugin, and leaves the product as
+	 * it is. Every one of those writes is the same wp_update_post() of the post's own fields. None
+	 * of them can write a commerce row, because only the plugin's save writes those, and the one
+	 * post field a sale depends on, the status, is read by the sellability rule on every path, so
+	 * the product follows it anyway. A revision restore then restores editorial content only, an
+	 * autosave never touches a commerce row, and a title fixed in Quick Edit leaves a live product
+	 * on sale.
 	 *
 	 * @since 0.1.0
 	 *

@@ -221,15 +221,18 @@ final class SiteHealth {
 	 * @return array{label: string, status: string, badge: array{label: string, color: string}, description: string, actions: string, test: string} The result.
 	 */
 	public function jobsTest(): array {
-		$findings = self::jobFindings( ( $this->jobs )()->report() );
+		$report   = ( $this->jobs )()->report();
+		$findings = self::jobFindings( $report );
 
 		if ( array() === $findings ) {
-			return self::result(
-				self::JOBS_TEST,
-				self::GOOD,
-				__( 'SEOCart\'s background jobs are running', 'seocart' ),
-				'<p>' . esc_html__( 'A runner started one of SEOCart\'s background jobs within the last hour, and none has failed for good.', 'seocart' ) . '</p>'
-			);
+			$label  = null === $report->secondsSinceCheckIn
+				? __( 'SEOCart\'s background jobs haven\'t needed a runner yet', 'seocart' )
+				: __( 'SEOCart\'s background jobs are running', 'seocart' );
+			$detail = null === $report->secondsSinceCheckIn
+				? __( 'No SEOCart background job has waited long enough to need a runner yet, and none has failed.', 'seocart' )
+				: __( 'A runner started one of SEOCart\'s background jobs within the last hour, and none has failed for good.', 'seocart' );
+
+			return self::result( self::JOBS_TEST, self::GOOD, $label, '<p>' . esc_html( $detail ) . '</p>' );
 		}
 
 		$description = '';
@@ -268,24 +271,27 @@ final class SiteHealth {
 			);
 		}
 
-		if ( $report->runnerStale() ) {
-			$findings[] = array(
-				'status' => self::RECOMMENDED,
-				'label'  => __( 'SEOCart\'s background jobs are not running', 'seocart' ),
-				'detail' => __( 'No runner has started one of SEOCart\'s background jobs in the last hour. WP-Cron runs them when the site has visitors; where it does not run reliably, have the server\'s cron run wp seocart jobs run every minute.', 'seocart' ),
-			);
-		}
+		// A store another plugin chose holds none of the plugin's jobs, so the check-in and the failures, read from the library's own tables, say nothing.
+		if ( null === $report->customStore ) {
+			if ( $report->runnerMissing() ) {
+				$findings[] = array(
+					'status' => self::RECOMMENDED,
+					'label'  => __( 'SEOCart\'s background jobs are not running', 'seocart' ),
+					'detail' => __( 'No runner has started one of SEOCart\'s background jobs in the last hour. WP-Cron runs them when the site has visitors; where it does not run reliably, have the server\'s cron run wp seocart jobs run every minute.', 'seocart' ),
+				);
+			}
 
-		if ( $report->failed > 0 ) {
-			$findings[] = array(
-				'status' => self::RECOMMENDED,
-				'label'  => __( 'Some of SEOCart\'s background jobs failed', 'seocart' ),
-				'detail' => sprintf(
-					/* translators: %d: A number of background jobs. */
-					_n( '%d background job failed on its last attempt. Run wp seocart jobs status to see which kind, and why.', '%d background jobs failed on their last attempt. Run wp seocart jobs status to see which kinds, and why.', $report->failed, 'seocart' ),
-					$report->failed
-				),
-			);
+			if ( $report->failed > 0 ) {
+				$findings[] = array(
+					'status' => self::RECOMMENDED,
+					'label'  => __( 'Some of SEOCart\'s background jobs failed', 'seocart' ),
+					'detail' => sprintf(
+						/* translators: %d: A number of background jobs. */
+						_n( '%d background job failed on its last attempt. Run wp seocart jobs status to see which kind, and why.', '%d background jobs failed on their last attempt. Run wp seocart jobs status to see which kinds, and why.', $report->failed, 'seocart' ),
+						$report->failed
+					),
+				);
+			}
 		}
 
 		if ( null !== $report->customStore ) {

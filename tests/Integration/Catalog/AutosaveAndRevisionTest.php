@@ -30,9 +30,9 @@ use SEOCart\Tests\Support\Catalog\ProductRestTestCase;
  * - In ProductPostsController, override prepare_item_for_database() to save the request's
  *   `seocart` object for the post it names, as a controller that wrote commerce data while
  *   preparing the post would: every autosave test sees a changed checksum.
- * - In PostLifecycle::boundPostWrittenElsewhere(), mark the post's product `updating`, as the
- *   other reading of a write by another path would mark it `incomplete`: the draft's autosave and
- *   the revision restore change a catalog row.
+ * - In PostLifecycle::boundPostWrittenElsewhere(), mark the post's product `updating`, as a rule
+ *   that marked such a write's product `incomplete` would: the draft's autosave and the revision
+ *   restore change a catalog row.
  *
  * @since 0.1.0
  */

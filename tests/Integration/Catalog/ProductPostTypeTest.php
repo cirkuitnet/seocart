@@ -36,6 +36,8 @@ use SEOCart\Tests\Support\KernelTestCase;
  *   rules survive deactivation, and test_deactivating_flushes_the_product_rules_away fails.
  * - In Lifecycle::flushRewriteRulesWithoutProducts(), remove the unregister_post_type() call: the
  *   flush writes the product rules again, and the same test fails.
+ * - In ProductPostType::arguments(), drop `with_front => false` from the `rewrite` argument: under
+ *   a structure with a front, test_permalinks_use_the_products_base_with_and_without_a_front fails.
  *
  * @since 0.1.0
  */
@@ -57,7 +59,7 @@ final class ProductPostTypeTest extends KernelTestCase {
 	 *
 	 * @var string
 	 */
-	private const PERMALINK_RULE = 'seocart_product/([^/]+)(?:/([0-9]+))?/?$';
+	private const PERMALINK_RULE = 'products/([^/]+)(?:/([0-9]+))?/?$';
 
 	/**
 	 * The rule WordPress writes for the product archive.
@@ -66,7 +68,7 @@ final class ProductPostTypeTest extends KernelTestCase {
 	 *
 	 * @var string
 	 */
-	private const ARCHIVE_RULE = 'seocart_product/?$';
+	private const ARCHIVE_RULE = 'products/?$';
 
 	/**
 	 * The stored rows of the rewrite options before the test, to put back; null for an option that did not exist.
@@ -159,7 +161,7 @@ final class ProductPostTypeTest extends KernelTestCase {
 		$this->assertTrue( $type->map_meta_cap );
 		$this->assertFalse( $type->can_export );
 		$this->assertFalse( $type->delete_with_user );
-		$this->assertTrue( $type->has_archive );
+		$this->assertSame( 'products', $type->has_archive, 'The archive base.' );
 		$this->assertSame( 'Products', $type->labels->name );
 		$this->assertSame( 'Product', $type->labels->singular_name );
 
@@ -173,6 +175,40 @@ final class ProductPostTypeTest extends KernelTestCase {
 
 		$this->assertFalse( post_type_supports( ProductCapabilities::POST_TYPE, 'custom-fields' ), 'No custom fields: commerce data never goes to post meta.' );
 		$this->assertSame( ProductCapabilities::registrationArguments(), array_intersect_key( ProductPostType::arguments(), ProductCapabilities::registrationArguments() ), 'The capability arguments are merged in unchanged.' );
+	}
+
+	/**
+	 * Tests that a product's permalink and its archive link use the `products` base, under a structure with a front and under one without.
+	 *
+	 * `with_front => false` keeps the base off any front the site's structure gives every other
+	 * post type, such as `/blog/`.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_permalinks_use_the_products_base_with_and_without_a_front(): void {
+		global $wp_rewrite;
+
+		foreach ( array( self::STRUCTURE, '/blog/%postname%/' ) as $structure ) {
+			$wp_rewrite->set_permalink_structure( $structure );
+			unregister_post_type( ProductCapabilities::POST_TYPE );
+			ProductPostType::register();
+
+			$postId = wp_insert_post(
+				array(
+					'post_type'   => ProductCapabilities::POST_TYPE,
+					'post_status' => 'publish',
+					'post_title'  => 'A product',
+					'post_name'   => 'a-product',
+				),
+				true
+			);
+
+			$this->assertIsInt( $postId, "Creating the product under {$structure}." );
+			$this->assertSame( home_url( '/products/a-product/' ), get_permalink( $postId ), "The permalink under {$structure}." );
+			$this->assertSame( home_url( '/products/' ), get_post_type_archive_link( ProductCapabilities::POST_TYPE ), "The archive link under {$structure}." );
+
+			wp_delete_post( $postId, true );
+		}
 	}
 
 	/**

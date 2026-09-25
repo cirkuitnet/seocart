@@ -36,6 +36,10 @@ use SEOCart\Tests\Support\KernelTestCase;
  * - In SiteHealth::schemaTest(), return the good result whatever the gate says: a site that
  *   refuses changes passes the schema test.
  * - In SiteHealth::jobFindings(), leave out the stale runner: jobs that nothing runs pass.
+ * - In SiteHealth::jobsTest(), give the state where nothing has needed a runner yet the "are
+ *   running" label too: its headline is no longer truthful for that state.
+ * - In SiteHealth::jobFindings(), drop the `null === $report->customStore` gate: a custom
+ *   store's stale runner and failed counts are reported as real again.
  *
  * @since 0.1.0
  */
@@ -113,18 +117,20 @@ final class SiteHealthTest extends KernelTestCase {
 	}
 
 	/**
-	 * Returns jobs reports and the status the jobs test must give each.
+	 * Returns jobs reports, the status and label the jobs test must give each, and a phrase its description must contain.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array<string, array{0: JobsReport, 1: string, 2: string}> The report, the status and the start of the label.
+	 * @return array<string, array{0: JobsReport, 1: string, 2: string, 3: string}> The report, the status, the label and a phrase from the description.
 	 */
 	public static function reports(): array {
 		return array(
-			'a runner checked in, nothing failed' => array( new JobsReport( 0, 3, 0, 0, null, 60, array(), '4.2.0', 'SEOCart', array( '4.2.0' ) ), 'good', 'SEOCart\'s background jobs are running' ),
-			'no runner ever checked in'           => array( new JobsReport( 1, 3, 0, 0, 30, null, array(), '4.2.0', 'SEOCart', array( '4.2.0' ) ), 'recommended', 'SEOCart\'s background jobs are not running' ),
-			'jobs failed for good'                => array( new JobsReport( 0, 3, 0, 2, null, 60, array(), '4.2.0', 'SEOCart', array( '4.2.0' ) ), 'recommended', 'Some of SEOCart\'s background jobs failed' ),
-			'the library in control is too old'   => array( new JobsReport( 0, 3, 0, 0, null, null, array(), '3.5.0', 'plugin old-shop', array( '4.2.0', '3.5.0' ) ), 'critical', 'SEOCart\'s background jobs cannot run reliably' ),
+			'a runner checked in, nothing failed'         => array( new JobsReport( 0, 3, 0, 0, null, 60, array(), '4.2.0', 'SEOCart', array( '4.2.0' ) ), 'good', 'SEOCart\'s background jobs are running', 'A runner started one of SEOCart&#039;s background jobs within the last hour' ),
+			'no runner ever checked in, nothing due long' => array( new JobsReport( 1, 3, 0, 0, 30, null, array(), '4.2.0', 'SEOCart', array( '4.2.0' ) ), 'good', 'SEOCart\'s background jobs haven\'t needed a runner yet', 'No SEOCart background job has waited long enough to need a runner yet' ),
+			'no runner ever checked in, a job overdue past the window' => array( new JobsReport( 1, 3, 0, 0, JobsReport::STALE_AFTER_SECONDS + 600, null, array(), '4.2.0', 'SEOCart', array( '4.2.0' ) ), 'recommended', 'SEOCart\'s background jobs are not running', 'No runner has started one of SEOCart&#039;s background jobs in the last hour.' ),
+			'jobs failed for good'                        => array( new JobsReport( 0, 3, 0, 2, null, 60, array(), '4.2.0', 'SEOCart', array( '4.2.0' ) ), 'recommended', 'Some of SEOCart\'s background jobs failed', '2 background jobs failed on their last attempt.' ),
+			'the library in control is too old'           => array( new JobsReport( 0, 3, 0, 0, null, null, array(), '3.5.0', 'plugin old-shop', array( '4.2.0', '3.5.0' ) ), 'critical', 'SEOCart\'s background jobs cannot run reliably', 'SEOCart needs ' . JobsReport::MINIMUM_VERSION . ' or newer.' ),
+			'a custom store hides the counts that would otherwise fail' => array( new JobsReport( 0, 3, 0, 2, null, JobsReport::STALE_AFTER_SECONDS + 600, array(), '4.2.0', 'SEOCart', array( '4.2.0' ), 'Acme_Custom_Store' ), 'recommended', 'SEOCart cannot see its background jobs', 'so SEOCart can neither count its jobs nor run them from its own triggers.' ),
 		);
 	}
 
@@ -135,11 +141,12 @@ final class SiteHealthTest extends KernelTestCase {
 	 *
 	 * @dataProvider reports
 	 *
-	 * @param JobsReport $report The jobs report.
-	 * @param string     $status The status the test must give.
-	 * @param string     $label  The label the test must give.
+	 * @param JobsReport $report              The jobs report.
+	 * @param string     $status              The status the test must give.
+	 * @param string     $label               The label the test must give.
+	 * @param string     $descriptionContains A phrase the description must contain.
 	 */
-	public function test_the_jobs_test_judges_the_jobs_report( JobsReport $report, string $status, string $label ): void {
+	public function test_the_jobs_test_judges_the_jobs_report( JobsReport $report, string $status, string $label, string $descriptionContains ): void {
 		$container = $this->container();
 		$health    = new SiteHealth(
 			$container->get( SchemaGate::class ),
@@ -153,6 +160,7 @@ final class SiteHealthTest extends KernelTestCase {
 		$this->assertSame( $status, $result['status'] );
 		$this->assertSame( $label, $result['label'] );
 		$this->assertSame( SiteHealth::JOBS_TEST, $result['test'] );
+		$this->assertStringContainsString( $descriptionContains, $result['description'] );
 	}
 
 	/**

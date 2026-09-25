@@ -22,8 +22,10 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: when doctor calls the runner unhealthy. The jobs module's report says what
  * the state is; this check says which states need a person:
  *
- * - no runner has started one of the plugin's jobs within JobsReport::STALE_AFTER_SECONDS, or
- *   none ever did: nothing runs the jobs, so stock releases, mail and retention wait;
+ * - a runner checked in before but has gone stale, or a job has stood due for longer than
+ *   JobsReport::STALE_AFTER_SECONDS and no runner has ever checked in: nothing runs the jobs, so
+ *   stock releases, mail and retention wait. A site where no runner has ever checked in but no
+ *   job has yet stood due that long passes: nothing has needed a runner;
  * - the copy of Action Scheduler in control is older than JobsReport::MINIMUM_VERSION, or none
  *   is loaded;
  * - another plugin gave Action Scheduler a store of its own: SEOCart's own triggers then run
@@ -105,7 +107,9 @@ final class RunnerCheck implements Check {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return CheckResult Passed when a runner checked in lately, the runtime is supported, the store is the library's own, and no job failed.
+	 * @return CheckResult Passed when a runner checked in lately, or none ever has but nothing has
+	 *                     been due long enough to need one; the runtime is supported, the store is
+	 *                     the library's own, and no job failed.
 	 */
 	public function run(): CheckResult {
 		$report = $this->jobs->report();
@@ -113,20 +117,34 @@ final class RunnerCheck implements Check {
 		// On another plugin's store the check-in and the failures, read from the library's own tables, say nothing.
 		$findings = null === $report->customStore ? array_merge( self::runtime( $report ), self::checkIn( $report ), self::failures( $report ) ) : self::runtime( $report );
 
-		if ( array() === $findings ) {
+		if ( array() !== $findings ) {
+			return CheckResult::fail( self::NAME, 'Background jobs need attention.', $findings );
+		}
+
+		if ( null === $report->secondsSinceCheckIn ) {
+			// checkIn() found nothing wrong although no runner ever checked in: nothing has waited long enough to need one.
 			return CheckResult::pass(
 				self::NAME,
 				sprintf(
-					'Action Scheduler %1$s from %2$s is in control; a runner started a job %3$d seconds ago; %4$d due, none failed.',
+					'No runner has started one of SEOCart\'s jobs yet, and none has waited longer than %1$d minutes; %2$d due. Action Scheduler %3$s from %4$s is in control.',
+					intdiv( JobsReport::STALE_AFTER_SECONDS, 60 ),
+					$report->due,
 					CheckResult::identifier( $report->runtimeVersion ),
-					self::source( $report->runtimeSource ),
-					(int) $report->secondsSinceCheckIn,
-					$report->due
+					self::source( $report->runtimeSource )
 				)
 			);
 		}
 
-		return CheckResult::fail( self::NAME, 'Background jobs need attention.', $findings );
+		return CheckResult::pass(
+			self::NAME,
+			sprintf(
+				'Action Scheduler %1$s from %2$s is in control; a runner started a job %3$d seconds ago; %4$d due, none failed.',
+				CheckResult::identifier( $report->runtimeVersion ),
+				self::source( $report->runtimeSource ),
+				(int) $report->secondsSinceCheckIn,
+				$report->due
+			)
+		);
 	}
 
 	/**
@@ -162,7 +180,7 @@ final class RunnerCheck implements Check {
 	 * @return list<string> The finding, or none.
 	 */
 	private static function checkIn( JobsReport $report ): array {
-		if ( ! $report->runnerStale() ) {
+		if ( ! $report->runnerMissing() ) {
 			return array();
 		}
 

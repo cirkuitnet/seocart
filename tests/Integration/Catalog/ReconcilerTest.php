@@ -41,8 +41,8 @@ use SEOCart\Tests\Support\KernelContainer;
  * - In Modules::catalogLifecycleHooks(), remove the `wp_after_insert_post` callback: no product
  *   row is created, and the first test fails.
  * - In PostLifecycle::postWritten(), reconcile an auto-draft too: the auto-draft test fails.
- * - In PostLifecycle::boundPostWrittenElsewhere(), mark the post's product `updating` (as the
- *   other reading of the rule would mark it `incomplete`): the test of a write to a bound post
+ * - In PostLifecycle::boundPostWrittenElsewhere(), mark the post's product `updating` (as a rule
+ *   that marked such a write's product `incomplete` would): the test of a write to a bound post
  *   fails, and so do the autosave and revision tests of the product endpoint.
  * - In PostLifecycle::boundPostWrittenElsewhere(), drop the return for a step into or out of
  *   the trash: the trash test fails, the trash reported as a write by another path.

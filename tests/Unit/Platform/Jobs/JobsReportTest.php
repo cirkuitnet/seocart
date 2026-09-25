@@ -37,6 +37,23 @@ final class JobsReportTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a runner is missing only once something needs one: a stale runner that checked
+	 * in before, or no check-in ever and a job overdue past the stale window.
+	 *
+	 * Planted violation: `>=` instead of `>` in runnerMissing(); a job due for exactly the
+	 * window, with no runner ever checked in, is reported missing one.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_runner_is_missing_only_once_something_needs_one(): void {
+		$this->assertFalse( self::dueReport( null, null )->runnerMissing(), 'Nothing has ever been due, and no runner ever checked in.' );
+		$this->assertFalse( self::dueReport( JobsReport::STALE_AFTER_SECONDS, null )->runnerMissing(), 'Due for exactly the window, but no longer, and no runner ever checked in.' );
+		$this->assertTrue( self::dueReport( JobsReport::STALE_AFTER_SECONDS + 1, null )->runnerMissing(), 'Due for longer than the window, and no runner ever checked in.' );
+		$this->assertFalse( self::dueReport( null, JobsReport::STALE_AFTER_SECONDS )->runnerMissing(), 'A runner checked in within the window.' );
+		$this->assertTrue( self::dueReport( null, JobsReport::STALE_AFTER_SECONDS + 1 )->runnerMissing(), 'A runner checked in before, but has gone stale.' );
+	}
+
+	/**
 	 * Tests the minimum-version rule.
 	 *
 	 * @since 0.1.0
@@ -59,5 +76,18 @@ final class JobsReportTest extends TestCase {
 	 */
 	private static function report( ?int $sinceCheckIn, string $version ): JobsReport {
 		return new JobsReport( 0, 0, 0, 0, null, $sinceCheckIn, array(), $version, 'SEOCart', array( $version ) );
+	}
+
+	/**
+	 * Builds a report with the oldest due job's age and the last check-in under test.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int|null $oldestDueSeconds How long the oldest due job has waited.
+	 * @param int|null $sinceCheckIn     Seconds since the last check-in.
+	 * @return JobsReport The report.
+	 */
+	private static function dueReport( ?int $oldestDueSeconds, ?int $sinceCheckIn ): JobsReport {
+		return new JobsReport( 0, 0, 0, 0, $oldestDueSeconds, $sinceCheckIn, array(), '4.2.0', 'SEOCart', array( '4.2.0' ) );
 	}
 }

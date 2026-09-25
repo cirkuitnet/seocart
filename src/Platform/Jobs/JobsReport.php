@@ -221,4 +221,20 @@ final readonly class JobsReport {
 	public function runnerStale( int $afterSeconds = self::STALE_AFTER_SECONDS ): bool {
 		return null === $this->secondsSinceCheckIn || $this->secondsSinceCheckIn > $afterSeconds;
 	}
+
+	/**
+	 * Tells whether background work needs a runner that has not come: the runner is stale, and
+	 * either one checked in before or a due job has waited longer than the stale window.
+	 *
+	 * A runner that never checked in is not missing by itself: nothing has needed one yet while no
+	 * job has stood due for longer than STALE_AFTER_SECONDS. Doctor and Site Health both judge the
+	 * runner by this one fact.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool True when nothing runs the jobs and something needs it to.
+	 */
+	public function runnerMissing(): bool {
+		return $this->runnerStale() && ( null !== $this->secondsSinceCheckIn || ( null !== $this->oldestDueSeconds && $this->oldestDueSeconds > self::STALE_AFTER_SECONDS ) );
+	}
 }

@@ -17,8 +17,10 @@ use SEOCart\Platform\Database\LockMode;
 use SEOCart\Platform\Database\LockService;
 use SEOCart\Platform\Jobs\ActionSchedulerQueue;
 use SEOCart\Platform\Jobs\Job;
+use SEOCart\Platform\Jobs\JobEnvelope;
 use SEOCart\Platform\Jobs\JobHandlers;
 use SEOCart\Platform\Jobs\JobQueue;
+use SEOCart\Platform\Jobs\JobRunner;
 use SEOCart\Platform\Jobs\JobsReport;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Platform\Logging\LogRetentionJob;
@@ -27,14 +29,16 @@ use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\Jobs\CustomStoreStub;
 use SEOCart\Tests\Support\Jobs\PluginActions;
 
+// phpcs:disable WordPress.DB.DirectDatabaseQuery -- due() plants a job's scheduled time directly, as a stored action would have it.
+
 /**
  * The runner check reads the jobs module's report and fails on each state that needs a person.
  *
- * The queue is the real one over the real Action Scheduler, so a check-in, a stale runner,
- * failed jobs and a custom store are planted in the library itself. The version of the copy in
- * control cannot be planted in a loaded library, so for it, and for a copy that is not loaded,
- * the check reads a report built by hand. Every plant is removed and the check passes again.
- * No finding carries a last error or a path.
+ * The queue is the real one over the real Action Scheduler, so a check-in, a due job, a stale
+ * runner, failed jobs and a custom store are planted in the library itself. The version of the
+ * copy in control cannot be planted in a loaded library, so for it, and for a copy that is not
+ * loaded, the check reads a report built by hand. Every plant is removed and the check passes
+ * again. No finding carries a last error or a path.
  *
  * @since 0.1.0
  */
@@ -101,18 +105,77 @@ final class RunnerCheckTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Tests that a runner that never checked in, or not for too long, fails, and passes again once one checks in.
+	 * Tests that a brand-new site, with nothing yet due, passes: nothing has needed a runner.
 	 *
-	 * Planted violation: in RunnerCheck::checkIn(), return nothing (both runners pass).
+	 * A job due but not yet stale does not make the message false either: the count still shows
+	 * it, and the check still passes.
+	 *
+	 * Planted violation: in JobsReport::runnerMissing(), return runnerStale() alone, dropping the
+	 * overdue clause: a brand-new site with nothing due fails again.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_a_runner_that_has_not_checked_in_fails(): void {
-		$never = $this->check();
+	public function test_nothing_due_yet_passes(): void {
+		$result = $this->check();
 
-		$this->assertFalse( $never->passed );
-		$this->assertSame( array( 'No runner has ever started one of SEOCart\'s jobs. Check that WP-Cron runs, or run `wp seocart jobs run` from the system cron.' ), $never->findings );
+		$this->assertTrue( $result->passed, implode( "\n", $result->findings ) );
+		$this->assertMatchesRegularExpression( '/^No runner has started one of SEOCart\'s jobs yet, and none has waited longer than 60 minutes; 0 due\. Action Scheduler [0-9.]+ from .+ is in control\.$/', $result->summary );
 
+		self::due( 60 );
+
+		$withDue = $this->check();
+
+		$this->assertTrue( $withDue->passed, implode( "\n", $withDue->findings ) );
+		$this->assertStringContainsString( '; 1 due. ', $withDue->summary, 'A job due but not yet stale still shows in the count, and still passes.' );
+	}
+
+	/**
+	 * Tests that a job overdue for longer than the stale window, with no runner ever checked in, still fails.
+	 *
+	 * A brand-new site is not exempt once a job has waited past the stale window: something does
+	 * need a runner, and none has ever come.
+	 *
+	 * Planted violation: in JobsReport::runnerMissing(), return false unconditionally: a new site
+	 * with a job overdue past the window passes.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_overdue_job_with_no_runner_fails(): void {
+		self::due( JobsReport::STALE_AFTER_SECONDS + 600 );
+
+		$result = $this->check();
+
+		$this->assertFalse( $result->passed );
+		$this->assertSame( array( 'No runner has ever started one of SEOCart\'s jobs. Check that WP-Cron runs, or run `wp seocart jobs run` from the system cron.' ), $result->findings );
+	}
+
+	/**
+	 * Tests the overdue boundary: a job due for exactly the stale window still passes, and one due a second longer fails.
+	 *
+	 * Planted violation: in JobsReport::runnerMissing(), use `>=` in place of `>`: a job due for
+	 * exactly the window is reported as needing a runner.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_overdue_boundary_is_exclusive(): void {
+		$atBoundary = $this->checkOf( self::dueReport( JobsReport::STALE_AFTER_SECONDS ) );
+
+		$this->assertTrue( $atBoundary->passed, implode( "\n", $atBoundary->findings ) );
+
+		$pastBoundary = $this->checkOf( self::dueReport( JobsReport::STALE_AFTER_SECONDS + 1 ) );
+
+		$this->assertFalse( $pastBoundary->passed );
+	}
+
+	/**
+	 * Tests that a runner that checked in once and then went stale fails, and passes again once one checks in.
+	 *
+	 * Planted violation: in RunnerCheck::checkIn(), return array() unconditionally (a stale
+	 * runner passes).
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_stale_runner_fails(): void {
 		$id = PluginActions::checkIn( JobsReport::STALE_AFTER_SECONDS + 600 );
 
 		$stale = $this->check();
@@ -345,5 +408,35 @@ final class RunnerCheckTest extends DatabaseTestCase {
 	 */
 	private static function report( string $version, string $source ): JobsReport {
 		return new JobsReport( 0, 3, 0, 0, null, 60, array(), $version, $source, '' === $version ? array() : array( $version ) );
+	}
+
+	/**
+	 * Builds a healthy report but for its oldest due job's age, with no runner ever checked in.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $oldestDueSeconds How long the oldest due job has waited.
+	 * @return JobsReport The report.
+	 */
+	private static function dueReport( int $oldestDueSeconds ): JobsReport {
+		return new JobsReport( 1, 3, 0, 0, $oldestDueSeconds, null, array(), JobsReport::MINIMUM_VERSION, 'SEOCart', array( JobsReport::MINIMUM_VERSION ) );
+	}
+
+	/**
+	 * Plants a pending job whose scheduled time has already passed, over the real Action Scheduler.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $secondsAgo How long ago it became due.
+	 * @return int The job's action id.
+	 */
+	private static function due( int $secondsAgo ): int {
+		global $wpdb;
+
+		$id = (int) as_enqueue_async_action( JobRunner::HOOK, ( new JobEnvelope( new Job( LogRetentionJob::name() ) ) )->toArguments(), JobQueue::GROUP );
+
+		$wpdb->query( $wpdb->prepare( 'UPDATE %i SET scheduled_date_gmt = UTC_TIMESTAMP() - INTERVAL %d SECOND, scheduled_date_local = UTC_TIMESTAMP() - INTERVAL %d SECOND WHERE action_id = %d', $wpdb->prefix . 'actionscheduler_actions', $secondsAgo, $secondsAgo, $id ) );
+
+		return $id;
 	}
 }

@@ -83,7 +83,11 @@ final class ProductPostType {
 				'rest_controller_class' => ProductPostsController::class,
 				'menu_icon'             => 'dashicons-products',
 				'supports'              => self::SUPPORTS,
-				'has_archive'           => true,
+				'has_archive'           => 'products',
+				'rewrite'               => array(
+					'slug'       => 'products',
+					'with_front' => false,
+				),
 				'can_export'            => false,
 				'delete_with_user'      => false,
 			),
