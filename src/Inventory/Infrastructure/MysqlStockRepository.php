@@ -155,6 +155,29 @@ final class MysqlStockRepository implements StockRepository {
 	public const EXPIRED_VARIANTS = 'SELECT DISTINCT variant_id FROM {stock_holds} WHERE expires_at <= UTC_TIMESTAMP() AND reclaim_token IS NULL AND variant_id > %d ORDER BY variant_id LIMIT %d';
 
 	/**
+	 * A page of variant ids that have a stock item, ascending from a variant id above a cursor.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const ITEM_VARIANT_IDS = 'SELECT variant_id FROM {stock_items} WHERE variant_id > %d ORDER BY variant_id LIMIT %d';
+
+	/**
+	 * The same page, from the very first variant id.
+	 *
+	 * Its own statement, not ITEM_VARIANT_IDS with a 0: MySQL costs `variant_id > 0` as a
+	 * primary-key range and estimates roughly half of a very large table for it, defeating the
+	 * cheap, LIMIT-bounded plan a first page should get for a comparison every row satisfies
+	 * anyway. itemVariantIds() sends this one for that page; every caller does so today.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const ITEM_VARIANT_IDS_FROM_START = 'SELECT variant_id FROM {stock_items} ORDER BY variant_id LIMIT %d';
+
+	/**
 	 * The adjustment: adds to on_hand only when the result is not negative.
 	 *
 	 * @since 0.1.0
@@ -526,6 +549,23 @@ final class MysqlStockRepository implements StockRepository {
 	 */
 	public function expiredVariants( int $after, int $limit ): array {
 		return array_map( static fn( array $row ): int => (int) $row['variant_id'], $this->rows( self::EXPIRED_VARIANTS, $after, $limit ) );
+	}
+
+	/**
+	 * Lists the variant ids that have a stock item, whatever its counters.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $after Only items with a higher variant id.
+	 * @param int $limit The most items to list.
+	 * @return list<int> The variant ids, ascending.
+	 */
+	public function itemVariantIds( int $after, int $limit ): array {
+		if ( $after > 0 ) {
+			return array_map( static fn( array $row ): int => (int) $row['variant_id'], $this->rows( self::ITEM_VARIANT_IDS, $after, $limit ) );
+		}
+
+		return array_map( static fn( array $row ): int => (int) $row['variant_id'], $this->rows( self::ITEM_VARIANT_IDS_FROM_START, $limit ) );
 	}
 
 	/**

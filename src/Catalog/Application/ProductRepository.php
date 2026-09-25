@@ -227,4 +227,196 @@ interface ProductRepository {
 	 *                                none for an id no variant has.
 	 */
 	public function sellabilityFacts( int ...$variantIds ): array;
+
+	// -------------------------------------------------------------------------------------------
+	// Doctor's reads and conditional writes. Every list is a page, ascending by id, bounded
+	// by $limit; a caller pages with the last id it saw as the next $afterId.
+	// -------------------------------------------------------------------------------------------
+
+	/**
+	 * Lists products with no `product_posts` row at all (doctor check 1).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId Only products above this id.
+	 * @param int $limit   The most to list.
+	 * @return list<int> The product ids, ascending.
+	 */
+	public function unboundProductIds( int $afterId, int $limit ): array;
+
+	/**
+	 * Lists products whose source binding is invalid (doctor check 2): `source_post_id` is NULL,
+	 * names no `product_posts` row of that product, or names a post that is missing or is not a
+	 * product post.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId Only products above this id.
+	 * @param int $limit   The most to list.
+	 * @return list<int> The product ids, ascending.
+	 */
+	public function invalidSourceBindings( int $afterId, int $limit ): array;
+
+	/**
+	 * Lists `product_posts` rows whose post no longer exists (doctor check 3), the row named by
+	 * its product's `source_post_id` excluded: that one is check 2's to report.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $limit The most to list.
+	 * @return list<array{post_id: int, product_id: int}> The bindings.
+	 */
+	public function danglingBindings( int $limit ): array;
+
+	/**
+	 * Deletes one dangling binding (doctor --repair, check 3): re-states, in the statement itself,
+	 * that the post is still missing and that the row is still not the product's source binding.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId    The binding's post.
+	 * @param int $productId The binding's product.
+	 * @return bool True when the row was deleted; false when it no longer matched (the post came
+	 *              back, or it had become the source binding) — nothing to do, not an error.
+	 */
+	public function deleteDanglingBinding( int $postId, int $productId ): bool;
+
+	/**
+	 * Lists product posts (not `auto-draft`) with no `product_posts` row (doctor check 4).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId Only posts above this id.
+	 * @param int $limit   The most to list.
+	 * @return list<int> The post ids, ascending.
+	 */
+	public function unboundPostIds( int $afterId, int $limit ): array;
+
+	/**
+	 * Locks a post's row and returns its type and status, current: never through WordPress's
+	 * post cache, which a concurrent write can leave stale. Must run inside a transaction.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId The post.
+	 * @return array{type: string, status: string}|null The post's type and status, or null when the row is gone.
+	 */
+	public function lockedPostTypeAndStatus( int $postId ): ?array;
+
+	/**
+	 * Lists products at their active generation with zero enabled variants, or whose default
+	 * variant has no price in the base currency (doctor check 5).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $baseCurrency The store's base currency code.
+	 * @param int    $afterId      Only products above this id.
+	 * @param int    $limit        The most to list.
+	 * @return list<int> The product ids, ascending.
+	 */
+	public function incompleteMismatchIds( string $baseCurrency, int $afterId, int $limit ): array;
+
+	/**
+	 * Lists products left `updating` for longer than the given threshold (doctor check 7).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $before The threshold instant (UTC, `Y-m-d H:i:s.u`): only products marked
+	 *                       before it.
+	 * @param int    $limit  The most to list.
+	 * @return list<array{product_id: int, updated_at: string}> The products, with the exact
+	 *                                                           `updated_at` a repair must match.
+	 */
+	public function stuckUpdating( string $before, int $limit ): array;
+
+	/**
+	 * Lists `variants` rows whose product no longer exists (doctor check 8).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $limit The most to list.
+	 * @return list<array{variant_id: int, product_id: int}> The orphans.
+	 */
+	public function orphanVariants( int $limit ): array;
+
+	/**
+	 * Lists `variant_prices` rows whose variant no longer exists (doctor check 8).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $limit The most to list.
+	 * @return list<array{price_id: int, variant_id: int}> The orphans.
+	 */
+	public function orphanPrices( int $limit ): array;
+
+	/**
+	 * Counts products marked `incomplete` (doctor check 10).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return int The count.
+	 */
+	public function incompleteCount(): int;
+
+	/**
+	 * Lists every variant's id whose product still exists, whatever its generation (doctor check
+	 * 6). A variant whose product is gone is row 8's, reported there and never here: giving it a
+	 * stock item would not make it any less orphaned.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId Only variants above this id.
+	 * @param int $limit   The most to list.
+	 * @return list<int> The variant ids, ascending.
+	 */
+	public function variantIds( int $afterId, int $limit ): array;
+
+	/**
+	 * Filters a list of variant ids to the ones that still have a `variants` row, whatever their
+	 * product (the reverse line: a stock item whose variant is gone tests the variant alone).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param array $variantIds The ids to test.
+	 * @return list<int> The ones that exist.
+	 *
+	 * @phpstan-param list<int> $variantIds
+	 */
+	public function variantsExisting( array $variantIds ): array;
+
+	/**
+	 * Reloads a product under its row lock, for a repair that must re-check the defect before it
+	 * writes: locking reads of the product row, its bindings and its default variant with its
+	 * base-currency price — the same shape load() returns, plus the exact stored marker and
+	 * `updated_at` the repair's compare-and-set must match.
+	 *
+	 * Run inside the caller's transaction, after the caller holds the product's named lock.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open.
+	 *
+	 * @param int $productId The product's id.
+	 * @return array{product: Product, state: GenerationState, updatedAt: string}|null The reload,
+	 *              or null when the product no longer exists.
+	 */
+	public function reloadUnderLock( int $productId ): ?array;
+
+	/**
+	 * Settles a product's marker, only while it still has exactly the state (and, when given, the
+	 * exact `updated_at`) the caller read: one conditional `UPDATE`, doctor --repair's compare-
+	 * and-set for checks 5 and 7. A save that changed the product since the read wins; 0 rows
+	 * changed is "nothing to do", not an error.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int             $productId       The product's id.
+	 * @param GenerationState $from            The marker the repair read.
+	 * @param GenerationState $to              The marker settle() computed.
+	 * @param string|null     $updatedAtMatch  Optional. When given, also requires this exact
+	 *                                         `updated_at` (check 7's extra guard against a save
+	 *                                         that re-marked the product in the meantime).
+	 * @return bool True when the row still matched and was changed.
+	 */
+	public function settleIfUnchanged( int $productId, GenerationState $from, GenerationState $to, ?string $updatedAtMatch = null ): bool;
 }

@@ -16,6 +16,7 @@ use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Kernel\GateState;
@@ -76,15 +77,6 @@ final class PostLifecycle {
 	 * @var string
 	 */
 	private const TRASH = 'trash';
-
-	/**
-	 * The status of the post WordPress creates when the editor opens for a new one.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private const AUTO_DRAFT = 'auto-draft';
 
 	/**
 	 * Loads the product a post is bound to.
@@ -208,7 +200,7 @@ final class PostLifecycle {
 	 * @param string $was    Optional. The status it had before the write; empty for a new post. Default empty.
 	 */
 	public function postWritten( int $postId, string $status, bool $update, string $was = '' ): void {
-		if ( self::AUTO_DRAFT === $status || $this->posts->isFiringAfterInsert( $postId ) ) {
+		if ( ProductCapabilities::AUTO_DRAFT === $status || $this->posts->isFiringAfterInsert( $postId ) ) {
 			return;
 		}
 

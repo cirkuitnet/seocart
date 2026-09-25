@@ -444,14 +444,46 @@ final class DoctorTest extends DatabaseTestCase {
 	}
 
 	/**
+	 * Tests `--repair` with `--residue`: a usage error, nothing run.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_repair_with_residue_is_a_usage_error(): void {
+		$this->assertSame( DoctorCommand::EXIT_USAGE, $this->doctor( true, true ) );
+		$this->assertStringContainsString( '--repair and --residue', implode( "\n", $this->printed ) );
+	}
+
+	/**
+	 * Tests `--repair` on a clean site: two passes, nothing to repair, still exits 0.
+	 *
+	 * None of the platform's own checks are Repairable, so this proves --repair's sequencing
+	 * (first pass, a repair section, second pass) without changing behaviour for a check that has
+	 * nothing to fix: output and the exit code are exactly what a plain `doctor` run gives, plus
+	 * the two extra sections.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_repair_on_a_clean_site_runs_both_passes_and_reports_nothing_to_repair(): void {
+		$this->assertSame( DoctorCommand::EXIT_OK, $this->doctor( false, true ) );
+
+		$output = implode( "\n", $this->printed );
+
+		$this->assertStringContainsString( 'First pass:', $output );
+		$this->assertStringContainsString( 'Nothing to repair.', $output );
+		$this->assertStringContainsString( 'Second pass:', $output );
+		$this->assertSame( 1, substr_count( $output, 'All 5 checks passed.' ), 'The verdict is the second, final pass\'s alone; the first pass is diagnostic only.' );
+	}
+
+	/**
 	 * Runs doctor and records what it printed.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param bool $residue Optional. Whether to pass `--residue`. Default false.
+	 * @param bool $repair  Optional. Whether to pass `--repair`. Default false.
 	 * @return int The exit code.
 	 */
-	private function doctor( bool $residue = false ): int {
+	private function doctor( bool $residue = false, bool $repair = false ): int {
 		$this->printed = array();
 
 		$command = new DoctorCommand(
@@ -461,7 +493,17 @@ final class DoctorTest extends DatabaseTestCase {
 			}
 		);
 
-		return $command->run( array(), $residue ? array( 'residue' => true ) : array() );
+		$options = array();
+
+		if ( $residue ) {
+			$options['residue'] = true;
+		}
+
+		if ( $repair ) {
+			$options['repair'] = true;
+		}
+
+		return $command->run( array(), $options );
 	}
 
 	/**

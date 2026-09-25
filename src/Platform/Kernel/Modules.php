@@ -16,6 +16,7 @@ defined( 'ABSPATH' ) || exit;
 
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\Operations;
+use SEOCart\Catalog\Application\Doctor\ProductSettler;
 use SEOCart\Catalog\Application\Lifecycle\DeleteProduct;
 use SEOCart\Catalog\Application\Lifecycle\DuplicateProduct;
 use SEOCart\Catalog\Application\Lifecycle\PostLifecycle;
@@ -27,6 +28,7 @@ use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\Event\ProductDeleted;
 use SEOCart\Catalog\Domain\Event\ProductSaved;
+use SEOCart\Catalog\Infrastructure\Doctor\CatalogChecks;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Catalog\Infrastructure\ProductPostType;
 use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
@@ -409,7 +411,18 @@ final class Modules {
 		);
 		$container->bind( Reporter::class, static fn( Container $c ): Reporter => new Reporter( static fn(): Logger => $c->get( Logger::class ), $c->get( CorrelationId::class ), $c->get( FallbackLog::class ) ) );
 		$container->bind( LogRetention::class, static fn( Container $c ): LogRetention => new LogRetention( $c->get( Database::class ) ) );
-		$container->bind( Doctor::class, static fn( Container $c ): Doctor => new Doctor( $c->get( Database::class ), $c->get( DataRegistry::class ), $c->get( Migrator::class ), $c->get( Outbox::class ), $c->get( JobQueue::class ), $c->get( StockProjectionCheck::class ) ) );
+		$container->bind(
+			Doctor::class,
+			static fn( Container $c ): Doctor => new Doctor(
+				$c->get( Database::class ),
+				$c->get( DataRegistry::class ),
+				$c->get( Migrator::class ),
+				$c->get( Outbox::class ),
+				$c->get( JobQueue::class ),
+				$c->get( StockProjectionCheck::class ),
+				...$c->get( CatalogChecks::class )->checks()
+			)
+		);
 		$container->bind( DoctorCommand::class, static fn( Container $c ): DoctorCommand => new DoctorCommand( $c->get( Doctor::class ), self::commandOutput() ) );
 	}
 
@@ -742,6 +755,23 @@ final class Modules {
 		$container->bind(
 			Reconciler::class,
 			static fn( Container $c ): Reconciler => new Reconciler( $c->get( ProductRepository::class ), $c->get( TransactionManager::class ), $c->get( PostLocales::class ), $c->get( Clock::class ), $c->get( IdGenerator::class ) )
+		);
+		$container->bind(
+			ProductSettler::class,
+			static fn( Container $c ): ProductSettler => new ProductSettler( $c->get( ProductRepository::class ), $c->get( StockService::class ), $c->get( TransactionManager::class ), array( $c->get( LockService::class ), 'withLock' ) )
+		);
+		$container->bind(
+			CatalogChecks::class,
+			static fn( Container $c ): CatalogChecks => new CatalogChecks(
+				$c->get( ProductRepository::class ),
+				$c->get( StockService::class ),
+				$c->get( Reconciler::class ),
+				$c->get( ProductSettler::class ),
+				$c->get( Clock::class ),
+				$c->get( TransactionManager::class ),
+				self::baseCurrency( $c ),
+				array( $c->get( LockService::class ), 'withLock' )
+			)
 		);
 		$container->bind(
 			DeleteProduct::class,

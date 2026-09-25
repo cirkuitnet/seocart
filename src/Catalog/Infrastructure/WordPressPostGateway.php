@@ -288,33 +288,19 @@ final class WordPressPostGateway implements PostGateway {
 	 * @phpstan-param list<string> $own
 	 */
 	private static function foreignCallback( mixed $callback, array $own ): ?string {
-		try {
-			if ( $callback instanceof \Closure || ( is_string( $callback ) && ! str_contains( $callback, '::' ) ) ) {
-				$reflection = new \ReflectionFunction( $callback );
-				$name       = $callback instanceof \Closure ? 'closure' : $callback;
-			} elseif ( is_array( $callback ) && isset( $callback[0], $callback[1] ) ) {
-				$reflection = new \ReflectionMethod( $callback[0], (string) $callback[1] );
-				$name       = ( is_object( $callback[0] ) ? get_class( $callback[0] ) . '->' : $callback[0] . '::' ) . $callback[1];
-			} elseif ( is_string( $callback ) ) {
-				$reflection = new \ReflectionMethod( $callback );
-				$name       = $callback;
-			} elseif ( is_object( $callback ) ) {
-				$reflection = new \ReflectionMethod( $callback, '__invoke' );
-				$name       = get_class( $callback ) . '->__invoke';
-			} else {
-				return null;
-			}
-		} catch ( \ReflectionException $unknown ) {
+		$reflected = CallbackReflection::of( $callback );
+
+		if ( null === $reflected ) {
 			return null;
 		}
 
-		$file = $reflection->getFileName();
+		$file = $reflected['reflection']->getFileName();
 
 		if ( false === $file ) {
 			return null;
 		}
 
-		$file = self::realPath( $file );
+		$file = CallbackReflection::realPath( $file );
 
 		foreach ( $own as $path ) {
 			if ( str_ends_with( $path, '/' ) ? str_starts_with( $file, $path ) : $file === $path ) {
@@ -322,7 +308,7 @@ final class WordPressPostGateway implements PostGateway {
 			}
 		}
 
-		return sprintf( '%s in %s:%d', $name, plugin_basename( $file ), (int) $reflection->getStartLine() );
+		return sprintf( '%s in %s:%d', $reflected['name'], plugin_basename( $file ), (int) $reflected['reflection']->getStartLine() );
 	}
 
 	/**
@@ -336,10 +322,7 @@ final class WordPressPostGateway implements PostGateway {
 	 * @return string The path.
 	 */
 	private static function realPath( string $path ): string {
-		$real       = realpath( $path );
-		$normalized = wp_normalize_path( false === $real ? $path : $real );
-
-		return str_ends_with( $path, '/' ) ? rtrim( $normalized, '/' ) . '/' : $normalized;
+		return CallbackReflection::realPath( $path );
 	}
 
 	/**

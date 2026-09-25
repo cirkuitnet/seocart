@@ -53,6 +53,18 @@ final class ProductCapabilities {
 	public const POST_TYPE = 'seocart_product';
 
 	/**
+	 * The status WordPress gives a post before its first real save.
+	 *
+	 * Shared by every place the catalog tells such a post apart from a real one: it is not yet a
+	 * product post a person means to keep, whichever of the catalog's own writes or checks asks.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const AUTO_DRAFT = 'auto-draft';
+
+	/**
 	 * The singular capability base: meta capabilities are named after it.
 	 *
 	 * @since 0.1.0

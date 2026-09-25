@@ -16,9 +16,10 @@ defined( 'ABSPATH' ) || exit;
 /**
  * The typed outcome of a check: passed or failed, one sentence, and a line per finding.
  *
- * Owns one fact: what a check reports. A failed check lists each problem it found on a line
- * of its own; a passed one lists none. The text names tables, indexes, locks, migrations and
- * counts, never a stored value.
+ * Owns one fact: what a check reports. A failed check lists each problem it found on a line of
+ * its own; a passed one lists none, except a check whose own contract calls its finding drift
+ * rather than a failure, which still lists it while passing. The text names tables, indexes,
+ * locks, migrations and counts, never a stored value.
  *
  * @since 0.1.0
  */
@@ -61,7 +62,9 @@ final readonly class CheckResult {
 	public string $summary;
 
 	/**
-	 * One line per problem found; empty when the check passed.
+	 * One line per problem found; empty for most passed checks, but not always: a check whose
+	 * contract says its finding is drift, never a failure on its own, still lists what it found
+	 * here even though it passed.
 	 *
 	 * @since 0.1.0
 	 *
@@ -89,16 +92,19 @@ final readonly class CheckResult {
 	}
 
 	/**
-	 * Records a check that found nothing wrong.
+	 * Records a check that passed: found nothing wrong, or found only what its own contract
+	 * reports as drift rather than a failure.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string $check   The name of the check.
-	 * @param string $summary What was checked.
+	 * @param string   $check    The name of the check.
+	 * @param string   $summary  What was checked.
+	 * @param string[] $findings Optional. One line per drift finding, for a check whose contract
+	 *                           says never to fail on its own. Default none.
 	 * @return self The outcome.
 	 */
-	public static function pass( string $check, string $summary ): self {
-		return new self( $check, true, $summary, array() );
+	public static function pass( string $check, string $summary, array $findings = array() ): self {
+		return new self( $check, true, $summary, array_values( $findings ) );
 	}
 
 	/**

@@ -13,6 +13,7 @@ namespace SEOCart\Catalog\Application\Lifecycle;
 
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Domain\Product;
+use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Exception\DuplicateKey;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
@@ -109,8 +110,15 @@ final class Reconciler {
 	/**
 	 * Binds a product post to a new `incomplete` product, unless it is bound already.
 	 *
-	 * Runs in the caller's transaction, or in its own. Whether the post is bound is read in the
-	 * same transaction as the writes, so the read and the insert pass the same schema check.
+	 * Runs in the caller's transaction, or in its own. Whether the post is bound, and the post's
+	 * own existence, type and status, are all read inside that same transaction, never trusted from
+	 * before it opened: a caller may hold a post id from a scan made moments, or minutes, earlier,
+	 * and by the time this runs the post can have been deleted, changed type, or gone back to
+	 * `auto-draft` (never a product to reconcile). The type and status come from a locking read of
+	 * the post's own row, never from WordPress's post cache, which a concurrent write can leave
+	 * holding a post already gone from the table. `trash` stays eligible: the lifecycle still
+	 * binds a newly trashed product post. Reading them here, not before, is what makes every
+	 * caller — the lifecycle hook and doctor's repair alike — safe against that gap.
 	 *
 	 * @since 0.1.0
 	 *
@@ -119,12 +127,24 @@ final class Reconciler {
 	 *                    moment is not an error.
 	 *
 	 * @param int $postId The product post.
-	 * @return bool True when the post was bound now; false when it was bound already, or another writer bound it first.
+	 * @return bool True when the post was bound now; false when it was bound already, another
+	 *              writer bound it first, or the post no longer exists, isn't a product post, or is
+	 *              `auto-draft`.
 	 */
 	public function reconcile( int $postId ): bool {
 		try {
 			return $this->transactions->transaction(
 				function () use ( $postId ): bool {
+					$post = $this->products->lockedPostTypeAndStatus( $postId );
+
+					if ( null === $post || ProductCapabilities::AUTO_DRAFT === $post['status'] ) {
+						return false;
+					}
+
+					if ( ProductCapabilities::POST_TYPE !== $post['type'] ) {
+						return false;
+					}
+
 					if ( null !== $this->products->findByPost( $postId ) ) {
 						return false;
 					}

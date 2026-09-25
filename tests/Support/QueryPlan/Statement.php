@@ -168,6 +168,17 @@ final class Statement {
 	}
 
 	/**
+	 * Tells whether the statement is a SELECT.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool True for a SELECT.
+	 */
+	public function isSelect(): bool {
+		return 1 === preg_match( '/^[\s(]*SELECT\b/i', $this->sql );
+	}
+
+	/**
 	 * Tells whether the statement is a SELECT that names a table of the plugin.
 	 *
 	 * @since 0.1.0
@@ -175,7 +186,7 @@ final class Statement {
 	 * @return bool True for a plugin SELECT.
 	 */
 	public function isPluginSelect(): bool {
-		if ( 1 !== preg_match( '/^[\s(]*SELECT\b/i', $this->sql ) ) {
+		if ( ! $this->isSelect() ) {
 			return false;
 		}
 

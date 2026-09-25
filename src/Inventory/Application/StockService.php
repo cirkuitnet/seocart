@@ -495,6 +495,20 @@ final class StockService {
 	}
 
 	/**
+	 * Lists the variant ids that have a stock item, whatever its counters: Catalog's doctor reads
+	 * this to find a stock item whose variant is gone, without reading Inventory's tables itself.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterVariantId Only items with a higher variant id: where the previous page ended, or 0.
+	 * @param int $limit          The most items to list.
+	 * @return list<int> The variant ids, ascending.
+	 */
+	public function itemVariantIds( int $afterVariantId, int $limit ): array {
+		return $this->stock->itemVariantIds( max( 0, $afterVariantId ), max( 1, $limit ) );
+	}
+
+	/**
 	 * Holds the normalised lines inside the transaction.
 	 *
 	 * @since 0.1.0

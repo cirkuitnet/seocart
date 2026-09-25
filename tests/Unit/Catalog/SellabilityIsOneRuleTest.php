@@ -105,7 +105,7 @@ final class SellabilityIsOneRuleTest extends TestCase {
 	 *
 	 * @var list<string>
 	 */
-	private const MARKER_WRITES = array( 'insertProduct', 'markUpdating', 'remark', 'leaveUpdating', 'restoreMark' );
+	private const MARKER_WRITES = array( 'insertProduct', 'markUpdating', 'remark', 'leaveUpdating', 'restoreMark', 'settleIfUnchanged' );
 
 	/**
 	 * The repository's reads that select the marker.
@@ -115,6 +115,17 @@ final class SellabilityIsOneRuleTest extends TestCase {
 	 * @var list<string>
 	 */
 	private const MARKER_READS = array( 'sellabilityFacts', 'load' );
+
+	/**
+	 * Doctor's read-only statements that compare the marker with a value, never deciding
+	 * sellability: they list or count products by their structural state (stuck, mismatched,
+	 * incomplete), for a report, not a sale. The verdict stays sellabilityFacts()'s alone.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<string>
+	 */
+	private const MARKER_FILTERS = array( 'incompleteCount', 'incompleteMismatchIds', 'stuckUpdating' );
 
 	/**
 	 * The files that may name a verdict: the rule and the enum.
@@ -167,14 +178,14 @@ final class SellabilityIsOneRuleTest extends TestCase {
 
 			$naming[] = $method;
 
-			if ( ! in_array( $method, self::MARKER_WRITES, true ) && array() !== array_filter( $named, array( self::class, 'comparesTheMarker' ) ) ) {
+			if ( ! in_array( $method, self::MARKER_WRITES, true ) && ! in_array( $method, self::MARKER_FILTERS, true ) && array() !== array_filter( $named, array( self::class, 'comparesTheMarker' ) ) ) {
 				$tests[] = $method;
 			}
 		}
 
 		sort( $naming );
 
-		$expected = array_merge( self::MARKER_WRITES, self::MARKER_READS );
+		$expected = array_merge( self::MARKER_WRITES, self::MARKER_READS, self::MARKER_FILTERS );
 
 		sort( $expected );
 

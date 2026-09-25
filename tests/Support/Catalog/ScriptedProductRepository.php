@@ -315,6 +315,228 @@ final class ScriptedProductRepository implements ProductRepository {
 	}
 
 	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $afterId Unused.
+	 * @param int $limit   Unused.
+	 * @return never
+	 */
+	public function unboundProductIds( int $afterId, int $limit ): array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $afterId Unused.
+	 * @param int $limit   Unused.
+	 * @return never
+	 */
+	public function invalidSourceBindings( int $afterId, int $limit ): array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $limit Unused.
+	 * @return never
+	 */
+	public function danglingBindings( int $limit ): array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $postId    Unused.
+	 * @param int $productId Unused.
+	 * @return never
+	 */
+	public function deleteDanglingBinding( int $postId, int $productId ): bool {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $afterId Unused.
+	 * @param int $limit   Unused.
+	 * @return never
+	 */
+	public function unboundPostIds( int $afterId, int $limit ): array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $postId Unused.
+	 * @return never
+	 */
+	public function lockedPostTypeAndStatus( int $postId ): ?array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param string $baseCurrency Unused.
+	 * @param int    $afterId      Unused.
+	 * @param int    $limit        Unused.
+	 * @return never
+	 */
+	public function incompleteMismatchIds( string $baseCurrency, int $afterId, int $limit ): array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param string $before Unused.
+	 * @param int    $limit  Unused.
+	 * @return never
+	 */
+	public function stuckUpdating( string $before, int $limit ): array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $limit Unused.
+	 * @return never
+	 */
+	public function orphanVariants( int $limit ): array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $limit Unused.
+	 * @return never
+	 */
+	public function orphanPrices( int $limit ): array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @return never
+	 */
+	public function incompleteCount(): int {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $afterId Unused.
+	 * @param int $limit   Unused.
+	 * @return never
+	 */
+	public function variantIds( int $afterId, int $limit ): array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param array $variantIds Unused.
+	 * @return never
+	 *
+	 * @phpstan-param list<int> $variantIds
+	 */
+	public function variantsExisting( array $variantIds ): array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $productId Unused.
+	 * @return never
+	 */
+	public function reloadUnderLock( int $productId ): ?array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int             $productId      Unused.
+	 * @param GenerationState $from           Unused.
+	 * @param GenerationState $to             Unused.
+	 * @param string|null     $updatedAtMatch Unused.
+	 * @return never
+	 */
+	public function settleIfUnchanged( int $productId, GenerationState $from, GenerationState $to, ?string $updatedAtMatch = null ): bool {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
 	 * Records a write, which must be inside a transaction.
 	 *
 	 * @since 0.1.0

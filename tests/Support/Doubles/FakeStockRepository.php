@@ -376,6 +376,23 @@ final class FakeStockRepository implements StockRepository {
 	}
 
 	/**
+	 * Lists the variant ids that have a stock item, whatever its counters.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $after Only above this id.
+	 * @param int $limit The most items.
+	 * @return list<int> The variant ids, ascending.
+	 */
+	public function itemVariantIds( int $after, int $limit ): array {
+		$variantIds = array_values( array_filter( array_keys( $this->items ), static fn( int $id ): bool => $id > $after ) );
+
+		sort( $variantIds );
+
+		return array_slice( $variantIds, 0, $limit );
+	}
+
+	/**
 	 * Adjusts on_hand when the floor and the precondition hold.
 	 *
 	 * @since 0.1.0

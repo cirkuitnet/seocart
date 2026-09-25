@@ -48,6 +48,23 @@ final class QueryPlan {
 	public const MOST_ROWS = 5000;
 
 	/**
+	 * How far under MOST_ROWS a large-table access's estimated rows must land before an
+	 * allow-listed query's plan counts as keeping the rule comfortably, and so may be judged
+	 * stale.
+	 *
+	 * InnoDB's row estimate for the same query on the same data varies a little between runs; a
+	 * query whose estimate sits right at MOST_ROWS can come in over it on one run and under it on
+	 * the next. Without this margin, that second run would report its allow-list entry stale and
+	 * fail the run, even though nothing about the query changed. 0.9 asks for real headroom, not
+	 * a coin flip.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var float
+	 */
+	public const STALE_MARGIN = 0.9;
+
+	/**
 	 * The query.
 	 *
 	 * @since 0.1.0
@@ -170,6 +187,33 @@ final class QueryPlan {
 		}
 
 		return new self( $statement, $accesses, $breaches );
+	}
+
+	/**
+	 * Tells whether the plan keeps the query-plan rule with room to spare: it breaks nothing, and
+	 * every large-table access's estimated rows is at most STALE_MARGIN of MOST_ROWS, not merely
+	 * at or under MOST_ROWS itself.
+	 *
+	 * An allow-list entry for a query judged not to keep the rule comfortably is never reported
+	 * stale, even when this run's plan does not breach: the estimate landing on the safe side of
+	 * MOST_ROWS this once does not mean the query no longer needs its entry.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool True when the plan breaks nothing, with margin.
+	 */
+	public function keepsRuleComfortably(): bool {
+		if ( array() !== $this->breaches ) {
+			return false;
+		}
+
+		foreach ( $this->accesses as $access ) {
+			if ( $access['table_rows'] >= self::LARGE_TABLE && $access['rows'] > self::MOST_ROWS * self::STALE_MARGIN ) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**

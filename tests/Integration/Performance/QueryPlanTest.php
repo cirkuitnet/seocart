@@ -78,7 +78,10 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  * - in exercise(), send `SELECT id FROM {products} WHERE uuid = ?` through the recorder's
  *   Database: a read of a catalog table that the catalog's source does not write, named as one;
  * - in ReferenceSeed::rows(), give one item in ten a hold instead of every item: the holds are
- *   too few for the sweep's search to be judged.
+ *   too few for the sweep's search to be judged;
+ * - in QueryPlan::keepsRuleComfortably(), drop the margin (judge an entry stale as soon as its
+ *   plan merely keeps the rule): an allow-listed query whose estimate sits right at MOST_ROWS
+ *   is reported stale on a run where InnoDB's estimate happens to land just under it.
  *
  * @group performance
  *
@@ -282,6 +285,11 @@ final class QueryPlanTest extends DatabaseTestCase {
 				}
 
 				unset( $stale[ $id ] );
+			} elseif ( isset( $allowed[ $id ] ) && ! $plan->keepsRuleComfortably() ) {
+				// This run's estimate landed on the safe side of the rule, but not comfortably:
+				// InnoDB's estimate for the same query varies a little between runs, so a query
+				// still this close to the boundary is not yet fixed. The entry stays, unstale.
+				unset( $stale[ $id ] );
 			}
 
 			$report = array_merge( $report, $plan->lines( $verdict ) );
@@ -289,7 +297,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		fwrite( STDOUT, sprintf( "\nThe plans of the %d plugin SELECTs of the run, one per query and IN-list length:\n%s\n", count( $sent ), implode( "\n", $report ) ) );
 
-		$this->assertSame( array(), $this->inventoryGaps( $sent ), 'The run and the reads the catalog\'s and the inventory\'s source write differ. Send each read in exercise(), so its plan is judged; a read of their tables belongs in their source.' );
+		$this->assertSame( array(), $this->inventoryGaps( $recorder->allSent() ), 'The run and the reads the catalog\'s and the inventory\'s source write differ. Send each read in exercise(), so its plan is judged; a read of their tables belongs in their source.' );
 		$this->assertSame( array(), $breaking, sprintf( "These plugin SELECTs break the query-plan rule (a full scan of, or more than %d rows examined in, a table of %d rows or more). Fix the query, or add the index it needs with a migration, or put it on %s with the reason its plan is accepted:\n%s\n", QueryPlan::MOST_ROWS, QueryPlan::LARGE_TABLE, AllowList::FILE, implode( "\n", $breaking ) ) );
 		$this->assertSame( array(), array_keys( $stale ), sprintf( 'These entries of %s name no query of the run that breaks the rule; the query changed or was fixed, so remove them.', AllowList::FILE ) );
 	}
@@ -331,6 +339,10 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$stock->groupVariants( $group );
 		$stock->expiredVariants( 0, 100 );
 
+		// A cursor near the end of the table: doctor's own reverse check pages from 0, so this is
+		// the only place a real cursor reaches MysqlStockRepository::ITEM_VARIANT_IDS.
+		$stock->itemVariantIds( Dataset::Medium->products() - 1000, 20 );
+
 		$rollBack = new \RuntimeException( 'Rolled back on purpose: the reads that lock run in a transaction that changes nothing.' );
 
 		try {
@@ -364,6 +376,9 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 					$products->lockVariants( (int) $locked->id() );
 
+					// The reconciler's own locking read of a post's type and status.
+					$products->lockedPostTypeAndStatus( (int) $locked->sourcePostId() );
+
 					$deleted = $products->lockForDelete( (int) $locked->id() );
 
 					$this->assertNotNull( $deleted );
@@ -387,7 +402,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param Statement[] $sent The plugin SELECTs the run sent.
+	 * @param Statement[] $sent Every SELECT the run sent, whatever table it names.
 	 * @return list<string> One line per read the run did not send, and per read of the module's tables from outside its source.
 	 *
 	 * @phpstan-param list<Statement> $sent

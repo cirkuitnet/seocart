@@ -143,7 +143,7 @@ final class CatalogTables {
 			self::RETENTION,
 			array(
 				'products -> variants'      => 'Deleting a product removes its variants first, in the same transaction. A product with no variant is incomplete.',
-				'products -> product_posts' => 'Deleting the source post deletes the product; deleting any other binding removes that binding only. A product with no binding is incomplete, and one whose source post has no binding is reported for a person to decide.',
+				'products -> product_posts' => 'Deleting the source post deletes the product; deleting any other binding removes that binding only. A product with no binding at all is reported by doctor, never repaired: whether one may be deleted waits for order history. A product whose source binding is missing or invalid is reported for a person to decide, never repaired. A non-source binding whose post is gone is deleted by doctor --repair. A post written by a path that never bound one is bound, inline by the lifecycle or by doctor --repair when it was not, to a new, incomplete product.',
 			)
 		);
 	}
@@ -224,7 +224,8 @@ final class CatalogTables {
 			self::RETENTION,
 			array(
 				'variants -> variant_prices' => 'Deleting a variant removes its prices. A variant without a price in the base currency leaves its product incomplete.',
-				'variants -> stock items'    => 'Deleting a variant removes its stock item; its stock ledger rows are kept. A variant without a stock item is given one at zero by doctor --repair.',
+				'variants -> products'       => 'A variant whose product no longer exists is reported by doctor, never repaired: the variant id may already be on a ledger row.',
+				'variants -> stock items'    => 'Deleting a variant removes its stock item; its stock ledger rows are kept. A variant without a stock item is given one at zero by doctor --repair. A stock item whose variant no longer exists is reported by doctor, never repaired: deleting it would write a tombstone to the stock ledger.',
 			)
 		);
 	}

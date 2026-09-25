@@ -11,11 +11,17 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Seed;
 
+use SEOCart\Catalog\Application\Doctor\ProductSettler;
+use SEOCart\Catalog\Application\Lifecycle\Reconciler;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\SellabilityReason;
+use SEOCart\Catalog\Infrastructure\Doctor\CatalogChecks;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
+use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
+use SEOCart\Platform\Authorization\Authorizer;
+use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Cli\Doctor\Doctor;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\LockMode;
@@ -27,9 +33,11 @@ use SEOCart\Platform\DataRegistry\OwnedData;
 use SEOCart\Platform\Events\Outbox;
 use SEOCart\Platform\Jobs\ActionSchedulerQueue;
 use SEOCart\Platform\Jobs\JobHandlers;
+use SEOCart\Platform\Localization\SiteLocale;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Support\Currency;
 use SEOCart\Support\SystemClock;
+use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 
 /**
@@ -84,7 +92,7 @@ final class SeedVerifier {
 	public static function problems( Database $db, callable $report, string $baseCurrency, int $variants ): array {
 		$problems = array();
 
-		foreach ( self::doctor( $db, $report )->run() as $result ) {
+		foreach ( self::doctor( $db, $report, $baseCurrency )->run() as $result ) {
 			if ( ! $result->passed ) {
 				$problems[] = sprintf( 'doctor %s: %s %s', $result->check, $result->summary, implode( ' ', $result->findings ) );
 			}
@@ -108,18 +116,34 @@ final class SeedVerifier {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param Database $db     The connection every check reads through.
-	 * @param callable $report Receives what the parts report: a code and its context.
+	 * @param Database $db           The connection every check reads through.
+	 * @param callable $report       Receives what the parts report: a code and its context.
+	 * @param string   $baseCurrency Optional. The store's base currency, for the catalog's checks. Default `USD`.
 	 * @return Doctor The doctor.
 	 */
-	public static function doctor( Database $db, callable $report ): Doctor {
+	public static function doctor( Database $db, callable $report, string $baseCurrency = 'USD' ): Doctor {
+		$products   = new MysqlProductRepository( $db, static fn(): Currency => Currency::of( $baseCurrency ) );
+		$stock      = new StockService(
+			new MysqlStockRepository( $db ),
+			$db,
+			new RecordingEventPublisher( $db ),
+			new SequentialIdGenerator( 950000 ),
+			new SystemClock(),
+			new CorrelationId( new SequentialIdGenerator( 960000 ) ),
+			new Authorizer( new CapabilityDeclaration() )
+		);
+		$locales    = new SiteLocale();
+		$reconciler = new Reconciler( $products, $db, $locales, new SystemClock(), new SequentialIdGenerator( 970000 ) );
+		$settler    = new ProductSettler( $products, $stock, $db, array( new LockService( $db, LockMode::GetLock ), 'withLock' ) );
+
 		return new Doctor(
 			$db,
 			OwnedData::registry(),
 			self::migrator( $db, $report ),
 			new Outbox( $db ),
 			new ActionSchedulerQueue( $db, new LockService( $db, LockMode::Table ), new JobHandlers( JobHandlers::PRODUCTION, 'strval' ), new CorrelationId( new SequentialIdGenerator() ), $report ),
-			new StockProjectionCheck( new MysqlStockRepository( $db ) )
+			new StockProjectionCheck( new MysqlStockRepository( $db ) ),
+			...( new CatalogChecks( $products, $stock, $reconciler, $settler, new SystemClock(), $db, static fn(): Currency => Currency::of( $baseCurrency ), array( new LockService( $db, LockMode::GetLock ), 'withLock' ) ) )->checks()
 		);
 	}
 

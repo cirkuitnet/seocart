@@ -437,6 +437,448 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
+	 * Lists products with no `product_posts` row at all (doctor check 1).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId Only products above this id.
+	 * @param int $limit   The most to list.
+	 * @return list<int> The product ids, ascending.
+	 */
+	public function unboundProductIds( int $afterId, int $limit ): array {
+		$args = array( $this->table( CatalogTables::PRODUCTS ), $this->table( CatalogTables::PRODUCT_POSTS ) );
+
+		$sql  = 'SELECT p.id FROM %i p LEFT JOIN %i pp ON pp.product_id = p.id WHERE pp.product_id IS NULL';
+		$sql .= self::afterFragment( 'p.id', $afterId, $args );
+		$sql .= ' ORDER BY p.id LIMIT %d';
+
+		$args[] = $limit;
+
+		return self::intColumn( $this->db->fetchAll( $sql, ...$args ), 'id' );
+	}
+
+	/**
+	 * Lists products whose source binding is invalid (doctor check 2).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId Only products above this id.
+	 * @param int $limit   The most to list.
+	 * @return list<int> The product ids, ascending.
+	 */
+	public function invalidSourceBindings( int $afterId, int $limit ): array {
+		$args = array( $this->table( CatalogTables::PRODUCTS ), $this->table( CatalogTables::PRODUCT_POSTS ), $this->postsTable() );
+
+		$sql = 'SELECT p.id FROM %i p'
+			. ' LEFT JOIN %i pp ON pp.product_id = p.id AND pp.post_id = p.source_post_id'
+			. ' LEFT JOIN %i wpp ON wpp.ID = p.source_post_id'
+			. ' WHERE ( p.source_post_id IS NULL OR pp.post_id IS NULL OR wpp.ID IS NULL OR wpp.post_type <> %s )';
+
+		$args[] = ProductCapabilities::POST_TYPE;
+
+		$sql .= self::afterFragment( 'p.id', $afterId, $args );
+		$sql .= ' ORDER BY p.id LIMIT %d';
+
+		$args[] = $limit;
+
+		return self::intColumn( $this->db->fetchAll( $sql, ...$args ), 'id' );
+	}
+
+	/**
+	 * Lists `product_posts` rows whose post no longer exists (doctor check 3), the source binding excluded.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $limit The most to list.
+	 * @return list<array{post_id: int, product_id: int}> The bindings.
+	 */
+	public function danglingBindings( int $limit ): array {
+		$rows = $this->db->fetchAll(
+			'SELECT pp.post_id, pp.product_id FROM %i pp'
+				. ' LEFT JOIN %i p ON p.id = pp.product_id'
+				. ' LEFT JOIN %i wpp ON wpp.ID = pp.post_id'
+				. ' WHERE ( wpp.ID IS NULL OR p.id IS NULL ) AND ( p.id IS NULL OR p.source_post_id IS NULL OR p.source_post_id <> pp.post_id )'
+				. ' ORDER BY pp.post_id LIMIT %d',
+			$this->table( CatalogTables::PRODUCT_POSTS ),
+			$this->table( CatalogTables::PRODUCTS ),
+			$this->postsTable(),
+			$limit
+		);
+
+		return array_map(
+			static fn( array $row ): array => array(
+				'post_id'    => (int) $row['post_id'],
+				'product_id' => (int) $row['product_id'],
+			),
+			$rows
+		);
+	}
+
+	/**
+	 * Deletes one dangling binding (doctor --repair, check 3), re-stating both conditions in the statement.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId    The binding's post.
+	 * @param int $productId The binding's product.
+	 * @return bool True when the row was deleted.
+	 */
+	public function deleteDanglingBinding( int $postId, int $productId ): bool {
+		return 1 === $this->db->execute(
+			'DELETE pp FROM %i pp'
+				. ' LEFT JOIN %i p ON p.id = pp.product_id'
+				. ' LEFT JOIN %i wpp ON wpp.ID = pp.post_id'
+				. ' WHERE pp.post_id = %d AND pp.product_id = %d AND ( wpp.ID IS NULL OR p.id IS NULL ) AND ( p.id IS NULL OR p.source_post_id IS NULL OR p.source_post_id <> pp.post_id )',
+			$this->table( CatalogTables::PRODUCT_POSTS ),
+			$this->table( CatalogTables::PRODUCTS ),
+			$this->postsTable(),
+			$postId,
+			$productId
+		);
+	}
+
+	/**
+	 * Lists product posts (not `auto-draft`) with no `product_posts` row (doctor check 4).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId Only posts above this id.
+	 * @param int $limit   The most to list.
+	 * @return list<int> The post ids, ascending.
+	 */
+	public function unboundPostIds( int $afterId, int $limit ): array {
+		$args = array( $this->postsTable(), $this->table( CatalogTables::PRODUCT_POSTS ), ProductCapabilities::POST_TYPE, ProductCapabilities::AUTO_DRAFT );
+
+		$sql  = 'SELECT wpp.ID FROM %i wpp LEFT JOIN %i pp ON pp.post_id = wpp.ID'
+			. ' WHERE wpp.post_type = %s AND wpp.post_status <> %s AND pp.post_id IS NULL';
+		$sql .= self::afterFragment( 'wpp.ID', $afterId, $args );
+		$sql .= ' ORDER BY wpp.ID LIMIT %d';
+
+		$args[] = $limit;
+
+		return self::intColumn( $this->db->fetchAll( $sql, ...$args ), 'ID' );
+	}
+
+	/**
+	 * Locks a post's row and returns its type and status, current: never through WordPress's
+	 * post cache, which a concurrent write can leave stale.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId The post.
+	 * @return array{type: string, status: string}|null The post's type and status, or null when the row is gone.
+	 */
+	public function lockedPostTypeAndStatus( int $postId ): ?array {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$row = $this->db->fetchRow( 'SELECT post_type, post_status FROM %i WHERE ID = %d FOR SHARE', $this->postsTable(), $postId );
+
+		if ( null === $row ) {
+			return null;
+		}
+
+		return array(
+			'type'   => (string) $row['post_type'],
+			'status' => (string) $row['post_status'],
+		);
+	}
+
+	/**
+	 * Lists complete products at their active generation with zero enabled variants, or whose
+	 * default variant has no price in the base currency (doctor check 5).
+	 *
+	 * Scoped to `generation_state = 'complete'`: an incomplete product missing a price is the
+	 * ordinary, expected state of a product still being set up, not a finding.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $baseCurrency The store's base currency code.
+	 * @param int    $afterId      Only products above this id.
+	 * @param int    $limit        The most to list.
+	 * @return list<int> The product ids, ascending.
+	 */
+	public function incompleteMismatchIds( string $baseCurrency, int $afterId, int $limit ): array {
+		$args = array(
+			$this->table( CatalogTables::PRODUCTS ),
+			$this->table( CatalogTables::VARIANTS ),
+			Variant::defaultCombinationHash(),
+			$this->table( CatalogTables::VARIANT_PRICES ),
+			$baseCurrency,
+		);
+
+		$sql = 'SELECT p.id FROM %i p'
+			. ' LEFT JOIN %i v ON v.product_id = p.id AND v.combination_hash = %s'
+			. ' LEFT JOIN %i vp ON vp.variant_id = v.id AND vp.currency = %s'
+			. ' WHERE p.generation_state = %s';
+
+		$args[] = GenerationState::Complete->value;
+
+		$sql .= self::afterFragment( 'p.id', $afterId, $args );
+		$sql .= ' AND ( p.enabled_variant_count = 0 OR v.id IS NULL OR vp.id IS NULL )';
+		$sql .= ' ORDER BY p.id LIMIT %d';
+
+		$args[] = $limit;
+
+		return self::intColumn( $this->db->fetchAll( $sql, ...$args ), 'id' );
+	}
+
+	/**
+	 * Lists products left `updating` for longer than the given threshold (doctor check 7).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $before The threshold instant (UTC).
+	 * @param int    $limit  The most to list.
+	 * @return list<array{product_id: int, updated_at: string}> The products.
+	 */
+	public function stuckUpdating( string $before, int $limit ): array {
+		$rows = $this->db->fetchAll(
+			'SELECT id AS product_id, updated_at FROM %i WHERE generation_state = %s AND updated_at < %s ORDER BY id LIMIT %d',
+			$this->table( CatalogTables::PRODUCTS ),
+			GenerationState::Updating->value,
+			$before,
+			$limit
+		);
+
+		return array_map(
+			static fn( array $row ): array => array(
+				'product_id' => (int) $row['product_id'],
+				'updated_at' => (string) $row['updated_at'],
+			),
+			$rows
+		);
+	}
+
+	/**
+	 * Lists `variants` rows whose product no longer exists (doctor check 8).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $limit The most to list.
+	 * @return list<array{variant_id: int, product_id: int}> The orphans.
+	 */
+	public function orphanVariants( int $limit ): array {
+		$rows = $this->db->fetchAll(
+			'SELECT v.id AS variant_id, v.product_id FROM %i v LEFT JOIN %i p ON p.id = v.product_id WHERE p.id IS NULL ORDER BY v.id LIMIT %d',
+			$this->table( CatalogTables::VARIANTS ),
+			$this->table( CatalogTables::PRODUCTS ),
+			$limit
+		);
+
+		return array_map(
+			static fn( array $row ): array => array(
+				'variant_id' => (int) $row['variant_id'],
+				'product_id' => (int) $row['product_id'],
+			),
+			$rows
+		);
+	}
+
+	/**
+	 * Lists `variant_prices` rows whose variant no longer exists (doctor check 8).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $limit The most to list.
+	 * @return list<array{price_id: int, variant_id: int}> The orphans.
+	 */
+	public function orphanPrices( int $limit ): array {
+		$rows = $this->db->fetchAll(
+			'SELECT vp.id AS price_id, vp.variant_id FROM %i vp LEFT JOIN %i v ON v.id = vp.variant_id WHERE v.id IS NULL ORDER BY vp.id LIMIT %d',
+			$this->table( CatalogTables::VARIANT_PRICES ),
+			$this->table( CatalogTables::VARIANTS ),
+			$limit
+		);
+
+		return array_map(
+			static fn( array $row ): array => array(
+				'price_id'   => (int) $row['price_id'],
+				'variant_id' => (int) $row['variant_id'],
+			),
+			$rows
+		);
+	}
+
+	/**
+	 * Counts products marked `incomplete` (doctor check 10).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return int The count.
+	 */
+	public function incompleteCount(): int {
+		return (int) $this->db->fetchValue(
+			'SELECT COUNT(*) FROM %i WHERE generation_state = %s',
+			$this->table( CatalogTables::PRODUCTS ),
+			GenerationState::Incomplete->value
+		);
+	}
+
+	/**
+	 * Lists every variant's id whose product still exists (doctor check 6).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId Only variants above this id.
+	 * @param int $limit   The most to list.
+	 * @return list<int> The variant ids, ascending.
+	 */
+	public function variantIds( int $afterId, int $limit ): array {
+		$args = array( $this->table( CatalogTables::VARIANTS ), $this->table( CatalogTables::PRODUCTS ) );
+
+		$sql  = 'SELECT v.id FROM %i v JOIN %i p ON p.id = v.product_id';
+		$sql .= self::afterFragment( 'v.id', $afterId, $args );
+		$sql .= ' ORDER BY v.id LIMIT %d';
+
+		$args[] = $limit;
+
+		return self::intColumn( $this->db->fetchAll( $sql, ...$args ), 'id' );
+	}
+
+	/**
+	 * Filters a list of variant ids to the ones that still have a `variants` row (the reverse
+	 * line).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param array $variantIds The ids to test.
+	 * @return list<int> The ones that exist.
+	 *
+	 * @phpstan-param list<int> $variantIds
+	 */
+	public function variantsExisting( array $variantIds ): array {
+		if ( array() === $variantIds ) {
+			return array();
+		}
+
+		return self::intColumn(
+			$this->db->fetchAll(
+				'SELECT id FROM %i WHERE id IN ( ' . implode( ', ', array_fill( 0, count( $variantIds ), '%d' ) ) . ' )',
+				$this->table( CatalogTables::VARIANTS ),
+				...$variantIds
+			),
+			'id'
+		);
+	}
+
+	/**
+	 * Reloads a product under its row lock, for a repair that must re-check the defect before it
+	 * writes: load()'s own locking read (the one lockForDelete() also uses), plus the exact stored
+	 * `updated_at` the repair's compare-and-set must match, which the aggregate itself does not carry.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open.
+	 *
+	 * @param int $productId The product's id.
+	 * @return array{product: Product, state: GenerationState, updatedAt: string}|null The reload, or null.
+	 */
+	public function reloadUnderLock( int $productId ): ?array {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$product = $this->load( $productId, true );
+
+		if ( null === $product ) {
+			return null;
+		}
+
+		// The row's lock is already held by load()'s own read above; this is a plain read of the
+		// same, now-locked row, only for the one column the aggregate does not carry.
+		$updatedAt = $this->db->fetchValue( 'SELECT updated_at FROM %i WHERE id = %d', $this->table( CatalogTables::PRODUCTS ), $productId );
+
+		return array(
+			'product'   => $product,
+			'state'     => $product->generation(),
+			'updatedAt' => (string) $updatedAt,
+		);
+	}
+
+	/**
+	 * Settles a product's marker, only while it still has exactly the state (and, when given, the
+	 * exact `updated_at`) the caller read.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int             $productId      The product's id.
+	 * @param GenerationState $from           The marker the repair read.
+	 * @param GenerationState $to             The marker settle() computed.
+	 * @param string|null     $updatedAtMatch Optional. Also requires this exact `updated_at`.
+	 * @return bool True when the row still matched and was changed.
+	 */
+	public function settleIfUnchanged( int $productId, GenerationState $from, GenerationState $to, ?string $updatedAtMatch = null ): bool {
+		if ( null !== $updatedAtMatch ) {
+			return 1 === $this->db->execute(
+				'UPDATE %i SET generation_state = %s, updated_at = ' . self::NEXT_INSTANT . ' WHERE id = %d AND generation_state = %s AND updated_at = %s',
+				$this->table( CatalogTables::PRODUCTS ),
+				$to->value,
+				$productId,
+				$from->value,
+				$updatedAtMatch
+			);
+		}
+
+		return 1 === $this->db->execute(
+			'UPDATE %i SET generation_state = %s, updated_at = ' . self::NEXT_INSTANT . ' WHERE id = %d AND generation_state = %s',
+			$this->table( CatalogTables::PRODUCTS ),
+			$to->value,
+			$productId,
+			$from->value
+		);
+	}
+
+	/**
+	 * Returns the full name of `wp_posts` on the current site.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string The prefixed name.
+	 */
+	private function postsTable(): string {
+		return $this->db->prefix() . 'posts';
+	}
+
+	/**
+	 * Reads one integer column of every row.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param array<int, array<string, mixed>> $rows   The rows.
+	 * @param string                           $column The column.
+	 * @return list<int> The values.
+	 */
+	private static function intColumn( array $rows, string $column ): array {
+		return array_map( 'intval', array_column( $rows, $column ) );
+	}
+
+	/**
+	 * The `AND <column> > <id>` fragment doctor's paging reads add only when they carry a cursor.
+	 *
+	 * Every caller in this codebase pages from 0, so the fragment is normally left out: `id > 0`
+	 * matches every row of the table anyway, and keeping the comparison would still make MySQL
+	 * cost a primary-key range over it, which it estimates near half the table for a keyset scan
+	 * like this one's, defeating the cheap, LIMIT-bounded plan the check is meant to get for no
+	 * reason. A genuine cursor (a caller walking a table page by page) still gets the comparison.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $column  The column, qualified as the statement needs it.
+	 * @param int    $afterId The cursor; no fragment when it is not positive.
+	 * @param array  $args    The statement's arguments, appended to when the fragment is used.
+	 * @return string The fragment, or '' when there is no cursor.
+	 *
+	 * @phpstan-param list<mixed> $args
+	 */
+	private static function afterFragment( string $column, int $afterId, array &$args ): string {
+		if ( $afterId <= 0 ) {
+			return '';
+		}
+
+		$args[] = $afterId;
+
+		return ' AND ' . $column . ' > %d';
+	}
+
+	/**
 	 * Loads a product by its id, when a lookup found one.
 	 *
 	 * @since 0.1.0

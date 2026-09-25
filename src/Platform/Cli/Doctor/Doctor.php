@@ -154,9 +154,27 @@ final class Doctor {
 	 * @return list<CheckResult> One result per check, in order.
 	 */
 	public function run( bool $residue = false ): array {
+		return $this->runList( $residue ? $this->residueChecks() : $this->checks() );
+	}
+
+	/**
+	 * Runs a given list of checks, in order. Never throws.
+	 *
+	 * `--repair` calls this twice on the same list from checks() — once for the first pass, once
+	 * for the second, after repair() has run on what the first pass failed — so both passes see
+	 * exactly the same checks, in exactly the same order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Check[] $checks The checks to run.
+	 * @return list<CheckResult> One result per check, in order.
+	 *
+	 * @phpstan-param list<Check> $checks
+	 */
+	public function runList( array $checks ): array {
 		$results = array();
 
-		foreach ( $residue ? $this->residueChecks() : $this->checks() as $check ) {
+		foreach ( $checks as $check ) {
 			try {
 				$results[] = $check->run();
 			} catch ( \Throwable $failure ) {

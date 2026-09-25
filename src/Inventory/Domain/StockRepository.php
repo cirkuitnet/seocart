@@ -176,6 +176,19 @@ interface StockRepository {
 	public function expiredVariants( int $after, int $limit ): array;
 
 	/**
+	 * Lists the variant ids that have a stock item, whatever its counters (doctor's reverse
+	 * cross-module line: a stock item whose variant is gone, read by Catalog through
+	 * StockService). Locks nothing: it chooses work.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $after Only items with a higher variant id: where the previous page ended, or 0.
+	 * @param int $limit The most items to list.
+	 * @return list<int> The variant ids, ascending.
+	 */
+	public function itemVariantIds( int $after, int $limit ): array;
+
+	/**
 	 * Adds a delta to an item's on_hand, if the result is not negative and, when given, on_hand is what the caller read.
 	 *
 	 * @since 0.1.0

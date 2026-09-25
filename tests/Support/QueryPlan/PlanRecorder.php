@@ -30,13 +30,27 @@ namespace SEOCart\Tests\Support\QueryPlan;
 final class PlanRecorder extends \wpdb {
 
 	/**
-	 * The plugin SELECTs sent, one per key: per query and IN-list length.
+	 * The plugin SELECTs sent, one per key: per query and IN-list length. Judged by EXPLAIN.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var array<string, Statement>
 	 */
 	private array $recorded = array();
+
+	/**
+	 * Every SELECT sent, one per key, whatever table it names. Only for the completeness check
+	 * (every read the module's source declares was sent), never for judging a plan: this
+	 * connection is the plugin's own, so a SELECT of WordPress's own tables alone, with nothing
+	 * of the plugin's own joined to it, is still a read the plugin's code sent — isPluginSelect()
+	 * rightly leaves it out of $recorded, since the query-plan rule is about the plugin's own
+	 * large tables, but a head under src/ still needs it accounted for as sent.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<string, Statement>
+	 */
+	private array $sent = array();
 
 	/**
 	 * Opens a recording connection to the global wpdb's database, on the current site.
@@ -76,6 +90,10 @@ final class PlanRecorder extends \wpdb {
 		if ( '' !== (string) $this->prefix ) {
 			$statement = new Statement( $query, (string) $this->prefix );
 
+			if ( $statement->isSelect() && ! isset( $this->sent[ $statement->key() ] ) ) {
+				$this->sent[ $statement->key() ] = $statement;
+			}
+
 			if ( $statement->isPluginSelect() && ! isset( $this->recorded[ $statement->key() ] ) ) {
 				$this->recorded[ $statement->key() ] = $statement;
 			}
@@ -93,5 +111,17 @@ final class PlanRecorder extends \wpdb {
 	 */
 	public function statements(): array {
 		return array_values( $this->recorded );
+	}
+
+	/**
+	 * Returns every SELECT sent so far, whatever table it names, one per key, in the order they
+	 * were first sent.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<Statement> The statements.
+	 */
+	public function allSent(): array {
+		return array_values( $this->sent );
 	}
 }

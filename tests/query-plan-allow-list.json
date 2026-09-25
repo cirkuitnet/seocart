@@ -15,6 +15,11 @@
 			"id": "6bdef5970bc2",
 			"statement": "SELECT i.variant_id, i.allocated, COALESCE( SUM( a.quantity - a.posted_quantity ), ? ) AS open_sum FROM {prefix}seocart_stock_items i LEFT JOIN {prefix}seocart_stock_allocations a ON a.variant_id = i.variant_id AND a.state = ? GROUP BY i.variant_id, i.allocated HAVING i.allocated <> open_sum ORDER BY i.variant_id LIMIT ?",
 			"reason": "Doctor's stock check compares every item's allocated with its open allocations, so it reads every stock item by design; each item's allocations are read by the variant_state index. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+		},
+		{
+			"id": "ce19c78854a4",
+			"statement": "SELECT p.id FROM {prefix}seocart_products p LEFT JOIN {prefix}seocart_variants v ON v.product_id = p.id AND v.combination_hash = ? LEFT JOIN {prefix}seocart_variant_prices vp ON vp.variant_id = v.id AND vp.currency = ? WHERE p.generation_state = ? AND ( p.enabled_variant_count = ? OR v.id IS NULL OR vp.id IS NULL ) ORDER BY p.id LIMIT ?",
+			"reason": "Doctor's check for a complete product that is not actually whole starts from every complete product, found by the generation_state index, looking for zero enabled variants or a missing base-currency price; about half of a real catalog is complete, so the index legitimately hands back thousands of candidate rows before the LEFT JOINs narrow them. The default variant and its price are each then found by their own unique key. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
 		}
 	]
 }
