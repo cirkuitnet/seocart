@@ -182,7 +182,7 @@ reason its plan is accepted; and it fails on a listed query that the run no long
 that now keeps the rule; and it fails when the catalog's or the inventory's source writes a
 `SELECT` the run did not send. Give it a test database of its own: the seed refuses a store that
 already has products, and `WP_PHPUNIT__TESTS_CONFIG` names the configuration to use. CI runs it
-as the informational `query-plans` job. To seed a disposable development site by hand, run
+as the required `query-plans` job. To seed a disposable development site by hand, run
 `SEOCART_SEED_DISPOSABLE=1 SEOCART_SEED_DATASET=medium wp eval-file tests/Support/Seed/seed-site.php`
 from the checkout; it refuses a site whose environment type is not `local` or `development`.
 

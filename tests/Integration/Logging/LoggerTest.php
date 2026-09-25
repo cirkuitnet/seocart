@@ -612,7 +612,9 @@ final class LoggerTest extends LogsTestCase {
 		$this->assertCount( 1, $this->fallback );
 		$this->assertStringContainsString( ReportCode::InvalidCode->value, $this->fallback[0] );
 
-		$stored = (string) wp_json_encode( $lines ) . implode( "\n", $this->fallback );
+		// Only the columns a code could reach: a row's id, timestamp and correlation id are digits that contain any short fragment by chance.
+		$written = array_map( static fn( array $line ): array => array_diff_key( $line, array_flip( array( 'id', 'created_at', 'correlation_id' ) ) ), $lines );
+		$stored  = (string) wp_json_encode( $written ) . implode( "\n", $this->fallback );
 
 		foreach ( array( 'abc123secret', '4111', 'Not A Code', 'aaaaaaaaaa', 'v2_ran' ) as $kept ) {
 			$this->assertStringNotContainsString( $kept, $stored );

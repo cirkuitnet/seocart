@@ -17,8 +17,8 @@
 #
 # Required checks for branch protection on main: lint-php, workflow-lint, static-analysis,
 # dry-gates, docs-drift, wporg-gates, every unit-tests cell, the "WordPress 7.1"
-# integration-tests cells, js-lint-test, and the four "package / …" jobs. The WordPress
-# nightly cells, the multisite cell and the query-plans job are informational.
+# integration-tests cells, integration-tests-multisite, query-plans, js-lint-test, and the
+# package jobs. The WordPress nightly cells are informational.
 #
 # The local setup action owns the development PHP version and Composer installation.
 # bin/ci/check-workflows.sh keeps these steps in the action and checks action pins.
@@ -185,8 +185,7 @@ jobs:
     # plugin by itself and the tests that only mean something on a network run instead of
     # skipping. One cell: PHP 8.4, WordPress 7.1. A job of its own rather
     # than an `include` in the matrix above: an include that matches the 8.4 / 7.1 cell would be
-    # merged into it, and would rename a required check. Informational, like the nightly cells:
-    # it is not among the required checks, and a failure is reported without failing the workflow.
+    # merged into it, and would rename a required check. This job is itself a required check.
     integration-tests-multisite:
         name: integration-tests-multisite
         needs:
@@ -197,13 +196,10 @@ jobs:
             php: '8.4'
             wp: '7.1'
             multisite: true
-            allow-failure: true
 
     # The query plans of the plugin's reads on the medium reference dataset: `composer
     # test:query-plans` seeds it into the cell's own database, prints how long seeding took, and
-    # EXPLAINs every plugin SELECT the reads send (docs/testing.md). Informational, like the
-    # multisite cell: it is not among the required checks, and a failure is reported without
-    # failing the workflow.
+    # EXPLAINs every plugin SELECT the reads send (docs/testing.md). A required check.
     query-plans:
         name: query-plans
         needs:
@@ -213,7 +209,6 @@ jobs:
         with:
             wp: '7.1'
             script: test:query-plans
-            allow-failure: true
 
     js-lint-test:
         runs-on: ubuntu-24.04
