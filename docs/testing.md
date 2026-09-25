@@ -119,7 +119,7 @@ the source of truth. Run `composer list` or `npm run` to see them with their des
 | `composer audit`                         | Composer's own check of the dependencies against known security advisories                                      |
 
 A group command fails while its group has no test, because an empty run proves nothing. That
-is expected until the wave that adds the first test of that group.
+is expected until that group has its first test.
 
 ### npm
 
