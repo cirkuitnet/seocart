@@ -46,8 +46,13 @@ defined( 'ABSPATH' ) || exit;
  * `transition_post_status`) are reported once per request, as
  * `catalog.foreign_save_post_listener`: they run inside the product's transaction window, where
  * a slow call or a statement that ends the transaction costs the save its atomicity. Core's
- * callbacks and the plugin's own are not reported. The report goes to the log, never to a
- * client.
+ * callbacks and the plugin's own are not reported: they are told by the real path of the file
+ * they are defined in, so a directory reached through a symbolic link is still recognised. The
+ * report goes to the log, never to a client.
+ *
+ * While fireAfterInsert() fires `wp_after_insert_post` for a post, isFiringAfterInsert() says so,
+ * which tells the post lifecycle that the write reaching the hook is the plugin's own. The
+ * reads, contentOf() among them, are plain WordPress reads.
  *
  * @since 0.1.0
  */
@@ -90,6 +95,24 @@ final class WordPressPostGateway implements PostGateway {
 	private bool $reported = false;
 
 	/**
+	 * How many fireAfterInsert() calls are firing the hook for each post at this moment, by post id.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<int, int>
+	 */
+	private array $firing = array();
+
+	/**
+	 * More files and directories, besides WordPress's and the plugin's, whose callbacks are not another plugin's.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<string>
+	 */
+	private array $alsoOwn;
+
+	/**
 	 * Creates the gateway. Does nothing else.
 	 *
 	 * @since 0.1.0
@@ -97,13 +120,17 @@ final class WordPressPostGateway implements PostGateway {
 	 * @param TransactionManager $transactions The transaction a write takes part in.
 	 * @param callable|null      $report       Optional. Receives a machine code (string) and its context (array). Default null.
 	 * @param bool               $debug        Optional. Whether to look for other plugins' callbacks, as WP_DEBUG does. Default false.
+	 * @param string[]           $alsoOwn      Optional. More files, and directories ending in a slash, whose callbacks are not
+	 *                                         another plugin's, besides WordPress's and the plugin's own. Default none.
 	 *
 	 * @phpstan-param (callable(string, array<string, mixed>): void)|null $report
+	 * @phpstan-param list<string>                                        $alsoOwn
 	 */
-	public function __construct( TransactionManager $transactions, ?callable $report = null, bool $debug = false ) {
+	public function __construct( TransactionManager $transactions, ?callable $report = null, bool $debug = false, array $alsoOwn = array() ) {
 		$this->transactions = $transactions;
 		$this->report       = $report;
 		$this->debug        = $debug;
+		$this->alsoOwn      = $alsoOwn;
 	}
 
 	/**
@@ -195,6 +222,7 @@ final class WordPressPostGateway implements PostGateway {
 		}
 
 		$foreign = array();
+		$own     = $this->ownPaths();
 
 		foreach ( array( 'save_post', 'save_post_' . ProductCapabilities::POST_TYPE, 'wp_insert_post', 'transition_post_status' ) as $hook ) {
 			$registered = $wp_filter[ $hook ] ?? null;
@@ -205,7 +233,7 @@ final class WordPressPostGateway implements PostGateway {
 
 			foreach ( $registered->callbacks as $priority => $callbacks ) {
 				foreach ( $callbacks as $callback ) {
-					$described = self::foreignCallback( $callback['function'] );
+					$described = self::foreignCallback( $callback['function'], $own );
 
 					if ( null !== $described ) {
 						$foreign[] = sprintf( '%s @%d %s', $hook, (int) $priority, $described );
@@ -224,18 +252,42 @@ final class WordPressPostGateway implements PostGateway {
 	}
 
 	/**
-	 * Describes a callback when it belongs to neither WordPress nor this plugin.
+	 * Returns the files, and the directories ending in a slash, whose callbacks are WordPress's or the plugin's, each by its real path.
 	 *
-	 * A callback belongs to WordPress when it is defined in PHP itself or under `wp-includes` or
-	 * `wp-admin`, and to this plugin when it is defined in the plugin's shipped code: `src`, the
-	 * bundled libraries and the main file.
+	 * A callback belongs to WordPress when it is defined under `wp-includes` or `wp-admin`, and to
+	 * this plugin when it is defined in the plugin's shipped code: `src`, the bundled libraries and
+	 * the main file.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param mixed $callback The callback as WordPress stores it.
-	 * @return string|null Its name and where it is defined, or null when it is WordPress's, the plugin's or not a callback.
+	 * @return list<string> The paths.
 	 */
-	private static function foreignCallback( mixed $callback ): ?string {
+	private function ownPaths(): array {
+		$plugin = dirname( __DIR__, 3 ) . '/';
+		$paths  = array_merge( array( ABSPATH . 'wp-includes/', ABSPATH . 'wp-admin/', $plugin . 'src/', $plugin . 'vendor-scoped/', $plugin . 'seocart.php' ), $this->alsoOwn );
+
+		return array_map( array( self::class, 'realPath' ), $paths );
+	}
+
+	/**
+	 * Describes a callback when it belongs to neither WordPress nor this plugin.
+	 *
+	 * A callback defined in PHP itself belongs to WordPress. Otherwise the file it is defined in is
+	 * compared with the own paths by real path: PHP reports the file with every symbolic link
+	 * resolved, while ABSPATH, for one, may name WordPress's directory through a link. A file is
+	 * the plugin's when it is an own file, or lies under an own directory: a directory, which
+	 * ends in a slash, is matched by prefix, and a file only by equality, so a file whose name
+	 * merely begins with an own file's, such as `seocart.php.bak.php`, is another plugin's.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param mixed    $callback The callback as WordPress stores it.
+	 * @param string[] $own      The own paths, from ownPaths().
+	 * @return string|null Its name and where it is defined, or null when it is WordPress's, the plugin's or not a callback.
+	 *
+	 * @phpstan-param list<string> $own
+	 */
+	private static function foreignCallback( mixed $callback, array $own ): ?string {
 		try {
 			if ( $callback instanceof \Closure || ( is_string( $callback ) && ! str_contains( $callback, '::' ) ) ) {
 				$reflection = new \ReflectionFunction( $callback );
@@ -262,18 +314,32 @@ final class WordPressPostGateway implements PostGateway {
 			return null;
 		}
 
-		$file    = wp_normalize_path( $file );
-		$plugin  = wp_normalize_path( dirname( __DIR__, 3 ) ) . '/';
-		$core    = wp_normalize_path( ABSPATH );
-		$ignored = array( $core . 'wp-includes/', $core . 'wp-admin/', $plugin . 'src/', $plugin . 'vendor-scoped/', $plugin . 'seocart.php' );
+		$file = self::realPath( $file );
 
-		foreach ( $ignored as $prefix ) {
-			if ( str_starts_with( $file, $prefix ) ) {
+		foreach ( $own as $path ) {
+			if ( str_ends_with( $path, '/' ) ? str_starts_with( $file, $path ) : $file === $path ) {
 				return null;
 			}
 		}
 
 		return sprintf( '%s in %s:%d', $name, plugin_basename( $file ), (int) $reflection->getStartLine() );
+	}
+
+	/**
+	 * Returns a path with every symbolic link resolved, normalized; the path itself, normalized, when it cannot be resolved.
+	 *
+	 * A directory keeps its trailing slash, so a comparison by prefix stops at its name.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $path A file, or a directory ending in a slash.
+	 * @return string The path.
+	 */
+	private static function realPath( string $path ): string {
+		$real       = realpath( $path );
+		$normalized = wp_normalize_path( false === $real ? $path : $real );
+
+		return str_ends_with( $path, '/' ) ? rtrim( $normalized, '/' ) . '/' : $normalized;
 	}
 
 	/**
@@ -302,7 +368,60 @@ final class WordPressPostGateway implements PostGateway {
 	 * @param object|null $before The post as it was before the update (a WP_Post), or null for an insert.
 	 */
 	public function fireAfterInsert( int $postId, bool $update, ?object $before ): void {
-		wp_after_insert_post( $postId, $update, $before instanceof \WP_Post ? $before : null );
+		$this->firing[ $postId ] = ( $this->firing[ $postId ] ?? 0 ) + 1;
+
+		try {
+			wp_after_insert_post( $postId, $update, $before instanceof \WP_Post ? $before : null );
+		} finally {
+			if ( --$this->firing[ $postId ] < 1 ) {
+				unset( $this->firing[ $postId ] );
+			}
+		}
+	}
+
+	/**
+	 * Tells whether fireAfterInsert() is firing `wp_after_insert_post` for a post at this moment.
+	 *
+	 * A write another plugin makes to the same post from a listener of that hook is seen as the
+	 * plugin's own while the hook runs.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId The post's id.
+	 * @return bool True while this gateway fires the hook for the post.
+	 */
+	public function isFiringAfterInsert( int $postId ): bool {
+		return isset( $this->firing[ $postId ] );
+	}
+
+	/**
+	 * Returns what a copy of a product post takes from it: its title, content and excerpt, and its featured image.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId The post's id.
+	 * @return array<string, mixed>|null The fields, unslashed, the featured image as `_thumbnail_id` in `meta_input`
+	 *                                   when the post has one; null when the post is not a product post.
+	 */
+	public function contentOf( int $postId ): ?array {
+		$post = get_post( $postId );
+
+		if ( ! $post instanceof \WP_Post || ProductCapabilities::POST_TYPE !== $post->post_type ) {
+			return null;
+		}
+
+		$fields    = array(
+			'post_title'   => $post->post_title,
+			'post_content' => $post->post_content,
+			'post_excerpt' => $post->post_excerpt,
+		);
+		$thumbnail = (int) get_post_thumbnail_id( $post );
+
+		if ( $thumbnail > 0 ) {
+			$fields['meta_input'] = array( '_thumbnail_id' => $thumbnail );
+		}
+
+		return $fields;
 	}
 
 	/**

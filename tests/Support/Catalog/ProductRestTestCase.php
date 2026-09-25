@@ -13,8 +13,6 @@ namespace SEOCart\Tests\Support\Catalog;
 
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Application\Query\Sellability;
-use SEOCart\Catalog\Infrastructure\CatalogTables;
-use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
 use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Authorization\CapabilityInstaller;
@@ -37,7 +35,9 @@ use WP_REST_Response;
  * committed. The controller is built from the production classes with the test's service and
  * reporter, and installed into the post type's controller slot on `rest_api_init`, after the
  * kernel's and before core registers the routes, on a REST server built afresh for each test.
- * The plugin's roles are installed, and put back afterwards.
+ * The product lifecycle is hooked in the kernel's place, sharing the controller's post gateway,
+ * so every request meets it as on a site. The plugin's roles are installed, and put back
+ * afterwards.
  *
  * @since 0.1.0
  */
@@ -118,7 +118,7 @@ abstract class ProductRestTestCase extends ProductWriteTestCase {
 			fn(): SaveProduct => $this->service,
 			$this->products,
 			new Sellability( $this->products ),
-			new WordPressPostGateway( $this->db, $this->reporter() ),
+			$this->services->posts,
 			new RestErrorTranslator(
 				ErrorTable::compose( ...Modules::ERROR_CATALOGS ),
 				static fn(): string => self::CORRELATION_ID,
@@ -138,6 +138,8 @@ abstract class ProductRestTestCase extends ProductWriteTestCase {
 			},
 			50
 		);
+
+		$this->services->attach();
 
 		self::discardRestServer();
 
@@ -210,26 +212,6 @@ abstract class ProductRestTestCase extends ProductWriteTestCase {
 		$this->trackCreatedPost( $response );
 
 		return $response;
-	}
-
-	/**
-	 * Reads the checksum of each of the four catalog tables, as a second connection sees them.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param SecondConnection $b The second connection.
-	 * @return array<string, string> The checksum of each table, by name.
-	 *
-	 * @phpstan-impure
-	 */
-	protected function catalogChecksums( SecondConnection $b ): array {
-		$sums = array();
-
-		foreach ( array( CatalogTables::PRODUCTS, CatalogTables::PRODUCT_POSTS, CatalogTables::VARIANTS, CatalogTables::VARIANT_PRICES ) as $table ) {
-			$sums[ $table ] = (string) ( $b->fetchRow( sprintf( 'CHECKSUM TABLE `%s`', $this->db->table( $table ) ) )['Checksum'] ?? '' );
-		}
-
-		return $sums;
 	}
 
 	/**

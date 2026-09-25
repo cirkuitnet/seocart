@@ -18,8 +18,9 @@ use WP_UnitTestCase;
  * The kernel's wiring, as a request really boots it: on an idle front-end request the plugin adds
  * exactly the hooks listed here and loads six files, and the hooks of the admin, WP-CLI, cron and
  * a network appear in their own kind of request only. The idle request's hooks are the kernel's
- * own four, the REST routes', the two of the abilities, the job runner's and the product post
- * type's: nine, and twelve on a network. Every one of them builds nothing until it fires.
+ * own four, the REST routes', the two of the abilities, the job runner's, the product post
+ * type's and the product lifecycle's three: twelve, and fifteen on a network. Every one of them
+ * builds nothing until it fires.
  *
  * Every request is booted in a child process of its own (tests/Support/idle-request-probe.php for
  * the idle request, tests/Support/kernel-hooks-probe.php for the others), because the kernel
@@ -116,6 +117,9 @@ final class KernelWiringTest extends WP_UnitTestCase {
 			'wp_abilities_api_init @10 ' . self::MODULES,
 			'seocart_job @10 ' . self::MODULES,
 			'init @10 SEOCart\\Catalog\\Infrastructure\\ProductPostType::register',
+			'wp_after_insert_post @10 ' . self::MODULES,
+			'transition_post_status @10 ' . self::MODULES,
+			'pre_delete_post @' . PHP_INT_MAX . ' ' . self::MODULES,
 		);
 
 		if ( 'admin' === $context ) {

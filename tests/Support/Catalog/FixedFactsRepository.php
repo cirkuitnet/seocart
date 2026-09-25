@@ -90,6 +90,76 @@ final class FixedFactsRepository implements ProductRepository {
 	 *
 	 * @throws \LogicException Always.
 	 *
+	 * @param int $productId Unused.
+	 * @return never
+	 */
+	public function find( int $productId ): never {
+		throw new \LogicException( 'A sellability reader loads no product.' );
+	}
+
+	/**
+	 * Not used by a reader.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $productId Unused.
+	 * @return never
+	 */
+	public function lockForDelete( int $productId ): never {
+		throw new \LogicException( 'A sellability reader deletes nothing.' );
+	}
+
+	/**
+	 * Not used by a reader.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $postId Unused.
+	 * @return never
+	 */
+	public function lockByPost( int $postId ): never {
+		throw new \LogicException( 'A sellability reader deletes nothing.' );
+	}
+
+	/**
+	 * Not used by a reader.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $productId Unused.
+	 * @return never
+	 */
+	public function lockVariants( int $productId ): never {
+		throw new \LogicException( 'A sellability reader trashes nothing.' );
+	}
+
+	/**
+	 * Not used by a reader.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param Product $product Unused.
+	 * @return never
+	 */
+	public function delete( Product $product ): never {
+		throw new \LogicException( 'A sellability reader deletes nothing.' );
+	}
+
+	/**
+	 * Not used by a reader.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
 	 * @param int $variantId Unused.
 	 * @return never
 	 */

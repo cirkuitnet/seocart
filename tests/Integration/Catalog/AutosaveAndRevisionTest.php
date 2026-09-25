@@ -18,15 +18,21 @@ use SEOCart\Tests\Support\Catalog\ProductRestTestCase;
 /**
  * Core's autosave and revision controllers for the product are built from the plugin's
  * controller, and prepare a post with its prepare_item_for_database(), which knows no commerce
- * field; neither calls the product write. A revision restore is an editorial post update. So
- * the four catalog tables stay byte for byte as they were, and a live product stays on sale.
+ * field; neither calls the product write. A revision restore is an editorial post update. The
+ * product lifecycle is hooked, as on a site, and a draft's autosave and a revision restore reach
+ * it as writes by another path to a bound post, which leave the product alone. So the four
+ * catalog tables stay byte for byte as they were, and a live product stays on sale.
  *
  * The autosave requests carry a `seocart` object on purpose: the block editor sends none, and a
  * hand-made one must be ignored too.
  *
- * Planted violation: in ProductPostsController, override prepare_item_for_database() to save the
- * request's `seocart` object for the post it names, as a controller that wrote commerce data
- * while preparing the post would: every autosave test sees a changed checksum.
+ * Planted violations, each confirmed to fail a test here:
+ * - In ProductPostsController, override prepare_item_for_database() to save the request's
+ *   `seocart` object for the post it names, as a controller that wrote commerce data while
+ *   preparing the post would: every autosave test sees a changed checksum.
+ * - In PostLifecycle::boundPostWrittenElsewhere(), mark the post's product `updating`, as the
+ *   other reading of a write by another path would mark it `incomplete`: the draft's autosave and
+ *   the revision restore change a catalog row.
  *
  * @since 0.1.0
  */

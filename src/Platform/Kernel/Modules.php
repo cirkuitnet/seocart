@@ -16,6 +16,10 @@ defined( 'ABSPATH' ) || exit;
 
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\Operations;
+use SEOCart\Catalog\Application\Lifecycle\DeleteProduct;
+use SEOCart\Catalog\Application\Lifecycle\DuplicateProduct;
+use SEOCart\Catalog\Application\Lifecycle\PostLifecycle;
+use SEOCart\Catalog\Application\Lifecycle\Reconciler;
 use SEOCart\Catalog\Application\PostGateway;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
@@ -142,7 +146,11 @@ use SEOCart\Support\SystemIdGenerator;
  *   operations' abilities when the Abilities API initialises;
  * - JOB_HOOK, which Action Scheduler fires to run one of the plugin's jobs, wherever its queue
  *   runs — another plugin's runner included;
- * - `init`, which registers the product post type.
+ * - `init`, which registers the product post type;
+ * - `wp_after_insert_post`, `transition_post_status` and `pre_delete_post`, which keep a product
+ *   consistent with its post whichever path writes, trashes or deletes it: a cron run empties
+ *   the trash, and any plugin may delete a post anywhere. Each returns at once for a post of
+ *   another type.
  *
  * Every service that reports what it does not throw is given the one Reporter, which resolves
  * the logger on its first report; the operation invoker and the error translator get its
@@ -682,11 +690,12 @@ final class Modules {
 	}
 
 	/**
-	 * The catalog module: the product repository, the sellability query, the product post gateway, the locale of a post, the product write, the product's REST controller and the editor's panel.
+	 * The catalog module: the product repository, the sellability query, the product post gateway, the locale of a post, the product write, the product's REST controller, the editor's panel, and the product's lifecycle: the reconciler, the delete, the copy and the post lifecycle.
 	 *
 	 * The repository, the write and the panel read the store's base currency from the settings
 	 * when they need it, never when they are built. Without a multilingual plugin every post has
-	 * the site's locale. The gateway reports other plugins' save listeners under WP_DEBUG.
+	 * the site's locale. The gateway reports other plugins' save listeners under WP_DEBUG, and the
+	 * post lifecycle other paths' writes to bound product posts.
 	 *
 	 * @since 0.1.0
 	 *
@@ -730,6 +739,31 @@ final class Modules {
 			)
 		);
 		$container->bind( ProductEditorPanel::class, static fn( Container $c ): ProductEditorPanel => new ProductEditorPanel( SEOCART_PLUGIN_FILE, self::baseCurrency( $c ) ) );
+		$container->bind(
+			Reconciler::class,
+			static fn( Container $c ): Reconciler => new Reconciler( $c->get( ProductRepository::class ), $c->get( TransactionManager::class ), $c->get( PostLocales::class ), $c->get( Clock::class ), $c->get( IdGenerator::class ) )
+		);
+		$container->bind(
+			DeleteProduct::class,
+			static fn( Container $c ): DeleteProduct => new DeleteProduct( $c->get( ProductRepository::class ), $c->get( StockService::class ), $c->get( TransactionManager::class ), $c->get( EventPublisher::class ), $c->get( Clock::class ) )
+		);
+		$container->bind(
+			DuplicateProduct::class,
+			static fn( Container $c ): DuplicateProduct => new DuplicateProduct( $c->get( ProductRepository::class ), $c->get( SaveProduct::class ), $c->get( PostGateway::class ) )
+		);
+		$container->bind(
+			PostLifecycle::class,
+			static fn( Container $c ): PostLifecycle => new PostLifecycle(
+				$c->get( ProductRepository::class ),
+				$c->get( Reconciler::class ),
+				$c->get( DeleteProduct::class ),
+				$c->get( StockService::class ),
+				$c->get( TransactionManager::class ),
+				$c->get( PostGateway::class ),
+				$c->get( Reporter::class ),
+				defined( 'WP_DEBUG' ) && WP_DEBUG
+			)
+		);
 	}
 
 	/**
@@ -767,12 +801,15 @@ final class Modules {
 	}
 
 	/**
-	 * The catalog module's hooks: the product post type, registered on every request's `init`, and in the admin the product editor's panel.
+	 * The catalog module's hooks: the product post type, registered on every request's `init`; the product's lifecycle, on every request; and in the admin the product editor's panel.
 	 *
 	 * The registration callback is the registration itself, which loads its own file and the
-	 * capability map, builds nothing from the container and sends no query. The panel is enqueued
-	 * on `enqueue_block_editor_assets`, which only the admin fires, and only for the product
-	 * editor.
+	 * capability map, builds nothing from the container and sends no query. The lifecycle's three
+	 * callbacks are on every request, because a product post may be written, trashed or deleted
+	 * by any request, a cron run that empties the trash included; each returns before it builds
+	 * anything unless the post is a product post. `pre_delete_post` runs last, and leaves alone a
+	 * delete an earlier callback has already decided. The panel is enqueued on
+	 * `enqueue_block_editor_assets`, which only the admin fires, and only for the product editor.
 	 *
 	 * @since 0.1.0
 	 *
@@ -782,6 +819,8 @@ final class Modules {
 	private static function catalogSubscribe( Container $container, bool $admin ): void {
 		add_action( 'init', array( ProductPostType::class, 'register' ) );
 
+		self::catalogLifecycleHooks( static fn(): PostLifecycle => $container->get( PostLifecycle::class ) );
+
 		if ( $admin ) {
 			add_action(
 				'enqueue_block_editor_assets',
@@ -790,6 +829,56 @@ final class Modules {
 				}
 			);
 		}
+	}
+
+	/**
+	 * Adds the product lifecycle's three callbacks: a product post written, changing status, and about to be deleted.
+	 *
+	 * Each callback returns at once for a post of another type, before it asks for the lifecycle.
+	 * `pre_delete_post` runs last, leaves alone a delete an earlier callback has already decided,
+	 * and passes on the lifecycle's answer: null lets WordPress delete the post, false refuses.
+	 * The kernel's callbacks resolve the container's lifecycle; the integration tests add their
+	 * own lifecycle through this same method.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param \Closure $lifecycle Returns the post lifecycle (a PostLifecycle), when a product post needs it.
+	 *
+	 * @phpstan-param \Closure(): PostLifecycle $lifecycle
+	 */
+	public static function catalogLifecycleHooks( \Closure $lifecycle ): void {
+		add_action(
+			'wp_after_insert_post',
+			static function ( $postId, $post, $update, $before = null ) use ( $lifecycle ): void {
+				if ( $post instanceof \WP_Post && ProductCapabilities::POST_TYPE === $post->post_type ) {
+					$lifecycle()->postWritten( (int) $post->ID, (string) $post->post_status, (bool) $update, $before instanceof \WP_Post ? (string) $before->post_status : '' );
+				}
+			},
+			10,
+			4
+		);
+		add_action(
+			'transition_post_status',
+			static function ( $now, $was, $post ) use ( $lifecycle ): void {
+				if ( $post instanceof \WP_Post && ProductCapabilities::POST_TYPE === $post->post_type ) {
+					$lifecycle()->statusChanged( (int) $post->ID, (string) $now, (string) $was );
+				}
+			},
+			10,
+			3
+		);
+		add_filter(
+			'pre_delete_post',
+			static function ( $check, $post ) use ( $lifecycle ) {
+				if ( null !== $check || ! $post instanceof \WP_Post || ProductCapabilities::POST_TYPE !== $post->post_type ) {
+					return $check;
+				}
+
+				return $lifecycle()->deleting( (int) $post->ID, get_current_user_id() );
+			},
+			PHP_INT_MAX,
+			2
+		);
 	}
 
 	/**

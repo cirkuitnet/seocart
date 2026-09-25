@@ -38,7 +38,9 @@ defined( 'ABSPATH' ) || exit;
  * it decides a sale on it in one place, sellabilityFacts(); the other reads load the marker as
  * state, and the only statements that change it are the creation of a product, markUpdating(),
  * relock(), leaveUpdating() and restoreMark(). Every write of a product's `updated_at` moves it
- * strictly forward, so the instant of a mark identifies that mark.
+ * strictly forward, so the instant of a mark identifies that mark. A deletion takes the product's
+ * row lock first, as a save's window does, reads the product with locking reads, then removes its
+ * rows children first.
  *
  * A SKU collision is the `sku` key doing its job. When a variant write breaks a unique key, a
  * locking read asks whether another variant holds the SKU; a locking read sees the newest
@@ -74,6 +76,15 @@ final class MysqlProductRepository implements ProductRepository {
 	public const NEXT_INSTANT = 'GREATEST( UTC_TIMESTAMP(6), updated_at + INTERVAL 1 MICROSECOND )';
 
 	/**
+	 * What turns a read into a locking read: it takes the rows' locks until the transaction ends, and reads the newest committed rows, whatever the transaction's snapshot.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const LOCKING = ' FOR UPDATE';
+
+	/**
 	 * The connection.
 	 *
 	 * @since 0.1.0
@@ -104,6 +115,18 @@ final class MysqlProductRepository implements ProductRepository {
 	public function __construct( Database $db, callable $baseCurrency ) {
 		$this->db           = $db;
 		$this->baseCurrency = $baseCurrency;
+	}
+
+	/**
+	 * Loads a product by its id.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $productId The product's id.
+	 * @return Product|null The product, or null when there is none with that id.
+	 */
+	public function find( int $productId ): ?Product {
+		return $this->load( $productId );
 	}
 
 	/**
@@ -252,6 +275,111 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
+	 * Loads a product for its deletion, under its row lock: every read a locking read, the product's row first.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open.
+	 *
+	 * @param int $productId The product's id.
+	 * @return Product|null The product, or null when there is none with that id.
+	 */
+	public function lockForDelete( int $productId ): ?Product {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return $this->load( $productId, true );
+	}
+
+	/**
+	 * Loads the product a post is bound to, under the row locks of the binding and the product: one locking read takes both, then the product is read with locking reads.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open.
+	 *
+	 * @param int $postId The post's id.
+	 * @return Product|null The product, or null when the post is bound to none.
+	 */
+	public function lockByPost( int $postId ): ?Product {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$productId = $this->db->fetchValue(
+			'SELECT pp.product_id FROM %i pp JOIN %i p ON p.id = pp.product_id WHERE pp.post_id = %d FOR UPDATE',
+			$this->table( CatalogTables::PRODUCT_POSTS ),
+			$this->table( CatalogTables::PRODUCTS ),
+			$postId
+		);
+
+		return null === $productId ? null : $this->load( (int) $productId, true );
+	}
+
+	/**
+	 * Locks every variant of a product until the transaction ends, and returns their ids: one locking read.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open.
+	 *
+	 * @param int $productId The product's id.
+	 * @return list<int> The variants' ids, ascending.
+	 */
+	public function lockVariants( int $productId ): array {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return array_map( 'intval', array_column( $this->db->fetchAll( 'SELECT id FROM %i WHERE product_id = %d ORDER BY id FOR UPDATE', $this->table( CatalogTables::VARIANTS ), $productId ), 'id' ) );
+	}
+
+	/**
+	 * Deletes a product's rows, children first: its variants' prices, its variants, its bindings, then the product itself.
+	 *
+	 * Fails with CatalogError::ProductNotFound when the product's row is gone.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When no transaction is open, or the product was never stored.
+	 * @phpstan-throws \LogicException|CodedException
+	 *
+	 * @param Product $product The product, as lockForDelete() loaded it.
+	 * @return array<int, string> The SKU of each variant deleted, by the variant's id, ascending.
+	 */
+	public function delete( Product $product ): array {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$productId = $product->id();
+
+		if ( null === $productId ) {
+			// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- A developer's message naming the product's public identifier; it is never rendered.
+			throw new \LogicException( sprintf( 'Product %s was never stored, so there is nothing to delete.', $product->uuid() ) );
+		}
+
+		// A locking read: every variant committed so far, of every generation, whatever this transaction's snapshot.
+		$skus = array();
+
+		foreach ( $this->db->fetchAll( 'SELECT id, sku FROM %i WHERE product_id = %d ORDER BY id FOR UPDATE', $this->table( CatalogTables::VARIANTS ), $productId ) as $variant ) {
+			$skus[ (int) $variant['id'] ] = (string) $variant['sku'];
+		}
+
+		$variantIds = array_keys( $skus );
+
+		if ( array() !== $variantIds ) {
+			$this->db->execute(
+				'DELETE FROM %i WHERE variant_id IN ( ' . implode( ', ', array_fill( 0, count( $variantIds ), '%d' ) ) . ' )',
+				$this->table( CatalogTables::VARIANT_PRICES ),
+				...$variantIds
+			);
+			$this->db->execute( 'DELETE FROM %i WHERE product_id = %d', $this->table( CatalogTables::VARIANTS ), $productId );
+		}
+
+		$this->db->execute( 'DELETE FROM %i WHERE product_id = %d', $this->table( CatalogTables::PRODUCT_POSTS ), $productId );
+
+		if ( 1 !== $this->db->execute( 'DELETE FROM %i WHERE id = %d', $this->table( CatalogTables::PRODUCTS ), $productId ) ) {
+			CodedException::raise( CatalogError::ProductNotFound, array( 'product_id' => $productId ) );
+		}
+
+		return $skus;
+	}
+
+	/**
 	 * Reads, in one query, the facts Sellability judges each variant on.
 	 *
 	 * The variant is joined to its product, the product to its binding to its source post, and
@@ -325,12 +453,14 @@ final class MysqlProductRepository implements ProductRepository {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int $productId The product's id.
+	 * @param int  $productId The product's id.
+	 * @param bool $locking   Optional. Whether every read is a locking read, the product's row first. Default false.
 	 * @return Product|null The product, or null when there is no such row.
 	 */
-	private function load( int $productId ): ?Product {
-		$row = $this->db->fetchRow(
-			'SELECT id, uuid, source_post_id, generation_state, active_variant_generation FROM %i WHERE id = %d',
+	private function load( int $productId, bool $locking = false ): ?Product {
+		$lock = $locking ? self::LOCKING : '';
+		$row  = $this->db->fetchRow(
+			'SELECT id, uuid, source_post_id, generation_state, active_variant_generation FROM %i WHERE id = %d' . $lock,
 			$this->table( CatalogTables::PRODUCTS ),
 			$productId
 		);
@@ -341,7 +471,7 @@ final class MysqlProductRepository implements ProductRepository {
 
 		$bindings = array();
 
-		foreach ( $this->db->fetchAll( 'SELECT post_id, locale, linked_at, linked_by_adapter FROM %i WHERE product_id = %d ORDER BY linked_at, post_id', $this->table( CatalogTables::PRODUCT_POSTS ), $productId ) as $binding ) {
+		foreach ( $this->db->fetchAll( 'SELECT post_id, locale, linked_at, linked_by_adapter FROM %i WHERE product_id = %d ORDER BY linked_at, post_id' . $lock, $this->table( CatalogTables::PRODUCT_POSTS ), $productId ) as $binding ) {
 			$bindings[] = new ProductPostBinding(
 				(int) $binding['post_id'],
 				Locale::of( (string) $binding['locale'] ),
@@ -357,7 +487,7 @@ final class MysqlProductRepository implements ProductRepository {
 			$bindings,
 			GenerationState::fromStored( (string) $row['generation_state'] ),
 			(int) $row['active_variant_generation'],
-			$this->loadDefaultVariant( $productId )
+			$this->loadDefaultVariant( $productId, $lock )
 		);
 	}
 
@@ -366,15 +496,16 @@ final class MysqlProductRepository implements ProductRepository {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int $productId The product's id.
+	 * @param int    $productId The product's id.
+	 * @param string $lock      What ends the read: LOCKING for a locking read, or nothing.
 	 * @return Variant|null The variant, or null when the product has none.
 	 */
-	private function loadDefaultVariant( int $productId ): ?Variant {
+	private function loadDefaultVariant( int $productId, string $lock ): ?Variant {
 		$base = $this->baseCurrency();
 		$row  = $this->db->fetchRow(
 			'SELECT v.id, v.uuid, v.sku, v.combination_hash, v.generation, v.is_enabled, v.weight_grams, vp.currency, vp.amount_basis, vp.price_minor, vp.compare_at_minor'
 				. ' FROM %i v LEFT JOIN %i vp ON vp.variant_id = v.id AND vp.currency = %s'
-				. ' WHERE v.product_id = %d AND v.combination_hash = %s',
+				. ' WHERE v.product_id = %d AND v.combination_hash = %s' . $lock,
 			$this->table( CatalogTables::VARIANTS ),
 			$this->table( CatalogTables::VARIANT_PRICES ),
 			$base->code(),

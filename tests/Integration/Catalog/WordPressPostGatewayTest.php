@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Catalog;
 
 use SEOCart\Catalog\Domain\CatalogError;
+use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Support\Error\CodedException;
@@ -221,6 +222,103 @@ final class WordPressPostGatewayTest extends CatalogTestCase {
 		$this->assertInstanceOf( \WP_Post::class, $after, 'The stored post is gone.' );
 		$this->assertSame( 'Fixture product', $after->post_title, 'The rolled-back title is still in the object cache.' );
 		$this->assertSame( 'Fixture product', $this->db->fetchValue( 'SELECT post_title FROM %i WHERE ID = %d', $this->db->prefix() . 'posts', $postId ) );
+	}
+
+	/**
+	 * Tests that, under WP_DEBUG, a callback defined in an own directory named through a symbolic link is not reported, while another plugin's is, and WordPress's are not.
+	 *
+	 * PHP names the file a callback is defined in with every link resolved, while an own path
+	 * may be named through a link, as ABSPATH may name WordPress's directory. The gateway is
+	 * given the own directory through a link, and the listener in it is required through the same
+	 * link.
+	 *
+	 * Planted violation: in WordPressPostGateway::realPath(), return the path normalized without
+	 * resolving it: the linked listener is reported as another plugin's, and on a server whose
+	 * ABSPATH names WordPress's directory through a link, so are WordPress's own callbacks.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_own_directory_named_through_a_link_is_recognised(): void {
+		$real = (string) tempnam( sys_get_temp_dir(), 'seocart-own-' );
+		$link = $real . '-link';
+
+		// phpcs:disable WordPress.WP.AlternativeFunctions -- The test builds a directory and a link to it in the temporary directory, and removes them.
+		unlink( $real );
+		mkdir( $real, 0700 );
+		file_put_contents( $real . '/listener.php', "<?php\nreturn static function (): void {};\n" );
+
+		$this->assertTrue( symlink( $real, $link ), 'The link could not be made.' );
+
+		try {
+			$linked  = require $link . '/listener.php';
+			$line    = __LINE__ + 1;
+			$foreign = static function (): void {};
+			$gateway = new WordPressPostGateway( $this->db, $this->reporter(), true, array( $link . '/' ) );
+
+			add_action( 'save_post_' . ProductCapabilities::POST_TYPE, $linked );
+			add_action( 'save_post_' . ProductCapabilities::POST_TYPE, $foreign );
+
+			$this->trackPost( $gateway->write( array( 'post_title' => 'Watched' ) ) );
+		} finally {
+			unlink( $link );
+			unlink( $real . '/listener.php' );
+			rmdir( $real );
+		}
+		// phpcs:enable WordPress.WP.AlternativeFunctions
+
+		$reported = array_values( array_filter( $this->reports, static fn( array $report ): bool => ReportCode::ForeignSaveListener->value === $report['code'] ) );
+		$listed   = (string) ( $reported[0]['context']['callbacks'] ?? '' );
+
+		$this->assertCount( 1, $reported );
+		$this->assertStringContainsString( basename( __FILE__ ) . ':' . $line, $listed, 'Another plugin\'s callback was not reported.' );
+		$this->assertStringNotContainsString( 'listener.php', $listed, 'The callback of the own directory named through a link was reported.' );
+		$this->assertStringNotContainsString( 'wp-includes/', $listed, 'WordPress\'s own callbacks were reported.' );
+	}
+
+	/**
+	 * Tests that, under WP_DEBUG, an own file is matched by its whole path: a callback in a file whose name only begins with an own file's is reported as another plugin's.
+	 *
+	 * The gateway is given one own file, `own.php`; a listener is defined in it, and another in
+	 * `own.php-copy.php` beside it, whose path begins with the own file's.
+	 *
+	 * Planted violation: in WordPressPostGateway::foreignCallback(), match every own path by
+	 * prefix, a file's as a directory's: the copy's listener is taken for the plugin's own and not
+	 * reported.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_own_file_is_matched_by_its_whole_path(): void {
+		$directory = (string) tempnam( sys_get_temp_dir(), 'seocart-own-' );
+		$listener  = "<?php\nreturn static function (): void {};\n";
+
+		// phpcs:disable WordPress.WP.AlternativeFunctions -- The test writes two files in the temporary directory, and removes them.
+		unlink( $directory );
+		mkdir( $directory, 0700 );
+		file_put_contents( $directory . '/own.php', $listener );
+		file_put_contents( $directory . '/own.php-copy.php', $listener );
+
+		try {
+			$own     = require $directory . '/own.php';
+			$copy    = require $directory . '/own.php-copy.php';
+			$gateway = new WordPressPostGateway( $this->db, $this->reporter(), true, array( $directory . '/own.php' ) );
+
+			add_action( 'save_post_' . ProductCapabilities::POST_TYPE, $own );
+			add_action( 'save_post_' . ProductCapabilities::POST_TYPE, $copy );
+
+			$this->trackPost( $gateway->write( array( 'post_title' => 'Watched' ) ) );
+		} finally {
+			unlink( $directory . '/own.php' );
+			unlink( $directory . '/own.php-copy.php' );
+			rmdir( $directory );
+		}
+		// phpcs:enable WordPress.WP.AlternativeFunctions
+
+		$reported = array_values( array_filter( $this->reports, static fn( array $report ): bool => ReportCode::ForeignSaveListener->value === $report['code'] ) );
+		$listed   = (string) ( $reported[0]['context']['callbacks'] ?? '' );
+
+		$this->assertCount( 1, $reported );
+		$this->assertStringContainsString( '/own.php-copy.php:2', $listed, 'A file whose path begins with an own file\'s was taken for the plugin\'s.' );
+		$this->assertStringNotContainsString( '/own.php:', $listed, 'The own file\'s listener was reported.' );
 	}
 
 	/**

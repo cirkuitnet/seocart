@@ -44,7 +44,8 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  * and fails when it took more than three minutes. The store must then be sound: doctor passes
  * and every seeded variant may be sold (SeedVerifier). Then the plugin's reads run over a
  * PlanRecorder: the catalog's lookups by post, by source post and by variant, its sellability
- * query and the reads of its write path, and every read of the stock repository, doctor's
+ * query, the reads of its write path and the locking reads of a trash and a delete, and every
+ * read of the stock repository, doctor's
  * projection checks and the sweep's search for expired holds included; the reads that must run
  * in a transaction, and the write path, run in one that is rolled back. Each plugin SELECT they
  * sent is explained once per query and IN-list length, and judged by QueryPlan's rule. The run
@@ -355,6 +356,18 @@ final class QueryPlanTest extends DatabaseTestCase {
 					} catch ( CodedException $taken ) {
 						$this->assertSame( CatalogError::SkuTaken, $taken->errorCode() );
 					}
+
+					// The lifecycle's locking reads: a trash's, then a delete's, and the deletion's own.
+					$locked = $products->lockByPost( (int) $product->sourcePostId() );
+
+					$this->assertNotNull( $locked );
+
+					$products->lockVariants( (int) $locked->id() );
+
+					$deleted = $products->lockForDelete( (int) $locked->id() );
+
+					$this->assertNotNull( $deleted );
+					$this->assertNotSame( array(), $products->delete( $deleted ) );
 
 					throw $rollBack;
 				}

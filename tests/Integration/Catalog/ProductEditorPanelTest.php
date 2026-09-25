@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Integration\Catalog;
 
 use SEOCart\Catalog\Application\ProductWrite\CommerceFields;
 use SEOCart\Catalog\Domain\SellabilityReason;
+use SEOCart\Catalog\Infrastructure\ProductPostType;
 use SEOCart\Catalog\Interfaces\Admin\ProductEditorPanel;
 use SEOCart\Catalog\Interfaces\Rest\ProductCommerceSchema;
 use SEOCart\Platform\Authorization\ProductCapabilities;
@@ -49,6 +50,11 @@ final class ProductEditorPanelTest extends WP_UnitTestCase {
 	 */
 	public function set_up(): void {
 		parent::set_up();
+
+		// Another test may have unregistered the type the kernel registers on `init`; a screen of an unregistered type has no post type.
+		if ( ! post_type_exists( ProductCapabilities::POST_TYPE ) ) {
+			ProductPostType::register();
+		}
 
 		$this->directory = (string) tempnam( sys_get_temp_dir(), 'seocart-panel-' );
 

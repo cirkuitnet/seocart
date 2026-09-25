@@ -17,6 +17,10 @@ use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
+use SEOCart\Catalog\Application\Lifecycle\DeleteProduct;
+use SEOCart\Catalog\Application\Lifecycle\DuplicateProduct;
+use SEOCart\Catalog\Application\Lifecycle\PostLifecycle;
+use SEOCart\Catalog\Application\Lifecycle\Reconciler;
 use SEOCart\Catalog\Interfaces\Admin\ProductEditorPanel;
 use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
 use SEOCart\Inventory\Application\StockService;
@@ -56,7 +60,7 @@ final class CatalogWiringTest extends DatabaseTestCase {
 
 		$log = $this->captureQueries(
 			static function () use ( $container, &$resolved ): void {
-				foreach ( array( ProductRepository::class, Sellability::class, PostGateway::class, PostLocales::class, SaveProduct::class, ProductPostsController::class, ProductEditorPanel::class ) as $port ) {
+				foreach ( array( ProductRepository::class, Sellability::class, PostGateway::class, PostLocales::class, SaveProduct::class, ProductPostsController::class, ProductEditorPanel::class, Reconciler::class, DeleteProduct::class, DuplicateProduct::class, PostLifecycle::class ) as $port ) {
 					$resolved[ $port ] = get_class( $container->get( $port ) );
 				}
 			}
@@ -71,6 +75,10 @@ final class CatalogWiringTest extends DatabaseTestCase {
 				SaveProduct::class            => SaveProduct::class,
 				ProductPostsController::class => ProductPostsController::class,
 				ProductEditorPanel::class     => ProductEditorPanel::class,
+				Reconciler::class             => Reconciler::class,
+				DeleteProduct::class          => DeleteProduct::class,
+				DuplicateProduct::class       => DuplicateProduct::class,
+				PostLifecycle::class          => PostLifecycle::class,
 			),
 			$resolved
 		);

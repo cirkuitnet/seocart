@@ -37,4 +37,32 @@ enum ReportCode: string {
 	 * @since 0.1.0
 	 */
 	case ForeignSaveListener = 'catalog.foreign_save_post_listener';
+
+	/**
+	 * Under WP_DEBUG, a product post that is bound to a product was written by a path other than the plugin's save, such as Quick Edit or `wp post update`.
+	 *
+	 * @since 0.1.0
+	 */
+	case ForeignPostWrite = 'catalog.foreign_post_write';
+
+	/**
+	 * A product post the plugin did not write could not be given its `incomplete` product; the post stays unbound until doctor finds it.
+	 *
+	 * @since 0.1.0
+	 */
+	case ReconcileFailed = 'catalog.reconcile_failed';
+
+	/**
+	 * A product post went to the trash, and its variants' holds could not be released; they are reclaimed when they expire.
+	 *
+	 * @since 0.1.0
+	 */
+	case ReleaseFailed = 'catalog.release_failed';
+
+	/**
+	 * Deleting a product post was refused because its product could not be deleted with it; the post and every row stay as they were.
+	 *
+	 * @since 0.1.0
+	 */
+	case DeleteRefused = 'catalog.delete_refused';
 }

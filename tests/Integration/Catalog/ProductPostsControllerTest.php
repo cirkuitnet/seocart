@@ -254,10 +254,13 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 	/**
 	 * Tests that a product post no product is bound to reports `no_binding` and nothing else.
 	 *
+	 * The post is written as a writer that never fires `wp_after_insert_post` writes one, the
+	 * one way a product post stays unbound while the lifecycle is hooked.
+	 *
 	 * @since 0.1.0
 	 */
 	public function test_an_unbound_post_has_no_binding(): void {
-		$postId = $this->post();
+		$postId = $this->unboundPost();
 		$data   = $this->request( 'GET', '/' . $postId, array(), array( 'context' => 'edit' ) )->get_data();
 
 		$this->assertSame( array( 'sellability' => 'no_binding' ), $data[ ProductCommerceSchema::PROPERTY ] ?? null );

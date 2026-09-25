@@ -11,6 +11,10 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Catalog;
 
+use SEOCart\Catalog\Application\Lifecycle\DeleteProduct;
+use SEOCart\Catalog\Application\Lifecycle\DuplicateProduct;
+use SEOCart\Catalog\Application\Lifecycle\PostLifecycle;
+use SEOCart\Catalog\Application\Lifecycle\Reconciler;
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\GenerationState;
@@ -36,14 +40,15 @@ use SEOCart\Tests\Support\Doubles\RecordingWake;
 use SEOCart\Tests\Support\KernelContainer;
 
 /**
- * Builds SaveProduct over one connection from the production classes, the way the kernel does, with a test's reporter.
+ * Builds SaveProduct and the product lifecycle over one connection from the production classes, the way the kernel does, with a test's reporter.
  *
  * Owns one fact: what a product-write test replaces in the production wiring. The reporter is
  * the test's, so a report is recorded instead of logged; the base currency is the catalog
  * tests' one, CatalogTestCase::BASE_CURRENCY, instead of the settings'; the gateway looks for
- * other plugins' listeners only when asked to; and the outbox's wake is recorded instead of
- * queueing a drain. The stock service and everything else come from the kernel's own
- * bindings, over the given connection.
+ * other plugins' listeners only when asked to; the outbox's wake is recorded instead of
+ * queueing a drain; and the units of work run on the connection itself, because the test site
+ * is not installed and its schema gate would refuse them. The stock service and everything else
+ * come from the kernel's own bindings, over the given connection.
  *
  * The probe process a concurrency test starts (tests/Support/product-save-probe.php) builds
  * its service here too, and pauses at the barrier this class names.
@@ -92,13 +97,38 @@ final class ProductWrites {
 	 * @phpstan-param callable(string, array<string, mixed>): void $report
 	 */
 	public static function service( Database $db, callable $report, bool $debug = false ): SaveProduct {
-		$base      = static fn(): Currency => Currency::of( CatalogTestCase::BASE_CURRENCY );
-		$products  = new MysqlProductRepository( $db, $base );
-		$container = KernelContainer::build(
+		return self::services( $db, $report, $debug )->save;
+	}
+
+	/**
+	 * Builds the product write and the product lifecycle over one connection, sharing one post gateway, one stock service and one publisher.
+	 *
+	 * The lifecycle's units of work run on the given transaction manager, the connection itself
+	 * unless a test gives another, such as one that refuses as a closed schema gate does. The
+	 * product write always runs on the connection.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Database                $db           The connection every part uses.
+	 * @param callable                $report       Receives every report: a code (string) and its context (array).
+	 * @param bool                    $debug        Optional. Whether the gateway and the lifecycle report as under WP_DEBUG. Default false.
+	 * @param TransactionManager|null $transactions Optional. The lifecycle's transaction manager. Default the connection.
+	 * @return CatalogServices The services.
+	 *
+	 * @phpstan-param callable(string, array<string, mixed>): void $report
+	 */
+	public static function services( Database $db, callable $report, bool $debug = false, ?TransactionManager $transactions = null ): CatalogServices {
+		$base         = static fn(): Currency => Currency::of( CatalogTestCase::BASE_CURRENCY );
+		$products     = new MysqlProductRepository( $db, $base );
+		$posts        = new WordPressPostGateway( $db, $report, $debug );
+		$transactions = $transactions ?? $db;
+		$container    = KernelContainer::build(
 			$db,
 			$report,
 			array(
-				EventPublisher::class => static fn( Container $c ): EventPublisher => new Publisher(
+				// The site under test is not installed, so its schema gate is closed: the services work on the connection itself.
+				TransactionManager::class => static fn( Container $c ): TransactionManager => $c->get( Database::class ),
+				EventPublisher::class     => static fn( Container $c ): EventPublisher => new Publisher(
 					$c->get( TransactionManager::class ),
 					$c->get( Outbox::class ),
 					$c->get( HookBridge::class ),
@@ -109,19 +139,37 @@ final class ProductWrites {
 			)
 		);
 
-		return new SaveProduct(
+		$stock  = $container->get( StockService::class );
+		$events = $container->get( EventPublisher::class );
+		$clock  = $container->get( Clock::class );
+		$ids    = $container->get( IdGenerator::class );
+		$save   = new SaveProduct(
 			$products,
-			new WordPressPostGateway( $db, $report, $debug ),
-			$container->get( StockService::class ),
+			$posts,
+			$stock,
 			$db,
 			array( $container->get( LockService::class ), 'withLock' ),
-			$container->get( EventPublisher::class ),
+			$events,
 			new Sellability( $products ),
 			new SiteLocale(),
-			$container->get( Clock::class ),
-			$container->get( IdGenerator::class ),
+			$clock,
+			$ids,
 			$base,
 			$report
+		);
+
+		$reconciler = new Reconciler( $products, $transactions, new SiteLocale(), $clock, $ids );
+		$delete     = new DeleteProduct( $products, $stock, $transactions, $events, $clock );
+
+		return new CatalogServices(
+			$products,
+			$posts,
+			$stock,
+			$save,
+			$reconciler,
+			$delete,
+			new DuplicateProduct( $products, $save, $posts ),
+			new PostLifecycle( $products, $reconciler, $delete, $stock, $transactions, $posts, $report, $debug )
 		);
 	}
 

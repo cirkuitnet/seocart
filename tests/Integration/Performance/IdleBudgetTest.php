@@ -127,9 +127,12 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 *   operations' abilities when the Abilities API initialises;
 	 * - `seocart_job`, which runs one of the plugin's jobs for whichever copy of Action Scheduler
 	 *   fires it;
-	 * - `init`, which registers the product post type.
+	 * - `init`, which registers the product post type;
+	 * - `wp_after_insert_post`, `transition_post_status` and `pre_delete_post`, which keep a product
+	 *   consistent with its post whichever path writes, trashes or deletes it, and return at once
+	 *   for a post of another type.
 	 *
-	 * That is nine, with a margin of three. A site of a network adds NETWORK_PLUGIN_HOOKS.
+	 * That is twelve: the ceiling, with no margin left. A site of a network adds NETWORK_PLUGIN_HOOKS.
 	 *
 	 * @since 0.1.0
 	 *
@@ -332,9 +335,9 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	/**
 	 * Tests G4: the plugin registers the hooks it states, and no more.
 	 *
-	 * Planted violation:
-	 * `for ( $planted = 0; $planted < 4; $planted++ ) { add_action( 'wp_footer', array( self::class, 'hasBooted' ), 100 + $planted ); }`.
-	 * With the nine stated registrations that makes thirteen. The failure must list them.
+	 * Planted violation, in Modules::subscribe():
+	 * `add_action( 'wp_footer', static function (): void {} );`.
+	 * With the twelve stated registrations that makes thirteen. The failure must list them.
 	 *
 	 * @since 0.1.0
 	 */

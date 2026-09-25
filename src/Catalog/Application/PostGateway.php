@@ -19,7 +19,8 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: how the catalog's services reach WordPress posts, so no service calls a
  * WordPress function. write() is the product post's one write: it defers the
  * `wp_after_insert_post` hook, which runs where fireAfterInsert() is called, after the product's
- * transaction commits.
+ * transaction commits. While fireAfterInsert() runs, isFiringAfterInsert() says so for that
+ * post, which is how the post lifecycle tells the plugin's own writes from every other.
  *
  * @since 0.1.0
  */
@@ -51,6 +52,27 @@ interface PostGateway {
 	 * @param object|null $before The post as it was before the update, or null for an insert.
 	 */
 	public function fireAfterInsert( int $postId, bool $update, ?object $before ): void;
+
+	/**
+	 * Tells whether fireAfterInsert() is firing `wp_after_insert_post` for a post at this moment.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId The post's id.
+	 * @return bool True while this gateway fires the hook for the post: the write that reaches the hook is the plugin's.
+	 */
+	public function isFiringAfterInsert( int $postId ): bool;
+
+	/**
+	 * Returns what a copy of a product post takes from it: its title, content and excerpt, and its featured image.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId The post's id.
+	 * @return array<string, mixed>|null The fields, unslashed, as write() takes them, the featured image in `meta_input`
+	 *                                   when the post has one; null when the post is not a product post.
+	 */
+	public function contentOf( int $postId ): ?array;
 
 	/**
 	 * Returns a post's status.

@@ -201,7 +201,7 @@ final class ProductTest extends TestCase {
 		$product->applyCommerce( Sku::of( 'C-3' ), VariantPrice::net( $usd, 999 ), null, $usd );
 		$product->identify( 21, 22 );
 		$product->markSaved( array( 'sku', 'price_minor' ), self::instant() );
-		$product->markDeleted( self::instant() );
+		$product->markDeleted( array( 'C-3', 'C-3-NEXT' ), self::instant() );
 
 		$events = $product->releaseEvents();
 
@@ -224,7 +224,7 @@ final class ProductTest extends TestCase {
 			array(
 				'product_id' => 21,
 				'post_id'    => 42,
-				'skus'       => array( 'C-3' ),
+				'skus'       => array( 'C-3', 'C-3-NEXT' ),
 			),
 			$events[1]->toPayload()
 		);

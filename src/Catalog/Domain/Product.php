@@ -323,15 +323,19 @@ final class Product {
 	/**
 	 * Records that the product was deleted, with the SKUs its variants had.
 	 *
+	 * The SKUs are the ones the deletion read under the product's lock, of every variant it
+	 * deleted: the aggregate knows its default variant only, as it was loaded.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \LogicException When the product is not stored yet or has no source post.
 	 *
-	 * @param \DateTimeImmutable $at When it was deleted.
+	 * @param string[]           $skus The SKUs of the variants deleted with it, in the order of their ids.
+	 * @param \DateTimeImmutable $at   When it was deleted.
+	 *
+	 * @phpstan-param list<string> $skus
 	 */
-	public function markDeleted( \DateTimeImmutable $at ): void {
-		$skus = null === $this->defaultVariant ? array() : array( $this->defaultVariant->sku()->toString() );
-
+	public function markDeleted( array $skus, \DateTimeImmutable $at ): void {
 		$this->recordThat( new ProductDeleted( $this->storedId(), $this->sourcePostIdOrFail(), $skus, $at ) );
 	}
 

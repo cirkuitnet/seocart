@@ -150,6 +150,32 @@ final class ScriptedPostGateway implements PostGateway {
 	}
 
 	/**
+	 * Fires nothing, so it never is.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $postId Unused.
+	 * @return bool False.
+	 */
+	public function isFiringAfterInsert( int $postId ): bool {
+		return false;
+	}
+
+	/**
+	 * Not used by the product write.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $postId Unused.
+	 * @return never
+	 */
+	public function contentOf( int $postId ): never {
+		throw new \LogicException( 'The product write reads no post to copy.' );
+	}
+
+	/**
 	 * Returns `publish` for a post that exists.
 	 *
 	 * @since 0.1.0

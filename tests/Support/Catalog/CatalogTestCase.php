@@ -153,6 +153,35 @@ abstract class CatalogTestCase extends DatabaseTestCase {
 	}
 
 	/**
+	 * Writes a product post as a writer that never fires `wp_after_insert_post` does, committed, and deletes it after the test.
+	 *
+	 * No product lifecycle hears of it, so it stays unbound even where the lifecycle is hooked:
+	 * the post a plugin leaves by calling wp_insert_post() with its after hooks off.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $status Optional. The post status. Default `publish`.
+	 * @return int The post's id.
+	 */
+	protected function unboundPost( string $status = 'publish' ): int {
+		$postId = wp_insert_post(
+			array(
+				'post_type'   => ProductCapabilities::POST_TYPE,
+				'post_status' => $status,
+				'post_title'  => 'Unbound product',
+			),
+			true,
+			false
+		);
+
+		$this->assertIsInt( $postId, 'The fixture post was not written.' );
+
+		$this->trackPost( $postId );
+
+		return $postId;
+	}
+
+	/**
 	 * Deletes a post after the test, one written by the code under test.
 	 *
 	 * @since 0.1.0

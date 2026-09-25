@@ -33,11 +33,12 @@ use SEOCart\Tests\Support\RunningProbe;
 use SEOCart\Tests\Support\SecondConnection;
 
 /**
- * A CatalogTestCase with the outbox and stock tables, and SaveProduct built over the test's connection.
+ * A CatalogTestCase with the outbox and stock tables, and SaveProduct and the product lifecycle built over the test's connection.
  *
  * Owns one fact: how a product-write test saves, forces a save to fail, and reads what was
  * committed. What was committed is read through a second connection, which sees nothing a
- * window has not committed. A post the service creates is deleted after the test.
+ * window has not committed. A post the service creates is deleted after the test. The product
+ * lifecycle is built but not hooked: a test that wants it calls `$this->services->attach()`.
  *
  * @since 0.1.0
  */
@@ -62,7 +63,16 @@ abstract class ProductWriteTestCase extends CatalogTestCase {
 	protected SaveProduct $service;
 
 	/**
-	 * Creates the outbox and stock tables, and builds the service.
+	 * The product write and the product lifecycle over the test's connection; `$service` is its product write.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var CatalogServices
+	 */
+	protected CatalogServices $services;
+
+	/**
+	 * Creates the outbox and stock tables, and builds the services.
 	 *
 	 * @since 0.1.0
 	 */
@@ -74,7 +84,8 @@ abstract class ProductWriteTestCase extends CatalogTestCase {
 		( new CreateOutboxMigration() )->up( $operations );
 		( new CreateStockTablesMigration() )->up( $operations );
 
-		$this->service = ProductWrites::service( $this->db, $this->reporter() );
+		$this->services = ProductWrites::services( $this->db, $this->reporter() );
+		$this->service  = $this->services->save;
 	}
 
 	/**
@@ -213,6 +224,26 @@ abstract class ProductWriteTestCase extends CatalogTestCase {
 	 */
 	protected function committedCount( SecondConnection $b, string $table, string $where = '1 = 1' ): int {
 		return (int) $b->fetchValue( sprintf( 'SELECT COUNT(*) FROM `%s` WHERE %s', $this->db->table( $table ), $where ) );
+	}
+
+	/**
+	 * Reads the checksum of each of the four catalog tables, as a second connection sees them.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param SecondConnection $b The second connection.
+	 * @return array<string, string> The checksum of each table, by name.
+	 *
+	 * @phpstan-impure
+	 */
+	protected function catalogChecksums( SecondConnection $b ): array {
+		$sums = array();
+
+		foreach ( array( CatalogTables::PRODUCTS, CatalogTables::PRODUCT_POSTS, CatalogTables::VARIANTS, CatalogTables::VARIANT_PRICES ) as $table ) {
+			$sums[ $table ] = (string) ( $b->fetchRow( sprintf( 'CHECKSUM TABLE `%s`', $this->db->table( $table ) ) )['Checksum'] ?? '' );
+		}
+
+		return $sums;
 	}
 
 	/**
