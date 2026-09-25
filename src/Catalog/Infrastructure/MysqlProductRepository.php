@@ -661,18 +661,26 @@ final class MysqlProductRepository implements ProductRepository {
 
 			$variantId = $this->db->lastInsertId();
 		} else {
+			$weight = self::placeholder( $variant->weightGrams() );
+
+			// A row whose values are all unchanged is left alone, so its updated_at keeps saying when it last changed.
 			$this->translatingSkuCollision(
 				$variant->sku(),
 				$variantId,
 				fn(): int => $this->db->execute(
-					'UPDATE %i SET sku = %s, generation = %d, is_enabled = %d, weight_grams = ' . self::placeholder( $variant->weightGrams() ) . ', updated_at = UTC_TIMESTAMP() WHERE id = %d',
+					'UPDATE %i SET sku = %s, generation = %d, is_enabled = %d, weight_grams = ' . $weight . ', updated_at = UTC_TIMESTAMP()'
+						. ' WHERE id = %d AND NOT ( CAST( sku AS BINARY ) <=> CAST( %s AS BINARY ) AND generation <=> %d AND is_enabled <=> %d AND weight_grams <=> ' . $weight . ' )',
 					...self::given(
 						$this->table( CatalogTables::VARIANTS ),
 						$variant->sku()->toString(),
 						$variant->generation(),
 						$variant->isEnabled() ? 1 : 0,
 						$variant->weightGrams(),
-						$variantId
+						$variantId,
+						$variant->sku()->toString(),
+						$variant->generation(),
+						$variant->isEnabled() ? 1 : 0,
+						$variant->weightGrams()
 					)
 				)
 			);
@@ -705,14 +713,19 @@ final class MysqlProductRepository implements ProductRepository {
 
 		$compareAt = self::placeholder( $price->compareAtMinor() );
 
+		// updated_at is assigned first, so it compares the stored values before they are overwritten: an unchanged price keeps it.
 		$this->db->execute(
 			'INSERT INTO %i ( variant_id, currency, amount_basis, price_minor, compare_at_minor, created_at, updated_at )'
 				. ' VALUES ( %d, %s, %s, %d, ' . $compareAt . ', UTC_TIMESTAMP(), UTC_TIMESTAMP() )'
-				. ' ON DUPLICATE KEY UPDATE amount_basis = %s, price_minor = %d, compare_at_minor = ' . $compareAt . ', updated_at = UTC_TIMESTAMP()',
+				. ' ON DUPLICATE KEY UPDATE updated_at = IF( CAST( amount_basis AS BINARY ) <=> CAST( %s AS BINARY ) AND price_minor <=> %d AND compare_at_minor <=> ' . $compareAt . ', updated_at, UTC_TIMESTAMP() ),'
+				. ' amount_basis = %s, price_minor = %d, compare_at_minor = ' . $compareAt,
 			...self::given(
 				$table,
 				$variantId,
 				$price->currency()->code(),
+				$price->amountBasis(),
+				$price->priceMinor(),
+				$price->compareAtMinor(),
 				$price->amountBasis(),
 				$price->priceMinor(),
 				$price->compareAtMinor(),

@@ -22,6 +22,7 @@ use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Kernel\Kernel;
 use SEOCart\Tests\Support\Catalog\ProductRestTestCase;
+use SEOCart\Tests\Support\SecondConnection;
 
 /**
  * An update or a create through `wp/v2/seocart-products` is one product save: the post and the
@@ -282,6 +283,63 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 	}
 
 	/**
+	 * Tests that sending back the commerce fields a product already has rewrites no commerce row.
+	 *
+	 * The rows are aged first, so a rewrite shows in the checksum whatever second the save runs in.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_unchanged_commerce_fields_rewrite_no_row(): void {
+		$b      = $this->secondConnection();
+		$saved  = $this->savedProduct();
+		$tables = array( CatalogTables::VARIANTS, CatalogTables::VARIANT_PRICES );
+		$sent   = $this->request( 'GET', '/' . $saved->postId, array(), array( 'context' => 'edit' ) )->get_data()[ ProductCommerceSchema::PROPERTY ] ?? array();
+
+		$this->assertArrayHasKey( 'sku', $sent, 'The edit context returned no commerce fields to send back.' );
+		$this->assertArrayHasKey( 'price_minor', $sent, 'The edit context returned no price to send back.' );
+
+		$this->ageCommerceRows( $b, (int) $saved->variantId );
+		$before   = array_intersect_key( $this->catalogChecksums( $b ), array_flip( $tables ) );
+		$response = $this->request( 'PUT', '/' . $saved->postId, array( ProductCommerceSchema::PROPERTY => array_diff_key( $sent, array_flip( array( ProductCommerceSchema::SELLABILITY, ProductCommerceSchema::GENERATION_STATE ) ) ) ) );
+
+		$this->assertSame( 200, $response->get_status(), (string) wp_json_encode( $response->get_data() ) );
+		$this->assertSame( $before, array_intersect_key( $this->catalogChecksums( $b ), array_flip( $tables ) ), 'An unchanged variant or price row was rewritten.' );
+	}
+
+	/**
+	 * Tests that a change to one commerce field alone is still written, whatever the unchanged-row guard compares.
+	 *
+	 * A SKU that changes only its case, a weight set and then cleared, and a compare-at price each reach their row,
+	 * and the price row's updated_at moves with its change.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_change_to_one_field_alone_is_written(): void {
+		$b         = $this->secondConnection();
+		$saved     = $this->savedProduct( 'Case-Sku' );
+		$variantId = (int) $saved->variantId;
+		$variant   = sprintf( 'SELECT %%s FROM `%s` WHERE id = %d', $this->db->table( CatalogTables::VARIANTS ), $variantId );
+		$price     = sprintf( 'SELECT %%s FROM `%s` WHERE variant_id = %d', $this->db->table( CatalogTables::VARIANT_PRICES ), $variantId );
+		$put       = fn( array $fields ): int => $this->request( 'PUT', '/' . $saved->postId, array( ProductCommerceSchema::PROPERTY => $fields ) )->get_status();
+
+		$this->assertSame( 200, $put( array( 'sku' => 'CASE-SKU' ) ) );
+		$this->assertSame( 'CASE-SKU', $b->fetchValue( sprintf( $variant, 'sku' ) ), 'A change of case alone was not written.' );
+
+		$this->assertSame( 200, $put( array( 'weight_grams' => 250 ) ) );
+		$this->assertSame( '250', $b->fetchValue( sprintf( $variant, 'weight_grams' ) ), 'A weight set alone was not written.' );
+
+		$this->assertSame( 200, $put( array( 'weight_grams' => null ) ) );
+		$this->assertNull( $b->fetchValue( sprintf( $variant, 'weight_grams' ) ), 'A weight cleared alone was not written.' );
+
+		$this->ageCommerceRows( $b, $variantId );
+		$aged = $b->fetchValue( sprintf( $price, 'updated_at' ) );
+
+		$this->assertSame( 200, $put( array( 'compare_at_minor' => 2999 ) ) );
+		$this->assertSame( '2999', $b->fetchValue( sprintf( $price, 'compare_at_minor' ) ), 'A compare-at price set alone was not written.' );
+		$this->assertNotSame( $aged, $b->fetchValue( sprintf( $price, 'updated_at' ) ), 'A compare-at price changed alone left the row\'s updated_at behind.' );
+	}
+
+	/**
 	 * Tests that the read-only fields a client sends back are ignored, as core ignores a read-only property.
 	 *
 	 * @since 0.1.0
@@ -313,8 +371,8 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_read_only_fields_alone_change_nothing(): void {
-		$b       = $this->secondConnection();
-		$saved   = $this->save(
+		$b      = $this->secondConnection();
+		$saved  = $this->save(
 			null,
 			array(
 				'post_title'  => 'Without a price',
@@ -322,7 +380,8 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 			),
 			array( 'sku' => 'SKU-RO' )
 		);
-		$tables  = array( CatalogTables::VARIANTS, CatalogTables::VARIANT_PRICES );
+		$tables = array( CatalogTables::VARIANTS, CatalogTables::VARIANT_PRICES );
+		$this->ageCommerceRows( $b, (int) $saved->variantId );
 		$before  = array_intersect_key( $this->catalogChecksums( $b ), array_flip( $tables ) );
 		$claimed = array(
 			ProductCommerceSchema::SELLABILITY      => SellabilityReason::Sellable->value,
@@ -710,5 +769,18 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 			10,
 			4
 		);
+	}
+
+	/**
+	 * Moves a variant's and its prices' updated_at five seconds into the past, committed.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param SecondConnection $b         The second connection.
+	 * @param int              $variantId The variant.
+	 */
+	private function ageCommerceRows( SecondConnection $b, int $variantId ): void {
+		$b->query( sprintf( 'UPDATE `%s` SET updated_at = updated_at - INTERVAL 5 SECOND WHERE id = %d', $this->db->table( CatalogTables::VARIANTS ), $variantId ) );
+		$b->query( sprintf( 'UPDATE `%s` SET updated_at = updated_at - INTERVAL 5 SECOND WHERE variant_id = %d', $this->db->table( CatalogTables::VARIANT_PRICES ), $variantId ) );
 	}
 }
