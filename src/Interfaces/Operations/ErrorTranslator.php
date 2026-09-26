@@ -32,7 +32,9 @@ defined( 'ABSPATH' ) || exit;
  *   so every error on the route has one shape.
  *
  * The REST foundation provides the implementation, RestErrorTranslator, which takes the status
- * and the message from the one error table and adds the details and the request's correlation id.
+ * and the message from the one error table and adds the details — the values of the message's
+ * placeholders, and the structured details the row declares, such as a cart's totals — and the
+ * request's correlation id.
  *
  * @since 0.1.0
  */

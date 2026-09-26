@@ -10,8 +10,10 @@
  * Every request here is a guest's: a request context of its own, without the administrator's
  * session the other specs share. The page read is a post the spec publishes and deletes again.
  *
- * The Store API has no write yet, so the refusal of a write without its request header is
- * proven by the integration suite, through the production wiring, until the first write lands.
+ * The cart: a write without the Store API's request header is refused and changes nothing; the
+ * first write, which creates the cart, gets the cart cookie; a read of the cart gets none. The
+ * cart's lines name a variant no product has, which the cart keeps and reports unpriced, so the
+ * spec needs no catalog.
  */
 
 import type { APIRequestContext, APIResponse } from '@playwright/test';
@@ -23,6 +25,15 @@ const STORE_NAMESPACE = 'seocart/store/v1';
 
 /** Every Store API answer carries this, a guest's included. */
 const NO_STORE = 'no-store, private';
+
+/** The header every Store API write carries. */
+const STORE_HEADER = { 'X-SEOCart-Store': '1' };
+
+/** The cookie that carries a browser's cart token. */
+const CART_COOKIE = 'seocart_cart_token';
+
+/** A variant no product has: the cart keeps its line and reports it unpriced. */
+const UNKNOWN_VARIANT = 990001;
 
 /** Returns the site's home URL, with its trailing slash. */
 function home(): string {
@@ -69,9 +80,12 @@ test.describe( 'Store API, as a guest', () => {
 	let guest: APIRequestContext;
 
 	test.beforeEach( async ( { playwright } ) => {
+		// An empty storage state: a new request context otherwise takes the configured one, the
+		// administrator's session, and its login cookie would make every request a user's.
 		guest = await playwright.request.newContext( {
 			baseURL: siteBaseURL(),
 			ignoreHTTPSErrors: ignoreHTTPSErrors(),
+			storageState: { cookies: [], origins: [] },
 		} );
 	} );
 
@@ -126,6 +140,73 @@ test.describe( 'Store API, as a guest', () => {
 				params: { force: true },
 			} );
 		}
+	} );
+
+	test( 'a cart write without the Store API header is refused and changes nothing', async () => {
+		const refused = await guest.post(
+			restUrl( `/${ STORE_NAMESPACE }/cart/lines` ),
+			{
+				data: {
+					lines: [ { variant_id: UNKNOWN_VARIANT, quantity: 1 } ],
+				},
+			}
+		);
+
+		expect( refused.status() ).toBe( 403 );
+		expect(
+			setCookies( refused ),
+			'A refused write set a cookie.'
+		).toEqual( [] );
+		expect( ( await refused.json() ).code ).toBe(
+			'store_api.header_missing'
+		);
+
+		const read = await guest.get( restUrl( `/${ STORE_NAMESPACE }/cart` ) );
+		const cart = await read.json();
+
+		expect( cart.version, 'The refused write created a cart.' ).toBe( 0 );
+		expect( cart.lines ).toEqual( [] );
+	} );
+
+	test( 'the first cart write gets the cart cookie, and a read of the cart gets none', async () => {
+		const first = await guest.post(
+			restUrl( `/${ STORE_NAMESPACE }/cart/lines` ),
+			{
+				headers: STORE_HEADER,
+				data: {
+					lines: [ { variant_id: UNKNOWN_VARIANT, quantity: 2 } ],
+				},
+			}
+		);
+
+		expect( first.status() ).toBe( 200 );
+		expect( first.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+
+		const cookies = setCookies( first );
+
+		expect( cookies, 'The first write set no cart cookie.' ).toHaveLength(
+			1
+		);
+		expect( cookies[ 0 ] ).toMatch(
+			new RegExp( `^${ CART_COOKIE }=[0-9a-f]{64};` )
+		);
+		expect( cookies[ 0 ].toLowerCase() ).toContain( 'httponly' );
+
+		const created = await first.json();
+
+		expect( created.version ).toBe( 1 );
+		expect( created.unpriced_lines ).toHaveLength( 1 );
+
+		// The request context keeps the cookie, as a browser does, so this read names the cart.
+		const read = await guest.get( restUrl( `/${ STORE_NAMESPACE }/cart` ) );
+
+		expect( read.status() ).toBe( 200 );
+		expect(
+			setCookies( read ),
+			'A read of the cart set a cookie.'
+		).toEqual( [] );
+		expect( read.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+		expect( ( await read.json() ).version ).toBe( 1 );
 	} );
 
 	test( 'an unknown Store API path is answered in the one error shape, never cached', async () => {

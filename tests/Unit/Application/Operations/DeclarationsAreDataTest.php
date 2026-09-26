@@ -25,8 +25,10 @@ use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
  * - call no WordPress function at all, gettext included (each one is counted by name);
  * - touch `$wpdb` in no way;
  * - open no file but the class files of the declaration mechanism, the capability declaration, the
- *   stock adjustment's declaration with the two enums it reads, and the fixture — no settings file,
- *   no service, no container, no kernel, no database layer.
+ *   stock adjustment's declaration with the two enums it reads, the cart's declarations with the
+ *   error catalogs, the two domain classes whose limits they state and the declared shape of
+ *   totals with the enums it lists, and the fixture — no settings file, no service, no container,
+ *   no kernel, no database layer.
  *
  * The probe can also add an operation whose factory translates a string, reads an option and reads
  * a file; the second test runs it that way and requires each of the three to be reported, so a
@@ -64,6 +66,20 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Cart/Interfaces/StoreApi/StoreOperations.php',
 		'src/Cart/Interfaces/StoreApi/StoreApiError.php',
 		'src/Cart/Interfaces/StoreApi/StoreRequestPolicy.php',
+		'src/Cart/Interfaces/StoreApi/CartOperations.php',
+		'src/Cart/Application/CartError.php',
+		'src/Cart/Domain/Cart.php',
+		'src/Cart/Domain/CartLine.php',
+		'src/Pricing/Interfaces/TotalsFields.php',
+		'src/Pricing/Application/UnpricedLine.php',
+		'src/Pricing/Domain/PricingError.php',
+		'src/Pricing/Domain/AmountBasis.php',
+		'src/Pricing/Domain/AdjustmentBase.php',
+		'src/Pricing/Domain/PriceSource.php',
+		'src/Pricing/Domain/Totals/AdjustmentScope.php',
+		'src/Pricing/Domain/Totals/AdjustmentType.php',
+		'src/Tax/Domain/CrossZonePolicy.php',
+		'src/Tax/Domain/TaxRoundingMode.php',
 		'src/Platform/RateLimiter/RateLimit.php',
 		'tests/Fixtures/Operations/',
 	);

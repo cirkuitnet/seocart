@@ -22,6 +22,373 @@
         }
     ],
     "paths": {
+        "/cart": {
+            "servers": [
+                {
+                    "url": "{site}/wp-json/seocart/store/v1",
+                    "variables": {
+                        "site": {
+                            "default": "https://example.com",
+                            "description": "The address of the WordPress site."
+                        }
+                    }
+                }
+            ],
+            "get": {
+                "operationId": "cart.get_cart",
+                "summary": "Returns the cart the request's token names, or an empty cart at version 0 when there is none; it never creates a cart and never sets a cookie.",
+                "description": "Public: requires no capability, and anyone may send it.",
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the Cart resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Cart"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`pricing.quote_unavailable`: an internal failure, answered with a generic message and empty details. The site's error log has what went wrong, under the correlation id.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/cart/lines": {
+            "servers": [
+                {
+                    "url": "{site}/wp-json/seocart/store/v1",
+                    "variables": {
+                        "site": {
+                            "default": "https://example.com",
+                            "description": "The address of the WordPress site."
+                        }
+                    }
+                }
+            ],
+            "post": {
+                "operationId": "cart.add_lines",
+                "summary": "Adds one to fifty lines to the cart, a line the cart holds already gaining the units, and starts a cart, whose token the answer carries, when the request names none.",
+                "description": "Public: requires no capability. The Store API's request policy requires the header `X-SEOCart-Store: 1`, the `X-WP-Nonce` header when a login cookie is sent, and at most 60 requests per client in 60 seconds.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "lines": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "variant_id": {
+                                                    "type": "integer",
+                                                    "minimum": 1,
+                                                    "description": "The variant the line holds."
+                                                },
+                                                "quantity": {
+                                                    "type": "integer",
+                                                    "minimum": 1,
+                                                    "maximum": 99999,
+                                                    "description": "How many units of the variant: a line holds at most 99999, and units added beyond fill it to that."
+                                                }
+                                            },
+                                            "required": [
+                                                "variant_id",
+                                                "quantity"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        "minItems": 1,
+                                        "maxItems": 50,
+                                        "description": "The lines to add: a variant and how many of it. Lines of one variant are added up.",
+                                        "examples": [
+                                            [
+                                                {
+                                                    "variant_id": 42,
+                                                    "quantity": 2
+                                                }
+                                            ]
+                                        ]
+                                    },
+                                    "cart_version": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "default": 0,
+                                        "description": "The version of the cart the write is based on: the version of the last answer, or 0 when the client has no cart.",
+                                        "examples": [
+                                            3
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "lines"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the Cart resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Cart"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "`store_api.header_missing`: This request changes the store, so it must carry the header X-SEOCart-Store: 1.\n\n`store_api.nonce_missing`: You are logged in, but this request carries no valid nonce, so it would run as a guest. Fetch a new nonce, send it as X-WP-Nonce, and try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`cart.not_found`: There is no cart for this request: it was never started, or it has expired. Start a new cart by adding a line.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "405": {
+                        "description": "`store_api.read_method`: This request changes the store, so it must be sent as a POST, PUT, PATCH or DELETE request. A GET or HEAD request never changes it, whatever method it names.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`cart.version_stale`: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.\n\n`cart.not_open`: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.\n\n`cart.too_many_lines`: A cart holds at most {max_lines} lines, so these lines were not added. Remove a line, or place an order and start a new cart.\n\n`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "`cart.creation_limited`: Too many carts have been started from here today. Try again later.\n\n`store_api.rate_limited`: Too many requests. Wait a moment, then try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`pricing.quote_unavailable`: an internal failure, answered with a generic message and empty details. The site's error log has what went wrong, under the correlation id.\n\n`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/cart/lines/{line_identity}": {
+            "servers": [
+                {
+                    "url": "{site}/wp-json/seocart/store/v1",
+                    "variables": {
+                        "site": {
+                            "default": "https://example.com",
+                            "description": "The address of the WordPress site."
+                        }
+                    }
+                }
+            ],
+            "patch": {
+                "operationId": "cart.update_line",
+                "summary": "Sets the quantity of one line of the cart, named by its identity; a quantity of 0 removes the line.",
+                "description": "Public: requires no capability. The Store API's request policy requires the header `X-SEOCart-Store: 1`, the `X-WP-Nonce` header when a login cookie is sent, the cart's token, and at most 60 requests per client in 60 seconds.",
+                "parameters": [
+                    {
+                        "name": "line_identity",
+                        "in": "path",
+                        "required": true,
+                        "description": "The line's identity: 64 hexadecimal characters that stay the same for as long as the line is in the cart.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "examples": [
+                                "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "quantity": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 99999,
+                                        "description": "How many units the line holds after the change; 0 removes the line.",
+                                        "examples": [
+                                            2
+                                        ]
+                                    },
+                                    "cart_version": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "description": "The version of the cart the write is based on: the version of the last answer.",
+                                        "examples": [
+                                            3
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "quantity",
+                                    "cart_version"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the Cart resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Cart"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`store_api.cart_token_missing`: This request changes an existing cart, so it must carry the cart's token.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "`store_api.header_missing`: This request changes the store, so it must carry the header X-SEOCart-Store: 1.\n\n`store_api.nonce_missing`: You are logged in, but this request carries no valid nonce, so it would run as a guest. Fetch a new nonce, send it as X-WP-Nonce, and try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`cart.not_found`: There is no cart for this request: it was never started, or it has expired. Start a new cart by adding a line.\n\n`cart.line_not_found`: The cart has no line {line_identity}.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "405": {
+                        "description": "`store_api.read_method`: This request changes the store, so it must be sent as a POST, PUT, PATCH or DELETE request. A GET or HEAD request never changes it, whatever method it names.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`cart.version_stale`: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.\n\n`cart.not_open`: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.\n\n`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "`store_api.rate_limited`: Too many requests. Wait a moment, then try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`pricing.quote_unavailable`: an internal failure, answered with a generic message and empty details. The site's error log has what went wrong, under the correlation id.\n\n`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/session": {
             "servers": [
                 {
@@ -351,6 +718,825 @@
     },
     "components": {
         "schemas": {
+            "Cart": {
+                "type": "object",
+                "properties": {
+                    "version": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The cart's version: 0 when there is no cart, then one more after every accepted write. Send it with the next write, and discard an answer whose version is lower than one already seen.",
+                        "examples": [
+                            3
+                        ]
+                    },
+                    "lines": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "line_identity": {
+                                    "type": "string",
+                                    "maxLength": 64,
+                                    "description": "The line's identity: 64 hexadecimal characters that stay the same for as long as the line is in the cart."
+                                },
+                                "variant_id": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "The variant the line holds."
+                                },
+                                "quantity": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 99999,
+                                    "description": "How many units of the variant: a line holds at most 99999, and units added beyond fill it to that."
+                                }
+                            },
+                            "required": [
+                                "line_identity",
+                                "variant_id",
+                                "quantity"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "maxItems": 50,
+                        "description": "The cart's lines, in the order they were added.",
+                        "examples": [
+                            [
+                                {
+                                    "line_identity": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+                                    "variant_id": 42,
+                                    "quantity": 2
+                                }
+                            ]
+                        ]
+                    },
+                    "totals": {
+                        "type": "object",
+                        "properties": {
+                            "currency": {
+                                "type": "string",
+                                "description": "The ISO 4217 code of the currency every amount is in."
+                            },
+                            "base_currency": {
+                                "type": "string",
+                                "description": "The ISO 4217 code of the store's base currency, which every base_ amount is in."
+                            },
+                            "conversion_context": {
+                                "type": "string",
+                                "description": "The fingerprint of the exchange rates the base amounts were converted at."
+                            },
+                            "rate_version": {
+                                "type": "integer",
+                                "description": "The version of the exchange rates the base amounts were converted at."
+                            },
+                            "cross_zone_policy": {
+                                "type": "string",
+                                "enum": [
+                                    "fixed_net",
+                                    "fixed_gross"
+                                ],
+                                "description": "What stays fixed when a price is sold into another tax zone."
+                            },
+                            "tax_rounding_mode": {
+                                "type": "string",
+                                "enum": [
+                                    "per_line",
+                                    "per_subtotal"
+                                ],
+                                "description": "Where tax was rounded: per line or per subtotal."
+                            },
+                            "calculated_at": {
+                                "type": "string",
+                                "description": "When the totals were calculated, in UTC."
+                            },
+                            "lines": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "key": {
+                                            "type": "string",
+                                            "description": "The line's key: a cart line's identity."
+                                        },
+                                        "variant_id": {
+                                            "type": "integer",
+                                            "description": "The variant priced."
+                                        },
+                                        "quantity": {
+                                            "type": "integer",
+                                            "description": "The units priced."
+                                        },
+                                        "unit_price_minor": {
+                                            "type": "integer",
+                                            "description": "The price of one unit as authored, in minor units."
+                                        },
+                                        "unit_amount_basis": {
+                                            "type": "string",
+                                            "enum": [
+                                                "net",
+                                                "gross"
+                                            ],
+                                            "description": "Whether the unit price was authored net or gross of tax."
+                                        },
+                                        "price_source": {
+                                            "type": "string",
+                                            "enum": [
+                                                "explicit",
+                                                "converted",
+                                                "auto_added"
+                                            ],
+                                            "description": "Where the unit price came from."
+                                        },
+                                        "tax_class": {
+                                            "type": "string",
+                                            "description": "The tax class the line is taxed in."
+                                        },
+                                        "auto_added": {
+                                            "type": "boolean",
+                                            "description": "Whether a promotion added the line."
+                                        },
+                                        "line_subtotal_minor": {
+                                            "type": "integer",
+                                            "description": "The unit price times the quantity, before discounts, in minor units."
+                                        },
+                                        "line_discount_minor": {
+                                            "type": "integer",
+                                            "description": "The discounts given on the line, in minor units."
+                                        },
+                                        "base_line_subtotal_minor": {
+                                            "type": "integer",
+                                            "description": "The line subtotal in the base currency, in minor units."
+                                        },
+                                        "base_line_discount_minor": {
+                                            "type": "integer",
+                                            "description": "The line discount in the base currency, in minor units."
+                                        },
+                                        "unit_gross_for_display_minor": {
+                                            "type": "integer",
+                                            "description": "The price of one unit with tax, for display, in minor units."
+                                        },
+                                        "net_minor": {
+                                            "type": "integer",
+                                            "description": "The net amount of the line after discounts, in minor units."
+                                        },
+                                        "tax_minor": {
+                                            "type": "integer",
+                                            "description": "The tax on the line after discounts, in minor units."
+                                        },
+                                        "gross_minor": {
+                                            "type": "integer",
+                                            "description": "The gross amount of the line after discounts, in minor units."
+                                        },
+                                        "base_net_minor": {
+                                            "type": "integer",
+                                            "description": "The net amount of the line after discounts in the base currency, in minor units."
+                                        },
+                                        "base_tax_minor": {
+                                            "type": "integer",
+                                            "description": "The tax on the line after discounts in the base currency, in minor units."
+                                        },
+                                        "base_gross_minor": {
+                                            "type": "integer",
+                                            "description": "The gross amount of the line after discounts in the base currency, in minor units."
+                                        },
+                                        "components": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "component_key": {
+                                                        "type": "string",
+                                                        "description": "The component's key."
+                                                    },
+                                                    "owner_line_key": {
+                                                        "type": [
+                                                            "string",
+                                                            "null"
+                                                        ],
+                                                        "description": "The key of the line taxed; null for an adjustment."
+                                                    },
+                                                    "owner_adjustment_position": {
+                                                        "type": [
+                                                            "integer",
+                                                            "null"
+                                                        ],
+                                                        "description": "The position of the adjustment taxed; null for a line."
+                                                    },
+                                                    "jurisdiction_code": {
+                                                        "type": "string",
+                                                        "description": "The jurisdiction that levies the rate."
+                                                    },
+                                                    "rate_ref": {
+                                                        "type": "string",
+                                                        "description": "The reference of the rate applied."
+                                                    },
+                                                    "rate_name": {
+                                                        "type": "string",
+                                                        "description": "The name of the rate applied."
+                                                    },
+                                                    "rate_micropercent": {
+                                                        "type": "integer",
+                                                        "description": "The rate, in millionths of a percent."
+                                                    },
+                                                    "is_compound": {
+                                                        "type": "boolean",
+                                                        "description": "Whether the rate is levied on the tax of the rates before it."
+                                                    },
+                                                    "priority": {
+                                                        "type": "integer",
+                                                        "description": "The order compound rates are applied in."
+                                                    },
+                                                    "authored_basis": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                            "net",
+                                                            "gross"
+                                                        ],
+                                                        "description": "Whether the amount taxed was authored net or gross of tax."
+                                                    },
+                                                    "residual_minor": {
+                                                        "type": "integer",
+                                                        "description": "The minor unit the split gave this component beyond its exact share: 0, or 1 with the tax's sign."
+                                                    },
+                                                    "net_minor": {
+                                                        "type": "integer",
+                                                        "description": "The net amount of the component, in minor units."
+                                                    },
+                                                    "tax_minor": {
+                                                        "type": "integer",
+                                                        "description": "The tax on the component, in minor units."
+                                                    },
+                                                    "gross_minor": {
+                                                        "type": "integer",
+                                                        "description": "The gross amount of the component, in minor units."
+                                                    },
+                                                    "base_net_minor": {
+                                                        "type": "integer",
+                                                        "description": "The net amount of the component in the base currency, in minor units."
+                                                    },
+                                                    "base_tax_minor": {
+                                                        "type": "integer",
+                                                        "description": "The tax on the component in the base currency, in minor units."
+                                                    },
+                                                    "base_gross_minor": {
+                                                        "type": "integer",
+                                                        "description": "The gross amount of the component in the base currency, in minor units."
+                                                    }
+                                                },
+                                                "required": [
+                                                    "component_key",
+                                                    "owner_line_key",
+                                                    "owner_adjustment_position",
+                                                    "jurisdiction_code",
+                                                    "rate_ref",
+                                                    "rate_name",
+                                                    "rate_micropercent",
+                                                    "is_compound",
+                                                    "priority",
+                                                    "authored_basis",
+                                                    "residual_minor",
+                                                    "net_minor",
+                                                    "tax_minor",
+                                                    "gross_minor",
+                                                    "base_net_minor",
+                                                    "base_tax_minor",
+                                                    "base_gross_minor"
+                                                ],
+                                                "additionalProperties": false
+                                            },
+                                            "description": "The tax, one component per rate applied."
+                                        }
+                                    },
+                                    "required": [
+                                        "key",
+                                        "variant_id",
+                                        "quantity",
+                                        "unit_price_minor",
+                                        "unit_amount_basis",
+                                        "price_source",
+                                        "tax_class",
+                                        "auto_added",
+                                        "line_subtotal_minor",
+                                        "line_discount_minor",
+                                        "base_line_subtotal_minor",
+                                        "base_line_discount_minor",
+                                        "unit_gross_for_display_minor",
+                                        "net_minor",
+                                        "tax_minor",
+                                        "gross_minor",
+                                        "base_net_minor",
+                                        "base_tax_minor",
+                                        "base_gross_minor",
+                                        "components"
+                                    ],
+                                    "additionalProperties": false
+                                },
+                                "description": "The priced lines, in the order of the cart."
+                            },
+                            "adjustments": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "position": {
+                                            "type": "integer",
+                                            "description": "The adjustment's place in the order adjustments were applied, from 0."
+                                        },
+                                        "scope": {
+                                            "type": "string",
+                                            "enum": [
+                                                "line",
+                                                "shipping",
+                                                "order"
+                                            ],
+                                            "description": "What the adjustment applies to."
+                                        },
+                                        "type": {
+                                            "type": "string",
+                                            "enum": [
+                                                "discount",
+                                                "shipping",
+                                                "fee"
+                                            ],
+                                            "description": "What kind of adjustment it is."
+                                        },
+                                        "source": {
+                                            "type": "string",
+                                            "description": "Where the adjustment comes from, such as shipping:flat or promotion:<uuid>."
+                                        },
+                                        "label_key": {
+                                            "type": "string",
+                                            "description": "The key of the adjustment's label."
+                                        },
+                                        "line_key": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "The key of the line a line-scoped adjustment applies to; null for any other."
+                                        },
+                                        "amount_minor": {
+                                            "type": "integer",
+                                            "description": "The amount as authored, in minor units."
+                                        },
+                                        "amount_basis": {
+                                            "type": "string",
+                                            "enum": [
+                                                "net",
+                                                "gross"
+                                            ],
+                                            "description": "Whether the amount was authored net or gross of tax."
+                                        },
+                                        "calculation_base": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "What a percentage adjustment was taken of; null for a fixed amount."
+                                        },
+                                        "tax_class": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "The tax class the adjustment is taxed in; null when it is not taxed."
+                                        },
+                                        "base_amount_minor": {
+                                            "type": "integer",
+                                            "description": "The amount as authored, in the base currency, in minor units."
+                                        },
+                                        "net_minor": {
+                                            "type": "integer",
+                                            "description": "The net amount of the adjustment, in minor units."
+                                        },
+                                        "tax_minor": {
+                                            "type": "integer",
+                                            "description": "The tax on the adjustment, in minor units."
+                                        },
+                                        "gross_minor": {
+                                            "type": "integer",
+                                            "description": "The gross amount of the adjustment, in minor units."
+                                        },
+                                        "base_net_minor": {
+                                            "type": "integer",
+                                            "description": "The net amount of the adjustment in the base currency, in minor units."
+                                        },
+                                        "base_tax_minor": {
+                                            "type": "integer",
+                                            "description": "The tax on the adjustment in the base currency, in minor units."
+                                        },
+                                        "base_gross_minor": {
+                                            "type": "integer",
+                                            "description": "The gross amount of the adjustment in the base currency, in minor units."
+                                        },
+                                        "components": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "component_key": {
+                                                        "type": "string",
+                                                        "description": "The component's key."
+                                                    },
+                                                    "owner_line_key": {
+                                                        "type": [
+                                                            "string",
+                                                            "null"
+                                                        ],
+                                                        "description": "The key of the line taxed; null for an adjustment."
+                                                    },
+                                                    "owner_adjustment_position": {
+                                                        "type": [
+                                                            "integer",
+                                                            "null"
+                                                        ],
+                                                        "description": "The position of the adjustment taxed; null for a line."
+                                                    },
+                                                    "jurisdiction_code": {
+                                                        "type": "string",
+                                                        "description": "The jurisdiction that levies the rate."
+                                                    },
+                                                    "rate_ref": {
+                                                        "type": "string",
+                                                        "description": "The reference of the rate applied."
+                                                    },
+                                                    "rate_name": {
+                                                        "type": "string",
+                                                        "description": "The name of the rate applied."
+                                                    },
+                                                    "rate_micropercent": {
+                                                        "type": "integer",
+                                                        "description": "The rate, in millionths of a percent."
+                                                    },
+                                                    "is_compound": {
+                                                        "type": "boolean",
+                                                        "description": "Whether the rate is levied on the tax of the rates before it."
+                                                    },
+                                                    "priority": {
+                                                        "type": "integer",
+                                                        "description": "The order compound rates are applied in."
+                                                    },
+                                                    "authored_basis": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                            "net",
+                                                            "gross"
+                                                        ],
+                                                        "description": "Whether the amount taxed was authored net or gross of tax."
+                                                    },
+                                                    "residual_minor": {
+                                                        "type": "integer",
+                                                        "description": "The minor unit the split gave this component beyond its exact share: 0, or 1 with the tax's sign."
+                                                    },
+                                                    "net_minor": {
+                                                        "type": "integer",
+                                                        "description": "The net amount of the component, in minor units."
+                                                    },
+                                                    "tax_minor": {
+                                                        "type": "integer",
+                                                        "description": "The tax on the component, in minor units."
+                                                    },
+                                                    "gross_minor": {
+                                                        "type": "integer",
+                                                        "description": "The gross amount of the component, in minor units."
+                                                    },
+                                                    "base_net_minor": {
+                                                        "type": "integer",
+                                                        "description": "The net amount of the component in the base currency, in minor units."
+                                                    },
+                                                    "base_tax_minor": {
+                                                        "type": "integer",
+                                                        "description": "The tax on the component in the base currency, in minor units."
+                                                    },
+                                                    "base_gross_minor": {
+                                                        "type": "integer",
+                                                        "description": "The gross amount of the component in the base currency, in minor units."
+                                                    }
+                                                },
+                                                "required": [
+                                                    "component_key",
+                                                    "owner_line_key",
+                                                    "owner_adjustment_position",
+                                                    "jurisdiction_code",
+                                                    "rate_ref",
+                                                    "rate_name",
+                                                    "rate_micropercent",
+                                                    "is_compound",
+                                                    "priority",
+                                                    "authored_basis",
+                                                    "residual_minor",
+                                                    "net_minor",
+                                                    "tax_minor",
+                                                    "gross_minor",
+                                                    "base_net_minor",
+                                                    "base_tax_minor",
+                                                    "base_gross_minor"
+                                                ],
+                                                "additionalProperties": false
+                                            },
+                                            "description": "The tax, one component per rate applied."
+                                        }
+                                    },
+                                    "required": [
+                                        "position",
+                                        "scope",
+                                        "type",
+                                        "source",
+                                        "label_key",
+                                        "line_key",
+                                        "amount_minor",
+                                        "amount_basis",
+                                        "calculation_base",
+                                        "tax_class",
+                                        "base_amount_minor",
+                                        "net_minor",
+                                        "tax_minor",
+                                        "gross_minor",
+                                        "base_net_minor",
+                                        "base_tax_minor",
+                                        "base_gross_minor",
+                                        "components"
+                                    ],
+                                    "additionalProperties": false
+                                },
+                                "description": "The discounts, shipping and fees, in the order they were applied."
+                            },
+                            "summary": {
+                                "type": "object",
+                                "properties": {
+                                    "subtotal_minor": {
+                                        "type": "integer",
+                                        "description": "The lines' subtotals added up, in minor units."
+                                    },
+                                    "subtotal_basis": {
+                                        "type": "string",
+                                        "enum": [
+                                            "net",
+                                            "gross",
+                                            "mixed"
+                                        ],
+                                        "description": "Whether the subtotal adds net amounts, gross amounts, or both."
+                                    },
+                                    "discount_total_minor": {
+                                        "type": "integer",
+                                        "description": "The discounts added up, as authored, in minor units."
+                                    },
+                                    "shipping_total_minor": {
+                                        "type": "integer",
+                                        "description": "The shipping added up, as authored, in minor units."
+                                    },
+                                    "fee_total_minor": {
+                                        "type": "integer",
+                                        "description": "The fees added up, as authored, in minor units."
+                                    },
+                                    "net_minor": {
+                                        "type": "integer",
+                                        "description": "The total without tax, in minor units."
+                                    },
+                                    "tax_minor": {
+                                        "type": "integer",
+                                        "description": "The tax, in minor units."
+                                    },
+                                    "grand_minor": {
+                                        "type": "integer",
+                                        "description": "The total with tax, in minor units."
+                                    },
+                                    "base_subtotal_minor": {
+                                        "type": "integer",
+                                        "description": "The subtotal in the base currency, in minor units."
+                                    },
+                                    "base_discount_total_minor": {
+                                        "type": "integer",
+                                        "description": "The discounts in the base currency, in minor units."
+                                    },
+                                    "base_shipping_total_minor": {
+                                        "type": "integer",
+                                        "description": "The shipping in the base currency, in minor units."
+                                    },
+                                    "base_fee_total_minor": {
+                                        "type": "integer",
+                                        "description": "The fees in the base currency, in minor units."
+                                    },
+                                    "base_net_minor": {
+                                        "type": "integer",
+                                        "description": "The total without tax in the base currency, in minor units."
+                                    },
+                                    "base_tax_minor": {
+                                        "type": "integer",
+                                        "description": "The tax in the base currency, in minor units."
+                                    },
+                                    "base_grand_minor": {
+                                        "type": "integer",
+                                        "description": "The total with tax in the base currency, in minor units."
+                                    }
+                                },
+                                "required": [
+                                    "subtotal_minor",
+                                    "subtotal_basis",
+                                    "discount_total_minor",
+                                    "shipping_total_minor",
+                                    "fee_total_minor",
+                                    "net_minor",
+                                    "tax_minor",
+                                    "grand_minor",
+                                    "base_subtotal_minor",
+                                    "base_discount_total_minor",
+                                    "base_shipping_total_minor",
+                                    "base_fee_total_minor",
+                                    "base_net_minor",
+                                    "base_tax_minor",
+                                    "base_grand_minor"
+                                ],
+                                "additionalProperties": false,
+                                "description": "The sums of the lines and adjustments, and their twins in the base currency."
+                            },
+                            "amount_due_minor": {
+                                "type": "integer",
+                                "description": "What is to be paid, in minor units."
+                            }
+                        },
+                        "required": [
+                            "currency",
+                            "base_currency",
+                            "conversion_context",
+                            "rate_version",
+                            "cross_zone_policy",
+                            "tax_rounding_mode",
+                            "calculated_at",
+                            "lines",
+                            "adjustments",
+                            "summary",
+                            "amount_due_minor"
+                        ],
+                        "additionalProperties": false,
+                        "description": "The totals of the lines, worked out when the answer was built; zero for an empty cart.",
+                        "examples": [
+                            {
+                                "currency": "USD",
+                                "base_currency": "USD",
+                                "conversion_context": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+                                "rate_version": 0,
+                                "cross_zone_policy": "fixed_net",
+                                "tax_rounding_mode": "per_line",
+                                "calculated_at": "2026-09-25T10:00:00.000000Z",
+                                "lines": [
+                                    {
+                                        "key": "b1",
+                                        "variant_id": 42,
+                                        "quantity": 2,
+                                        "unit_price_minor": 1299,
+                                        "unit_amount_basis": "net",
+                                        "price_source": "explicit",
+                                        "tax_class": "standard",
+                                        "auto_added": false,
+                                        "line_subtotal_minor": 1299,
+                                        "line_discount_minor": 1299,
+                                        "base_line_subtotal_minor": 1299,
+                                        "base_line_discount_minor": 1299,
+                                        "unit_gross_for_display_minor": 1299,
+                                        "net_minor": 1299,
+                                        "tax_minor": 1299,
+                                        "gross_minor": 1299,
+                                        "base_net_minor": 1299,
+                                        "base_tax_minor": 1299,
+                                        "base_gross_minor": 1299,
+                                        "components": [
+                                            {
+                                                "component_key": "b1:US-TX:standard",
+                                                "owner_line_key": "b1",
+                                                "owner_adjustment_position": 0,
+                                                "jurisdiction_code": "US-TX",
+                                                "rate_ref": "US-TX:standard",
+                                                "rate_name": "Sales tax",
+                                                "rate_micropercent": 8250000,
+                                                "is_compound": false,
+                                                "priority": 1,
+                                                "authored_basis": "net",
+                                                "residual_minor": 0,
+                                                "net_minor": 1299,
+                                                "tax_minor": 1299,
+                                                "gross_minor": 1299,
+                                                "base_net_minor": 1299,
+                                                "base_tax_minor": 1299,
+                                                "base_gross_minor": 1299
+                                            }
+                                        ]
+                                    }
+                                ],
+                                "adjustments": [
+                                    {
+                                        "position": 0,
+                                        "scope": "shipping",
+                                        "type": "shipping",
+                                        "source": "shipping:flat",
+                                        "label_key": "shipping.flat",
+                                        "line_key": "b1",
+                                        "amount_minor": 1299,
+                                        "amount_basis": "net",
+                                        "calculation_base": "subtotal_after_discounts",
+                                        "tax_class": "standard",
+                                        "base_amount_minor": 1299,
+                                        "net_minor": 1299,
+                                        "tax_minor": 1299,
+                                        "gross_minor": 1299,
+                                        "base_net_minor": 1299,
+                                        "base_tax_minor": 1299,
+                                        "base_gross_minor": 1299,
+                                        "components": [
+                                            {
+                                                "component_key": "b1:US-TX:standard",
+                                                "owner_line_key": "b1",
+                                                "owner_adjustment_position": 0,
+                                                "jurisdiction_code": "US-TX",
+                                                "rate_ref": "US-TX:standard",
+                                                "rate_name": "Sales tax",
+                                                "rate_micropercent": 8250000,
+                                                "is_compound": false,
+                                                "priority": 1,
+                                                "authored_basis": "net",
+                                                "residual_minor": 0,
+                                                "net_minor": 1299,
+                                                "tax_minor": 1299,
+                                                "gross_minor": 1299,
+                                                "base_net_minor": 1299,
+                                                "base_tax_minor": 1299,
+                                                "base_gross_minor": 1299
+                                            }
+                                        ]
+                                    }
+                                ],
+                                "summary": {
+                                    "subtotal_minor": 1299,
+                                    "subtotal_basis": "net",
+                                    "discount_total_minor": 1299,
+                                    "shipping_total_minor": 1299,
+                                    "fee_total_minor": 1299,
+                                    "net_minor": 1299,
+                                    "tax_minor": 1299,
+                                    "grand_minor": 1299,
+                                    "base_subtotal_minor": 1299,
+                                    "base_discount_total_minor": 1299,
+                                    "base_shipping_total_minor": 1299,
+                                    "base_fee_total_minor": 1299,
+                                    "base_net_minor": 1299,
+                                    "base_tax_minor": 1299,
+                                    "base_grand_minor": 1299
+                                },
+                                "amount_due_minor": 1299
+                            }
+                        ]
+                    },
+                    "unpriced_lines": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "line_identity": {
+                                    "type": "string",
+                                    "maxLength": 64,
+                                    "description": "The line's identity: 64 hexadecimal characters that stay the same for as long as the line is in the cart."
+                                },
+                                "variant_id": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "The variant the line holds."
+                                },
+                                "reason": {
+                                    "type": "string",
+                                    "enum": [
+                                        "no_price_in_currency",
+                                        "unknown_variant"
+                                    ],
+                                    "description": "Why the line could not be priced."
+                                }
+                            },
+                            "required": [
+                                "line_identity",
+                                "variant_id",
+                                "reason"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "maxItems": 50,
+                        "description": "The lines the totals leave out, because they have no price in the cart's currency or their variant is gone.",
+                        "examples": [
+                            [
+                                {
+                                    "line_identity": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+                                    "variant_id": 42,
+                                    "reason": "no_price_in_currency"
+                                }
+                            ]
+                        ]
+                    }
+                },
+                "required": [
+                    "version",
+                    "lines",
+                    "totals",
+                    "unpriced_lines"
+                ]
+            },
             "Error": {
                 "type": "object",
                 "description": "An error. WordPress writes it as its code, its message and its data; the data members are the same for every error of these routes, including WordPress's own refusal of a request that does not match the input schema or of a user who lacks the capability, but not its refusal of a JSONP callback, which it sends before any route is matched.",

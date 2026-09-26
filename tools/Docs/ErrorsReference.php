@@ -142,6 +142,10 @@ final class ErrorsReference implements Generator {
 				'- Message: ' . $row->render( $placeholders ),
 				'- Values: ' . ( array() === $placeholders ? 'none' : implode( ', ', array_map( static fn( string $name ): string => '`' . $name . '`', array_keys( $placeholders ) ) ) )
 			);
+
+			if ( array() !== $row->detailKeys() ) {
+				$lines[] = '- Details: ' . implode( ', ', array_map( static fn( string $name ): string => '`' . $name . '`', $row->detailKeys() ) ) . ', beside the values';
+			}
 		}
 
 		return new GenerationResult( implode( "\n", $lines ) . "\n" );

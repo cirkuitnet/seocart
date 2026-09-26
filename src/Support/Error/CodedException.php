@@ -35,7 +35,9 @@ defined( 'ABSPATH' ) || exit;
  *
  * The context must carry exactly the placeholders the code's row declares, and each value must
  * be an int, a string or a bool — never an object, never a secret, because the message a
- * client sees is rendered from it. The exception's own message is the code, which is never
+ * client sees is rendered from it. Beside it, the exception may carry details: structured values
+ * under the detail keys the row declares, such as a cart's totals, and under no other key. They
+ * are JSON data — arrays, ints, strings, bools and nulls — and never part of the message. The exception's own message is the code, which is never
  * translated and is safe to log. Programming errors — combining currencies, overflow, an
  * invalid value built by code — are LogicExceptions instead, and have no row.
  *
@@ -62,22 +64,36 @@ class CodedException extends \RuntimeException {
 	private array $context;
 
 	/**
-	 * Creates the exception after checking its context against the code's row.
+	 * The structured details, keyed by detail key.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<string, mixed>
+	 */
+	private array $details;
+
+	/**
+	 * Creates the exception after checking its context and its details against the code's row.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @throws ErrorTableException When the context's keys are not exactly the row's
-	 *                             placeholders, or a value is not an int, a string or a bool.
+	 *                             placeholders, a value is not an int, a string or a bool, a
+	 *                             detail key is not one the row declares, or a detail is not JSON
+	 *                             data.
 	 *
 	 * @param ErrorCode       $error_code The code.
 	 * @param array           $context    The values the message contains, keyed by placeholder name.
 	 * @param \Throwable|null $previous   The exception that caused this one, if any.
+	 * @param array           $details    The structured details, keyed by detail key.
 	 *
 	 * @phpstan-param array<array-key, mixed> $context
+	 * @phpstan-param array<array-key, mixed> $details
 	 */
-	final protected function __construct( ErrorCode $error_code, array $context, ?\Throwable $previous ) {
+	final protected function __construct( ErrorCode $error_code, array $context, ?\Throwable $previous, array $details ) {
 		$code     = (string) $error_code->value;
-		$declared = ErrorDefinition::of( $error_code )->placeholders();
+		$row      = ErrorDefinition::of( $error_code );
+		$declared = $row->placeholders();
 		$given    = array_map( 'strval', array_keys( $context ) );
 
 		sort( $declared );
@@ -97,10 +113,21 @@ class CodedException extends \RuntimeException {
 			$checked[ (string) $name ] = $value;
 		}
 
+		foreach ( $details as $name => $value ) {
+			if ( ! in_array( (string) $name, $row->detailKeys(), true ) ) {
+				throw ErrorTableException::because( 'The detail "%1$s" of %2$s is not one of the detail keys its row declares: [%3$s].', (string) $name, $code, implode( ', ', $row->detailKeys() ) );
+			}
+
+			if ( ! self::isData( $value ) ) {
+				throw ErrorTableException::because( 'The detail "%1$s" of %2$s must be JSON data: arrays, ints, strings, bools and nulls.', (string) $name, $code );
+			}
+		}
+
 		parent::__construct( $code, 0, $previous );
 
 		$this->errorCode = $error_code;
 		$this->context   = $checked;
+		$this->details   = array_combine( array_map( 'strval', array_keys( $details ) ), $details );
 	}
 
 	/**
@@ -113,12 +140,15 @@ class CodedException extends \RuntimeException {
 	 *                                    placeholder name: exactly the placeholders the code's
 	 *                                    row declares. Default empty.
 	 * @param \Throwable|null $previous   Optional. The exception that caused this one. Default null.
+	 * @param array           $details    Optional. Structured details under the detail keys the
+	 *                                    code's row declares. Default none.
 	 * @return static The exception, ready to throw.
 	 *
 	 * @phpstan-param array<array-key, mixed> $context
+	 * @phpstan-param array<array-key, mixed> $details
 	 */
-	public static function because( ErrorCode $error_code, array $context = array(), ?\Throwable $previous = null ): static {
-		return new static( $error_code, $context, $previous );
+	public static function because( ErrorCode $error_code, array $context = array(), ?\Throwable $previous = null, array $details = array() ): static {
+		return new static( $error_code, $context, $previous, $details );
 	}
 
 	/**
@@ -142,12 +172,15 @@ class CodedException extends \RuntimeException {
 	 * @param array     $context    Optional. The values the message contains, keyed by
 	 *                              placeholder name: exactly the placeholders the code's row
 	 *                              declares. Default empty.
+	 * @param array     $details    Optional. Structured details under the detail keys the code's
+	 *                              row declares. Default none.
 	 * @return never
 	 *
 	 * @phpstan-param array<array-key, mixed> $context
+	 * @phpstan-param array<array-key, mixed> $details
 	 */
-	public static function raise( ErrorCode $error_code, array $context = array() ): never {
-		$exception = static::because( $error_code, $context );
+	public static function raise( ErrorCode $error_code, array $context = array(), array $details = array() ): never {
+		$exception = static::because( $error_code, $context, null, $details );
 
 		throw $exception;
 	}
@@ -172,6 +205,39 @@ class CodedException extends \RuntimeException {
 	 */
 	public function context(): array {
 		return $this->context;
+	}
+
+	/**
+	 * Returns the structured details the error carries beyond its message.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, mixed> The details, keyed by detail key; empty when there are none.
+	 */
+	public function details(): array {
+		return $this->details;
+	}
+
+	/**
+	 * Tells whether a value is JSON data: an int, a string, a bool, null, or an array of those.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param mixed $value The value.
+	 * @return bool True when it is.
+	 */
+	private static function isData( mixed $value ): bool {
+		if ( ! is_array( $value ) ) {
+			return null === $value || is_int( $value ) || is_string( $value ) || is_bool( $value );
+		}
+
+		foreach ( $value as $item ) {
+			if ( ! self::isData( $item ) ) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 }
 

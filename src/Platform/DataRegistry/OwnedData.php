@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\DataRegistry;
 
+use SEOCart\Cart\Infrastructure\CartTables;
+use SEOCart\Cart\Infrastructure\Migrations\CreateCartTables;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\Migrations\CreateCatalogTables;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
@@ -76,6 +78,7 @@ final class OwnedData {
 			new Contribution( tables: InventoryTables::all(), migrations: array( new CreateStockTablesMigration() ) ),
 			new Contribution( tables: array( RateCountersTable::definition() ), migrations: array( new CreateRateCountersMigration() ) ),
 			new Contribution( tables: OrderTables::all(), migrations: array( new CreateOrderTables() ) ),
+			new Contribution( tables: CartTables::all(), migrations: array( new CreateCartTables() ) ),
 		);
 	}
 }

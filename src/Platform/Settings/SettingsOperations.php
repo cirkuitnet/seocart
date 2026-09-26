@@ -204,7 +204,10 @@ final class SettingsOperations {
 			minimum: $field->minimum(),
 			maximum: $field->maximum(),
 			privacy: $field->privacy(),
-			translatable: $field->isTranslatable()
+			translatable: $field->isTranslatable(),
+			fields: $field->fields(),
+			min_items: $field->minItems(),
+			max_items: $field->maxItems()
 		);
 	}
 }

@@ -20,6 +20,43 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: Sorry, you are not allowed to do that. It requires the {capability} capability.
 - Values: `capability`
 
+## `cart.creation_limited`
+
+- HTTP status: 429
+- Message: Too many carts have been started from here today. Try again later.
+- Values: none
+
+## `cart.line_not_found`
+
+- HTTP status: 404
+- Message: The cart has no line {line_identity}.
+- Values: `line_identity`
+
+## `cart.not_found`
+
+- HTTP status: 404
+- Message: There is no cart for this request: it was never started, or it has expired. Start a new cart by adding a line.
+- Values: none
+
+## `cart.not_open`
+
+- HTTP status: 409
+- Message: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.
+- Values: `status`
+
+## `cart.too_many_lines`
+
+- HTTP status: 409
+- Message: A cart holds at most {max_lines} lines, so these lines were not added. Remove a line, or place an order and start a new cart.
+- Values: `max_lines`
+
+## `cart.version_stale`
+
+- HTTP status: 409
+- Message: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.
+- Values: `current_version`
+- Details: `totals`, beside the values
+
 ## `catalog.currency_not_base`
 
 - HTTP status: 400
