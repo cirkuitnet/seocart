@@ -3,7 +3,7 @@
     "info": {
         "title": "SEOCart REST API",
         "version": "v1",
-        "description": "The routes of the `seocart/v1` namespace. Each operation is generated from the same declaration as its ability and its WP-CLI command, which docs/reference/ describes. A request authenticates as a WordPress user, with a REST nonce or an application password, and each operation names the capability it requires.",
+        "description": "The routes of the `seocart/v1` namespace, and of the Store API, `seocart/store/v1`, whose paths name their own server. Each operation is generated from the same declaration as its ability and its WP-CLI command, which docs/reference/ describes. A request authenticates as a WordPress user, with a REST nonce or an application password, and each operation names the capability it requires. A Store API operation requires none: anyone may send a read, and a write must satisfy the Store API's request policy.",
         "license": {
             "name": "GPL-3.0-or-later",
             "identifier": "GPL-3.0-or-later"
@@ -22,6 +22,46 @@
         }
     ],
     "paths": {
+        "/session": {
+            "servers": [
+                {
+                    "url": "{site}/wp-json/seocart/store/v1",
+                    "variables": {
+                        "site": {
+                            "default": "https://example.com",
+                            "description": "The address of the WordPress site."
+                        }
+                    }
+                }
+            ],
+            "get": {
+                "operationId": "store_api.get_session",
+                "summary": "Returns a fresh REST nonce for the user WordPress authenticated the request as, and that user's id, 0 for a guest, so a storefront can roll its nonce forward and notice a login that was not honoured.",
+                "description": "Public: requires no capability, and anyone may send it.",
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the StoreSession resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StoreSession"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/settings": {
             "get": {
                 "operationId": "settings.get_settings",
@@ -424,6 +464,30 @@
                     "held",
                     "available",
                     "ledger_entry_id"
+                ]
+            },
+            "StoreSession": {
+                "type": "object",
+                "properties": {
+                    "nonce": {
+                        "type": "string",
+                        "description": "A fresh wp_rest nonce for the user the request was authenticated as. Send it as the X-WP-Nonce header of the next request.",
+                        "examples": [
+                            "2f1e4c9a7b"
+                        ]
+                    },
+                    "user_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The WordPress user the request was authenticated as; 0 for a guest, and for a request that carried a login cookie without a nonce.",
+                        "examples": [
+                            0
+                        ]
+                    }
+                },
+                "required": [
+                    "nonce",
+                    "user_id"
                 ]
             }
         }

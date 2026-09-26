@@ -24,8 +24,9 @@ defined( 'ABSPATH' ) || exit;
  * `Cache-Control: no-store, private`: an operation's answer depends on who asks and changes with
  * the store, so neither a browser nor a shared cache may keep it. A response to a request that
  * WordPress authenticated with its login cookie also carries `Vary: Cookie`, so a cache that
- * ignores `no-store` still cannot hand one user's answer to another. A read that is safe to cache
- * publicly would be a second policy; no route needs one yet.
+ * ignores `no-store` still cannot hand one user's answer to another. So does every response of the
+ * Store API, the guest's included: it depends on the cart-token cookie as much as on the login.
+ * A read that is safe to cache publicly would be a second policy; no route needs one yet.
  *
  * The REST adapter applies it to every response of an operation route: successes, the errors the
  * service raised, and the requests WordPress refused before the service ran, with apply(). As the
@@ -68,14 +69,18 @@ final class CachePolicy {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param WP_REST_Response $response The response.
-	 * @return WP_REST_Response The same response, with `Cache-Control` set and, for a
-	 *                          cookie-authenticated request, `Cookie` added to `Vary`.
+	 * @param WP_REST_Response $response         The response.
+	 * @param bool             $varies_by_cookie Optional. Whether the response depends on a
+	 *                                           cookie whoever sends it, as a Store API response
+	 *                                           does. Default false.
+	 * @return WP_REST_Response The same response, with `Cache-Control` set and, for a response that
+	 *                          varies by cookie or a cookie-authenticated request, `Cookie` added
+	 *                          to `Vary`.
 	 */
-	public static function apply( WP_REST_Response $response ): WP_REST_Response {
+	public static function apply( WP_REST_Response $response, bool $varies_by_cookie = false ): WP_REST_Response {
 		$response->header( 'Cache-Control', self::CACHE_CONTROL );
 
-		if ( self::isCookieAuthenticated() ) {
+		if ( $varies_by_cookie || self::isCookieAuthenticated() ) {
 			$response->header( 'Vary', self::withCookie( (string) ( $response->get_headers()['Vary'] ?? '' ) ) );
 		}
 
@@ -87,13 +92,15 @@ final class CachePolicy {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param WP_REST_Server   $server The server sending the response.
-	 * @param WP_HTTP_Response $served The response being served, whose `Vary` is kept.
+	 * @param WP_REST_Server   $server           The server sending the response.
+	 * @param WP_HTTP_Response $served           The response being served, whose `Vary` is kept.
+	 * @param bool             $varies_by_cookie Optional. Whether the response depends on a
+	 *                                           cookie whoever sends it. Default false.
 	 */
-	public static function send( WP_REST_Server $server, WP_HTTP_Response $served ): void {
+	public static function send( WP_REST_Server $server, WP_HTTP_Response $served, bool $varies_by_cookie = false ): void {
 		$server->send_header( 'Cache-Control', self::CACHE_CONTROL );
 
-		if ( self::isCookieAuthenticated() ) {
+		if ( $varies_by_cookie || self::isCookieAuthenticated() ) {
 			$server->send_header( 'Vary', self::withCookie( (string) ( $served->get_headers()['Vary'] ?? '' ) ) );
 		}
 	}

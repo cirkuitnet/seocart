@@ -271,7 +271,7 @@ final class OperationSurfaces {
 	}
 
 	/**
-	 * Sends a REST request to a route of the plugin's namespace.
+	 * Sends a REST request to a route of the plugin's admin namespace.
 	 *
 	 * @since 0.1.0
 	 *

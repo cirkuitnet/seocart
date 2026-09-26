@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Authorization;
 
+use WP_Error;
 use WP_REST_Request;
 
 defined( 'ABSPATH' ) || exit;
@@ -30,7 +31,7 @@ defined( 'ABSPATH' ) || exit;
  * through user_can(), and so through the one map_meta_cap callback (CapabilityMapper), which
  * the admin screens and the CLI use as well. There is no shortcut for logged-in users.
  *
- * Three kinds exist:
+ * Four kinds exist:
  *
  * - requiring(): one of the plugin's declared primitives;
  * - requiringOn(): one of the declared meta capabilities, checked on the resource a request
@@ -38,15 +39,22 @@ defined( 'ABSPATH' ) || exit;
  *   asking anyone;
  * - publicRead(): the named marker for a route that is public on purpose. It checks nothing,
  *   so "intentionally public" is a written decision rather than an omission, and the walker
- *   refuses it on any endpoint that accepts a method other than GET or HEAD.
+ *   refuses it on any endpoint that accepts a method other than GET or HEAD;
+ * - publicWrite(): a write anyone may send, such as a guest's change to a cart. It checks no
+ *   capability, so it cannot be built without the RequestPolicy that decides instead: the Store
+ *   API's, which requires a request that arrived as a write, its request header, a nonce under
+ *   cookie authentication and the cart token where one is needed. The rate limit is not the
+ *   policy's: the REST adapter counts it once, where the endpoint runs. The walker refuses it
+ *   on GET and HEAD, and on a route whose policies do not include the Store API's.
  *
  * A callback is checked against CapabilityDeclaration when it is built, and cannot be built
  * for anything else. A core capability such as `exist` or `read` would admit every visitor or
  * every customer, and a primitive checked "on a resource" would ignore the resource, so both
- * are refused. A public write is not one of the kinds on purpose: the Store API defines its own,
- * which cannot exist without a RequestPolicy.
+ * are refused.
  *
- * Any kind can be narrowed further with withPolicy(), the seam described by RequestPolicy.
+ * Any kind can be narrowed further with withPolicy(), the seam described by RequestPolicy. A
+ * policy answers like a WordPress permission callback: true, false, or the WP_Error to refuse
+ * the request with.
  *
  * The class is final because the walker recognises the plugin's callbacks with `instanceof`: a
  * subclass could override __invoke() and still pass for one.
@@ -56,7 +64,7 @@ defined( 'ABSPATH' ) || exit;
 final class PermissionCallback {
 
 	/**
-	 * The capability to check, or null for the public-read marker.
+	 * The capability to check, or null for a public read or a public write.
 	 *
 	 * @since 0.1.0
 	 *
@@ -74,6 +82,15 @@ final class PermissionCallback {
 	private ?string $resourceParameter;
 
 	/**
+	 * Whether this is a public write: no capability, and a policy that decides instead.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var bool
+	 */
+	private bool $publicWrite;
+
+	/**
 	 * Policies consulted after the capability check, in the order they were added.
 	 *
 	 * @since 0.1.0
@@ -87,12 +104,14 @@ final class PermissionCallback {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string|null $capability        The capability to check, or null for a public read.
+	 * @param string|null $capability        The capability to check, or null for a public read or write.
 	 * @param string|null $resourceParameter The request parameter that names the resource, if any.
+	 * @param bool        $publicWrite       Optional. Whether this is a public write. Default false.
 	 */
-	private function __construct( ?string $capability, ?string $resourceParameter ) {
+	private function __construct( ?string $capability, ?string $resourceParameter, bool $publicWrite = false ) {
 		$this->capability        = $capability;
 		$this->resourceParameter = $resourceParameter;
+		$this->publicWrite       = $publicWrite;
 	}
 
 	/**
@@ -149,6 +168,24 @@ final class PermissionCallback {
 	}
 
 	/**
+	 * Creates a public write: a change anyone may send, decided by a policy instead of a capability.
+	 *
+	 * The policy is not optional, so a public write cannot be built without one. It is consulted
+	 * first, before any policy added later with withPolicy().
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param RequestPolicy $policy The policy that decides whether the write may run: the Store API's.
+	 * @return self The callback.
+	 */
+	public static function publicWrite( RequestPolicy $policy ): self {
+		$callback             = new self( null, null, true );
+		$callback->policies[] = $policy;
+
+		return $callback;
+	}
+
+	/**
 	 * Returns a copy that also requires a policy to let the request through.
 	 *
 	 * @since 0.1.0
@@ -168,10 +205,32 @@ final class PermissionCallback {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return bool True when no capability is checked.
+	 * @return bool True when no capability is checked and the callback is not a public write.
 	 */
 	public function isPublicRead(): bool {
-		return null === $this->capability;
+		return null === $this->capability && ! $this->publicWrite;
+	}
+
+	/**
+	 * Tells whether this is a public write.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool True for a callback built by publicWrite().
+	 */
+	public function isPublicWrite(): bool {
+		return $this->publicWrite;
+	}
+
+	/**
+	 * Returns the policies consulted after the capability check.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<RequestPolicy> The policies, in the order they are consulted.
+	 */
+	public function policies(): array {
+		return $this->policies;
 	}
 
 	/**
@@ -179,7 +238,7 @@ final class PermissionCallback {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return string|null The capability, or null for the public-read marker.
+	 * @return string|null The capability, or null for a public read or a public write.
 	 */
 	public function capability(): ?string {
 		return $this->capability;
@@ -199,13 +258,20 @@ final class PermissionCallback {
 	/**
 	 * Answers the REST server: may the current request run?
 	 *
+	 * A public write that holds no policy, which only reflection could build, is refused.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @param WP_REST_Request $request The request being answered.
-	 * @return bool True when the current user holds the capability, on the resource if there is
-	 *              one, and every policy allows the request.
+	 * @return bool|WP_Error True when the current user holds the capability, on the resource if
+	 *                       there is one, and every policy allows the request; otherwise false,
+	 *                       or the error a policy refused it with.
 	 */
-	public function __invoke( WP_REST_Request $request ): bool {
+	public function __invoke( WP_REST_Request $request ): bool|WP_Error {
+		if ( $this->publicWrite && array() === $this->policies ) {
+			return false;
+		}
+
 		if ( null !== $this->capability ) {
 			$resource = null === $this->resourceParameter ? null : $request->get_param( $this->resourceParameter );
 			$actor    = Actor::user( get_current_user_id() );
@@ -216,8 +282,10 @@ final class PermissionCallback {
 		}
 
 		foreach ( $this->policies as $policy ) {
-			if ( ! $policy->allows( $request, $this->capability ) ) {
-				return false;
+			$answer = $policy->allows( $request, $this->capability );
+
+			if ( true !== $answer ) {
+				return $answer;
 			}
 		}
 

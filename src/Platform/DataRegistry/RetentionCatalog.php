@@ -104,6 +104,10 @@ final class RetentionCatalog {
 			'rule'     => 'A webhook receipt is deleted the period after it was received; until then a second delivery of the same event is recognized as a duplicate.',
 			'defaults' => array( 'all' => 'P30D' ),
 		),
+		'rate_counters'    => array(
+			'rule'     => 'A counter row is deleted once its window has ended; no window is longer than the period.',
+			'defaults' => array( 'all' => 'PT24H' ),
+		),
 		'financial'        => array(
 			'rule'     => 'An order and its children, its payments, refunds and promotion usage are kept for the period, then anonymized, never deleted.',
 			'defaults' => array( 'all' => 'P7Y' ),

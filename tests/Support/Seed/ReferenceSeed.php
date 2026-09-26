@@ -21,6 +21,7 @@ use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Schema\PlatformTables;
 use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Platform\Logging\LogsTable;
+use SEOCart\Platform\RateLimiter\RateCountersTable;
 use SEOCart\Platform\Secrets\SecretKeysTable;
 
 /**
@@ -272,6 +273,7 @@ final class ReferenceSeed {
 			SecretKeysTable::NAME                => 'A secret is never seeded.',
 			LogsTable::NAME                      => 'It holds diagnostics, not store data.',
 			InventoryTables::ALLOCATIONS         => 'Only an order allocates stock, and there are no orders yet.',
+			RateCountersTable::NAME              => 'It counts the requests of clients in their current windows; a store at rest has none, and a counter is read by its primary key only.',
 		);
 	}
 

@@ -14,6 +14,7 @@ namespace SEOCart\Tools\Docs;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\RestBinding;
+use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
 use SEOCart\Platform\Rest\ErrorShape;
 use SEOCart\Support\Error\ErrorTable;
 use SEOCart\Support\Schema\FieldSpec;
@@ -193,6 +194,16 @@ final class OpenApiDocument implements Generator {
 
 			$components[ $resource->name() ] = $schema;
 
+			$servers = $rest->isStore() ? array( self::server( $rest->restNamespace() ) ) : null;
+
+			if ( isset( $paths[ $rest->route() ] ) && ( $paths[ $rest->route() ]['servers'] ?? null ) !== $servers ) {
+				throw new \RuntimeException( 'The route ' . $rest->route() . ' is served in both namespaces; a path of the document has one server.' );
+			}
+
+			if ( null !== $servers ) {
+				$paths[ $rest->route() ]['servers'] = $servers;
+			}
+
 			$paths[ $rest->route() ][ strtolower( (string) $definition->httpMethod() ) ] = $this->operation( $definition, $rest );
 		}
 
@@ -212,24 +223,14 @@ final class OpenApiDocument implements Generator {
 			'info'              => array(
 				'title'       => 'SEOCart REST API',
 				'version'     => substr( RestBinding::NAMESPACE, (int) strrpos( RestBinding::NAMESPACE, '/' ) + 1 ),
-				'description' => 'The routes of the `' . RestBinding::NAMESPACE . '` namespace. Each operation is generated from the same declaration as its ability and its WP-CLI command, which docs/reference/ describes. A request authenticates as a WordPress user, with a REST nonce or an application password, and each operation names the capability it requires.',
+				'description' => 'The routes of the `' . RestBinding::NAMESPACE . '` namespace, and of the Store API, `' . RestBinding::STORE_NAMESPACE . '`, whose paths name their own server. Each operation is generated from the same declaration as its ability and its WP-CLI command, which docs/reference/ describes. A request authenticates as a WordPress user, with a REST nonce or an application password, and each operation names the capability it requires. A Store API operation requires none: anyone may send a read, and a write must satisfy the Store API\'s request policy.',
 				'license'     => array(
 					'name'       => 'GPL-3.0-or-later',
 					'identifier' => 'GPL-3.0-or-later',
 				),
 			),
 			'jsonSchemaDialect' => self::SCHEMA_DIALECT,
-			'servers'           => array(
-				array(
-					'url'       => '{site}/wp-json/' . RestBinding::NAMESPACE,
-					'variables' => array(
-						'site' => array(
-							'default'     => 'https://example.com',
-							'description' => 'The address of the WordPress site.',
-						),
-					),
-				),
-			),
+			'servers'           => array( self::server( RestBinding::NAMESPACE ) ),
 			'paths'             => array() === $paths ? new \stdClass() : $paths,
 		);
 
@@ -238,6 +239,26 @@ final class OpenApiDocument implements Generator {
 		}
 
 		return $document;
+	}
+
+	/**
+	 * Builds the server object of a namespace.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $rest_namespace The namespace, such as `seocart/v1`.
+	 * @return array<string, mixed> The server, with the site's address as its variable.
+	 */
+	private static function server( string $rest_namespace ): array {
+		return array(
+			'url'       => '{site}/wp-json/' . $rest_namespace,
+			'variables' => array(
+				'site' => array(
+					'default'     => 'https://example.com',
+					'description' => 'The address of the WordPress site.',
+				),
+			),
+		);
 	}
 
 	/**
@@ -271,7 +292,7 @@ final class OpenApiDocument implements Generator {
 		$operation = array(
 			'operationId' => $definition->id(),
 			'summary'     => $definition->summary(),
-			'description' => 'Requires the capability ' . FieldDocs::capability( $definition ) . '.',
+			'description' => self::access( $definition ),
 		);
 
 		if ( array() !== $parameters ) {
@@ -290,6 +311,36 @@ final class OpenApiDocument implements Generator {
 		$operation['responses'] = $this->responses( $definition );
 
 		return $operation;
+	}
+
+	/**
+	 * Says who may send an operation.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param OperationDefinition $definition The operation.
+	 * @return string The capability it requires; for a public read, that anyone may send it; for a
+	 *                public write, what its request policy requires.
+	 */
+	private static function access( OperationDefinition $definition ): string {
+		if ( ! $definition->isPublic() ) {
+			return 'Requires the capability ' . FieldDocs::capability( $definition ) . '.';
+		}
+
+		$write = $definition->publicWrite();
+
+		if ( null === $write ) {
+			return 'Public: requires no capability, and anyone may send it.';
+		}
+
+		return sprintf(
+			'Public: requires no capability. The Store API\'s request policy requires the header `%1$s: %2$s`, the `X-WP-Nonce` header when a login cookie is sent, %3$sand at most %4$d requests per client in %5$d seconds.',
+			StoreRequestPolicy::HEADER,
+			StoreRequestPolicy::HEADER_VALUE,
+			$write->requiresCart() ? 'the cart\'s token, ' : '',
+			$write->rateLimit()->limit(),
+			$write->rateLimit()->windowSeconds()
+		);
 	}
 
 	/**
@@ -336,9 +387,12 @@ final class OpenApiDocument implements Generator {
 		$capability   = FieldDocs::capability( $definition );
 		$descriptions = array(
 			400 => array( 'The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.' ),
-			401 => array( 'No user is logged in, and the operation requires the capability ' . $capability . ': `rest_forbidden`.' ),
-			403 => array( 'The user does not hold the capability ' . $capability . ': `rest_forbidden`.' ),
 		);
+
+		if ( ! $definition->isPublic() ) {
+			$descriptions[401] = array( 'No user is logged in, and the operation requires the capability ' . $capability . ': `rest_forbidden`.' );
+			$descriptions[403] = array( 'The user does not hold the capability ' . $capability . ': `rest_forbidden`.' );
+		}
 
 		foreach ( FieldDocs::errorCodes( $definition, $this->errors ) as $code ) {
 			$row = $this->errors->definitionFor( $code );

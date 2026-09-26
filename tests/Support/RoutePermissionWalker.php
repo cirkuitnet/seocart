@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support;
 
+use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
 use SEOCart\Platform\Authorization\PermissionCallback;
 use WP_REST_Server;
 
@@ -26,7 +27,10 @@ use WP_REST_Server;
  * `__return_true`, a closure, a function name or an array callable, is a violation whatever it
  * returns, because it escapes the one permission path. The public-read marker is a
  * PermissionCallback too, and it is allowed only on an endpoint whose every method is GET or
- * HEAD: an allow-list, so a method nobody thought of, such as LINK, is refused as well.
+ * HEAD: an allow-list, so a method nobody thought of, such as LINK, is refused as well. A public
+ * write is recognised the same way, by its type and its kind: it is refused on GET and HEAD, and
+ * on any endpoint whose policies do not include the Store API's request policy, the one that
+ * decides for it — so a public write guarded by a policy that allows everything, or by none, fails.
  *
  * The one route that is skipped is the namespace index core registers for every namespace,
  * `/<namespace>`, served by WP_REST_Server::get_namespace_index(): it is core's, and core gives
@@ -79,6 +83,24 @@ final class RoutePermissionWalker {
 	 * @var string
 	 */
 	public const RULE_PUBLIC_READ_BEYOND_GET = 'public-read-on-a-method-other-than-get-or-head';
+
+	/**
+	 * Rule: a public write is served by GET or HEAD.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const RULE_PUBLIC_WRITE_ON_READ = 'public-write-on-get-or-head';
+
+	/**
+	 * Rule: a public write is not guarded by the Store API's request policy.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const RULE_PUBLIC_WRITE_WITHOUT_POLICY = 'public-write-without-the-store-api-policy';
 
 	/**
 	 * Rule: a route has no schema.
@@ -401,7 +423,45 @@ final class RoutePermissionWalker {
 					'is marked PermissionCallback::publicRead(), which allows GET and HEAD only',
 					"require the capability the operation declares, with PermissionCallback::requiring( '<capability>' ), or serve the public read on GET."
 				);
+			} elseif ( $callback->isPublicWrite() ) {
+				$violations = array_merge( $violations, self::checkPublicWrite( $route, (string) $method, $callback ) );
 			}
+		}
+
+		return $violations;
+	}
+
+	/**
+	 * Checks one method of an endpoint guarded by a public write.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string             $route    The route.
+	 * @param string             $method   The HTTP method.
+	 * @param PermissionCallback $callback The public write.
+	 * @return list<array{route: string, method: string, rule: string, message: string}> A violation for a read method, and one for a missing Store API policy.
+	 */
+	private static function checkPublicWrite( string $route, string $method, PermissionCallback $callback ): array {
+		$violations = array();
+
+		if ( in_array( strtoupper( $method ), self::PUBLIC_READ_METHODS, true ) ) {
+			$violations[] = self::violation(
+				$route,
+				$method,
+				self::RULE_PUBLIC_WRITE_ON_READ,
+				'is a public write served by a read method, which a prefetch, a crawler or a cache would send',
+				'serve the write with POST, PUT, PATCH or DELETE, as its declaration derives it.'
+			);
+		}
+
+		if ( array() === array_filter( $callback->policies(), static fn( $policy ): bool => $policy instanceof StoreRequestPolicy ) ) {
+			$violations[] = self::violation(
+				$route,
+				$method,
+				self::RULE_PUBLIC_WRITE_WITHOUT_POLICY,
+				"is a public write that the Store API's request policy does not guard, so nothing requires its header, its nonce under a login cookie, its cart token or its rate limit",
+				"declare the operation with StoreRequestPolicy::write(), so the REST adapter guards it with the Store API's policy."
+			);
 		}
 
 		return $violations;

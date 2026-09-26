@@ -19,6 +19,8 @@ use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Application\Operations\WriteMethod;
+use SEOCart\Cart\Interfaces\StoreApi\StoreApiError;
+use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
 use SEOCart\Platform\Database\DatabaseError;
 use SEOCart\Platform\Rest\ErrorShape;
 use SEOCart\Support\Error\ErrorTable;
@@ -26,6 +28,7 @@ use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
 use SEOCart\Support\Schema\ResourceSchema;
 use SEOCart\Support\SupportError;
+use SEOCart\Tests\Fixtures\Operations\FixtureCartOperation;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockError;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
 use SEOCart\Tests\Fixtures\Operations\FixtureStoreError;
@@ -505,6 +508,83 @@ final class OpenApiDocumentTest extends TestCase {
 		$this->expectExceptionMessage( 'fixture_stock.insufficient is not in this error table' );
 
 		( new OpenApiDocument( $registry, ErrorTable::compose( SupportError::class ) ) )->generate( '' );
+	}
+
+	/**
+	 * Tests that the Store API's operations name their own server, say they are public, and list the policy's refusals instead of the capability's.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_store_api_operation_is_documented_as_public(): void {
+		$registry = new OperationRegistry();
+
+		FixtureCartOperation::register( $registry );
+
+		$document = self::decode( ( new OpenApiDocument( $registry, ErrorTable::compose( SupportError::class, FixtureStockError::class, StoreApiError::class ) ) )->generate( '' )->content );
+		$lines    = $document['paths'][ FixtureCartOperation::LINES_ROUTE ];
+		$read     = $document['paths'][ FixtureCartOperation::CART_ROUTE ];
+
+		$this->assertSame( '{site}/wp-json/seocart/v1', $document['servers'][0]['url'], 'The document\'s own server stays the admin namespace.' );
+		$this->assertSame( '{site}/wp-json/seocart/store/v1', $lines['servers'][0]['url'] );
+		$this->assertSame( '{site}/wp-json/seocart/store/v1', $read['servers'][0]['url'] );
+		$this->assertSame( 'Public: requires no capability, and anyone may send it.', $read['get']['description'] );
+		$this->assertStringStartsWith( 'Public: requires no capability. The Store API\'s request policy requires the header `X-SEOCart-Store: 1`', $lines['post']['description'] );
+		$this->assertStringNotContainsString( 'the cart\'s token', $lines['post']['description'] );
+		$this->assertStringContainsString( 'the cart\'s token', $lines['patch']['description'] );
+
+		foreach ( array( $lines['post'], $lines['patch'], $read['get'] ) as $operation ) {
+			$this->assertArrayNotHasKey( '401', $operation['responses'], 'A public operation is not refused for a missing login.' );
+		}
+
+		$this->assertStringContainsString( '`store_api.read_method`', $lines['post']['responses']['405']['description'] );
+		$this->assertStringContainsString( '`store_api.header_missing`', $lines['post']['responses']['403']['description'] );
+		$this->assertStringContainsString( '`store_api.nonce_missing`', $lines['post']['responses']['403']['description'] );
+		$this->assertStringContainsString( '`store_api.rate_limited`', $lines['post']['responses']['429']['description'] );
+		$this->assertStringContainsString( '`store_api.cart_token_missing`', $lines['patch']['responses']['400']['description'] );
+		$this->assertArrayNotHasKey( '403', $read['get']['responses'] );
+	}
+
+	/**
+	 * Tests that a route served in both namespaces fails the generator: a path of the document has one server.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_route_in_both_namespaces_fails(): void {
+		$registry = new OperationRegistry();
+
+		FixtureStockOperation::register( $registry );
+		$registry->add( 'fixture_stock.adjust_public_stock', array( self::class, 'publicStockDefinition' ) );
+
+		$this->expectException( \RuntimeException::class );
+		$this->expectExceptionMessage( 'The route ' . FixtureStockOperation::ROUTE . ' is served in both namespaces' );
+
+		( new OpenApiDocument( $registry, ErrorTable::compose( SupportError::class, FixtureStockError::class, StoreApiError::class ) ) )->generate( '' );
+	}
+
+	/**
+	 * Declares the fixture's adjustment again as a public write of the Store API, on the same route.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function publicStockDefinition(): OperationDefinition {
+		$fixture = FixtureStockOperation::definition();
+
+		return new OperationDefinition(
+			id: 'fixture_stock.adjust_public_stock',
+			label: $fixture->label(),
+			summary: $fixture->summary(),
+			input: $fixture->input(),
+			output: $fixture->output(),
+			capability: null,
+			resource_field: null,
+			errors: array( FixtureStockError::Insufficient ),
+			annotations: $fixture->annotations(),
+			service: $fixture->service(),
+			rest: new RestBinding( FixtureStockOperation::ROUTE, WriteMethod::Post, store: true ),
+			public_write: StoreRequestPolicy::write( 'fixture.write', 5, 60, false )
+		);
 	}
 
 	/**

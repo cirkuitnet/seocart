@@ -17,6 +17,7 @@ use SEOCart\Platform\Jobs\Handlers\MigrationAttempt;
 use SEOCart\Platform\Jobs\Handlers\OutboxCatchUp;
 use SEOCart\Platform\Jobs\Handlers\OutboxRetention;
 use SEOCart\Platform\Logging\LogRetentionJob;
+use SEOCart\Platform\RateLimiter\SweepRateCounters;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -55,6 +56,7 @@ final class JobHandlers {
 		JobHistoryCleanup::class,
 		LogRetentionJob::class,
 		SweepHolds::class,
+		SweepRateCounters::class,
 	);
 
 	/**

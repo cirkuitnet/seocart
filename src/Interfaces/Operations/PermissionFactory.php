@@ -12,7 +12,9 @@ declare( strict_types=1 );
 namespace SEOCart\Interfaces\Operations;
 
 use SEOCart\Application\Operations\OperationDefinition;
+use SEOCart\Application\Operations\PublicWrite;
 use SEOCart\Platform\Authorization\PermissionCallback;
+use SEOCart\Platform\Authorization\RequestPolicy;
 use WP_REST_Request;
 
 defined( 'ABSPATH' ) || exit;
@@ -35,6 +37,10 @@ defined( 'ABSPATH' ) || exit;
  * query or the body, so the permission check and the service read the one value in the URL. An
  * Ability or a command has only its input, so both read it there.
  *
+ * A public operation, which has no capability, exists only on the REST surface: a public read gets
+ * the public-read marker, and a public write PermissionCallback::publicWrite() with the request
+ * policy built for its PublicWrite, which the REST adapter is given by the kernel.
+ *
  * @since 0.1.0
  */
 final class PermissionFactory {
@@ -44,18 +50,40 @@ final class PermissionFactory {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param OperationDefinition $definition The operation.
-	 * @return PermissionCallback The callback: the declared primitive, or the declared meta
-	 *                            capability on the resource field.
+	 * @throws \LogicException When the operation is a public write and no policy factory is given.
+	 *
+	 * @param OperationDefinition $definition   The operation.
+	 * @param \Closure|null       $write_policy Optional. Builds the request policy of a public
+	 *                                          write from its PublicWrite. Required for a public
+	 *                                          write. Default null.
+	 * @return PermissionCallback The callback: the declared primitive, the declared meta capability
+	 *                            on the resource field, the public-read marker for a public read,
+	 *                            or a public write with its policy.
+	 *
+	 * @phpstan-param (\Closure(PublicWrite): RequestPolicy)|null $write_policy
 	 */
-	public static function forRest( OperationDefinition $definition ): PermissionCallback {
+	public static function forRest( OperationDefinition $definition, ?\Closure $write_policy = null ): PermissionCallback {
+		$capability     = $definition->capability();
 		$resource_field = $definition->resourceField();
+		$public_write   = $definition->publicWrite();
 
-		if ( null === $resource_field ) {
-			return PermissionCallback::requiring( $definition->capability() );
+		if ( null !== $public_write ) {
+			if ( null === $write_policy ) {
+				throw new \LogicException( sprintf( 'The operation %s is a public write, and no request policy was given to guard it.', esc_html( $definition->id() ) ) );
+			}
+
+			return PermissionCallback::publicWrite( $write_policy( $public_write ) );
 		}
 
-		return PermissionCallback::requiringOn( $definition->capability(), $resource_field );
+		if ( null === $capability ) {
+			return PermissionCallback::publicRead();
+		}
+
+		if ( null === $resource_field ) {
+			return PermissionCallback::requiring( $capability );
+		}
+
+		return PermissionCallback::requiringOn( $capability, $resource_field );
 	}
 
 	/**
@@ -66,7 +94,8 @@ final class PermissionFactory {
 	 * @param OperationDefinition  $definition The operation.
 	 * @param array<string, mixed> $input      The prepared input of an Ability or a command, from
 	 *                                         OperationInvoker::prepare().
-	 * @return bool The answer of the operation's REST permission callback for the same user and resource.
+	 * @return bool The answer of the operation's REST permission callback for the same user and
+	 *              resource: true only when it allows the request.
 	 */
 	public static function allows( OperationDefinition $definition, array $input ): bool {
 		$request        = new WP_REST_Request();
@@ -76,6 +105,6 @@ final class PermissionFactory {
 			$request->set_url_params( array( $resource_field => $input[ $resource_field ] ) );
 		}
 
-		return ( self::forRest( $definition ) )( $request );
+		return true === ( self::forRest( $definition ) )( $request );
 	}
 }

@@ -390,9 +390,11 @@ final class OperationResponseHeadersTest extends WP_UnitTestCase {
 				}
 
 				$varies = in_array( 'cookie', array_map( 'trim', explode( ',', strtolower( (string) ( $headers['Vary'] ?? '' ) ) ) ), true );
+				$store  = $definition->rest()->isStore();
 
-				if ( ( $cookie_authed && 0 !== $user ) !== $varies ) {
-					$walk['violations'][] = "{$label}: Vary " . ( $varies ? 'names Cookie, but the request was not cookie-authenticated.' : 'does not name Cookie, but the request was cookie-authenticated.' );
+				// A Store API answer varies by cookie whoever sends it; any other only when the login cookie authenticated its user.
+				if ( ( $store || ( $cookie_authed && 0 !== $user ) ) !== $varies ) {
+					$walk['violations'][] = "{$label}: Vary " . ( $varies ? 'names Cookie, but the request was not cookie-authenticated.' : 'does not name Cookie, but the request was cookie-authenticated or the Store API\'s.' );
 				}
 			}
 		}
@@ -435,7 +437,7 @@ final class OperationResponseHeadersTest extends WP_UnitTestCase {
 			unset( $input[ $name ] );
 		}
 
-		$request = new WP_REST_Request( $method, '/' . RestBinding::NAMESPACE . $route );
+		$request = new WP_REST_Request( $method, '/' . ( null === $rest ? RestBinding::NAMESPACE : $rest->restNamespace() ) . $route );
 
 		if ( 'GET' === $method ) {
 			$request->set_query_params( $input );

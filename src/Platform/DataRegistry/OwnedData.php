@@ -25,6 +25,8 @@ use SEOCart\Platform\Jobs\JobQueue;
 use SEOCart\Platform\Kernel\BootOption;
 use SEOCart\Platform\Logging\LogsTable;
 use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
+use SEOCart\Platform\RateLimiter\Migrations\CreateRateCountersMigration;
+use SEOCart\Platform\RateLimiter\RateCountersTable;
 use SEOCart\Platform\Secrets\Migrations\CreateSecretKeysMigration;
 use SEOCart\Platform\Secrets\SecretKeysTable;
 use SEOCart\Platform\Settings\Settings;
@@ -70,6 +72,7 @@ final class OwnedData {
 			new Contribution( tables: CatalogTables::all(), migrations: array( new CreateCatalogTables() ) ),
 			new Contribution( jobGroups: array( JobQueue::GROUP => 'Jobs' ) ),
 			new Contribution( tables: InventoryTables::all(), migrations: array( new CreateStockTablesMigration() ) ),
+			new Contribution( tables: array( RateCountersTable::definition() ), migrations: array( new CreateRateCountersMigration() ) ),
 		);
 	}
 }

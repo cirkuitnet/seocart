@@ -141,7 +141,7 @@ final class OperationRegistryTest extends TestCase {
 					'ability' => 'other-ability',
 					'cli'     => null,
 				),
-				'REST POST /fixture-stock/{}/adjustments',
+				'REST POST /seocart/v1/fixture-stock/{}/adjustments',
 			),
 			'the same route with another parameter name' => array(
 				array(
@@ -150,7 +150,7 @@ final class OperationRegistryTest extends TestCase {
 					'ability' => 'other-ability',
 					'cli'     => null,
 				),
-				'REST POST /fixture-stock/{}/adjustments',
+				'REST POST /seocart/v1/fixture-stock/{}/adjustments',
 			),
 			'the same ability'                           => array(
 				array(

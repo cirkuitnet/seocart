@@ -13,6 +13,8 @@ namespace SEOCart\Tests\Unit\Platform\Authorization;
 
 use PHPUnit\Framework\TestCase;
 use SEOCart\Platform\Authorization\PermissionCallback;
+use SEOCart\Platform\Authorization\RequestPolicy;
+use WP_REST_Request;
 
 /**
  * Proves, without WordPress, what a PermissionCallback may be built for.
@@ -134,5 +136,41 @@ final class PermissionCallbackTest extends TestCase {
 		$this->assertFalse( PermissionCallback::requiring( 'seocart_view_orders' )->isPublicRead() );
 		$this->assertTrue( PermissionCallback::publicRead()->isPublicRead() );
 		$this->assertNull( PermissionCallback::publicRead()->capability() );
+		$this->assertFalse( PermissionCallback::publicRead()->isPublicWrite() );
+		$this->assertFalse( PermissionCallback::requiring( 'seocart_view_orders' )->isPublicWrite() );
+	}
+
+	/**
+	 * Tests that a public write is a kind of its own, built with the policy that decides for it.
+	 *
+	 * Planted violation: in PermissionCallback::publicWrite(), leave out
+	 * `$callback->policies[] = $policy;`. The callback then holds no policy.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_public_write_is_built_with_its_policy(): void {
+		$policy = new class() implements RequestPolicy {
+
+			/**
+			 * Lets every request through.
+			 *
+			 * @since 0.1.0
+			 *
+			 * @param WP_REST_Request $request    The request.
+			 * @param string|null     $capability The capability already confirmed, or null.
+			 * @return bool True.
+			 */
+			public function allows( WP_REST_Request $request, ?string $capability ): bool {
+				return true;
+			}
+		};
+
+		$write = PermissionCallback::publicWrite( $policy );
+
+		$this->assertTrue( $write->isPublicWrite() );
+		$this->assertFalse( $write->isPublicRead(), 'A public write checks no capability, and must not pass for the public-read marker.' );
+		$this->assertNull( $write->capability() );
+		$this->assertSame( array( $policy ), $write->policies() );
+		$this->assertSame( array( $policy, $policy ), $write->withPolicy( $policy )->policies(), 'A further policy narrows it, after its own.' );
 	}
 }

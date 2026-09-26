@@ -52,6 +52,7 @@ final class RetentionCatalogTest extends TestCase {
 		),
 		'idempotency_keys' => array( 'all' => 'P30D' ),
 		'webhook_receipts' => array( 'all' => 'P30D' ),
+		'rate_counters'    => array( 'all' => 'PT24H' ),
 		'financial'        => array( 'all' => 'P7Y' ),
 	);
 

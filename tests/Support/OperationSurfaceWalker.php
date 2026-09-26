@@ -46,7 +46,8 @@ use WP_REST_Server;
  *
  * A route at an operation's address must also be guarded as that operation declares: by a
  * PermissionCallback for the definition's capability, checked on the definition's resource field
- * when it names one. RoutePermissionWalker only checks that a callback is of the plugin's type,
+ * when it names one; for a public read, by the public-read marker; for a public write, by a public
+ * write. RoutePermissionWalker only checks that a callback is of the plugin's type,
  * which a callback for another capability also is; the comparison with the definition is made
  * here, against the definition itself rather than the permission factory, so a factory that
  * guards a route wrongly is caught as well.
@@ -285,8 +286,10 @@ final class OperationSurfaceWalker {
 	 * Checks that an endpoint at an operation's address is guarded as the operation declares.
 	 *
 	 * The capability and the resource parameter must both be the definition's: the same capability
-	 * checked on another parameter, or without the resource, is another check. A policy added with
-	 * PermissionCallback::withPolicy() can only narrow what the callback allows, so it is not compared.
+	 * checked on another parameter, or without the resource, is another check. A public operation
+	 * must be guarded by its kind: the public-read marker, or a public write. A policy added with
+	 * PermissionCallback::withPolicy() can only narrow what the callback allows, so it is not compared;
+	 * the route walker checks that a public write holds the Store API's.
 	 *
 	 * @since 0.1.0
 	 *
@@ -296,13 +299,35 @@ final class OperationSurfaceWalker {
 	 * @return list<string> One message when the endpoint is guarded otherwise, or none.
 	 */
 	private static function guardViolations( string $address, $callback, OperationDefinition $definition ): array {
-		if ( $callback instanceof PermissionCallback && $definition->capability() === $callback->capability() && $definition->resourceField() === $callback->resourceParameter() ) {
+		if ( $callback instanceof PermissionCallback && self::guardsAsDeclared( $callback, $definition ) ) {
 			return array();
 		}
 
-		$guard = $callback instanceof PermissionCallback ? self::describeGuard( $callback->capability(), $callback->resourceParameter() ) : 'a callback that is not a PermissionCallback';
+		$guard = $callback instanceof PermissionCallback ? self::describeGuard( $callback->capability(), $callback->resourceParameter(), $callback->isPublicWrite() ) : 'a callback that is not a PermissionCallback';
 
-		return array( "The REST route {$address} is guarded by {$guard}, but {$definition->id()} declares " . self::describeGuard( $definition->capability(), $definition->resourceField() ) . '.' );
+		return array( "The REST route {$address} is guarded by {$guard}, but {$definition->id()} declares " . self::describeGuard( $definition->capability(), $definition->resourceField(), null !== $definition->publicWrite() ) . '.' );
+	}
+
+	/**
+	 * Tells whether a callback checks what a definition declares.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param PermissionCallback  $callback   The endpoint's callback.
+	 * @param OperationDefinition $definition The operation declared at its address.
+	 * @return bool True for a public write guarding a public write, the public-read marker guarding a
+	 *              public read, and the declared capability on the declared resource otherwise.
+	 */
+	private static function guardsAsDeclared( PermissionCallback $callback, OperationDefinition $definition ): bool {
+		if ( null !== $definition->publicWrite() ) {
+			return $callback->isPublicWrite();
+		}
+
+		if ( $definition->isPublic() ) {
+			return $callback->isPublicRead();
+		}
+
+		return ! $callback->isPublicWrite() && $definition->capability() === $callback->capability() && $definition->resourceField() === $callback->resourceParameter();
 	}
 
 	/**
@@ -373,11 +398,16 @@ final class OperationSurfaceWalker {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string|null $capability The capability, or null for the public-read marker.
-	 * @param string|null $parameter  The request parameter naming the resource, or null for none.
+	 * @param string|null $capability   The capability, or null for a public read or write.
+	 * @param string|null $parameter    The request parameter naming the resource, or null for none.
+	 * @param bool        $public_write Whether it is a public write.
 	 * @return string For example `seocart_manage_settings` or `seocart_edit_order on item_id`.
 	 */
-	private static function describeGuard( ?string $capability, ?string $parameter ): string {
+	private static function describeGuard( ?string $capability, ?string $parameter, bool $public_write ): string {
+		if ( $public_write ) {
+			return 'a public write';
+		}
+
 		if ( null === $capability ) {
 			return 'the public-read marker';
 		}

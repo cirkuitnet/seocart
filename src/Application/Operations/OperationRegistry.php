@@ -122,7 +122,8 @@ final class OperationRegistry {
 	 * Lists the surface addresses one definition occupies.
 	 *
 	 * Two routes that differ only in the names of their parameters are one address, because
-	 * WordPress would match the same URLs to both.
+	 * WordPress would match the same URLs to both. A route's address includes its namespace, so the
+	 * same route in the two namespaces is two addresses.
 	 *
 	 * @since 0.1.0
 	 *
@@ -134,7 +135,7 @@ final class OperationRegistry {
 		$rest      = $definition->rest();
 
 		if ( null !== $rest ) {
-			$addresses[] = 'REST ' . $definition->httpMethod() . ' ' . preg_replace( '/\{[^}]*\}/', '{}', $rest->route() );
+			$addresses[] = 'REST ' . $definition->httpMethod() . ' /' . $rest->restNamespace() . preg_replace( '/\{[^}]*\}/', '{}', $rest->route() );
 		}
 
 		if ( null !== $definition->abilityName() ) {

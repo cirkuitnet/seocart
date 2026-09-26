@@ -13,8 +13,10 @@ namespace SEOCart\Interfaces\Operations;
 
 use SEOCart\Application\Operations\CompiledOperation;
 use SEOCart\Application\Operations\OperationRegistry;
+use SEOCart\Application\Operations\PublicWrite;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Authorization\RequestPolicy;
 use SEOCart\Platform\Rest\CachePolicy;
 use WP_Error;
 use WP_HTTP_Response;
@@ -25,7 +27,8 @@ use WP_REST_Server;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Serves each operation that declares a REST route, in the `seocart/v1` namespace.
+ * Serves each operation that declares a REST route, in its namespace: `seocart/v1`, or the Store
+ * API's `seocart/store/v1`.
  *
  * This class owns one fact: how an operation becomes a WordPress REST route. It restates nothing
  * the declaration says. For each route it registers:
@@ -33,10 +36,16 @@ defined( 'ABSPATH' ) || exit;
  * - the method the definition derives — GET only for a read-only operation;
  * - the compiled arguments, with which WordPress validates, sanitizes and fills in defaults
  *   before the permission check runs;
- * - PermissionFactory's permission callback;
+ * - PermissionFactory's permission callback; for a public write, a public-write callback with the
+ *   request policy PublicWrites::policy() builds from the operation's PublicWrite;
  * - the compiled output schema, which WordPress serves to OPTIONS requests;
  * - a callback that has OperationInvoker prepare the declared input and run the operation for the
- *   current user, as an Actor, and answers with the result;
+ *   current user, as an Actor, and answers with the result. For a public write it first counts the
+ *   write against its rate limit, with PublicWrites::admit(), and answers with the refusal over it.
+ *   The count is here, and not in the permission callback, because this callback runs once for
+ *   each request it serves, including one dispatched with rest_do_request(), while WordPress asks
+ *   a permission callback again for the `Allow` header and for an OPTIONS request, and another
+ *   plugin may wrap it and ask it any number of times;
  * - the operation's id under OPERATION_KEY, which marks the endpoint as an operation's.
  *
  * A route parameter is read from the URL only. WP_REST_Request::get_param() would let a query or
@@ -46,8 +55,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * Every response of an operation route is finished the same way: an error gets exactly the
  * documented data members from the ErrorTranslator, and every response gets CachePolicy's
- * headers. WordPress produces a response at several points, so four filters finish it, each
- * leaving every other route alone:
+ * headers, with `Vary: Cookie` always on a Store API route. WordPress produces a response at
+ * several points, so four filters finish it, each leaving every other route alone:
  *
  * - finishResponse(), on `rest_request_after_callbacks`: a success, an error the service raised,
  *   and a request WordPress refused before the service ran, for bad input or a missing permission;
@@ -66,6 +75,13 @@ defined( 'ABSPATH' ) || exit;
  * matched no endpoint — a refusal by authentication, an answer given before dispatch — do they
  * match the route and the method themselves, the way WordPress matches them; an OPTIONS request
  * on an operation's route counts.
+ *
+ * One more request is finished as an operation's by the two filters that run while WordPress
+ * serves it: a request under one of the plugin's namespaces that WordPress answered with
+ * `rest_no_route` — an unknown path, or a method the route does not serve; WordPress answers both
+ * with 404 — unless the path matches a route the plugin did not register, such as another
+ * plugin's route under the namespace, which stays WordPress's. A request dispatched internally,
+ * with rest_do_request(), passes neither filter and keeps WordPress's answer.
  *
  * One refusal passes none of the filters: an invalid `?_jsonp` callback, which WordPress refuses
  * with a 400 of its own before it builds a request at all.
@@ -127,19 +143,45 @@ final class RestAdapter {
 	private array $routes = array();
 
 	/**
+	 * Returns what guards and counts a public write, or null when none is given.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var (\Closure(): PublicWrites)|null
+	 */
+	private ?\Closure $publicWrites;
+
+	/**
+	 * The requests to an unknown route under a plugin namespace finished while being served, so
+	 * their caching headers are sent too.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var \WeakMap<WP_REST_Request, true>
+	 */
+	private \WeakMap $unrouted;
+
+	/**
 	 * Creates the adapter. Registers nothing yet.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param OperationRegistry $registry   The operations.
-	 * @param OperationInvoker  $invoker    Runs an operation's service.
-	 * @param ErrorTranslator   $translator The translator the invoker uses, which also gives the
-	 *                                      errors WordPress raises on a route their data members.
+	 * @param OperationRegistry $registry     The operations.
+	 * @param OperationInvoker  $invoker      Runs an operation's service.
+	 * @param ErrorTranslator   $translator   The translator the invoker uses, which also gives the
+	 *                                        errors WordPress raises on a route their data members.
+	 * @param \Closure|null     $public_writes Optional. Returns what guards and counts a public
+	 *                                         write: the Store API's. Called only when the registry
+	 *                                         holds a public write, which requires it. Default null.
+	 *
+	 * @phpstan-param (\Closure(): PublicWrites)|null $public_writes
 	 */
-	public function __construct( OperationRegistry $registry, OperationInvoker $invoker, ErrorTranslator $translator ) {
-		$this->registry   = $registry;
-		$this->invoker    = $invoker;
-		$this->translator = $translator;
+	public function __construct( OperationRegistry $registry, OperationInvoker $invoker, ErrorTranslator $translator, ?\Closure $public_writes = null ) {
+		$this->registry     = $registry;
+		$this->invoker      = $invoker;
+		$this->translator   = $translator;
+		$this->publicWrites = $public_writes;
+		$this->unrouted     = new \WeakMap();
 	}
 
 	/**
@@ -168,13 +210,13 @@ final class RestAdapter {
 			$operation = new CompiledOperation( $definition );
 
 			register_rest_route(
-				RestBinding::NAMESPACE,
+				$rest->restNamespace(),
 				self::pattern( $rest ),
 				array(
 					array(
 						'methods'             => (string) $definition->httpMethod(),
 						'args'                => self::arguments( $operation, $rest ),
-						'permission_callback' => PermissionFactory::forRest( $definition ),
+						'permission_callback' => PermissionFactory::forRest( $definition, fn( PublicWrite $write ): RequestPolicy => $this->publicWrites()->policy( $write ) ),
 						'callback'            => function ( WP_REST_Request $request ) use ( $operation ): WP_REST_Response|WP_Error {
 							return $this->respond( $operation, $request );
 						},
@@ -208,13 +250,11 @@ final class RestAdapter {
 	 * @phpstan-param array<string, mixed> $handler
 	 */
 	public function finishResponse( $response, array $handler, WP_REST_Request $request ) {
-		unset( $request );
-
 		if ( ! isset( $handler[ self::OPERATION_KEY ] ) ) {
 			return $response;
 		}
 
-		return $this->finish( $response );
+		return $this->finish( $response, $request );
 	}
 
 	/**
@@ -238,7 +278,7 @@ final class RestAdapter {
 			return $result;
 		}
 
-		return $this->finish( $result );
+		return $this->finish( $result, $request );
 	}
 
 	/**
@@ -246,8 +286,9 @@ final class RestAdapter {
 	 * `rest_post_dispatch`, last.
 	 *
 	 * This is the one filter a refusal by authentication passes through: WordPress checks the
-	 * cookie nonce and the `rest_authentication_errors` filter before it matches a route. A response
-	 * the other filters finished already is unchanged.
+	 * cookie nonce and the `rest_authentication_errors` filter before it matches a route. So is
+	 * WordPress's `rest_no_route` for a request under a plugin namespace. A response the other
+	 * filters finished already is unchanged.
 	 *
 	 * Public only because WordPress calls it as a filter.
 	 *
@@ -260,9 +301,21 @@ final class RestAdapter {
 	 *               operation's request, the finished response.
 	 */
 	public function finishServedResponse( $result, WP_REST_Server $server, WP_REST_Request $request ) {
-		unset( $server );
+		if ( ! $result instanceof WP_HTTP_Response ) {
+			return $result;
+		}
 
-		return $result instanceof WP_HTTP_Response && $this->isOperationRequest( $request ) ? $this->finish( $result ) : $result;
+		if ( $this->isOperationRequest( $request ) ) {
+			return $this->finish( $result, $request );
+		}
+
+		if ( ! $this->isUnroutedPluginRequest( $server, $request, $result ) ) {
+			return $result;
+		}
+
+		$this->unrouted[ $request ] = true;
+
+		return $this->finish( $result, $request );
 	}
 
 	/**
@@ -284,8 +337,8 @@ final class RestAdapter {
 	 * @return bool Whether the request has been served, unchanged.
 	 */
 	public function sendCacheHeaders( $served, WP_HTTP_Response $result, WP_REST_Request $request, WP_REST_Server $server ) {
-		if ( ! $served && $this->isOperationRequest( $request ) ) {
-			CachePolicy::send( $server, $result );
+		if ( ! $served && ( $this->isOperationRequest( $request ) || isset( $this->unrouted[ $request ] ) ) ) {
+			CachePolicy::send( $server, $result, self::isStoreRequest( $request ) );
 		}
 
 		return $served;
@@ -296,13 +349,16 @@ final class RestAdapter {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param mixed $outcome A WP_Error, a response, or data to answer with.
+	 * @param mixed           $outcome A WP_Error, a response, or data to answer with.
+	 * @param WP_REST_Request $request The request, whose namespace decides whether it varies by cookie.
 	 * @return WP_REST_Response The response. An error body — WordPress's `{ code, message, data }` —
 	 *                          has exactly the documented data members; any other body is unchanged.
 	 */
-	private function finish( $outcome ): WP_REST_Response {
+	private function finish( $outcome, WP_REST_Request $request ): WP_REST_Response {
+		$store = self::isStoreRequest( $request );
+
 		if ( $outcome instanceof WP_Error ) {
-			return CachePolicy::apply( rest_convert_error_to_response( $this->translator->conform( $outcome ) ) );
+			return CachePolicy::apply( rest_convert_error_to_response( $this->translator->conform( $outcome ) ), $store );
 		}
 
 		$response = rest_ensure_response( $outcome );
@@ -316,7 +372,93 @@ final class RestAdapter {
 			}
 		}
 
-		return CachePolicy::apply( $response );
+		return CachePolicy::apply( $response, $store );
+	}
+
+	/**
+	 * Returns what guards and counts a public write.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When the adapter was given none: a public write cannot be served without it.
+	 *
+	 * @return PublicWrites The Store API's.
+	 */
+	private function publicWrites(): PublicWrites {
+		if ( null === $this->publicWrites ) {
+			throw new \LogicException( 'A public write is registered, and the REST adapter was given nothing to guard and count it with.' );
+		}
+
+		return ( $this->publicWrites )();
+	}
+
+	/**
+	 * Tells whether WordPress found no route for a request under one of the plugin's namespaces.
+	 *
+	 * True when WordPress matched no endpoint and answered `rest_no_route`, the request's path is
+	 * under `seocart/v1` or `seocart/store/v1` in any letter case, and no route the adapter did not
+	 * register matches the path: a wrong method on another plugin's route under the namespace, or
+	 * on the namespace index core registers, stays WordPress's.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param WP_REST_Server   $server  The server, whose routes are compared.
+	 * @param WP_REST_Request  $request The request.
+	 * @param WP_HTTP_Response $result  The response WordPress built.
+	 * @return bool True for WordPress's `rest_no_route` under a plugin namespace.
+	 */
+	private function isUnroutedPluginRequest( WP_REST_Server $server, WP_REST_Request $request, WP_HTTP_Response $result ): bool {
+		$body = $result->get_data();
+
+		if ( array() !== $request->get_attributes() || ! is_array( $body ) || 'rest_no_route' !== ( $body['code'] ?? null ) ) {
+			return false;
+		}
+
+		$path = $request->get_route();
+
+		if ( null === self::pluginNamespace( $path ) ) {
+			return false;
+		}
+
+		foreach ( array_keys( $server->get_routes() ) as $route ) {
+			if ( ! isset( $this->routes[ $route ] ) && 1 === preg_match( '@^' . $route . '$@i', $path ) ) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Tells whether a request is for the Store API, whose every response varies by cookie.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param WP_REST_Request $request The request.
+	 * @return bool True when the path is under `seocart/store/v1`, in any letter case.
+	 */
+	private static function isStoreRequest( WP_REST_Request $request ): bool {
+		return RestBinding::STORE_NAMESPACE === self::pluginNamespace( $request->get_route() );
+	}
+
+	/**
+	 * Returns the plugin namespace a path is under, compared as WordPress compares routes: ignoring case.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $path The request's path, such as `/seocart/store/v1/session`.
+	 * @return string|null RestBinding::NAMESPACE, RestBinding::STORE_NAMESPACE, or null.
+	 */
+	private static function pluginNamespace( string $path ): ?string {
+		$path = strtolower( trim( $path, '/' ) ) . '/';
+
+		foreach ( array( RestBinding::NAMESPACE, RestBinding::STORE_NAMESPACE ) as $plugin_namespace ) {
+			if ( str_starts_with( $path, $plugin_namespace . '/' ) ) {
+				return $plugin_namespace;
+			}
+		}
+
+		return null;
 	}
 
 	/**
@@ -364,7 +506,7 @@ final class RestAdapter {
 	 * @return string The route with its namespace, such as `/seocart/v1/stock-items/(?P<item_id>[^/]+)`.
 	 */
 	public static function serverRoute( RestBinding $rest ): string {
-		return '/' . RestBinding::NAMESPACE . self::pattern( $rest );
+		return '/' . $rest->restNamespace() . self::pattern( $rest );
 	}
 
 	/**
@@ -431,17 +573,30 @@ final class RestAdapter {
 	/**
 	 * Answers a request: the declared input to the invoker, its result to the client.
 	 *
+	 * A public write is counted first, once: this callback runs once per request.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @param CompiledOperation $operation The operation.
 	 * @param WP_REST_Request   $request   The validated, permitted request.
-	 * @return WP_REST_Response|WP_Error The serialized output, or the translated failure.
+	 * @return WP_REST_Response|WP_Error The serialized output, or the translated failure, or the
+	 *                                   refusal of a public write over its rate limit.
 	 */
 	private function respond( CompiledOperation $operation, WP_REST_Request $request ): WP_REST_Response|WP_Error {
 		$definition = $operation->definition();
-		$url        = $request->get_url_params();
-		$path       = null === $definition->rest() ? array() : $definition->rest()->pathParameters();
-		$values     = array();
+		$write      = $definition->publicWrite();
+
+		if ( null !== $write ) {
+			$admitted = $this->publicWrites()->admit( $write );
+
+			if ( true !== $admitted ) {
+				return $admitted;
+			}
+		}
+
+		$url    = $request->get_url_params();
+		$path   = null === $definition->rest() ? array() : $definition->rest()->pathParameters();
+		$values = array();
 
 		foreach ( $definition->input() as $field ) {
 			$name = $field->name();

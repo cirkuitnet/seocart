@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Application\Operations;
 
+use SEOCart\Cart\Interfaces\StoreApi\StoreOperations;
 use SEOCart\Inventory\Application\InventoryOperations;
 use SEOCart\Platform\Settings\SettingsOperations;
 
@@ -43,6 +44,7 @@ final class Operations {
 		$registry->add( SettingsOperations::GET, array( SettingsOperations::class, 'get' ) );
 		$registry->add( SettingsOperations::UPDATE, array( SettingsOperations::class, 'update' ) );
 		$registry->add( InventoryOperations::ADJUST_STOCK, array( InventoryOperations::class, 'adjustStock' ) );
+		$registry->add( StoreOperations::GET_SESSION, array( StoreOperations::class, 'getSession' ) );
 
 		return $registry;
 	}

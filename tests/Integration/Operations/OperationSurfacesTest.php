@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Integration\Operations;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\Operations;
+use SEOCart\Cart\Interfaces\StoreApi\StoreOperations;
 use SEOCart\Interfaces\Operations\RestAdapter;
 use SEOCart\Inventory\Application\InventoryOperations;
 use SEOCart\Platform\Authorization\PermissionCallback;
@@ -86,6 +87,15 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 	 * @var string
 	 */
 	private const STOCK_ROUTE = '/seocart/v1/stock-items/(?P<variant_id>[^/]+)/adjustments';
+
+	/**
+	 * The Store API's session read, as the REST server lists it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const SESSION_ROUTE = '/seocart/store/v1/session';
 
 	/**
 	 * Discards the REST server and the Abilities registries.
@@ -377,6 +387,39 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 		return array(
 			'a closure of its own'                  => array( 'a closure' ),
 			"the adapter's callback for the update" => array( "another operation's" ),
+		);
+	}
+
+	/**
+	 * Tests that a public operation's route guarded otherwise than its kind is reported, in the walk over the real routes.
+	 *
+	 * The session read is a public read; its endpoint is given a capability check instead of the
+	 * public-read marker, keeping its marker and its callback, so only the guard differs.
+	 *
+	 * Planted violation: in OperationSurfaceWalker::guardsAsDeclared(), answer true for every public
+	 * operation. The replaced guard is then not reported.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_public_route_guarded_otherwise_is_reported(): void {
+		OperationSurfaces::discard();
+
+		add_filter(
+			'rest_endpoints',
+			static function ( array $endpoints ): array {
+				foreach ( array_keys( $endpoints[ self::SESSION_ROUTE ] ) as $key ) {
+					if ( is_int( $key ) ) {
+						$endpoints[ self::SESSION_ROUTE ][ $key ]['permission_callback'] = PermissionCallback::requiring( InventoryOperations::CAPABILITY );
+					}
+				}
+
+				return $endpoints;
+			}
+		);
+
+		$this->assertSame(
+			array( 'The REST route GET ' . self::SESSION_ROUTE . ' is guarded by ' . InventoryOperations::CAPABILITY . ', but ' . StoreOperations::GET_SESSION . ' declares the public-read marker.' ),
+			OperationSurfaceWalker::restViolations( rest_get_server(), Operations::registry() )
 		);
 	}
 

@@ -16,6 +16,11 @@ defined( 'ABSPATH' ) || exit;
 
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\Operations;
+use SEOCart\Cart\Application\CartTokens;
+use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
+use SEOCart\Cart\Interfaces\StoreApi\StoreApiError;
+use SEOCart\Cart\Interfaces\StoreApi\StoreSession;
+use SEOCart\Cart\Interfaces\StoreApi\StoreWrites;
 use SEOCart\Catalog\Application\Doctor\ProductSettler;
 use SEOCart\Catalog\Application\Lifecycle\DeleteProduct;
 use SEOCart\Catalog\Application\Lifecycle\DuplicateProduct;
@@ -41,6 +46,7 @@ use SEOCart\Interfaces\Operations\AbilitiesAdapter;
 use SEOCart\Interfaces\Operations\CliAdapter;
 use SEOCart\Interfaces\Operations\ErrorTranslator;
 use SEOCart\Interfaces\Operations\OperationInvoker;
+use SEOCart\Interfaces\Operations\PublicWrites;
 use SEOCart\Interfaces\Operations\RestAdapter;
 use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Inventory\Application\StockService;
@@ -103,6 +109,11 @@ use SEOCart\Platform\Logging\LogRetention;
 use SEOCart\Platform\Logging\LogRetentionJob;
 use SEOCart\Platform\Logging\Redactor;
 use SEOCart\Platform\Logging\Reporter;
+use SEOCart\Platform\RateLimiter\ClientIdentities;
+use SEOCart\Platform\RateLimiter\ObjectCacheRateLimiter;
+use SEOCart\Platform\RateLimiter\RateLimiter;
+use SEOCart\Platform\RateLimiter\SweepRateCounters;
+use SEOCart\Platform\RateLimiter\TableRateLimiter;
 use SEOCart\Platform\Rest\RestErrorTranslator;
 use SEOCart\Platform\Secrets\Cli\SecretsCommand;
 use SEOCart\Platform\Secrets\EncryptionKey;
@@ -186,6 +197,7 @@ final class Modules {
 		KernelError::class,
 		SecretsError::class,
 		SettingsError::class,
+		StoreApiError::class,
 		SupportError::class,
 	);
 
@@ -268,6 +280,8 @@ final class Modules {
 		self::jobsRegister( $container );
 		self::catalogRegister( $container );
 		self::inventoryRegister( $container );
+		self::rateLimiterRegister( $container );
+		self::cartRegister( $container );
 		self::kernelRegister( $container );
 	}
 
@@ -479,7 +493,9 @@ final class Modules {
 	 * The operations and their surfaces: the registry, the invoker, the error translator and the REST, ability and command adapters.
 	 *
 	 * The invoker resolves an operation's service from this container when the operation runs, so
-	 * every service an operation names must be bound; a test holds that.
+	 * every service an operation names must be bound; a test holds that. The REST adapter guards and
+	 * counts each public write through the Store API's StoreWrites, built only when a public write
+	 * is registered.
 	 *
 	 * @since 0.1.0
 	 *
@@ -504,7 +520,7 @@ final class Modules {
 				array( $c->get( Reporter::class ), 'unexpected' )
 			)
 		);
-		$container->bind( RestAdapter::class, static fn( Container $c ): RestAdapter => new RestAdapter( $c->get( OperationRegistry::class ), $c->get( OperationInvoker::class ), $c->get( ErrorTranslator::class ) ) );
+		$container->bind( RestAdapter::class, static fn( Container $c ): RestAdapter => new RestAdapter( $c->get( OperationRegistry::class ), $c->get( OperationInvoker::class ), $c->get( ErrorTranslator::class ), static fn(): PublicWrites => $c->get( StoreWrites::class ) ) );
 		$container->bind( AbilitiesAdapter::class, static fn( Container $c ): AbilitiesAdapter => new AbilitiesAdapter( $c->get( OperationRegistry::class ), $c->get( OperationInvoker::class ) ) );
 		$container->bind( CliAdapter::class, static fn( Container $c ): CliAdapter => new CliAdapter( $c->get( OperationRegistry::class ), $c->get( OperationInvoker::class ) ) );
 	}
@@ -992,6 +1008,45 @@ final class Modules {
 		);
 		$container->bind( SweepHolds::class, static fn( Container $c ): SweepHolds => new SweepHolds( $c->get( StockService::class ) ) );
 		$container->bind( StockProjectionCheck::class, static fn( Container $c ): StockProjectionCheck => new StockProjectionCheck( $c->get( MysqlStockRepository::class ) ) );
+	}
+
+	/**
+	 * The rate limiter: the adapter the site counts with, the clients' identities and the sweep of the counter table.
+	 *
+	 * The adapter is chosen once per request, when it is first needed: the object cache when a
+	 * persistent one is in use, the counter table otherwise, which the object cache also counts in
+	 * when it fails. It adds no hook: the sweep runs through JOB_HOOK.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container The container.
+	 */
+	private static function rateLimiterRegister( Container $container ): void {
+		$container->bind( TableRateLimiter::class, static fn( Container $c ): TableRateLimiter => new TableRateLimiter( $c->get( Database::class ) ) );
+		$container->bind( ObjectCacheRateLimiter::class, static fn( Container $c ): ObjectCacheRateLimiter => new ObjectCacheRateLimiter( $c->get( Clock::class ), static fn(): RateLimiter => $c->get( TableRateLimiter::class ) ) );
+		$container->bind( RateLimiter::class, static fn( Container $c ): RateLimiter => ObjectCacheRateLimiter::isAvailable() ? $c->get( ObjectCacheRateLimiter::class ) : $c->get( TableRateLimiter::class ) );
+		$container->bind( ClientIdentities::class, static fn(): ClientIdentities => ClientIdentities::forRequest() );
+		$container->bind( SweepRateCounters::class, static fn( Container $c ): SweepRateCounters => new SweepRateCounters( $c->get( Database::class ) ) );
+	}
+
+	/**
+	 * The cart module's Store API: the cart-token transport, what guards and counts its writes, and the session read.
+	 *
+	 * It adds no hook: the routes are the operations', and the transport adds its one filter only
+	 * when a response creates a cart.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container The container.
+	 */
+	private static function cartRegister( Container $container ): void {
+		$container->bind( CartTokenTransport::class, static fn( Container $c ): CartTokenTransport => new CartTokenTransport( $c->get( Clock::class ) ) );
+		$container->bind( CartTokens::class, static fn( Container $c ): CartTokens => $c->get( CartTokenTransport::class ) );
+		$container->bind(
+			StoreWrites::class,
+			static fn( Container $c ): StoreWrites => new StoreWrites( $c->get( RateLimiter::class ), $c->get( ClientIdentities::class ), $c->get( CartTokenTransport::class ), $c->get( ErrorTranslator::class ) )
+		);
+		$container->bind( StoreSession::class, static fn(): StoreSession => new StoreSession() );
 	}
 
 	/**

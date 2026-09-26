@@ -21,6 +21,8 @@ use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\DataRegistry\OwnedData;
 use SEOCart\Platform\Kernel\Kernel;
+use SEOCart\Platform\RateLimiter\ClientIdentity;
+use SEOCart\Platform\RateLimiter\TableRateLimiter;
 use SEOCart\Platform\Settings\InternationalSettings;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Support\Currency;
@@ -54,9 +56,9 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  * sent is explained once per query and IN-list length, and judged by QueryPlan's rule. The run
  * prints every plan, and fails on a plan that breaks the rule unless its query is on the
  * allow-list (AllowList); on an allow-list entry that names no query of the run, or a query
- * that keeps the rule; and, for the catalog and the inventory, on a SELECT their source writes
- * that the run did not send, or a SELECT of their tables their source does not write
- * (ReadInventory), so that no read goes unjudged.
+ * that keeps the rule; and, for the catalog, the inventory and the rate limiter, on a SELECT
+ * their source writes that the run did not send, or a SELECT of their tables their source does
+ * not write (ReadInventory), so that no read goes unjudged.
  *
  * It belongs to the `performance` group but runs only when the environment variable
  * SEOCART_QUERY_PLANS is 1, as `composer test:query-plans` sets it before it runs that group:
@@ -78,6 +80,8 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  *   repository's EXPIRED_VARIANTS statement as a read it did not send;
  * - in exercise(), leave out the rolled-back save: the run names the catalog's reads of the
  *   write path, the SKU check among them, as reads it did not send;
+ * - in exercise(), leave out the rate limiter's peek(): the run names TableRateLimiter::PEEK as a
+ *   read it did not send;
  * - in exercise(), send `SELECT id FROM {products} WHERE uuid = ?` through the recorder's
  *   Database: a read of a catalog table that the catalog's source does not write, named as one;
  * - in ReferenceSeed::rows(), give one item in ten a hold instead of every item: the holds are
@@ -309,7 +313,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		fwrite( STDOUT, sprintf( "\nThe plans of the %d plugin SELECTs of the run, one per query and IN-list length:\n%s\n", count( $sent ), implode( "\n", $report ) ) );
 
-		$this->assertSame( array(), $this->inventoryGaps( $recorder->allSent() ), 'The run and the reads the catalog\'s and the inventory\'s source write differ. Send each read in exercise(), so its plan is judged; a read of their tables belongs in their source.' );
+		$this->assertSame( array(), $this->inventoryGaps( $recorder->allSent() ), 'The run and the reads the catalog\'s, the inventory\'s and the rate limiter\'s source write differ. Send each read in exercise(), so its plan is judged; a read of their tables belongs in their source.' );
 		$this->assertSame( array(), $breaking, sprintf( "These plugin SELECTs break the query-plan rule (a full scan of, or more than %d rows examined in, a table of %d rows or more). Fix the query, or add the index it needs with a migration, or put it on %s with the reason its plan is accepted:\n%s\n", QueryPlan::MOST_ROWS, QueryPlan::LARGE_TABLE, AllowList::FILE, implode( "\n", $breaking ) ) );
 		$this->assertSame( array(), array_keys( $stale ), sprintf( 'These entries of %s name no query of the run that breaks the rule; the query changed or was fixed, so remove them.', AllowList::FILE ) );
 	}
@@ -362,6 +366,9 @@ final class QueryPlanTest extends DatabaseTestCase {
 		// anything; this is the only place either shape of this statement is sent.
 		$products->boundPostBindings( 0, 500 );
 		$products->boundPostBindings( ReferenceSeed::FIRST_POST_ID + 7000, 500 );
+
+		// The rate limiter's one read: the count of a client's current window, by its primary key.
+		( new TableRateLimiter( $db ) )->peek( 'cart.write', ClientIdentity::ofClient( '192.0.2.1', 0, 'query plans' ), 60 );
 
 		$rollBack = new \RuntimeException( 'Rolled back on purpose: the reads that lock run in a transaction that changes nothing.' );
 
@@ -433,7 +440,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Compares the SELECTs the catalog's and the inventory's source write with the plugin SELECTs the run sent, both ways.
+	 * Compares the SELECTs the catalog's, the inventory's and the rate limiter's source write with the plugin SELECTs the run sent, both ways.
 	 *
 	 * @since 0.1.0
 	 *
@@ -445,8 +452,14 @@ final class QueryPlanTest extends DatabaseTestCase {
 	private function inventoryGaps( array $sent ): array {
 		$gaps = array();
 
-		foreach ( array( 'Catalog', 'Inventory' ) as $module ) {
-			$heads  = ReadInventory::of( dirname( __DIR__, 3 ) . '/src/' . $module );
+		$sources = array(
+			'Catalog'     => 'Catalog',
+			'Inventory'   => 'Inventory',
+			'RateLimiter' => 'Platform/RateLimiter',
+		);
+
+		foreach ( $sources as $module => $directory ) {
+			$heads  = ReadInventory::of( dirname( __DIR__, 3 ) . '/src/' . $directory );
 			$tables = array();
 
 			foreach ( OwnedData::registry()->tables() as $table ) {
@@ -460,7 +473,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 			}
 
 			foreach ( ReadInventory::unknown( $heads, $sent, $tables ) as $read ) {
-				$gaps[] = "{$module}, sent from outside src/{$module}: {$read}";
+				$gaps[] = "{$module}, sent from outside src/{$directory}: {$read}";
 			}
 		}
 

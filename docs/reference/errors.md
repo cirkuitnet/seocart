@@ -276,3 +276,33 @@ An internal error carries a generic message and empty details: it is a code mark
 - Any write: every operation that changes the store may answer with this code, whether or not it lists it.
 - Message: The store is temporarily unavailable while its database is being updated ({reason}).
 - Values: `reason`
+
+## `store_api.cart_token_missing`
+
+- HTTP status: 400
+- Message: This request changes an existing cart, so it must carry the cart's token.
+- Values: none
+
+## `store_api.header_missing`
+
+- HTTP status: 403
+- Message: This request changes the store, so it must carry the header X-SEOCart-Store: 1.
+- Values: none
+
+## `store_api.nonce_missing`
+
+- HTTP status: 403
+- Message: You are logged in, but this request carries no valid nonce, so it would run as a guest. Fetch a new nonce, send it as X-WP-Nonce, and try again.
+- Values: none
+
+## `store_api.rate_limited`
+
+- HTTP status: 429
+- Message: Too many requests. Wait a moment, then try again.
+- Values: none
+
+## `store_api.read_method`
+
+- HTTP status: 405
+- Message: This request changes the store, so it must be sent as a POST, PUT, PATCH or DELETE request. A GET or HEAD request never changes it, whatever method it names.
+- Values: none

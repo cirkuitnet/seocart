@@ -61,6 +61,10 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Inventory/Application/InventoryOperations.php',
 		'src/Inventory/Application/InventoryError.php',
 		'src/Inventory/Domain/LedgerReason.php',
+		'src/Cart/Interfaces/StoreApi/StoreOperations.php',
+		'src/Cart/Interfaces/StoreApi/StoreApiError.php',
+		'src/Cart/Interfaces/StoreApi/StoreRequestPolicy.php',
+		'src/Platform/RateLimiter/RateLimit.php',
 		'tests/Fixtures/Operations/',
 	);
 

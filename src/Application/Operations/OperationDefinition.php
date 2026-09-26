@@ -45,6 +45,14 @@ defined( 'ABSPATH' ) || exit;
  * - an id that is not `module.verb_noun`, such as `inventory.adjust_stock`;
  * - a capability the plugin does not declare: a primitive for a check without a resource, or a
  *   meta capability together with the required input field that names the resource;
+ * - a public operation, one that requires no capability, anywhere but on a Store API route; a
+ *   public write without the PublicWrite that configures the policy deciding for it, and a
+ *   PublicWrite on a read or on an operation that requires a capability; and a public operation
+ *   with a resource field, an ability, a command or agent exposure. Abilities and commands check
+ *   the same capability as the route, so an operation without one has neither: an agent or a
+ *   script reaches it through the Store API, under the same request policy as a browser;
+ * - an operation that requires a capability on a Store API route, which serves public
+ *   operations only;
  * - a REST route whose parameters are not required inputs, a resource field that is not one of the
  *   route's parameters, a read-only operation with a write method, or a changing one without;
  * - a nullable input field: the REST API reads an explicit null as a missing argument while the
@@ -147,13 +155,22 @@ final class OperationDefinition {
 	private ResourceSchema $output;
 
 	/**
-	 * The capability the operation requires.
+	 * The capability the operation requires, or null for a public operation.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var string
+	 * @var string|null
 	 */
-	private string $capability;
+	private ?string $capability;
+
+	/**
+	 * What a public write declares about the policy that decides for it, or null.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var PublicWrite|null
+	 */
+	private ?PublicWrite $publicWrite;
 
 	/**
 	 * The input field naming the resource a meta capability is checked on, or null for a primitive.
@@ -239,7 +256,8 @@ final class OperationDefinition {
 	 * @param string           $summary        One English sentence saying what the operation does.
 	 * @param FieldSpec[]      $input          The input fields.
 	 * @param ResourceSchema   $output         The output schema.
-	 * @param string           $capability     The capability the operation requires.
+	 * @param string|null      $capability     The capability the operation requires, or null for
+	 *                                         a public operation on a Store API route.
 	 * @param string|null      $resource_field The required input field naming the resource a meta
 	 *                                         capability is checked on, or null for a primitive.
 	 * @param ErrorCode[]      $errors         The error codes the operation can fail with.
@@ -253,6 +271,9 @@ final class OperationDefinition {
 	 *                                         `seocart/<slug>`. Default none.
 	 * @param CliBinding|null  $cli            Optional. The WP-CLI command. Default none.
 	 * @param bool             $agent_exposed  Optional. Whether agents may see the ability. Default false.
+	 * @param PublicWrite|null $public_write   Optional. For a public write, its rate limit, cart
+	 *                                         requirement and the policy's refusals, which are
+	 *                                         added to the error codes. Default none.
 	 *
 	 * @phpstan-param \Closure(): string                $label
 	 * @phpstan-param list<FieldSpec>                   $input
@@ -265,7 +286,7 @@ final class OperationDefinition {
 		string $summary,
 		array $input,
 		ResourceSchema $output,
-		string $capability,
+		?string $capability,
 		?string $resource_field,
 		array $errors,
 		Annotations $annotations,
@@ -273,7 +294,8 @@ final class OperationDefinition {
 		?RestBinding $rest = null,
 		?string $ability = null,
 		?CliBinding $cli = null,
-		bool $agent_exposed = false
+		bool $agent_exposed = false,
+		?PublicWrite $public_write = null
 	) {
 		if ( 1 !== preg_match( self::ID_PATTERN, $id ) ) {
 			SchemaException::raise( 'The operation id "%1$s" is not module.verb_noun in snake_case, such as inventory.adjust_stock.', $id );
@@ -284,13 +306,20 @@ final class OperationDefinition {
 		}
 
 		$fields = self::indexFields( $id, $input );
+		$errors = array_merge( $errors, null === $public_write ? array() : $public_write->refusals() );
 
 		self::checkService( $id, $service );
 		self::checkErrors( $id, $errors );
-		self::checkCapability( $id, $capability, $resource_field, $fields );
 
-		if ( self::movesMoney( $capability ) && ! $annotations->isDestructive() ) {
-			SchemaException::raise( 'The operation %1$s requires %2$s: it moves money, so it must be annotated destructive.', $id, $capability );
+		if ( null === $capability ) {
+			self::checkPublic( $id, $rest, $annotations, $resource_field, $ability, $cli, $agent_exposed, $public_write );
+		} else {
+			self::checkCapability( $id, $capability, $resource_field, $fields );
+			self::checkGuarded( $id, $capability, $rest, $public_write );
+
+			if ( self::movesMoney( $capability ) && ! $annotations->isDestructive() ) {
+				SchemaException::raise( 'The operation %1$s requires %2$s: it moves money, so it must be annotated destructive.', $id, $capability );
+			}
 		}
 
 		if ( null === $rest && null === $ability && null === $cli ) {
@@ -313,7 +342,7 @@ final class OperationDefinition {
 			}
 		}
 
-		if ( $agent_exposed ) {
+		if ( $agent_exposed && null !== $capability ) {
 			self::checkAgentExposure( $id, $capability, $annotations, $ability, $input, $output );
 		}
 
@@ -331,6 +360,7 @@ final class OperationDefinition {
 		$this->ability       = $ability;
 		$this->cli           = $cli;
 		$this->agentExposed  = $agent_exposed;
+		$this->publicWrite   = $public_write;
 	}
 
 	/**
@@ -393,10 +423,33 @@ final class OperationDefinition {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return string A primitive, or a meta capability when resourceField() names a field.
+	 * @return string|null A primitive, or a meta capability when resourceField() names a field;
+	 *                     null for a public operation.
 	 */
-	public function capability(): string {
+	public function capability(): ?string {
 		return $this->capability;
+	}
+
+	/**
+	 * Tells whether the operation is public: it requires no capability.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool True for a public read or a public write of the Store API.
+	 */
+	public function isPublic(): bool {
+		return null === $this->capability;
+	}
+
+	/**
+	 * Returns what a public write declares about the policy that decides for it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return PublicWrite|null The declaration, or null for any other operation.
+	 */
+	public function publicWrite(): ?PublicWrite {
+		return $this->publicWrite;
 	}
 
 	/**
@@ -415,7 +468,7 @@ final class OperationDefinition {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return list<ErrorCode> The codes, in declaration order.
+	 * @return list<ErrorCode> The codes, in declaration order, then a public write's refusals.
 	 */
 	public function errors(): array {
 		return $this->errors;
@@ -614,6 +667,68 @@ final class OperationDefinition {
 
 		if ( null === $field || ! $field->isRequired() || $field->isNullable() || ! in_array( $field->type(), array( FieldType::Uuid, FieldType::Integer ), true ) ) {
 			SchemaException::raise( 'The resource field %1$s of %2$s must be a required, non-nullable uuid or integer input.', $resource_field, $id );
+		}
+	}
+
+	/**
+	 * Checks a public operation: a Store API route, and a write policy exactly when it writes.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws SchemaException When the operation is not on a Store API route, names a resource,
+	 *                         has an ability, a command or agent exposure, or is a write without a
+	 *                         PublicWrite or a read with one.
+	 *
+	 * @param string           $id             The operation id, for messages.
+	 * @param RestBinding|null $rest           The route, or null.
+	 * @param Annotations      $annotations    The annotations.
+	 * @param string|null      $resource_field The field naming the resource, or null.
+	 * @param string|null      $ability        The ability slug, or null.
+	 * @param CliBinding|null  $cli            The command, or null.
+	 * @param bool             $agent_exposed  Whether agents may see the ability.
+	 * @param PublicWrite|null $public_write   The write's declaration, or null.
+	 */
+	private static function checkPublic( string $id, ?RestBinding $rest, Annotations $annotations, ?string $resource_field, ?string $ability, ?CliBinding $cli, bool $agent_exposed, ?PublicWrite $public_write ): void {
+		if ( null === $rest || ! $rest->isStore() ) {
+			SchemaException::raise( 'The operation %1$s requires no capability, so it must be a Store API route (%2$s): every other route requires a capability.', $id, RestBinding::STORE_NAMESPACE );
+		}
+
+		if ( null !== $resource_field ) {
+			SchemaException::raise( 'The operation %1$s requires no capability, so it checks nothing on a resource: declare no resource field.', $id );
+		}
+
+		if ( null !== $ability || null !== $cli || $agent_exposed ) {
+			SchemaException::raise( 'The operation %1$s requires no capability, so it is never an ability, a command or exposed to agents: those surfaces check the capability the route checks.', $id );
+		}
+
+		if ( $annotations->isReadOnly() && null !== $public_write ) {
+			SchemaException::raise( 'The operation %1$s is a public read: it has no write policy to declare.', $id );
+		}
+
+		if ( ! $annotations->isReadOnly() && null === $public_write ) {
+			SchemaException::raise( 'The operation %1$s is a public write, which cannot be declared without its PublicWrite: the rate limit and the cart requirement that the Store API\'s request policy enforces instead of a capability.', $id );
+		}
+	}
+
+	/**
+	 * Checks an operation that requires a capability: never on a Store API route, never a public write.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws SchemaException When the operation declares a PublicWrite, or its route is the Store API's.
+	 *
+	 * @param string           $id           The operation id, for messages.
+	 * @param string           $capability   The capability.
+	 * @param RestBinding|null $rest         The route, or null.
+	 * @param PublicWrite|null $public_write The write's declaration, or null.
+	 */
+	private static function checkGuarded( string $id, string $capability, ?RestBinding $rest, ?PublicWrite $public_write ): void {
+		if ( null !== $public_write ) {
+			SchemaException::raise( 'The operation %1$s requires %2$s, so it is not a public write: declare no PublicWrite.', $id, $capability );
+		}
+
+		if ( null !== $rest && $rest->isStore() ) {
+			SchemaException::raise( 'The operation %1$s requires %2$s, but the Store API (%3$s) serves public operations only.', $id, $capability, RestBinding::STORE_NAMESPACE );
 		}
 	}
 

@@ -154,12 +154,18 @@ final class FieldDocs {
 	 * @since 0.1.0
 	 *
 	 * @param OperationDefinition $definition The operation.
-	 * @return string The capability, and the input that names the resource when it is checked on one.
+	 * @return string The capability, and the input that names the resource when it is checked on one;
+	 *                for a public operation, that it requires none.
 	 */
 	public static function capability( OperationDefinition $definition ): string {
-		$field = $definition->resourceField();
+		$capability = $definition->capability();
+		$field      = $definition->resourceField();
 
-		return '`' . $definition->capability() . '`' . ( null === $field ? '' : ' on the resource that `' . $field . '` names' );
+		if ( null === $capability ) {
+			return 'none: a public operation of the Store API';
+		}
+
+		return '`' . $capability . '`' . ( null === $field ? '' : ' on the resource that `' . $field . '` names' );
 	}
 
 	/**
