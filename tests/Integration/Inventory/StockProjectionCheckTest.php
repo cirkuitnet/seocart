@@ -103,7 +103,9 @@ final class StockProjectionCheckTest extends StockTestCase {
 			$this->assertMatchesRegularExpression( $pattern, $result->findings[ $index ] );
 		}
 
-		$this->assertSame( $result->findings, $this->projectionCheck()->findings, 'Doctor repaired nothing.' );
+		// A second can pass between the two runs, so the age of the day-old hold is left out of the comparison.
+		$ageless = static fn( array $findings ): array => preg_replace( '/\d+ seconds ago/', 'N seconds ago', $findings );
+		$this->assertSame( $ageless( $result->findings ), $ageless( $this->projectionCheck()->findings ), 'Doctor repaired nothing.' );
 	}
 
 	/**
