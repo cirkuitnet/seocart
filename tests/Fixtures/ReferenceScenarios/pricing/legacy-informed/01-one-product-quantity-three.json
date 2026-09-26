@@ -1,0 +1,77 @@
+{
+	"scenario": "one product, quantity 3, one tax rate, one carrier",
+	"source": "research scenario: a single product without attributes, quantity 3, no promotion, a taxable state, one carrier",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 101,
+				"quantity": 3,
+				"unit": { "amount": "19.99", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": {
+			"destination": "US",
+			"rates": [
+				{
+					"method": "ground",
+					"amount": "5.00",
+					"basis": "net",
+					"taxClass": "standard"
+				}
+			],
+			"selected": null
+		},
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ]
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "59.97",
+			"discountTotal": "0.00",
+			"shippingTotal": "5.00",
+			"feeTotal": "0.00",
+			"net": "64.97",
+			"tax": "5.36",
+			"grand": "70.33"
+		},
+		"baseSummary": {
+			"subtotal": "59.97",
+			"discountTotal": "0.00",
+			"shippingTotal": "5.00",
+			"feeTotal": "0.00",
+			"net": "64.97",
+			"tax": "5.36",
+			"grand": "70.33"
+		},
+		"lines": {
+			"l1": {
+				"net": "59.97",
+				"tax": "4.95",
+				"gross": "64.92",
+				"discount": "0.00",
+				"unitGross": "21.64"
+			}
+		},
+		"adjustments": [
+			{
+				"source": "shipping:ground",
+				"scope": "shipping",
+				"type": "shipping",
+				"amount": "5.00",
+				"net": "5.00",
+				"tax": "0.41",
+				"gross": "5.41"
+			}
+		],
+		"components": {
+			"line:l1:1": { "tax": "4.95", "residual": 0 },
+			"adjustment:1:1": { "tax": "0.41", "residual": 0 }
+		}
+	}
+}

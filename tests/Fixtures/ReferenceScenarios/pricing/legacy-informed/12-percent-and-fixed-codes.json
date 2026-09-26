@@ -1,0 +1,121 @@
+{
+	"scenario": "a percentage code and an amount-off code together, in their declared order",
+	"source": "research scenario: two stackable coupons, one an amount and one a percentage",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 101,
+				"quantity": 1,
+				"unit": { "amount": "40.00", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 102,
+				"quantity": 1,
+				"unit": { "amount": "20.00", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"promotions": [
+			{
+				"uuid": "00000000-0000-7000-8000-000000000122",
+				"code": "SIXOFF",
+				"priority": 20,
+				"effect": { "kind": "fixed", "amount": "6.00", "basis": "net" }
+			},
+			{
+				"uuid": "00000000-0000-7000-8000-000000000121",
+				"code": "TENOFF",
+				"priority": 10,
+				"effect": { "kind": "percent", "percent": "10" }
+			}
+		],
+		"shipping": {
+			"destination": "US",
+			"rates": [
+				{
+					"method": "ground",
+					"amount": "5.00",
+					"basis": "net",
+					"taxClass": "standard"
+				}
+			],
+			"selected": null
+		},
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ]
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "60.00",
+			"discountTotal": "-12.00",
+			"shippingTotal": "5.00",
+			"feeTotal": "0.00",
+			"net": "53.00",
+			"tax": "4.37",
+			"grand": "57.37"
+		},
+		"lines": {
+			"l1": {
+				"net": "32.00",
+				"tax": "2.64",
+				"gross": "34.64",
+				"discount": "-8.00"
+			},
+			"l2": {
+				"net": "16.00",
+				"tax": "1.32",
+				"gross": "17.32",
+				"discount": "-4.00"
+			}
+		},
+		"adjustments": [
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000121",
+				"line": "l1",
+				"amount": "-4.00",
+				"net": "-4.00",
+				"tax": "-0.33",
+				"gross": "-4.33"
+			},
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000121",
+				"line": "l2",
+				"amount": "-2.00",
+				"net": "-2.00",
+				"tax": "-0.17",
+				"gross": "-2.17"
+			},
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000122",
+				"line": "l1",
+				"amount": "-4.00",
+				"net": "-4.00",
+				"tax": "-0.33",
+				"gross": "-4.33"
+			},
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000122",
+				"line": "l2",
+				"amount": "-2.00",
+				"net": "-2.00",
+				"tax": "-0.16",
+				"gross": "-2.16"
+			},
+			{
+				"source": "shipping:ground",
+				"amount": "5.00",
+				"net": "5.00",
+				"tax": "0.41",
+				"gross": "5.41"
+			}
+		]
+	},
+	"note": "Promotions apply in their declared priority, whatever order the codes were entered in: the percentage first, then the amount off what is left."
+}

@@ -1,0 +1,53 @@
+{
+	"scenario": "a line of a class nothing taxes beside a taxable line, rounded per line",
+	"source": "research scenario: one tax-exempt product line and one taxable line at 8.25 %, probing the drift between two roundings",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 101,
+				"quantity": 3,
+				"unit": { "amount": "3.33", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 102,
+				"quantity": 1,
+				"unit": { "amount": "5.01", "basis": "net" },
+				"taxClass": "exempt"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ],
+				"exempt": []
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "15.00",
+			"discountTotal": "0.00",
+			"shippingTotal": "0.00",
+			"feeTotal": "0.00",
+			"net": "15.00",
+			"tax": "0.82",
+			"grand": "15.82"
+		},
+		"lines": {
+			"l1": {
+				"net": "9.99",
+				"tax": "0.82",
+				"gross": "10.81",
+				"unitGross": "3.60"
+			},
+			"l2": { "net": "5.01", "tax": "0.00", "gross": "5.01" }
+		},
+		"adjustments": [],
+		"components": { "line:l1:1": { "tax": "0.82", "residual": 0 } }
+	},
+	"note": "Tax is rounded once, on each line; the exempt line has no tax and no tax component, and the total is the sum of the lines, so there is no second rounding to drift from."
+}

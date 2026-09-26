@@ -1,0 +1,110 @@
+{
+	"scenario": "a cart in a presentment currency at a frozen rate, with an explicit and a converted price",
+	"source": "multi-currency rule: totals in the cart's currency, every figure's base twin converted at the frozen rate in pools",
+	"input": {
+		"currency": "EUR",
+		"context": {
+			"base": "USD",
+			"rate": "0.91230",
+			"scale": 5,
+			"version": 3
+		},
+		"lines": [
+			{
+				"key": "explicit",
+				"variant": 301,
+				"quantity": 1,
+				"unit": { "amount": "20.00", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "converted",
+				"variant": 302,
+				"quantity": 2,
+				"priceSource": "converted",
+				"unit": { "amount": "10.00", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"promotions": [
+			{
+				"uuid": "00000000-0000-7000-8000-000000000301",
+				"code": "TENOFF",
+				"priority": 10,
+				"effect": { "kind": "percent", "percent": "10" }
+			}
+		],
+		"shipping": {
+			"destination": "DE",
+			"rates": [
+				{
+					"method": "flat",
+					"amount": "4.56",
+					"basis": "net",
+					"taxClass": "standard"
+				}
+			],
+			"selected": null
+		},
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "20", "jurisdiction": "DE" } ]
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "38.24",
+			"discountTotal": "-3.82",
+			"shippingTotal": "4.56",
+			"feeTotal": "0.00",
+			"net": "38.98",
+			"tax": "7.79",
+			"grand": "46.77"
+		},
+		"baseSummary": {
+			"subtotal": "41.92",
+			"discountTotal": "-4.19",
+			"shippingTotal": "5.00",
+			"feeTotal": "0.00",
+			"net": "42.73",
+			"tax": "8.54",
+			"grand": "51.27"
+		},
+		"lines": {
+			"explicit": { "net": "18.00", "tax": "3.60", "gross": "21.60" },
+			"converted": {
+				"net": "16.42",
+				"tax": "3.28",
+				"gross": "19.70",
+				"discount": "-1.82"
+			}
+		},
+		"adjustments": [
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000301",
+				"line": "explicit",
+				"amount": "-2.00",
+				"net": "-2.00",
+				"tax": "-0.40",
+				"gross": "-2.40"
+			},
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000301",
+				"line": "converted",
+				"amount": "-1.82",
+				"net": "-1.82",
+				"tax": "-0.37",
+				"gross": "-2.19"
+			},
+			{
+				"source": "shipping:flat",
+				"amount": "4.56",
+				"net": "4.56",
+				"tax": "0.91",
+				"gross": "5.47"
+			}
+		]
+	},
+	"note": "The converted unit price is 10.00 USD × 0.91230 = 9.123, rounded once to 9.12 EUR; the flat rate of 5.00 USD is quoted as 4.56 EUR the same way."
+}

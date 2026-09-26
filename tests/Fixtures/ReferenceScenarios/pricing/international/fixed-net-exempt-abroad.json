@@ -1,0 +1,38 @@
+{
+	"scenario": "an exempt customer abroad under the fixed-net policy pays the same net amount as at home",
+	"source": "tax-inclusive pricing rule: an exempt customer pays the net amount",
+	"input": {
+		"currency": "GBP",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 201,
+				"quantity": 1,
+				"unit": { "amount": "9.99", "basis": "gross" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "25", "jurisdiction": "XA" } ]
+			},
+			"reference": {
+				"standard": [ { "rate": "20", "jurisdiction": "GB" } ]
+			}
+		},
+		"policy": "fixed_net",
+		"customer": { "exempt": true }
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "9.99",
+			"net": "8.33",
+			"tax": "0.00",
+			"grand": "8.33"
+		},
+		"lines": {
+			"l1": { "net": "8.33", "tax": "0.00", "gross": "8.33" }
+		}
+	}
+}

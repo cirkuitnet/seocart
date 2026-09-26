@@ -515,6 +515,47 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
+	 * Reads, in one query, the prices a merchant authored for some variants in some currencies.
+	 *
+	 * Both lists become IN lists of one statement on the `(variant_id, currency)` key, so the
+	 * number of queries does not grow with the variants or the currencies.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int[]    $variantIds    The variants' ids.
+	 * @param Currency ...$currencies The currencies.
+	 * @return list<array{variantId: int, price: VariantPrice, taxClassId: int|null}> The prices, in no particular order.
+	 *
+	 * @phpstan-param list<int> $variantIds
+	 */
+	public function explicitPrices( array $variantIds, Currency ...$currencies ): array {
+		$ids   = array_values( array_unique( array_filter( $variantIds, static fn( int $id ): bool => $id > 0 ) ) );
+		$codes = array_values( array_unique( array_map( static fn( Currency $currency ): string => $currency->code(), $currencies ) ) );
+
+		if ( array() === $ids || array() === $codes ) {
+			return array();
+		}
+
+		$rows = $this->db->fetchAll(
+			'SELECT variant_id, currency, amount_basis, price_minor, compare_at_minor, tax_class_id FROM %i'
+				. ' WHERE variant_id IN ( ' . implode( ', ', array_fill( 0, count( $ids ), '%d' ) ) . ' )'
+				. ' AND currency IN ( ' . implode( ', ', array_fill( 0, count( $codes ), '%s' ) ) . ' )',
+			$this->table( CatalogTables::VARIANT_PRICES ),
+			...$ids,
+			...$codes
+		);
+
+		return array_map(
+			static fn( array $row ): array => array(
+				'variantId'  => (int) $row['variant_id'],
+				'price'      => VariantPrice::stored( Currency::of( (string) $row['currency'] ), (int) $row['price_minor'], self::intOrNull( $row['compare_at_minor'] ), (string) $row['amount_basis'] ),
+				'taxClassId' => self::intOrNull( $row['tax_class_id'] ),
+			),
+			$rows
+		);
+	}
+
+	/**
 	 * Moves a post's binding to another locale.
 	 *
 	 * @since 0.1.0

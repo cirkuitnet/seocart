@@ -74,8 +74,8 @@ use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\DatabaseError;
 use SEOCart\Platform\Database\DatabaseState;
 use SEOCart\Platform\Database\LockService;
-use SEOCart\Platform\Database\Migrator;
 use SEOCart\Platform\Database\MigrationsTableState;
+use SEOCart\Platform\Database\Migrator;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\DataRegistry\DataRegistry;
 use SEOCart\Platform\DataRegistry\OwnedData;
@@ -129,10 +129,22 @@ use SEOCart\Platform\Settings\Settings;
 use SEOCart\Platform\Settings\SettingsError;
 use SEOCart\Platform\Settings\SettingsService;
 use SEOCart\Platform\Settings\SettingsStore;
+use SEOCart\Pricing\Application\Calculator;
+use SEOCart\Pricing\Application\PriceResolver;
+use SEOCart\Pricing\Application\ShippingRateQuoter;
+use SEOCart\Pricing\Application\TaxQuoter;
+use SEOCart\Pricing\Domain\AmountBasis;
+use SEOCart\Pricing\Domain\NoPromotions;
+use SEOCart\Pricing\Domain\PricingError;
+use SEOCart\Pricing\Domain\PromotionEvaluator;
+use SEOCart\Pricing\Infrastructure\Quotes\FixedRateTaxQuoter;
+use SEOCart\Pricing\Infrastructure\Quotes\FlatRateShippingQuoter;
 use SEOCart\Support\Clock;
 use SEOCart\Support\Currency;
+use SEOCart\Support\Decimal;
 use SEOCart\Support\Error\ErrorTable;
 use SEOCart\Support\IdGenerator;
+use SEOCart\Support\Percentage;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\SupportError;
 use SEOCart\Support\SystemClock;
@@ -195,6 +207,7 @@ final class Modules {
 		DatabaseError::class,
 		InventoryError::class,
 		KernelError::class,
+		PricingError::class,
 		SecretsError::class,
 		SettingsError::class,
 		StoreApiError::class,
@@ -282,6 +295,7 @@ final class Modules {
 		self::inventoryRegister( $container );
 		self::rateLimiterRegister( $container );
 		self::cartRegister( $container );
+		self::pricingRegister( $container );
 		self::kernelRegister( $container );
 	}
 
@@ -1047,6 +1061,39 @@ final class Modules {
 			static fn( Container $c ): StoreWrites => new StoreWrites( $c->get( RateLimiter::class ), $c->get( ClientIdentities::class ), $c->get( CartTokenTransport::class ), $c->get( ErrorTranslator::class ) )
 		);
 		$container->bind( StoreSession::class, static fn(): StoreSession => new StoreSession() );
+	}
+
+	/**
+	 * The pricing module: the calculator, its price resolver, and the providers its quotes come from.
+	 *
+	 * It adds no hook: a cart or an order asks the calculator for totals when it needs them. The
+	 * shipping and tax providers are the two the plugin ships with, set up with their own
+	 * constants; the promotion evaluator evaluates nothing until a promotion module replaces it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container The container.
+	 */
+	private static function pricingRegister( Container $container ): void {
+		$container->bind( PriceResolver::class, static fn( Container $c ): PriceResolver => new PriceResolver( $c->get( ProductRepository::class ) ) );
+		$container->bind(
+			ShippingRateQuoter::class,
+			static fn( Container $c ): ShippingRateQuoter => new FlatRateShippingQuoter( $c->get( IdGenerator::class ), Decimal::of( FlatRateShippingQuoter::RATE ), AmountBasis::Net, FlatRateShippingQuoter::TAX_CLASS )
+		);
+		$container->bind( TaxQuoter::class, static fn(): TaxQuoter => new FixedRateTaxQuoter( Percentage::fromString( FixedRateTaxQuoter::RATE ), FixedRateTaxQuoter::JURISDICTION ) );
+		$container->bind( PromotionEvaluator::class, static fn(): PromotionEvaluator => new NoPromotions() );
+		$container->bind(
+			Calculator::class,
+			static fn( Container $c ): Calculator => new Calculator(
+				$c->get( PriceResolver::class ),
+				$c->get( ShippingRateQuoter::class ),
+				$c->get( TaxQuoter::class ),
+				$c->get( PromotionEvaluator::class ),
+				$c->get( TransactionManager::class ),
+				$c->get( Clock::class ),
+				self::baseCurrency( $c )
+			)
+		);
 	}
 
 	/**

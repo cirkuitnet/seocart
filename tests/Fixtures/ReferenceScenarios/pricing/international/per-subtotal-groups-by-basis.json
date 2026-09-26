@@ -1,0 +1,44 @@
+{
+	"scenario": "rounded per subtotal, a net line and a gross line of one class are taxed in groups of their own",
+	"source": "tax rounding mode rule: per subtotal, lines are grouped by tax class and by amount basis",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 631,
+				"quantity": 1,
+				"unit": { "amount": "10.00", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 632,
+				"quantity": 1,
+				"unit": { "amount": "12.00", "basis": "gross" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "20", "jurisdiction": "XA" } ]
+			}
+		},
+		"policy": "fixed_gross",
+		"roundingMode": "per_subtotal"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "22.00",
+			"net": "20.00",
+			"tax": "4.00",
+			"grand": "24.00"
+		},
+		"lines": {
+			"l1": { "net": "10.00", "tax": "2.00", "gross": "12.00" },
+			"l2": { "net": "10.00", "tax": "2.00", "gross": "12.00" }
+		}
+	},
+	"note": "A net amount has tax added and a gross amount has it taken out, so the two cannot be summed into one amount to tax: taxed as one net group, the gross line would be charged 2.40 of tax on top of its 12.00."
+}

@@ -15,6 +15,8 @@ use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Catalog\Domain\SellabilityFacts;
+use SEOCart\Catalog\Domain\VariantPrice;
+use SEOCart\Support\Currency;
 use SEOCart\Support\Locale;
 
 defined( 'ABSPATH' ) || exit;
@@ -284,6 +286,23 @@ interface ProductRepository {
 	 *                                variant has. A product with no post in the locale is marked not translated.
 	 */
 	public function sellabilityFactsIn( Locale $locale, int ...$variantIds ): array;
+
+	/**
+	 * Reads, in one query, the prices a merchant authored for some variants in some currencies.
+	 *
+	 * One row per variant and currency that has a price, found through the `(variant_id,
+	 * currency)` key; a variant or a currency without a price has no row. A price in one currency
+	 * is never derived from another here.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int[]    $variantIds    The variants' ids.
+	 * @param Currency ...$currencies The currencies.
+	 * @return list<array{variantId: int, price: VariantPrice, taxClassId: int|null}> The prices, in no particular order, each with its tax class, or null for none.
+	 *
+	 * @phpstan-param list<int> $variantIds
+	 */
+	public function explicitPrices( array $variantIds, Currency ...$currencies ): array;
 
 	/**
 	 * Moves a post's binding to another locale: one statement.

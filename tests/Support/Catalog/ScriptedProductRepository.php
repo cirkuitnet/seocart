@@ -17,6 +17,7 @@ use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Platform\Database\TransactionManager;
+use SEOCart\Support\Currency;
 use SEOCart\Support\Locale;
 
 /**
@@ -581,6 +582,21 @@ final class ScriptedProductRepository implements ProductRepository {
 	 */
 	public function sellabilityFactsIn( Locale $locale, int ...$variantIds ): array {
 		return array();
+	}
+
+	/**
+	 * Not used by the product write.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int[]    $variantIds    Unused.
+	 * @param Currency ...$currencies Unused.
+	 * @return never
+	 */
+	public function explicitPrices( array $variantIds, Currency ...$currencies ): never {
+		throw new \LogicException( 'The product write reads no price.' );
 	}
 
 	/**

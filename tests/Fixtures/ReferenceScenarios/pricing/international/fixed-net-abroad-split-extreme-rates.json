@@ -1,0 +1,60 @@
+{
+	"scenario": "sold abroad under fixed-net, a group's converted gross is shared by its net, so no line takes more tax than gross",
+	"source": "tax-inclusive pricing rule: a gross price keeps its net amount across tax zones",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 641,
+				"quantity": 1,
+				"unit": { "amount": "0.01", "basis": "gross" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 642,
+				"quantity": 1,
+				"unit": { "amount": "0.03", "basis": "gross" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l3",
+				"variant": 643,
+				"quantity": 1,
+				"unit": { "amount": "0.03", "basis": "gross" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "200", "jurisdiction": "XB" } ]
+			},
+			"reference": {
+				"standard": [ { "rate": "400", "jurisdiction": "XA" } ]
+			}
+		},
+		"policy": "fixed_net",
+		"roundingMode": "per_subtotal"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "0.07",
+			"net": "0.01",
+			"tax": "0.03",
+			"grand": "0.04"
+		},
+		"lines": {
+			"l1": { "net": "0.00", "tax": "0.01", "gross": "0.01" },
+			"l2": { "net": "0.01", "tax": "0.01", "gross": "0.02" },
+			"l3": { "net": "0.00", "tax": "0.01", "gross": "0.01" }
+		},
+		"components": {
+			"line:l1:1": { "tax": "0.01" },
+			"line:l2:1": { "tax": "0.01" },
+			"line:l3:1": { "tax": "0.01" }
+		}
+	},
+	"note": "The group's gross at the destination is 0.07 × 3 ÷ 5 = 0.042, rounded to 0.04, with tax 0.03 and net 0.01; the net and the tax are shared out. Sharing the converted gross instead would give the first line gross 0.00 and tax 0.01, a net of -0.01."
+}

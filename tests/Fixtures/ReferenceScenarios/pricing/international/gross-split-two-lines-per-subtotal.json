@@ -1,0 +1,44 @@
+{
+	"scenario": "two gross lines taxed together keep their gross prices when the group is shared back",
+	"source": "tax-inclusive pricing rule: a gross price is what the customer pays, so its share of a group keeps it",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 611,
+				"quantity": 1,
+				"unit": { "amount": "10.00", "basis": "gross" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 612,
+				"quantity": 1,
+				"unit": { "amount": "10.00", "basis": "gross" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "20", "jurisdiction": "XA" } ]
+			}
+		},
+		"policy": "fixed_gross",
+		"roundingMode": "per_subtotal"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "20.00",
+			"net": "16.67",
+			"tax": "3.33",
+			"grand": "20.00"
+		},
+		"lines": {
+			"l1": { "net": "8.33", "tax": "1.67", "gross": "10.00" },
+			"l2": { "net": "8.34", "tax": "1.66", "gross": "10.00" }
+		}
+	},
+	"note": "The group's tax, 3.3333, rounds once to 3.33 and is shared 1.67 and 1.66; each line keeps its 10.00. Sharing the net instead would price them at 10.01 and 9.99."
+}

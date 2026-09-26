@@ -167,6 +167,25 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The database ended the operation to resolve a conflict with another request (error {errno}, SQLSTATE {sqlstate}). Try again.
 - Values: `errno`, `sqlstate`
 
+## `pricing.currency_not_enabled`
+
+- HTTP status: 409
+- Message: Prices are not offered in {currency}. Choose another currency.
+- Values: `currency`
+
+## `pricing.no_shipping_rate`
+
+- HTTP status: 409
+- Message: No shipping method delivers to this address. Check the address, or contact the store.
+- Values: none
+
+## `pricing.quote_unavailable`
+
+- HTTP status: 503
+- Internal: a client receives the code, the status, a generic message and the correlation id. This message and its values go to the site's error log only.
+- Message: A total could not be worked out, because the provider {provider} did not answer or left out a tax class the cart needs.
+- Values: `provider`
+
 ## `secrets.encryption_key_invalid`
 
 - HTTP status: 500

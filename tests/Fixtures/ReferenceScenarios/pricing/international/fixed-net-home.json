@@ -1,0 +1,39 @@
+{
+	"scenario": "a gross price sold at home under the fixed-net policy is the price as authored",
+	"source": "tax-inclusive pricing rule: a gross price keeps its net amount across tax zones",
+	"input": {
+		"currency": "GBP",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 201,
+				"quantity": 1,
+				"unit": { "amount": "9.99", "basis": "gross" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "20", "jurisdiction": "GB" } ]
+			},
+			"reference": {
+				"standard": [ { "rate": "20", "jurisdiction": "GB" } ]
+			}
+		},
+		"policy": "fixed_net"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "9.99",
+			"net": "8.32",
+			"tax": "1.67",
+			"grand": "9.99"
+		},
+		"lines": {
+			"l1": { "net": "8.32", "tax": "1.67", "gross": "9.99" }
+		},
+		"components": { "line:l1:1": { "tax": "1.67", "residual": 0 } }
+	},
+	"note": "The tax, 1.665, is rounded once and the net is what remains, so the price paid at home is exactly the price authored."
+}

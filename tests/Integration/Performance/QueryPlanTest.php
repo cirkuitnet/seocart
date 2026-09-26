@@ -48,7 +48,7 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  * and fails when it took more than three minutes. The store must then be sound: doctor passes
  * and every seeded variant may be sold (SeedVerifier). Then the plugin's reads run over a
  * PlanRecorder: the catalog's lookups by post, by source post and by variant, its sellability
- * query in a locale and without one, the reads of its write path, the locking reads of a trash
+ * query in a locale and without one, the price read of a calculation, the reads of its write path, the locking reads of a trash
  * and a delete, and the reads of a change of a product's posts, and every read of the stock
  * repository, doctor's
  * projection checks and the sweep's search for expired holds included; the reads that must run
@@ -349,6 +349,10 @@ final class QueryPlanTest extends DatabaseTestCase {
 		( new Sellability( $products ) )->of( $page, false );
 		( new Sellability( $products ) )->of( array( 5000 ), false );
 		( new Sellability( $products ) )->of( $page, false, Locale::of( self::SECOND_LOCALE ) );
+
+		// A calculation's price read: in the base currency, and in a cart's currency with the base one.
+		$products->explicitPrices( $page, Currency::of( self::$baseCurrency ) );
+		$products->explicitPrices( $page, Currency::of( self::$baseCurrency ), Currency::of( 'EUR' ) );
 
 		$stock->levels( $page );
 		$stock->levels( array( 5000 ) );

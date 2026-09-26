@@ -1,0 +1,116 @@
+{
+	"scenario": "an amount off after a percentage is shared by what the lines cost after the percentage",
+	"source": "research scenario: two stackable coupons, one an amount and one a percentage",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 101,
+				"quantity": 1,
+				"unit": { "amount": "0.01", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 102,
+				"quantity": 1,
+				"unit": { "amount": "0.01", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l3",
+				"variant": 103,
+				"quantity": 1,
+				"unit": { "amount": "1.00", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"promotions": [
+			{
+				"uuid": "00000000-0000-7000-8000-000000000124",
+				"code": "HALFOFF",
+				"priority": 10,
+				"effect": { "kind": "percent", "percent": "50" }
+			},
+			{
+				"uuid": "00000000-0000-7000-8000-000000000125",
+				"code": "FIFTYCENTS",
+				"priority": 20,
+				"effect": { "kind": "fixed", "amount": "0.50", "basis": "net" }
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ]
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "1.02",
+			"discountTotal": "-1.02",
+			"shippingTotal": "0.00",
+			"feeTotal": "0.00",
+			"net": "0.00",
+			"tax": "0.00",
+			"grand": "0.00"
+		},
+		"lines": {
+			"l1": {
+				"net": "0.00",
+				"tax": "0.00",
+				"gross": "0.00",
+				"discount": "-0.01"
+			},
+			"l2": {
+				"net": "0.00",
+				"tax": "0.00",
+				"gross": "0.00",
+				"discount": "-0.01"
+			},
+			"l3": {
+				"net": "0.00",
+				"tax": "0.00",
+				"gross": "0.00",
+				"discount": "-1.00"
+			}
+		},
+		"adjustments": [
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000124",
+				"line": "l1",
+				"amount": "-0.01",
+				"net": "-0.01",
+				"tax": "0.00",
+				"gross": "-0.01"
+			},
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000124",
+				"line": "l2",
+				"amount": "-0.01",
+				"net": "-0.01",
+				"tax": "0.00",
+				"gross": "-0.01"
+			},
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000124",
+				"line": "l3",
+				"amount": "-0.50",
+				"net": "-0.50",
+				"tax": "-0.04",
+				"gross": "-0.54"
+			},
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000125",
+				"line": "l3",
+				"amount": "-0.50",
+				"net": "-0.50",
+				"tax": "-0.04",
+				"gross": "-0.54"
+			}
+		]
+	},
+	"note": "Half of 0.01 rounds to 0.01, so the percentage takes the two small lines to zero; the amount off then all goes to the line that still costs something. Shared by what the lines cost before the percentage, a minor unit of it would land on a line already at zero."
+}

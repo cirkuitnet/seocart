@@ -1,0 +1,47 @@
+{
+	"scenario": "sold abroad at real rates under fixed-net, a group's converted gross is shared by its net",
+	"source": "tax-inclusive pricing rule: a gross price keeps its net amount across tax zones",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 651,
+				"quantity": 1,
+				"unit": { "amount": "0.03", "basis": "gross" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 652,
+				"quantity": 1,
+				"unit": { "amount": "1.00", "basis": "gross" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "5", "jurisdiction": "XB" } ]
+			},
+			"reference": {
+				"standard": [ { "rate": "25", "jurisdiction": "XA" } ]
+			}
+		},
+		"policy": "fixed_net",
+		"roundingMode": "per_subtotal"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "1.03",
+			"net": "0.83",
+			"tax": "0.04",
+			"grand": "0.87"
+		},
+		"lines": {
+			"l1": { "net": "0.02", "tax": "0.00", "gross": "0.02" },
+			"l2": { "net": "0.81", "tax": "0.04", "gross": "0.85" }
+		}
+	},
+	"note": "The group's gross at the destination is 1.03 × 1.05 ÷ 1.25 = 0.8652, rounded to 0.87, with tax 0.04 and net 0.83; the net and the tax are shared out. At real rates no share goes negative either way, but the converted gross is not a price anyone was quoted, so it is not the figure kept: sharing it would give 0.03 and 0.84."
+}

@@ -1,0 +1,80 @@
+{
+	"scenario": "free shipping keeps the rate and takes it off with a second adjustment",
+	"source": "research scenario: a free-shipping coupon",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 101,
+				"quantity": 1,
+				"unit": { "amount": "30.00", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"promotions": [
+			{
+				"uuid": "00000000-0000-7000-8000-000000000022",
+				"code": "SHIPFREE",
+				"priority": 10,
+				"effect": { "kind": "free_shipping" }
+			}
+		],
+		"shipping": {
+			"destination": "US",
+			"rates": [
+				{
+					"method": "ground",
+					"amount": "7.50",
+					"basis": "net",
+					"taxClass": "standard"
+				}
+			],
+			"selected": null
+		},
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ]
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "30.00",
+			"discountTotal": "-7.50",
+			"shippingTotal": "7.50",
+			"feeTotal": "0.00",
+			"net": "30.00",
+			"tax": "2.48",
+			"grand": "32.48"
+		},
+		"lines": {
+			"l1": { "net": "30.00", "tax": "2.48", "gross": "32.48" }
+		},
+		"adjustments": [
+			{
+				"source": "shipping:ground",
+				"scope": "shipping",
+				"type": "shipping",
+				"amount": "7.50",
+				"net": "7.50",
+				"tax": "0.62",
+				"gross": "8.12"
+			},
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000022",
+				"scope": "shipping",
+				"type": "discount",
+				"amount": "-7.50",
+				"net": "-7.50",
+				"tax": "-0.62",
+				"gross": "-8.12"
+			}
+		],
+		"components": {
+			"adjustment:1:1": { "tax": "0.62" },
+			"adjustment:2:1": { "tax": "-0.62" }
+		}
+	},
+	"note": "Delivery options such as a Saturday delivery that suppressed free shipping have no counterpart here; the rate and its free-shipping discount both stay on the order, and their tax nets to zero."
+}

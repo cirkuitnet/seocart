@@ -1,0 +1,39 @@
+{
+	"scenario": "a gross price sold into a zone with a higher rate under the fixed-net policy keeps its net amount",
+	"source": "tax-inclusive pricing rule: a gross price keeps its net amount across tax zones",
+	"input": {
+		"currency": "GBP",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 201,
+				"quantity": 1,
+				"unit": { "amount": "9.99", "basis": "gross" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "25", "jurisdiction": "XA" } ]
+			},
+			"reference": {
+				"standard": [ { "rate": "20", "jurisdiction": "GB" } ]
+			}
+		},
+		"policy": "fixed_net"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "9.99",
+			"net": "8.33",
+			"tax": "2.08",
+			"grand": "10.41"
+		},
+		"lines": {
+			"l1": { "net": "8.33", "tax": "2.08", "gross": "10.41" }
+		},
+		"components": { "line:l1:1": { "tax": "2.08", "residual": 0 } }
+	},
+	"note": "The gross at the destination is 9.99 × 1.25 ÷ 1.20 = 10.40625, rounded once to 10.41, with the net amount kept exact on the way; the tax 2.082 is then taken out of it."
+}

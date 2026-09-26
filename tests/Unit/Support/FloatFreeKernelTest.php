@@ -16,11 +16,12 @@ use PHPUnit\Framework\TestCase;
 /**
  * Fails when a float can enter the money path, or when the kernel leans on an optional extension.
  *
- * The money path, for this gate, is every file under src/Support except src/Support/Schema/.
- * Support is the kernel every module's amounts, rates and instants pass through, and none of
- * its classes has a use for a float, so the rule is a directory rather than a list of classes
- * that could fall behind. Schema/ belongs to the operations work, whose JSON Schema dialects
- * have a `number` type of their own.
+ * The money path, for this gate, is every file under src/Support except src/Support/Schema/,
+ * and every file under src/Pricing and src/Tax. Support is the kernel every module's amounts,
+ * rates and instants pass through; Pricing and Tax are the calculation that turns them into
+ * totals. None of their classes has a use for a float, so the rule is a set of directories
+ * rather than a list of classes that could fall behind. Schema/ belongs to the operations work,
+ * whose JSON Schema dialects have a `number` type of their own.
  *
  * The token rules, and why each one:
  *
@@ -205,14 +206,15 @@ final class FloatFreeKernelTest extends TestCase {
 	 */
 	public function test_the_money_path_is_free_of_floats(): void {
 		$violations = array();
+		$sources    = PhpSource::files( 'src/Support', array( 'src/Support/Schema' ) ) + PhpSource::files( 'src/Pricing' ) + PhpSource::files( 'src/Tax' );
 
-		foreach ( PhpSource::files( 'src/Support', array( 'src/Support/Schema' ) ) as $file => $source ) {
+		foreach ( $sources as $file => $source ) {
 			foreach ( self::floatViolations( $source ) as $violation ) {
 				$violations[] = $file . ':' . $violation;
 			}
 		}
 
-		$this->assertSame( array(), $violations, 'Money is integer minor units and Decimal; nothing in src/Support may produce a float.' );
+		$this->assertSame( array(), $violations, 'Money is integer minor units and Decimal; nothing in src/Support, src/Pricing or src/Tax may produce a float.' );
 	}
 
 	/**

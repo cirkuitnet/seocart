@@ -16,13 +16,15 @@ use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Catalog\Domain\SellabilityFacts;
+use SEOCart\Catalog\Domain\VariantPrice;
+use SEOCart\Support\Currency;
 use SEOCart\Support\Locale;
 
 /**
- * Answers sellabilityFacts() from a fixed list and records every set of ids it was asked about.
+ * Answers sellabilityFacts() and explicitPrices() from fixed lists and records every set of ids it was asked about.
  *
- * Owns one fact: what a unit test of a sellability reader sees of storage. Every other method
- * is a programming error here and throws.
+ * Owns one fact: what a unit test of a sellability reader or a price resolver sees of storage.
+ * Every other method is a programming error here and throws.
  *
  * @since 0.1.0
  */
@@ -45,6 +47,24 @@ final class FixedFactsRepository implements ProductRepository {
 	 * @var list<array{0: string, 1: list<int>}>
 	 */
 	public array $askedIn = array();
+
+	/**
+	 * The prices explicitPrices() answers from: each with its variant and its tax class.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<array{variantId: int, price: VariantPrice, taxClassId: int|null}>
+	 */
+	public array $prices = array();
+
+	/**
+	 * The ids and the currency codes of each price read, in order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<array{0: list<int>, 1: list<string>}>
+	 */
+	public array $askedPrices = array();
 
 	/**
 	 * The facts held.
@@ -278,6 +298,25 @@ final class FixedFactsRepository implements ProductRepository {
 		$this->askedIn[] = array( $locale->toString(), array_values( $variantIds ) );
 
 		return array_values( array_filter( $this->facts, static fn( SellabilityFacts $fact ): bool => in_array( $fact->variantId, $variantIds, true ) ) );
+	}
+
+	/**
+	 * Returns the held prices of the variants and currencies asked for, as one query would, and records the ids and currencies.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int[]    $variantIds    The variants.
+	 * @param Currency ...$currencies The currencies.
+	 * @return list<array{variantId: int, price: VariantPrice, taxClassId: int|null}> Their prices.
+	 *
+	 * @phpstan-param list<int> $variantIds
+	 */
+	public function explicitPrices( array $variantIds, Currency ...$currencies ): array {
+		$codes = array_map( static fn( Currency $currency ): string => $currency->code(), $currencies );
+
+		$this->askedPrices[] = array( $variantIds, $codes );
+
+		return array_values( array_filter( $this->prices, static fn( array $row ): bool => in_array( $row['variantId'], $variantIds, true ) && in_array( $row['price']->currency()->code(), $codes, true ) ) );
 	}
 
 	/**

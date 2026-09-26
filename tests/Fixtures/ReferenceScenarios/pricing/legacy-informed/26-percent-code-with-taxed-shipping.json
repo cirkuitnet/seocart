@@ -1,0 +1,78 @@
+{
+	"scenario": "a 20 % code with taxed shipping: tax is on the discounted amounts",
+	"source": "research scenario: tax after discount switched off and on, with a 20 % coupon and taxed shipping",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 101,
+				"quantity": 1,
+				"unit": { "amount": "50.00", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"promotions": [
+			{
+				"uuid": "00000000-0000-7000-8000-000000000026",
+				"code": "TWENTY",
+				"priority": 10,
+				"effect": { "kind": "percent", "percent": "20" }
+			}
+		],
+		"shipping": {
+			"destination": "US",
+			"rates": [
+				{
+					"method": "ground",
+					"amount": "10.00",
+					"basis": "net",
+					"taxClass": "standard"
+				}
+			],
+			"selected": null
+		},
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ]
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "50.00",
+			"discountTotal": "-10.00",
+			"shippingTotal": "10.00",
+			"feeTotal": "0.00",
+			"net": "50.00",
+			"tax": "4.13",
+			"grand": "54.13"
+		},
+		"lines": {
+			"l1": {
+				"net": "40.00",
+				"tax": "3.30",
+				"gross": "43.30",
+				"discount": "-10.00"
+			}
+		},
+		"adjustments": [
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000026",
+				"line": "l1",
+				"amount": "-10.00",
+				"net": "-10.00",
+				"tax": "-0.83",
+				"gross": "-10.83"
+			},
+			{
+				"source": "shipping:ground",
+				"amount": "10.00",
+				"net": "10.00",
+				"tax": "0.83",
+				"gross": "10.83"
+			}
+		]
+	},
+	"note": "Tax is always worked out on the discounted amounts; the older system's switch to tax before discounts does not exist here, by design."
+}

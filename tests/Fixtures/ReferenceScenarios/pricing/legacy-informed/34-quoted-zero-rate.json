@@ -1,0 +1,66 @@
+{
+	"scenario": "a quoted shipping rate of zero is a fact and is selected like any rate",
+	"source": "research scenario: a rate table charging nothing for a light cart, and a carrier returning a genuine zero rate",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 101,
+				"quantity": 1,
+				"unit": { "amount": "12.00", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": {
+			"destination": "US",
+			"rates": [
+				{
+					"method": "express",
+					"amount": "9.00",
+					"basis": "net",
+					"taxClass": "standard"
+				},
+				{
+					"method": "ground",
+					"amount": "0.00",
+					"basis": "net",
+					"taxClass": "standard"
+				}
+			],
+			"selected": null
+		},
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ]
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "12.00",
+			"discountTotal": "0.00",
+			"shippingTotal": "0.00",
+			"feeTotal": "0.00",
+			"net": "12.00",
+			"tax": "0.99",
+			"grand": "12.99"
+		},
+		"lines": {
+			"l1": { "net": "12.00", "tax": "0.99", "gross": "12.99" }
+		},
+		"adjustments": [
+			{
+				"source": "shipping:ground",
+				"scope": "shipping",
+				"type": "shipping",
+				"amount": "0.00",
+				"net": "0.00",
+				"tax": "0.00",
+				"gross": "0.00"
+			}
+		],
+		"components": { "adjustment:1:1": { "tax": "0.00", "residual": 0 } }
+	},
+	"note": "A quoted zero is selected like any rate and stays on the order as the method chosen; the older system hid a genuine zero rate from the customer."
+}

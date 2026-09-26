@@ -1,0 +1,39 @@
+{
+	"scenario": "an exempt customer abroad under the fixed-gross policy pays the price less the destination's tax",
+	"source": "tax-inclusive pricing rule: an exempt customer never pays more net than a taxed one",
+	"input": {
+		"currency": "GBP",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 201,
+				"quantity": 1,
+				"unit": { "amount": "9.99", "basis": "gross" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "25", "jurisdiction": "XA" } ]
+			},
+			"reference": {
+				"standard": [ { "rate": "20", "jurisdiction": "GB" } ]
+			}
+		},
+		"policy": "fixed_gross",
+		"customer": { "exempt": true }
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "9.99",
+			"net": "7.99",
+			"tax": "0.00",
+			"grand": "7.99"
+		},
+		"lines": {
+			"l1": { "net": "7.99", "tax": "0.00", "gross": "7.99" }
+		}
+	},
+	"note": "9.99 ÷ 1.25 = 7.992, rounded once to 7.99: the price falls by the tax the destination would have charged, so the exempt customer pays what a taxed customer's net is."
+}

@@ -1,0 +1,82 @@
+{
+	"scenario": "an amount off larger than the taxable part of the cart never makes tax negative",
+	"source": "research scenario: an exempt line and a taxable line, with a discount larger than the taxable portion",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 101,
+				"quantity": 1,
+				"unit": { "amount": "10.00", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 102,
+				"quantity": 1,
+				"unit": { "amount": "40.00", "basis": "net" },
+				"taxClass": "exempt"
+			}
+		],
+		"promotions": [
+			{
+				"uuid": "00000000-0000-7000-8000-000000000028",
+				"code": "TWENTYOFF",
+				"priority": 10,
+				"effect": { "kind": "fixed", "amount": "20.00", "basis": "net" }
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ],
+				"exempt": []
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "50.00",
+			"discountTotal": "-20.00",
+			"shippingTotal": "0.00",
+			"feeTotal": "0.00",
+			"net": "30.00",
+			"tax": "0.50",
+			"grand": "30.50"
+		},
+		"lines": {
+			"l1": {
+				"net": "6.00",
+				"tax": "0.50",
+				"gross": "6.50",
+				"discount": "-4.00"
+			},
+			"l2": {
+				"net": "24.00",
+				"tax": "0.00",
+				"gross": "24.00",
+				"discount": "-16.00"
+			}
+		},
+		"adjustments": [
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000028",
+				"line": "l1",
+				"amount": "-4.00",
+				"net": "-4.00",
+				"tax": "-0.33",
+				"gross": "-4.33"
+			},
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000028",
+				"line": "l2",
+				"amount": "-16.00",
+				"net": "-16.00",
+				"tax": "0.00",
+				"gross": "-16.00"
+			}
+		]
+	},
+	"note": "The amount off is shared across all lines by what they cost, so no line's discount exceeds the line and tax never goes negative; the older system took it off the taxable portion alone, which could make tax negative."
+}

@@ -1,0 +1,38 @@
+{
+	"scenario": "a gross price sold into a zone with a higher rate under the fixed-gross policy keeps the price paid",
+	"source": "tax-inclusive pricing rule: a gross price keeps the price paid across tax zones",
+	"input": {
+		"currency": "GBP",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 201,
+				"quantity": 1,
+				"unit": { "amount": "9.99", "basis": "gross" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "25", "jurisdiction": "XA" } ]
+			},
+			"reference": {
+				"standard": [ { "rate": "20", "jurisdiction": "GB" } ]
+			}
+		},
+		"policy": "fixed_gross"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "9.99",
+			"net": "7.99",
+			"tax": "2.00",
+			"grand": "9.99"
+		},
+		"lines": {
+			"l1": { "net": "7.99", "tax": "2.00", "gross": "9.99" }
+		}
+	},
+	"note": "The tax 1.998 is taken out of the price paid at the destination's rate and rounded once to 2.00."
+}

@@ -1,0 +1,103 @@
+{
+	"scenario": "a percentage code on two lines",
+	"source": "research scenario: a percentage coupon on the whole cart, with a maximum amount set and a subtotal above it",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 101,
+				"quantity": 2,
+				"unit": { "amount": "25.00", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 102,
+				"quantity": 1,
+				"unit": { "amount": "12.50", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"promotions": [
+			{
+				"uuid": "00000000-0000-7000-8000-000000000010",
+				"code": "TENOFF",
+				"priority": 10,
+				"effect": { "kind": "percent", "percent": "10" }
+			}
+		],
+		"shipping": {
+			"destination": "US",
+			"rates": [
+				{
+					"method": "ground",
+					"amount": "5.00",
+					"basis": "net",
+					"taxClass": "standard"
+				}
+			],
+			"selected": null
+		},
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ]
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "62.50",
+			"discountTotal": "-6.25",
+			"shippingTotal": "5.00",
+			"feeTotal": "0.00",
+			"net": "61.25",
+			"tax": "5.05",
+			"grand": "66.30"
+		},
+		"lines": {
+			"l1": {
+				"net": "45.00",
+				"tax": "3.71",
+				"gross": "48.71",
+				"discount": "-5.00"
+			},
+			"l2": {
+				"net": "11.25",
+				"tax": "0.93",
+				"gross": "12.18",
+				"discount": "-1.25"
+			}
+		},
+		"adjustments": [
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000010",
+				"scope": "line",
+				"type": "discount",
+				"line": "l1",
+				"amount": "-5.00",
+				"net": "-5.00",
+				"tax": "-0.42",
+				"gross": "-5.42"
+			},
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000010",
+				"scope": "line",
+				"type": "discount",
+				"line": "l2",
+				"amount": "-1.25",
+				"net": "-1.25",
+				"tax": "-0.10",
+				"gross": "-1.35"
+			},
+			{
+				"source": "shipping:ground",
+				"amount": "5.00",
+				"net": "5.00",
+				"tax": "0.41",
+				"gross": "5.41"
+			}
+		]
+	},
+	"note": "A percentage code has no maximum amount here, so the whole percentage comes off each line; the older system capped it."
+}

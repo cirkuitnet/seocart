@@ -1,0 +1,82 @@
+{
+	"scenario": "two gross discounts on one gross line keep their gross amounts when the line's change is shared out",
+	"source": "tax-inclusive pricing rule: a gross discount takes its gross amount off, so its share of the line's change keeps it",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 621,
+				"quantity": 1,
+				"unit": { "amount": "10.00", "basis": "gross" },
+				"taxClass": "standard"
+			}
+		],
+		"promotions": [
+			{
+				"uuid": "00000000-0000-7000-8000-000000000621",
+				"code": "FIFTY",
+				"priority": 10,
+				"effect": {
+					"kind": "fixed",
+					"amount": "0.50",
+					"basis": "gross"
+				}
+			},
+			{
+				"uuid": "00000000-0000-7000-8000-000000000622",
+				"code": "FIFTYMORE",
+				"priority": 20,
+				"effect": {
+					"kind": "fixed",
+					"amount": "0.50",
+					"basis": "gross"
+				}
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "20", "jurisdiction": "XA" } ]
+			}
+		},
+		"policy": "fixed_gross",
+		"roundingMode": "per_line"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "10.00",
+			"discountTotal": "-1.00",
+			"net": "7.50",
+			"tax": "1.50",
+			"grand": "9.00"
+		},
+		"lines": {
+			"l1": {
+				"net": "7.50",
+				"tax": "1.50",
+				"gross": "9.00",
+				"discount": "-1.00"
+			}
+		},
+		"adjustments": [
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000621",
+				"line": "l1",
+				"amount": "-0.50",
+				"net": "-0.41",
+				"tax": "-0.09",
+				"gross": "-0.50"
+			},
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000622",
+				"line": "l1",
+				"amount": "-0.50",
+				"net": "-0.42",
+				"tax": "-0.08",
+				"gross": "-0.50"
+			}
+		]
+	},
+	"note": "The line's gross falls from 10.00 to 9.00 and its tax from 1.67 to 1.50; the two discounts share that change as 0.50 and 0.50 gross, with the leftover minor unit of tax to the first. Sharing the net instead would give them 0.51 and 0.49."
+}

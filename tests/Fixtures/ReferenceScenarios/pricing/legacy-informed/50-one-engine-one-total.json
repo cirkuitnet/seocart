@@ -1,0 +1,56 @@
+{
+	"scenario": "one calculation gives one total, whichever page shows it",
+	"source": "research scenario: a manual order with no shipping, whose totals differed between two pages by a payment fee",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 101,
+				"quantity": 2,
+				"unit": { "amount": "20.00", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"fees": [
+			{
+				"key": "handling",
+				"percent": "3",
+				"base": "subtotal_after_discounts",
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ]
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "40.00",
+			"discountTotal": "0.00",
+			"shippingTotal": "0.00",
+			"feeTotal": "1.20",
+			"net": "41.20",
+			"tax": "3.40",
+			"grand": "44.60"
+		},
+		"lines": {
+			"l1": { "net": "40.00", "tax": "3.30", "gross": "43.30" }
+		},
+		"adjustments": [
+			{
+				"source": "fee:handling",
+				"scope": "order",
+				"type": "fee",
+				"amount": "1.20",
+				"net": "1.20",
+				"tax": "0.10",
+				"gross": "1.30"
+			}
+		]
+	},
+	"note": "One engine produces one total, and every page reads it; the older system showed a total with the fee on one page and without it on another. Recorded once, as a divergence by design."
+}

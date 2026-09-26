@@ -1,0 +1,51 @@
+{
+	"scenario": "three lines rounded per line",
+	"source": "tax rounding mode rule: per line, every line's tax is rounded on its own",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 401,
+				"quantity": 1,
+				"unit": { "amount": "1.00", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 402,
+				"quantity": 1,
+				"unit": { "amount": "1.00", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l3",
+				"variant": 403,
+				"quantity": 1,
+				"unit": { "amount": "1.00", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ]
+			}
+		},
+		"roundingMode": "per_line"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "3.00",
+			"net": "3.00",
+			"tax": "0.24",
+			"grand": "3.24"
+		},
+		"lines": {
+			"l1": { "net": "1.00", "tax": "0.08", "gross": "1.08" },
+			"l2": { "net": "1.00", "tax": "0.08", "gross": "1.08" },
+			"l3": { "net": "1.00", "tax": "0.08", "gross": "1.08" }
+		}
+	},
+	"note": "Each line's tax, 0.0825, rounds to 0.08: one minor unit less, on the total, than rounding per subtotal."
+}

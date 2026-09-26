@@ -1,0 +1,83 @@
+{
+	"scenario": "a fixed code larger than the subtotal",
+	"source": "research scenario: an amount-off coupon greater than the subtotal",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 101,
+				"quantity": 1,
+				"unit": { "amount": "9.99", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"promotions": [
+			{
+				"uuid": "00000000-0000-7000-8000-000000000011",
+				"code": "HUNDRED",
+				"priority": 10,
+				"effect": {
+					"kind": "fixed",
+					"amount": "100.00",
+					"basis": "net"
+				}
+			}
+		],
+		"shipping": {
+			"destination": "US",
+			"rates": [
+				{
+					"method": "ground",
+					"amount": "5.00",
+					"basis": "net",
+					"taxClass": "standard"
+				}
+			],
+			"selected": null
+		},
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ]
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "9.99",
+			"discountTotal": "-9.99",
+			"shippingTotal": "5.00",
+			"feeTotal": "0.00",
+			"net": "5.00",
+			"tax": "0.41",
+			"grand": "5.41"
+		},
+		"lines": {
+			"l1": {
+				"net": "0.00",
+				"tax": "0.00",
+				"gross": "0.00",
+				"discount": "-9.99"
+			}
+		},
+		"adjustments": [
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000011",
+				"scope": "line",
+				"line": "l1",
+				"amount": "-9.99",
+				"net": "-9.99",
+				"tax": "-0.82",
+				"gross": "-10.81"
+			},
+			{
+				"source": "shipping:ground",
+				"amount": "5.00",
+				"net": "5.00",
+				"tax": "0.41",
+				"gross": "5.41"
+			}
+		]
+	},
+	"note": "The discount is capped at what the lines cost, so a total never goes below zero; the older system produced a negative total, which is the defect."
+}

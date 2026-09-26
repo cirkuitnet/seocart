@@ -1,0 +1,56 @@
+{
+	"scenario": "three small gross lines taxed together keep their gross prices when the group is shared back",
+	"source": "tax-inclusive pricing rule: a gross price is what the customer pays, so its share of a group keeps it",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 601,
+				"quantity": 1,
+				"unit": { "amount": "0.03", "basis": "gross" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 602,
+				"quantity": 1,
+				"unit": { "amount": "0.03", "basis": "gross" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l3",
+				"variant": 603,
+				"quantity": 1,
+				"unit": { "amount": "0.03", "basis": "gross" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "20", "jurisdiction": "XA" } ]
+			}
+		},
+		"policy": "fixed_gross",
+		"roundingMode": "per_subtotal"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "0.09",
+			"net": "0.07",
+			"tax": "0.02",
+			"grand": "0.09"
+		},
+		"lines": {
+			"l1": { "net": "0.02", "tax": "0.01", "gross": "0.03" },
+			"l2": { "net": "0.02", "tax": "0.01", "gross": "0.03" },
+			"l3": { "net": "0.03", "tax": "0.00", "gross": "0.03" }
+		},
+		"components": {
+			"line:l1:1": { "tax": "0.01", "residual": 0 },
+			"line:l3:1": { "tax": "0.00", "residual": 0 }
+		}
+	},
+	"note": "The group's tax, 0.015, rounds once to 0.02; the gross and the tax are shared back and each net is what remains. Sharing the net and the tax instead would price the lines at 0.04, 0.03 and 0.02."
+}

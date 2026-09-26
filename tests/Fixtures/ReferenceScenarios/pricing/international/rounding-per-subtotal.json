@@ -1,0 +1,55 @@
+{
+	"scenario": "the same three lines rounded per subtotal",
+	"source": "tax rounding mode rule: per subtotal, lines of one class are taxed together and the tax is shared back",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 401,
+				"quantity": 1,
+				"unit": { "amount": "1.00", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 402,
+				"quantity": 1,
+				"unit": { "amount": "1.00", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l3",
+				"variant": 403,
+				"quantity": 1,
+				"unit": { "amount": "1.00", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ]
+			}
+		},
+		"roundingMode": "per_subtotal"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "3.00",
+			"net": "3.00",
+			"tax": "0.25",
+			"grand": "3.25"
+		},
+		"lines": {
+			"l1": { "net": "1.00", "tax": "0.09", "gross": "1.09" },
+			"l2": { "net": "1.00", "tax": "0.08", "gross": "1.08" },
+			"l3": { "net": "1.00", "tax": "0.08", "gross": "1.08" }
+		},
+		"components": {
+			"line:l1:1": { "tax": "0.09", "residual": 0 },
+			"line:l2:1": { "tax": "0.08", "residual": 0 }
+		}
+	},
+	"note": "The group's tax, 0.2475, rounds once to 0.25 and is shared back by largest remainder; the leftover minor unit goes to the first line on the tie."
+}

@@ -1,0 +1,94 @@
+{
+	"scenario": "a percentage code on two matching lines is taken off each line once",
+	"source": "research scenario: a percentage coupon scoped to a product with two matching lines",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 101,
+				"quantity": 1,
+				"unit": { "amount": "9.99", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 101,
+				"quantity": 2,
+				"unit": { "amount": "4.99", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"promotions": [
+			{
+				"uuid": "00000000-0000-7000-8000-000000000017",
+				"code": "FIFTEEN",
+				"priority": 10,
+				"effect": { "kind": "percent", "percent": "15" }
+			}
+		],
+		"shipping": {
+			"destination": "US",
+			"rates": [
+				{
+					"method": "ground",
+					"amount": "5.00",
+					"basis": "net",
+					"taxClass": "standard"
+				}
+			],
+			"selected": null
+		},
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "8.25", "jurisdiction": "US-TX" } ]
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "19.97",
+			"discountTotal": "-3.00",
+			"shippingTotal": "5.00",
+			"feeTotal": "0.00",
+			"net": "21.97",
+			"tax": "1.81",
+			"grand": "23.78"
+		},
+		"lines": {
+			"l1": {
+				"net": "8.49",
+				"tax": "0.70",
+				"gross": "9.19",
+				"discount": "-1.50"
+			},
+			"l2": {
+				"net": "8.48",
+				"tax": "0.70",
+				"gross": "9.18",
+				"discount": "-1.50",
+				"unitGross": "4.59"
+			}
+		},
+		"adjustments": [
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000017",
+				"line": "l1",
+				"amount": "-1.50",
+				"net": "-1.50",
+				"tax": "-0.12",
+				"gross": "-1.62"
+			},
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000017",
+				"line": "l2",
+				"amount": "-1.50",
+				"net": "-1.50",
+				"tax": "-0.12",
+				"gross": "-1.62"
+			},
+			{ "source": "shipping:ground", "amount": "5.00" }
+		]
+	},
+	"note": "The percentage is taken off each line once; the older system counted the whole subtotal's percentage once per matching line, which is the defect."
+}
