@@ -58,6 +58,21 @@ use SEOCart\Inventory\Domain\StockRepository;
 use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
 use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
+use SEOCart\Order\Application\OrderError;
+use SEOCart\Order\Application\Orders;
+use SEOCart\Order\Domain\AccessKeys;
+use SEOCart\Order\Domain\ConversionContexts;
+use SEOCart\Order\Domain\Event\OrderCreated;
+use SEOCart\Order\Domain\Event\OrderPlaced;
+use SEOCart\Order\Domain\Event\OrderStatusChanged;
+use SEOCart\Order\Domain\OrderNumberGenerator;
+use SEOCart\Order\Domain\OrderRepository;
+use SEOCart\Order\Domain\OrderStatusRegistry;
+use SEOCart\Order\Infrastructure\MysqlConversionContexts;
+use SEOCart\Order\Infrastructure\MysqlOrderRepository;
+use SEOCart\Order\Infrastructure\OrderStatements;
+use SEOCart\Order\Infrastructure\SequenceOrderNumberGenerator;
+use SEOCart\Order\Infrastructure\WordPressAccessKeys;
 use SEOCart\Platform\Authorization\AuthorizationError;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
@@ -207,6 +222,7 @@ final class Modules {
 		DatabaseError::class,
 		InventoryError::class,
 		KernelError::class,
+		OrderError::class,
 		PricingError::class,
 		SecretsError::class,
 		SettingsError::class,
@@ -225,6 +241,9 @@ final class Modules {
 		ProductBindingPromoted::class,
 		ProductDeleted::class,
 		ProductSaved::class,
+		OrderCreated::class,
+		OrderPlaced::class,
+		OrderStatusChanged::class,
 		StockAdjusted::class,
 		StockHoldExpired::class,
 		StockReserved::class,
@@ -296,6 +315,7 @@ final class Modules {
 		self::rateLimiterRegister( $container );
 		self::cartRegister( $container );
 		self::pricingRegister( $container );
+		self::orderRegister( $container );
 		self::kernelRegister( $container );
 	}
 
@@ -1092,6 +1112,40 @@ final class Modules {
 				$c->get( TransactionManager::class ),
 				$c->get( Clock::class ),
 				self::baseCurrency( $c )
+			)
+		);
+	}
+
+	/**
+	 * The order module: the order repository and service, the order number counter, the access keys and the conversion contexts.
+	 *
+	 * It adds no hook: an order is placed and changed by the services that call it, inside their
+	 * own transactions.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container The container.
+	 */
+	private static function orderRegister( Container $container ): void {
+		$container->bind( OrderStatements::class, static fn( Container $c ): OrderStatements => new OrderStatements( $c->get( Database::class ) ) );
+		$container->bind( OrderRepository::class, static fn( Container $c ): OrderRepository => new MysqlOrderRepository( $c->get( OrderStatements::class ), $c->get( IdGenerator::class ) ) );
+		$container->bind( OrderNumberGenerator::class, static fn( Container $c ): OrderNumberGenerator => new SequenceOrderNumberGenerator( $c->get( OrderStatements::class ) ) );
+		$container->bind( AccessKeys::class, static fn(): AccessKeys => new WordPressAccessKeys() );
+		$container->bind( ConversionContexts::class, static fn( Container $c ): ConversionContexts => new MysqlConversionContexts( $c->get( OrderStatements::class ), $c->get( IdGenerator::class ) ) );
+		$container->bind( OrderStatusRegistry::class, static fn(): OrderStatusRegistry => new OrderStatusRegistry() );
+		$container->bind(
+			Orders::class,
+			static fn( Container $c ): Orders => new Orders(
+				$c->get( OrderRepository::class ),
+				$c->get( OrderNumberGenerator::class ),
+				$c->get( AccessKeys::class ),
+				$c->get( ConversionContexts::class ),
+				$c->get( OrderStatusRegistry::class ),
+				$c->get( TransactionManager::class ),
+				$c->get( EventPublisher::class ),
+				$c->get( IdGenerator::class ),
+				$c->get( Clock::class ),
+				$c->get( CorrelationId::class )
 			)
 		);
 	}

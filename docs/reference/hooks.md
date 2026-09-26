@@ -14,6 +14,68 @@ Whether a request that published events ends its response before delivering them
 - Returning `true`: Ends the response before delivering, so the client never waits for a listener.
 - Returning `false`: Hands the delivery to the job runner instead, as on a server that cannot end a response early.
 
+## `seocart_order_created`
+
+Fires after an order is committed in `pending_payment`, before its payment is known.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `order`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_order_created', $callback, 10, 2 )`; the first argument is a `SEOCart\Order\Domain\Event\OrderCreated`.
+
+### Event properties
+
+- `orderId` (int): The order's internal id.
+- `orderUuid` (string): The order's public identifier.
+- `orderNumber` (string): The number shown to people.
+- `channel` (string): Where the order came from, for example `storefront`.
+- `currency` (string): The order's currency, ISO 4217.
+- `grandTotalMinor` (int): The grand total, in minor units of the currency.
+
+## `seocart_order_placed`
+
+Fires after an order is accepted: its payment was approved and it entered its accepted status.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `order`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_order_placed', $callback, 10, 2 )`; the first argument is a `SEOCart\Order\Domain\Event\OrderPlaced`.
+
+### Event properties
+
+- `orderId` (int): The order's internal id.
+- `orderUuid` (string): The order's public identifier.
+- `orderNumber` (string): The number shown to people.
+- `channel` (string): Where the order came from, for example `storefront`.
+- `currency` (string): The order's currency, ISO 4217.
+- `grandTotalMinor` (int): The grand total, in minor units of the currency.
+- `baseCurrency` (string): The store's base currency when the order was placed.
+- `baseGrandTotalMinor` (int): The grand total in minor units of the base currency.
+- `customerId` (int|null): The WordPress user the order belongs to, or null for a guest order.
+- `actorType` (string): Who placed the order: `user` in person, `system` for a process on a user's authority.
+- `actorId` (int|null): The WordPress user who placed it, or null for a visitor.
+
+## `seocart_order_status_changed`
+
+Fires after an order's status change is committed.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `order`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_order_status_changed', $callback, 10, 2 )`; the first argument is a `SEOCart\Order\Domain\Event\OrderStatusChanged`.
+
+### Event properties
+
+- `orderId` (int): The order's internal id.
+- `from` (string): The status before the change.
+- `to` (string): The status after the change.
+- `reason` (string): Why it changed, for example `payment_approved`.
+- `actorType` (string): `user` for a person acting in person, `system` for a process acting on a user's authority.
+- `actorId` (int|null): The WordPress user on whose authority it changed, or null for a visitor.
+
 ## `seocart_product_binding_promoted`
 
 A product's source binding moved: another of its posts, in another locale, became the post that controls its existence.

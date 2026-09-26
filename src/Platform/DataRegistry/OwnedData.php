@@ -15,6 +15,8 @@ use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\Migrations\CreateCatalogTables;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
+use SEOCart\Order\Infrastructure\Migrations\CreateOrderTables;
+use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Migrations\PlatformBootstrapMigration;
 use SEOCart\Platform\Database\Schema\Classification;
@@ -73,6 +75,7 @@ final class OwnedData {
 			new Contribution( jobGroups: array( JobQueue::GROUP => 'Jobs' ) ),
 			new Contribution( tables: InventoryTables::all(), migrations: array( new CreateStockTablesMigration() ) ),
 			new Contribution( tables: array( RateCountersTable::definition() ), migrations: array( new CreateRateCountersMigration() ) ),
+			new Contribution( tables: OrderTables::all(), migrations: array( new CreateOrderTables() ) ),
 		);
 	}
 }

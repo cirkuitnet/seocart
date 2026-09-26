@@ -16,6 +16,7 @@ use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
+use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Schema\PlatformTables;
@@ -274,7 +275,7 @@ final class ReferenceSeed {
 			LogsTable::NAME                      => 'It holds diagnostics, not store data.',
 			InventoryTables::ALLOCATIONS         => 'Only an order allocates stock, and there are no orders yet.',
 			RateCountersTable::NAME              => 'It counts the requests of clients in their current windows; a store at rest has none, and a counter is read by its primary key only.',
-		);
+		) + array_fill_keys( OrderTables::names(), 'The dataset has no orders yet: placing orders is a workload of its own.' );
 	}
 
 	/**

@@ -167,6 +167,18 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The database ended the operation to resolve a conflict with another request (error {errno}, SQLSTATE {sqlstate}). Try again.
 - Values: `errno`, `sqlstate`
 
+## `order.not_found`
+
+- HTTP status: 404
+- Message: The order was not found.
+- Values: none
+
+## `order.transition_illegal`
+
+- HTTP status: 409
+- Message: An order cannot change from {from} to {to}.
+- Values: `from`, `to`
+
 ## `pricing.currency_not_enabled`
 
 - HTTP status: 409
