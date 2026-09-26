@@ -49,6 +49,9 @@ final class SettingsOperationsTest extends TestCase {
 		'maximum',
 		'privacy',
 		'translatable',
+		'fields',
+		'min_items',
+		'max_items',
 	);
 
 	/**
@@ -194,6 +197,9 @@ final class SettingsOperationsTest extends TestCase {
 			'maximum'      => $field->maximum(),
 			'privacy'      => $field->privacy(),
 			'translatable' => $field->isTranslatable(),
+			'fields'       => $field->fields(),
+			'min_items'    => $field->minItems(),
+			'max_items'    => $field->maxItems(),
 		);
 	}
 }

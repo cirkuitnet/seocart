@@ -26,6 +26,9 @@ defined( 'ABSPATH' ) || exit;
  *   schema lists it as required;
  * - a value the service returns under a name the schema does not declare is dropped.
  *
+ * The rules apply at every depth: inside an Object or an ObjectList field, each nested field is
+ * serialized by its own class, and a nested key the declaration does not list is dropped.
+ *
  * The name is the resource's name in the OpenAPI document, where it becomes the one component a
  * response refers to.
  *
@@ -134,17 +137,7 @@ final class ResourceSchema {
 	 * @return list<FieldSpec> The fields, in declaration order.
 	 */
 	public function serializedFields(): array {
-		$fields = array();
-
-		foreach ( $this->fields as $field ) {
-			if ( Privacy::Secret === $field->privacy() ) {
-				continue;
-			}
-
-			$fields[] = Privacy::Pii === $field->privacy() ? $field->asOptional() : $field;
-		}
-
-		return $fields;
+		return array_values( array_filter( array_map( static fn( FieldSpec $field ): ?FieldSpec => $field->forOutput(), $this->fields ) ) );
 	}
 
 	/**
@@ -152,20 +145,39 @@ final class ResourceSchema {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws SchemaException When the result lacks a required field the viewer would receive: the
-	 *                         service does not return what its operation declares.
+	 * @throws SchemaException When the result lacks a required field the viewer would receive, or
+	 *                         gives a composite field a value that is not an array: the service
+	 *                         does not return what its operation declares.
 	 *
 	 * @param array<string, mixed> $values          The service result, keyed by wire name.
 	 * @param bool                 $may_view_people Whether the viewer may see personal data.
 	 * @return array<string, mixed> The declared fields the viewer may see, in declaration order.
 	 */
 	public function serialize( array $values, bool $may_view_people ): array {
+		return $this->serializeFields( $this->fields, $values, $may_view_people );
+	}
+
+	/**
+	 * Serializes one object's values by its fields, at any depth.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws SchemaException As serialize().
+	 *
+	 * @param FieldSpec[]          $fields          The object's fields.
+	 * @param array<string, mixed> $values          Its values, keyed by wire name.
+	 * @param bool                 $may_view_people Whether the viewer may see personal data.
+	 * @return array<string, mixed> The declared fields the viewer may see, in declaration order.
+	 *
+	 * @phpstan-param list<FieldSpec> $fields
+	 */
+	private function serializeFields( array $fields, array $values, bool $may_view_people ): array {
 		$output = array();
 
-		foreach ( $this->fields as $field ) {
-			$privacy = $field->privacy();
+		foreach ( $fields as $field ) {
+			$carried = $field->forOutput();
 
-			if ( Privacy::Secret === $privacy || ( Privacy::Pii === $privacy && ! $may_view_people ) ) {
+			if ( null === $carried || ( Privacy::Pii === $field->privacy() && ! $field->type()->isComposite() && ! $may_view_people ) ) {
 				continue;
 			}
 
@@ -177,9 +189,47 @@ final class ResourceSchema {
 				continue;
 			}
 
-			$output[ $field->name() ] = $values[ $field->name() ];
+			$output[ $field->name() ] = $this->serializeValue( $carried, $values[ $field->name() ], $may_view_people );
 		}
 
 		return $output;
+	}
+
+	/**
+	 * Serializes one value: a composite one by its fields, any other as it is.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws SchemaException When a composite field's value is neither null nor an array.
+	 *
+	 * @param FieldSpec $field           The field, as outputs carry it.
+	 * @param mixed     $value           The value.
+	 * @param bool      $may_view_people Whether the viewer may see personal data.
+	 * @return mixed The value the viewer may see.
+	 */
+	private function serializeValue( FieldSpec $field, mixed $value, bool $may_view_people ): mixed {
+		if ( null === $value || ! $field->type()->isComposite() ) {
+			return $value;
+		}
+
+		if ( ! is_array( $value ) ) {
+			SchemaException::raise( 'The result for the resource %1$s gives the field %2$s a value that is not an object or a list.', $this->name, $field->name() );
+		}
+
+		if ( FieldType::Object === $field->type() ) {
+			return $this->serializeFields( $field->fields(), $value, $may_view_people );
+		}
+
+		$items = array();
+
+		foreach ( $value as $item ) {
+			if ( ! is_array( $item ) ) {
+				SchemaException::raise( 'The result for the resource %1$s gives an item of the list %2$s that is not an object.', $this->name, $field->name() );
+			}
+
+			$items[] = $this->serializeFields( $field->fields(), $item, $may_view_people );
+		}
+
+		return $items;
 	}
 }

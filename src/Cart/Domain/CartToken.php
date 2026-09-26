@@ -100,6 +100,17 @@ final class CartToken {
 	}
 
 	/**
+	 * Returns the hash the cart is stored under: the token's SHA-256, never the token itself.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string 64 hexadecimal characters.
+	 */
+	public function hash(): string {
+		return hash( 'sha256', $this->value );
+	}
+
+	/**
 	 * Tells whether two tokens are the same, in constant time.
 	 *
 	 * @since 0.1.0

@@ -16,7 +16,12 @@ defined( 'ABSPATH' ) || exit;
 
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\Operations;
+use SEOCart\Cart\Application\CartError;
+use SEOCart\Cart\Application\CartService;
 use SEOCart\Cart\Application\CartTokens;
+use SEOCart\Cart\Domain\CartRepository;
+use SEOCart\Cart\Infrastructure\Jobs\SweepExpiredCarts;
+use SEOCart\Cart\Infrastructure\MysqlCartRepository;
 use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
 use SEOCart\Cart\Interfaces\StoreApi\StoreApiError;
 use SEOCart\Cart\Interfaces\StoreApi\StoreSession;
@@ -159,6 +164,7 @@ use SEOCart\Support\Currency;
 use SEOCart\Support\Decimal;
 use SEOCart\Support\Error\ErrorTable;
 use SEOCart\Support\IdGenerator;
+use SEOCart\Support\Locale;
 use SEOCart\Support\Percentage;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\SupportError;
@@ -218,6 +224,7 @@ final class Modules {
 	 */
 	public const ERROR_CATALOGS = array(
 		AuthorizationError::class,
+		CartError::class,
 		CatalogError::class,
 		DatabaseError::class,
 		InventoryError::class,
@@ -1064,16 +1071,34 @@ final class Modules {
 	}
 
 	/**
-	 * The cart module's Store API: the cart-token transport, what guards and counts its writes, and the session read.
+	 * The cart module: its service, its statements and their sweep; and its Store API: the cart-token transport, what guards and counts its writes, and the session read.
 	 *
-	 * It adds no hook: the routes are the operations', and the transport adds its one filter only
-	 * when a response creates a cart.
+	 * It adds no hook: the routes are the operations', the sweep runs through JOB_HOOK, and the
+	 * transport adds its one filter only when a response creates a cart. A new cart is in the
+	 * store's base currency and the site's locale, each read when a cart is started, never when
+	 * the service is built.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param Container $container The container.
 	 */
 	private static function cartRegister( Container $container ): void {
+		$container->bind( MysqlCartRepository::class, static fn( Container $c ): MysqlCartRepository => new MysqlCartRepository( $c->get( Database::class ) ) );
+		$container->bind( CartRepository::class, static fn( Container $c ): CartRepository => $c->get( MysqlCartRepository::class ) );
+		$container->bind(
+			CartService::class,
+			static fn( Container $c ): CartService => new CartService(
+				$c->get( CartRepository::class ),
+				$c->get( TransactionManager::class ),
+				$c->get( CartTokens::class ),
+				$c->get( RateLimiter::class ),
+				$c->get( ClientIdentities::class ),
+				self::baseCurrency( $c ),
+				static fn(): Locale => $c->get( PostLocales::class )->siteLocale(),
+				$c->get( Calculator::class )
+			)
+		);
+		$container->bind( SweepExpiredCarts::class, static fn( Container $c ): SweepExpiredCarts => new SweepExpiredCarts( $c->get( MysqlCartRepository::class ) ) );
 		$container->bind( CartTokenTransport::class, static fn( Container $c ): CartTokenTransport => new CartTokenTransport( $c->get( Clock::class ) ) );
 		$container->bind( CartTokens::class, static fn( Container $c ): CartTokens => $c->get( CartTokenTransport::class ) );
 		$container->bind(

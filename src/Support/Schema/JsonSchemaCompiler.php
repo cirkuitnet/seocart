@@ -24,7 +24,9 @@ defined( 'ABSPATH' ) || exit;
  * The dialects differ in exactly these ways, each asserted by the unit test of this class:
  *
  * - restArguments(), WordPress REST `args`: one schema per argument, `required` a boolean on each
- *   argument, and `default` applied by WordPress to an absent argument.
+ *   argument, and `default` applied by WordPress to an absent argument. Since an argument's own
+ *   `required` says whether it must be sent, an Object argument marks its required members with
+ *   `required: true` on each of them, the other form WordPress validates.
  * - wordPressSchema(), the WordPress REST response schema and the Ability input and output
  *   schemas: one object schema declaring draft 4, `required` a list on the object, `default`
  *   documentation only.
@@ -41,6 +43,12 @@ defined( 'ABSPATH' ) || exit;
  *
  * In the four JSON dialects a nullable field has the type list [type, "null"]; none of them uses
  * the `nullable` keyword of OpenAPI 3.0. A uuid is a string with `format: uuid` in all four.
+ *
+ * A composite field is written the same way in the four JSON dialects: an Object as an object
+ * schema of its fields, an ObjectList as an array whose `items` is one, with `minItems` and
+ * `maxItems`. Inside it, `required` is a list on the object, as in draft 4 and 2020-12, which
+ * WordPress also validates, and `additionalProperties` is false, so a key the declaration does
+ * not list is refused on input. A command cannot take a composite field.
  *
  * Nothing here calls WordPress. The texts are the machine descriptions, in English.
  *
@@ -115,7 +123,12 @@ final class JsonSchemaCompiler {
 		$arguments = array();
 
 		foreach ( $fields as $field ) {
-			$argument             = self::keywords( $field );
+			$argument = self::keywords( $field );
+
+			foreach ( $argument['required'] ?? array() as $member ) {
+				$argument['properties'][ $member ]['required'] = true;
+			}
+
 			$argument['required'] = $field->isRequired();
 
 			$arguments[ $field->name() ] = $argument;
@@ -221,8 +234,8 @@ final class JsonSchemaCompiler {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws SchemaException When a positional name is not one of the fields, or a field is named
-	 *                         like the format option.
+	 * @throws SchemaException When a positional name is not one of the fields, a field is named
+	 *                         like the format option, or a field is composite.
 	 *
 	 * @param FieldSpec[] $fields     The operation's input fields.
 	 * @param string[]    $positional The names of the fields given as positional arguments.
@@ -237,6 +250,10 @@ final class JsonSchemaCompiler {
 		foreach ( $fields as $field ) {
 			if ( self::CLI_FORMAT_OPTION === $field->name() ) {
 				SchemaException::raise( 'The field %1$s has the name of the option every command prints its result with; rename it.', $field->name() );
+			}
+
+			if ( $field->type()->isComposite() ) {
+				SchemaException::raise( 'The field %1$s is an object or a list of objects, which a command cannot take as an argument.', $field->name() );
 			}
 
 			$by_name[ $field->name() ] = $field;
@@ -318,14 +335,36 @@ final class JsonSchemaCompiler {
 	 * @since 0.1.0
 	 *
 	 * @param FieldSpec $field The field.
-	 * @return array<string, mixed> The type, format, constraints, default and description.
+	 * @return array<string, mixed> The type, format, members or items, constraints, default and description.
 	 */
 	private static function keywords( FieldSpec $field ): array {
-		$type     = FieldType::Integer === $field->type() ? 'integer' : 'string';
+		$type = match ( $field->type() ) {
+			FieldType::Integer    => 'integer',
+			FieldType::Boolean    => 'boolean',
+			FieldType::Object     => 'object',
+			FieldType::ObjectList => 'array',
+			default               => 'string',
+		};
 		$keywords = array( 'type' => $field->isNullable() ? array( $type, 'null' ) : $type );
 
 		if ( FieldType::Uuid === $field->type() ) {
 			$keywords['format'] = 'uuid';
+		}
+
+		if ( FieldType::Object === $field->type() ) {
+			$keywords += self::members( $field->fields() );
+		}
+
+		if ( FieldType::ObjectList === $field->type() ) {
+			$keywords['items'] = array( 'type' => 'object' ) + self::members( $field->fields() );
+
+			if ( 0 !== $field->minItems() ) {
+				$keywords['minItems'] = $field->minItems();
+			}
+
+			if ( null !== $field->maxItems() ) {
+				$keywords['maxItems'] = $field->maxItems();
+			}
 		}
 
 		if ( array() !== $field->allowedValues() ) {
@@ -351,6 +390,39 @@ final class JsonSchemaCompiler {
 		$keywords['description'] = $field->description();
 
 		return $keywords;
+	}
+
+	/**
+	 * Writes the members of a nested object: its properties, the required ones, and no others.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param FieldSpec[] $fields The object's fields.
+	 * @return array<string, mixed> `properties`, `required` when a field is, and `additionalProperties: false`.
+	 *
+	 * @phpstan-param list<FieldSpec> $fields
+	 */
+	private static function members( array $fields ): array {
+		$properties = array();
+		$required   = array();
+
+		foreach ( $fields as $field ) {
+			$properties[ $field->name() ] = self::keywords( $field );
+
+			if ( $field->isRequired() ) {
+				$required[] = $field->name();
+			}
+		}
+
+		$members = array( 'properties' => $properties );
+
+		if ( array() !== $required ) {
+			$members['required'] = $required;
+		}
+
+		$members['additionalProperties'] = false;
+
+		return $members;
 	}
 
 	/**

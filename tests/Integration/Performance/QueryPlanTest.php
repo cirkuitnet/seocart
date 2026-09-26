@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Performance;
 
+use SEOCart\Cart\Infrastructure\CartTables;
+use SEOCart\Cart\Infrastructure\MysqlCartRepository;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\ProductPostBinding;
@@ -51,12 +53,14 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  * query in a locale and without one, the price read of a calculation, the reads of its write path, the locking reads of a trash
  * and a delete, and the reads of a change of a product's posts, and every read of the stock
  * repository, doctor's
- * projection checks and the sweep's search for expired holds included; the reads that must run
- * in a transaction, and the write path, run in one that is rolled back. Each plugin SELECT they
+ * projection checks and the sweep's search for expired holds included; the cart's reads by
+ * token, its lines, the locking read that classifies a refused write, and the sweep's search for
+ * expired carts; the reads that must run in a transaction, and the write path, run in one that
+ * is rolled back. Each plugin SELECT they
  * sent is explained once per query and IN-list length, and judged by QueryPlan's rule. The run
  * prints every plan, and fails on a plan that breaks the rule unless its query is on the
  * allow-list (AllowList); on an allow-list entry that names no query of the run, or a query
- * that keeps the rule; and, for the catalog, the inventory and the rate limiter, on a SELECT
+ * that keeps the rule; and, for the catalog, the inventory, the rate limiter and the cart, on a SELECT
  * their source writes that the run did not send, or a SELECT of their tables their source does
  * not write (ReadInventory), so that no read goes unjudged.
  *
@@ -82,6 +86,8 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  *   write path, the SKU check among them, as reads it did not send;
  * - in exercise(), leave out the rate limiter's peek(): the run names TableRateLimiter::PEEK as a
  *   read it did not send;
+ * - in exercise(), leave out the sweep's search for expired carts, deleteExpired(): the run
+ *   names MysqlCartRepository::EXPIRED as a read it did not send;
  * - in exercise(), send `SELECT id FROM {products} WHERE uuid = ?` through the recorder's
  *   Database: a read of a catalog table that the catalog's source does not write, named as one;
  * - in ReferenceSeed::rows(), give one item in ten a hold instead of every item: the holds are
@@ -235,6 +241,8 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$this->assertSame( 10000, self::$written['rows'][ InventoryTables::ITEMS ] );
 		$this->assertGreaterThan( 10000, self::$written['rows'][ InventoryTables::LEDGER ] );
 		$this->assertGreaterThanOrEqual( QueryPlan::LARGE_TABLE, self::$written['rows'][ InventoryTables::HOLDS ], 'The holds are too few for the search of the sweep to be judged.' );
+		$this->assertSame( Dataset::Medium->carts(), self::$written['rows'][ CartTables::CARTS ] );
+		$this->assertGreaterThanOrEqual( QueryPlan::LARGE_TABLE, self::$written['rows'][ CartTables::LINES ], 'The cart lines are too few for their reads to be judged.' );
 		$this->assertLessThanOrEqual( self::SEED_SECONDS, self::$written['seconds'], sprintf( 'Seeding the medium dataset took %.1f seconds, more than its %d.', self::$written['seconds'], self::SEED_SECONDS ) );
 	}
 
@@ -313,7 +321,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		fwrite( STDOUT, sprintf( "\nThe plans of the %d plugin SELECTs of the run, one per query and IN-list length:\n%s\n", count( $sent ), implode( "\n", $report ) ) );
 
-		$this->assertSame( array(), $this->inventoryGaps( $recorder->allSent() ), 'The run and the reads the catalog\'s, the inventory\'s and the rate limiter\'s source write differ. Send each read in exercise(), so its plan is judged; a read of their tables belongs in their source.' );
+		$this->assertSame( array(), $this->inventoryGaps( $recorder->allSent() ), 'The run and the reads the catalog\'s, the inventory\'s, the rate limiter\'s and the cart\'s source write differ. Send each read in exercise(), so its plan is judged; a read of their tables belongs in their source.' );
 		$this->assertSame( array(), $breaking, sprintf( "These plugin SELECTs break the query-plan rule (a full scan of, or more than %d rows examined in, a table of %d rows or more). Fix the query, or add the index it needs with a migration, or put it on %s with the reason its plan is accepted:\n%s\n", QueryPlan::MOST_ROWS, QueryPlan::LARGE_TABLE, AllowList::FILE, implode( "\n", $breaking ) ) );
 		$this->assertSame( array(), array_keys( $stale ), sprintf( 'These entries of %s name no query of the run that breaks the rule; the query changed or was fixed, so remove them.', AllowList::FILE ) );
 	}
@@ -374,13 +382,27 @@ final class QueryPlanTest extends DatabaseTestCase {
 		// The rate limiter's one read: the count of a client's current window, by its primary key.
 		( new TableRateLimiter( $db ) )->peek( 'cart.write', ClientIdentity::ofClient( '192.0.2.1', 0, 'query plans' ), 60 );
 
+		// The cart's reads: a live cart by its token, with its lines. Its locking read and the sweep's
+		// search run in the transaction below, which rolls the sweep's deletes back.
+		$carts     = new MysqlCartRepository( $db );
+		$cartTable = $this->db->table( CartTables::CARTS );
+		$liveCart  = (string) $wpdb->get_var( $wpdb->prepare( 'SELECT token_hash FROM %i WHERE expires_at > UTC_TIMESTAMP() AND line_count > 2 ORDER BY id LIMIT 1', $cartTable ) );
+		$someCart  = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT id FROM %i ORDER BY id DESC LIMIT 1', $cartTable ) );
+
+		$this->assertNotNull( $carts->findByTokenHash( $liveCart ) );
+
 		$rollBack = new \RuntimeException( 'Rolled back on purpose: the reads that lock run in a transaction that changes nothing.' );
 
 		try {
 			$db->transaction(
-				function () use ( $products, $stock, $expired, $rollBack ): void {
+				function () use ( $products, $stock, $expired, $carts, $someCart, $rollBack ): void {
 					$stock->lockedLevel( $expired );
 					$stock->hasOpenAllocation( $expired );
+
+					// The locking read that classifies a refused cart write, and the sweep's search
+					// and deletes, rolled back with the rest.
+					$this->assertNotNull( $carts->diagnose( $someCart ) );
+					$this->assertGreaterThan( 0, $carts->deleteExpired( 100 ) );
 					$stock->reclaimExpired( $expired, '00000000-0000-4000-8000-000000000000' );
 
 					// The catalog's write path: the mark, then a save that gives the product the SKU of
@@ -444,7 +466,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Compares the SELECTs the catalog's, the inventory's and the rate limiter's source write with the plugin SELECTs the run sent, both ways.
+	 * Compares the SELECTs the catalog's, the inventory's, the rate limiter's and the cart's source write with the plugin SELECTs the run sent, both ways.
 	 *
 	 * @since 0.1.0
 	 *
@@ -460,6 +482,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 			'Catalog'     => 'Catalog',
 			'Inventory'   => 'Inventory',
 			'RateLimiter' => 'Platform/RateLimiter',
+			'Cart'        => 'Cart',
 		);
 
 		foreach ( $sources as $module => $directory ) {

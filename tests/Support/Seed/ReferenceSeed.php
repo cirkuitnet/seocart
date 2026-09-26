@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Seed;
 
+use SEOCart\Cart\Domain\LineIdentity;
+use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
@@ -39,6 +41,12 @@ use SEOCart\Platform\Secrets\SecretKeysTable;
  *   on_hand, and one hold row, or two for about one item in five, each of one unit: half of them
  *   live, half expired within the period the sweep is allowed. An item with fewer than two units
  *   on hand holds none, so no item holds more than it has.
+ *
+ * Then the Dataset's carts, drawn after every product, so the product rows do not depend on
+ * them: each in the base currency and the site's locale, with one to five lines of distinct
+ * seeded variants and one to five units each, its counts matching its lines. Four in five are
+ * live, written within the last six days; the others expired up to three days ago, as the sweep
+ * finds them.
  *
  * The rows are deterministic: they come from one fixed RNG seed and one anchor instant, so the
  * same seed and anchor give the same bytes on every machine. write() anchors on the database's
@@ -92,6 +100,8 @@ final class ReferenceSeed {
 		InventoryTables::ITEMS,
 		InventoryTables::LEDGER,
 		InventoryTables::HOLDS,
+		CartTables::CARTS,
+		CartTables::LINES,
 	);
 
 	/**
@@ -120,6 +130,15 @@ final class ReferenceSeed {
 	 * @var int
 	 */
 	private const HOLD_SECONDS = 900;
+
+	/**
+	 * How long a seeded cart lives after its last write: the guest period of the carts policy.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const CART_SECONDS = 7 * 86400;
 
 	/**
 	 * The user who wrote the seeded posts and moved the seeded stock: the site's first user.
@@ -439,11 +458,120 @@ final class ReferenceSeed {
 			}
 		}
 
+		$lineId = 0;
+
+		for ( $cart = 1, $carts = $this->dataset->carts(); $cart <= $carts; $cart++ ) {
+			$lines = $this->cartLines( $random, $cart, $lineId, $anchor );
+
+			$buffers[ CartTables::CARTS ][] = $this->cart( $random, $cart, $lines, $anchor );
+
+			foreach ( $lines as $line ) {
+				$buffers[ CartTables::LINES ][] = $line;
+			}
+
+			foreach ( array( CartTables::CARTS, CartTables::LINES ) as $table ) {
+				if ( count( $buffers[ $table ] ) >= self::CHUNK ) {
+					yield array( $table, $buffers[ $table ] );
+
+					$buffers[ $table ] = array();
+				}
+			}
+		}
+
 		foreach ( $buffers as $table => $rows ) {
 			if ( array() !== $rows ) {
 				yield array( $table, $rows );
 			}
 		}
+	}
+
+	/**
+	 * Draws one cart's lines: one to five distinct seeded variants, one to five units each.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param \Random\Randomizer $random The RNG.
+	 * @param int                $cart   The cart's id.
+	 * @param int                $lineId The last line id written; moved on by each line.
+	 * @param int                $anchor The anchor instant, a Unix timestamp.
+	 * @return list<array<string, int|string|null>> The lines, in the order they were added.
+	 */
+	private function cartLines( \Random\Randomizer $random, int $cart, int &$lineId, int $anchor ): array {
+		$variants = array();
+		$count    = $random->getInt( 1, 5 );
+
+		for ( $drawn = 0; $drawn < $count; ) {
+			$variant = $random->getInt( 1, $this->dataset->products() );
+
+			if ( ! isset( $variants[ $variant ] ) ) {
+				$variants[ $variant ] = true;
+				++$drawn;
+			}
+		}
+
+		$lines = array();
+		$added = gmdate( 'Y-m-d H:i:s', $anchor - $cart ) . '.000000';
+
+		foreach ( array_keys( $variants ) as $variant ) {
+			$lines[] = array(
+				'id'                     => ++$lineId,
+				'cart_id'                => $cart,
+				'line_identity'          => LineIdentity::of( $variant )->value(),
+				'variant_id'             => $variant,
+				'quantity'               => $random->getInt( 1, 5 ),
+				'unavailable_reason'     => null,
+				'priced_currency'        => null,
+				'priced_at_rate_version' => null,
+				'created_at'             => $added,
+				'updated_at'             => $added,
+			);
+		}
+
+		return $lines;
+	}
+
+	/**
+	 * Draws one cart's row, its counts taken from its lines: live, or expired up to three days ago.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param \Random\Randomizer                   $random The RNG.
+	 * @param int                                  $cart   The cart's id.
+	 * @param list<array<string, int|string|null>> $lines  Its lines.
+	 * @param int                                  $anchor The anchor instant, a Unix timestamp.
+	 * @return array<string, int|string|null> The row.
+	 */
+	private function cart( \Random\Randomizer $random, int $cart, array $lines, int $anchor ): array {
+		$written = 0 === $random->getInt( 0, 4 )
+			? $anchor - self::CART_SECONDS - $random->getInt( 60, 3 * 86400 )
+			: $anchor - $random->getInt( 0, 6 * 86400 );
+
+		return array(
+			'id'                  => $cart,
+			'token_hash'          => hash( 'sha256', bin2hex( $random->getBytes( 32 ) ) ),
+			'version'             => $random->getInt( 1, 6 ),
+			'status'              => 'open',
+			'order_id'            => null,
+			'currency'            => $this->baseCurrency,
+			'locale'              => $this->sourceLocale,
+			'market_id'           => null,
+			'channel'             => 'storefront',
+			'customer_id'         => null,
+			'user_id'             => null,
+			'line_count'          => count( $lines ),
+			'item_count'          => array_sum( array_column( $lines, 'quantity' ) ),
+			'promotion_codes'     => '[]',
+			'captured_email'      => null,
+			'captured_consent_id' => null,
+			'client_ip'           => null,
+			'user_agent'          => null,
+			'currency_changed_at' => null,
+			'abandoned_at'        => null,
+			'recovered_at'        => null,
+			'expires_at'          => gmdate( 'Y-m-d H:i:s', $written + self::CART_SECONDS ),
+			'created_at'          => gmdate( 'Y-m-d H:i:s', $written - 600 ) . '.000000',
+			'updated_at'          => gmdate( 'Y-m-d H:i:s', $written ) . '.000000',
+		);
 	}
 
 	/**
