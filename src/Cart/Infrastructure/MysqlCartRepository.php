@@ -40,7 +40,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * The sweep's statements live here too, because they are cart SQL; they are not part of the port
  * the service sees. The sweep decides a cart's expiry in the statement that deletes it, on the
- * cart's row under its lock, so a cart whose life a write is extending keeps every line.
+ * cart's row under its lock, so a cart whose life a write is extending keeps every line. The
+ * checkout's session of a cart lives exactly as long as the cart, so that statement deletes it too.
  *
  * @since 0.1.0
  */
@@ -176,18 +177,31 @@ final class MysqlCartRepository implements CartRepository {
 	public const EXPIRED = 'SELECT id FROM %i WHERE expires_at <= UTC_TIMESTAMP() ORDER BY expires_at LIMIT %d';
 
 	/**
-	 * Deletes the carts listed in `{ids}` that are expired, each with its lines, in one statement.
+	 * Deletes the carts listed in `{ids}` that are expired, each with its lines and its checkout session, in one statement.
 	 *
 	 * The statement locks each cart's row as it reads it, waiting for a write that holds it, and
 	 * decides the cart's expiry on that row as last committed: a cart whose life a write extended,
 	 * committed or not when the sweep found it, is kept whole, and a cart that is deleted goes with
-	 * every line it has. The cart's row is locked before its lines, the order every write takes.
+	 * every line it has and its checkout session. The cart's row is locked before its lines and its
+	 * session, the order every write takes.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const DELETE_EXPIRED = 'DELETE c, l FROM %i c LEFT JOIN %i l ON l.cart_id = c.id WHERE c.id IN ({ids}) AND c.expires_at <= UTC_TIMESTAMP()';
+	public const DELETE_EXPIRED = 'DELETE c, l, s FROM %i c LEFT JOIN %i l ON l.cart_id = c.id LEFT JOIN %i s ON s.cart_id = c.id WHERE c.id IN ({ids}) AND c.expires_at <= UTC_TIMESTAMP()';
+
+	/**
+	 * The unprefixed name of the checkout's session table, whose row of a cart the sweep deletes with the cart.
+	 *
+	 * Named here rather than read from the checkout's declarations, because the cart depends on no
+	 * other module's code; a test holds it equal to the checkout's own name.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const CHECKOUT_SESSIONS = 'checkout_sessions';
 
 	/**
 	 * The condition of both compare-and-swaps: this cart, at this version, open and live.
@@ -488,12 +502,13 @@ final class MysqlCartRepository implements CartRepository {
 	}
 
 	/**
-	 * Deletes one page of expired carts with their lines, and returns how many expired carts the page found.
+	 * Deletes one page of expired carts with their lines and checkout sessions, and returns how many expired carts the page found.
 	 *
 	 * The page is found by a plain read, which sees only what is committed, so it can name a cart
 	 * whose life a write has extended without committing yet. The deletion therefore decides each
-	 * cart's expiry again, on the cart's row under its lock, and deletes a cart and its lines
-	 * together or not at all (DELETE_EXPIRED): a cart a write kept alive keeps every line.
+	 * cart's expiry again, on the cart's row under its lock, and deletes a cart, its lines and its
+	 * session together or not at all (DELETE_EXPIRED): a cart a write kept alive keeps every line
+	 * and its session.
 	 *
 	 * @since 0.1.0
 	 *
@@ -507,7 +522,7 @@ final class MysqlCartRepository implements CartRepository {
 			return 0;
 		}
 
-		$this->db->execute( self::forIds( self::DELETE_EXPIRED, count( $ids ) ), $this->carts(), $this->lineTable(), ...$ids );
+		$this->db->execute( self::forIds( self::DELETE_EXPIRED, count( $ids ) ), $this->carts(), $this->lineTable(), $this->db->table( self::CHECKOUT_SESSIONS ), ...$ids );
 
 		return count( $ids );
 	}

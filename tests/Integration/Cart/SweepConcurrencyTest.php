@@ -14,6 +14,9 @@ namespace SEOCart\Tests\Integration\Cart;
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Cart\Infrastructure\Jobs\SweepExpiredCarts;
 use SEOCart\Cart\Infrastructure\MysqlCartRepository;
+use SEOCart\Checkout\Domain\CheckoutDetails;
+use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
+use SEOCart\Support\Address;
 use SEOCart\Tests\Support\Cart\CartTestCase;
 
 /**
@@ -111,7 +114,7 @@ final class SweepConcurrencyTest extends CartTestCase {
 
 		$b->query( 'SET timestamp = UNIX_TIMESTAMP() + 7200' );
 
-		$delete = $this->raw( MysqlCartRepository::forIds( MysqlCartRepository::DELETE_EXPIRED, 1 ), $carts, $this->table( CartTables::LINES ), $cart->id );
+		$delete = $this->raw( MysqlCartRepository::forIds( MysqlCartRepository::DELETE_EXPIRED, 1 ), $carts, $this->table( CartTables::LINES ), $this->table( MysqlCartRepository::CHECKOUT_SESSIONS ), $cart->id );
 		$raced  = $this->beforeStatement(
 			self::shapeOf( MysqlCartRepository::forRows( 1 ) ),
 			function () use ( $b, $carts, $cart, $delete ): void {
@@ -131,5 +134,54 @@ final class SweepConcurrencyTest extends CartTestCase {
 		$this->assertSame( 0, $b->reap(), 'The sweep deleted rows of the cart A was extending.' );
 		$this->assertSame( 2, $this->committedCart( $b, $cart->id )['version'] ?? null );
 		$this->assertSame( array( $shirt . ':1', $mug . ':1' ), $this->committedLines( $b, $cart->id ) );
+	}
+
+	/**
+	 * Tests that the sweep's deletion waits for a checkout write that is extending the cart, and then keeps the cart and its session.
+	 *
+	 * As the test above, with the checkout's session write in A's place: its compare-and-swap has
+	 * extended the cart, which already has a session, and just before A writes the new details B
+	 * sends the sweep's deleting statement, which waits for A's lock on the cart. A commits. B then
+	 * finds the cart live, and deletes neither it nor its session.
+	 *
+	 * Planted violation: in MysqlCartRepository::DELETE_EXPIRED, drop
+	 * `AND c.expires_at <= UTC_TIMESTAMP()`: once A commits, B's statement deletes the cart A has
+	 * just extended, with the session A has just written.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_sweep_waits_for_a_checkout_write_and_keeps_the_session(): void {
+		$sessions = new MysqlCheckoutSessions( $this->db );
+		$cart     = $this->startCart( array( self::variant() => 1 ) );
+		$b        = $this->secondConnection();
+		$carts    = $this->table( CartTables::CARTS );
+
+		$this->db->transaction( fn() => $sessions->save( $cart->id, new CheckoutDetails( null, new Address( 'GB' ), null, null ) ) );
+		$this->expiresIn( $cart->id, 3600 );
+
+		$b->query( 'SET timestamp = UNIX_TIMESTAMP() + 7200' );
+
+		$delete = $this->raw( MysqlCartRepository::forIds( MysqlCartRepository::DELETE_EXPIRED, 1 ), $carts, $this->table( CartTables::LINES ), $this->table( MysqlCartRepository::CHECKOUT_SESSIONS ), $cart->id );
+		$raced  = $this->beforeStatement(
+			self::shapeOf( MysqlCheckoutSessions::SAVE ),
+			function () use ( $b, $delete ): void {
+				$b->queryAsync( $delete );
+				$this->awaitWaiting( $b, $delete, 'statistics' );
+			}
+		);
+
+		$answer = $this->service->changeWith(
+			1,
+			self::guest(),
+			static function ( int $cartId ) use ( $sessions ): void {
+				$sessions->save( $cartId, new CheckoutDetails( null, new Address( 'DE' ), null, null ) );
+			}
+		);
+
+		$this->assertTrue( $raced->fired, 'B never raced A.' );
+		$this->assertSame( 2, $answer['version'] );
+		$this->assertSame( 0, $b->reap(), 'The sweep deleted rows of the cart A was extending.' );
+		$this->assertSame( 2, $this->committedCart( $b, $cart->id )['version'] ?? null );
+		$this->assertSame( 'DE', $sessions->find( $cart->id )?->details->shippingAddress?->country(), 'The sweep deleted the session A wrote.' );
 	}
 }

@@ -15,6 +15,7 @@ use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Cart\Infrastructure\Jobs\SweepExpiredCarts;
 use SEOCart\Cart\Infrastructure\Migrations\CreateCartTables;
 use SEOCart\Cart\Infrastructure\MysqlCartRepository;
+use SEOCart\Checkout\Infrastructure\Migrations\CreateCheckoutTables;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
@@ -37,14 +38,17 @@ use SEOCart\Tests\Support\Jobs\JobsTestCase;
 final class SweepExpiredCartsJobTest extends JobsTestCase {
 
 	/**
-	 * Creates the cart tables beside the queue's.
+	 * Creates the cart tables, and the checkout's whose sessions the sweep deletes with their carts, beside the queue's.
 	 *
 	 * @since 0.1.0
 	 */
 	public function set_up(): void {
 		parent::set_up();
 
-		( new CreateCartTables() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+		$operations = new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) );
+
+		( new CreateCartTables() )->up( $operations );
+		( new CreateCheckoutTables() )->up( $operations );
 	}
 
 	/**

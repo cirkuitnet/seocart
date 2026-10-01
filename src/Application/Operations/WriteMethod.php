@@ -38,4 +38,11 @@ enum WriteMethod: string {
 	 * @since 0.1.0
 	 */
 	case Patch = 'PATCH';
+
+	/**
+	 * Replaces a resource whole: a field the request leaves out is cleared, never kept.
+	 *
+	 * @since 0.1.0
+	 */
+	case Put = 'PUT';
 }

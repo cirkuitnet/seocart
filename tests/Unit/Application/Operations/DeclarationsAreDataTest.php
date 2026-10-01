@@ -27,7 +27,9 @@ use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
  * - open no file but the class files of the declaration mechanism, the capability declaration, the
  *   stock adjustment's declaration with the two enums it reads, the cart's declarations with the
  *   error catalogs, the two domain classes whose limits they state and the declared shape of
- *   totals with the enums it lists, and the fixture — no settings file, no service, no container,
+ *   totals with the enums it lists, the checkout's declarations with their error catalog, the
+ *   address document whose fields they state and the details whose method key they bound, and
+ *   the fixture — no settings file, no service, no container,
  *   no kernel, no database layer.
  *
  * The probe can also add an operation whose factory translates a string, reads an option and reads
@@ -71,6 +73,10 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Cart/Application/CartError.php',
 		'src/Cart/Domain/Cart.php',
 		'src/Cart/Domain/CartLine.php',
+		'src/Checkout/Interfaces/StoreApi/CheckoutOperations.php',
+		'src/Checkout/Domain/CheckoutError.php',
+		'src/Checkout/Domain/AddressDocument.php',
+		'src/Checkout/Domain/CheckoutDetails.php',
 		'src/Pricing/Interfaces/TotalsFields.php',
 		'src/Pricing/Application/UnpricedLine.php',
 		'src/Pricing/Domain/PricingError.php',

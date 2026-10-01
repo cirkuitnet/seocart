@@ -18,6 +18,11 @@ use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Catalog\Domain\Sku;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
+use SEOCart\Checkout\Domain\CheckoutError;
+use SEOCart\Checkout\Domain\IdempotencyClaim;
+use SEOCart\Checkout\Infrastructure\CheckoutTables;
+use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
+use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Database\Database;
@@ -47,7 +52,8 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  * Every plugin SELECT the plugin's reads send keeps the query-plan rule on the reference dataset, or is on the allow-list with its reason.
  *
  * The run seeds the `medium` dataset once, in set_up_before_class(), prints how long that took
- * and fails when it took more than three minutes. The store must then be sound: doctor passes
+ * and fails when it took more than three minutes. The dataset has no orders, so no idempotency
+ * keys; the run writes keys of its own, all placed, enough that doctor's search of them is judged. The store must then be sound: doctor passes
  * and every seeded variant may be sold (SeedVerifier). Then the plugin's reads run over a
  * PlanRecorder: the catalog's lookups by post, by source post and by variant, its sellability
  * query in a locale and without one, the price read of a calculation, the reads of its write path, the locking reads of a trash
@@ -178,6 +184,8 @@ final class QueryPlanTest extends DatabaseTestCase {
 		self::$baseCurrency = (string) Kernel::container()->get( SettingsStore::class )->value( InternationalSettings::BASE_CURRENCY );
 		self::$seed         = new ReferenceSeed( Dataset::Medium, self::$baseCurrency, get_locale() );
 		self::$written      = self::$seed->write( $db );
+
+		self::writeKeys( $db );
 
 		$counts = array();
 
@@ -321,7 +329,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		fwrite( STDOUT, sprintf( "\nThe plans of the %d plugin SELECTs of the run, one per query and IN-list length:\n%s\n", count( $sent ), implode( "\n", $report ) ) );
 
-		$this->assertSame( array(), $this->inventoryGaps( $recorder->allSent() ), 'The run and the reads the catalog\'s, the inventory\'s, the rate limiter\'s and the cart\'s source write differ. Send each read in exercise(), so its plan is judged; a read of their tables belongs in their source.' );
+		$this->assertSame( array(), $this->inventoryGaps( $recorder->allSent() ), 'The run and the reads the catalog\'s, the inventory\'s, the rate limiter\'s, the cart\'s and the checkout\'s source write differ. Send each read in exercise(), so its plan is judged; a read of their tables belongs in their source.' );
 		$this->assertSame( array(), $breaking, sprintf( "These plugin SELECTs break the query-plan rule (a full scan of, or more than %d rows examined in, a table of %d rows or more). Fix the query, or add the index it needs with a migration, or put it on %s with the reason its plan is accepted:\n%s\n", QueryPlan::MOST_ROWS, QueryPlan::LARGE_TABLE, AllowList::FILE, implode( "\n", $breaking ) ) );
 		$this->assertSame( array(), array_keys( $stale ), sprintf( 'These entries of %s name no query of the run that breaks the rule; the query changed or was fixed, so remove them.', AllowList::FILE ) );
 	}
@@ -391,11 +399,16 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		$this->assertNotNull( $carts->findByTokenHash( $liveCart ) );
 
+		// The checkout's read of a cart's session, by its unique key, which every pricing of a cart sends.
+		( new MysqlCheckoutSessions( $db ) )->find( $someCart );
+
+		$keys = new MysqlIdempotencyKeys( $db );
+
 		$rollBack = new \RuntimeException( 'Rolled back on purpose: the reads that lock run in a transaction that changes nothing.' );
 
 		try {
 			$db->transaction(
-				function () use ( $products, $stock, $expired, $carts, $someCart, $rollBack ): void {
+				function () use ( $products, $stock, $expired, $carts, $someCart, $keys, $rollBack ): void {
 					$stock->lockedLevel( $expired );
 					$stock->hasOpenAllocation( $expired );
 
@@ -404,6 +417,17 @@ final class QueryPlanTest extends DatabaseTestCase {
 					$this->assertNotNull( $carts->diagnose( $someCart ) );
 					$this->assertGreaterThan( 0, $carts->deleteExpired( 100 ) );
 					$stock->reclaimExpired( $expired, '00000000-0000-4000-8000-000000000000' );
+
+					// A key's claim, and a second claim of it, whose duplicate is read by the key's unique key.
+					$keyHash = IdempotencyClaim::keyHash( hash( 'sha256', 'a query-plan cart' ), 'attempt-1' );
+
+					$keys->claim( 'checkout.place_order', $keyHash, hash( 'sha256', 'request' ), 60 );
+
+					try {
+						$keys->claim( 'checkout.place_order', $keyHash, hash( 'sha256', 'request' ), 60 );
+					} catch ( CodedException $held ) {
+						$this->assertSame( CheckoutError::PlacementInProgress, $held->errorCode() );
+					}
 
 					// The catalog's write path: the mark, then a save that gives the product the SKU of
 					// another, so that the repository looks up the variant holding it.
@@ -483,6 +507,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 			'Inventory'   => 'Inventory',
 			'RateLimiter' => 'Platform/RateLimiter',
 			'Cart'        => 'Cart',
+			'Checkout'    => 'Checkout',
 		);
 
 		foreach ( $sources as $module => $directory ) {
@@ -529,6 +554,33 @@ final class QueryPlanTest extends DatabaseTestCase {
 	 */
 	private static function switchedOn(): bool {
 		return '1' === getenv( self::SWITCH );
+	}
+
+	/**
+	 * Writes the idempotency keys of a month of placements, which the reference dataset leaves out because it has no orders.
+	 *
+	 * Every key is placed, with its order and its answer, and expires within thirty days by the
+	 * database clock; none is stranded, so doctor stays clean. There are more than QueryPlan's
+	 * large table holds, so the plans of the key reads are judged.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Database $db The connection.
+	 */
+	private static function writeKeys( Database $db ): void {
+		$keys = QueryPlan::LARGE_TABLE + 2000;
+		$row  = "( 'checkout.place_order', %s, %s, 'placed', %d, '{}', UTC_TIMESTAMP() + INTERVAL %d SECOND, UTC_TIMESTAMP(6) - INTERVAL %d SECOND )";
+
+		for ( $first = 1; $first <= $keys; $first += 1000 ) {
+			$last   = min( $keys, $first + 999 );
+			$values = array( $db->table( CheckoutTables::IDEMPOTENCY_KEYS ) );
+
+			for ( $key = $first; $key <= $last; $key++ ) {
+				array_push( $values, hash( 'sha256', 'query-plan key ' . $key ), hash( 'sha256', 'query-plan request ' . $key ), $key, 3600 + ( $key % 30 ) * 86400, $key );
+			}
+
+			$db->execute( 'INSERT INTO %i ( scope, key_hash, request_fingerprint, state, order_id, response_json, expires_at, created_at ) VALUES ' . implode( ', ', array_fill( 0, $last - $first + 1, $row ) ), ...$values );
+		}
 	}
 
 	/**

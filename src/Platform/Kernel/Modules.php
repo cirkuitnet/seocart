@@ -47,6 +47,15 @@ use SEOCart\Catalog\Infrastructure\ProductPostType;
 use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
 use SEOCart\Catalog\Interfaces\Admin\ProductEditorPanel;
 use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
+use SEOCart\Checkout\Application\CheckoutSessions;
+use SEOCart\Checkout\Application\IdempotencyKeys;
+use SEOCart\Checkout\Application\UpdateCheckoutSession;
+use SEOCart\Checkout\Domain\CheckoutError;
+use SEOCart\Checkout\Domain\CheckoutSession;
+use SEOCart\Checkout\Infrastructure\Doctor\CheckoutChecks;
+use SEOCart\Checkout\Infrastructure\Jobs\IdempotencyKeyRetention;
+use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
+use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Interfaces\Operations\AbilitiesAdapter;
 use SEOCart\Interfaces\Operations\CliAdapter;
 use SEOCart\Interfaces\Operations\ErrorTranslator;
@@ -244,6 +253,7 @@ final class Modules {
 		AuthorizationError::class,
 		CartError::class,
 		CatalogError::class,
+		CheckoutError::class,
 		DatabaseError::class,
 		InventoryError::class,
 		KernelError::class,
@@ -345,6 +355,7 @@ final class Modules {
 		self::inventoryRegister( $container );
 		self::rateLimiterRegister( $container );
 		self::cartRegister( $container );
+		self::checkoutRegister( $container );
 		self::pricingRegister( $container );
 		self::orderRegister( $container );
 		self::paymentRegister( $container );
@@ -504,6 +515,7 @@ final class Modules {
 				$c->get( Migrator::class ),
 				$c->get( Outbox::class ),
 				$c->get( JobQueue::class ),
+				$c->get( CheckoutChecks::class ),
 				$c->get( StockProjectionCheck::class ),
 				$c->get( PaymentLedgerCheck::class ),
 				...$c->get( CatalogChecks::class )->checks()
@@ -1119,6 +1131,7 @@ final class Modules {
 				$c->get( CartTokens::class ),
 				$c->get( RateLimiter::class ),
 				$c->get( ClientIdentities::class ),
+				self::checkoutDelivery( $c ),
 				self::baseCurrency( $c ),
 				static fn(): Locale => $c->get( PostLocales::class )->siteLocale(),
 				$c->get( Calculator::class )
@@ -1132,6 +1145,41 @@ final class Modules {
 			static fn( Container $c ): StoreWrites => new StoreWrites( $c->get( RateLimiter::class ), $c->get( ClientIdentities::class ), $c->get( CartTokenTransport::class ), $c->get( ErrorTranslator::class ) )
 		);
 		$container->bind( StoreSession::class, static fn(): StoreSession => new StoreSession() );
+	}
+
+	/**
+	 * The checkout module: its sessions and idempotency keys, the session write, the keys' retention job and doctor's check.
+	 *
+	 * It adds no hook: the session write is an operation's route, the retention job runs through
+	 * JOB_HOOK, and the check through doctor.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container The container.
+	 */
+	private static function checkoutRegister( Container $container ): void {
+		$container->bind( MysqlCheckoutSessions::class, static fn( Container $c ): MysqlCheckoutSessions => new MysqlCheckoutSessions( $c->get( Database::class ) ) );
+		$container->bind( CheckoutSessions::class, static fn( Container $c ): CheckoutSessions => $c->get( MysqlCheckoutSessions::class ) );
+		$container->bind( MysqlIdempotencyKeys::class, static fn( Container $c ): MysqlIdempotencyKeys => new MysqlIdempotencyKeys( $c->get( Database::class ) ) );
+		$container->bind( IdempotencyKeys::class, static fn( Container $c ): IdempotencyKeys => $c->get( MysqlIdempotencyKeys::class ) );
+		$container->bind( UpdateCheckoutSession::class, static fn( Container $c ): UpdateCheckoutSession => new UpdateCheckoutSession( $c->get( CartService::class ), $c->get( CheckoutSessions::class ) ) );
+		$container->bind( IdempotencyKeyRetention::class, static fn( Container $c ): IdempotencyKeyRetention => new IdempotencyKeyRetention( $c->get( MysqlIdempotencyKeys::class ) ) );
+		$container->bind( CheckoutChecks::class, static fn( Container $c ): CheckoutChecks => new CheckoutChecks( $c->get( MysqlIdempotencyKeys::class ) ) );
+	}
+
+	/**
+	 * Returns what the cart's calculation asks the checkout: where a cart's order ships, and the shipping method chosen.
+	 *
+	 * The cart depends on no other module, so the kernel hands it this reader. It reads the cart's
+	 * session when a cart is priced, never when the cart service is built.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container The container.
+	 * @return \Closure(int): array{destination: \SEOCart\Support\Address|null, shipping_method_key: string|null} The reader.
+	 */
+	private static function checkoutDelivery( Container $container ): \Closure {
+		return static fn( int $cartId ): array => CheckoutSession::deliveryOf( $container->get( CheckoutSessions::class )->find( $cartId ) );
 	}
 
 	/**

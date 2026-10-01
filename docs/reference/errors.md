@@ -135,6 +135,30 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The product of post {post_id} was changed by another save while this one was being written; nothing was saved. Try again.
 - Values: `post_id`
 
+## `checkout.idempotency_key_reused`
+
+- HTTP status: 422
+- Message: This idempotency key was already used to place an order from a different request. Send a new key with a new request.
+- Values: none
+
+## `checkout.invalid_address`
+
+- HTTP status: 422
+- Message: The address field {field} is not valid. A country is a two-letter code, such as GB, and an email address looks like name@example.com.
+- Values: `field`
+
+## `checkout.invalid_method_key`
+
+- HTTP status: 422
+- Message: The {field} is not a method key. A method key uses only lower-case letters, digits, dots, colons, hyphens and underscores, such as flat.
+- Values: `field`
+
+## `checkout.placement_in_progress`
+
+- HTTP status: 409
+- Message: An order is being placed with this idempotency key right now. Wait a moment, then send the same request again.
+- Values: none
+
 ## `currency.unknown`
 
 - HTTP status: 400

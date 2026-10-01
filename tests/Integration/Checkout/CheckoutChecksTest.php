@@ -1,0 +1,104 @@
+<?php
+/**
+ * Tests doctor's check of stranded idempotency keys
+ *
+ * @package SEOCart
+ * @since   0.1.0
+ * @license GPL-3.0-or-later
+ */
+
+declare( strict_types=1 );
+
+namespace SEOCart\Tests\Integration\Checkout;
+
+use SEOCart\Checkout\Domain\CheckoutError;
+use SEOCart\Checkout\Domain\IdempotencyClaim;
+use SEOCart\Checkout\Infrastructure\CheckoutTables;
+use SEOCart\Checkout\Infrastructure\Doctor\CheckoutChecks;
+use SEOCart\Support\Error\CodedException;
+use SEOCart\Tests\Support\Checkout\CheckoutTestCase;
+
+/**
+ * A key still claimed an hour after it was claimed is stranded: doctor reports it, --repair deletes it, and the client's retry then places its order; a key a placement holds now, or one placed, is never touched.
+ *
+ * A key's age is set and judged by the database clock.
+ *
+ * Planted violations, each named on its test.
+ *
+ * @since 0.1.0
+ */
+final class CheckoutChecksTest extends CheckoutTestCase {
+
+	/**
+	 * Tests that a stranded key is reported and deleted, a young claim and an old placed key are left alone, and the retry then owns the key.
+	 *
+	 * Planted violation: in MysqlIdempotencyKeys, drop
+	 * `AND created_at <= UTC_TIMESTAMP() - INTERVAL %d SECOND` from STRANDED and DELETE_STRANDED
+	 * (and their values): doctor then reports, and --repair deletes, the key a placement is holding
+	 * right now.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_stranded_key_is_reported_and_deleted_and_the_retry_places(): void {
+		$stranded = $this->claimCommitted( self::keyHash( 'stranded' ), self::digest( 'request 1' ) );
+		$young    = $this->claimCommitted( self::keyHash( 'in flight' ), self::digest( 'request 2' ) );
+		$placed   = $this->db->transaction(
+			function (): IdempotencyClaim {
+				$claim = $this->keys->claim( self::SCOPE, self::keyHash( 'placed' ), self::digest( 'request 3' ), self::KEY_TTL );
+
+				$this->keys->complete( $claim->id, 42, '{"status":201}' );
+
+				return $claim;
+			}
+		);
+
+		$this->keyClaimedAgo( $stranded->id, 2 * 3600 );
+		$this->keyClaimedAgo( $young->id, 30 * 60 );
+		$this->keyClaimedAgo( $placed->id, 2 * 3600 );
+
+		try {
+			$this->claimCommitted( self::keyHash( 'stranded' ), self::digest( 'request 1' ) );
+			$this->fail( 'A retry owned a key that is still claimed.' );
+		} catch ( CodedException $held ) {
+			$this->assertSame( CheckoutError::PlacementInProgress, $held->errorCode() );
+		}
+
+		$check  = new CheckoutChecks( $this->keys );
+		$result = $check->run();
+
+		$this->assertFalse( $result->passed );
+		$this->assertCount( 1, $result->findings );
+		$this->assertStringContainsString( 'idempotency key ' . $stranded->id . ' (' . self::SCOPE . ')', $result->findings[0] );
+
+		$repaired = $check->repair();
+
+		$this->assertSame( CheckoutChecks::NAME, $repaired->check );
+		$this->assertCount( 1, $repaired->changes );
+		$this->assertTrue( $check->run()->passed, 'The stranded key is still reported after --repair.' );
+		$this->assertSame( array( $young->id, $placed->id ), array_map( 'intval', array_column( $this->db->fetchAll( 'SELECT id FROM %i ORDER BY id', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ) ), 'id' ) ), '--repair touched a key it must not.' );
+		$this->assertTrue( $this->claimCommitted( self::keyHash( 'stranded' ), self::digest( 'request 1' ) )->owned, 'The retry did not own the key once the stranded claim was gone.' );
+	}
+
+	/**
+	 * Tests that a key completed between the check and its repair is kept: the repair checks again in its statement.
+	 *
+	 * Planted violation: in MysqlIdempotencyKeys::DELETE_STRANDED, drop `AND state = 'claimed'`: the
+	 * repair then deletes a key whose order was placed after the check ran.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_key_completed_since_the_check_is_kept(): void {
+		$claim = $this->claimCommitted( self::keyHash( 'late' ), self::digest( 'request 1' ) );
+
+		$this->keyClaimedAgo( $claim->id, 2 * 3600 );
+
+		$check = new CheckoutChecks( $this->keys );
+
+		$this->assertFalse( $check->run()->passed );
+
+		$this->db->execute( "UPDATE %i SET state = 'placed', order_id = 42, response_json = '{}' WHERE id = %d", $this->table( CheckoutTables::IDEMPOTENCY_KEYS ), $claim->id );
+
+		$this->assertSame( array(), $check->repair()->changes );
+		$this->assertSame( 1, $this->checkoutRows( CheckoutTables::IDEMPOTENCY_KEYS ) );
+	}
+}

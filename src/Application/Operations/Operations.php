@@ -13,6 +13,7 @@ namespace SEOCart\Application\Operations;
 
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Cart\Interfaces\StoreApi\StoreOperations;
+use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Inventory\Application\InventoryOperations;
 use SEOCart\Order\Interfaces\StoreApi\OrderStoreOperations;
 use SEOCart\Platform\Settings\SettingsOperations;
@@ -51,6 +52,7 @@ final class Operations {
 		$registry->add( CartOperations::ADD_LINES, array( CartOperations::class, 'addLines' ) );
 		$registry->add( CartOperations::UPDATE_LINE, array( CartOperations::class, 'updateLine' ) );
 		$registry->add( OrderStoreOperations::GET_STATUS, array( OrderStoreOperations::class, 'getStatus' ) );
+		$registry->add( CheckoutOperations::UPDATE_SESSION, array( CheckoutOperations::class, 'updateSession' ) );
 
 		return $registry;
 	}

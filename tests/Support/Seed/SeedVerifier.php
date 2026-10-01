@@ -20,6 +20,8 @@ use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Infrastructure\Doctor\CatalogChecks;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
+use SEOCart\Checkout\Infrastructure\Doctor\CheckoutChecks;
+use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
@@ -153,6 +155,7 @@ final class SeedVerifier {
 			self::migrator( $db, $report ),
 			new Outbox( $db ),
 			new ActionSchedulerQueue( $db, new LockService( $db, LockMode::Table ), new JobHandlers( JobHandlers::PRODUCTION, 'strval' ), new CorrelationId( new SequentialIdGenerator() ), $report ),
+			new CheckoutChecks( new MysqlIdempotencyKeys( $db ) ),
 			new StockProjectionCheck( new MysqlStockRepository( $db ) ),
 			new PaymentLedgerCheck( new MysqlPaymentRepository( $db, new SequentialIdGenerator( 980000 ) ), new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 990000 ) ) ),
 			...( new CatalogChecks( $products, $stock, $groups, $settler, new SystemClock(), $db, static fn(): Currency => Currency::of( $baseCurrency ), array( new LockService( $db, LockMode::GetLock ), 'withLock' ) ) )->checks()

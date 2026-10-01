@@ -15,6 +15,8 @@ use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Cart\Infrastructure\Migrations\CreateCartTables;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\Migrations\CreateCatalogTables;
+use SEOCart\Checkout\Infrastructure\CheckoutTables;
+use SEOCart\Checkout\Infrastructure\Migrations\CreateCheckoutTables;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
 use SEOCart\Order\Infrastructure\Migrations\CreateOrderTables;
@@ -82,6 +84,7 @@ final class OwnedData {
 			new Contribution( tables: OrderTables::all(), migrations: array( new CreateOrderTables() ) ),
 			new Contribution( tables: CartTables::all(), migrations: array( new CreateCartTables() ) ),
 			new Contribution( tables: PaymentTables::all(), migrations: array( new CreatePaymentTables() ) ),
+			new Contribution( tables: CheckoutTables::all(), migrations: array( new CreateCheckoutTables() ) ),
 		);
 	}
 }

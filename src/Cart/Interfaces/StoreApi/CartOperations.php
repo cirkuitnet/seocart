@@ -358,14 +358,14 @@ final class CartOperations {
 	}
 
 	/**
-	 * Returns the version a write was based on.
+	 * Returns the version a write was based on: the one declaration of every cart write's version, the checkout's included.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param int $minimum 0 for a write that may start a cart, which is then optional; 1 for a write to a cart that must exist.
 	 * @return FieldSpec The field.
 	 */
-	private static function cartVersion( int $minimum ): FieldSpec {
+	public static function cartVersion( int $minimum ): FieldSpec {
 		return new FieldSpec(
 			name: 'cart_version',
 			type: FieldType::Integer,

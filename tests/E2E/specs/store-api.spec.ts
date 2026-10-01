@@ -23,6 +23,11 @@
  * does not exist. The Store API cannot place an order yet, so the reads of a real order need one
  * planted on the site under test first, named in SEOCART_E2E_ORDER as `<uuid>:<key>`; without it
  * they are skipped, and the refusal of an order that does not exist still runs.
+ *
+ * The checkout: a write of the checkout's details moves the cart's version on and gets the cart
+ * cookie again; its answer carries a guest's shipping address as an object without its fields,
+ * which are personal data; a replay of it is refused as stale. With no line priced, the totals
+ * charge no shipping.
  */
 
 import type { APIRequestContext, APIResponse } from '@playwright/test';
@@ -324,6 +329,70 @@ test.describe( 'Store API, as a guest', () => {
 		).toEqual( [] );
 		expect( read.headers()[ 'cache-control' ] ).toBe( NO_STORE );
 		expect( ( await read.json() ).version ).toBe( 2 );
+	} );
+
+	test( 'a checkout write rides the cart version and sends a guest no address back', async () => {
+		const started = await guest.post(
+			restUrl( `/${ STORE_NAMESPACE }/cart/lines` ),
+			{
+				headers: STORE_HEADER,
+				data: {
+					lines: [ { variant_id: UNKNOWN_VARIANT, quantity: 1 } ],
+				},
+			}
+		);
+
+		expect( started.status() ).toBe( 200 );
+
+		const cookies = setCookies( started );
+		const details = {
+			cart_version: 1,
+			shipping_address: {
+				country: 'GB',
+				first_name: 'Ada',
+				last_name: 'Lovelace',
+				line1: "12 St James's Square",
+				city: 'London',
+				postcode: 'SW1Y 4JH',
+			},
+			shipping_method_key: 'flat',
+			payment_method_key: 'stub',
+		};
+
+		const written = await guest.put(
+			restUrl( `/${ STORE_NAMESPACE }/checkout` ),
+			{ headers: STORE_HEADER, data: details }
+		);
+
+		expect( written.status() ).toBe( 200 );
+		expect( written.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+
+		const answer = await written.json();
+
+		expect( answer.version ).toBe( 2 );
+		expect( answer.checkout_session ).toEqual( {
+			billing_address: null,
+			shipping_address: {},
+			shipping_method_key: 'flat',
+			payment_method_key: 'stub',
+		} );
+		expect( answer.totals.summary.shipping_total_minor ).toBe( 0 );
+
+		const again = setCookies( written );
+
+		expect(
+			again,
+			'The checkout write did not send the cart cookie again.'
+		).toHaveLength( 1 );
+		expect( cookiePair( again[ 0 ] ) ).toBe( cookiePair( cookies[ 0 ] ) );
+
+		const replay = await guest.put(
+			restUrl( `/${ STORE_NAMESPACE }/checkout` ),
+			{ headers: STORE_HEADER, data: details }
+		);
+
+		expect( replay.status() ).toBe( 409 );
+		expect( ( await replay.json() ).code ).toBe( 'cart.version_stale' );
 	} );
 
 	test( 'an unknown Store API path is answered in the one error shape, never cached', async () => {

@@ -16,6 +16,7 @@ use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
+use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Order\Infrastructure\OrderTables;
@@ -295,6 +296,8 @@ final class ReferenceSeed {
 			LogsTable::NAME                      => 'It holds diagnostics, not store data.',
 			InventoryTables::ALLOCATIONS         => 'Only an order allocates stock, and there are no orders yet.',
 			RateCountersTable::NAME              => 'It counts the requests of clients in their current windows; a store at rest has none, and a counter is read by its primary key only.',
+			CheckoutTables::SESSIONS             => 'A session exists only for a cart a shopper is checking out, and it is read by its cart, through its unique key.',
+			CheckoutTables::IDEMPOTENCY_KEYS     => 'Only an order placement claims a key, and there are no orders yet. A claim finds a key by its unique key, but doctor\'s search for stranded keys reads the whole table, so the query-plan run writes keys of its own to judge it.',
 		) + array_fill_keys( OrderTables::names(), 'The dataset has no orders yet: placing orders is a workload of its own.' )
 			+ array_fill_keys( PaymentTables::names(), 'A payment is made for an order, and the dataset has no orders yet.' );
 	}

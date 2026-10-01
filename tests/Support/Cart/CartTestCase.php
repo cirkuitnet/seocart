@@ -20,6 +20,9 @@ use SEOCart\Cart\Infrastructure\Migrations\CreateCartTables;
 use SEOCart\Cart\Infrastructure\MysqlCartRepository;
 use SEOCart\Catalog\Infrastructure\Migrations\CreateCatalogTables;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
+use SEOCart\Checkout\Domain\CheckoutSession;
+use SEOCart\Checkout\Infrastructure\Migrations\CreateCheckoutTables;
+use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
@@ -176,6 +179,7 @@ abstract class CartTestCase extends DatabaseTestCase {
 		( new CreateRateCountersMigration() )->up( $operations );
 		( new CreateCatalogTables() )->up( $operations );
 		( new CreateCartTables() )->up( $operations );
+		( new CreateCheckoutTables() )->up( $operations );
 
 		$this->identities = new ClientIdentities( new TrustedClientIp( array( 'REMOTE_ADDR' => '192.0.2.10' ) ), static fn(): string => 'cart tests' );
 		$this->repository = new MysqlCartRepository( $this->db );
@@ -215,10 +219,25 @@ abstract class CartTestCase extends DatabaseTestCase {
 			$tokens,
 			new TableRateLimiter( $db ),
 			$this->identities,
+			$this->deliveryOver( $db ),
 			static fn(): Currency => Currency::of( self::CURRENCY ),
 			static fn(): Locale => Locale::of( self::LOCALE ),
 			$calculator ?? self::calculatorOver( $db )
 		);
+	}
+
+	/**
+	 * Returns what a cart service over a connection asks the checkout for a cart's delivery: the kernel's reader, over the checkout sessions of that connection.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Database $db The connection.
+	 * @return \Closure(int): array{destination: \SEOCart\Support\Address|null, shipping_method_key: string|null} The reader.
+	 */
+	protected function deliveryOver( Database $db ): \Closure {
+		$sessions = new MysqlCheckoutSessions( $db );
+
+		return static fn( int $cartId ): array => CheckoutSession::deliveryOf( $sessions->find( $cartId ) );
 	}
 
 	/**

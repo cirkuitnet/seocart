@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Integration\Performance;
 use SEOCart\Cart\Domain\CartLine;
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
+use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Tests\Support\Cart\CartTestCase;
 use SEOCart\Tests\Support\Cart\ServesStoreApi;
 use SEOCart\Tests\Support\Performance\ReferenceCarts;
@@ -23,7 +24,8 @@ use SEOCart\Tests\Support\QueryLog;
  * The cart's budgets, measured on whole requests served through the production wiring, the
  * calculation of the totals and the request policy's count included:
  *
- * - reading a three-line cart costs at most 6 queries, and its answer at most 8 KB;
+ * - reading a three-line cart costs at most 6 queries, one of them the read of its checkout
+ *   session, which gives its totals their destination, and its answer at most 8 KB;
  * - an add-lines write on Reference Cart B costs at most 20 queries;
  * - adding lines writes them in one statement, whatever their number.
  *
@@ -116,6 +118,7 @@ final class CartBudgetTest extends CartTestCase {
 		$this->assertSame( 200, $read['status'] );
 		$this->assertCount( 3, $read['body']['totals']['lines'] );
 		$this->assertQueryCountAtMost( self::READ_BUDGET, $log, 'Reading a three-line cart' );
+		$this->assertQueryCount( 1, $log->forTable( $this->table( CheckoutTables::SESSIONS ) ), 'The read of the checkout session of the cart' );
 		$this->assertLessThanOrEqual( self::READ_BYTES, $bytes );
 
 		self::report( sprintf( 'G17, reading a three-line cart: %d queries (budget %d), %d bytes (budget %d).', $log->count(), self::READ_BUDGET, $bytes, self::READ_BYTES ) );

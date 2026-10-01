@@ -25,6 +25,11 @@
 			"id": "873c08c669e1",
 			"statement": "SELECT post_id, product_id, locale FROM {prefix}seocart_product_posts WHERE post_id > ? ORDER BY post_id LIMIT ?",
 			"reason": "Doctor's translation-group check must ask the multilingual plugin about every bound post to find the ones its binding disagrees with, so it walks the whole product_posts table by its primary key, a page at a time; a cursor part-way through legitimately leaves thousands of rows ahead of it. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+		},
+		{
+			"id": "6bba32b5d503",
+			"statement": "SELECT id, scope, TIMESTAMPDIFF( SECOND, created_at, UTC_TIMESTAMP() ) AS age_seconds FROM {prefix}seocart_idempotency_keys WHERE state = ? AND created_at <= UTC_TIMESTAMP() - INTERVAL ? SECOND ORDER BY created_at, id LIMIT ?",
+			"reason": "Doctor's check for idempotency keys stranded in `claimed` reads the whole key table, oldest first: a stranded key is rare, and the table holds only the keys of the retention period, which the retention job keeps to that. An index on (state, created_at) would be written by every claim and every completion of an order placement for doctor alone. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
 		}
 	]
 }

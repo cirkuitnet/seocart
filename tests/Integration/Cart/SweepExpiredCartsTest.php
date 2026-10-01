@@ -13,6 +13,10 @@ namespace SEOCart\Tests\Integration\Cart;
 
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Cart\Infrastructure\Jobs\SweepExpiredCarts;
+use SEOCart\Checkout\Domain\CheckoutDetails;
+use SEOCart\Checkout\Infrastructure\CheckoutTables;
+use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
+use SEOCart\Support\Address;
 use SEOCart\Tests\Support\Cart\CartTestCase;
 
 /**
@@ -75,6 +79,32 @@ final class SweepExpiredCartsTest extends CartTestCase {
 		$this->assertSame( 3, $this->rowsOf( CartTables::CARTS ) );
 		$this->assertSame( 3, $this->rowsOf( CartTables::LINES ) );
 		$this->assertSame( '0', $this->db->fetchValue( 'SELECT COUNT(*) FROM %i WHERE expires_at <= UTC_TIMESTAMP()', $this->table( CartTables::CARTS ) ) );
+	}
+
+	/**
+	 * Tests that the sweep deletes an expired cart's checkout session with it, and keeps a live cart's.
+	 *
+	 * Planted violation: in MysqlCartRepository::DELETE_EXPIRED, delete from the carts and their
+	 * lines alone (`DELETE c, l FROM`): the expired cart's session, addresses and all, outlives it.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_sweep_deletes_an_expired_carts_checkout_session_with_it(): void {
+		$sessions = new MysqlCheckoutSessions( $this->db );
+		$expired  = $this->startCart( array( self::variant() => 1 ) );
+		$live     = $this->startCart( array( self::variant() => 1 ) );
+
+		foreach ( array( $expired, $live ) as $cart ) {
+			$this->db->transaction( fn() => $sessions->save( $cart->id, new CheckoutDetails( null, new Address( 'GB' ), null, null ) ) );
+		}
+
+		$this->expire( $expired->id );
+
+		( new SweepExpiredCarts( $this->repository ) )->handle( array() );
+
+		$this->assertNull( $sessions->find( $expired->id ), 'The expired cart\'s checkout session outlived it.' );
+		$this->assertNotNull( $sessions->find( $live->id ), 'A live cart\'s checkout session was swept.' );
+		$this->assertSame( 1, (int) $this->db->fetchValue( 'SELECT COUNT(*) FROM %i', $this->table( CheckoutTables::SESSIONS ) ) );
 	}
 
 	/**

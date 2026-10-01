@@ -29,6 +29,7 @@ use SEOCart\Pricing\Application\CalculationRequest;
 use SEOCart\Pricing\Application\Calculator;
 use SEOCart\Pricing\Application\LineRequest;
 use SEOCart\Pricing\Application\UnpricedLine;
+use SEOCart\Support\Address;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Locale;
@@ -145,6 +146,15 @@ final class CartService {
 	private ClientIdentities $identities;
 
 	/**
+	 * Returns where a cart's order ships and the shipping method chosen, as the cart's checkout has them.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var \Closure(int): array{destination: Address|null, shipping_method_key: string|null}
+	 */
+	private \Closure $delivery;
+
+	/**
 	 * Returns the currency a new cart is in: the store's base currency.
 	 *
 	 * @since 0.1.0
@@ -181,19 +191,24 @@ final class CartService {
 	 * @param CartTokens         $tokens     Reads and issues cart tokens.
 	 * @param RateLimiter        $limiter    Counts the carts each client starts.
 	 * @param ClientIdentities   $identities Names the client.
+	 * @param \Closure           $delivery   Returns, for a cart's id, where its order ships and the
+	 *                                       shipping method chosen, as its checkout has them: each
+	 *                                       null until the checkout knows it.
 	 * @param \Closure           $currency   Returns the currency a new cart is in.
 	 * @param \Closure           $locale     Returns the locale a new cart is started in.
 	 * @param Calculator         $calculator Works out the totals of a cart's lines.
 	 *
+	 * @phpstan-param \Closure(int): array{destination: Address|null, shipping_method_key: string|null} $delivery
 	 * @phpstan-param \Closure(): Currency $currency
 	 * @phpstan-param \Closure(): Locale   $locale
 	 */
-	public function __construct( CartRepository $carts, TransactionManager $tx, CartTokens $tokens, RateLimiter $limiter, ClientIdentities $identities, \Closure $currency, \Closure $locale, Calculator $calculator ) {
+	public function __construct( CartRepository $carts, TransactionManager $tx, CartTokens $tokens, RateLimiter $limiter, ClientIdentities $identities, \Closure $delivery, \Closure $currency, \Closure $locale, Calculator $calculator ) {
 		$this->carts      = $carts;
 		$this->tx         = $tx;
 		$this->tokens     = $tokens;
 		$this->limiter    = $limiter;
 		$this->identities = $identities;
+		$this->delivery   = $delivery;
 		$this->currency   = $currency;
 		$this->locale     = $locale;
 		$this->calculator = $calculator;
@@ -458,6 +473,38 @@ final class CartService {
 	}
 
 	/**
+	 * Changes the request's cart with another module's write, behind the cart's version, and answers the cart by wire name.
+	 *
+	 * The one door for a write another module makes that must ride the cart's version, such as
+	 * the checkout's details. It is a cart write like any other: the compare-and-swap moves the
+	 * version on, a refusal changes nothing, and the cart then lives the writer's lifetime and its
+	 * token is issued again. The closure is given the cart's id and runs inside the cart's
+	 * transaction, after the compare-and-swap and only when it matched. It sends its own module's
+	 * statements and nothing else: no outbound call, and no calculation, which never runs inside
+	 * a transaction. The answer is priced once the transaction has ended, so its totals see what
+	 * the closure wrote.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `cart.not_found` when the request names no live cart;
+	 *                        `cart.version_stale`, `cart.not_open` or `cart.not_found` when the
+	 *                        compare-and-swap refuses; what the closure raises; the codes the
+	 *                        calculation raises.
+	 *
+	 * @param int      $expectedVersion The version the client based the write on.
+	 * @param Actor    $actor           Who writes: whose lifetime the cart then lives.
+	 * @param \Closure $write           Writes the other module's rows, given the cart's id.
+	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
+	 *
+	 * @phpstan-param \Closure(int): void $write
+	 */
+	public function changeWith( int $expectedVersion, Actor $actor, \Closure $write ): array {
+		$presented = $this->presentedRow() ?? CodedException::raise( CartError::NotFound );
+
+		return $this->priced( $this->change( $presented, $expectedVersion, $actor, $write ) );
+	}
+
+	/**
 	 * Returns the token the request carries and the row of the live cart it names, without its lines, which a write reads back once it has changed them.
 	 *
 	 * @since 0.1.0
@@ -707,10 +754,12 @@ final class CartService {
 	}
 
 	/**
-	 * Works out a cart's totals: its lines in the order they were added, each keyed by its identity.
+	 * Works out a cart's totals: its lines in the order they were added, each keyed by its identity, shipped where its checkout says.
 	 *
-	 * Runs outside any transaction, as the calculation requires. With no cart it prices no line,
-	 * in the currency a new cart would have, which comes to zero totals.
+	 * Runs outside any transaction, as the calculation requires. The cart's checkout gives the
+	 * destination and the shipping method chosen, so once a shipping address is known the totals
+	 * carry its shipping. With no cart it prices no line, in the currency a new cart would have,
+	 * which comes to zero totals, and asks the checkout nothing.
 	 *
 	 * @since 0.1.0
 	 *
@@ -720,9 +769,13 @@ final class CartService {
 	 * @return Calculation The totals, and the lines that could not be priced.
 	 */
 	private function calculate( ?Cart $cart ): Calculation {
-		return null === $cart
-			? $this->priceLines( ( $this->currency )(), array(), array() )
-			: $this->priceLines( $cart->currency, $cart->lines, $cart->promotionCodes );
+		if ( null === $cart ) {
+			return $this->priceLines( ( $this->currency )(), array(), array() );
+		}
+
+		$delivery = ( $this->delivery )( $cart->id );
+
+		return $this->priceLines( $cart->currency, $cart->lines, $cart->promotionCodes, $delivery['destination'], $delivery['shipping_method_key'] );
 	}
 
 	/**
@@ -734,22 +787,24 @@ final class CartService {
 	 *
 	 * @throws CodedException The codes the calculation raises.
 	 *
-	 * @param Currency   $currency       The currency.
-	 * @param CartLine[] $lines          The lines, in the cart's order.
-	 * @param string[]   $promotionCodes The promotion codes applied.
+	 * @param Currency     $currency          The currency.
+	 * @param CartLine[]   $lines             The lines, in the cart's order.
+	 * @param string[]     $promotionCodes    The promotion codes applied.
+	 * @param Address|null $destination       Optional. Where the order ships. Default null, not known yet.
+	 * @param string|null  $shippingMethodKey Optional. The shipping method chosen. Default null, the cheapest.
 	 * @return Calculation The totals, and the lines that could not be priced.
 	 *
 	 * @phpstan-param list<CartLine> $lines
 	 * @phpstan-param list<string>   $promotionCodes
 	 */
-	private function priceLines( Currency $currency, array $lines, array $promotionCodes ): Calculation {
+	private function priceLines( Currency $currency, array $lines, array $promotionCodes, ?Address $destination = null, ?string $shippingMethodKey = null ): Calculation {
 		$requests = array();
 
 		foreach ( $lines as $line ) {
 			$requests[] = new LineRequest( $line->identity->value(), $line->variantId, $line->quantity );
 		}
 
-		return $this->calculator->calculate( new CalculationRequest( $currency, $requests, null, $promotionCodes ) );
+		return $this->calculator->calculate( new CalculationRequest( $currency, $requests, $destination, $promotionCodes, $shippingMethodKey ) );
 	}
 
 	/**
