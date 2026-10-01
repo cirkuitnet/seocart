@@ -23,6 +23,10 @@ use SEOCart\Platform\Kernel\SiteAddress;
  * The record is one JSON object that begins with its revision, keeps what a newer version wrote,
  * refuses anything it cannot read, and cannot outgrow its byte budget.
  *
+ * Planted violation, shown red and removed: in BootRecord::readRateVersion(), accept any whole
+ * number: a stored exchange-rate version of 0 is read as current, and the corrupt-text test fails
+ * on it.
+ *
  * @since 0.1.0
  */
 final class BootRecordTest extends TestCase {
@@ -83,6 +87,7 @@ final class BootRecordTest extends TestCase {
 		$this->assertSame( '2026-09-22T09:00:00Z', $read->installedAt() );
 		$this->assertTrue( $read->canaryFailed() );
 		$this->assertSame( '2026-09-23T12:00:00Z', $read->canaryFailedSince() );
+		$this->assertSame( 4, $read->rateVersion() );
 		$this->assertSame( $json, $read->toJson() );
 		$this->assertFalse( BootRecord::fromJson( $read->withCanaryFailure( null )->toJson() )->canaryFailed(), 'The canary\'s end was not recorded.' );
 		$this->assertSame( SafeModeStatus::Copy, $read->withCanaryFailure( null )->safeModeReason(), 'The canary\'s end changed the recorded reason.' );
@@ -134,6 +139,8 @@ final class BootRecordTest extends TestCase {
 			'an empty version'              => array( '{"v":1,"rev":1,"lock_mode":"get_lock","plugin_version":""}' ),
 			'a canary entry without a time' => array( '{"v":1,"rev":1,"lock_mode":"get_lock","canary":true}' ),
 			'the canary as a reason'        => array( '{"v":1,"rev":1,"lock_mode":"get_lock","safe_mode":{"reason":"canary","since":"2026-09-23T10:00:00Z"}}' ),
+			'a rate version as text'        => array( '{"v":1,"rev":1,"lock_mode":"get_lock","rate_version":"4"}' ),
+			'a rate version below 1'        => array( '{"v":1,"rev":1,"lock_mode":"get_lock","rate_version":0}' ),
 		);
 	}
 
@@ -184,6 +191,7 @@ final class BootRecordTest extends TestCase {
 		$this->assertTrue( BootRecord::fromJson( $newer . '"canary":{"failed_at":1}}' )->canaryFailed(), 'A canary entry this version cannot read must count as a failure.' );
 		$this->assertSame( SafeModeStatus::Manual, $unreadable->safeModeReason(), 'A newer shape without an address this version can read must keep Safe Mode on.' );
 		$this->assertSame( SafeModeStatus::Manual, $unreadableHash->safeModeReason(), 'A newer shape with an address this version cannot read must keep Safe Mode on.' );
+		$this->assertNull( BootRecord::fromJson( $newer . '"rate_version":{"major":4}}' )->rateVersion(), 'A rate version this version cannot read must count as none, so no rate is priced at.' );
 
 		$this->expectException( \LogicException::class );
 		$this->expectExceptionMessage( 'newer shape' );
@@ -232,6 +240,7 @@ final class BootRecordTest extends TestCase {
 			->withAdoptedAt( $long )
 			->withInstalledAt( $long )
 			->withCanaryFailure( str_repeat( 't', 32 ) )
+			->withRateVersion( PHP_INT_MAX )
 			->withRev( PHP_INT_MAX );
 
 		for ( $i = 0; $i < BootRecord::MAX_KILL_SWITCHES; ++$i ) {
@@ -296,6 +305,24 @@ final class BootRecordTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a record keeps no exchange-rate version until one is recorded, that one can be taken back to none, and that a version below 1 is refused.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_rate_version_is_recorded_from_1(): void {
+		$installed = BootRecord::absent()->withLockMode( LockMode::GetLock );
+
+		$this->assertNull( $installed->rateVersion() );
+		$this->assertNull( BootRecord::fromJson( $installed->withRev( 1 )->toJson() )->rateVersion() );
+		$this->assertSame( 1, BootRecord::fromJson( $installed->withRateVersion( 1 )->withRev( 1 )->toJson() )->rateVersion() );
+		$this->assertNull( BootRecord::fromJson( $installed->withRateVersion( 1 )->withRateVersion( null )->withRev( 1 )->toJson() )->rateVersion() );
+
+		$this->expectException( \InvalidArgumentException::class );
+
+		$installed->withRateVersion( 0 );
+	}
+
+	/**
 	 * Tests that two records the same but for their revision are the same.
 	 *
 	 * @since 0.1.0
@@ -333,6 +360,7 @@ final class BootRecordTest extends TestCase {
 			->withSafeMode( SafeModeStatus::Copy, '2026-09-23T10:00:00Z' )
 			->withAdoptedAt( '2026-09-23T11:00:00Z' )
 			->withInstalledAt( '2026-09-22T09:00:00Z' )
-			->withCanaryFailure( '2026-09-23T12:00:00Z' );
+			->withCanaryFailure( '2026-09-23T12:00:00Z' )
+			->withRateVersion( 4 );
 	}
 }

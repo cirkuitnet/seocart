@@ -130,7 +130,7 @@ abstract class KernelTestCase extends DatabaseTestCase {
 	 * @param string|null $head Optional. The schema head to record. Default none.
 	 * @return BootRecord The record, not yet stored.
 	 */
-	protected static function installedRecord( ?string $head = null ): BootRecord {
+	public static function installedRecord( ?string $head = null ): BootRecord {
 		$record = BootRecord::absent()
 			->withInstallUuid( '0199713c-4d7b-7a3c-9e2b-3c4d5e6f7a8b' )
 			->withHomeUrl( home_url() )
@@ -148,7 +148,7 @@ abstract class KernelTestCase extends DatabaseTestCase {
 	 *
 	 * @return string The migration id.
 	 */
-	protected static function codeHead(): string {
+	public static function codeHead(): string {
 		$chain = OwnedData::registry()->migrations();
 
 		return $chain[ count( $chain ) - 1 ]->id();

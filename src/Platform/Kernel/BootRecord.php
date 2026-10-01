@@ -39,7 +39,9 @@ defined( 'ABSPATH' ) || exit;
  * - `adopted_at`: when the merchant last confirmed that a changed address is the same store;
  * - `kill`: reserved for per-subsystem switches, capped at 64 entries; nothing writes it yet;
  * - `canary`: null, or since when the secrets canary has failed. It is kept apart from
- *   `safe_mode`, so that a canary failure and its end never change the reason recorded there.
+ *   `safe_mode`, so that a canary failure and its end never change the reason recorded there;
+ * - `rate_version`: null, or the current version of the exchange rates, recorded once its rates
+ *   are stored, so that a cart in another currency learns which rates to price at without a query.
  *
  * During a rolling deployment an older and a newer version share one record. A newer version may
  * add keys without raising `v`; this version keeps keys it does not know and writes them back. A
@@ -148,7 +150,7 @@ final class BootRecord {
 	 *
 	 * @var list<string>
 	 */
-	private const KEYS = array( 'v', 'rev', 'plugin_version', 'schema_head', 'lock_mode', 'install_uuid', 'home_hash', 'home_shown', 'safe_mode', 'adopted_at', 'kill', 'installed_at', 'canary' );
+	private const KEYS = array( 'v', 'rev', 'plugin_version', 'schema_head', 'lock_mode', 'install_uuid', 'home_hash', 'home_shown', 'safe_mode', 'adopted_at', 'kill', 'installed_at', 'canary', 'rate_version' );
 
 	/**
 	 * Whether this stands for a record that does not exist.
@@ -286,6 +288,15 @@ final class BootRecord {
 	private ?string $canaryFailedSince = null;
 
 	/**
+	 * The current version of the exchange rates; null when none was ever saved.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int|null
+	 */
+	private ?int $rateVersion = null;
+
+	/**
 	 * Whether the stored record is of a newer shape than this version reads, which this version never writes.
 	 *
 	 * @since 0.1.0
@@ -389,6 +400,7 @@ final class BootRecord {
 		$record->installedAt   = self::field( static fn(): ?string => self::readText( $data, 'installed_at', self::MAX_TEXT_BYTES ), $newer, null );
 		$record->lockMode      = self::field( static fn(): LockMode => self::readLockMode( $data ), $newer, null );
 		$record->killSwitches  = self::field( static fn(): array => self::readKillSwitches( $data ), $newer, array() );
+		$record->rateVersion   = self::field( static fn(): ?int => self::readRateVersion( $data ), $newer, null );
 
 		list( $record->homeHash, $record->homeShown ) = self::field( static fn(): array => self::readAddress( $data ), $newer, array( null, null ) );
 
@@ -448,6 +460,7 @@ final class BootRecord {
 			'kill'           => (object) $this->killSwitches,
 			'installed_at'   => $this->installedAt,
 			'canary'         => $this->canaryFailed ? array( 'since' => (string) $this->canaryFailedSince ) : null,
+			'rate_version'   => $this->rateVersion,
 		) + $this->extra;
 
 		$json = wp_json_encode( $data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
@@ -819,6 +832,38 @@ final class BootRecord {
 	}
 
 	/**
+	 * Returns the current version of the exchange rates.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return int|null The version, 1 or more; null when none was ever saved.
+	 */
+	public function rateVersion(): ?int {
+		return $this->rateVersion;
+	}
+
+	/**
+	 * Returns a copy recording the current version of the exchange rates, or that none is current.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \InvalidArgumentException When the version is below 1.
+	 *
+	 * @param int|null $version The version, 1 or more; null when no rates are stored.
+	 * @return self The copy.
+	 */
+	public function withRateVersion( ?int $version ): self {
+		if ( null !== $version && $version < 1 ) {
+			throw new \InvalidArgumentException( 'An exchange-rate version is 1 or more.' );
+		}
+
+		$copy              = $this->present();
+		$copy->rateVersion = $version;
+
+		return $copy;
+	}
+
+	/**
 	 * Returns a copy that stands for a record that exists.
 	 *
 	 * @since 0.1.0
@@ -964,6 +1009,26 @@ final class BootRecord {
 		}
 
 		return array( true, self::readText( $entry, 'since', self::MAX_TIME_BYTES ) );
+	}
+
+	/**
+	 * Reads the current version of the exchange rates: null, or a whole number of 1 or more.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \UnexpectedValueException When it is anything else.
+	 *
+	 * @param array<array-key, mixed> $data The decoded record.
+	 * @return int|null The version.
+	 */
+	private static function readRateVersion( array $data ): ?int {
+		$version = $data['rate_version'] ?? null;
+
+		if ( null !== $version && ( ! is_int( $version ) || $version < 1 ) ) {
+			throw new \UnexpectedValueException( 'The boot record\'s exchange-rate version is not a whole number of 1 or more.' );
+		}
+
+		return $version;
 	}
 
 	/**

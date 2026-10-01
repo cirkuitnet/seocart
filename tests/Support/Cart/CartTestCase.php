@@ -37,6 +37,7 @@ use SEOCart\Pricing\Application\PriceResolver;
 use SEOCart\Pricing\Application\TaxQuoter;
 use SEOCart\Pricing\Domain\AmountBasis;
 use SEOCart\Pricing\Domain\NoPromotions;
+use SEOCart\Pricing\Infrastructure\MysqlPresentmentCurrencies;
 use SEOCart\Pricing\Infrastructure\Quotes\FixedRateTaxQuoter;
 use SEOCart\Pricing\Infrastructure\Quotes\FlatRateShippingQuoter;
 use SEOCart\Support\Currency;
@@ -241,7 +242,7 @@ abstract class CartTestCase extends DatabaseTestCase {
 	}
 
 	/**
-	 * Builds the calculator over a connection, as the kernel builds it: the catalog's prices, the two stub quoters, no promotions, the default tax settings.
+	 * Builds the calculator over a connection, as the kernel builds it: the catalog's prices, the two stub quoters, no promotions, the default tax settings, and no rate version saved.
 	 *
 	 * @since 0.1.0
 	 *
@@ -261,7 +262,8 @@ abstract class CartTestCase extends DatabaseTestCase {
 			new SystemClock(),
 			$base,
 			static fn(): CrossZonePolicy => CrossZonePolicy::FixedNet,
-			static fn(): TaxRoundingMode => TaxRoundingMode::PerLine
+			static fn(): TaxRoundingMode => TaxRoundingMode::PerLine,
+			new MysqlPresentmentCurrencies( $db, static fn(): ?int => null )
 		);
 	}
 

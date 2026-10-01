@@ -12,10 +12,12 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Pricing;
 
 use SEOCart\Pricing\Application\LineRequest;
+use SEOCart\Pricing\Application\PresentmentCurrency;
 use SEOCart\Pricing\Application\PriceResolver;
 use SEOCart\Pricing\Application\UnpricedLine;
 use SEOCart\Pricing\Domain\InputLine;
 use SEOCart\Support\Currency;
+use SEOCart\Tests\Support\Pricing\Calculators;
 use SEOCart\Tests\Support\Pricing\PricingTestCase;
 
 /**
@@ -45,7 +47,7 @@ final class PriceResolverTest extends PricingTestCase {
 		$resolved = null;
 		$log      = $this->captureQueries(
 			static function () use ( $resolver, $lines, &$resolved ): void {
-				$resolved = $resolver->resolve( $lines, Currency::of( 'USD' ), Currency::of( 'USD' ) );
+				$resolved = $resolver->resolve( $lines, PresentmentCurrency::base( Currency::of( 'USD' ) ) );
 			}
 		);
 
@@ -60,29 +62,48 @@ final class PriceResolverTest extends PricingTestCase {
 	}
 
 	/**
-	 * Tests that a price authored in the cart's currency is used, and that a variant priced only in the base currency is reported, not converted.
+	 * Tests that a price authored in the cart's currency wins over the base one, and that a variant priced only in the base currency is converted only where the currency allows it.
 	 *
 	 * @group international
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_a_price_in_the_carts_currency_is_used_and_none_is_derived(): void {
+	public function test_a_price_in_the_carts_currency_wins_and_a_base_price_is_converted_only_where_allowed(): void {
 		$both     = $this->pricedVariant( 'BOTH', '11.00' );
 		$baseOnly = $this->pricedVariant( 'BASE-ONLY', '7.00' );
+		$lines    = array( new LineRequest( 'both', $both, 1 ), new LineRequest( 'base-only', $baseOnly, 1 ), new LineRequest( 'gone', $baseOnly + 1000, 1 ) );
+		$resolver = new PriceResolver( $this->products );
 
 		$this->addPrice( $both, '10.00', 'EUR' );
 
-		$resolved = ( new PriceResolver( $this->products ) )->resolve(
-			array( new LineRequest( 'both', $both, 1 ), new LineRequest( 'base-only', $baseOnly, 1 ), new LineRequest( 'gone', $baseOnly + 1000, 1 ) ),
-			Currency::of( 'EUR' ),
-			Currency::of( 'USD' )
-		);
+		$before = $this->pricesFingerprint();
+		$strict = $resolver->resolve( $lines, Calculators::presentment( 'EUR', '0.91230', false ) );
 
-		$this->assertCount( 1, $resolved->lines );
-		$this->assertSame( 'EUR 1000', $resolved->lines[0]->unitPrice->amount->currency()->code() . ' ' . $resolved->lines[0]->unitPrice->amount->minorUnits() );
+		$this->assertSame( array( 'both EUR 1000 explicit' ), self::described( $strict->lines ) );
 		$this->assertEquals(
 			array( new UnpricedLine( 'base-only', $baseOnly, UnpricedLine::NO_PRICE_IN_CURRENCY ), new UnpricedLine( 'gone', $baseOnly + 1000, UnpricedLine::UNKNOWN_VARIANT ) ),
-			$resolved->unpriced
+			$strict->unpriced
 		);
+
+		$converting = $resolver->resolve( $lines, Calculators::presentment( 'EUR', '0.91230' ) );
+
+		// 7.00 USD × 0.91230 = 6.3861: 6.39 EUR.
+		$this->assertSame( array( 'both EUR 1000 explicit', 'base-only EUR 639 converted' ), self::described( $converting->lines ) );
+		$this->assertEquals( array( new UnpricedLine( 'gone', $baseOnly + 1000, UnpricedLine::UNKNOWN_VARIANT ) ), $converting->unpriced );
+		$this->assertSame( $before, $this->pricesFingerprint(), 'Pricing writes nothing.' );
+	}
+
+	/**
+	 * Describes priced lines by key, currency, unit price and source.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param InputLine[] $lines The lines.
+	 * @return list<string> One description per line.
+	 *
+	 * @phpstan-param list<InputLine> $lines
+	 */
+	private static function described( array $lines ): array {
+		return array_map( static fn( InputLine $line ): string => $line->key . ' ' . $line->unitPrice->amount->currency()->code() . ' ' . $line->unitPrice->amount->minorUnits() . ' ' . $line->priceSource->value, $lines );
 	}
 }

@@ -38,6 +38,8 @@ use SEOCart\Platform\RateLimiter\RateCountersTable;
 use SEOCart\Platform\Secrets\Migrations\CreateSecretKeysMigration;
 use SEOCart\Platform\Secrets\SecretKeysTable;
 use SEOCart\Platform\Settings\Settings;
+use SEOCart\Pricing\Infrastructure\Migrations\CreateRateTables;
+use SEOCart\Pricing\Infrastructure\PricingTables;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -74,7 +76,7 @@ final class OwnedData {
 			new Contribution( tables: array( PlatformTables::migrations(), PlatformTables::locks() ), migrations: array( new PlatformBootstrapMigration() ) ),
 			new Contribution( tables: array( OutboxTable::definition() ), migrations: array( new CreateOutboxMigration() ) ),
 			new Contribution( options: Settings::registry()->optionDefinitions() ),
-			new Contribution( options: array( new OptionDefinition( BootOption::NAME, 'Kernel', 'The installation record: the plugin version and schema head the site was installed to, how locks are held, the install identity and address Safe Mode compares with, and the recorded Safe Mode reason.', true, Classification::Public ) ) ),
+			new Contribution( options: array( new OptionDefinition( BootOption::NAME, 'Kernel', 'The installation record: the plugin version and schema head the site was installed to, how locks are held, the install identity and address Safe Mode compares with, the recorded Safe Mode reason, and the current exchange-rate version.', true, Classification::Public ) ) ),
 			new Contribution( tables: array( SecretKeysTable::definition() ), migrations: array( new CreateSecretKeysMigration() ) ),
 			new Contribution( tables: array( LogsTable::definition() ), migrations: array( new CreateLogsMigration() ) ),
 			new Contribution( tables: CatalogTables::all(), migrations: array( new CreateCatalogTables() ) ),
@@ -85,6 +87,7 @@ final class OwnedData {
 			new Contribution( tables: CartTables::all(), migrations: array( new CreateCartTables() ) ),
 			new Contribution( tables: PaymentTables::all(), migrations: array( new CreatePaymentTables() ) ),
 			new Contribution( tables: CheckoutTables::all(), migrations: array( new CreateCheckoutTables() ) ),
+			new Contribution( tables: PricingTables::all(), migrations: array( new CreateRateTables() ) ),
 		);
 	}
 }

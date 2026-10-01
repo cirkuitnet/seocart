@@ -42,8 +42,11 @@ use SEOCart\Platform\DataRegistry\OwnedData;
 use SEOCart\Platform\Events\Outbox;
 use SEOCart\Platform\Jobs\ActionSchedulerQueue;
 use SEOCart\Platform\Jobs\JobHandlers;
+use SEOCart\Platform\Kernel\BootOption;
 use SEOCart\Platform\Localization\SiteLocale;
 use SEOCart\Platform\Logging\CorrelationId;
+use SEOCart\Pricing\Infrastructure\Doctor\RateVersionCheck;
+use SEOCart\Pricing\Infrastructure\MysqlExchangeRates;
 use SEOCart\Support\Currency;
 use SEOCart\Support\SystemClock;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
@@ -158,6 +161,13 @@ final class SeedVerifier {
 			new CheckoutChecks( new MysqlIdempotencyKeys( $db ) ),
 			new StockProjectionCheck( new MysqlStockRepository( $db ) ),
 			new PaymentLedgerCheck( new MysqlPaymentRepository( $db, new SequentialIdGenerator( 980000 ) ), new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 990000 ) ) ),
+			new RateVersionCheck(
+				new MysqlExchangeRates( $db, $db, array( new LockService( $db, LockMode::GetLock ), 'withLock' ), static fn(): Currency => Currency::of( $baseCurrency ), static function (): void {} ),
+				static fn(): ?int => ( new BootOption( $db, $report ) )->read()->rateVersion(),
+				static function (): void {
+					throw new \LogicException( 'The seed verifier reports what doctor finds; it never repairs.' );
+				}
+			),
 			...( new CatalogChecks( $products, $stock, $groups, $settler, new SystemClock(), $db, static fn(): Currency => Currency::of( $baseCurrency ), array( new LockService( $db, LockMode::GetLock ), 'withLock' ) ) )->checks()
 		);
 	}

@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Pricing;
 
+use SEOCart\Pricing\Application\PresentmentCurrency;
 use SEOCart\Pricing\Domain\AdjustmentBase;
 use SEOCart\Pricing\Domain\AmountBasis;
 use SEOCart\Pricing\Domain\AuthoredAmount;
@@ -45,7 +46,9 @@ use SEOCart\Tax\Domain\TaxRoundingMode;
  * Owns one fact: how a scenario file maps onto the engine. The file states the input as a cart
  * would hand it in, with its prices and its quotes, and the expected figures as decimal strings,
  * never floats. The scenario runs the engine directly: no calculator, no port, no WordPress.
- * Promotions are evaluated by FactsEvaluator.
+ * Promotions are evaluated by FactsEvaluator. A scenario in another currency can also be run on
+ * lines and a rate read from storage instead of the file's (runPricedAs()), so the same expected
+ * figures hold the stored prices and rates to account.
  *
  * The file's shape: `scenario` and `source` (what it tests, and where the case comes from, in
  * words), `input`, `expected`, and an optional one-line `note` where the expected figures
@@ -155,14 +158,34 @@ final class ScenarioFixture {
 		$input    = array_replace( $this->document['input'], $changes );
 		$currency = Currency::of( $input['currency'] );
 		$context  = $this->context( $input );
+
+		return $this->inputOf( $input, $context, CurrencyRoundingRule::defaultFor( $currency ), array_map( fn( array $line ): InputLine => $this->line( $line, $currency, $context ), $input['lines'] ) );
+	}
+
+	/**
+	 * Builds the input from the file's facts, with the rate, the rounding rule and the lines given.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param array                $input   The input part of the file.
+	 * @param ConversionContext    $context The rate from the base currency.
+	 * @param CurrencyRoundingRule $rule    How amounts in the currency are rounded.
+	 * @param InputLine[]          $lines   The priced lines.
+	 * @return CalculationInput The input.
+	 *
+	 * @phpstan-param array<string, mixed> $input
+	 * @phpstan-param list<InputLine>      $lines
+	 */
+	private function inputOf( array $input, ConversionContext $context, CurrencyRoundingRule $rule, array $lines ): CalculationInput {
+		$currency = Currency::of( $input['currency'] );
 		$shipping = $input['shipping'] ?? array();
 
 		return new CalculationInput(
 			$currency,
 			$context->baseCurrency(),
 			$context,
-			CurrencyRoundingRule::defaultFor( $currency ),
-			array_map( fn( array $line ): InputLine => $this->line( $line, $currency, $context ), $input['lines'] ),
+			$rule,
+			$lines,
 			isset( $shipping['destination'] ) ? new Address( $shipping['destination'] ) : null,
 			new CustomerTaxFacts( (bool) ( $input['customer']['exempt'] ?? false ) ),
 			array_map( fn( array $promotion ): PromotionFacts => $this->promotion( $promotion, $currency ), $input['promotions'] ?? array() ),
@@ -231,8 +254,35 @@ final class ScenarioFixture {
 	 * @phpstan-param array<string, mixed> $changes
 	 */
 	public function run( array $changes = array() ): Totals {
+		return $this->runInput( $this->input( $changes ) );
+	}
+
+	/**
+	 * Runs the scenario on lines priced elsewhere, in a currency whose terms were read elsewhere: everything else is the file's.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param PresentmentCurrency $currency The terms of the scenario's currency: its rate from the base currency and its rounding rule.
+	 * @param InputLine[]         $lines    The priced lines, keyed as the file keys them.
+	 * @return Totals The totals.
+	 *
+	 * @phpstan-param list<InputLine> $lines
+	 */
+	public function runPricedAs( PresentmentCurrency $currency, array $lines ): Totals {
+		return $this->runInput( $this->inputOf( $this->document['input'], $currency->context, $currency->roundingRule, $lines ) );
+	}
+
+	/**
+	 * Runs an input through the engine's two phases, with the scenario's quotes.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param CalculationInput $input The input.
+	 * @return Totals The totals.
+	 */
+	private function runInput( CalculationInput $input ): Totals {
 		$engine = new Engine();
-		$phaseA = $engine->phaseA( $this->input( $changes ), new FactsEvaluator() );
+		$phaseA = $engine->phaseA( $input, new FactsEvaluator() );
 
 		return $engine->phaseB( $phaseA, $this->quotes( $phaseA ) );
 	}

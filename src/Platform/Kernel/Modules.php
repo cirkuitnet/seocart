@@ -175,6 +175,8 @@ use SEOCart\Platform\Settings\SettingsError;
 use SEOCart\Platform\Settings\SettingsService;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Pricing\Application\Calculator;
+use SEOCart\Pricing\Application\ExchangeRates;
+use SEOCart\Pricing\Application\PresentmentCurrencies;
 use SEOCart\Pricing\Application\PriceResolver;
 use SEOCart\Pricing\Application\ShippingRateQuoter;
 use SEOCart\Pricing\Application\TaxQuoter;
@@ -182,6 +184,9 @@ use SEOCart\Pricing\Domain\AmountBasis;
 use SEOCart\Pricing\Domain\NoPromotions;
 use SEOCart\Pricing\Domain\PricingError;
 use SEOCart\Pricing\Domain\PromotionEvaluator;
+use SEOCart\Pricing\Infrastructure\Doctor\RateVersionCheck;
+use SEOCart\Pricing\Infrastructure\MysqlExchangeRates;
+use SEOCart\Pricing\Infrastructure\MysqlPresentmentCurrencies;
 use SEOCart\Pricing\Infrastructure\Quotes\FixedRateTaxQuoter;
 use SEOCart\Pricing\Infrastructure\Quotes\FlatRateShippingQuoter;
 use SEOCart\Support\Clock;
@@ -518,6 +523,7 @@ final class Modules {
 				$c->get( CheckoutChecks::class ),
 				$c->get( StockProjectionCheck::class ),
 				$c->get( PaymentLedgerCheck::class ),
+				$c->get( RateVersionCheck::class ),
 				...$c->get( CatalogChecks::class )->checks()
 			)
 		);
@@ -1183,7 +1189,7 @@ final class Modules {
 	}
 
 	/**
-	 * The pricing module: the calculator, its price resolver, and the providers its quotes come from.
+	 * The pricing module: the calculator, its price resolver, the providers its quotes come from, and the store's currencies and exchange rates.
 	 *
 	 * It adds no hook: a cart or an order asks the calculator for totals when it needs them. The
 	 * shipping and tax providers are the two the plugin ships with, set up with their own
@@ -1214,8 +1220,64 @@ final class Modules {
 				$c->get( Clock::class ),
 				self::baseCurrency( $c ),
 				static fn(): CrossZonePolicy => CrossZonePolicy::from( (string) $c->get( SettingsStore::class )->value( InternationalSettings::CROSS_ZONE_POLICY ) ),
-				static fn(): TaxRoundingMode => TaxRoundingMode::from( (string) $c->get( SettingsStore::class )->value( InternationalSettings::TAX_ROUNDING_MODE ) )
+				static fn(): TaxRoundingMode => TaxRoundingMode::from( (string) $c->get( SettingsStore::class )->value( InternationalSettings::TAX_ROUNDING_MODE ) ),
+				$c->get( PresentmentCurrencies::class )
 			)
+		);
+		$container->bind( PresentmentCurrencies::class, static fn( Container $c ): PresentmentCurrencies => new MysqlPresentmentCurrencies( $c->get( Database::class ), self::rateVersion( $c ) ) );
+		$container->bind(
+			MysqlExchangeRates::class,
+			static fn( Container $c ): MysqlExchangeRates => new MysqlExchangeRates(
+				$c->get( Database::class ),
+				$c->get( TransactionManager::class ),
+				array( $c->get( LockService::class ), 'withLock' ),
+				self::baseCurrency( $c ),
+				static function ( int $version ) use ( $c ): void {
+					self::recordRateVersion( $c, $version, false );
+				}
+			)
+		);
+		$container->bind( ExchangeRates::class, static fn( Container $c ): ExchangeRates => $c->get( MysqlExchangeRates::class ) );
+		$container->bind(
+			RateVersionCheck::class,
+			static fn( Container $c ): RateVersionCheck => new RateVersionCheck(
+				$c->get( MysqlExchangeRates::class ),
+				self::rateVersion( $c ),
+				static function ( ?int $version ) use ( $c ): void {
+					self::recordRateVersion( $c, $version, true );
+				}
+			)
+		);
+	}
+
+	/**
+	 * Returns the current exchange-rate version, read from the boot record when it is asked for, at no cost.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container The container the boot record comes from.
+	 * @return \Closure(): (int|null) The reader: the version, or null when none is current.
+	 */
+	private static function rateVersion( Container $container ): \Closure {
+		return static fn(): ?int => $container->get( BootOption::class )->read()->rateVersion();
+	}
+
+	/**
+	 * Records an exchange-rate version as current in the boot record: the kernel's one recording of it.
+	 *
+	 * Never on a site without a record. A save records forwards only, so a save that finished after
+	 * a newer one cannot move the version back; doctor's repair, and only it, moves it back on
+	 * purpose, to the newest version stored, or to none when no rate is stored.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container    The container the boot record comes from.
+	 * @param int|null  $version      The version, or null for none.
+	 * @param bool      $evenBackward Whether an older version than the recorded one is recorded too: true for doctor's repair alone.
+	 */
+	private static function recordRateVersion( Container $container, ?int $version, bool $evenBackward ): void {
+		$container->get( BootOption::class )->mutate(
+			static fn( BootRecord $record ): BootRecord => $record->isAbsent() || ( ! $evenBackward && (int) $version <= (int) $record->rateVersion() ) ? $record : $record->withRateVersion( $version )
 		);
 	}
 

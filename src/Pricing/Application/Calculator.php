@@ -21,9 +21,7 @@ use SEOCart\Pricing\Domain\PromotionEvaluator;
 use SEOCart\Pricing\Domain\Quote\Quotes;
 use SEOCart\Pricing\Domain\RejectedCode;
 use SEOCart\Support\Clock;
-use SEOCart\Support\ConversionContext;
 use SEOCart\Support\Currency;
-use SEOCart\Support\CurrencyRoundingRule;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tax\Domain\CrossZonePolicy;
 use SEOCart\Tax\Domain\TaxRoundingMode;
@@ -43,11 +41,15 @@ defined( 'ABSPATH' ) || exit;
  * anything is read, rather than merely advised against. A caller that needs fresh totals inside
  * a unit of work calculates first and opens the transaction after.
  *
- * Prices are offered in the base currency only; a cart in another currency is refused. The store's
- * base currency, its cross-zone policy and its tax rounding mode are the merchant's settings, read
- * once per calculation, through the readers the calculator is given: they are one group of
- * settings, so reading them costs one query the first time in a request and none after. No
- * promotion is resolved from a code here, so every code entered is traced as unknown.
+ * Prices are offered in the base currency, and in every currency the merchant enabled that has
+ * a rate in the current exchange-rate version; a cart in any other currency is refused. A cart's
+ * currency brings its terms: its rounding rule, whether base prices may be converted into it, and
+ * the rate every converted price and every base figure of the calculation is at. Finding them
+ * costs nothing for the base currency and one query the first time in a request for another.
+ * The store's base currency, its cross-zone policy and its tax rounding mode are the merchant's
+ * settings, read once per calculation, through the readers the calculator is given: they are one
+ * group of settings, so reading them costs one query the first time in a request and none after.
+ * No promotion is resolved from a code here, so every code entered is traced as unknown.
  *
  * @since 0.1.0
  */
@@ -58,15 +60,16 @@ final class Calculator {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param PriceResolver      $prices          Finds the lines' prices.
-	 * @param ShippingRateQuoter $shipping        Quotes the shipping rates.
-	 * @param TaxQuoter          $tax             Quotes the tax rates.
-	 * @param PromotionEvaluator $promotions      Turns the promotions into intents.
-	 * @param TransactionManager $transactions    Tells whether a transaction is open.
-	 * @param Clock              $clock           Tells when the calculation is asked for.
-	 * @param \Closure           $baseCurrency    Returns the store's base currency.
-	 * @param \Closure           $crossZonePolicy Returns what stays fixed when a gross price is sold into another tax zone.
-	 * @param \Closure           $taxRoundingMode Returns where tax is rounded.
+	 * @param PriceResolver         $prices          Finds the lines' prices.
+	 * @param ShippingRateQuoter    $shipping        Quotes the shipping rates.
+	 * @param TaxQuoter             $tax             Quotes the tax rates.
+	 * @param PromotionEvaluator    $promotions      Turns the promotions into intents.
+	 * @param TransactionManager    $transactions    Tells whether a transaction is open.
+	 * @param Clock                 $clock           Tells when the calculation is asked for.
+	 * @param \Closure              $baseCurrency    Returns the store's base currency.
+	 * @param \Closure              $crossZonePolicy Returns what stays fixed when a gross price is sold into another tax zone.
+	 * @param \Closure              $taxRoundingMode Returns where tax is rounded.
+	 * @param PresentmentCurrencies $currencies      Finds the terms the cart's currency is offered on.
 	 *
 	 * @phpstan-param \Closure(): Currency        $baseCurrency
 	 * @phpstan-param \Closure(): CrossZonePolicy $crossZonePolicy
@@ -81,7 +84,8 @@ final class Calculator {
 		private Clock $clock,
 		private \Closure $baseCurrency,
 		private \Closure $crossZonePolicy,
-		private \Closure $taxRoundingMode
+		private \Closure $taxRoundingMode,
+		private PresentmentCurrencies $currencies
 	) {
 	}
 
@@ -91,9 +95,9 @@ final class Calculator {
 	 * @since 0.1.0
 	 *
 	 * @throws \LogicException When a transaction is open.
-	 * @throws CodedException  With PricingError::CurrencyNotEnabled when the cart is not in the base
-	 *                         currency; PricingError::QuoteUnavailable when a provider cannot quote;
-	 *                         PricingError::NoShippingRate when the destination has no rate.
+	 * @throws CodedException  With PricingError::CurrencyNotEnabled when prices are not offered in the
+	 *                         cart's currency; PricingError::QuoteUnavailable when a provider cannot
+	 *                         quote; PricingError::NoShippingRate when the destination has no rate.
 	 *
 	 * @param CalculationRequest $request The lines, the currency, the destination, the codes and the shipping chosen.
 	 * @return Calculation The totals, and the lines that could not be priced.
@@ -101,18 +105,19 @@ final class Calculator {
 	public function calculate( CalculationRequest $request ): Calculation {
 		$this->refuseInsideTransaction();
 
-		$base = ( $this->baseCurrency )();
+		$base     = ( $this->baseCurrency )();
+		$currency = $this->currencies->find( $base, $request->currency );
 
-		if ( ! $request->currency->equals( $base ) ) {
+		if ( null === $currency ) {
 			CodedException::raise( PricingError::CurrencyNotEnabled, array( 'currency' => $request->currency->code() ) );
 		}
 
-		$prices = $this->prices->resolve( $request->lines, $request->currency, $base );
+		$prices = $this->prices->resolve( $request->lines, $currency );
 		$input  = new CalculationInput(
 			$request->currency,
 			$base,
-			ConversionContext::identity( $base ),
-			CurrencyRoundingRule::defaultFor( $request->currency ),
+			$currency->context,
+			$currency->roundingRule,
 			$prices->lines,
 			$request->destination,
 			CustomerTaxFacts::notExempt(),

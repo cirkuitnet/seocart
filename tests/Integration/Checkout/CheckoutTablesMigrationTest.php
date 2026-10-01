@@ -11,9 +11,11 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Checkout;
 
+use SEOCart\Cart\Infrastructure\Migrations\CreateCartTables;
 use SEOCart\Cart\Infrastructure\MysqlCartRepository;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\Migrations\CreateCheckoutTables;
+use SEOCart\Order\Infrastructure\Migrations\CreateOrderTables;
 use SEOCart\Platform\Database\LockMode;
 use SEOCart\Platform\Database\LockService;
 use SEOCart\Platform\Database\Migration;
@@ -31,7 +33,7 @@ use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
 
 /**
- * The checkout's tables are created exactly as declared, after every other migration, and a second run changes nothing.
+ * The checkout's tables are created exactly as declared, after the cart's and the order's tables they reference, and a second run changes nothing.
  *
  * Planted violation: at the end of CreateCheckoutTables::up(), drop the `cart_id` unique key of
  * `checkout_sessions` directly, so the table no longer has a key its declaration names. The
@@ -69,19 +71,15 @@ final class CheckoutTablesMigrationTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Tests the migration's place, after every migration the plugin had before it, and that the production registry lists the two tables.
+	 * Tests the migration's place, after the migrations of the cart's and the order's tables, which its tables reference, and that the production registry lists the two tables.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_migration_comes_last_and_the_registry_lists_its_tables(): void {
+	public function test_the_migration_follows_the_cart_and_order_tables_and_the_registry_lists_its_tables(): void {
 		$migration = new CreateCheckoutTables();
-		$others    = array_filter( array_map( static fn( Migration $other ): string => $other->id(), OwnedData::registry()->migrations() ), static fn( string $id ): bool => CreateCheckoutTables::ID !== $id );
 
-		$this->assertNotSame( array(), $others );
-
-		foreach ( $others as $id ) {
-			$this->assertGreaterThan( $id, $migration->id(), "The checkout's migration sorts before {$id}." );
-		}
+		$this->assertGreaterThan( CreateCartTables::ID, $migration->id(), 'A session names its cart.' );
+		$this->assertGreaterThan( CreateOrderTables::ID, $migration->id(), 'An idempotency key names its order.' );
 
 		$this->assertFalse( $migration->canOperateHalfApplied() );
 		$this->assertEquals( CheckoutTables::all(), $migration->tables() );

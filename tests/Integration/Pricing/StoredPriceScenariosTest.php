@@ -20,6 +20,7 @@ use SEOCart\Support\Address;
 use SEOCart\Support\Currency;
 use SEOCart\Tax\Domain\CrossZonePolicy;
 use SEOCart\Tax\Domain\TaxRoundingMode;
+use SEOCart\Tests\Support\Doubles\FixedPresentmentCurrencies;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
 use SEOCart\Tests\Support\Doubles\PoisonedQuoters;
 use SEOCart\Tests\Support\Pricing\Inputs;
@@ -58,7 +59,7 @@ final class StoredPriceScenariosTest extends PricingTestCase {
 		}
 
 		$quoters     = new PoisonedQuoters( $scenario->shippingRates(), $scenario->taxQuote() );
-		$calculator  = new Calculator( new PriceResolver( $this->products ), $quoters->shipping(), $quoters->tax(), new NoPromotions(), $this->db, FrozenClock::at( Inputs::AT ), static fn(): Currency => Currency::of( self::BASE_CURRENCY ), static fn(): CrossZonePolicy => CrossZonePolicy::FixedNet, static fn(): TaxRoundingMode => TaxRoundingMode::PerLine );
+		$calculator  = new Calculator( new PriceResolver( $this->products ), $quoters->shipping(), $quoters->tax(), new NoPromotions(), $this->db, FrozenClock::at( Inputs::AT ), static fn(): Currency => Currency::of( self::BASE_CURRENCY ), static fn(): CrossZonePolicy => CrossZonePolicy::FixedNet, static fn(): TaxRoundingMode => TaxRoundingMode::PerLine, new FixedPresentmentCurrencies() );
 		$destination = $input['shipping']['destination'] ?? null;
 		$calculation = $calculator->calculate( new CalculationRequest( Currency::of( $input['currency'] ), $lines, null === $destination ? null : new Address( $destination ), array(), $input['shipping']['selected'] ?? null ) );
 

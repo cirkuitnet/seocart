@@ -15,6 +15,8 @@ use PHPUnit\Framework\TestCase;
 use SEOCart\Pricing\Application\CalculationRequest;
 use SEOCart\Pricing\Application\LineRequest;
 use SEOCart\Pricing\Application\UnpricedLine;
+use SEOCart\Pricing\Domain\AmountBasis;
+use SEOCart\Pricing\Domain\PriceSource;
 use SEOCart\Pricing\Domain\PricingError;
 use SEOCart\Pricing\Domain\Quote\TaxQuote;
 use SEOCart\Pricing\Domain\Totals\TraceEntry;
@@ -23,6 +25,7 @@ use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Catalog\FixedFactsRepository;
 use SEOCart\Tests\Support\Doubles\FakeTransactionManager;
+use SEOCart\Tests\Support\Doubles\FixedPresentmentCurrencies;
 use SEOCart\Tests\Support\Doubles\PoisonedQuoters;
 use SEOCart\Tests\Support\Pricing\Calculators;
 use SEOCart\Tests\Support\Pricing\Inputs;
@@ -36,7 +39,10 @@ use SEOCart\Tests\Support\Pricing\Inputs;
  *   are read and the quoters called, and the first test fails on the recorded calls;
  * - in Calculator::quotes(), catch the shipping quoter's failure and go on with no rate: the
  *   customer is told there is no shipping method instead of that the provider did not answer,
- *   and the second test fails.
+ *   and the second test fails;
+ * - in Calculator::calculate(), build the input with the identity context and the default rule
+ *   whatever the currency: CalculationInput refuses a EUR calculation at a USD to USD rate, and the
+ *   enabled-currency test fails.
  *
  * @since 0.1.0
  */
@@ -103,13 +109,14 @@ final class CalculatorTest extends TestCase {
 	}
 
 	/**
-	 * Tests that a cart in another currency than the base one is refused before any price is read.
+	 * Tests that a cart in a currency prices are not offered in is refused before any price is read.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_a_cart_in_another_currency_is_refused_before_any_read(): void {
+	public function test_a_cart_in_a_currency_not_offered_is_refused_before_any_read(): void {
 		$prices     = self::prices();
-		$calculator = Calculators::over( $prices, self::quoters(), new FakeTransactionManager() );
+		$currencies = new FixedPresentmentCurrencies( Calculators::presentment( 'GBP', '0.79000' ) );
+		$calculator = Calculators::over( $prices, self::quoters(), new FakeTransactionManager(), currencies: $currencies );
 
 		try {
 			$calculator->calculate( new CalculationRequest( Currency::of( 'EUR' ), array( new LineRequest( 'a', 11, 1 ) ) ) );
@@ -120,6 +127,39 @@ final class CalculatorTest extends TestCase {
 		}
 
 		$this->assertSame( array(), $prices->askedPrices );
+		$this->assertSame( array( 'EUR' ), $currencies->asked );
+	}
+
+	/**
+	 * Tests that a cart in an offered currency is priced on its terms: at its rate, by its rule, with every base figure at that rate.
+	 *
+	 * @group international
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_cart_in_an_offered_currency_is_priced_on_its_terms(): void {
+		$prices           = self::prices();
+		$prices->prices[] = Calculators::price( 12, '8.00', 'EUR' );
+		$euro             = Calculators::presentment( 'EUR', '0.91230', true, 0, 4 );
+		$quoters          = new PoisonedQuoters( array( Inputs::shippingRate( 'flat', '4.56', AmountBasis::Net, 'standard', 'EUR' ) ), self::taxQuote() );
+		$request          = new CalculationRequest( Currency::of( 'EUR' ), array( new LineRequest( 'converted', 11, 2 ), new LineRequest( 'explicit', 12, 1 ) ), new Address( 'DE' ) );
+		$totals           = Calculators::over( $prices, $quoters, new FakeTransactionManager(), currencies: new FixedPresentmentCurrencies( $euro ) )->calculate( $request )->totals;
+
+		$this->assertSame( $euro->context, $totals->conversionContext );
+		$this->assertSame( array( 'EUR', 'USD', 4 ), array( $totals->currency->code(), $totals->baseCurrency->code(), $totals->toArray()['rate_version'] ) );
+		$this->assertSame(
+			array(
+				array( 'converted', 912, PriceSource::Converted ),
+				array( 'explicit', 800, PriceSource::Explicit ),
+			),
+			array_map( static fn( $line ): array => array( $line->line->key, $line->line->unitPrice->amount->minorUnits(), $line->line->priceSource ), $totals->lines )
+		);
+		$this->assertSame( 'USD', $totals->summary->baseGrand->currency()->code() );
+		$this->assertSame(
+			$totals->summary->baseNet->add( $totals->summary->baseTax )->minorUnits(),
+			$totals->summary->baseGrand->minorUnits(),
+			'The base figures add up as the cart\'s do.'
+		);
 	}
 
 	/**

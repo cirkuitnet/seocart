@@ -28,6 +28,7 @@ use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Platform\Logging\LogsTable;
 use SEOCart\Platform\RateLimiter\RateCountersTable;
 use SEOCart\Platform\Secrets\SecretKeysTable;
+use SEOCart\Pricing\Infrastructure\PricingTables;
 
 /**
  * Generates a reference dataset and writes it with multi-row INSERTs.
@@ -299,7 +300,8 @@ final class ReferenceSeed {
 			CheckoutTables::SESSIONS             => 'A session exists only for a cart a shopper is checking out, and it is read by its cart, through its unique key.',
 			CheckoutTables::IDEMPOTENCY_KEYS     => 'Only an order placement claims a key, and there are no orders yet. A claim finds a key by its unique key, but doctor\'s search for stranded keys reads the whole table, so the query-plan run writes keys of its own to judge it.',
 		) + array_fill_keys( OrderTables::names(), 'The dataset has no orders yet: placing orders is a workload of its own.' )
-			+ array_fill_keys( PaymentTables::names(), 'A payment is made for an order, and the dataset has no orders yet.' );
+			+ array_fill_keys( PaymentTables::names(), 'A payment is made for an order, and the dataset has no orders yet.' )
+			+ array_fill_keys( PricingTables::names(), 'The dataset sells in its base currency only; a store has a few dozen currencies and rates at most, read by their keys.' );
 	}
 
 	/**
