@@ -23,8 +23,9 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: the persisted allocation of tax to jurisdictions, one row of
  * `order_tax_components`. The components of an amount share out exactly the tax of that
  * amount: their taxes add up to it, and the residual says which component received a leftover
- * minor unit. The net of a component is the amount the rate was charged on, so each of two
- * rates on one line shows the line's net. A refund returns components, never recomputes them.
+ * minor unit. The net of a component is the amount the rate was charged on: a rate on the net
+ * amount shows the line's net, and a compound rate the line's net plus the taxes of the rates it
+ * compounds on. A refund returns components, never recomputes them.
  *
  * @since 0.1.0
  */

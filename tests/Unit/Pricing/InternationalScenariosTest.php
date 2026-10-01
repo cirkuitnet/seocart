@@ -15,6 +15,7 @@ use PHPUnit\Framework\TestCase;
 use SEOCart\Pricing\Domain\Engine\Engine;
 use SEOCart\Pricing\Domain\NoPromotions;
 use SEOCart\Pricing\Domain\Quote\Quotes;
+use SEOCart\Pricing\Domain\Totals\Totals;
 use SEOCart\Support\ConversionContext;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Decimal;
@@ -49,7 +50,18 @@ use SEOCart\Tests\Support\Pricing\TotalsInvariants;
  * - in BaseEquivalentStep::authoredToBase() and TotalsAssembly, convert the lines' subtotals and
  *   every adjustment as a pool of their own again, and take a line's base subtotal from that
  *   pool: the presentment cart's base subtotal, discount and shipping stop adding up to its base
- *   net, 42.72 against 42.73.
+ *   net, 42.72 against 42.73;
+ * - in TaxRates::basisRate(), return the destination's rate under fixed-net too: the fixed-net
+ *   net amount off takes 1.02 off each line (8.98, not 9.00), the gross amount off takes 0.96 net
+ *   instead of 1.00, and the exempt customer abroad pays 7.99 instead of 8.33;
+ * - in TaxStep::taxedAmount(), take the tax out of a gross amount at its rates added up: the
+ *   compound gross twin comes back to 100.43 net, not 100.00;
+ * - in EffectiveRate::of(), add a compound rate's own rate: the compound net price is taxed
+ *   14.98, not 15.47;
+ * - in DiscountStep::discountOrder(), weigh the lines by their amounts as authored: the
+ *   fixed-gross amount off takes 1.11 net off the gross line (8.89) and 0.89 off the net one;
+ * - in FeeStep, add the lines of both bases up as one sum: the fee on both bases is one fee of
+ *   0.54 in the first line's basis.
  *
  * @group international
  *
@@ -120,6 +132,77 @@ final class InternationalScenariosTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a net price taxed at additive or compound rates, and its gross taxed back, come to the same figures and components.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @dataProvider data_round_trips
+	 *
+	 * @param string $net   The scenario of the net price.
+	 * @param string $gross The scenario of its gross twin.
+	 */
+	public function test_taking_the_tax_out_inverts_the_composition_that_added_it( string $net, string $gross ): void {
+		$scenarios = self::data_scenarios();
+		$added     = $scenarios[ $net ][0]->run();
+		$taken     = $scenarios[ $gross ][0]->run();
+		$figures   = static fn( $totals ): array => array_map(
+			static fn( $component ): array => array( $component->componentKey, $component->residualMinor ) + Totals::figures( $component->amount ),
+			$totals->components()
+		);
+
+		$this->assertSame( Totals::figures( $added->lines[0]->amount ), Totals::figures( $taken->lines[0]->amount ) );
+		$this->assertSame( $figures( $added ), $figures( $taken ) );
+		$this->assertSame( $added->lines[0]->lineSubtotal->amount->minorUnits(), $taken->lines[0]->amount->net()->minorUnits(), 'The gross twin comes back to the net price.' );
+	}
+
+	/**
+	 * Provides the net scenarios and their gross twins.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, array{string, string}> Test cases.
+	 */
+	public static function data_round_trips(): array {
+		return array(
+			'rates that add'  => array( 'additive-rates-net-price', 'additive-rates-gross-price' ),
+			'a compound rate' => array( 'compound-rates-net-price', 'compound-rates-gross-price' ),
+		);
+	}
+
+	/**
+	 * Tests that a net amount off takes the same net off a gross line as off a net line, under both policies abroad, taxed or exempt.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @dataProvider data_net_amounts_off
+	 *
+	 * @param string $name The scenario.
+	 */
+	public function test_a_net_amount_off_takes_that_net_off_whatever_the_lines_basis( string $name ): void {
+		$scenario = self::data_scenarios()[ $name ][0];
+		$taxed    = $scenario->run();
+		$exempt   = $scenario->run( array( 'customer' => array( 'exempt' => true ) ) );
+
+		$this->assertSame( array( 900, 900 ), array_map( static fn( $line ): int => $line->amount->net()->minorUnits(), $taxed->lines ), 'Each line of 10.00 net takes 1.00 net off.' );
+		$this->assertSame( array( 900, 900 ), array_map( static fn( $line ): int => $line->amount->gross()->minorUnits(), $exempt->lines ), 'The exempt customer pays each line 1.00 less than its 10.00 net.' );
+		$this->assertSame( array(), TotalsInvariants::problems( $exempt ) );
+	}
+
+	/**
+	 * Provides the net-amount-off scenarios, one per policy.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, array{string}> Test cases.
+	 */
+	public static function data_net_amounts_off(): array {
+		return array(
+			'fixed net'   => array( 'net-amount-off-both-bases-fixed-net-abroad' ),
+			'fixed gross' => array( 'net-amount-off-both-bases-fixed-gross-abroad' ),
+		);
+	}
+
+	/**
 	 * Tests the presentment scenario's base figures: converted in pools, so they add up, and reproducible from the context.
 	 *
 	 * @since 0.1.0
@@ -133,7 +216,7 @@ final class InternationalScenariosTest extends TestCase {
 
 		$summary = $totals->summary;
 
-		$this->assertSame( $summary->baseNet->minorUnits(), $summary->baseSubtotal->add( $summary->baseDiscountTotal )->add( $summary->baseShippingTotal )->add( $summary->baseFeeTotal )->minorUnits(), 'Every amount is net, so the base subtotal, discount, shipping and fees add up to the base net.' );
+		$this->assertSame( $summary->baseNet->minorUnits(), $summary->baseSubtotal->add( $summary->baseDiscountTotal )->add( $summary->baseShippingTotal )->add( $summary->baseFeeTotal )->minorUnits(), 'The base subtotal, discount, shipping and fees add up to the base net.' );
 		$this->assertSame( $summary->baseGrand->minorUnits(), $summary->baseNet->add( $summary->baseTax )->minorUnits(), 'The base net and base tax add up to the base grand total.' );
 		$this->assertMoneyEquals( $context->convertToBaseMoney( $totals->summary->net, RoundingMode::HalfUp ), $totals->summary->baseNet, 'Every net is positive, so the base net is the net converted once.' );
 		$this->assertMoneyEquals( $context->convertToBaseMoney( $totals->summary->tax, RoundingMode::HalfUp ), $totals->summary->baseTax );

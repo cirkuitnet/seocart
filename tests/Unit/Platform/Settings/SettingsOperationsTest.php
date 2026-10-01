@@ -72,7 +72,7 @@ final class SettingsOperationsTest extends TestCase {
 		$this->assertSame( array( SettingsError::StoredValueInvalid ), $get->errors() );
 		$this->assertSame( array( SettingsService::class, 'get' ), $get->service() );
 		$this->assertSame( 'Settings', $get->output()->name() );
-		$this->assertSame( array( 'base_currency' ), self::names( $get->output()->fields() ) );
+		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode' ), self::names( $get->output()->fields() ) );
 	}
 
 	/**
@@ -93,9 +93,9 @@ final class SettingsOperationsTest extends TestCase {
 		$this->assertTrue( $update->annotations()->toArray()['idempotent'] );
 		$this->assertSame( array( SettingsError::StoredValueInvalid, SupportError::UnknownCurrency ), $update->errors() );
 		$this->assertSame( array( SettingsService::class, 'update' ), $update->service() );
-		$this->assertSame( array( 'base_currency' ), self::names( $update->input() ) );
+		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode' ), self::names( $update->input() ) );
 		$this->assertSame( 'Settings', $update->output()->name(), 'A change answers with the same resource as a read.' );
-		$this->assertSame( array( 'base_currency' ), self::names( $update->output()->fields() ) );
+		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode' ), self::names( $update->output()->fields() ) );
 	}
 
 	/**

@@ -164,6 +164,8 @@ use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\SupportError;
 use SEOCart\Support\SystemClock;
 use SEOCart\Support\SystemIdGenerator;
+use SEOCart\Tax\Domain\CrossZonePolicy;
+use SEOCart\Tax\Domain\TaxRoundingMode;
 
 /**
  * Binds every module's services into the container, and hooks every module into WordPress.
@@ -1089,6 +1091,8 @@ final class Modules {
 	 * It adds no hook: a cart or an order asks the calculator for totals when it needs them. The
 	 * shipping and tax providers are the two the plugin ships with, set up with their own
 	 * constants; the promotion evaluator evaluates nothing until a promotion module replaces it.
+	 * The calculator reads the base currency, the cross-zone policy and the tax rounding mode from
+	 * their settings when it calculates, never when it is built: one group, primed by the first read.
 	 *
 	 * @since 0.1.0
 	 *
@@ -1111,7 +1115,9 @@ final class Modules {
 				$c->get( PromotionEvaluator::class ),
 				$c->get( TransactionManager::class ),
 				$c->get( Clock::class ),
-				self::baseCurrency( $c )
+				self::baseCurrency( $c ),
+				static fn(): CrossZonePolicy => CrossZonePolicy::from( (string) $c->get( SettingsStore::class )->value( InternationalSettings::CROSS_ZONE_POLICY ) ),
+				static fn(): TaxRoundingMode => TaxRoundingMode::from( (string) $c->get( SettingsStore::class )->value( InternationalSettings::TAX_ROUNDING_MODE ) )
 			)
 		);
 	}

@@ -1,0 +1,47 @@
+{
+	"scenario": "the gross twin of the additive-rate net price: taking the tax out inverts the same composition",
+	"source": "tax-inclusive pricing rule: extraction inverts the same composition that application used",
+	"input": {
+		"currency": "USD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 752,
+				"quantity": 3,
+				"unit": { "amount": "21.64", "basis": "gross" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [
+					{ "rate": "6.25", "jurisdiction": "US-TX" },
+					{ "rate": "2", "jurisdiction": "US-TX-AUS" }
+				]
+			}
+		},
+		"policy": "fixed_gross"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "59.97",
+			"net": "59.97",
+			"tax": "4.95",
+			"grand": "64.92"
+		},
+		"lines": {
+			"l1": {
+				"net": "59.97",
+				"tax": "4.95",
+				"gross": "64.92",
+				"unitGross": "21.64"
+			}
+		},
+		"components": {
+			"line:l1:1": { "net": "59.97", "tax": "3.75", "residual": 0 },
+			"line:l1:2": { "net": "59.97", "tax": "1.20", "residual": 0 }
+		}
+	},
+	"note": "64.92 × 0.0825 ÷ 1.0825 = 4.9477, rounded once to 4.95: the net price of the other scenario, with the same components."
+}

@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Pricing;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Pricing\Domain\AmountBasis;
 use SEOCart\Pricing\Domain\Engine\Rounder;
 use SEOCart\Pricing\Domain\Engine\TraceBuilder;
 use SEOCart\Pricing\Domain\Totals\TraceEntry;
@@ -86,7 +87,7 @@ final class RounderTest extends TestCase {
 	public function test_tax_on_net_and_in_gross_round_once(): void {
 		$trace   = new TraceBuilder( RoundingMode::HalfUp );
 		$rounder = new Rounder();
-		$twenty  = EffectiveRate::additive( Percentage::fromString( '20' ) );
+		$twenty  = EffectiveRate::of( array( Percentage::fromString( '20' ) ) );
 
 		$fromNet   = $rounder->taxOnNet( $trace, 'line:a', Inputs::money( '8.33' ), $twenty );
 		$fromGross = $rounder->taxInGross( $trace, 'line:b', Inputs::money( '9.99' ), $twenty );
@@ -97,6 +98,29 @@ final class RounderTest extends TestCase {
 		$this->assertSame( '1.6660000000', $entries[0]->data['exact'] );
 		$this->assertSame( '1.66500000000000', $entries[1]->data['exact'] );
 		$this->assertCount( 2, $entries );
+	}
+
+	/**
+	 * Tests that an amount brought to another basis is multiplied or divided once and rounded once, and one already in it is left alone.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_amount_brought_to_another_basis_rounds_once(): void {
+		$trace   = new TraceBuilder( RoundingMode::HalfUp );
+		$rounder = new Rounder();
+		$twenty  = EffectiveRate::of( array( Percentage::fromString( '20' ) ) );
+		$net     = Inputs::amount( '8.33' );
+		$gross   = Inputs::amount( '9.99', AmountBasis::Gross );
+
+		$this->assertEquals( Inputs::amount( '10.00', AmountBasis::Gross ), $rounder->inBasisOf( $trace, 'share:a', $net, AmountBasis::Gross, $twenty ) );
+		$this->assertEquals( Inputs::amount( '8.33' ), $rounder->inBasisOf( $trace, 'share:b', $gross, AmountBasis::Net, $twenty ) );
+		$this->assertSame( $net, $rounder->inBasisOf( $trace, 'share:c', $net, AmountBasis::Net, $twenty ) );
+
+		$entries = $trace->freeze()->entries;
+
+		$this->assertCount( 2, $entries, 'An amount already in the basis is not rounded.' );
+		$this->assertSame( array( 'share:a:to_gross', '9.9960000000', '10.00' ), array( $entries[0]->data['subject'], $entries[0]->data['exact'], $entries[0]->data['rounded'] ) );
+		$this->assertSame( array( 'share:b:to_net', '8.32500000000000', '8.33' ), array( $entries[1]->data['subject'], $entries[1]->data['exact'], $entries[1]->data['rounded'] ) );
 	}
 
 	/**

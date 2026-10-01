@@ -1,0 +1,47 @@
+{
+	"scenario": "the gross twin of the compound-rate net price: taking the tax out inverts the same composition",
+	"source": "tax-inclusive pricing rule: extraction inverts the same composition that application used",
+	"input": {
+		"currency": "CAD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 742,
+				"quantity": 1,
+				"unit": { "amount": "115.47", "basis": "gross" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [
+					{ "rate": "5", "jurisdiction": "CA" },
+					{
+						"rate": "9.975",
+						"jurisdiction": "CA-QC",
+						"compound": true,
+						"priority": 2
+					}
+				]
+			}
+		},
+		"policy": "fixed_gross"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "100.00",
+			"net": "100.00",
+			"tax": "15.47",
+			"grand": "115.47"
+		},
+		"lines": {
+			"l1": { "net": "100.00", "tax": "15.47", "gross": "115.47" }
+		},
+		"components": {
+			"line:l1:1": { "net": "100.00", "tax": "5.00", "residual": 1 },
+			"line:l1:2": { "net": "105.00", "tax": "10.47", "residual": 0 }
+		}
+	},
+	"note": "115.47 × 0.1547375 ÷ 1.1547375 = 15.4732, rounded once to 15.47: the net price of the other scenario, with the same components."
+}

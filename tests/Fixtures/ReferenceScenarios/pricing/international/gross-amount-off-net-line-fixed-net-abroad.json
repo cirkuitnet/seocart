@@ -1,0 +1,69 @@
+{
+	"scenario": "a gross amount off a net line abroad under the fixed-net policy takes the net that gross stands for at home",
+	"source": "tax-inclusive pricing rule: an amount off in one basis is brought to a line's basis at the rate the policy sets gross prices at",
+	"input": {
+		"currency": "GBP",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 721,
+				"quantity": 1,
+				"unit": { "amount": "10.00", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"promotions": [
+			{
+				"uuid": "00000000-0000-7000-8000-000000000721",
+				"code": "GROSSOFF",
+				"priority": 10,
+				"effect": {
+					"kind": "fixed",
+					"amount": "1.20",
+					"basis": "gross"
+				}
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "25", "jurisdiction": "XA" } ]
+			},
+			"reference": {
+				"standard": [ { "rate": "20", "jurisdiction": "GB" } ]
+			}
+		},
+		"policy": "fixed_net"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "10.00",
+			"discountTotal": "-1.00",
+			"net": "9.00",
+			"tax": "2.25",
+			"grand": "11.25"
+		},
+		"lines": {
+			"l1": {
+				"net": "9.00",
+				"tax": "2.25",
+				"gross": "11.25",
+				"discount": "-1.00"
+			}
+		},
+		"adjustments": [
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000721",
+				"scope": "line",
+				"type": "discount",
+				"line": "l1",
+				"basis": "net",
+				"amount": "-1.00",
+				"net": "-1.00",
+				"tax": "-0.25",
+				"gross": "-1.25"
+			}
+		]
+	},
+	"note": "Under fixed-net a gross amount is set at the store's 20 %, so 1.20 off stands for 1.00 net, as it does on a gross line, where it takes the net from 10.00 to 9.00; the customer abroad then saves 1.25 of the price paid."
+}

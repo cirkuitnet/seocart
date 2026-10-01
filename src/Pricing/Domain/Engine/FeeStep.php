@@ -32,6 +32,12 @@ defined( 'ABSPATH' ) || exit;
  * that do not include any fee, so no fee ever grows another. A fee that comes to nothing makes
  * no adjustment.
  *
+ * Lines authored net and lines authored gross have no common sum, since one includes tax and the
+ * other does not. So a percentage of lines authored in both bases is charged once per basis: the
+ * percentage of the net lines as a net fee, and of the gross lines as a gross fee, each rounded
+ * once, two adjustments with the fee's source. Each is then taxed as its basis says, exactly as
+ * the lines it was worked out on.
+ *
  * @since 0.1.0
  */
 final class FeeStep {
@@ -49,65 +55,69 @@ final class FeeStep {
 		$rounder = new Rounder();
 
 		foreach ( $state->input()->fees as $fee ) {
-			$amount = $fee->amount instanceof Percentage ? $this->percentOf( $state, $rounder, $fee, $fee->amount ) : $fee->amount;
+			foreach ( $this->charges( $state, $rounder, $fee ) as $amount ) {
+				if ( $amount->amount->isZero() ) {
+					$state->trace->record(
+						TraceEntry::SKIPPED,
+						array(
+							'reason' => 'nothing_to_charge',
+							'source' => $fee->source->toString(),
+						)
+					);
 
-			if ( $amount->amount->isZero() ) {
-				$state->trace->record(
-					TraceEntry::SKIPPED,
-					array(
-						'reason' => 'nothing_to_charge',
-						'source' => $fee->source->toString(),
-					)
-				);
+					continue;
+				}
 
-				continue;
+				$state->add( AdjustmentScope::Order, AdjustmentType::Fee, $fee->source, $fee->key, null, $amount, $fee->base, $fee->taxability );
 			}
-
-			$state->add( AdjustmentScope::Order, AdjustmentType::Fee, $fee->source, $fee->key, null, $amount, $fee->base, $fee->taxability );
 		}
 	}
 
 	/**
-	 * Works out a percentage fee on its base, rounded once, in the base's basis.
+	 * Works out what a fee charges: a fixed fee as authored, a percentage fee on its base, once per basis the base is authored in.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param PhaseBState   $state      The phase's figures.
-	 * @param Rounder       $rounder    The rounder.
-	 * @param FeeDefinition $fee        The fee.
-	 * @param Percentage    $percentage Its percentage.
-	 * @return AuthoredAmount The fee.
+	 * @param PhaseBState   $state   The phase's figures.
+	 * @param Rounder       $rounder The rounder.
+	 * @param FeeDefinition $fee     The fee.
+	 * @return list<AuthoredAmount> The charges: one, or one per basis for a percentage of lines authored in both.
 	 */
-	private function percentOf( PhaseBState $state, Rounder $rounder, FeeDefinition $fee, Percentage $percentage ): AuthoredAmount {
-		$base = AdjustmentBase::SubtotalAfterDiscounts === $fee->base ? $this->linesAfterDiscounts( $state ) : $this->shippingAfterDiscount( $state );
+	private function charges( PhaseBState $state, Rounder $rounder, FeeDefinition $fee ): array {
+		if ( ! $fee->amount instanceof Percentage ) {
+			return array( $fee->amount );
+		}
 
-		return $base->withAmount( $rounder->money( $state->trace, $fee->source->toString(), $base->amount->multiply( $percentage ), $base->currency() ) );
+		$bases   = AdjustmentBase::SubtotalAfterDiscounts === $fee->base ? $this->linesAfterDiscounts( $state ) : array( $this->shippingAfterDiscount( $state ) );
+		$charges = array();
+
+		foreach ( $bases as $base ) {
+			$subject   = $fee->source->toString() . ( count( $bases ) > 1 ? ':' . $base->basis->value : '' );
+			$charges[] = $base->withAmount( $rounder->money( $state->trace, $subject, $base->amount->multiply( $fee->amount ), $base->currency() ) );
+		}
+
+		return $charges;
 	}
 
 	/**
-	 * Adds up the lines after every discount.
+	 * Adds up the lines after every discount, one sum per basis.
 	 *
 	 * @since 0.1.0
-	 *
-	 * @throws \LogicException When the lines are authored in both bases, which have no common sum.
 	 *
 	 * @param PhaseBState $state The phase's figures.
-	 * @return AuthoredAmount The sum, in the lines' basis; zero and net when there is no line.
+	 * @return list<AuthoredAmount> One sum per basis the lines are authored in, in the order the bases first appear; zero and net when there is no line.
 	 */
-	private function linesAfterDiscounts( PhaseBState $state ): AuthoredAmount {
-		$sum = new AuthoredAmount( Money::zero( $state->input()->currency ), AmountBasis::Net );
+	private function linesAfterDiscounts( PhaseBState $state ): array {
+		$sums = array();
 
-		foreach ( $state->phaseA->lines as $index => $resolved ) {
-			$line = $state->afterDiscounts[ $resolved->line->key ];
+		foreach ( $state->phaseA->lines as $resolved ) {
+			$line  = $state->afterDiscounts[ $resolved->line->key ];
+			$basis = $line->basis->value;
 
-			if ( 0 !== $index && $line->basis !== $sum->basis ) {
-				throw new \LogicException( 'A percentage fee on the lines needs them all authored in one basis.' );
-			}
-
-			$sum = $line->withAmount( $sum->amount->add( $line->amount ) );
+			$sums[ $basis ] = isset( $sums[ $basis ] ) ? $line->withAmount( $sums[ $basis ]->amount->add( $line->amount ) ) : $line;
 		}
 
-		return $sum;
+		return array() === $sums ? array( new AuthoredAmount( Money::zero( $state->input()->currency ), AmountBasis::Net ) ) : array_values( $sums );
 	}
 
 	/**

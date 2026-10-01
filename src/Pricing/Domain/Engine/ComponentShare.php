@@ -20,7 +20,9 @@ defined( 'ABSPATH' ) || exit;
  * A tax component as the tax step leaves it: the rate, the amount charged on with this rate's tax, and the residual.
  *
  * Owns one fact: a component in the cart's currency. The base-currency step adds its twin, and
- * the totals then carry it as a TaxComponent.
+ * the totals then carry it as a TaxComponent. The amount charged on is the owner's net for a
+ * rate on the net amount; for a compound rate it is the owner's net plus the taxes of the
+ * components it compounds on, which the base-currency step adds up the same way.
  *
  * @since 0.1.0
  */
@@ -34,11 +36,15 @@ final readonly class ComponentShare {
 	 * @param TaxRateComponent $rate          The rate.
 	 * @param TaxedMoney       $amount        The amount charged on, this rate's tax, and their sum.
 	 * @param int              $residualMinor The minor unit the split gave this share beyond its exact proportion.
+	 * @param array            $includedTaxes The positions, among its owner's components, of those whose tax is in the amount charged on.
+	 *
+	 * @phpstan-param list<int> $includedTaxes
 	 */
 	public function __construct(
 		public TaxRateComponent $rate,
 		public TaxedMoney $amount,
-		public int $residualMinor
+		public int $residualMinor,
+		public array $includedTaxes
 	) {
 	}
 }

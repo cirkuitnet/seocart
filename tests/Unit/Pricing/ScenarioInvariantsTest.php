@@ -15,6 +15,7 @@ use PHPUnit\Framework\TestCase;
 use SEOCart\Pricing\Domain\Totals\AdjustmentScope;
 use SEOCart\Pricing\Domain\Totals\Totals;
 use SEOCart\Pricing\Domain\Totals\TraceEntry;
+use SEOCart\Support\Decimal;
 use SEOCart\Support\Money;
 use SEOCart\Tests\Support\Pricing\Inputs;
 use SEOCart\Tests\Support\Pricing\ScenarioFixture;
@@ -23,8 +24,11 @@ use SEOCart\Tests\Support\Pricing\ScenarioFixture;
  * Runs every scenario of both families and checks what holds for any of them.
  *
  * - Every adjustment carries a well-formed source.
- * - An amount off the order is shared across the lines so that its shares add up to the amount,
- *   capped at what the lines cost when it was applied.
+ * - An amount off the order is split across the lines so that its shares add up to the amount,
+ *   capped at what the lines cost when it was applied, and never more. Where every line is in
+ *   the amount's basis the shares are the adjustments; a share brought to a line of the other
+ *   basis is converted after the split, so there the split itself, as the trace records it, is
+ *   what adds up.
  * - The trace has one adjustment entry per adjustment, with its source, and one rounding entry
  *   per rounding boundary with the value before and after; totals and trace read back from JSON
  *   unchanged.
@@ -76,6 +80,7 @@ final class ScenarioInvariantsTest extends TestCase {
 
 		foreach ( $fixed as $promotion ) {
 			$source = 'promotion:' . $promotion['uuid'];
+			$amount = Inputs::money( $promotion['effect']['amount'], $totals->currency->code() );
 			$shares = Money::zero( $totals->currency );
 			$first  = null;
 
@@ -87,10 +92,58 @@ final class ScenarioInvariantsTest extends TestCase {
 			}
 
 			$this->assertNotNull( $first, "{$source} took nothing off." );
-			$this->assertTrue( $shares->equals( self::cap( $totals, $first, Inputs::money( $promotion['effect']['amount'], $totals->currency->code() ) ) ), "The shares of {$source} add up to " . $shares->toDecimal()->toString() . '.' );
+
+			$split = self::split( $totals, 'order:' . $source );
+
+			$this->assertTrue( Decimal::of( $split['exact'] )->equals( array_reduce( (array) $split['rounded'], static fn( Decimal $sum, string $share ): Decimal => $sum->add( Decimal::of( $share ) ), Decimal::of( '0' ) ) ), "The split of {$source} does not add up." );
+			$this->assertLessThanOrEqual( 0, Decimal::of( $split['exact'] )->compare( $amount->toDecimal() ), "{$source} took more than its amount." );
+
+			if ( self::allLinesIn( $totals, $promotion['effect']['basis'] ) ) {
+				$this->assertTrue( $shares->equals( self::cap( $totals, $first, $amount ) ), "The shares of {$source} add up to " . $shares->toDecimal()->toString() . '.' );
+			}
 		}
 
 		$this->addToAssertionCount( 1 );
+	}
+
+	/**
+	 * Returns the trace's record of a split by its subject.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \RuntimeException When the trace has no such split.
+	 *
+	 * @param Totals $totals  The totals.
+	 * @param string $subject The split's subject.
+	 * @return array<string, mixed> The rounding entry's data: `exact` is the whole, `rounded` the shares.
+	 */
+	private static function split( Totals $totals, string $subject ): array {
+		foreach ( $totals->trace->entries as $entry ) {
+			if ( TraceEntry::ROUNDING === $entry->kind && $subject === $entry->data['subject'] ) {
+				return $entry->data;
+			}
+		}
+
+		throw new \RuntimeException( "The trace records no split of {$subject}." );
+	}
+
+	/**
+	 * Tells whether every line is authored in a basis, so that an amount off in that basis is shared with no conversion.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Totals $totals The totals.
+	 * @param string $basis  `net` or `gross`.
+	 * @return bool True when every line is authored in it.
+	 */
+	private static function allLinesIn( Totals $totals, string $basis ): bool {
+		foreach ( $totals->lines as $line ) {
+			if ( $basis !== $line->lineSubtotal->basis->value ) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**

@@ -101,8 +101,7 @@ final class PhaseBState {
 	 * Each line's authored amount after discounts and each adjustment's authored amount in the base currency, by reference.
 	 *
 	 * Each is the base twin of the taxed figure the amount equals, or a share of the pool of those
-	 * that equal none: what an order stores as a line's and an adjustment's base amount, and what
-	 * the summary's base subtotal, discount, shipping and fee totals add up.
+	 * that equal none: what an order stores as a line's and an adjustment's base amount.
 	 *
 	 * @since 0.1.0
 	 *
@@ -118,6 +117,15 @@ final class PhaseBState {
 	 * @var array<string, list<TaxedMoney>>
 	 */
 	public array $componentBases = array();
+
+	/**
+	 * The tax rates of each class, composed from the quote under the calculation's policy.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var TaxRates
+	 */
+	public readonly TaxRates $rates;
 
 	/**
 	 * The lines, by key.
@@ -142,6 +150,8 @@ final class PhaseBState {
 		public readonly Quotes $quotes,
 		public readonly TraceBuilder $trace
 	) {
+		$this->rates = new TaxRates( $quotes->taxQuote, $phaseA->input->crossZonePolicy );
+
 		foreach ( $phaseA->lines as $resolved ) {
 			$this->afterDiscounts[ $resolved->line->key ] = $resolved->lineAmount;
 			$this->lines[ $resolved->line->key ]          = $resolved->line;

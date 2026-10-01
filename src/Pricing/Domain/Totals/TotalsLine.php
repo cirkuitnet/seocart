@@ -29,8 +29,8 @@ defined( 'ABSPATH' ) || exit;
  * display only; the line is never recomputed from it.
  *
  * The base twins of the subtotal and the discount are what an order's line keeps in
- * `base_line_discount_minor` and adds into the order's base subtotal, for reports that sum in
- * the base currency and never convert again. They are derived, not converted on their own: the
+ * `base_line_discount_minor`, for reports that sum in the base currency and never convert
+ * again; the order's base subtotal is a net figure the summary adds up on its own. They are derived, not converted on their own: the
  * base discount is the sum of the line's discounts' base amounts, and the base subtotal is the
  * base twin of the line after discounts less that base discount. So the base subtotal and the
  * base discount add up to the line's base net, or its base gross for a gross price, as the cart
@@ -50,7 +50,7 @@ final readonly class TotalsLine {
 	 * @param Money          $lineDiscount        The line's discounts, signed: zero or negative.
 	 * @param TaxedMoney     $amount              The line after discounts: net, tax and gross.
 	 * @param TaxedMoney     $base                The same, in the base currency.
-	 * @param Money          $baseSubtotal        The subtotal in the base currency: the line's base amount after discounts less its base discount, which the order's base subtotal adds up.
+	 * @param Money          $baseSubtotal        The subtotal in the base currency: the line's base amount after discounts less its base discount.
 	 * @param Money          $baseDiscount        The discount in the base currency: the sum of the line's discounts' base amounts, for `base_line_discount_minor`.
 	 * @param Money          $unitGrossForDisplay The gross of one unit, for display only.
 	 * @param array          $components          The tax components of the line.

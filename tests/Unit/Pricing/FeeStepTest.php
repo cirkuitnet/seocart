@@ -20,9 +20,13 @@ use SEOCart\Pricing\Domain\PromotionFacts;
 use SEOCart\Pricing\Domain\Taxability;
 use SEOCart\Support\Percentage;
 use SEOCart\Tests\Support\Pricing\Inputs;
+use SEOCart\Tests\Support\Pricing\TotalsInvariants;
 
 /**
  * Proves that a percentage fee follows its base, a fixed fee is charged as authored, and an untaxed fee has no tax.
+ *
+ * Planted violation, shown red and removed: in FeeStep, add the lines of both bases up as one
+ * sum: the fee on lines of both bases becomes one adjustment instead of two.
  *
  * @since 0.1.0
  */
@@ -63,15 +67,19 @@ final class FeeStepTest extends TestCase {
 	}
 
 	/**
-	 * Tests that a percentage of lines authored in both bases is refused: they have no common sum.
+	 * Tests that a percentage of lines authored in both bases is charged once per basis, each part taxed as its basis says.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_a_percentage_fee_on_lines_of_both_bases_is_refused(): void {
-		$fee = new FeeDefinition( 'service', Percentage::fromString( '2' ), AdjustmentBase::SubtotalAfterDiscounts, Taxability::notTaxable() );
+	public function test_a_percentage_fee_on_lines_of_both_bases_is_charged_once_per_basis(): void {
+		$fee    = new FeeDefinition( 'service', Percentage::fromString( '2' ), AdjustmentBase::SubtotalAfterDiscounts, Taxability::taxable( 'standard' ) );
+		$lines  = array( Inputs::line( 'a', '10.00' ), Inputs::line( 'b', '12.00', basis: AmountBasis::Gross ), Inputs::line( 'c', '5.00' ) );
+		$totals = Inputs::calculate( Inputs::input( $lines, destination: null, fees: array( $fee ) ), taxQuote: Inputs::taxQuote( array( 'standard' => array( Inputs::rate( '20' ) ) ) ) );
 
-		$this->expectException( \LogicException::class );
-
-		Inputs::calculate( Inputs::input( array( Inputs::line( 'a', '10.00' ), Inputs::line( 'b', '10.00', basis: AmountBasis::Gross ) ), destination: null, fees: array( $fee ) ) );
+		$this->assertSame( array( 'fee:service', 'fee:service' ), array_map( static fn( $adjustment ): string => $adjustment->source()->toString(), $totals->adjustments ) );
+		$this->assertSame( array( array( 30, 'net' ), array( 24, 'gross' ) ), array_map( static fn( $adjustment ): array => array( $adjustment->adjustment->authoredAmount->amount->minorUnits(), $adjustment->adjustment->authoredAmount->basis->value ), $totals->adjustments ), '2 % of the net lines, 15.00, and of the gross line, 12.00.' );
+		$this->assertSame( array( array( 30, 6, 36 ), array( 20, 4, 24 ) ), array_map( static fn( $adjustment ): array => array( $adjustment->amount->net()->minorUnits(), $adjustment->amount->tax()->minorUnits(), $adjustment->amount->gross()->minorUnits() ), $totals->adjustments ) );
+		$this->assertSame( 50, $totals->summary->feeTotal->minorUnits(), 'The fees\' net: 0.30 and 0.20.' );
+		$this->assertSame( array(), TotalsInvariants::problems( $totals ) );
 	}
 }

@@ -16,6 +16,8 @@ use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Pricing\Application\Calculator;
 use SEOCart\Pricing\Application\PriceResolver;
 use SEOCart\Support\Currency;
+use SEOCart\Tax\Domain\CrossZonePolicy;
+use SEOCart\Tax\Domain\TaxRoundingMode;
 use SEOCart\Tests\Support\Catalog\FixedFactsRepository;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
 use SEOCart\Tests\Support\Doubles\PoisonedQuoters;
@@ -23,8 +25,8 @@ use SEOCart\Tests\Support\Doubles\PoisonedQuoters;
 /**
  * Wires a calculator the way the kernel does, over a price double, poisoned ports and a transaction double.
  *
- * Owns one fact: the calculator a unit test drives. The store's base currency is USD and the
- * clock is frozen at Inputs::AT.
+ * Owns one fact: the calculator a unit test drives. The store's base currency is USD, its tax
+ * settings are the defaults unless a test names others, and the clock is frozen at Inputs::AT.
  *
  * @since 0.1.0
  */
@@ -38,9 +40,11 @@ final class Calculators {
 	 * @param FixedFactsRepository $prices       The prices it reads.
 	 * @param PoisonedQuoters      $quoters      Its shipping, tax and promotion ports.
 	 * @param TransactionManager   $transactions What tells it whether a transaction is open.
+	 * @param CrossZonePolicy      $policy       Optional. The store's cross-zone policy. Default fixed net.
+	 * @param TaxRoundingMode      $mode         Optional. The store's tax rounding mode. Default per line.
 	 * @return Calculator The calculator.
 	 */
-	public static function over( FixedFactsRepository $prices, PoisonedQuoters $quoters, TransactionManager $transactions ): Calculator {
+	public static function over( FixedFactsRepository $prices, PoisonedQuoters $quoters, TransactionManager $transactions, CrossZonePolicy $policy = CrossZonePolicy::FixedNet, TaxRoundingMode $mode = TaxRoundingMode::PerLine ): Calculator {
 		return new Calculator(
 			new PriceResolver( $prices ),
 			$quoters->shipping(),
@@ -48,7 +52,9 @@ final class Calculators {
 			$quoters->evaluator(),
 			$transactions,
 			FrozenClock::at( Inputs::AT ),
-			static fn(): Currency => Currency::of( 'USD' )
+			static fn(): Currency => Currency::of( 'USD' ),
+			static fn(): CrossZonePolicy => $policy,
+			static fn(): TaxRoundingMode => $mode
 		);
 	}
 

@@ -312,8 +312,12 @@ final class ScenarioFixture {
 				$check( "adjustment {$index} ({$want['source']}).{$name}", $figure, $actual[ $name ] );
 			}
 
-			foreach ( array( 'scope', 'type', 'line' ) as $name ) {
-				$have = 'line' === $name ? $adjustment->adjustment->lineKey : $adjustment->adjustment->{$name}->value;
+			foreach ( array( 'scope', 'type', 'line', 'basis' ) as $name ) {
+				$have = match ( $name ) {
+					'line'  => $adjustment->adjustment->lineKey,
+					'basis' => $adjustment->adjustment->authoredAmount->basis->value,
+					default => $adjustment->adjustment->{$name}->value,
+				};
 
 				if ( isset( $want[ $name ] ) && $want[ $name ] !== $have ) {
 					$differences[] = "adjustment {$index}.{$name}: expected {$want[$name]}, got " . (string) $have;
@@ -340,6 +344,10 @@ final class ScenarioFixture {
 			}
 
 			$check( "component {$key}.tax", $want['tax'], $component->amount->tax() );
+
+			if ( isset( $want['net'] ) ) {
+				$check( "component {$key}.net", $want['net'], $component->amount->net() );
+			}
 
 			if ( isset( $want['residual'] ) && $want['residual'] !== $component->residualMinor ) {
 				$differences[] = "component {$key}.residual: expected {$want['residual']}, got {$component->residualMinor}";

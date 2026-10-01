@@ -42,25 +42,27 @@ use SEOCart\Tests\Support\SettingsFixtures;
 final class SettingsRegistryTest extends TestCase {
 
 	/**
-	 * Tests that the production list holds the base currency, the grant record and the data keys, and exposes the base currency only.
+	 * Tests that the production list holds the international settings, the grant record and the data keys, and exposes the international settings only.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_production_list_holds_the_base_currency_the_grant_record_and_the_data_keys(): void {
+	public function test_the_production_list_holds_the_international_settings_the_grant_record_and_the_data_keys(): void {
 		$registry = Settings::registry();
 		$roles    = ( new CapabilityDeclaration() )->roles();
 		$options  = array_map( static fn( array $settings ): array => array_map( static fn( Setting $setting ): string => $setting->name(), $settings ), $registry->options() );
 
 		$this->assertSame(
 			array(
-				'seocart_international_base_currency' => array( InternationalSettings::BASE_CURRENCY ),
-				'seocart_capability_grants'           => $roles,
-				'seocart_data_keys'                   => array( SecretKeys::ACTIVE, SecretKeys::RETIRING, SecretKeys::CANARY ),
+				'seocart_international_base_currency'     => array( InternationalSettings::BASE_CURRENCY ),
+				'seocart_international_cross_zone_policy' => array( InternationalSettings::CROSS_ZONE_POLICY ),
+				'seocart_international_tax_rounding_mode' => array( InternationalSettings::TAX_ROUNDING_MODE ),
+				'seocart_capability_grants'               => $roles,
+				'seocart_data_keys'                       => array( SecretKeys::ACTIVE, SecretKeys::RETIRING, SecretKeys::CANARY ),
 			),
 			$options
 		);
 
-		$this->assertSame( array( InternationalSettings::BASE_CURRENCY ), array_map( static fn( Setting $setting ): string => $setting->name(), $registry->exposed() ) );
+		$this->assertSame( array( InternationalSettings::BASE_CURRENCY, InternationalSettings::CROSS_ZONE_POLICY, InternationalSettings::TAX_ROUNDING_MODE ), array_map( static fn( Setting $setting ): string => $setting->name(), $registry->exposed() ) );
 		$this->assertSame( 'USD', $registry->setting( InternationalSettings::BASE_CURRENCY )->field()->defaultValue() );
 		$this->assertSame( array( SupportError::UnknownCurrency ), $registry->setting( InternationalSettings::BASE_CURRENCY )->errors() );
 
@@ -154,9 +156,11 @@ final class SettingsRegistryTest extends TestCase {
 
 		$this->assertSame(
 			array(
-				'seocart_international_base_currency' => array( 'Settings', 'ISO 4217 code of the currency the store keeps its accounts in, in upper case.', false, Classification::Public ),
-				'seocart_capability_grants'           => array( 'Settings', OptionGrantLedger::PURPOSE, false, Classification::Public ),
-				'seocart_data_keys'                   => array( 'Settings', SecretKeys::PURPOSE, false, Classification::Secret ),
+				'seocart_international_base_currency'     => array( 'Settings', 'ISO 4217 code of the currency the store keeps its accounts in, in upper case.', false, Classification::Public ),
+				'seocart_international_cross_zone_policy' => array( 'Settings', 'What stays fixed when a price entered including tax is sold where the tax rate differs from the store\'s own: fixed_net keeps the price before tax, fixed_gross keeps the price paid.', false, Classification::Public ),
+				'seocart_international_tax_rounding_mode' => array( 'Settings', 'Where tax is rounded: per_line rounds each line\'s tax, per_subtotal rounds the tax of the lines of one tax class once and shares it out to them.', false, Classification::Public ),
+				'seocart_capability_grants'               => array( 'Settings', OptionGrantLedger::PURPOSE, false, Classification::Public ),
+				'seocart_data_keys'                       => array( 'Settings', SecretKeys::PURPOSE, false, Classification::Secret ),
 			),
 			self::described( Settings::registry()->optionDefinitions() )
 		);

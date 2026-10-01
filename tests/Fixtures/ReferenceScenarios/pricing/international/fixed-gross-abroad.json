@@ -25,7 +25,7 @@
 	},
 	"expected": {
 		"summary": {
-			"subtotal": "9.99",
+			"subtotal": "7.99",
 			"net": "7.99",
 			"tax": "2.00",
 			"grand": "9.99"

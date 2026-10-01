@@ -65,6 +65,8 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Cart/Interfaces/StoreApi/StoreApiError.php',
 		'src/Cart/Interfaces/StoreApi/StoreRequestPolicy.php',
 		'src/Platform/RateLimiter/RateLimit.php',
+		'src/Tax/Domain/CrossZonePolicy.php',
+		'src/Tax/Domain/TaxRoundingMode.php',
 		'tests/Fixtures/Operations/',
 	);
 

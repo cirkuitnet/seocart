@@ -137,6 +137,28 @@
                                         "examples": [
                                             "EUR"
                                         ]
+                                    },
+                                    "cross_zone_policy": {
+                                        "type": "string",
+                                        "enum": [
+                                            "fixed_net",
+                                            "fixed_gross"
+                                        ],
+                                        "description": "What stays fixed when a price entered including tax is sold where the tax rate differs from the store's own: fixed_net keeps the price before tax, fixed_gross keeps the price paid.",
+                                        "examples": [
+                                            "fixed_gross"
+                                        ]
+                                    },
+                                    "tax_rounding_mode": {
+                                        "type": "string",
+                                        "enum": [
+                                            "per_line",
+                                            "per_subtotal"
+                                        ],
+                                        "description": "Where tax is rounded: per_line rounds each line's tax, per_subtotal rounds the tax of the lines of one tax class once and shares it out to them.",
+                                        "examples": [
+                                            "per_subtotal"
+                                        ]
                                     }
                                 }
                             }
@@ -404,10 +426,34 @@
                         "examples": [
                             "EUR"
                         ]
+                    },
+                    "cross_zone_policy": {
+                        "type": "string",
+                        "enum": [
+                            "fixed_net",
+                            "fixed_gross"
+                        ],
+                        "description": "What stays fixed when a price entered including tax is sold where the tax rate differs from the store's own: fixed_net keeps the price before tax, fixed_gross keeps the price paid.",
+                        "examples": [
+                            "fixed_gross"
+                        ]
+                    },
+                    "tax_rounding_mode": {
+                        "type": "string",
+                        "enum": [
+                            "per_line",
+                            "per_subtotal"
+                        ],
+                        "description": "Where tax is rounded: per_line rounds each line's tax, per_subtotal rounds the tax of the lines of one tax class once and shares it out to them.",
+                        "examples": [
+                            "per_subtotal"
+                        ]
                     }
                 },
                 "required": [
-                    "base_currency"
+                    "base_currency",
+                    "cross_zone_policy",
+                    "tax_rounding_mode"
                 ]
             },
             "StockLevel": {

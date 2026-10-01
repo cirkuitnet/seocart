@@ -1,0 +1,97 @@
+{
+	"scenario": "a net amount off, shared by a gross line and a net line abroad under the fixed-net policy, takes the same net off each",
+	"source": "tax-inclusive pricing rule: an amount off in one basis is brought to a line's basis at the rate the policy sets gross prices at",
+	"input": {
+		"currency": "GBP",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 701,
+				"quantity": 1,
+				"unit": { "amount": "12.00", "basis": "gross" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 702,
+				"quantity": 1,
+				"unit": { "amount": "10.00", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"promotions": [
+			{
+				"uuid": "00000000-0000-7000-8000-000000000701",
+				"code": "TWOOFF",
+				"priority": 10,
+				"effect": {
+					"kind": "fixed",
+					"amount": "2.00",
+					"basis": "net"
+				}
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "25", "jurisdiction": "XA" } ]
+			},
+			"reference": {
+				"standard": [ { "rate": "20", "jurisdiction": "GB" } ]
+			}
+		},
+		"policy": "fixed_net"
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "20.00",
+			"discountTotal": "-2.00",
+			"net": "18.00",
+			"tax": "4.50",
+			"grand": "22.50"
+		},
+		"lines": {
+			"l1": {
+				"net": "9.00",
+				"tax": "2.25",
+				"gross": "11.25",
+				"discount": "-1.20"
+			},
+			"l2": {
+				"net": "9.00",
+				"tax": "2.25",
+				"gross": "11.25",
+				"discount": "-1.00"
+			}
+		},
+		"adjustments": [
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000701",
+				"scope": "line",
+				"type": "discount",
+				"line": "l1",
+				"basis": "gross",
+				"amount": "-1.20",
+				"net": "-1.00",
+				"tax": "-0.25",
+				"gross": "-1.25"
+			},
+			{
+				"source": "promotion:00000000-0000-7000-8000-000000000701",
+				"scope": "line",
+				"type": "discount",
+				"line": "l2",
+				"basis": "net",
+				"amount": "-1.00",
+				"net": "-1.00",
+				"tax": "-0.25",
+				"gross": "-1.25"
+			}
+		],
+		"components": {
+			"line:l1:1": { "tax": "2.25", "residual": 0 },
+			"line:l2:1": { "tax": "2.25", "residual": 0 }
+		}
+	},
+	"note": "The gross line stands for 12.00 ÷ 1.20 = 10.00 net, so both lines weigh 10.00 and take 1.00 each; the gross line's 1.00 is 1.20 off its price at the store's 20 %, and its net falls from 10.00 to 9.00 exactly, as the net line's does. At the destination's 25 % it would be 1.25 off, and 1.04 off the net."
+}

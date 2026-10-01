@@ -37,12 +37,11 @@ defined( 'ABSPATH' ) || exit;
  * An authored amount is not converted on its own: it takes the base twin of the taxed figure it
  * equals in the cart's currency. A net-authored amount is its taxed net, so its base twin is its
  * base net; a gross-authored amount that is its taxed gross takes its base gross. These twins are
- * the base amounts an order stores beside each line and adjustment, and the summary's base
- * subtotal, discount, shipping and fee totals are their sums. A line's twin is its amount after
- * discounts; its base discount is the sum of its discounts' twins, and its base subtotal is its
- * twin less its base discount. So the base figures add up across the summary and across each
- * line: where every amount is net-authored, the base subtotal, discounts, shipping and fees add
- * up to the base net, exactly as they do in the cart's currency.
+ * the base amounts an order stores beside each line and adjustment. A line's twin is its amount
+ * after discounts; its base discount is the sum of its discounts' twins, and its base subtotal
+ * is its twin less its base discount, so a line's base figures add up as its cart figures do.
+ * The summary's base figures are sums of the taxed figures' base nets, not of these twins, so
+ * they add up to the base net whatever basis each amount was authored in.
  *
  * One exception keeps a conversion of its own: an authored amount that equals none of its taxed
  * figures. That is a gross price under the policy that keeps the net amount fixed, sold where
@@ -51,7 +50,8 @@ defined( 'ABSPATH' ) || exit;
  * pooled together, positive and negative apart, converted once and shared back.
  *
  * A component's base tax is its share of its owner's base tax, in proportion to the components'
- * taxes; its base net is its owner's base net, as its net is its owner's net. With the identity
+ * taxes; its base net is its owner's base net, plus for a compound rate the base taxes of the
+ * components it compounds on, as its net is in the cart's currency. With the identity
  * context of a base-currency cart, every pool converts to itself and shares back exactly, so the
  * base figures are the cart's figures, through the same code.
  *
@@ -224,7 +224,10 @@ final class BaseEquivalentStep {
 	}
 
 	/**
-	 * Gives an owner's components their base twins: shares of the owner's base tax, on the owner's base net.
+	 * Gives an owner's components their base twins: shares of the owner's base tax, each on the base of what its rate was charged on.
+	 *
+	 * A component's base net is its owner's base net, plus, for a compound rate, the base taxes
+	 * of the components it compounds on: the same sum as in the cart's currency.
 	 *
 	 * @since 0.1.0
 	 *
@@ -243,8 +246,19 @@ final class BaseEquivalentStep {
 		$owner  = $state->bases[ $ref ];
 		$ratios = array_map( static fn( ComponentShare $component ): int => self::magnitude( $component->amount->tax() ), $components );
 		$taxes  = array() === array_filter( $ratios ) ? array_map( static fn(): Money => Money::zero( $owner->currency() ), $ratios ) : $rounder->split( $state->trace, $ref . ':components', $owner->tax(), $ratios )->shares;
+		$twins  = array();
 
-		$state->componentBases[ $ref ] = array_map( static fn( Money $tax ): TaxedMoney => new TaxedMoney( $owner->net(), $tax, $owner->net()->add( $tax ) ), array_values( $taxes ) );
+		foreach ( $components as $position => $component ) {
+			$chargedOn = $owner->net();
+
+			foreach ( $component->includedTaxes as $before ) {
+				$chargedOn = $chargedOn->add( $taxes[ $before ] );
+			}
+
+			$twins[] = new TaxedMoney( $chargedOn, $taxes[ $position ], $chargedOn->add( $taxes[ $position ] ) );
+		}
+
+		$state->componentBases[ $ref ] = $twins;
 	}
 
 	/**

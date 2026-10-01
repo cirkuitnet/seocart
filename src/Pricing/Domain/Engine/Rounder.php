@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Pricing\Domain\Engine;
 
 use SEOCart\Pricing\Domain\AmountBasis;
+use SEOCart\Pricing\Domain\AuthoredAmount;
 use SEOCart\Pricing\Domain\Totals\TraceEntry;
 use SEOCart\Support\ConversionContext;
 use SEOCart\Support\Currency;
@@ -141,6 +142,36 @@ final class Rounder {
 		$this->record( $trace, $subject, $exact->toString(), $taxed->tax()->toDecimal()->toString(), $trace->mode()->value );
 
 		return $taxed;
+	}
+
+	/**
+	 * Brings an authored amount to another basis at a rate, rounding once: a net amount times (1 + rate), or a gross one divided by it.
+	 *
+	 * An amount already in the basis is returned as it is, with no rounding and no trace entry.
+	 * The rate is the one at which the two bases are the same price (TaxRates::basisRate()), so
+	 * the amount brought over changes what it applies to as the same amount authored in that
+	 * basis would.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param TraceBuilder   $trace   The calculation's trace, which gives the mode.
+	 * @param string         $subject What is brought over.
+	 * @param AuthoredAmount $amount  The amount.
+	 * @param AmountBasis    $basis   The basis to bring it to.
+	 * @param EffectiveRate  $rate    The rate between the bases.
+	 * @return AuthoredAmount The amount in that basis.
+	 */
+	public function inBasisOf( TraceBuilder $trace, string $subject, AuthoredAmount $amount, AmountBasis $basis, EffectiveRate $rate ): AuthoredAmount {
+		if ( $basis === $amount->basis ) {
+			return $amount;
+		}
+
+		$money     = $amount->amount;
+		$converted = AmountBasis::Gross === $basis
+			? $this->money( $trace, $subject . ':to_gross', $money->multiply( $rate->multiplier() ), $money->currency() )
+			: $this->quotient( $trace, $subject . ':to_net', $money->toDecimal(), $rate->multiplier(), $money->currency() );
+
+		return new AuthoredAmount( $converted, $basis );
 	}
 
 	/**

@@ -48,6 +48,18 @@ use WP_UnitTestCase;
 final class SettingsSurfacesTest extends WP_UnitTestCase {
 
 	/**
+	 * The tax settings as a site that never saved them reads them.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<string, string>
+	 */
+	private const TAX_DEFAULTS = array(
+		'cross_zone_policy' => 'fixed_net',
+		'tax_rounding_mode' => 'per_line',
+	);
+
+	/**
 	 * The three surfaces, wired for the settings operations.
 	 *
 	 * @since 0.1.0
@@ -116,7 +128,7 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 	public function test_a_read_is_the_same_everywhere(): void {
 		wp_set_current_user( self::user( array( 'seocart_manage_settings' ) ) );
 
-		$expected = array( 'base_currency' => 'USD' );
+		$expected = array( 'base_currency' => 'USD' ) + self::TAX_DEFAULTS;
 		$response = $this->surfaces->rest( 'GET', '/settings' );
 
 		$this->assertSame( 200, $response->get_status() );
@@ -147,19 +159,19 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 		$response = $this->surfaces->rest( 'PATCH', '/settings', array( 'base_currency' => 'EUR' ) );
 
 		$this->assertSame( 200, $response->get_status() );
-		$this->assertSame( array( 'base_currency' => 'EUR' ), $response->get_data() );
+		$this->assertSame( array( 'base_currency' => 'EUR' ) + self::TAX_DEFAULTS, $response->get_data() );
 		$this->assertSame( 'EUR', $this->storedBaseCurrency() );
 
 		$command = $this->surfaces->cli( 'seocart settings update', array(), array( 'base_currency' => 'GBP' ) );
 
 		$this->assertNull( $command['failure'] );
-		$this->assertSame( array( 'base_currency' => 'GBP' ), $command['printed']['item'] ?? null );
+		$this->assertSame( array( 'base_currency' => 'GBP' ) + self::TAX_DEFAULTS, $command['printed']['item'] ?? null );
 		$this->assertSame( 'GBP', $this->storedBaseCurrency() );
 
-		$this->assertSame( array( 'base_currency' => 'JPY' ), $this->service->update( array( 'base_currency' => 'JPY' ), self::actor() ) );
+		$this->assertSame( array( 'base_currency' => 'JPY' ) + self::TAX_DEFAULTS, $this->service->update( array( 'base_currency' => 'JPY' ), self::actor() ) );
 		$this->assertSame( 'JPY', $this->storedBaseCurrency() );
 
-		$this->assertSame( array( 'base_currency' => 'JPY' ), $this->surfaces->rest( 'GET', '/settings' )->get_data(), 'A read does not see the last change.' );
+		$this->assertSame( array( 'base_currency' => 'JPY' ) + self::TAX_DEFAULTS, $this->surfaces->rest( 'GET', '/settings' )->get_data(), 'A read does not see the last change.' );
 	}
 
 	/**
@@ -179,8 +191,8 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 		$response = $this->surfaces->rest( 'PATCH', '/settings', array( 'unrelated' => 'x' ) );
 
 		$this->assertSame( 200, $response->get_status() );
-		$this->assertSame( array( 'base_currency' => 'EUR' ), $response->get_data() );
-		$this->assertSame( array( 'base_currency' => 'EUR' ), $this->surfaces->cli( 'seocart settings update', array(), array() )['printed']['item'] ?? null );
+		$this->assertSame( array( 'base_currency' => 'EUR' ) + self::TAX_DEFAULTS, $response->get_data() );
+		$this->assertSame( array( 'base_currency' => 'EUR' ) + self::TAX_DEFAULTS, $this->surfaces->cli( 'seocart settings update', array(), array() )['printed']['item'] ?? null );
 		$this->assertSame( 'EUR', $this->storedBaseCurrency() );
 	}
 
@@ -213,6 +225,64 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 
 		$this->assertNull( $this->storedBaseCurrency(), 'A refused change was stored.' );
 		$this->assertSame( array(), $this->surfaces->reported, 'A refusal the client caused was reported as an internal failure.' );
+	}
+
+	/**
+	 * Tests that the tax settings are changed and answered the same way from the route, the command and the service.
+	 *
+	 * @group international
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_tax_settings_change_the_same_everywhere(): void {
+		wp_set_current_user( self::user( array( 'seocart_manage_settings' ) ) );
+
+		$response = $this->surfaces->rest( 'PATCH', '/settings', array( 'cross_zone_policy' => 'fixed_gross' ) );
+
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertSame( 'fixed_gross', $response->get_data()['cross_zone_policy'] ?? null );
+		$this->assertSame( 'fixed_gross', self::stored( 'seocart_international_cross_zone_policy' ) );
+
+		$command = $this->surfaces->cli( 'seocart settings update', array(), array( 'tax_rounding_mode' => 'per_subtotal' ) );
+
+		$this->assertNull( $command['failure'] );
+		$this->assertSame( 'per_subtotal', self::stored( 'seocart_international_tax_rounding_mode' ) );
+
+		$expected = array(
+			'base_currency'     => 'USD',
+			'cross_zone_policy' => 'fixed_net',
+			'tax_rounding_mode' => 'per_subtotal',
+		);
+
+		$this->assertSame( $expected, $this->service->update( array( 'cross_zone_policy' => 'fixed_net' ), self::actor() ) );
+		$this->assertSame( $expected, $this->surfaces->rest( 'GET', '/settings' )->get_data() );
+	}
+
+	/**
+	 * Tests that a tax setting outside the values its enum declares is refused by the schema on every surface, and nothing is stored.
+	 *
+	 * @group international
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_tax_setting_outside_its_values_is_refused(): void {
+		wp_set_current_user( self::user( array( 'seocart_manage_settings' ) ) );
+
+		$response = $this->surfaces->rest( 'PATCH', '/settings', array( 'cross_zone_policy' => 'fixed_both' ) );
+
+		$this->assertSame( 400, $response->get_status() );
+		$this->assertSame( 'rest_invalid_param', $response->as_error()->get_error_code() );
+		$this->assertNotNull( $this->surfaces->cli( 'seocart settings update', array(), array( 'tax_rounding_mode' => 'per_order' ) )['failure'] );
+
+		try {
+			$this->service->update( array( 'tax_rounding_mode' => 'per_order' ), self::actor() );
+			$this->fail( 'The service stored a rounding mode that does not exist.' );
+		} catch ( \InvalidArgumentException $refused ) {
+			$this->assertStringContainsString( 'tax_rounding_mode', $refused->getMessage() );
+		}
+
+		$this->assertNull( self::stored( 'seocart_international_cross_zone_policy' ) );
+		$this->assertNull( self::stored( 'seocart_international_tax_rounding_mode' ) );
 	}
 
 	/**
@@ -262,7 +332,9 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 
 		$this->assertSame( array( 'GET', 'PATCH' ), $data['methods'] ?? null );
 		$this->assertSame( 'Settings', $data['schema']['title'] ?? null );
-		$this->assertSame( array( 'base_currency' ), array_keys( $data['schema']['properties'] ?? array() ) );
+		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode' ), array_keys( $data['schema']['properties'] ?? array() ) );
+		$this->assertSame( array( 'fixed_net', 'fixed_gross' ), $data['schema']['properties']['cross_zone_policy']['enum'] ?? null );
+		$this->assertSame( array( 'per_line', 'per_subtotal' ), $data['schema']['properties']['tax_rounding_mode']['enum'] ?? null );
 	}
 
 	/**
@@ -355,10 +427,22 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 	 * @return string|null The stored value, or null when none is stored.
 	 */
 	private function storedBaseCurrency(): ?string {
+		return self::stored( 'seocart_international_base_currency' );
+	}
+
+	/**
+	 * Reads what an option stores from the options table, bypassing every cache.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $option The option.
+	 * @return string|null The stored value, or null when none is stored.
+	 */
+	private static function stored( string $option ): ?string {
 		global $wpdb;
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the test reads what was really stored.
-		$value = $wpdb->get_var( $wpdb->prepare( 'SELECT option_value FROM %i WHERE option_name = %s', $wpdb->options, 'seocart_international_base_currency' ) );
+		$value = $wpdb->get_var( $wpdb->prepare( 'SELECT option_value FROM %i WHERE option_name = %s', $wpdb->options, $option ) );
 
 		return null === $value ? null : (string) $value;
 	}

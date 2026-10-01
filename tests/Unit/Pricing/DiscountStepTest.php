@@ -28,7 +28,9 @@ use SEOCart\Tests\Support\Pricing\TotalsInvariants;
  *
  * - in DiscountStep::discountOrder(), round each line's share of the amount on its own instead of
  *   splitting it: 1.00 over three equal lines comes to 0.99;
- * - in DiscountStep, drop both caps: a code of 100.00 on a 9.99 cart takes the grand total to -90.01.
+ * - in DiscountStep, drop both caps: a code of 100.00 on a 9.99 cart takes the grand total to -90.01;
+ * - in DiscountStep::discountOrder(), weigh the lines by their amounts as authored, whatever their
+ *   basis: 2.00 net off a 12.00 gross and a 10.00 net line comes to 1.31 and 0.91, not 1.20 and 1.00.
  *
  * @since 0.1.0
  */
@@ -87,14 +89,36 @@ final class DiscountStepTest extends TestCase {
 	}
 
 	/**
-	 * Tests that an amount off is not shared with a line authored in the other basis.
+	 * Tests that a net amount off takes the same net off a gross line as off a net line, each share in its line's basis, for a taxed and an exempt customer.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_an_amount_off_is_not_shared_across_bases(): void {
-		$this->expectException( \LogicException::class );
+	public function test_an_amount_off_takes_the_same_net_off_lines_of_either_basis(): void {
+		$lines  = array( Inputs::line( 'a', '12.00', basis: AmountBasis::Gross ), Inputs::line( 'b', '10.00' ) );
+		$tax    = Inputs::taxQuote( array( 'standard' => array( Inputs::rate( '20' ) ) ) );
+		$taxed  = Inputs::calculate( Inputs::input( $lines, destination: null, promotions: array( self::fixed( '2.00' ) ) ), taxQuote: $tax );
+		$exempt = Inputs::calculate( Inputs::input( $lines, destination: null, promotions: array( self::fixed( '2.00' ) ), exempt: true ), taxQuote: $tax );
 
-		Inputs::calculate( Inputs::input( array( Inputs::line( 'a', '9.99', basis: AmountBasis::Gross ) ), destination: null, promotions: array( self::fixed( '1.00' ) ) ) );
+		$this->assertSame( array( -120, -100 ), self::amounts( $taxed ), 'The lines weigh 10.00 net each, so each takes 1.00 net: 1.20 off the gross price, 1.00 off the net one.' );
+		$this->assertSame( array( 'gross', 'net' ), array_map( static fn( TotalsAdjustment $adjustment ): string => $adjustment->adjustment->authoredAmount->basis->value, $taxed->adjustments ) );
+		$this->assertSame( array( 900, 900 ), array_map( static fn( $line ): int => $line->amount->net()->minorUnits(), $taxed->lines ) );
+		$this->assertSame( 1800, $exempt->summary->grand->minorUnits(), 'The exempt customer gets the same 2.00 off the 20.00 it pays.' );
+		$this->assertSame( array(), TotalsInvariants::problems( $taxed ) );
+		$this->assertSame( array(), TotalsInvariants::problems( $exempt ) );
+	}
+
+	/**
+	 * Tests that an amount off that covers lines of both bases takes each whole, with no conversion to round it.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_amount_off_covering_lines_of_both_bases_takes_each_whole(): void {
+		$lines  = array( Inputs::line( 'a', '9.99', basis: AmountBasis::Gross ), Inputs::line( 'b', '10.00' ) );
+		$totals = Inputs::calculate( Inputs::input( $lines, destination: null, promotions: array( self::fixed( '100.00' ) ) ), taxQuote: Inputs::taxQuote( array( 'standard' => array( Inputs::rate( '20' ) ) ) ) );
+
+		$this->assertSame( array( -999, -1000 ), self::amounts( $totals ) );
+		$this->assertSame( 0, $totals->summary->grand->minorUnits() );
+		$this->assertSame( array(), TotalsInvariants::problems( $totals ) );
 	}
 
 	/**

@@ -43,46 +43,34 @@ defined( 'ABSPATH' ) || exit;
  * anything is read, rather than merely advised against. A caller that needs fresh totals inside
  * a unit of work calculates first and opens the transaction after.
  *
- * Prices are offered in the base currency only; a cart in another currency is refused. Tax is
- * worked out per line, and a gross price keeps its net amount across tax zones. No promotion is
- * resolved from a code here, so every code entered is traced as unknown.
+ * Prices are offered in the base currency only; a cart in another currency is refused. The store's
+ * base currency, its cross-zone policy and its tax rounding mode are the merchant's settings, read
+ * once per calculation, through the readers the calculator is given: they are one group of
+ * settings, so reading them costs one query the first time in a request and none after. No
+ * promotion is resolved from a code here, so every code entered is traced as unknown.
  *
  * @since 0.1.0
  */
 final class Calculator {
 
 	/**
-	 * What stays fixed when a gross price is sold into another tax zone.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var CrossZonePolicy
-	 */
-	private const CROSS_ZONE_POLICY = CrossZonePolicy::FixedNet;
-
-	/**
-	 * Where tax is rounded.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var TaxRoundingMode
-	 */
-	private const TAX_ROUNDING_MODE = TaxRoundingMode::PerLine;
-
-	/**
 	 * Creates the calculator. Sends nothing.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param PriceResolver      $prices       Finds the lines' prices.
-	 * @param ShippingRateQuoter $shipping     Quotes the shipping rates.
-	 * @param TaxQuoter          $tax          Quotes the tax rates.
-	 * @param PromotionEvaluator $promotions   Turns the promotions into intents.
-	 * @param TransactionManager $transactions Tells whether a transaction is open.
-	 * @param Clock              $clock        Tells when the calculation is asked for.
-	 * @param \Closure           $baseCurrency Returns the store's base currency.
+	 * @param PriceResolver      $prices          Finds the lines' prices.
+	 * @param ShippingRateQuoter $shipping        Quotes the shipping rates.
+	 * @param TaxQuoter          $tax             Quotes the tax rates.
+	 * @param PromotionEvaluator $promotions      Turns the promotions into intents.
+	 * @param TransactionManager $transactions    Tells whether a transaction is open.
+	 * @param Clock              $clock           Tells when the calculation is asked for.
+	 * @param \Closure           $baseCurrency    Returns the store's base currency.
+	 * @param \Closure           $crossZonePolicy Returns what stays fixed when a gross price is sold into another tax zone.
+	 * @param \Closure           $taxRoundingMode Returns where tax is rounded.
 	 *
-	 * @phpstan-param \Closure(): Currency $baseCurrency
+	 * @phpstan-param \Closure(): Currency        $baseCurrency
+	 * @phpstan-param \Closure(): CrossZonePolicy $crossZonePolicy
+	 * @phpstan-param \Closure(): TaxRoundingMode $taxRoundingMode
 	 */
 	public function __construct(
 		private PriceResolver $prices,
@@ -91,7 +79,9 @@ final class Calculator {
 		private PromotionEvaluator $promotions,
 		private TransactionManager $transactions,
 		private Clock $clock,
-		private \Closure $baseCurrency
+		private \Closure $baseCurrency,
+		private \Closure $crossZonePolicy,
+		private \Closure $taxRoundingMode
 	) {
 	}
 
@@ -130,8 +120,8 @@ final class Calculator {
 			array_map( static fn( string $code ): RejectedCode => new RejectedCode( $code, RejectedCode::UNKNOWN ), $request->promotionCodes ),
 			$request->shippingMethodKey,
 			array(),
-			self::CROSS_ZONE_POLICY,
-			self::TAX_ROUNDING_MODE,
+			( $this->crossZonePolicy )(),
+			( $this->taxRoundingMode )(),
 			$this->clock->now()
 		);
 

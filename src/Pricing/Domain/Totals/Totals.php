@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Pricing\Domain\Totals;
 
+use SEOCart\Pricing\Domain\AmountBasis;
 use SEOCart\Pricing\Domain\InstantFormat;
 use SEOCart\Support\ConversionContext;
 use SEOCart\Support\Currency;
@@ -32,6 +33,9 @@ defined( 'ABSPATH' ) || exit;
  * The grand total is the lines, which already include their discounts, plus the adjustments
  * outside a line: shipping, its discount, and fees. It is never negative: discounts are capped
  * where they are made. In this version nothing is tendered, so the amount due is the grand total.
+ * Every summary figure is a net amount, so the summary adds up whatever basis each amount was
+ * authored in; the authored amounts stay on the lines and adjustments, and a gross figure for
+ * display is read from their taxed amounts.
  *
  * @since 0.1.0
  */
@@ -155,58 +159,63 @@ final readonly class Totals {
 	/**
 	 * Adds up the summary figures, in both currencies.
 	 *
-	 * A line-scoped adjustment counts toward its type's authored figure, but not toward net, tax
-	 * and grand: its line already includes it.
+	 * Every figure is a sum of taxed net amounts, never of authored ones: an amount authored net
+	 * and one authored gross have no common sum, and a store with gross prices and a net shipping
+	 * rate is an ordinary one. The discount, shipping and fee figures are the nets of the
+	 * adjustments of each type, discounts below zero. The subtotal is the lines' net before their
+	 * discounts: the lines' net less the nets of the discounts inside them, which a line's figures
+	 * already include. So the subtotal, discounts, shipping and fees add up to the net, and the net
+	 * and the tax to the grand total. The base figures are the same sums of the same members' base
+	 * nets, so they add up the same way.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @return TotalsSummary The summary.
 	 */
 	private function summarise(): TotalsSummary {
-		$subtotal     = Money::zero( $this->currency );
-		$baseSubtotal = Money::zero( $this->baseCurrency );
-		$taxed        = TaxedMoney::zero( $this->currency );
-		$baseTaxed    = TaxedMoney::zero( $this->baseCurrency );
-		$bases        = array();
-		$byType       = array();
+		$lines     = TaxedMoney::zero( $this->currency );
+		$baseLines = TaxedMoney::zero( $this->baseCurrency );
+		$inLines   = array( Money::zero( $this->currency ), Money::zero( $this->baseCurrency ) );
+		$byType    = array();
 
 		foreach ( AdjustmentType::cases() as $type ) {
 			$byType[ $type->value ] = array( Money::zero( $this->currency ), Money::zero( $this->baseCurrency ) );
 		}
 
 		foreach ( $this->lines as $line ) {
-			$subtotal     = $subtotal->add( $line->lineSubtotal->amount );
-			$baseSubtotal = $baseSubtotal->add( $line->baseSubtotal );
-			$taxed        = $taxed->add( $line->amount );
-			$baseTaxed    = $baseTaxed->add( $line->base );
-
-			$bases[ $line->lineSubtotal->basis->value ] = true;
+			$lines     = $lines->add( $line->amount );
+			$baseLines = $baseLines->add( $line->base );
 		}
+
+		$taxed     = $lines;
+		$baseTaxed = $baseLines;
 
 		foreach ( $this->adjustments as $adjustment ) {
 			$type = $adjustment->adjustment->type->value;
 
 			$byType[ $type ] = array(
-				$byType[ $type ][0]->add( $adjustment->adjustment->authoredAmount->amount ),
-				$byType[ $type ][1]->add( $adjustment->baseAuthoredAmount ),
+				$byType[ $type ][0]->add( $adjustment->amount->net() ),
+				$byType[ $type ][1]->add( $adjustment->base->net() ),
 			);
 
-			if ( AdjustmentScope::Line !== $adjustment->adjustment->scope ) {
+			if ( AdjustmentScope::Line === $adjustment->adjustment->scope ) {
+				$inLines = array( $inLines[0]->add( $adjustment->amount->net() ), $inLines[1]->add( $adjustment->base->net() ) );
+			} else {
 				$taxed     = $taxed->add( $adjustment->amount );
 				$baseTaxed = $baseTaxed->add( $adjustment->base );
 			}
 		}
 
 		return new TotalsSummary(
-			$subtotal,
-			count( $bases ) > 1 ? 'mixed' : (string) ( array_key_first( $bases ) ?? 'net' ),
+			$lines->net()->subtract( $inLines[0] ),
+			AmountBasis::Net->value,
 			$byType[ AdjustmentType::Discount->value ][0],
 			$byType[ AdjustmentType::Shipping->value ][0],
 			$byType[ AdjustmentType::Fee->value ][0],
 			$taxed->net(),
 			$taxed->tax(),
 			$taxed->gross(),
-			$baseSubtotal,
+			$baseLines->net()->subtract( $inLines[1] ),
 			$byType[ AdjustmentType::Discount->value ][1],
 			$byType[ AdjustmentType::Shipping->value ][1],
 			$byType[ AdjustmentType::Fee->value ][1],

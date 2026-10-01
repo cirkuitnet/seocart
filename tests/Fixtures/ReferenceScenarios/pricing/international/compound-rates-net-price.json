@@ -1,0 +1,46 @@
+{
+	"scenario": "a net price under a rate and a compound rate: the compound rate is charged on the price and the first rate's tax",
+	"source": "tax-inclusive pricing rule: compound rates multiply in priority order on top of the rates that add",
+	"input": {
+		"currency": "CAD",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 741,
+				"quantity": 1,
+				"unit": { "amount": "100.00", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [
+					{ "rate": "5", "jurisdiction": "CA" },
+					{
+						"rate": "9.975",
+						"jurisdiction": "CA-QC",
+						"compound": true,
+						"priority": 2
+					}
+				]
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "100.00",
+			"net": "100.00",
+			"tax": "15.47",
+			"grand": "115.47"
+		},
+		"lines": {
+			"l1": { "net": "100.00", "tax": "15.47", "gross": "115.47" }
+		},
+		"components": {
+			"line:l1:1": { "net": "100.00", "tax": "5.00", "residual": 1 },
+			"line:l1:2": { "net": "105.00", "tax": "10.47", "residual": 0 }
+		}
+	},
+	"note": "The effective rate is 1.05 × 1.09975 = 1.1547375, so the tax is 15.47375, rounded once to 15.47 and shared out in proportion to 5 % and 9.975 % of 1.05: 4.9988 and 10.4712, the leftover minor unit to the first. The compound rate is charged on 105.00, the price and the first rate's tax."
+}

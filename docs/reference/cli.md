@@ -25,7 +25,7 @@ wp seocart settings get [--format=<format>]
 Changes the store settings the request names, checking every value before saving any, and returns every store setting.
 
 ```sh
-wp seocart settings update [--base_currency=<base_currency>] [--format=<format>]
+wp seocart settings update [--base_currency=<base_currency>] [--cross_zone_policy=<cross_zone_policy>] [--tax_rounding_mode=<tax_rounding_mode>] [--format=<format>]
 ```
 
 - Operation: `settings.update_settings`
@@ -35,6 +35,8 @@ wp seocart settings update [--base_currency=<base_currency>] [--format=<format>]
 ### Arguments
 
 - `[--base_currency=<base_currency>]`: ISO 4217 code of the currency the store keeps its accounts in, in upper case. Text.
+- `[--cross_zone_policy=<cross_zone_policy>]`: What stays fixed when a price entered including tax is sold where the tax rate differs from the store's own: fixed_net keeps the price before tax, fixed_gross keeps the price paid. One of `fixed_net`, `fixed_gross`.
+- `[--tax_rounding_mode=<tax_rounding_mode>]`: Where tax is rounded: per_line rounds each line's tax, per_subtotal rounds the tax of the lines of one tax class once and shares it out to them. One of `per_line`, `per_subtotal`.
 - `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
 
 ## `wp seocart stock adjust`

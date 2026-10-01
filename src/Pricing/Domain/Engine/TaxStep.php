@@ -13,14 +13,12 @@ namespace SEOCart\Pricing\Domain\Engine;
 
 use SEOCart\Pricing\Domain\AmountBasis;
 use SEOCart\Pricing\Domain\AuthoredAmount;
-use SEOCart\Pricing\Domain\Quote\TaxRateComponent;
 use SEOCart\Pricing\Domain\Totals\Adjustment;
 use SEOCart\Pricing\Domain\Totals\AdjustmentScope;
 use SEOCart\Support\Decimal;
 use SEOCart\Support\Money;
 use SEOCart\Support\TaxedMoney;
 use SEOCart\Tax\Domain\CrossZonePolicy;
-use SEOCart\Tax\Domain\EffectiveRate;
 use SEOCart\Tax\Domain\TaxRoundingMode;
 
 defined( 'ABSPATH' ) || exit;
@@ -47,10 +45,12 @@ defined( 'ABSPATH' ) || exit;
  *   agree wherever the destination's rate is the reference rate. An exempt customer pays that
  *   exact net amount, rounded once.
  *
- * Rates of a class that are not compound add up to one effective rate. The tax of an amount is
- * shared out to its rates by largest remainder, in proportion to the rates, so the components'
- * taxes add up to the amount's tax exactly; each component's net is the amount the rate was
- * charged on.
+ * Each `r` is the effective rate of the class's rates (EffectiveRate): the rates that are not
+ * compound add up, and the compound ones multiply on top. The tax of an amount is shared out to
+ * its rates by largest remainder, in proportion to each rate's part of the effective rate, so
+ * the components' taxes add up to the amount's tax exactly. A component's net is the amount its
+ * rate was charged on: the amount's net, and for a compound rate the net plus the taxes of the
+ * components before it, so each component's gross is what its rate was charged on plus its tax.
  *
  * Rounded per line, each line is its own amount. Rounded per subtotal, the lines of one tax class
  * and one basis are taxed as one amount, rounded once, and the result is shared out to them by
@@ -282,44 +282,39 @@ final class TaxStep {
 	 * @return TaxedMoney The amount's net, tax and gross.
 	 */
 	private function taxedAmount( PhaseBState $state, Rounder $rounder, string $subject, AuthoredAmount $amount, string $taxClass ): TaxedMoney {
-		$input       = $state->input();
-		$quote       = $state->quotes->taxQuote;
 		$money       = $amount->amount;
 		$zero        = Money::zero( $money->currency() );
-		$exempt      = $input->customerTax->exempt;
-		$destination = self::effectiveRate( $quote->destinationRatesFor( $taxClass ) );
+		$exempt      = $state->input()->customerTax->exempt;
+		$destination = $state->rates->destination( $taxClass );
 
 		if ( AmountBasis::Net === $amount->basis ) {
 			return $exempt ? new TaxedMoney( $money, $zero, $money ) : $rounder->taxOnNet( $state->trace, $subject, $money, $destination );
 		}
 
-		if ( CrossZonePolicy::FixedGross === $input->crossZonePolicy ) {
-			if ( $exempt ) {
-				$net = $rounder->quotient( $state->trace, $subject . ':exempt_net', $money->toDecimal(), $destination->multiplier(), $money->currency() );
-
-				return new TaxedMoney( $net, $zero, $net );
-			}
-
-			return $rounder->taxInGross( $state->trace, $subject, $money, $destination );
-		}
-
-		$reference = self::effectiveRate( $quote->referenceRatesFor( $taxClass ) );
-
 		if ( $exempt ) {
-			$net = $rounder->quotient( $state->trace, $subject . ':exempt_net', $money->toDecimal(), $reference->multiplier(), $money->currency() );
+			// The net a gross amount stands for under the policy: at the destination's rate under
+			// fixed-gross, at the store's own under fixed-net.
+			$net = $rounder->quotient( $state->trace, $subject . ':exempt_net', $money->toDecimal(), $state->rates->basisRate( $taxClass )->multiplier(), $money->currency() );
 
 			return new TaxedMoney( $net, $zero, $net );
 		}
 
-		$gross = $rounder->quotient( $state->trace, $subject . ':gross_at_destination', $money->toDecimal()->multiply( $destination->multiplier() ), $reference->multiplier(), $money->currency() );
+		if ( CrossZonePolicy::FixedGross === $state->input()->crossZonePolicy ) {
+			return $rounder->taxInGross( $state->trace, $subject, $money, $destination );
+		}
+
+		$gross = $rounder->quotient( $state->trace, $subject . ':gross_at_destination', $money->toDecimal()->multiply( $destination->multiplier() ), $state->rates->reference( $taxClass )->multiplier(), $money->currency() );
 
 		return $rounder->taxInGross( $state->trace, $subject, $gross, $destination );
 	}
 
 	/**
-	 * Shares an amount's tax out to the destination's rates of its class, in proportion to the rates.
+	 * Shares an amount's tax out to the destination's rates of its class, in proportion to each rate's part of their composition.
 	 *
-	 * An exempt customer's amount and an amount of a class no rate taxes have no component.
+	 * An exempt customer's amount and an amount of a class no rate taxes have no component. A
+	 * compound rate's component is charged on the amount's net plus the taxes of the rates it
+	 * compounds on, as those were shared out; so its figures are whole minor units with no
+	 * rounding of their own.
 	 *
 	 * @since 0.1.0
 	 *
@@ -337,23 +332,33 @@ final class TaxStep {
 			return array();
 		}
 
-		$ratios = array_map( static fn( TaxRateComponent $rate ): Decimal => $rate->rate->toFactor(), $rates );
-		$shares = array();
+		$composed = $state->rates->destination( $taxClass );
+		$parts    = $composed->parts();
+		$included = $composed->includedTaxes();
+		$ratios   = array();
 
-		if ( array() === array_filter( $ratios, static fn( Decimal $ratio ): bool => ! $ratio->isZero() ) ) {
-			// Every rate is zero, so the tax is zero: each rate's share of it is zero, and nothing is split.
-			foreach ( $rates as $rate ) {
-				$shares[] = new ComponentShare( $rate, $taxed, 0 );
-			}
-
-			return $shares;
+		foreach ( array_keys( $rates ) as $position ) {
+			$ratios[ $position ] = $parts[ $position ];
 		}
 
-		$allocation = $rounder->split( $state->trace, $subject . ':components', $taxed->tax(), $ratios );
+		if ( $composed->factor()->isZero() ) {
+			// Every rate is zero, so the tax is zero: each rate's share of it is zero, and nothing is split.
+			$allocation = new Allocation( array_map( static fn(): Money => $taxed->tax(), $ratios ), array_map( static fn(): int => 0, $ratios ) );
+		} else {
+			$allocation = $rounder->split( $state->trace, $subject . ':components', $taxed->tax(), $ratios );
+		}
 
-		foreach ( $rates as $index => $rate ) {
-			$tax      = $allocation->shares[ $index ];
-			$shares[] = new ComponentShare( $rate, new TaxedMoney( $taxed->net(), $tax, $taxed->net()->add( $tax ) ), $allocation->residuals[ $index ] );
+		$shares = array();
+
+		foreach ( $rates as $position => $rate ) {
+			$tax       = $allocation->shares[ $position ];
+			$chargedOn = $taxed->net();
+
+			foreach ( $included[ $position ] as $before ) {
+				$chargedOn = $chargedOn->add( $allocation->shares[ $before ] );
+			}
+
+			$shares[] = new ComponentShare( $rate, new TaxedMoney( $chargedOn, $tax, $chargedOn->add( $tax ) ), $allocation->residuals[ $position ], $included[ $position ] );
 		}
 
 		return $shares;
@@ -390,31 +395,6 @@ final class TaxStep {
 			return AmountBasis::Gross;
 		}
 
-		$quote = $state->quotes->taxQuote;
-		$home  = self::effectiveRate( $quote->destinationRatesFor( $taxClass ) )->multiplier()->equals( self::effectiveRate( $quote->referenceRatesFor( $taxClass ) )->multiplier() );
-
-		return $home ? AmountBasis::Gross : AmountBasis::Net;
-	}
-
-	/**
-	 * Composes the rates of a class into one.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @throws \LogicException When a rate is compound: rates are composed by adding them.
-	 *
-	 * @param TaxRateComponent[] $rates The rates.
-	 * @return EffectiveRate Their sum.
-	 *
-	 * @phpstan-param list<TaxRateComponent> $rates
-	 */
-	private static function effectiveRate( array $rates ): EffectiveRate {
-		foreach ( $rates as $rate ) {
-			if ( $rate->isCompound ) {
-				throw new \LogicException( 'A compound tax rate cannot be applied: the rates of a class are composed by adding them.' );
-			}
-		}
-
-		return EffectiveRate::additive( ...array_map( static fn( TaxRateComponent $rate ) => $rate->rate, $rates ) );
+		return $state->rates->atHome( $taxClass ) ? AmountBasis::Gross : AmountBasis::Net;
 	}
 }

@@ -18,11 +18,20 @@ defined( 'ABSPATH' ) || exit;
 /**
  * The summary figures an order stores on its row: subtotal, discounts, shipping, fees, net, tax and grand total.
  *
- * Owns one fact: what the summary holds. The first four are sums of authored amounts: the
- * lines' subtotals (net, gross or mixed, as `subtotalBasis` says), then the adjustments by
- * type, discounts signed. Net, tax and grand are the sums of the taxed lines and of the
- * adjustments outside a line, so `net + tax = grand`. Every figure has its base-currency twin,
- * the sum of the same members' base figures. Totals computes them; this class only holds them.
+ * Owns one fact: what the summary holds. Every figure is a net amount, summed from the taxed
+ * figures, never from the authored ones: a net amount and a gross one have no common sum, and a
+ * calculation that mixes them is common, such as gross prices with a net shipping rate. The
+ * subtotal is the lines' net before their discounts; the discounts (signed, zero or less), the
+ * shipping and the fees are the nets of the adjustments of each type. So, in every calculation:
+ *
+ *     subtotal + discountTotal + shippingTotal + feeTotal = net
+ *     net + tax = grand
+ *
+ * Net, tax and grand are the sums of the taxed lines and of the adjustments outside a line.
+ * Every figure has its base-currency twin, the same sum of the same members' base figures, so
+ * both identities hold in the base currency too. The authored amounts stay on each line and
+ * adjustment; a gross figure for display is read from their taxed amounts. Totals computes the
+ * figures; this class only holds them.
  *
  * @since 0.1.0
  */
@@ -33,11 +42,11 @@ final readonly class TotalsSummary {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param Money  $subtotal          The lines' subtotals, as authored.
-	 * @param string $subtotalBasis     `net`, `gross`, or `mixed` when the lines have both.
-	 * @param Money  $discountTotal     Every discount, signed: zero or negative.
-	 * @param Money  $shippingTotal     The shipping charge, as authored.
-	 * @param Money  $feeTotal          Every fee, as authored.
+	 * @param Money  $subtotal          The lines' net before their discounts.
+	 * @param string $subtotalBasis     Always `net`: every summary figure is a net amount, whatever the lines were authored in.
+	 * @param Money  $discountTotal     The discounts' net, signed: zero or negative.
+	 * @param Money  $shippingTotal     The shipping charge's net.
+	 * @param Money  $feeTotal          The fees' net.
 	 * @param Money  $net               The total before tax.
 	 * @param Money  $tax               The tax.
 	 * @param Money  $grand             The total including tax.

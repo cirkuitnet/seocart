@@ -1,0 +1,81 @@
+{
+	"scenario": "a percentage fee on lines authored net and gross is charged once per basis",
+	"source": "tax-inclusive pricing rule: net and gross amounts have no common sum, so a percentage of both is worked out on each",
+	"input": {
+		"currency": "GBP",
+		"lines": [
+			{
+				"key": "l1",
+				"variant": 731,
+				"quantity": 1,
+				"unit": { "amount": "10.00", "basis": "net" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l2",
+				"variant": 732,
+				"quantity": 1,
+				"unit": { "amount": "12.00", "basis": "gross" },
+				"taxClass": "standard"
+			},
+			{
+				"key": "l3",
+				"variant": 733,
+				"quantity": 1,
+				"unit": { "amount": "5.00", "basis": "net" },
+				"taxClass": "standard"
+			}
+		],
+		"fees": [
+			{
+				"key": "service",
+				"percent": "2",
+				"base": "subtotal_after_discounts",
+				"taxClass": "standard"
+			}
+		],
+		"shipping": { "destination": null, "rates": [], "selected": null },
+		"tax": {
+			"destination": {
+				"standard": [ { "rate": "20", "jurisdiction": "GB" } ]
+			}
+		}
+	},
+	"expected": {
+		"summary": {
+			"subtotal": "25.00",
+			"feeTotal": "0.50",
+			"net": "25.50",
+			"tax": "5.10",
+			"grand": "30.60"
+		},
+		"lines": {
+			"l1": { "net": "10.00", "tax": "2.00", "gross": "12.00" },
+			"l2": { "net": "10.00", "tax": "2.00", "gross": "12.00" },
+			"l3": { "net": "5.00", "tax": "1.00", "gross": "6.00" }
+		},
+		"adjustments": [
+			{
+				"source": "fee:service",
+				"scope": "order",
+				"type": "fee",
+				"basis": "net",
+				"amount": "0.30",
+				"net": "0.30",
+				"tax": "0.06",
+				"gross": "0.36"
+			},
+			{
+				"source": "fee:service",
+				"scope": "order",
+				"type": "fee",
+				"basis": "gross",
+				"amount": "0.24",
+				"net": "0.20",
+				"tax": "0.04",
+				"gross": "0.24"
+			}
+		]
+	},
+	"note": "2 % of the net lines, 15.00, is a net fee of 0.30; 2 % of the gross line, 12.00, is a gross fee of 0.24; each is taxed as its basis says, as the lines it was worked out on are."
+}
