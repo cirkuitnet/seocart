@@ -110,7 +110,7 @@ final class AuthorizeAndReconcileTest extends PaymentTestCase {
 	}
 
 	/**
-	 * Tests that a gateway that does not answer leaves the intent as it was, for reconciliation.
+	 * Tests that a gateway that does not answer leaves the intent as it was, for reconciliation, which then learns the gateway has no record of it: a declined authorization `not_found`.
 	 *
 	 * @since 0.1.0
 	 */
@@ -127,7 +127,14 @@ final class AuthorizeAndReconcileTest extends PaymentTestCase {
 		}
 
 		$this->assertSame( $before, $this->snapshot() );
-		$this->assertNull( $this->payments->queryGateway( $intent ), 'The stub never gave the intent a reference, so it knows nothing of it.' );
+
+		$answer = $this->payments->queryGateway( $intent );
+
+		$this->assertNotNull( $answer, 'The stub never gave the intent a reference, so it says it has no record of it.' );
+		$this->assertSame(
+			array( Operation::Authorize, Outcome::Declined, StubGateway::NOT_FOUND, 'stub-nf-' . $intent->uuid ),
+			array( $answer->operation, $answer->outcome, $answer->errorCode, $answer->providerObjectId )
+		);
 	}
 
 	/**
@@ -163,13 +170,17 @@ final class AuthorizeAndReconcileTest extends PaymentTestCase {
 	}
 
 	/**
-	 * Tests that a caller paging with the cursor reaches the intent behind three the gateway never answers, where the first page alone never would.
+	 * Tests that a caller paging with the cursor reaches the intent behind three the gateway is still deciding, where the first page alone never would.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_the_cursor_reaches_what_waits_behind_unanswered_intents(): void {
 		$unanswered = array( $this->placeWithIntent()[1], $this->placeWithIntent()[1], $this->placeWithIntent()[1] );
 		$answerable = $this->placeWithIntent()[1];
+
+		foreach ( $unanswered as $intent ) {
+			$this->deliver( $this->authorizeWith( $intent, StubGateway::PENDING ) );
+		}
 
 		$this->deliver( $this->authorizeWith( $answerable, StubGateway::REQUIRES_ACTION ) );
 
@@ -179,7 +190,7 @@ final class AuthorizeAndReconcileTest extends PaymentTestCase {
 
 		$uuids = static fn( array $intents ): array => array_map( static fn( IntentRef $intent ): string => $intent->uuid, $intents );
 
-		$this->assertSame( $uuids( array( $unanswered[0], $unanswered[1] ) ), $uuids( $this->payments->staleIntents( 600, 2 ) ), 'Without the cursor, every pass starts with the two the gateway never answers.' );
+		$this->assertSame( $uuids( array( $unanswered[0], $unanswered[1] ) ), $uuids( $this->payments->staleIntents( 600, 2 ) ), 'Without the cursor, every pass starts with the two the gateway is still deciding.' );
 
 		$asked   = array();
 		$applied = array();

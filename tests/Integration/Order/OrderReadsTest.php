@@ -22,6 +22,7 @@ use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
+use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\Order\NewOrders;
@@ -69,6 +70,42 @@ final class OrderReadsTest extends OrderTestCase {
 		$this->assertNotNull( $view->shippingAddress );
 		$this->assertTrue( $view->shippingAddress->equals( $placed->shippingAddress ?? $placed->billingAddress ) );
 		$this->assertSame( 'UTC', $view->placedAt->getTimezone()->getName() );
+	}
+
+	/**
+	 * Tests the two reads by internal id: what each line sells, in variant order, and the order's uuid and status, each one query and neither a lock.
+	 *
+	 * Planted violation: in MysqlOrderRepository::STOCK_LINES, order by `sort_order` instead of
+	 * `variant_id, id`: the lines then come in the order they are shown, not the order stock is
+	 * locked in.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_orders_stock_lines_and_status_are_read_by_its_id(): void {
+		$context  = NewOrders::context( Currency::of( 'USD' ), Currency::of( 'USD' ) );
+		$inserted = $this->place( NewOrders::document( $context, array_reverse( NewOrders::lines( $context ) ), NewOrders::adjustments( $context ), NewOrders::totals( $context ) ) );
+		$lines    = array();
+		$status   = null;
+		$log      = $this->captureQueries(
+			function () use ( $inserted, &$lines, &$status ): void {
+				$lines  = $this->orders->stockLines( $inserted->id );
+				$status = $this->orders->statusOf( $inserted->id );
+			}
+		);
+
+		$this->assertSame( array( array( 501, 2 ), array( 502, 1 ) ), array_map( static fn( array $line ): array => array( $line['variantId'], $line['quantity'] ), $lines ), 'By variant, although the order shows variant 502 first.' );
+		$this->assertCount( 2, array_unique( array_column( $lines, 'orderLineId' ) ) );
+		$this->assertSame(
+			array(
+				'uuid'   => $inserted->uuid,
+				'status' => OrderStatus::PendingPayment,
+			),
+			$status
+		);
+		$this->assertQueryCount( 2, $log, 'One read each' );
+		$this->assertSame( 0, $log->matching( '/FOR UPDATE|FOR SHARE/' )->count(), 'Neither read locks.' );
+		$this->assertNull( $this->orders->statusOf( $inserted->id + 1000 ) );
+		$this->assertSame( array(), $this->orders->stockLines( $inserted->id + 1000 ) );
 	}
 
 	/**

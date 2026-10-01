@@ -79,6 +79,8 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Checkout/Domain/CheckoutError.php',
 		'src/Checkout/Domain/AddressDocument.php',
 		'src/Checkout/Domain/CheckoutDetails.php',
+		'src/Checkout/Domain/IdempotencyClaim.php',
+		'src/Checkout/Domain/PlacementOutcome.php',
 		'src/Pricing/Interfaces/TotalsFields.php',
 		'src/Pricing/Application/UnpricedLine.php',
 		'src/Pricing/Domain/PricingError.php',

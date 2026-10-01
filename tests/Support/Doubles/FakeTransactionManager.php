@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Support\Doubles;
 
 use SEOCart\Platform\Database\Exception\TransactionRetryable;
+use SEOCart\Platform\Database\Isolation;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 
@@ -57,6 +58,15 @@ final class FakeTransactionManager implements TransactionManager {
 	 * @var int
 	 */
 	private int $attempts = 0;
+
+	/**
+	 * The isolation level each outermost attempt asked for, retries included, in order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<Isolation>
+	 */
+	private array $isolations = array();
 
 	/**
 	 * How many outermost units of work committed.
@@ -112,11 +122,12 @@ final class FakeTransactionManager implements TransactionManager {
 	 *
 	 * @param-immediately-invoked-callable $work
 	 *
-	 * @param callable(): mixed $work  The unit of work.
-	 * @param RetryPolicy|null  $retry Optional. Honoured at the outermost level only. Default null.
+	 * @param callable(): mixed $work      The unit of work.
+	 * @param RetryPolicy|null  $retry     Optional. Honoured at the outermost level only. Default null.
+	 * @param Isolation         $isolation Optional. Recorded per outermost attempt, as Database asks for it. Default Isolation::Default.
 	 * @return mixed What the callable returned.
 	 */
-	public function transaction( callable $work, ?RetryPolicy $retry = null ): mixed {
+	public function transaction( callable $work, ?RetryPolicy $retry = null, Isolation $isolation = Isolation::Default ): mixed {
 		if ( 0 !== $this->depth ) {
 			return $this->level( $work );
 		}
@@ -125,6 +136,8 @@ final class FakeTransactionManager implements TransactionManager {
 
 		for ( $attempt = 1; true; ++$attempt ) {
 			++$this->attempts;
+
+			$this->isolations[] = $isolation;
 
 			try {
 				$result = $this->level( $work );
@@ -210,6 +223,17 @@ final class FakeTransactionManager implements TransactionManager {
 	 */
 	public function attempts(): int {
 		return $this->attempts;
+	}
+
+	/**
+	 * Returns the isolation level each outermost attempt asked for.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<Isolation> In order, retries included.
+	 */
+	public function isolations(): array {
+		return $this->isolations;
 	}
 
 	/**

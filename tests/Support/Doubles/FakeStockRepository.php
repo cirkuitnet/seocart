@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Doubles;
 
+use SEOCart\Inventory\Domain\Allocation;
 use SEOCart\Inventory\Domain\BackorderPolicy;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Domain\ReclaimedRows;
@@ -266,6 +267,73 @@ final class FakeStockRepository implements StockRepository {
 		$this->write( 'insertHold:' . $variantId . ':' . $quantity );
 
 		return $this->addHold( $variantId, $quantity, $holdGroup, (int) strtotime( $expiresAt . ' UTC' ) );
+	}
+
+	/**
+	 * Converts a hold's row of an item into allocated units, when the row is there.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $holdGroup The hold.
+	 * @param int    $variantId The item.
+	 * @param int    $quantity  The units.
+	 * @return bool Whether the row was there and is gone.
+	 */
+	public function convertHold( string $holdGroup, int $variantId, int $quantity ): bool {
+		$this->write( 'convertHold:' . $variantId . ':' . $quantity );
+
+		foreach ( $this->holds as $id => $row ) {
+			if ( $holdGroup === $row['hold_group'] && $variantId === $row['variant_id'] && $quantity === $row['quantity'] && null === $row['token'] ) {
+				unset( $this->holds[ $id ] );
+
+				$this->items[ $variantId ]['held']      -= $quantity;
+				$this->items[ $variantId ]['allocated'] += $quantity;
+
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Adds units to an item's `allocated` when available.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $variantId The item.
+	 * @param int $quantity  The units.
+	 * @return bool Whether it matched.
+	 */
+	public function claimAllocation( int $variantId, int $quantity ): bool {
+		$this->write( 'claimAllocation:' . $variantId . ':' . $quantity );
+
+		$item = $this->items[ $variantId ] ?? null;
+
+		if ( null === $item || ! $item['track'] || $item['on_hand'] - $item['allocated'] - $item['held'] < $quantity ) {
+			return false;
+		}
+
+		$this->items[ $variantId ]['allocated'] += $quantity;
+
+		return true;
+	}
+
+	/**
+	 * Records an open allocation.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int        $orderId    The order.
+	 * @param Allocation $allocation The allocation.
+	 * @return int The row's id: a count of the allocations recorded.
+	 */
+	public function insertAllocation( int $orderId, Allocation $allocation ): int {
+		$this->write( 'insertAllocation:' . $orderId . ':' . $allocation->orderLineId . ':' . $allocation->variantId . ':' . $allocation->quantity );
+
+		$this->openAllocations[ $allocation->variantId ] = true;
+
+		return count( $this->calls );
 	}
 
 	/**

@@ -11,25 +11,22 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Pricing;
 
-use SEOCart\Order\Domain\AmountBasis;
+use SEOCart\Catalog\Domain\GenerationState;
+use SEOCart\Catalog\Domain\SellabilityFacts;
+use SEOCart\Checkout\Application\OrderDocument;
+use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Order\Domain\NewOrder;
-use SEOCart\Order\Domain\NewOrderAdjustment;
-use SEOCart\Order\Domain\NewOrderLine;
-use SEOCart\Order\Domain\NewTaxComponent;
-use SEOCart\Order\Domain\TotalsSnapshot;
-use SEOCart\Pricing\Domain\Totals\TaxComponent;
 use SEOCart\Pricing\Domain\Totals\Totals;
-use SEOCart\Pricing\Domain\Totals\TotalsAdjustment;
-use SEOCart\Pricing\Domain\Totals\TotalsLine;
-use SEOCart\Tests\Support\Order\NewOrders;
+use SEOCart\Support\Address;
+use SEOCart\Support\Locale;
 
 /**
- * Maps a calculation's totals onto an order document, figure for figure, for tests that place what was calculated.
+ * Builds the order a placement would write from a calculation's totals, for tests that place what was calculated without a cart.
  *
- * Owns one fact: how a test turns totals into an order before placement exists to do it. Every
- * amount is the calculation's own, copied; nothing is added up or converted. What the totals do
- * not hold is the fixture order's: its contact, its addresses, a product, SKU and title named after
- * each line's variant, prices entered net and no stock hold.
+ * Owns one fact: what a test supplies that a placement reads elsewhere. The mapping itself is the
+ * placement's own, OrderDocument; the test gives it a checkout, the fixture contact's addresses,
+ * and, for each line's variant, the catalog's facts of a product of the same id, with a SKU and a
+ * title named after the variant. Nothing is held.
  *
  * @since 0.1.0
  */
@@ -44,136 +41,21 @@ final class TotalsOrders {
 	 * @return NewOrder The document, at the totals' conversion context.
 	 */
 	public static function document( Totals $totals ): NewOrder {
-		return NewOrders::document(
-			$totals->conversionContext,
-			array_map( array( self::class, 'line' ), $totals->lines ),
-			array_map( array( self::class, 'adjustment' ), $totals->adjustments ),
-			self::snapshot( $totals ),
+		$sold = array();
+
+		foreach ( $totals->lines as $line ) {
+			$variant = $line->line->variantId;
+
+			$sold[ $variant ] = new SellabilityFacts( $variant, $variant, GenerationState::Complete, 1, 1, true, $variant, $variant, 'publish', true, true, 'SKU-' . $variant, 'Variant ' . $variant );
+		}
+
+		$details = new CheckoutDetails(
+			new Address( 'GB', first_name: 'Jane', last_name: 'Doe', line1: '1 High Street', city: 'London', postcode: 'SW1A 1AA', email: 'jane.doe@example.com' ),
+			new Address( 'GB', first_name: 'Jane', last_name: 'Doe', line1: '2 Low Road', city: 'Leeds', postcode: 'LS1 1AA' ),
 			null,
 			null
 		);
-	}
 
-	/**
-	 * Copies a line.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param TotalsLine $line The line.
-	 * @return NewOrderLine The order line.
-	 */
-	private static function line( TotalsLine $line ): NewOrderLine {
-		$input = $line->line;
-
-		return new NewOrderLine(
-			key: $input->key,
-			variantId: $input->variantId,
-			productId: $input->variantId,
-			sku: 'SKU-' . $input->variantId,
-			title: 'Variant ' . $input->variantId,
-			variantLabel: '',
-			quantity: $input->quantity,
-			unitAmountBasis: AmountBasis::from( $input->unitPrice->basis->value ),
-			unitPrice: $input->unitPrice->amount,
-			unitPriceGross: $line->unitGrossForDisplay,
-			unitCompareAt: null,
-			lineSubtotal: $line->lineSubtotal->amount,
-			lineDiscount: $line->lineDiscount,
-			amount: $line->amount,
-			lineTotal: $line->amount->gross(),
-			baseLineDiscount: $line->baseDiscount,
-			baseAmount: $line->base,
-			taxClass: $input->taxClass,
-			isTaxable: array() !== $line->components,
-			priceSource: $input->priceSource->value,
-			taxComponents: array_map( array( self::class, 'component' ), $line->components )
-		);
-	}
-
-	/**
-	 * Copies an adjustment.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param TotalsAdjustment $adjustment The adjustment.
-	 * @return NewOrderAdjustment The order adjustment.
-	 */
-	private static function adjustment( TotalsAdjustment $adjustment ): NewOrderAdjustment {
-		$made = $adjustment->adjustment;
-
-		return new NewOrderAdjustment(
-			scope: $made->scope->value,
-			type: $made->type->value,
-			source: $made->source->toString(),
-			label: $made->labelKey,
-			authoredAmountBasis: AmountBasis::from( $made->authoredAmount->basis->value ),
-			amount: $made->authoredAmount->amount,
-			taxed: $adjustment->amount,
-			baseAmount: $adjustment->baseAuthoredAmount,
-			baseTaxed: $adjustment->base,
-			calculationBase: $made->calculationBase?->value,
-			taxClass: $made->taxability->taxClass,
-			isTaxable: $made->taxability->isTaxable(),
-			lineKey: $made->lineKey,
-			taxComponents: array_map( array( self::class, 'component' ), $adjustment->components )
-		);
-	}
-
-	/**
-	 * Copies a tax component.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param TaxComponent $component The component.
-	 * @return NewTaxComponent The order's component.
-	 */
-	private static function component( TaxComponent $component ): NewTaxComponent {
-		return new NewTaxComponent(
-			$component->rate->jurisdictionCode,
-			null,
-			$component->rate->name,
-			$component->rate->rate->micropercent(),
-			$component->rate->isCompound,
-			$component->rate->priority,
-			AmountBasis::from( $component->authoredBasis->value ),
-			$component->amount,
-			$component->base,
-			$component->residualMinor
-		);
-	}
-
-	/**
-	 * Copies the summary, the policy and mode the totals were taxed under, the rate version and the trace.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param Totals $totals The totals.
-	 * @return TotalsSnapshot The snapshot.
-	 */
-	private static function snapshot( Totals $totals ): TotalsSnapshot {
-		$summary = $totals->summary;
-		$version = $totals->conversionContext->sourceVersion();
-
-		return new TotalsSnapshot(
-			subtotal: $summary->subtotal,
-			discountTotal: $summary->discountTotal,
-			shippingTotal: $summary->shippingTotal,
-			feeTotal: $summary->feeTotal,
-			taxTotal: $summary->tax,
-			grandTotal: $summary->grand,
-			amountDue: $totals->amountDue(),
-			baseSubtotal: $summary->baseSubtotal,
-			baseDiscountTotal: $summary->baseDiscountTotal,
-			baseShippingTotal: $summary->baseShippingTotal,
-			baseFeeTotal: $summary->baseFeeTotal,
-			baseTaxTotal: $summary->baseTax,
-			baseGrandTotal: $summary->baseGrand,
-			taxRoundingMode: $totals->taxRoundingMode->value,
-			priceEntryMode: 'net',
-			crossZonePolicy: $totals->crossZonePolicy->value,
-			taxDisplayMode: null,
-			rateVersion: 0 === $version ? null : $version,
-			trace: array( 'entries' => $totals->trace->toArray() )
-		);
+		return OrderDocument::of( $totals, Locale::of( 'en_GB' ), $details, $sold, null, null );
 	}
 }

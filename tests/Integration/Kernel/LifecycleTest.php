@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Integration\Kernel;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Authorization\CapabilityInstaller;
 use SEOCart\Platform\Authorization\GrantLedger;
+use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Migrations\PlatformBootstrapMigration;
 use SEOCart\Platform\Database\Migrator;
 use SEOCart\Platform\DataRegistry\OwnedData;
@@ -65,6 +66,8 @@ use SEOCart\Tests\Support\Migrations\CreatesTestTable;
  * - In Lifecycle::queueIfIncomplete(), return at once: test_an_incomplete_migration_queues_the_migration_job_once
  *   finds no job; queue `new \SEOCart\Platform\Jobs\Job( MigrationAttempt::name() )`, without its key, instead
  *   of MigrationAttempt::job(): the same test finds two.
+ * - In Lifecycle::activate(), leave out refuseStatementBinaryLog():
+ *   test_a_binary_log_by_statement_refuses_activation finds the site installed.
  * - In Lifecycle::identity(), leave out `->withLockMode( ... )`: the first write is refused, and
  *   test_the_first_write_records_the_lock_mode finds no record. With BootRecord::toJson()'s lock-mode
  *   check removed as well, the record is written without one, and the same test fails on it.
@@ -115,6 +118,72 @@ final class LifecycleTest extends KernelTestCase {
 		$this->assertNotNull( $record->installedAt() );
 		$this->assertNull( $record->safeModeReason() );
 		$this->assertSame( array(), $this->reports );
+	}
+
+	/**
+	 * Tests that a server whose binary log records statements is refused before anything is installed, and that no other server is.
+	 *
+	 * The two server variables are played by rewriting the one read that asks for them, the way a
+	 * host would have set them; the test server itself must accept activation.
+	 *
+	 * Planted violation: in Lifecycle::activate(), leave out refuseStatementBinaryLog(): the site is
+	 * installed on a server that would refuse every order placed on it.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_binary_log_by_statement_refuses_activation(): void {
+		$db = $this->container()->get( Database::class );
+
+		$this->assertFalse( $db->refusesReadCommitted(), 'The test server records its binary log by row, or has none: it must accept activation.' );
+
+		foreach ( array( array( 1, 'ROW' ), array( 1, 'MIXED' ), array( 0, 'STATEMENT' ) ) as list( $on, $format ) ) {
+			$this->assertFalse( $this->withBinaryLog( $on, $format, static fn(): bool => $db->refusesReadCommitted() ), "A binary log {$on} in {$format} format takes READ COMMITTED writes." );
+		}
+
+		$refused = $this->withBinaryLog(
+			1,
+			'STATEMENT',
+			function (): ?\WPDieException {
+				try {
+					$this->container()->get( Lifecycle::class )->activate();
+				} catch ( \WPDieException $refusal ) {
+					return $refusal;
+				}
+
+				return null;
+			}
+		);
+
+		$this->assertNotNull( $refused, 'Activation went on although the server refuses every order.' );
+		$this->assertStringContainsString( 'binlog_format', $refused->getMessage() );
+		$this->assertFalse( $this->pluginTableExists( 'migrations' ), 'Something was installed on a server that refuses the store\'s writes.' );
+		$this->assertNull( $this->storedRecord() );
+	}
+
+	/**
+	 * Runs work while the server appears to keep its binary log as given.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @template T
+	 *
+	 * @param int      $on     1 when the binary log is on.
+	 * @param string   $format Its format.
+	 * @param \Closure $work   The work.
+	 * @return T What the work returned.
+	 *
+	 * @phpstan-param \Closure(): T $work
+	 */
+	private function withBinaryLog( int $on, string $format, \Closure $work ): mixed {
+		$fake = static fn( $query ) => 'SELECT @@log_bin AS log_bin, @@binlog_format AS binlog_format' === $query ? sprintf( "SELECT %d AS log_bin, '%s' AS binlog_format", $on, $format ) : $query;
+
+		add_filter( 'query', $fake );
+
+		try {
+			return $work();
+		} finally {
+			remove_filter( 'query', $fake );
+		}
 	}
 
 	/**

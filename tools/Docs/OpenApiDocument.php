@@ -13,6 +13,7 @@ namespace SEOCart\Tools\Docs;
 
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
+use SEOCart\Application\Operations\RequestHeader;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
 use SEOCart\Platform\Rest\ErrorShape;
@@ -272,11 +273,15 @@ final class OpenApiDocument implements Generator {
 	 */
 	private function operation( OperationDefinition $definition, RestBinding $rest ): array {
 		$in_path    = array();
+		$in_header  = array();
 		$in_request = array();
+		$headers    = $rest->headers();
 
 		foreach ( $definition->input() as $field ) {
 			if ( in_array( $field->name(), $rest->pathParameters(), true ) ) {
 				$in_path[] = $field;
+			} elseif ( isset( $headers[ $field->name() ] ) ) {
+				$in_header[] = $field;
 			} else {
 				$in_request[] = $field;
 			}
@@ -284,7 +289,7 @@ final class OpenApiDocument implements Generator {
 
 		// A GET has no body, and a DELETE none whose meaning HTTP defines: their other inputs are query parameters.
 		$in_query   = in_array( $definition->httpMethod(), array( 'GET', 'DELETE' ), true );
-		$parameters = self::parameters( $in_path, 'path' );
+		$parameters = array_merge( self::parameters( $in_path, 'path' ), self::parameters( $in_header, 'header', $headers ) );
 
 		if ( $in_query ) {
 			$parameters = array_merge( $parameters, self::parameters( $in_request, 'query' ) );
@@ -309,7 +314,7 @@ final class OpenApiDocument implements Generator {
 			);
 		}
 
-		$operation['responses'] = $this->responses( $definition );
+		$operation['responses'] = $this->responses( $definition, $rest );
 
 		return $operation;
 	}
@@ -349,25 +354,29 @@ final class OpenApiDocument implements Generator {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param FieldSpec[] $fields   The fields.
-	 * @param string      $location 'path' or 'query'.
+	 * @param FieldSpec[]                  $fields   The fields.
+	 * @param string                       $location 'path', 'query' or 'header'.
+	 * @param array<string, RequestHeader> $headers  Optional. The header each field is sent in, by
+	 *                                               field name: its name, and whether a client must
+	 *                                               send it. Default none.
 	 * @return list<array<string, mixed>> One parameter object per field.
 	 *
 	 * @phpstan-param list<FieldSpec> $fields
 	 */
-	private static function parameters( array $fields, string $location ): array {
+	private static function parameters( array $fields, string $location, array $headers = array() ): array {
 		$schema     = self::schema( $fields );
 		$parameters = array();
 
 		foreach ( $fields as $field ) {
 			$property = $schema['properties'][ $field->name() ];
+			$header   = $headers[ $field->name() ] ?? null;
 
 			unset( $property['description'] );
 
 			$parameters[] = array(
-				'name'        => $field->name(),
+				'name'        => $header->name ?? $field->name(),
 				'in'          => $location,
-				'required'    => $field->isRequired(),
+				'required'    => $field->isRequired() || true === $header?->required,
 				'description' => $field->description(),
 				'schema'      => $property,
 			);
@@ -382,13 +391,15 @@ final class OpenApiDocument implements Generator {
 	 * @since 0.1.0
 	 *
 	 * @param OperationDefinition $definition The operation.
+	 * @param RestBinding         $rest       Its route, which names the errors it answers with a `Retry-After` header.
 	 * @return array<int, array<string, mixed>> The responses. PHP keeps the numeric keys as integers; JSON writes them as names.
 	 */
-	private function responses( OperationDefinition $definition ): array {
+	private function responses( OperationDefinition $definition, RestBinding $rest ): array {
 		$capability   = FieldDocs::capability( $definition );
 		$descriptions = array(
 			400 => array( 'The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.' ),
 		);
+		$waits        = array();
 
 		if ( ! $definition->isPublic() ) {
 			$descriptions[401] = array( 'No user is logged in, and the operation requires the capability ' . $capability . ': `rest_forbidden`.' );
@@ -410,6 +421,10 @@ final class OpenApiDocument implements Generator {
 			}
 
 			$descriptions[ $row->httpStatus() ][] = '`' . $code->value . '`: ' . $row->render( $placeholders );
+
+			if ( null !== $rest->retryAfter( $code->value ) ) {
+				$waits[ $row->httpStatus() ][] = sprintf( '`%1$s`: %2$d', $code->value, $rest->retryAfter( $code->value ) );
+			}
 		}
 
 		ksort( $descriptions );
@@ -434,6 +449,15 @@ final class OpenApiDocument implements Generator {
 					),
 				),
 			);
+
+			if ( isset( $waits[ $status ] ) ) {
+				$responses[ (string) $status ]['headers'] = array(
+					'Retry-After' => array(
+						'description' => 'How many seconds to wait before sending the same request again, sent with ' . implode( '; ', $waits[ $status ] ) . ' seconds.',
+						'schema'      => array( 'type' => 'integer' ),
+					),
+				);
+			}
 		}
 
 		return $responses;

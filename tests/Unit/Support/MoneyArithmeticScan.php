@@ -17,7 +17,8 @@ namespace SEOCart\Tests\Unit\Support;
  * Owns one fact: how the scans that hold a module to no money arithmetic read its tokens. The
  * names of the money API's arithmetic methods and raw accessors are the money-arithmetic sniff's
  * own lists, read from its source, so they are written in one place. A call on `$this`, `self`,
- * `static` or `parent` is never one: a service is not an amount.
+ * `static` or `parent` is never one: a service is not an amount; nor is a call on the stock
+ * service a module holds as `$this->stock`, whose allocate() allocates units.
  *
  * @since 0.1.0
  */
@@ -40,6 +41,15 @@ final class MoneyArithmeticScan {
 	 * @var list<string>
 	 */
 	private const OWN = array( '$this', 'self', 'static', 'parent' );
+
+	/**
+	 * Services held in a property whose methods share a name with the money API, and compute no amount: the stock service allocates units.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<string>
+	 */
+	private const NOT_AMOUNTS = array( 'stock' );
 
 	/**
 	 * Returns the names of the methods that compute an amount, from the sniff, and `sum`.
@@ -117,7 +127,7 @@ final class MoneyArithmeticScan {
 
 			$called   = is_array( $prev ) && in_array( $prev[0], array( T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR, T_DOUBLE_COLON ), true );
 			$receiver = $tokens[ $index - 2 ] ?? '';
-			$own      = in_array( is_array( $receiver ) ? $receiver[1] : $receiver, self::OWN, true );
+			$own      = in_array( is_array( $receiver ) ? $receiver[1] : $receiver, array_merge( self::OWN, self::NOT_AMOUNTS ), true );
 
 			if ( $called && ! $own && in_array( strtolower( $text ), $lowerNames, true ) ) {
 				$found[] = $line . ': ' . $text . '()';

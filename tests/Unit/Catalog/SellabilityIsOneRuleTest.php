@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Unit\Catalog;
 
 use PHPUnit\Framework\TestCase;
 use SEOCart\Catalog\Domain\GenerationState;
+use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Tests\Unit\Support\PhpSource;
 
 /**
@@ -256,6 +257,20 @@ final class SellabilityIsOneRuleTest extends TestCase {
 
 		$this->assertArrayHasKey( self::VERDICT_NAMERS[0], $naming, 'The search did not find the rule naming its verdicts, so an empty result would prove nothing.' );
 		$this->assertSame( array(), array_values( array_diff( array_keys( $naming ), self::VERDICT_NAMERS ) ), 'Only Catalog\\Domain\\Sellability decides a verdict; every reader asks Query\\Sellability.' );
+	}
+
+	/**
+	 * Tests that a reader that decides on a verdict asks it whether it sells, which only `sellable` does.
+	 *
+	 * Planted violation: in SellabilityReason::sells(), answer true for every verdict but
+	 * `unknown_variant`: a draft's line would then be sold.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_only_a_sellable_verdict_sells(): void {
+		$selling = array_filter( SellabilityReason::cases(), static fn( SellabilityReason $verdict ): bool => $verdict->sells() );
+
+		$this->assertSame( array( 'sellable' ), array_values( array_map( static fn( SellabilityReason $verdict ): string => $verdict->value, $selling ) ) );
 	}
 
 	/**

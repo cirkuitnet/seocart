@@ -649,12 +649,12 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 	}
 
 	/**
-	 * Returns a product's commerce fields as the wire carries them, or none for a post without a product or a variant.
+	 * Returns a product's default variant's id and its commerce fields as the wire carries them, or none for a post without a product or a variant.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param Product|null $product The product.
-	 * @return array<string, int|string|null> The fields, keyed as CommerceFields names them; a price's currency only with a price.
+	 * @return array<string, int|string|null> The variant's id, then the fields, keyed as CommerceFields names them; a price's currency only with a price.
 	 */
 	private static function commerceValues( ?Product $product ): array {
 		$variant = $product?->defaultVariant();
@@ -665,8 +665,9 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 
 		$price  = $variant->basePrice();
 		$values = array(
-			CommerceFields::SKU         => $variant->sku()->toString(),
-			CommerceFields::PRICE_MINOR => $price?->priceMinor(),
+			ProductCommerceSchema::VARIANT_ID => $variant->id(),
+			CommerceFields::SKU               => $variant->sku()->toString(),
+			CommerceFields::PRICE_MINOR       => $price?->priceMinor(),
 		);
 
 		if ( null !== $price ) {

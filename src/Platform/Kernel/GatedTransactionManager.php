@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Platform\Kernel;
 
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\Isolation;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Support\Error\CodedException;
@@ -78,16 +79,17 @@ final class GatedTransactionManager implements TransactionManager {
 	 *
 	 * @param-immediately-invoked-callable $work
 	 *
-	 * @param callable(): mixed $work  The unit of work.
-	 * @param RetryPolicy|null  $retry Optional. Honoured at the outermost level only. Default null, which never retries.
+	 * @param callable(): mixed $work      The unit of work.
+	 * @param RetryPolicy|null  $retry     Optional. Honoured at the outermost level only. Default null, which never retries.
+	 * @param Isolation         $isolation Optional. The isolation level of the outermost level. Default Isolation::Default.
 	 * @return mixed What the callable returned, unchanged.
 	 */
-	public function transaction( callable $work, ?RetryPolicy $retry = null ): mixed {
+	public function transaction( callable $work, ?RetryPolicy $retry = null, Isolation $isolation = Isolation::Default ): mixed {
 		if ( 0 === $this->db->depth() && $this->gate->writesBlocked() ) {
 			CodedException::raise( KernelError::StoreUnavailable, array( 'reason' => $this->gate->state()->value ) );
 		}
 
-		return $this->db->transaction( $work, $retry );
+		return $this->db->transaction( $work, $retry, $isolation );
 	}
 
 	/**

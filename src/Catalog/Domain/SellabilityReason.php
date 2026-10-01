@@ -100,4 +100,16 @@ enum SellabilityReason: string {
 	 * @since 0.1.0
 	 */
 	case UnknownVariant = 'unknown_variant';
+
+	/**
+	 * Tells whether the verdict lets the variant be sold, so a reader that decides on it names no verdict.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool True for `sellable` alone.
+	 */
+	public function sells(): bool {
+		// phpcs:ignore PHPCompatibility.Variables.ForbiddenThisUseContexts.OutsideObjectContext -- an enum's method has its case as $this; the sniff predates enums.
+		return self::Sellable === $this;
+	}
 }

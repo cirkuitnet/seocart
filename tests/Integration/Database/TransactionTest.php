@@ -18,6 +18,7 @@ use SEOCart\Platform\Database\Exception\QueryFailed;
 use SEOCart\Platform\Database\Exception\TransactionDepthExceeded;
 use SEOCart\Platform\Database\Exception\TransactionIntegrityLost;
 use SEOCart\Platform\Database\Exception\TransactionRetryable;
+use SEOCart\Platform\Database\Isolation;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionGuards;
 use SEOCart\Tests\Support\DatabaseTestCase;
@@ -736,42 +737,7 @@ final class TransactionTest extends DatabaseTestCase {
 		$attempts   = 0;
 		$retryables = 0;
 
-		$this->onSleep = function () use ( $b ): void {
-			$this->assertTrue( $b->isReady( 5000 ), 'B\'s update of row 1 must finish once A has been rolled back.' );
-			$this->assertSame( 1, $b->reap() );
-
-			$b->query( 'COMMIT' );
-		};
-
-		$this->db->transaction(
-			function () use ( $b, &$attempts, &$retryables ): void {
-				++$attempts;
-
-				$this->db->execute( "UPDATE %i SET value = 'a' WHERE id = 1", $this->rowsTable() );
-
-				if ( 1 === $attempts ) {
-					$waiting = sprintf( "UPDATE `%s` SET value = 'b' WHERE id = 1", $this->rowsTable() );
-
-					$b->queryAsync( $waiting );
-
-					// B must be waiting for A's lock on row 1, as the server sees it.
-					$this->awaitWaiting( $b, $waiting, 'updating' );
-				}
-
-				try {
-					$this->db->execute( "UPDATE %i SET value = 'a' WHERE id = 2", $this->rowsTable() );
-				} catch ( TransactionRetryable $deadlock ) {
-					++$retryables;
-
-					throw $deadlock;
-				}
-
-				if ( 1 === $attempts ) {
-					$this->fail( 'InnoDB chose B as the deadlock victim: victim selection changed; raise B\'s weight (more rows changed by B).' );
-				}
-			},
-			RetryPolicy::deadlocks()
-		);
+		$this->db->transaction( $this->deadlockingWork( $b, $attempts, $retryables ), RetryPolicy::deadlocks() );
 
 		$this->assertSame( 2, $attempts, 'The whole unit of work ran twice.' );
 		$this->assertSame( 1, $retryables, 'One deadlock was observed.' );
@@ -781,6 +747,67 @@ final class TransactionTest extends DatabaseTestCase {
 			'1:a,2:a,3:b,4:b',
 			$b->fetchValue( sprintf( "SELECT GROUP_CONCAT( CONCAT( id, ':', value ) ORDER BY id ) FROM `%s`", $this->rowsTable() ) ),
 			'A\'s writes won on rows 1 and 2; B\'s commit stands on rows 3 and 4.'
+		);
+	}
+
+	/**
+	 * READ COMMITTED is asked for before the transaction of the unit that wants it, and for no other.
+	 *
+	 * A unit at READ COMMITTED and then one at the server's level: the log shows `SET TRANSACTION`
+	 * once, directly before the first unit's START TRANSACTION. The level is real: in the first
+	 * unit a second read sees what B committed after the first read; in the second unit, at the
+	 * server's REPEATABLE READ, it does not, so the session's own level was left as it was. A
+	 * deadlocked unit at READ COMMITTED asks for it again before its second attempt.
+	 *
+	 * Planted violation: in transaction(), send the isolation statement once before the retry loop
+	 * instead of in unitOfWork(). The second attempt's START TRANSACTION then follows no SET.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_read_committed_is_asked_for_the_next_transaction_only(): void {
+		$this->assertSame( 'REPEATABLE-READ', $this->db->fetchValue( 'SELECT @@transaction_isolation' ), 'This test needs a server whose own level is REPEATABLE READ.' );
+
+		$this->insertRow( 1, 'seed' );
+
+		$b    = $this->secondConnection();
+		$seen = array();
+		$read = function () use ( $b, &$seen ): \Closure {
+			return function () use ( $b, &$seen ): void {
+				$seen[] = $this->db->fetchValue( 'SELECT value FROM %i WHERE id = 1', $this->rowsTable() );
+
+				$b->query( sprintf( "UPDATE `%s` SET value = '%s' WHERE id = 1", $this->rowsTable(), 'after-' . count( $seen ) ) );
+
+				$seen[] = $this->db->fetchValue( 'SELECT value FROM %i WHERE id = 1', $this->rowsTable() );
+			};
+		};
+
+		$log = $this->captureQueries(
+			function () use ( $read ): void {
+				$this->db->transaction( $read(), null, Isolation::ReadCommitted );
+				$this->db->transaction( $read() );
+			}
+		);
+
+		$this->assertSame( array( 'seed', 'after-1', 'after-1', 'after-1' ), $seen, 'READ COMMITTED sees B\'s commit within the unit; the next unit, at the server\'s level, keeps its first read.' );
+		$this->assertSame(
+			array( 'SET TRANSACTION ISOLATION LEVEL READ COMMITTED', 'START TRANSACTION', 'START TRANSACTION' ),
+			self::transactionControl( $log ),
+			'The level is asked for directly before the unit that wants it, and not before the next one.'
+		);
+
+		$this->db->execute( 'DELETE FROM %i', $this->rowsTable() );
+
+		$partner    = $this->deadlockPartner();
+		$attempts   = 0;
+		$retryables = 0;
+		$work       = $this->deadlockingWork( $partner, $attempts, $retryables );
+		$deadlocked = $this->captureQueries( fn() => $this->db->transaction( $work, RetryPolicy::deadlocks(), Isolation::ReadCommitted ) );
+
+		$this->assertSame( array( 2, 1 ), array( $attempts, $retryables ), 'The unit deadlocked once and ran twice.' );
+		$this->assertSame(
+			array( 'SET TRANSACTION ISOLATION LEVEL READ COMMITTED', 'START TRANSACTION', 'SET TRANSACTION ISOLATION LEVEL READ COMMITTED', 'START TRANSACTION' ),
+			self::transactionControl( $deadlocked ),
+			'The re-run asks for the level again: MySQL applied it to the first attempt\'s transaction only.'
 		);
 	}
 
@@ -1327,6 +1354,68 @@ final class TransactionTest extends DatabaseTestCase {
 		$this->assertSame( 3, $b->affectedRows() );
 
 		return $b;
+	}
+
+	/**
+	 * Returns a unit of work that deadlocks with B on its first attempt and wins on its second.
+	 *
+	 * A updates row 1, B is sent its update of row 1 and waits, A then updates row 2, which B
+	 * holds: InnoDB rolls back A, the lighter. The pause between attempts is the barrier: the
+	 * sleeper lets B finish and commit, so the second attempt meets no lock.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param SecondConnection $b          Connection B, from deadlockPartner().
+	 * @param int              $attempts   Counts the attempts.
+	 * @param int              $retryables Counts the deadlocks A observed.
+	 * @return \Closure(): void The unit of work.
+	 */
+	private function deadlockingWork( SecondConnection $b, int &$attempts, int &$retryables ): \Closure {
+		$this->onSleep = function () use ( $b ): void {
+			$this->assertTrue( $b->isReady( 5000 ), 'B\'s update of row 1 must finish once A has been rolled back.' );
+			$this->assertSame( 1, $b->reap() );
+
+			$b->query( 'COMMIT' );
+		};
+
+		return function () use ( $b, &$attempts, &$retryables ): void {
+			++$attempts;
+
+			$this->db->execute( "UPDATE %i SET value = 'a' WHERE id = 1", $this->rowsTable() );
+
+			if ( 1 === $attempts ) {
+				$waiting = sprintf( "UPDATE `%s` SET value = 'b' WHERE id = 1", $this->rowsTable() );
+
+				$b->queryAsync( $waiting );
+
+				// B must be waiting for A's lock on row 1, as the server sees it.
+				$this->awaitWaiting( $b, $waiting, 'updating' );
+			}
+
+			try {
+				$this->db->execute( "UPDATE %i SET value = 'a' WHERE id = 2", $this->rowsTable() );
+			} catch ( TransactionRetryable $deadlock ) {
+				++$retryables;
+
+				throw $deadlock;
+			}
+
+			if ( 1 === $attempts ) {
+				$this->fail( 'InnoDB chose B as the deadlock victim: victim selection changed; raise B\'s weight (more rows changed by B).' );
+			}
+		};
+	}
+
+	/**
+	 * Returns the isolation and BEGIN statements of a log, in order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param QueryLog $log The log.
+	 * @return list<string> Each `SET TRANSACTION …` and `START TRANSACTION`.
+	 */
+	private static function transactionControl( QueryLog $log ): array {
+		return $log->matching( '/^(SET TRANSACTION|START TRANSACTION)/' )->sqls();
 	}
 
 	/**

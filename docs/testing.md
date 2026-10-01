@@ -67,8 +67,9 @@ From many, fast and cheap to few, slow and high in value:
 ### End-to-end tests
 
 - Playwright targets a **real base URL**, given in `WP_BASE_URL`. Use a disposable site.
-- The Store API spec's reads of a real order need one planted on the site first, named in
-  `SEOCART_E2E_ORDER` as `<uuid>:<access key>`; without it they are skipped.
+- The Store API spec places its own order: it creates a product through the REST API as the
+  administrator, walks a guest's cart to a placed order, reads the order's status with its key,
+  and moves the product to the trash.
 - There is exactly one cart and checkout flow, so there is one end-to-end journey to
   maintain for it.
 - Accessibility assertions use `@axe-core/playwright` in the same suite and gate on

@@ -17,6 +17,7 @@ use PHPUnit\Framework\TestCase;
 use SEOCart\Application\Operations\Annotations;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
+use SEOCart\Application\Operations\RequestHeader;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Application\Operations\WriteMethod;
 use SEOCart\Cart\Application\StoreApiError;
@@ -495,6 +496,67 @@ final class OpenApiDocumentTest extends TestCase {
 		$this->assertSame(
 			array( array( 'item_id', 'path', true ), array( 'history', 'query', false ) ),
 			array_map( static fn( array $parameter ): array => array( $parameter['name'], $parameter['in'], $parameter['required'] ), $operation['parameters'] ?? array() )
+		);
+	}
+
+	/**
+	 * Tests that a field the route reads from a header is documented as a header parameter under the header's name, required when the operation refuses a request without it, and an error with a wait as answered with a Retry-After header.
+	 *
+	 * Planted violations:
+	 * - in OpenApiDocument::operation(), leave the header fields among the request inputs: the key
+	 *   is then documented as a member of the JSON body, where the route refuses it;
+	 * - in OpenApiDocument::parameters(), take `required` from the field alone: a header the
+	 *   operation refuses a request without is documented as optional.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_header_field_is_a_header_parameter_and_a_wait_a_response_header(): void {
+		$registry = new OperationRegistry();
+		$registry->add( 'fixture_stock.adjust_keyed_stock', array( self::class, 'keyedDefinition' ) );
+
+		$operation = self::decode( ( new OpenApiDocument( $registry, ErrorTable::compose( SupportError::class, FixtureStockError::class, StoreApiError::class ) ) )->generate( '' )->content )['paths']['/fixture-keyed-stock/{item_id}']['post'];
+
+		$this->assertSame(
+			array( array( 'item_id', 'path', true ), array( 'Request-Key', 'header', true ) ),
+			array_map( static fn( array $parameter ): array => array( $parameter['name'], $parameter['in'], $parameter['required'] ), $operation['parameters'] ?? array() )
+		);
+		$this->assertArrayNotHasKey( 'request_key', $operation['requestBody']['content']['application/json']['schema']['properties'] ?? array(), 'The header field is not a member of the body.' );
+		$this->assertSame( array( 'type' => 'integer' ), $operation['responses']['409']['headers']['Retry-After']['schema'] ?? null );
+		$this->assertStringContainsString( '`fixture_stock.insufficient`: 5', $operation['responses']['409']['headers']['Retry-After']['description'] ?? '' );
+		$this->assertArrayNotHasKey( 'headers', $operation['responses']['400'] );
+	}
+
+	/**
+	 * Declares the fixture's adjustment as a public write of the Store API that reads a key from a header and asks for a wait on refusal.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function keyedDefinition(): OperationDefinition {
+		$fixture = FixtureStockOperation::definition();
+		$key     = new FieldSpec(
+			name: 'request_key',
+			type: FieldType::String,
+			description: 'The key of the request, read from the Request-Key header.',
+			label: static fn(): string => 'Request key',
+			example: 'k-1',
+			max_length: 64
+		);
+
+		return new OperationDefinition(
+			id: 'fixture_stock.adjust_keyed_stock',
+			label: $fixture->label(),
+			summary: $fixture->summary(),
+			input: array_merge( $fixture->input(), array( $key ) ),
+			output: $fixture->output(),
+			capability: null,
+			resource_field: null,
+			errors: array( FixtureStockError::Insufficient ),
+			annotations: $fixture->annotations(),
+			service: $fixture->service(),
+			rest: new RestBinding( '/fixture-keyed-stock/{item_id}', WriteMethod::Post, store: true, headers: array( 'request_key' => new RequestHeader( 'Request-Key', true ) ), retry_after: array( FixtureStockError::Insufficient->value => 5 ) ),
+			public_write: StoreRequestPolicy::write( 'fixture.write', 5, 60, false )
 		);
 	}
 

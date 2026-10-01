@@ -14,6 +14,9 @@ namespace SEOCart\Checkout\Infrastructure;
 use SEOCart\Checkout\Application\IdempotencyKeys;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
+use SEOCart\Checkout\Domain\PlacementOutcome;
+use SEOCart\Order\Domain\OrderStatus;
+use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Exception\DuplicateKey;
 use SEOCart\Support\Error\CodedException;
@@ -63,6 +66,15 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	public const TAKEN = 'SELECT id, request_fingerprint, state, order_id, response_json, expires_at <= UTC_TIMESTAMP() AS expired FROM %i WHERE scope = %s AND key_hash = %s FOR SHARE';
 
 	/**
+	 * A key as last committed, before any transaction: what it holds, and whether it has expired. A plain read, by the unique key.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const FIND = 'SELECT id, request_fingerprint, state, order_id, response_json, expires_at <= UTC_TIMESTAMP() AS expired FROM %i WHERE scope = %s AND key_hash = %s';
+
+	/**
 	 * Claims an expired key again, for a new request and a TTL from now: only while it is still expired.
 	 *
 	 * @since 0.1.0
@@ -79,6 +91,16 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	 * @var string
 	 */
 	public const COMPLETE = "UPDATE %i SET state = 'placed', order_id = %d, response_json = %s WHERE id = %d AND state = 'claimed'";
+
+	/**
+	 * Writes a settlement's outcome and statuses into the answer the key of its order keeps, found by the `order_id` key; an order's status left unchanged when none is given.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const SETTLE_ANSWER = "UPDATE %i SET response_json = JSON_SET( response_json, '$.outcome', %s, '$.status', COALESCE( NULLIF( %s, '' ), JSON_UNQUOTE( JSON_EXTRACT( response_json, '$.status' ) ) ), '$.payment_status', %s ) "
+		. "WHERE order_id = %d AND state = 'placed'";
 
 	/**
 	 * A page of keys still claimed long after they were claimed, oldest first: doctor's search.
@@ -182,6 +204,28 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	}
 
 	/**
+	 * Answers a request with the answer of the earlier request that placed its order with the same key, when there was one. One plain read.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `checkout.idempotency_key_reused` or `checkout.placement_in_progress`.
+	 *
+	 * @param string $scope       What the key is claimed for.
+	 * @param string $keyHash     The key's hash.
+	 * @param string $fingerprint The SHA-256 of the request's canonical form.
+	 * @return IdempotencyClaim|null A replay of the earlier answer; null when the key is new or expired.
+	 */
+	public function replay( string $scope, string $keyHash, string $fingerprint ): ?IdempotencyClaim {
+		$row = $this->db->fetchRow( self::FIND, $this->keys(), $scope, $keyHash );
+
+		if ( null === $row || '1' === (string) $row['expired'] ) {
+			return null;
+		}
+
+		return self::answerLive( $row, $fingerprint );
+	}
+
+	/**
 	 * Records the order placed with a claimed key, and its answer. Runs only inside the caller's transaction.
 	 *
 	 * @since 0.1.0
@@ -198,6 +242,24 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 		if ( 1 !== $this->db->execute( self::COMPLETE, $this->keys(), $orderId, $responseJson, $id ) ) {
 			throw new \LogicException( sprintf( 'Idempotency key %d is not claimed, so order %d cannot be recorded with it: claim the key in the same transaction first.', $id, $orderId ) );
 		}
+	}
+
+	/**
+	 * Writes what a placement's settlement came to into the answer its key keeps. Runs only inside the caller's transaction.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param int              $orderId       The order placed with the key.
+	 * @param PlacementOutcome $outcome       What the settlement came to.
+	 * @param OrderStatus|null $orderStatus   The order's status after it, or null when it did not change.
+	 * @param PaymentStatus    $paymentStatus The order's payment status after it.
+	 */
+	public function settleAnswer( int $orderId, PlacementOutcome $outcome, ?OrderStatus $orderStatus, PaymentStatus $paymentStatus ): void {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$this->db->execute( self::SETTLE_ANSWER, $this->keys(), $outcome->value, $orderStatus->value ?? '', $paymentStatus->value, $orderId );
 	}
 
 	/**
@@ -283,6 +345,23 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 			CodedException::raise( CheckoutError::PlacementInProgress );
 		}
 
+		return self::answerLive( $row, $fingerprint );
+	}
+
+	/**
+	 * Answers a request whose key another request holds and has not let expire: a replay of its answer, or a refusal.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `checkout.placement_in_progress` while the other request has not placed
+	 *                        its order; `checkout.idempotency_key_reused` when it placed it for a
+	 *                        request of another fingerprint.
+	 *
+	 * @param array<string, mixed> $row         The key's row.
+	 * @param string               $fingerprint The request's fingerprint.
+	 * @return IdempotencyClaim The replay.
+	 */
+	private static function answerLive( array $row, string $fingerprint ): IdempotencyClaim {
 		if ( 'placed' !== $row['state'] ) {
 			CodedException::raise( CheckoutError::PlacementInProgress );
 		}
@@ -291,7 +370,7 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 			CodedException::raise( CheckoutError::IdempotencyKeyReused );
 		}
 
-		return IdempotencyClaim::replay( $id, (int) $row['order_id'], (string) $row['response_json'] );
+		return IdempotencyClaim::replay( (int) $row['id'], (int) $row['order_id'], (string) $row['response_json'] );
 	}
 
 	/**

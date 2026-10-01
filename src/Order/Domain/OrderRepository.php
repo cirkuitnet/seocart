@@ -282,6 +282,26 @@ interface OrderRepository {
 	public function refundedQuantities( int $afterId, int $limit ): array;
 
 	/**
+	 * Reads what each of an order's lines sells: its id, its variant and its units, in variant order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $orderId The order's internal id.
+	 * @return list<array{orderLineId: int, variantId: int, quantity: int}> The lines, by variant and then by id; none for no such order.
+	 */
+	public function stockLines( int $orderId ): array;
+
+	/**
+	 * Reads an order's public identifier and status by its internal id, without a lock.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $orderId The order's internal id, never a value from a request.
+	 * @return array{uuid: string, status: OrderStatus}|null The two, or null when there is no such order.
+	 */
+	public function statusOf( int $orderId ): ?array;
+
+	/**
 	 * Reads an order for showing it, by its public identifier: the order row, its lines, their options and its addresses.
 	 *
 	 * @since 0.1.0

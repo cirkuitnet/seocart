@@ -46,6 +46,10 @@ defined( 'ABSPATH' ) || exit;
  * `stub-cap-{uuid}` for a capture, and `stub-re-{refund uuid}` for a refund, named by the
  * idempotency key the refund was asked with.
  *
+ * An intent it never gave a reference to, because the call that would have authorized it never
+ * reached it (`stub:throw`), is one it has no record of; asked about it, it says so, as a declined
+ * authorization `not_found` named `stub-nf-{intent uuid}`, which ends the placement.
+ *
  * @since 0.1.0
  */
 final class StubGateway implements PaymentGateway {
@@ -168,6 +172,15 @@ final class StubGateway implements PaymentGateway {
 	public const INVALID_TOKEN = 'invalid_payment_token';
 
 	/**
+	 * The machine code of the answer about an intent the gateway has no record of.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const NOT_FOUND = 'not_found';
+
+	/**
 	 * The machine code of a declined refund.
 	 *
 	 * @since 0.1.0
@@ -220,6 +233,15 @@ final class StubGateway implements PaymentGateway {
 	 * @var string
 	 */
 	private const REFUND_PREFIX = 'stub-re-';
+
+	/**
+	 * What the answer about an intent the gateway has no record of is named with, before the intent's uuid.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const NOT_FOUND_PREFIX = 'stub-nf-';
 
 	/**
 	 * The length of a uuid, which ends an intent reference.
@@ -324,14 +346,19 @@ final class StubGateway implements PaymentGateway {
 	 *
 	 * An intent that waited for the customer is found approved, as if they had confirmed; one
 	 * that is pending is still pending; any other scenario answers as it answered first. An
-	 * intent the stub never gave a reference to is unknown to it.
+	 * intent the stub never gave a reference to is one it has no record of, which it says: a
+	 * declined authorization `not_found`.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param PaymentQuery $query The intent.
-	 * @return GatewayResult|null The answer, or null while pending or unknown.
+	 * @return GatewayResult|null The answer, or null while pending, or for a reference it did not give.
 	 */
 	public function query( PaymentQuery $query ): ?GatewayResult {
+		if ( null === $query->providerIntentId ) {
+			return new GatewayResult( self::ID, Operation::Authorize, Outcome::Declined, $query->intentUuid, $query->amount, self::NOT_FOUND_PREFIX . $query->intentUuid, null, self::NOT_FOUND );
+		}
+
 		$scenario = self::scenarioOf( $query->providerIntentId );
 
 		return null === $scenario ? null : self::laterAnswer( $query->intentUuid, $query->amount, $scenario );

@@ -32,20 +32,23 @@ interface TransactionManager {
 	 * Runs a unit of work inside a transaction.
 	 *
 	 * At the outermost level a retry policy re-runs the whole callable after a deadlock or a
-	 * lock-wait timeout, once the rollback is complete. At any inner level the policy is
-	 * ignored and the failure propagates, so the outermost level decides.
+	 * lock-wait timeout, once the rollback is complete, and the isolation level is asked for at
+	 * the start of every attempt. At any inner level both are ignored and a failure propagates,
+	 * so the outermost level decides.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param-immediately-invoked-callable $work
 	 *
-	 * @param callable(): mixed $work  The unit of work. It must not catch a failure of the
-	 *                                 transaction it runs in and carry on.
-	 * @param RetryPolicy|null  $retry Optional. How often to re-run after a deadlock or a
-	 *                                 lock-wait timeout. Default null, which never retries.
+	 * @param callable(): mixed $work      The unit of work. It must not catch a failure of the
+	 *                                     transaction it runs in and carry on.
+	 * @param RetryPolicy|null  $retry     Optional. How often to re-run after a deadlock or a
+	 *                                     lock-wait timeout. Default null, which never retries.
+	 * @param Isolation         $isolation Optional. The isolation level the outermost level runs
+	 *                                     at. Default Isolation::Default, the server's.
 	 * @return mixed What the callable returned, unchanged.
 	 */
-	public function transaction( callable $work, ?RetryPolicy $retry = null ): mixed;
+	public function transaction( callable $work, ?RetryPolicy $retry = null, Isolation $isolation = Isolation::Default ): mixed;
 
 	/**
 	 * Returns how many transaction levels are open.

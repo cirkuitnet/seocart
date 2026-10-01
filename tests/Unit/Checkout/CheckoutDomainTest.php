@@ -145,6 +145,21 @@ final class CheckoutDomainTest extends TestCase {
 	}
 
 	/**
+	 * Tests what an order needs of a checkout: both addresses, an e-mail address on the billing one, and a payment method; a shipping method is chosen for it when none is.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_checkout_names_what_an_order_still_needs(): void {
+		$billing  = new Address( 'US', email: 'ada@example.com' );
+		$shipping = new Address( 'US' );
+
+		$this->assertSame( array( 'billing_address', 'shipping_address', 'payment_method_key' ), ( new CheckoutDetails( null, null, null, null ) )->missingForPlacement() );
+		$this->assertSame( array( 'billing_address.email' ), ( new CheckoutDetails( new Address( 'US' ), $shipping, null, 'stub' ) )->missingForPlacement() );
+		$this->assertSame( array( 'payment_method_key' ), ( new CheckoutDetails( $billing, $shipping, 'flat', null ) )->missingForPlacement() );
+		$this->assertSame( array(), ( new CheckoutDetails( $billing, $shipping, null, 'stub' ) )->missingForPlacement() );
+	}
+
+	/**
 	 * Tests that a tax quote fingerprint must be a SHA-256 in lower-case hexadecimal.
 	 *
 	 * @since 0.1.0

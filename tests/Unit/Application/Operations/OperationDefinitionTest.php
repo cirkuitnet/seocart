@@ -15,6 +15,7 @@ use PHPUnit\Framework\TestCase;
 use SEOCart\Application\Operations\Annotations;
 use SEOCart\Application\Operations\CliBinding;
 use SEOCart\Application\Operations\OperationDefinition;
+use SEOCart\Application\Operations\RequestHeader;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Application\Operations\WriteMethod;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
@@ -209,6 +210,8 @@ final class OperationDefinitionTest extends TestCase {
 			'ability slug with a slash'            => array( array( 'ability' => 'seocart/adjust' ), 'is not kebab-case' ),
 			'positional argument that is no input' => array( array( 'cli' => new CliBinding( array( 'fixture-stock', 'adjust' ), array( 'sku' ) ) ), 'The positional argument sku' ),
 			'positional argument that is optional' => array( array( 'cli' => new CliBinding( array( 'fixture-stock', 'adjust' ), array( 'note' ) ) ), 'The positional argument note' ),
+			'header field that is required'        => array( array( 'rest' => new RestBinding( FixtureStockOperation::ROUTE, WriteMethod::Post, headers: array( 'delta' => new RequestHeader( 'X-Delta' ) ) ) ), 'The header field delta of fixture_stock.adjust_stock is not an optional input field' ),
+			'header field that is no input'        => array( array( 'rest' => new RestBinding( FixtureStockOperation::ROUTE, WriteMethod::Post, headers: array( 'nonce' => new RequestHeader( 'X-Nonce' ) ) ) ), 'The header field nonce of fixture_stock.adjust_stock is not an optional input field' ),
 			'nullable input field'                 => array(
 				array(
 					'input' => array(

@@ -160,7 +160,7 @@ final class SeedVerifier {
 			self::migrator( $db, $report ),
 			new Outbox( $db ),
 			new ActionSchedulerQueue( $db, new LockService( $db, LockMode::Table ), new JobHandlers( JobHandlers::PRODUCTION, 'strval' ), new CorrelationId( new SequentialIdGenerator() ), $report ),
-			new CheckoutChecks( new MysqlIdempotencyKeys( $db ) ),
+			new CheckoutChecks( new MysqlIdempotencyKeys( $db ), $db, new MysqlPaymentRepository( $db, new SequentialIdGenerator( 970000 ) ), new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 960000 ) ) ),
 			new StockProjectionCheck( new MysqlStockRepository( $db ) ),
 			new PaymentLedgerCheck( new MysqlPaymentRepository( $db, new SequentialIdGenerator( 980000 ) ), new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 990000 ) ) ),
 			new RateVersionCheck(

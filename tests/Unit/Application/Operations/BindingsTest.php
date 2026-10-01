@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Unit\Application\Operations;
 use PHPUnit\Framework\TestCase;
 use SEOCart\Application\Operations\Annotations;
 use SEOCart\Application\Operations\CliBinding;
+use SEOCart\Application\Operations\RequestHeader;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Application\Operations\WriteMethod;
 use SEOCart\Support\Schema\SchemaException;
@@ -38,6 +39,87 @@ final class BindingsTest extends TestCase {
 		$this->assertSame( WriteMethod::Patch, $rest->writeMethod() );
 		$this->assertNull( ( new RestBinding( '/stock-items' ) )->writeMethod() );
 		$this->assertSame( array(), ( new RestBinding( '/stock-items' ) )->pathParameters() );
+	}
+
+	/**
+	 * Tests that a route keeps the input fields it reads from headers, each with its header and whether a client must send it, and the codes it answers with a wait.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_route_reads_fields_from_headers_and_answers_codes_with_a_wait(): void {
+		$key  = new RequestHeader( 'Idempotency-Key', true );
+		$rest = new RestBinding( '/checkout', WriteMethod::Post, true, array( 'idempotency_key' => $key ), array( 'checkout.placement_in_progress' => 2 ) );
+
+		$this->assertSame( array( 'idempotency_key' => $key ), $rest->headers() );
+		$this->assertSame( array( 'Idempotency-Key', true ), array( $key->name, $key->required ) );
+		$this->assertFalse( ( new RequestHeader( 'X-Request-Id' ) )->required, 'A header is optional unless it is said to be required.' );
+		$this->assertSame( 2, $rest->retryAfter( 'checkout.placement_in_progress' ) );
+		$this->assertNull( $rest->retryAfter( 'cart.not_open' ) );
+		$this->assertSame( array(), ( new RestBinding( '/checkout' ) )->headers() );
+	}
+
+	/**
+	 * Provides header names that are not one.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, array{string}> The names.
+	 */
+	public static function refusedHeaderNames(): array {
+		return array(
+			'a space'         => array( 'Idempotency Key' ),
+			'an underscore'   => array( 'Idempotency_Key' ),
+			'a leading digit' => array( '1-Key' ),
+			'no name'         => array( '' ),
+		);
+	}
+
+	/**
+	 * Tests that a header is named with letters, digits and hyphens, starting with a letter.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @dataProvider refusedHeaderNames
+	 *
+	 * @param string $name The name.
+	 */
+	public function test_a_header_that_is_not_one_is_refused( string $name ): void {
+		$this->expectException( SchemaException::class );
+		$this->expectExceptionMessage( 'must be named with letters, digits and hyphens' );
+
+		new RequestHeader( $name );
+	}
+
+	/**
+	 * Provides header and wait declarations a route refuses, with the part of the message that names the rule.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, array{array<string, RequestHeader>, array<string, int>, string}> Headers, waits and the expected message part.
+	 */
+	public static function refusedHeaders(): array {
+		return array(
+			'field also in the url' => array( array( 'item_id' => new RequestHeader( 'X-Item' ) ), array(), 'must not also be read from the URL' ),
+			'a wait of no time'     => array( array(), array( 'checkout.placement_in_progress' => 0 ), 'with a Retry-After of at least one second' ),
+		);
+	}
+
+	/**
+	 * Tests that a field read from both a header and the URL, and a wait of no time, are refused.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @dataProvider refusedHeaders
+	 *
+	 * @param array<string, RequestHeader> $headers          The header fields.
+	 * @param array<string, int>           $retry_after      The waits.
+	 * @param string                       $expected_message Part of the message.
+	 */
+	public function test_a_malformed_header_or_wait_is_refused( array $headers, array $retry_after, string $expected_message ): void {
+		$this->expectException( SchemaException::class );
+		$this->expectExceptionMessage( $expected_message );
+
+		new RestBinding( '/stock-items/{item_id}', WriteMethod::Post, false, $headers, $retry_after );
 	}
 
 	/**

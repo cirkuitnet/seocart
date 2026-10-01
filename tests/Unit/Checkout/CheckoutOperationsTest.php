@@ -13,13 +13,16 @@ namespace SEOCart\Tests\Unit\Checkout;
 
 use PHPUnit\Framework\TestCase;
 use SEOCart\Application\Operations\Operations;
+use SEOCart\Application\Operations\RequestHeader;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Cart\Application\CartError;
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
+use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Checkout\Domain\AddressDocument;
 use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Checkout\Domain\CheckoutError;
+use SEOCart\Checkout\Domain\PlacementOutcome;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
@@ -119,6 +122,62 @@ final class CheckoutOperationsTest extends TestCase {
 		$this->assertSame( Privacy::Pii, $session['shipping_address']->privacy() );
 
 		foreach ( array( CartError::NotFound, CartError::VersionStale, CartError::NotOpen, CheckoutError::InvalidAddress ) as $code ) {
+			$this->assertContains( $code->value, $codes );
+		}
+	}
+
+	/**
+	 * Tests the placement's surface: a POST route of the Store API, its key read from the Idempotency-Key header, a wait answered with a Retry-After, and a limit of its own.
+	 *
+	 * Planted violation: in CheckoutOperations::placeOrder(), declare `idempotency_key` required:
+	 * the declaration is refused, since a header the request leaves out is the service's refusal.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_placement_is_a_post_route_with_its_key_in_a_header(): void {
+		$definition = CheckoutOperations::placeOrder();
+		$rest       = $definition->rest();
+		$write      = $definition->publicWrite();
+		$ids        = array_map( static fn( $registered ): string => $registered->id(), Operations::registry()->all() );
+
+		$this->assertContains( CheckoutOperations::PLACE_ORDER, $ids );
+		$this->assertNotNull( $rest );
+		$this->assertNotNull( $write );
+		$this->assertSame( array( 'POST', '/checkout', RestBinding::STORE_NAMESPACE ), array( $definition->httpMethod(), $rest->route(), $rest->restNamespace() ) );
+		$this->assertEquals( array( 'idempotency_key' => new RequestHeader( 'Idempotency-Key', true ) ), $rest->headers(), 'The key is read from its header, which a client must send.' );
+		$this->assertSame( CheckoutOperations::RETRY_AFTER_SECONDS, $rest->retryAfter( CheckoutError::PlacementInProgress->value ) );
+		$this->assertSame( array( null, null, null ), array( $definition->capability(), $definition->abilityName(), $definition->cli() ) );
+		$this->assertSame( array( PlaceOrder::class, 'place' ), $definition->service() );
+		$this->assertTrue( $write->requiresCart() );
+		$this->assertSame( array( CheckoutOperations::PLACE_BUCKET, CheckoutOperations::PLACE_LIMIT, CheckoutOperations::PLACE_WINDOW ), array( $write->rateLimit()->bucket(), $write->rateLimit()->limit(), $write->rateLimit()->windowSeconds() ) );
+		$this->assertSame(
+			array(
+				'readonly'    => false,
+				'destructive' => true,
+				'idempotent'  => true,
+			),
+			array_intersect_key( $definition->annotations()->toArray(), array_flip( array( 'readonly', 'destructive', 'idempotent' ) ) )
+		);
+	}
+
+	/**
+	 * Tests the placement's input and answer: the payment token is a secret, the order key is answered, and every outcome is declared.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_placement_takes_a_secret_token_and_answers_the_order_key(): void {
+		$definition = CheckoutOperations::placeOrder();
+		$input      = self::byName( $definition->input() );
+		$output     = self::byName( $definition->output()->fields() );
+		$codes      = array_map( static fn( $code ): string => (string) $code->value, $definition->errors() );
+
+		$this->assertSame( array( 'cart_version', 'grand_total_minor', 'currency', 'payment_data', 'idempotency_key' ), array_keys( $input ) );
+		$this->assertFalse( $input['idempotency_key']->isRequired() );
+		$this->assertSame( Privacy::Secret, self::byName( $input['payment_data']->fields() )['payment_token']->privacy() );
+		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status' ), array_keys( $output ) );
+		$this->assertSame( array_map( static fn( PlacementOutcome $outcome ): string => $outcome->value, PlacementOutcome::cases() ), $output['outcome']->allowedValues() );
+
+		foreach ( array( CheckoutError::IdempotencyKeyMissing, CheckoutError::IdempotencyKeyReused, CheckoutError::PlacementInProgress, CheckoutError::CartEmpty, CheckoutError::SessionIncomplete, CheckoutError::TotalsChanged, CheckoutError::LineUnsellable, CheckoutError::PaymentDeclined, CheckoutError::GatewayUnavailable, CartError::NotOpen, CartError::VersionStale ) as $code ) {
 			$this->assertContains( $code->value, $codes );
 		}
 	}

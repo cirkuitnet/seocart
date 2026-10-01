@@ -31,6 +31,12 @@ defined( 'ABSPATH' ) || exit;
  * The method is not chosen here freely: OperationDefinition derives it, GET for a read-only
  * operation and the declared WriteMethod otherwise.
  *
+ * A route may also read an input field from a request header, such as the `Idempotency-Key` of
+ * a write that must not be done twice: the field is then read from that header and from nowhere
+ * else, as a route parameter is read from the URL. And it may name error codes it answers with a
+ * `Retry-After` header, and the seconds the client should wait, such as a refusal of a request
+ * that another request with the same key is still serving.
+ *
  * @since 0.1.0
  */
 final class RestBinding {
@@ -99,21 +105,51 @@ final class RestBinding {
 	private bool $store;
 
 	/**
+	 * The input fields read from a request header, each with its header.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<string, RequestHeader>
+	 */
+	private array $headers;
+
+	/**
+	 * The error codes the route answers with a `Retry-After` header, each with the seconds.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<string, int>
+	 */
+	private array $retryAfter;
+
+	/**
 	 * Declares the route.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @throws SchemaException When the route does not start with a slash and a text segment, has an
-	 *                         empty or malformed segment, or names a parameter twice.
+	 *                         empty or malformed segment, or names a parameter twice; when a header
+	 *                         field is also a route parameter; or when a Retry-After is below one
+	 *                         second.
 	 *
-	 * @param string           $route        The route relative to the namespace, such as
-	 *                                       `/stock-items/{item_id}/adjustments`.
-	 * @param WriteMethod|null $write_method Optional. The method, for an operation that changes
-	 *                                       something. Default null, for a read-only operation.
-	 * @param bool             $store        Optional. Whether the route is the Store API's, in
-	 *                                       STORE_NAMESPACE. Default false, NAMESPACE.
+	 * @param string                       $route        The route relative to the namespace, such as
+	 *                                                   `/stock-items/{item_id}/adjustments`.
+	 * @param WriteMethod|null             $write_method Optional. The method, for an operation that
+	 *                                                   changes something. Default null, for a
+	 *                                                   read-only operation.
+	 * @param bool                         $store        Optional. Whether the route is the Store
+	 *                                                   API's, in STORE_NAMESPACE. Default false,
+	 *                                                   NAMESPACE.
+	 * @param array<string, RequestHeader> $headers      Optional. The input fields read from a
+	 *                                                   request header, by field name, each with its
+	 *                                                   header, such as `idempotency_key =>
+	 *                                                   new RequestHeader( 'Idempotency-Key', true )`.
+	 *                                                   Default none.
+	 * @param array<string, int>           $retry_after  Optional. The error codes answered with a
+	 *                                                   `Retry-After` header, each with the seconds.
+	 *                                                   Default none.
 	 */
-	public function __construct( string $route, ?WriteMethod $write_method = null, bool $store = false ) {
+	public function __construct( string $route, ?WriteMethod $write_method = null, bool $store = false, array $headers = array(), array $retry_after = array() ) {
 		if ( ! str_starts_with( $route, '/' ) ) {
 			SchemaException::raise( 'The route "%1$s" must start with a slash.', $route );
 		}
@@ -142,9 +178,23 @@ final class RestBinding {
 			$this->pathParameters[] = $name;
 		}
 
+		foreach ( array_keys( $headers ) as $field ) {
+			if ( in_array( (string) $field, $this->pathParameters, true ) ) {
+				SchemaException::raise( 'The header field %1$s of the route "%2$s" must not also be read from the URL.', (string) $field, $route );
+			}
+		}
+
+		foreach ( $retry_after as $code => $seconds ) {
+			if ( $seconds < 1 ) {
+				SchemaException::raise( 'The route "%1$s" answers %2$s with a Retry-After of at least one second.', $route, (string) $code );
+			}
+		}
+
 		$this->route       = $route;
 		$this->writeMethod = $write_method;
 		$this->store       = $store;
+		$this->headers     = $headers;
+		$this->retryAfter  = $retry_after;
 	}
 
 	/**
@@ -189,6 +239,29 @@ final class RestBinding {
 	 */
 	public function writeMethod(): ?WriteMethod {
 		return $this->writeMethod;
+	}
+
+	/**
+	 * Returns the input fields read from a request header.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array<string, RequestHeader> Each field's header, by field name.
+	 */
+	public function headers(): array {
+		return $this->headers;
+	}
+
+	/**
+	 * Returns how long a client should wait before it sends a request again that this route refused with an error code.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $code The error code.
+	 * @return int|null The seconds, or null when the route answers the code without a Retry-After.
+	 */
+	public function retryAfter( string $code ): ?int {
+		return $this->retryAfter[ $code ] ?? null;
 	}
 
 	/**

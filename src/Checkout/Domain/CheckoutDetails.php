@@ -20,10 +20,11 @@ defined( 'ABSPATH' ) || exit;
 /**
  * The shopper's checkout choices: the two addresses and the shipping and payment methods, each null until given.
  *
- * Owns one fact: what a checkout session write replaces, and what a method key may be. A write
- * sends all four, and one it leaves out is cleared. A method key is a provider's name for a
- * method, such as `flat`: lower-case ASCII letters and digits with dots, colons, hyphens and
- * underscores, which is all its column can store unchanged.
+ * Owns one fact: what a checkout session write replaces, what a method key may be, and which
+ * details an order cannot be placed without. A write sends all four, and one it leaves out is
+ * cleared. A method key is a provider's name for a method, such as `flat`: lower-case ASCII
+ * letters and digits with dots, colons, hyphens and underscores, which is all its column can
+ * store unchanged.
  *
  * @since 0.1.0
  */
@@ -70,6 +71,36 @@ final readonly class CheckoutDetails {
 				throw new \InvalidArgumentException( sprintf( 'A method key is 1 to %d lower-case ASCII letters, digits, dots, colons, hyphens and underscores.', self::METHOD_KEY_MAX_LENGTH ) );
 			}
 		}
+	}
+
+	/**
+	 * Lists what an order cannot be placed without and the details lack: both addresses, an e-mail address on the billing one, and a payment method.
+	 *
+	 * The shipping method may be left out: the cheapest rate quoted is the one charged.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<string> The missing fields, by wire name: `billing_address`, `billing_address.email`,
+	 *                      `shipping_address` and `payment_method_key`; none when an order can be placed.
+	 */
+	public function missingForPlacement(): array {
+		$missing = array();
+
+		if ( null === $this->billingAddress ) {
+			$missing[] = 'billing_address';
+		} elseif ( '' === trim( $this->billingAddress->email() ) ) {
+			$missing[] = 'billing_address.email';
+		}
+
+		if ( null === $this->shippingAddress ) {
+			$missing[] = 'shipping_address';
+		}
+
+		if ( null === $this->paymentMethodKey ) {
+			$missing[] = 'payment_method_key';
+		}
+
+		return $missing;
 	}
 
 	/**

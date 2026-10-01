@@ -14,6 +14,7 @@ namespace SEOCart\Catalog\Application\Query;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\Sellability as SellabilityRule;
+use SEOCart\Catalog\Domain\SellabilityFacts;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Support\Locale;
 
@@ -69,6 +70,26 @@ final class Sellability {
 	 * @return array<int, SellabilityReason> Each variant's verdict, keyed by its id, in the order asked; one query, none for no id.
 	 */
 	public function of( array $variantIds, bool $canReadPrivate, ?Locale $locale = null ): array {
+		return array_map( static fn( array $sale ): SellabilityReason => $sale['verdict'], $this->forSale( $variantIds, $canReadPrivate, $locale ) );
+	}
+
+	/**
+	 * Returns the verdict on each variant, with the facts it was judged on: what a sale records of the variant it sells.
+	 *
+	 * The same one query as of(). The facts carry the variant's product, its SKU and the title of
+	 * the post judged, as stored: in the locale asked for, the product's post in that locale;
+	 * without one, its source post.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int[]       $variantIds     The variants' ids.
+	 * @param bool        $canReadPrivate Whether the reader may read private products.
+	 * @param Locale|null $locale         Optional. The locale the variants are sold in, or null for the product's
+	 *                                    source post. Default null.
+	 * @return array<int, array{verdict: SellabilityReason, facts: SellabilityFacts|null}> Each variant's verdict and
+	 *         facts, keyed by its id, in the order asked; the facts are null for an id no variant has.
+	 */
+	public function forSale( array $variantIds, bool $canReadPrivate, ?Locale $locale = null ): array {
 		$ids = array_values( array_unique( array_map( 'intval', $variantIds ) ) );
 
 		if ( array() === $ids ) {
@@ -81,13 +102,16 @@ final class Sellability {
 			$facts[ $fact->variantId ] = $fact;
 		}
 
-		$verdicts = array();
+		$sales = array();
 
 		foreach ( $ids as $id ) {
-			$verdicts[ $id ] = SellabilityRule::verdict( $facts[ $id ] ?? null, $canReadPrivate );
+			$sales[ $id ] = array(
+				'verdict' => SellabilityRule::verdict( $facts[ $id ] ?? null, $canReadPrivate ),
+				'facts'   => $facts[ $id ] ?? null,
+			);
 		}
 
-		return $verdicts;
+		return $sales;
 	}
 
 	/**

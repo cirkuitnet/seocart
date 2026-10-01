@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Doubles;
 
+use SEOCart\Platform\Database\Isolation;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Kernel\GateState;
@@ -69,16 +70,17 @@ final class ClosedGateTransactions implements TransactionManager {
 	 *
 	 * @param-immediately-invoked-callable $work
 	 *
-	 * @param callable(): mixed $work  The unit of work.
-	 * @param RetryPolicy|null  $retry Optional. Its retry policy. Default null.
+	 * @param callable(): mixed $work      The unit of work.
+	 * @param RetryPolicy|null  $retry     Optional. Its retry policy. Default null.
+	 * @param Isolation         $isolation Optional. Its isolation level. Default Isolation::Default.
 	 * @return mixed What a nested unit of work returned.
 	 */
-	public function transaction( callable $work, ?RetryPolicy $retry = null ): mixed {
+	public function transaction( callable $work, ?RetryPolicy $retry = null, Isolation $isolation = Isolation::Default ): mixed {
 		if ( 0 === $this->inner->depth() ) {
 			CodedException::raise( KernelError::StoreUnavailable, array( 'reason' => $this->state->value ) );
 		}
 
-		return $this->inner->transaction( $work, $retry );
+		return $this->inner->transaction( $work, $retry, $isolation );
 	}
 
 	/**

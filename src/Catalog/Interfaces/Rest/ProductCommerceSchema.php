@@ -24,7 +24,8 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Declares the product's commerce data on `wp/v2/seocart-products`, and compiles it into the one property the controller adds to the post's schema.
  *
- * Owns one fact: the wire shape of the `seocart` object. It is the commerce fields a save writes,
+ * Owns one fact: the wire shape of the `seocart` object. It is the default variant's id, which a
+ * client only reads and names in a cart line; the commerce fields a save writes,
  * CommerceFields unchanged; the two that place the post among the product's posts, one per
  * language: `locale`, the language the post presents the product in, and `translation_of`, the
  * post it translates, which a post's first save may give to join that post's product; then two a
@@ -34,8 +35,9 @@ defined( 'ABSPATH' ) || exit;
  * translation parameters, which a free multilingual plugin may not offer, declared here once, inside
  * the plugin's own object so that they never collide with a multilingual plugin's own. Their allowed values are the enums' own cases, so no list is kept
  * here. The property is compiled by JsonSchemaCompiler::restObjectProperty(), called here and
- * nowhere else; WordPress derives the route arguments from it, skipping the two read-only
- * fields, and validates a written object against it, so a key it does not declare is refused.
+ * nowhere else; WordPress derives the route arguments from it, skipping the three read-only
+ * fields, and validates a written object against it, so a key it does not declare is refused;
+ * a read-only field a client sends back is ignored.
  * There is no boolean: whether a product may be sold is the verdict's value, `sellable`.
  *
  * @since 0.1.0
@@ -50,6 +52,15 @@ final class ProductCommerceSchema {
 	 * @var string
 	 */
 	public const PROPERTY = 'seocart';
+
+	/**
+	 * The field that carries the id of the product's default variant, which a cart line names.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const VARIANT_ID = 'variant_id';
 
 	/**
 	 * The field that carries the locale the post presents its product in.
@@ -92,10 +103,20 @@ final class ProductCommerceSchema {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return list<FieldSpec> The commerce fields a save writes, the two translation fields, then the two a client only reads.
+	 * @return list<FieldSpec> The default variant's id, the commerce fields a save writes, the two translation fields, then the two a client only reads.
 	 */
 	public static function fields(): array {
 		return array_merge(
+			array(
+				new FieldSpec(
+					name: self::VARIANT_ID,
+					type: FieldType::Integer,
+					description: 'The ID of the product\'s default variant, which a cart line names; read only, and sent once the product has a variant.',
+					label: static fn(): string => __( 'Variant', 'seocart' ),
+					example: 1001,
+					minimum: 1
+				),
+			),
 			array_values( CommerceFields::all() ),
 			array(
 				new FieldSpec(
@@ -167,9 +188,9 @@ final class ProductCommerceSchema {
 	 */
 	public static function property(): array {
 		return JsonSchemaCompiler::restObjectProperty(
-			'The product\'s commerce data: the default variant\'s SKU, price, compare-at price and weight, the post\'s place among the product\'s posts in each language, and whether it may be sold.',
+			'The product\'s commerce data: the default variant\'s id, SKU, price, compare-at price and weight, the post\'s place among the product\'s posts in each language, and whether it may be sold.',
 			self::fields(),
-			array( self::SELLABILITY, self::GENERATION_STATE ),
+			array( self::VARIANT_ID, self::SELLABILITY, self::GENERATION_STATE ),
 			array( self::GENERATION_STATE )
 		);
 	}

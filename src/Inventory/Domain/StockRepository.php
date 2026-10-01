@@ -31,13 +31,16 @@ defined( 'ABSPATH' ) || exit;
  * relying on the lock a refused claim leaves: under READ COMMITTED a row that did not match is
  * unlocked again.
  *
- * The rule guarantees correctness, not freedom from deadlocks. Under REPEATABLE READ, InnoDB also
- * takes gap locks on the `stock_holds` indexes: the claim of expired rows locks the range of the
- * item's `variant_expires` entries up to the next item's, and the give-back's subqueries lock
- * around the claimed token in `reclaim_token`, where a new hold row is inserted. Those gaps reach
- * other items, so a hold that reclaimed one item can make a holder of another item wait, and the
- * two can deadlock. InnoDB then rolls one unit of work back whole, and the deadlock retry policy
- * runs it again: no hold is lost or doubled, and `held` still equals its rows.
+ * The rule guarantees correctness, not freedom from deadlocks, so the service runs every unit of
+ * work that writes these tables at READ COMMITTED. Under REPEATABLE READ, InnoDB also takes gap
+ * locks on the `stock_holds` indexes: the give-back's subqueries and the delete lock the gaps
+ * around the claimed token in `reclaim_token`, where every new hold row and every later token is
+ * written, and the claim of expired rows locks the range of the item's `variant_expires` entries
+ * up to the next item's. Those gaps reach other items, so a hold that reclaimed one item made a
+ * holder of another item wait, and the two could deadlock. At READ COMMITTED only the matched
+ * rows are locked. Should a deadlock still come, from elsewhere, InnoDB rolls one unit of work
+ * back whole and the deadlock retry policy runs it again: no hold is lost or doubled, and `held`
+ * still equals its rows.
  *
  * The ledger is append-only: no method updates or deletes a ledger entry.
  *
@@ -93,6 +96,59 @@ interface StockRepository {
 	 * @phpstan-impure
 	 */
 	public function insertHold( int $variantId, int $quantity, string $holdGroup, string $expiresAt, ?int $cartId, ?int $orderId ): int;
+
+	/**
+	 * Turns a hold's units of one item into allocated units, when the hold still has its row of the item.
+	 *
+	 * The conversion moves the units from `held` to `allocated` and takes the item's lock; the
+	 * hold's row of the item, of exactly those units, is then deleted under that lock, which proves
+	 * the units were the hold's. When the hold has no such row, because it expired and was
+	 * reclaimed or was released, the conversion is undone in the same transaction and nothing has
+	 * changed. Two statements, or three when the row is gone; one when `held` cannot cover the
+	 * units, which the hold's row alone would.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param string $holdGroup The hold.
+	 * @param int    $variantId The item.
+	 * @param int    $quantity  The units the hold's row holds, 1 or more.
+	 * @return bool True when the units are allocated and the hold's row is gone; false when nothing changed.
+	 *
+	 * @phpstan-impure
+	 */
+	public function convertHold( string $holdGroup, int $variantId, int $quantity ): bool;
+
+	/**
+	 * Adds a quantity to a tracked item's `allocated`, if that many units are available: an allocation claimed without a hold.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $variantId The item.
+	 * @param int $quantity  The units, 1 or more.
+	 * @return bool True when the claim matched: the units are allocated and the item is locked.
+	 *
+	 * @phpstan-impure
+	 */
+	public function claimAllocation( int $variantId, int $quantity ): bool;
+
+	/**
+	 * Inserts an open allocation row, after its units were added to the item's `allocated`.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int        $orderId    The order the units are promised to.
+	 * @param Allocation $allocation The order line, the variant and the units.
+	 * @return int The row's id.
+	 *
+	 * @phpstan-impure
+	 */
+	public function insertAllocation( int $orderId, Allocation $allocation ): int;
 
 	/**
 	 * Takes the item's lock.

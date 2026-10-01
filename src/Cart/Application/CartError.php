@@ -45,6 +45,9 @@ enum CartError: string implements ErrorCode {
 	/**
 	 * An order is being placed, or was placed, from the cart, so it can no longer be changed.
 	 *
+	 * The cart's own writes name its status; the checkout's answer also names the order, by its
+	 * uuid and its status, in the error's details.
+	 *
 	 * @since 0.1.0
 	 */
 	case NotOpen = 'cart.not_open';
@@ -106,7 +109,8 @@ enum CartError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: The cart's status: placing or converted. */
 					__( 'The cart can no longer be changed: an order has been placed from it (its status is %1$s). Start a new cart to keep shopping.', 'seocart' ),
-				array( 'status' )
+				array( 'status' ),
+				details: array( 'order_uuid', 'order_status' )
 			),
 			new ErrorDefinition(
 				self::LineNotFound,

@@ -28,6 +28,15 @@ defined( 'ABSPATH' ) || exit;
 final readonly class IdempotencyClaim {
 
 	/**
+	 * What an order placement claims its keys for: its operation's id, so no other operation shares a key with it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const PLACE_ORDER_SCOPE = 'checkout.place_order';
+
+	/**
 	 * The longest key a client may send, in characters: a UUID fits, and so does any token of its own up to this length.
 	 *
 	 * @since 0.1.0

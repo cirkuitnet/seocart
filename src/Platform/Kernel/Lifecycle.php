@@ -212,12 +212,35 @@ final class Lifecycle {
 	/**
 	 * Installs the plugin on the current site. Runs on the activation hook.
 	 *
-	 * A network activation installs the current site only; see the class description.
+	 * A network activation installs the current site only; see the class description. A server
+	 * that would refuse the store's writes is refused first: see refuseStatementBinaryLog().
 	 *
 	 * @since 0.1.0
 	 */
 	public function activate(): void {
+		$this->refuseStatementBinaryLog();
 		$this->installSite();
+	}
+
+	/**
+	 * Stops the activation, with a plain message, on a server whose binary log records statements.
+	 *
+	 * Placing an order and every stock change run at READ COMMITTED, and InnoDB refuses every write
+	 * at that level while the binary log is on in `STATEMENT` format, so the store would take no
+	 * order. Nothing has been written when this runs. `doctor` reports a format changed later.
+	 *
+	 * @since 0.1.0
+	 */
+	private function refuseStatementBinaryLog(): void {
+		if ( ! $this->container->get( Database::class )->refusesReadCommitted() ) {
+			return;
+		}
+
+		wp_die(
+			esc_html__( 'SEOCart cannot be activated on this site: its database server records the binary log by statement (binlog_format is STATEMENT), and in that format the server refuses the writes SEOCart makes when an order is placed or stock changes. Ask your host to set binlog_format to ROW or MIXED, then activate SEOCart again.', 'seocart' ),
+			esc_html__( 'SEOCart could not be activated', 'seocart' ),
+			array( 'back_link' => true )
+		);
 	}
 
 	/**

@@ -51,6 +51,12 @@ final class IntentTransitionsTest extends TestCase {
 			$this->assertSame( array(), IntentTransitions::TABLE[ $final->value ], "{$final->value} is final." );
 		}
 
+		$this->assertSame(
+			array( IntentStatus::Refunded, IntentStatus::Voided, IntentStatus::Failed ),
+			array_values( array_filter( IntentStatus::cases(), static fn( IntentStatus $state ): bool => IntentTransitions::isFinal( $state ) ) ),
+			'isFinal() names the final states, and no other.'
+		);
+
 		$this->assertSame( array(), IntentTransitions::allowedFrom( IntentStatus::Created ) );
 	}
 

@@ -43,6 +43,7 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 409
 - Message: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.
 - Values: `status`
+- Details: `order_uuid`, `order_status`, beside the values
 
 ## `cart.too_many_codes`
 
@@ -141,6 +142,25 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The product of post {post_id} was changed by another save while this one was being written; nothing was saved. Try again.
 - Values: `post_id`
 
+## `checkout.cart_empty`
+
+- HTTP status: 422
+- Message: The cart has no line, so there is no order to place. Add a line to the cart first.
+- Values: none
+
+## `checkout.gateway_unavailable`
+
+- HTTP status: 503
+- Message: The payment provider could not be reached. Your order is waiting for its answer: check its status in a few minutes before you try again.
+- Values: none
+- Details: `order_uuid`, beside the values
+
+## `checkout.idempotency_key_missing`
+
+- HTTP status: 400
+- Message: An order is placed only with an Idempotency-Key header: a new key, such as a UUID, for each attempt, and the same key again when the attempt is retried.
+- Values: none
+
 ## `checkout.idempotency_key_reused`
 
 - HTTP status: 422
@@ -159,11 +179,38 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The {field} is not a method key. A method key uses only lower-case letters, digits, dots, colons, hyphens and underscores, such as flat.
 - Values: `field`
 
+## `checkout.line_unsellable`
+
+- HTTP status: 409
+- Message: The variant {variant_id} cannot be sold now ({reason}), so no order was placed. Remove it from the cart, then place the order again.
+- Values: `variant_id`, `reason`
+
+## `checkout.payment_declined`
+
+- HTTP status: 402
+- Message: The payment was declined, so the order was not placed and nothing was charged. Check the payment details, or choose another way to pay, then place the order again.
+- Values: none
+- Details: `order_uuid`, beside the values
+
 ## `checkout.placement_in_progress`
 
 - HTTP status: 409
 - Message: An order is being placed with this idempotency key right now. Wait a moment, then send the same request again.
 - Values: none
+
+## `checkout.session_incomplete`
+
+- HTTP status: 422
+- Message: The checkout is missing details an order needs: both addresses, an email address on the billing address, and a payment method. The error lists the ones missing.
+- Values: none
+- Details: `missing`, beside the values
+
+## `checkout.totals_changed`
+
+- HTTP status: 409
+- Message: The cart's totals have changed since you read them, so no order was placed. Check the new totals, then place the order again with them.
+- Values: none
+- Details: `version`, `totals`, beside the values
 
 ## `currency.unknown`
 

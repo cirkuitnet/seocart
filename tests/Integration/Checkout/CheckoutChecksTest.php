@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests doctor's check of stranded idempotency keys
+ * Tests doctor's check of the checkout: the binary log, and stranded idempotency keys
  *
  * @package SEOCart
  * @since   0.1.0
@@ -16,7 +16,7 @@ use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\Doctor\CheckoutChecks;
 use SEOCart\Support\Error\CodedException;
-use SEOCart\Tests\Support\Checkout\CheckoutTestCase;
+use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 
 /**
  * A key still claimed an hour after it was claimed is stranded: doctor reports it, --repair deletes it, and the client's retry then places its order; a key a placement holds now, or one placed, is never touched.
@@ -27,7 +27,7 @@ use SEOCart\Tests\Support\Checkout\CheckoutTestCase;
  *
  * @since 0.1.0
  */
-final class CheckoutChecksTest extends CheckoutTestCase {
+final class CheckoutChecksTest extends PlacementTestCase {
 
 	/**
 	 * Tests that a stranded key is reported and deleted, a young claim and an old placed key are left alone, and the retry then owns the key.
@@ -63,7 +63,7 @@ final class CheckoutChecksTest extends CheckoutTestCase {
 			$this->assertSame( CheckoutError::PlacementInProgress, $held->errorCode() );
 		}
 
-		$check  = new CheckoutChecks( $this->keys );
+		$check  = $this->kernel->get( CheckoutChecks::class );
 		$result = $check->run();
 
 		$this->assertFalse( $result->passed );
@@ -80,6 +80,37 @@ final class CheckoutChecksTest extends CheckoutTestCase {
 	}
 
 	/**
+	 * Tests that a binary log that records statements is reported as critical, and that this server's is not.
+	 *
+	 * The server's variables are played by rewriting the one read that asks for them.
+	 *
+	 * Planted violation: in Database::refusesReadCommitted(), compare the format with 'ROW' instead
+	 * of 'STATEMENT': the check then passes a server that refuses every order.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_binary_log_by_statement_is_reported(): void {
+		$check = $this->kernel->get( CheckoutChecks::class );
+
+		$this->assertTrue( $check->run()->passed, implode( "\n", $check->run()->findings ) );
+
+		$fake = static fn( $query ) => 'SELECT @@log_bin AS log_bin, @@binlog_format AS binlog_format' === $query ? "SELECT 1 AS log_bin, 'STATEMENT' AS binlog_format" : $query;
+
+		add_filter( 'query', $fake );
+
+		try {
+			$result = $check->run();
+		} finally {
+			remove_filter( 'query', $fake );
+		}
+
+		$this->assertFalse( $result->passed );
+		$this->assertCount( 1, $result->findings );
+		$this->assertStringStartsWith( 'Critical: the binary log records statements', $result->findings[0] );
+		$this->assertSame( array(), $check->repair()->changes, 'There is nothing to repair: the format is the host\'s setting.' );
+	}
+
+	/**
 	 * Tests that a key completed between the check and its repair is kept: the repair checks again in its statement.
 	 *
 	 * Planted violation: in MysqlIdempotencyKeys::DELETE_STRANDED, drop `AND state = 'claimed'`: the
@@ -92,7 +123,7 @@ final class CheckoutChecksTest extends CheckoutTestCase {
 
 		$this->keyClaimedAgo( $claim->id, 2 * 3600 );
 
-		$check = new CheckoutChecks( $this->keys );
+		$check = $this->kernel->get( CheckoutChecks::class );
 
 		$this->assertFalse( $check->run()->passed );
 

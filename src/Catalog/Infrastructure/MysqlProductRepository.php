@@ -487,7 +487,8 @@ final class MysqlProductRepository implements ProductRepository {
 	 *
 	 * The variant is joined to its product, the product to its binding to its source post, and
 	 * that binding to the post only when the post is a product post; whether the variant has a
-	 * price in the base currency is one EXISTS.
+	 * price in the base currency is one EXISTS. The variant's SKU and the post's title come with
+	 * them, for a sale to record.
 	 *
 	 * @since 0.1.0
 	 *
@@ -719,7 +720,7 @@ final class MysqlProductRepository implements ProductRepository {
 
 		$binding = null === $locale ? 'pp.post_id = p.source_post_id AND pp.product_id = p.id' : 'pp.product_id = p.id AND pp.locale = %s';
 		$rows    = $this->db->fetchAll(
-			'SELECT v.id AS variant_id, v.is_enabled, v.generation, p.id AS product_id, p.generation_state, p.active_variant_generation, p.source_post_id, pp.post_id, wp.post_status,'
+			'SELECT v.id AS variant_id, v.is_enabled, v.generation, v.sku, p.id AS product_id, p.generation_state, p.active_variant_generation, p.source_post_id, pp.post_id, wp.post_status, wp.post_title,'
 				. ' EXISTS ( SELECT 1 FROM %i vp WHERE vp.variant_id = v.id AND vp.currency = %s ) AS has_base_price'
 				. ' FROM %i v'
 				. ' JOIN %i p ON p.id = v.product_id'
@@ -754,7 +755,9 @@ final class MysqlProductRepository implements ProductRepository {
 				self::intOrNull( $row['post_id'] ),
 				null === $row['post_status'] ? null : (string) $row['post_status'],
 				1 === (int) $row['has_base_price'],
-				null === $locale || null !== $row['post_id']
+				null === $locale || null !== $row['post_id'],
+				(string) $row['sku'],
+				(string) $row['post_title']
 			);
 		}
 

@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Inventory\Infrastructure;
 
+use SEOCart\Inventory\Domain\Allocation;
 use SEOCart\Inventory\Domain\BackorderPolicy;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Domain\ReclaimedRows;
@@ -32,9 +33,11 @@ defined( 'ABSPATH' ) || exit;
  * list as `{list}`; expand() turns them into wpdb placeholders and arguments. Written that way,
  * a test can read from the constants alone that no statement updates or deletes the ledger.
  *
- * It keeps the one-lock rule StockRepository states: the claim and the item lock are the only
- * statements that take an item's row lock, and every reclaim begins with the item lock, so its
- * hold rows are claimed, given back and deleted by the item's lock holder alone. Every
+ * It keeps the one-lock rule StockRepository states: the claims, of a hold and of an allocation,
+ * the conversion of a hold into an allocation and the item lock are the only statements that
+ * take an item's row lock, and every reclaim begins with the item lock, so its hold rows are
+ * claimed, given back and deleted by the item's lock holder alone; a conversion deletes its hold
+ * row only once its own statement holds the lock. Every
  * conditional update of an item sets `updated_at` from the database clock, and the item lock
  * moves it forward by at least a microsecond, so one affected row always means the WHERE clause
  * matched. Reads made under a lock are locking reads, so they see the latest committed row and
@@ -73,6 +76,51 @@ final class MysqlStockRepository implements StockRepository {
 	 * @var string
 	 */
 	public const INSERT_HOLD = 'INSERT INTO {stock_holds} ( variant_id, cart_id, order_id, hold_group, quantity, expires_at, created_at ) VALUES ( %d, NULLIF( %d, 0 ), NULLIF( %d, 0 ), %s, %d, %s, UTC_TIMESTAMP(6) )';
+
+	/**
+	 * The conversion of held units into allocated ones: only when `held` covers them, which the hold's own row does.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const CONVERT_HOLD = 'UPDATE {stock_items} SET held = held - %d, allocated = allocated + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND held >= %d';
+
+	/**
+	 * The proof that converted units were the hold's: its row of the item, of exactly those units, deleted under the item's lock.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const DELETE_HOLD_ROW = 'DELETE FROM {stock_holds} WHERE hold_group = %s AND variant_id = %d AND quantity = %d AND reclaim_token IS NULL';
+
+	/**
+	 * Undoes a conversion whose hold row was gone, in the same transaction and under the same lock.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const UNDO_CONVERT = 'UPDATE {stock_items} SET held = held + %d, allocated = allocated - %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d';
+
+	/**
+	 * The claim of an allocation without a hold: adds to `allocated` only when the item is tracked and that many units are available.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const CLAIM_ALLOCATION = 'UPDATE {stock_items} SET allocated = allocated + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND track = 1 AND ( on_hand - allocated - held ) >= %d';
+
+	/**
+	 * An open allocation row, inserted right after its units were added to `allocated`.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const INSERT_ALLOCATION = "INSERT INTO {stock_allocations} ( variant_id, order_id, order_line_id, quantity, posted_quantity, state, created_at ) VALUES ( %d, %d, %d, %d, 0, 'open', UTC_TIMESTAMP(6) )";
 
 	/**
 	 * The item lock: the first statement of every reclaim, and of the delete. Moves `updated_at` forward, so it always changes the row.
@@ -404,6 +452,65 @@ final class MysqlStockRepository implements StockRepository {
 		$this->requireTransaction( __FUNCTION__ );
 
 		$this->write( self::INSERT_HOLD, $variantId, $cartId ?? 0, $orderId ?? 0, $holdGroup, $quantity, $expiresAt );
+
+		return $this->db->lastInsertId();
+	}
+
+	/**
+	 * Turns a hold's units of one item into allocated units, when the hold still has its row of the item.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $holdGroup The hold.
+	 * @param int    $variantId The item.
+	 * @param int    $quantity  The units the hold's row holds.
+	 * @return bool True when the units are allocated and the row is gone; false when nothing changed.
+	 */
+	public function convertHold( string $holdGroup, int $variantId, int $quantity ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		if ( 1 !== $this->write( self::CONVERT_HOLD, $quantity, $quantity, $variantId, $quantity ) ) {
+			return false;
+		}
+
+		if ( 1 === $this->write( self::DELETE_HOLD_ROW, $holdGroup, $variantId, $quantity ) ) {
+			return true;
+		}
+
+		// The hold's row is gone, so the units converted were another hold's: give them back.
+		$this->write( self::UNDO_CONVERT, $quantity, $quantity, $variantId );
+
+		return false;
+	}
+
+	/**
+	 * Adds a quantity to a tracked item's `allocated`, if that many units are available.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $variantId The item.
+	 * @param int $quantity  The units.
+	 * @return bool True when the claim matched.
+	 */
+	public function claimAllocation( int $variantId, int $quantity ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->write( self::CLAIM_ALLOCATION, $quantity, $variantId, $quantity );
+	}
+
+	/**
+	 * Inserts an open allocation row.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int        $orderId    The order.
+	 * @param Allocation $allocation The order line, the variant and the units.
+	 * @return int The row's id.
+	 */
+	public function insertAllocation( int $orderId, Allocation $allocation ): int {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$this->write( self::INSERT_ALLOCATION, $allocation->variantId, $orderId, $allocation->orderLineId, $allocation->quantity );
 
 		return $this->db->lastInsertId();
 	}

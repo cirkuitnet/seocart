@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Catalog;
 
+use SEOCart\Platform\Database\Isolation;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Tests\Support\Doubles\FakeTransactionManager;
@@ -64,19 +65,20 @@ final class LoggedTransactions implements TransactionManager {
 	 *
 	 * @throws \Throwable Whatever the work threw, after the rollback is recorded.
 	 *
-	 * @param callable         $work  The unit of work.
-	 * @param RetryPolicy|null $retry Optional. The retry policy. Default null, which never retries.
+	 * @param callable         $work      The unit of work.
+	 * @param RetryPolicy|null $retry     Optional. The retry policy. Default null, which never retries.
+	 * @param Isolation        $isolation Optional. The isolation level. Default Isolation::Default.
 	 * @return mixed What the work returned.
 	 */
-	public function transaction( callable $work, ?RetryPolicy $retry = null ): mixed {
+	public function transaction( callable $work, ?RetryPolicy $retry = null, Isolation $isolation = Isolation::Default ): mixed {
 		if ( 0 !== $this->inner->depth() ) {
-			return $this->inner->transaction( $work, $retry );
+			return $this->inner->transaction( $work, $retry, $isolation );
 		}
 
 		$this->log->record( sprintf( 'transaction: %d attempts', null === $retry ? 1 : $retry->attempts() ) );
 
 		try {
-			$result = $this->inner->transaction( $work, $retry );
+			$result = $this->inner->transaction( $work, $retry, $isolation );
 		} catch ( \Throwable $failure ) {
 			$this->log->record( 'rollback' );
 

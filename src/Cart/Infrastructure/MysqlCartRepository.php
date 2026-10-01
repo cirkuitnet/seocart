@@ -168,13 +168,13 @@ final class MysqlCartRepository implements CartRepository {
 	public const BIND_ORDER = "UPDATE %i SET order_id = %d, updated_at = UTC_TIMESTAMP(6) WHERE id = %d AND status = 'placing' AND order_id IS NULL";
 
 	/**
-	 * Moves a cart placing a given order to converted, or back to open.
+	 * Moves the cart placing a given order to converted, or back to open: the cart is found by the order it names.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const SETTLE = "UPDATE %i SET status = %s, updated_at = UTC_TIMESTAMP(6) WHERE id = %d AND order_id = %d AND status = 'placing'";
+	public const SETTLE_ORDER = "UPDATE %i SET status = %s, updated_at = UTC_TIMESTAMP(6) WHERE order_id = %d AND status = 'placing'";
 
 	/**
 	 * A page of expired carts, oldest expiry first: the sweep's search.
@@ -508,25 +508,24 @@ final class MysqlCartRepository implements CartRepository {
 	}
 
 	/**
-	 * Moves a cart placing a given order to converted, or back to open.
+	 * Moves the cart placing an order to converted, or back to open.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \InvalidArgumentException When the status is placing, which a settlement never sets.
 	 *
-	 * @param int        $cartId  The cart.
-	 * @param int        $orderId The order the cart is placing.
+	 * @param int        $orderId The order.
 	 * @param CartStatus $status  CartStatus::Converted or CartStatus::Open.
-	 * @return bool True when the cart was placing that order.
+	 * @return bool True when a cart was placing that order.
 	 */
-	public function settle( int $cartId, int $orderId, CartStatus $status ): bool {
+	public function settleOrder( int $orderId, CartStatus $status ): bool {
 		$this->requireTransaction( __FUNCTION__ );
 
 		if ( CartStatus::Placing === $status ) {
 			throw new \InvalidArgumentException( 'A settlement moves a placing cart to converted or back to open, never to placing.' );
 		}
 
-		return 1 === $this->db->execute( self::SETTLE, $this->carts(), $status->value, $cartId, $orderId );
+		return 1 === $this->db->execute( self::SETTLE_ORDER, $this->carts(), $status->value, $orderId );
 	}
 
 	/**

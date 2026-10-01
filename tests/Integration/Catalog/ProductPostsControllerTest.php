@@ -110,6 +110,7 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 		$this->assertSame( rest_url( 'wp/v2/seocart-products/' . $data['id'] ), $response->get_headers()['Location'] ?? null );
 		$this->assertSame( 'sellable', $data[ ProductCommerceSchema::PROPERTY ]['sellability'] ?? null );
 		$this->assertSame( 'SKU-REST', $data[ ProductCommerceSchema::PROPERTY ]['sku'] ?? null );
+		$this->assertSame( (int) $b->fetchValue( sprintf( "SELECT id FROM `%s` WHERE sku = 'SKU-REST'", $this->db->table( CatalogTables::VARIANTS ) ) ), $data[ ProductCommerceSchema::PROPERTY ][ ProductCommerceSchema::VARIANT_ID ] ?? null, 'The answer names the variant a cart line adds.' );
 		$this->assertSame( ProductCapabilities::POST_TYPE, get_post_type( (int) $data['id'] ) );
 		$this->assertSame( 1, $this->committedSavesOfAll( $b ) );
 	}
@@ -217,6 +218,7 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 
 		$this->assertSame(
 			array(
+				'variant_id'       => (int) $saved->variantId,
 				'sku'              => 'SKU-1',
 				'price_minor'      => 1999,
 				'currency'         => self::BASE_CURRENCY,
@@ -349,18 +351,24 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 	}
 
 	/**
-	 * Tests that the read-only fields a client sends back are ignored, as core ignores a read-only property.
+	 * Tests that the read-only fields a client sends back are ignored, as core ignores a read-only property: a variant id another variant has changes no variant.
+	 *
+	 * Planted violation: in ProductCommerceSchema::writable(), list VARIANT_ID: the save is then
+	 * given a field it has no rule for, and the request is refused.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_read_only_fields_sent_back_are_ignored(): void {
 		$b        = $this->secondConnection();
 		$saved    = $this->savedProduct();
+		$variants = sprintf( 'SELECT COUNT(*) FROM `%s`', $this->db->table( CatalogTables::VARIANTS ) );
+		$before   = $b->fetchValue( $variants );
 		$response = $this->request(
 			'PUT',
 			'/' . $saved->postId,
 			array(
 				ProductCommerceSchema::PROPERTY => array(
+					ProductCommerceSchema::VARIANT_ID  => (int) $saved->variantId + 1000,
 					'price_minor'                      => 100,
 					ProductCommerceSchema::SELLABILITY => 'sellable',
 					ProductCommerceSchema::GENERATION_STATE => 'complete',
@@ -370,6 +378,8 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 
 		$this->assertSame( 200, $response->get_status(), (string) wp_json_encode( $response->get_data() ) );
 		$this->assertSame( '100', $this->committedProduct( $b, $saved )[2] );
+		$this->assertSame( (int) $saved->variantId, $response->get_data()[ ProductCommerceSchema::PROPERTY ][ ProductCommerceSchema::VARIANT_ID ] ?? null, 'The answer names the variant the product has, not the one sent.' );
+		$this->assertSame( $before, $b->fetchValue( $variants ) );
 	}
 
 	/**

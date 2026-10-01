@@ -737,8 +737,9 @@ final class OperationDefinition {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws SchemaException When a route parameter is not a required input, the resource field is
-	 *                         not a route parameter, or the method does not match the annotations.
+	 * @throws SchemaException When a route parameter is not a required input, a header field is not an
+	 *                         optional input, the resource field is not a route parameter, or the
+	 *                         method does not match the annotations.
 	 *
 	 * @param string                   $id             The operation id, for messages.
 	 * @param RestBinding              $rest           The route.
@@ -750,6 +751,13 @@ final class OperationDefinition {
 		foreach ( $rest->pathParameters() as $name ) {
 			if ( ! isset( $fields[ $name ] ) || ! $fields[ $name ]->isRequired() || $fields[ $name ]->isNullable() ) {
 				SchemaException::raise( 'The route parameter %1$s of %2$s is not a required, non-nullable input field.', $name, $id );
+			}
+		}
+
+		// A header the request leaves out is not an invalid argument, so the service refuses its absence with its own error.
+		foreach ( array_keys( $rest->headers() ) as $name ) {
+			if ( ! isset( $fields[ (string) $name ] ) || $fields[ (string) $name ]->isRequired() ) {
+				SchemaException::raise( 'The header field %1$s of %2$s is not an optional input field: the service, not the schema, refuses a request without the header.', (string) $name, $id );
 			}
 		}
 

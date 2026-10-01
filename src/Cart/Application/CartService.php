@@ -18,6 +18,7 @@ use SEOCart\Cart\Domain\CartStatus;
 use SEOCart\Cart\Domain\CartToken;
 use SEOCart\Cart\Domain\LineIdentity;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Database\Isolation;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\DataRegistry\RetentionCatalog;
@@ -50,7 +51,8 @@ defined( 'ABSPATH' ) || exit;
  * token names no cart, so a shopper who has bought starts a new cart.
  *
  * Every change of an existing cart is one transaction that begins with the compare-and-swap on
- * the version the client based it on. One row changed: the cart was open, live and at that
+ * the version the client based it on, at READ COMMITTED, so a write locks its own cart's rows
+ * and never the gaps another cart's lines are written into. One row changed: the cart was open, live and at that
  * version, it is now at the next one, its life is extended by the writer's lifetime
  * (lifetimeSeconds()), and the write goes on in the same transaction. No row changed: one locking
  * read classifies the refusal as `cart.not_found`, `cart.not_open` or `cart.version_stale`, and
@@ -573,25 +575,26 @@ final class CartService {
 	}
 
 	/**
-	 * Settles a placing cart once its order's payment result is known. Runs only inside the settlement's transaction.
+	 * Settles the cart placing an order once the order's payment result is known. Runs only inside the settlement's transaction.
 	 *
-	 * An accepted order converts the cart, which is then finished. Any other result opens it
-	 * again, still naming the order, so the shopper can try again from the same cart.
+	 * The settlement knows the order, not the cart: the cart is the one that names the order and
+	 * is still placing it. An accepted order converts the cart, which is then finished. Any other
+	 * result opens it again, still naming the order, so the shopper can try again from the same
+	 * cart.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \LogicException Outside a transaction.
 	 *
-	 * @param int  $cartId    The cart.
-	 * @param int  $orderId   The order the cart is placing.
+	 * @param int  $orderId   The order.
 	 * @param bool $converted True when the order was accepted.
-	 * @return bool True when the cart was placing that order; false when it was not, or is gone,
+	 * @return bool True when a cart was placing that order; false when none was, or it is gone,
 	 *              which the settlement records rather than fails on, since the money is settled.
 	 */
-	public function settle( int $cartId, int $orderId, bool $converted ): bool {
+	public function settleOrder( int $orderId, bool $converted ): bool {
 		$this->requireCallersTransaction( __FUNCTION__ );
 
-		return $this->carts->settle( $cartId, $orderId, $converted ? CartStatus::Converted : CartStatus::Open );
+		return $this->carts->settleOrder( $orderId, $converted ? CartStatus::Converted : CartStatus::Open );
 	}
 
 	/**
@@ -738,7 +741,8 @@ final class CartService {
 
 				return new Cart( $cartId, 1, CartStatus::Open, null, $currency, $locale, array(), $this->linesAfterWrite( $cartId ) );
 			},
-			RetryPolicy::deadlocks()
+			RetryPolicy::deadlocks(),
+			Isolation::ReadCommitted
 		);
 
 		$this->tokens->issue( $token, $lifetime );
@@ -841,7 +845,7 @@ final class CartService {
 	 */
 	private function commitChange( CartToken $token, int $lifetime, \Closure $change ): Cart {
 		try {
-			$changed = $this->tx->transaction( $change, RetryPolicy::deadlocks() );
+			$changed = $this->tx->transaction( $change, RetryPolicy::deadlocks(), Isolation::ReadCommitted );
 		} catch ( CodedException $refused ) {
 			if ( CartError::VersionStale === $refused->errorCode() ) {
 				$this->refuseAsStale( $refused );
@@ -919,7 +923,7 @@ final class CartService {
 	private function refuseAsStale( CodedException $refused ): never {
 		$cart = $this->current() ?? CodedException::raise( CartError::NotFound );
 
-		throw CodedException::because( CartError::VersionStale, array( 'current_version' => $cart->version ), $refused, array( 'totals' => $this->calculate( $cart )->totals->toArray() ) );
+		throw CodedException::because( CartError::VersionStale, array( 'current_version' => $cart->version ), $refused, array( 'totals' => $this->calculation( $cart )->totals->toArray() ) );
 	}
 
 	/**
@@ -984,10 +988,11 @@ final class CartService {
 	/**
 	 * Works out a cart's totals: its lines in the order they were added, each keyed by its identity, shipped where its checkout says.
 	 *
-	 * Runs outside any transaction, as the calculation requires. The cart's checkout gives the
-	 * destination and the shipping method chosen, so once a shipping address is known the totals
-	 * carry its shipping. With no cart it prices no line, in the currency a new cart would have,
-	 * which comes to zero totals, and asks the checkout nothing.
+	 * The one way a cart is priced: every answer about the cart carries these totals, and an
+	 * order is placed from them. Runs outside any transaction, as the calculation requires. The
+	 * cart's checkout gives the destination and the shipping method chosen, so once a shipping
+	 * address is known the totals carry its shipping. With no cart it prices no line, in the
+	 * currency a new cart would have, which comes to zero totals, and asks the checkout nothing.
 	 *
 	 * @since 0.1.0
 	 *
@@ -996,7 +1001,7 @@ final class CartService {
 	 * @param Cart|null $cart The cart, or null for none.
 	 * @return Calculation The totals, and the lines that could not be priced.
 	 */
-	private function calculate( ?Cart $cart ): Calculation {
+	public function calculation( ?Cart $cart ): Calculation {
 		if ( null === $cart ) {
 			return $this->priceLines( ( $this->currency )(), array(), array() );
 		}
@@ -1048,7 +1053,7 @@ final class CartService {
 	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The version, 0 for no cart, the lines, the promotion codes, the totals and the unpriced lines.
 	 */
 	private function priced( ?Cart $cart, ?Calculation $calculation = null ): array {
-		$calculation = $calculation ?? $this->calculate( $cart );
+		$calculation = $calculation ?? $this->calculation( $cart );
 		$lines       = array();
 
 		foreach ( null === $cart ? array() : $cart->lines as $line ) {

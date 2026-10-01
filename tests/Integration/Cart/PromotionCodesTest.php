@@ -486,7 +486,7 @@ final class PromotionCodesTest extends CartTestCase {
 		$this->assertQueryCount( 4, $plain, 'Reading a cart without codes: its row, its lines, its checkout session and their prices' );
 		$this->assertQueryCount( 5, $coded, 'Reading a cart with three codes: its row, its lines, its checkout session, their prices and the promotions' );
 		$this->assertQueryCount( 1, $coded->forTable( $this->table( PromotionTables::PROMOTIONS ) ), 'Reads of the promotions for three codes' );
-		$this->assertQueryCount( 13, $applied, 'Applying a code: the cart, two counters, the promotion; the swap and the lines, in a transaction of four control statements; the answer\'s checkout session, prices and promotions' );
+		$this->assertQueryCount( 14, $applied, 'Applying a code: the cart, two counters, the promotion; the swap and the lines, in a transaction of five control statements at READ COMMITTED; the answer\'s checkout session, prices and promotions' );
 		$this->assertQueryCount( 2, $applied->forTable( $this->table( PromotionTables::PROMOTIONS ) ), 'Reads of the promotions when a code is applied: the code, then the cart\'s codes for its totals' );
 	}
 

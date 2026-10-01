@@ -138,6 +138,37 @@ final class SellabilityFetchTest extends CatalogTestCase {
 	}
 
 	/**
+	 * Tests that a sale's read gives, from the same one query, the facts a sale records: the product, the SKU and the post's title as stored.
+	 *
+	 * Planted violation: in MysqlProductRepository::facts(), pass an empty title instead of
+	 * `post_title`: an order would then record no title.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_sale_reads_the_product_sku_and_title_in_the_same_fetch(): void {
+		$product   = $this->storedProduct( 'MUG-1' );
+		$variantId = (int) $product->defaultVariant()?->id();
+		$query     = $this->query();
+
+		$this->db->execute( "UPDATE %i SET post_title = 'Mug & <b>Saucer</b>' WHERE ID = %d", $this->db->prefix() . 'posts', (int) $product->sourcePostId() );
+
+		$query->of( array( $variantId ), false );
+
+		$sales = array();
+		$log   = $this->captureQueries(
+			static function () use ( $query, $variantId, &$sales ): void {
+				$sales = $query->forSale( array( $variantId, $variantId + 1000 ), false );
+			}
+		);
+
+		$this->assertSame( SellabilityReason::Sellable, $sales[ $variantId ]['verdict'] );
+		$this->assertSame( array( (int) $product->id(), 'MUG-1', 'Mug & <b>Saucer</b>' ), array( $sales[ $variantId ]['facts']?->productId, $sales[ $variantId ]['facts']?->sku, $sales[ $variantId ]['facts']?->title ), 'The title is the post\'s, as stored.' );
+		$this->assertSame( array( SellabilityReason::UnknownVariant, null ), array_values( $sales[ $variantId + 1000 ] ) );
+		$this->assertQueryCount( 1, $log->forTable( $this->catalogTable( CatalogTables::VARIANTS ) ), 'The facts of a sale come with its verdict' );
+		$this->assertCount( 1, $log, 'One query in all' );
+	}
+
+	/**
 	 * Returns the query as the kernel wires it, over this test's connection.
 	 *
 	 * @since 0.1.0

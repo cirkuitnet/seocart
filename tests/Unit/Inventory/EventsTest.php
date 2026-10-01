@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Unit\Inventory;
 
 use PHPUnit\Framework\TestCase;
 use SEOCart\Inventory\Domain\Event\StockAdjusted;
+use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Domain\Event\StockHoldExpired;
 use SEOCart\Inventory\Domain\Event\StockReservationReleased;
 use SEOCart\Inventory\Domain\Event\StockReserved;
@@ -23,7 +24,7 @@ use SEOCart\Tests\Support\Doubles\FakeTransactionManager;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 
 /**
- * The four stock events, read the way a hooks reference reads them: without a database.
+ * The stock events, read the way a hooks reference reads them: without a database.
  *
  * A reference of the actions the plugin fires is generated from each event class: its name, its
  * delivery, its payload version, its aggregate, and the payload fields from the constructor's
@@ -55,6 +56,7 @@ final class EventsTest extends TestCase {
 			'StockHoldExpired'         => array( new StockHoldExpired( '018f4e2a-7b3c-7d1e-9a2b-3c4d5e6f7a8b', 7, 2, '2026-09-24 09:55:00', $at ) ),
 			'StockReserved'            => array( new StockReserved( '018f4e2a-7b3c-7d1e-9a2b-3c4d5e6f7a8b', 3, null, array( 7, 9 ), array( 2, 1 ), '2026-09-24 10:15:00', $at ) ),
 			'StockReservationReleased' => array( new StockReservationReleased( '018f4e2a-7b3c-7d1e-9a2b-3c4d5e6f7a8b', 'payment_declined', array( 7 ), array( 2 ), $at ) ),
+			'StockAllocated'           => array( new StockAllocated( 31, array( 7, 9 ), array( 2, 1 ), $at ) ),
 		);
 	}
 
@@ -101,7 +103,7 @@ final class EventsTest extends TestCase {
 	}
 
 	/**
-	 * Tests the class-level facts a reference reads: readonly, a name, a delivery, version 1 and the `variant` aggregate.
+	 * Tests the class-level facts a reference reads: readonly, a name, a delivery, version 1 and the aggregate its constant names.
 	 *
 	 * @since 0.1.0
 	 *
@@ -115,20 +117,21 @@ final class EventsTest extends TestCase {
 		$this->assertTrue( $class->isFinal() && $class->isReadOnly() );
 		$this->assertMatchesRegularExpression( '/^stock_[a-z_]+$/', $event::eventName() );
 		$this->assertSame( 1, $event::payloadVersion() );
-		$this->assertSame( 'variant', $event->aggregateType() );
 		$this->assertTrue( $class->hasConstant( 'AGGREGATE' ) );
-		$this->assertStringContainsString( 'Fires after', (string) $class->getDocComment() );
+		$this->assertSame( $class->getConstant( 'AGGREGATE' ), $event->aggregateType() );
+		$this->assertContains( $event->aggregateType(), array( 'variant', 'order' ), 'A stock event happens to an item, or to the order it allocates to.' );
+		$this->assertStringContainsString( 'Fires ', (string) $class->getDocComment() );
 	}
 
 	/**
-	 * Tests that the kernel's catalog holds the four events, and that the publisher's rules accept each.
+	 * Tests that the kernel's catalog holds the stock events, and that the publisher's rules accept each.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_the_catalog_lists_them_and_the_publisher_accepts_them(): void {
 		$catalog = new EventCatalog( Modules::EVENT_CLASSES );
 
-		foreach ( array( StockAdjusted::class, StockHoldExpired::class, StockReserved::class, StockReservationReleased::class ) as $class ) {
+		foreach ( array( StockAdjusted::class, StockAllocated::class, StockHoldExpired::class, StockReserved::class, StockReservationReleased::class ) as $class ) {
 			$this->assertSame( $class::eventName(), $catalog->nameOf( $class ) );
 		}
 
@@ -146,7 +149,7 @@ final class EventsTest extends TestCase {
 	}
 
 	/**
-	 * Tests that a reservation and a release refuse lists that do not pair up.
+	 * Tests that a reservation, a release and an allocation refuse lists that do not pair up.
 	 *
 	 * @since 0.1.0
 	 */
@@ -159,6 +162,8 @@ final class EventsTest extends TestCase {
 				static fn() => new StockReserved( 'h', null, null, array( 1, 2 ), array( 1 ), '2026-09-24 10:15:00', $at ),
 				static fn() => new StockReserved( 'h', null, null, array(), array(), '2026-09-24 10:15:00', $at ),
 				static fn() => new StockReservationReleased( 'h', 'x', array( 1 ), array(), $at ),
+				static fn() => new StockAllocated( 1, array( 1 ), array(), $at ),
+				static fn() => new StockAllocated( 1, array(), array(), $at ),
 			) as $build
 		) {
 			try {
@@ -168,6 +173,6 @@ final class EventsTest extends TestCase {
 			}
 		}
 
-		$this->assertSame( 3, $refused );
+		$this->assertSame( 5, $refused );
 	}
 }

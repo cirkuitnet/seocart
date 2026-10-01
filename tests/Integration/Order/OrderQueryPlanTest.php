@@ -127,6 +127,10 @@ final class OrderQueryPlanTest extends OrderTestCase {
 		$orders->findByUuid( $inserted->uuid );
 		$repository->findForAccess( $inserted->uuid );
 
+		// The reads of a placement's settlement and of a refusal that names the order: its lines' stock, its status by id.
+		$orders->stockLines( $inserted->id );
+		$orders->statusOf( $inserted->id );
+
 		// The reads of doctor's payment check: the payment amounts and the lines' refunded quantities, a page at a time, the flagged orders and the totals drift.
 		$repository->paymentAmounts( 0, 500 );
 		$repository->refundedQuantities( 0, 500 );

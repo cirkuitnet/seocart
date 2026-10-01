@@ -486,6 +486,35 @@ final class Orders {
 	}
 
 	/**
+	 * Reads what each of an order's lines sells, for the stock the order is allocated: one read, in variant order.
+	 *
+	 * The settlement of a placement calls it once the payment path has locked the order, so the
+	 * lines it reads are the ones the order keeps.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $orderId The order's internal id.
+	 * @return list<array{orderLineId: int, variantId: int, quantity: int}> The lines; none for no such order.
+	 */
+	public function stockLines( int $orderId ): array {
+		return $this->orders->stockLines( $orderId );
+	}
+
+	/**
+	 * Reads an order's public identifier and status by its internal id: one plain read, which locks nothing and needs no transaction.
+	 *
+	 * For an answer that names an order the caller knows by id only, such as the order a cart is placing.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $orderId The order's internal id, never a value from a request.
+	 * @return array{uuid: string, status: OrderStatus}|null The two, or null when there is no such order.
+	 */
+	public function statusOf( int $orderId ): ?array {
+		return $this->orders->statusOf( $orderId );
+	}
+
+	/**
 	 * Changes the status of an order this transaction has locked, records it and publishes it.
 	 *
 	 * @since 0.1.0

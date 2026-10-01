@@ -233,6 +233,44 @@ final class CalculatorTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a calculation names what an order records beside its totals: the promotions that applied, the rate selected and the tax quote's fingerprint.
+	 *
+	 * Planted violation: in Calculation::taxQuoteFingerprint(), keep the quote's expiry: two
+	 * calculations of the same quote then have different fingerprints.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_calculation_names_its_promotions_its_shipping_rate_and_its_tax_quote(): void {
+		$uuid       = '00000000-0000-7000-8000-00000000c010';
+		$codes      = new FixedPromotionCodes( new PromotionFacts( 7, $uuid, 'SAVE10', PromotionEffect::percent( Percentage::fromString( '10' ) ), 10 ) );
+		$calculator = Calculators::over( self::prices(), self::quoters(), new FakeTransactionManager(), codes: $codes, evaluator: new FactsEvaluator() );
+		$request    = new CalculationRequest( Currency::of( 'USD' ), array( new LineRequest( 'a', 11, 2 ) ), new Address( 'US' ), array( 'SAVE10', 'NOPE' ) );
+		$first      = $calculator->calculate( $request );
+		$rates      = array( 'standard' => array( Inputs::rate( '20' ) ) );
+		$requoted   = new TaxQuote( 'tax-quote-1', 'US-TX', 'test:tax:v1', $rates, $rates, new \DateTimeImmutable( '2026-01-15T11:30:00+00:00' ) );
+		$later      = Calculators::over( self::prices(), new PoisonedQuoters( array( Inputs::shippingRate( 'flat', '5.00' ) ), $requoted ), new FakeTransactionManager(), codes: $codes, evaluator: new FactsEvaluator() )->calculate( $request );
+		$otherRate  = Calculators::over( self::prices(), new PoisonedQuoters( array( Inputs::shippingRate( 'flat', '5.00' ) ), Inputs::taxQuote( array( 'standard' => array( Inputs::rate( '21' ) ) ) ) ), new FakeTransactionManager(), codes: $codes, evaluator: new FactsEvaluator() )->calculate( $request );
+		$noAddress  = $calculator->calculate( new CalculationRequest( Currency::of( 'USD' ), array( new LineRequest( 'a', 11, 2 ) ) ) );
+
+		$this->assertSame(
+			array(
+				array(
+					'id'   => 7,
+					'uuid' => $uuid,
+				),
+			),
+			$first->appliedPromotions(),
+			'The code turned away is not a promotion that applied.'
+		);
+		$this->assertSame( array(), $noAddress->appliedPromotions() );
+		$this->assertSame( array( 'ship-quote-flat', 'flat', 500, 'net' ), array( $first->selectedShippingRate()['quote_id'] ?? null, $first->selectedShippingRate()['method_key'] ?? null, $first->selectedShippingRate()['rate_minor'] ?? null, $first->selectedShippingRate()['rate_basis'] ?? null ) );
+		$this->assertNull( $noAddress->selectedShippingRate(), 'No shipping is selected without a destination.' );
+		$this->assertMatchesRegularExpression( '/^[0-9a-f]{64}$/', $first->taxQuoteFingerprint() );
+		$this->assertSame( $first->taxQuoteFingerprint(), $later->taxQuoteFingerprint(), 'The same quote of the same rates, holding until later, has the same fingerprint.' );
+		$this->assertNotSame( $first->taxQuoteFingerprint(), $otherRate->taxQuoteFingerprint(), 'Another rate is another quote.' );
+	}
+
+	/**
 	 * Tests that a request without codes asks the resolver nothing.
 	 *
 	 * @since 0.1.0

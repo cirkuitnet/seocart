@@ -88,7 +88,7 @@ final class StubGatewayTest extends TestCase {
 	}
 
 	/**
-	 * Tests the later answers: the customer confirmed, the provider still decides, and the rest answer as they first did; an unknown intent is unknown.
+	 * Tests the later answers: the customer confirmed, the provider still decides, and the rest answer as they first did; an intent the stub gave no reference to has no record, which is a declined authorization `not_found`.
 	 *
 	 * @since 0.1.0
 	 */
@@ -101,7 +101,10 @@ final class StubGatewayTest extends TestCase {
 		$this->assertSame( array( Outcome::Approved, 'stub-ch-' . self::INTENT ), array( $confirmed->outcome, $confirmed->providerObjectId ) );
 		$this->assertNull( $stub->query( self::query( 'stub-pi-pending-' . self::INTENT ) ), 'Still pending.' );
 		$this->assertEquals( $stub->authorize( new PaymentRequest( self::INTENT, self::amount(), StubGateway::DECLINE ) ), $stub->query( self::query( 'stub-pi-decline-' . self::INTENT ) ) );
-		$this->assertNull( $stub->query( self::query( null ) ), 'An intent the stub gave no reference to.' );
+		$unheard = $stub->query( self::query( null ) );
+
+		$this->assertNotNull( $unheard, 'An intent the stub gave no reference to is one it has no record of: an answer.' );
+		$this->assertSame( array( Operation::Authorize, Outcome::Declined, StubGateway::NOT_FOUND, 'stub-nf-' . self::INTENT, null ), array( $unheard->operation, $unheard->outcome, $unheard->errorCode, $unheard->providerObjectId, $unheard->providerIntentId ) );
 		$this->assertNull( $stub->query( self::query( 'pi_3OtherProvider' ) ), 'Another provider\'s reference.' );
 		$this->assertNull( $stub->query( self::query( 'stub-pi-throw-' . self::INTENT ) ), 'A scenario the script does not know.' );
 	}

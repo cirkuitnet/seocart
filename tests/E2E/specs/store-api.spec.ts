@@ -17,12 +17,15 @@
  * long as the cart; a read of the cart gets none. The cart's lines name a variant no product has,
  * which the cart keeps and reports unpriced, so the spec needs no catalog.
  *
- * The order-status read answers a guest who presents the order's access key, in its header or
- * in the emailed link's `order_key` parameter, with the order's figures and lines; a guest
- * without the key, or with a wrong one, gets the same `order.not_found` as for an order that
- * does not exist. The Store API cannot place an order yet, so the reads of a real order need one
- * planted on the site under test first, named in SEOCART_E2E_ORDER as `<uuid>:<key>`; without it
- * they are skipped, and the refusal of an order that does not exist still runs.
+ * A guest places an order. The spec creates a product of its own through the REST API as the
+ * administrator (published, with a SKU and a price), gives it stock, and reads its default
+ * variant's id from the product's `seocart` object. The guest adds a line of it, writes a
+ * complete checkout and places the order with an Idempotency-Key header; the stub gateway
+ * approves it, and the answer carries the order's key, once. The order-status read answers a
+ * guest who presents that key, in its header or in the emailed link's `order_key` parameter,
+ * with the order's figures and lines; a guest without the key, or with a wrong one, gets the
+ * same `order.not_found` as for an order that does not exist. The product is moved to the trash
+ * afterwards: the order's allocation keeps its variant from being deleted.
  *
  * The checkout: a write of the checkout's details moves the cart's version on and gets the cart
  * cookie again; its answer carries a guest's shipping address as an object without its fields,
@@ -41,6 +44,10 @@
 import type { APIRequestContext, APIResponse } from '@playwright/test';
 import { test, expect } from '../fixtures';
 import { ignoreHTTPSErrors, siteBaseURL } from '../support/environment';
+import type { createRequestUtils } from '../support/request-utils';
+
+/** The administrator's REST client, as the fixtures give it. */
+type RequestUtils = Awaited< ReturnType< typeof createRequestUtils > >;
 
 /** The Store API's namespace. */
 const STORE_NAMESPACE = 'seocart/store/v1';
@@ -93,14 +100,21 @@ const ORDER_KEY_HEADER = 'X-SEOCart-Order-Key';
 /** A well-formed uuid no order has. */
 const NO_SUCH_ORDER = '00000000-0000-7000-8000-000000000000';
 
-/** The order planted on the site under test, if any: SEOCART_E2E_ORDER is `<uuid>:<key>`. */
-const PLANTED_ORDER = ( () => {
-	const [ uuid = '', key = '' ] = (
-		process.env.SEOCART_E2E_ORDER ?? ''
-	).split( ':' );
+/** The REST base of the product post type, which the administrator creates a product through. */
+const PRODUCTS_REST_BASE = 'seocart-products';
 
-	return '' !== uuid && '' !== key ? { uuid, key } : null;
-} )();
+/** The request header a placement carries its idempotency key in. */
+const IDEMPOTENCY_HEADER = 'Idempotency-Key';
+
+/** The stub gateway's payment token that approves. */
+const APPROVE = 'stub:approve';
+
+/** An order a guest placed, and the product it bought. */
+interface PlacedOrder {
+	uuid: string;
+	key: string;
+	productId: number;
+}
 
 /** The promotion code planted on the site under test, if any: SEOCART_E2E_CODE names it. */
 const PLANTED_CODE = ( process.env.SEOCART_E2E_CODE ?? '' ).trim();
@@ -174,6 +188,124 @@ async function startCart( guest: APIRequestContext ): Promise< string > {
 	expect( ( await started.json() ).version ).toBe( 1 );
 
 	return cookiePair( setCookies( started )[ 0 ] );
+}
+
+/**
+ * Creates a product to sell as the administrator, stocks it, then places an order of one unit of it as a guest: a line, a complete checkout, and the placement.
+ *
+ * @param guest        The guest's request context, which keeps the cart cookie as a browser does.
+ * @param requestUtils The administrator's REST client.
+ */
+async function placeOrder(
+	guest: APIRequestContext,
+	requestUtils: RequestUtils
+): Promise< PlacedOrder > {
+	const product = await requestUtils.rest< {
+		id: number;
+		seocart: { variant_id: number; sellability: string };
+	} >( {
+		method: 'POST',
+		path: `/wp/v2/${ PRODUCTS_REST_BASE }`,
+		data: {
+			title: 'Store API spec: a product a guest buys',
+			status: 'publish',
+			seocart: { sku: `E2E-ORDER-${ Date.now() }`, price_minor: 1999 },
+		},
+	} );
+
+	expect( product.seocart.sellability ).toBe( 'sellable' );
+
+	await requestUtils.rest( {
+		method: 'POST',
+		path: `/seocart/v1/stock-items/${ product.seocart.variant_id }/adjustments`,
+		data: { delta: 5, reason: 'received' },
+	} );
+
+	const line = await guest.post(
+		restUrl( `/${ STORE_NAMESPACE }/cart/lines` ),
+		{
+			headers: STORE_HEADER,
+			data: {
+				lines: [
+					{ variant_id: product.seocart.variant_id, quantity: 1 },
+				],
+			},
+		}
+	);
+
+	expect( line.status() ).toBe( 200 );
+	expect( ( await line.json() ).unpriced_lines ).toEqual( [] );
+
+	const checkout = await guest.put(
+		restUrl( `/${ STORE_NAMESPACE }/checkout` ),
+		{
+			headers: STORE_HEADER,
+			data: {
+				cart_version: 1,
+				billing_address: {
+					country: 'GB',
+					first_name: 'Ada',
+					last_name: 'Lovelace',
+					line1: "12 St James's Square",
+					city: 'London',
+					postcode: 'SW1Y 4JH',
+					email: 'ada@example.com',
+				},
+				shipping_address: {
+					country: 'GB',
+					line1: "12 St James's Square",
+					city: 'London',
+					postcode: 'SW1Y 4JH',
+				},
+				payment_method_key: 'stub',
+			},
+		}
+	);
+
+	expect( checkout.status() ).toBe( 200 );
+
+	const ready = await checkout.json();
+	const placement = {
+		cart_version: ready.version,
+		grand_total_minor: ready.totals.summary.grand_minor,
+		currency: ready.totals.currency,
+		payment_data: { payment_token: APPROVE },
+	};
+	const key = `e2e-${ Date.now() }`;
+	const placed = await guest.post(
+		restUrl( `/${ STORE_NAMESPACE }/checkout` ),
+		{
+			headers: { ...STORE_HEADER, [ IDEMPOTENCY_HEADER ]: key },
+			data: placement,
+		}
+	);
+
+	expect( placed.status() ).toBe( 200 );
+	expect( placed.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+
+	const answer = await placed.json();
+
+	expect( answer.outcome ).toBe( 'approved' );
+	expect( answer.status ).toBe( 'processing' );
+	expect( typeof answer.order_key ).toBe( 'string' );
+
+	// The same request again, as a client that lost the answer retries it: the same order and key.
+	const again = await guest.post(
+		restUrl( `/${ STORE_NAMESPACE }/checkout` ),
+		{
+			headers: { ...STORE_HEADER, [ IDEMPOTENCY_HEADER ]: key },
+			data: placement,
+		}
+	);
+
+	expect( again.status() ).toBe( 200 );
+	expect( ( await again.json() ).order_key ).toBe( answer.order_key );
+
+	return {
+		uuid: answer.order_uuid,
+		key: answer.order_key,
+		productId: product.id,
+	};
 }
 
 /**
@@ -554,59 +686,76 @@ test.describe( 'Store API, as a guest', () => {
 		);
 	} );
 
-	test( "a guest with the order's key reads its status, in the header or the link", async () => {
-		test.skip(
-			null === PLANTED_ORDER,
-			'Plant an order on the site under test and name it in SEOCART_E2E_ORDER as <uuid>:<key>.'
-		);
+	test.describe.serial( 'an order a guest places', () => {
+		let order: PlacedOrder | null = null;
 
-		const order = PLANTED_ORDER as { uuid: string; key: string };
-		const reads = [
-			await guest.get( orderUrl( order.uuid ), {
-				headers: { [ ORDER_KEY_HEADER ]: order.key },
-			} ),
-			await guest.get( orderUrl( order.uuid, order.key ) ),
-		];
-
-		for ( const read of reads ) {
-			expect( read.status() ).toBe( 200 );
-			expect( read.headers()[ 'cache-control' ] ).toBe( NO_STORE );
-			expect( varies( read ) ).toContain( 'cookie' );
-			expect(
-				setCookies( read ),
-				'The status read set a cookie.'
-			).toEqual( [] );
-
-			const body = await read.json();
-
-			expect( body.uuid ).toBe( order.uuid );
-			expect( typeof body.order_number ).toBe( 'string' );
-			expect( typeof body.grand_total_minor ).toBe( 'number' );
-			expect( body ).not.toHaveProperty( 'email' );
-			expect( body.lines.length ).toBeGreaterThan( 0 );
-
-			for ( const line of body.lines ) {
-				expect( typeof line.title ).toBe( 'string' );
-				expect( typeof line.sku ).toBe( 'string' );
-				expect( line.quantity ).toBeGreaterThan( 0 );
-				expect( typeof line.line_total_minor ).toBe( 'number' );
+		test.afterAll( async ( { requestUtils } ) => {
+			if ( null !== order ) {
+				// The trash, not a delete: the order's allocation keeps its variant from being deleted.
+				await requestUtils.rest( {
+					method: 'DELETE',
+					path: `/wp/v2/${ PRODUCTS_REST_BASE }/${ order.productId }`,
+				} );
 			}
-		}
-	} );
+		} );
 
-	test( "a guest without the order's key, or with a wrong one, gets the answer an order that does not exist gets", async () => {
-		test.skip(
-			null === PLANTED_ORDER,
-			'Plant an order on the site under test and name it in SEOCART_E2E_ORDER as <uuid>:<key>.'
-		);
+		test( 'a guest places an order: a line, a checkout, the placement with its key, and a retry that answers the same', async ( {
+			requestUtils,
+		} ) => {
+			order = await placeOrder( guest, requestUtils );
+		} );
 
-		const order = PLANTED_ORDER as { uuid: string; key: string };
+		test( "a guest with the order's key reads its status, in the header or the link", async () => {
+			test.skip( null === order, 'The order was not placed.' );
 
-		await expectOrderNotFound( await guest.get( orderUrl( order.uuid ) ) );
-		await expectOrderNotFound(
-			await guest.get( orderUrl( order.uuid ), {
-				headers: { [ ORDER_KEY_HEADER ]: '0'.repeat( 32 ) },
-			} )
-		);
+			const placed = order as PlacedOrder;
+			const reads = [
+				await guest.get( orderUrl( placed.uuid ), {
+					headers: { [ ORDER_KEY_HEADER ]: placed.key },
+				} ),
+				await guest.get( orderUrl( placed.uuid, placed.key ) ),
+			];
+
+			for ( const read of reads ) {
+				expect( read.status() ).toBe( 200 );
+				expect( read.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+				expect( varies( read ) ).toContain( 'cookie' );
+				expect(
+					setCookies( read ),
+					'The status read set a cookie.'
+				).toEqual( [] );
+
+				const body = await read.json();
+
+				expect( body.uuid ).toBe( placed.uuid );
+				expect( body.status ).toBe( 'processing' );
+				expect( typeof body.order_number ).toBe( 'string' );
+				expect( typeof body.grand_total_minor ).toBe( 'number' );
+				expect( body ).not.toHaveProperty( 'email' );
+				expect( body.lines.length ).toBeGreaterThan( 0 );
+
+				for ( const line of body.lines ) {
+					expect( typeof line.title ).toBe( 'string' );
+					expect( typeof line.sku ).toBe( 'string' );
+					expect( line.quantity ).toBeGreaterThan( 0 );
+					expect( typeof line.line_total_minor ).toBe( 'number' );
+				}
+			}
+		} );
+
+		test( "a guest without the order's key, or with a wrong one, gets the answer an order that does not exist gets", async () => {
+			test.skip( null === order, 'The order was not placed.' );
+
+			const placed = order as PlacedOrder;
+
+			await expectOrderNotFound(
+				await guest.get( orderUrl( placed.uuid ) )
+			);
+			await expectOrderNotFound(
+				await guest.get( orderUrl( placed.uuid ), {
+					headers: { [ ORDER_KEY_HEADER ]: '0'.repeat( 32 ) },
+				} )
+			);
+		} );
 	} );
 } );

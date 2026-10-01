@@ -422,26 +422,32 @@ final class HoldConcurrencyTest extends StockTestCase {
 	}
 
 	/**
-	 * Tests that a two-line hold that reclaimed its first item, deadlocked with a holder of its second, is run again whole and loses and doubles nothing.
+	 * Tests that a hold that reclaimed one item never makes a holder of another item wait: no gap is locked.
 	 *
-	 * The item lock serialises everything on one item, but not the gaps InnoDB locks on the hold
-	 * table under REPEATABLE READ. A reclaims the first item's expired hold, which locks the gap its
-	 * claim scanned up to the end of the hold index; A holds the first item and is about to claim
-	 * the second. B, heavier in its own transaction, claims the second item, which A has not
-	 * locked, and inserts its hold row, which falls into A's gap: the server shows B waiting for A.
-	 * A's claim of the second item then waits for B: a deadlock across two items. InnoDB rolls back
-	 * the lighter transaction, A, and the sleeper is the barrier that lets B commit. A's second
-	 * attempt reclaims the first item again and holds both. Afterwards each item's `held` equals its
-	 * hold rows, the expired hold was reported once, and the hold was reserved once.
+	 * A holds two items and reclaims the first one's expired hold on its way. Just before A claims
+	 * the second item, when A holds the first item and has claimed, given back and deleted its
+	 * expired rows by token, B, in a transaction of its own and heavier, claims the second item and
+	 * a third one and inserts a hold row for each. Under REPEATABLE READ those inserts fall into the
+	 * gaps A's lookups by token locked: B waited for A, A's claim of the second item then waited for
+	 * B, and InnoDB rolled A back. At READ COMMITTED, which every unit that writes stock runs at, B
+	 * waits for nothing and commits, and A claims the second item and finishes in one attempt.
+	 * Afterwards each item's `held` equals its hold rows, the expired hold was reported once, and
+	 * the hold was reserved once.
+	 *
+	 * Planted violation: in StockService::hold(), drop Isolation::ReadCommitted. B's insert of the
+	 * second item's row then waits on A's gap ("B waited for a hold of another item"), and A's claim
+	 * of the second item deadlocks with B, so a pause is recorded.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_a_two_line_hold_after_a_reclaim_and_a_holder_of_its_second_item_lose_nothing(): void {
+	public function test_a_reclaim_never_makes_a_holder_of_another_item_wait(): void {
 		$first  = self::variant();
 		$second = self::variant();
+		$third  = self::variant();
 
 		$this->stockItem( $first, 1 );
 		$this->stockItem( $second, 2 );
+		$this->stockItem( $third, 2 );
 		$this->plantHold( $first, 1, -60 );
 
 		foreach ( range( 1, 10 ) as $id ) {
@@ -449,42 +455,62 @@ final class HoldConcurrencyTest extends StockTestCase {
 		}
 
 		$b      = $this->secondConnection();
-		$group  = SequentialIdGenerator::nth( 800010 );
-		$claim  = $this->raw( MysqlStockRepository::CLAIM, 1, $second, 1 );
-		$insert = $this->raw( MysqlStockRepository::INSERT_HOLD, $second, 0, 0, $group, 1, '2099-01-01 00:00:00' );
+		$groups = array(
+			$second => SequentialIdGenerator::nth( 800010 ),
+			$third  => SequentialIdGenerator::nth( 800011 ),
+		);
+		$waited = null;
 
 		$b->query( 'START TRANSACTION' );
 		$b->query( sprintf( "UPDATE `%s` SET value = 'b' WHERE id <= 10", $this->rowsTable() ) );
 
 		$raced = $this->beforeStatement(
-			'/^' . preg_quote( $claim, '/' ) . '$/',
-			function () use ( $b, $claim, $insert ): void {
-				$b->query( $claim );
+			'/^' . preg_quote( $this->raw( MysqlStockRepository::CLAIM, 1, $second, 1 ), '/' ) . '$/',
+			function () use ( $b, $groups, &$waited ): void {
+				foreach ( $groups as $variant => $group ) {
+					$b->query( $this->raw( MysqlStockRepository::CLAIM, 1, $variant, 1 ) );
 
-				$this->assertSame( 1, $b->affectedRows(), 'B could not claim the second item, which A had not locked.' );
+					$this->assertSame( 1, $b->affectedRows(), 'B could not claim an item A had not locked.' );
 
-				$b->queryAsync( $insert );
-				$this->awaitWaiting( $b, $insert, 'update' );
+					$insert = $this->raw( MysqlStockRepository::INSERT_HOLD, $variant, 0, 0, $group, 1, '2099-01-01 00:00:00' );
+
+					$b->queryAsync( $insert );
+
+					if ( $this->waitsOrAnswers( $b, $insert, 'update' ) ) {
+						$waited = true;
+
+						return;
+					}
+
+					$this->assertSame( 1, $b->reap() );
+				}
+
+				$waited = false;
+
+				$b->query( 'COMMIT' );
 			}
 		);
 
+		// Only under the planted violation: B waits on A's gap, A deadlocks with B and is rolled back.
 		$this->onSleep = function () use ( $b ): void {
 			$this->assertTrue( $b->isReady( 5000 ), 'B\'s hold row must go in once A is rolled back.' );
-			$this->assertSame( 1, $b->reap() );
-
+			$b->reap();
 			$b->query( 'COMMIT' );
 		};
 
 		$hold = $this->service->hold( array( new HoldLine( $first, 1 ), new HoldLine( $second, 1 ) ), 600 );
 
 		$this->assertTrue( $raced->fired, 'B never raced A.' );
-		$this->assertSame( array( 50 ), $this->sleeps, 'InnoDB chose B as the deadlock victim: victim selection changed; raise B\'s weight.' );
+		$this->assertFalse( $waited, 'B waited for a hold of another item: a gap lock reached across items.' );
+		$this->assertSame( array(), $this->sleeps, 'A deadlocked with a holder of another item.' );
 		$this->assertSame( 1, $this->committedItem( $b, $first )['held'] ?? null );
 		$this->assertSame( array( $hold->holdGroup . ':1' ), $this->committedHolds( $b, $first ) );
 		$this->assertSame( 2, $this->committedItem( $b, $second )['held'] ?? null );
-		$this->assertSame( array( $group . ':1', $hold->holdGroup . ':1' ), $this->committedHolds( $b, $second ) );
-		$this->assertSame( 1, $this->committedEvents( $b, StockHoldExpired::eventName() ), 'The expired hold is reported once, by the attempt that committed.' );
-		$this->assertCount( 1, $this->afterCommit, 'One reservation, not one per attempt.' );
+		$this->assertEqualsCanonicalizing( array( $groups[ $second ] . ':1', $hold->holdGroup . ':1' ), $this->committedHolds( $b, $second ) );
+		$this->assertSame( 1, $this->committedItem( $b, $third )['held'] ?? null );
+		$this->assertSame( array( $groups[ $third ] . ':1' ), $this->committedHolds( $b, $third ) );
+		$this->assertSame( 1, $this->committedEvents( $b, StockHoldExpired::eventName() ), 'The expired hold is reported once.' );
+		$this->assertCount( 1, $this->afterCommit, 'One reservation.' );
 		$this->assertTrue( $this->projectionCheck()->passed, implode( "\n", $this->projectionCheck()->findings ) );
 	}
 }

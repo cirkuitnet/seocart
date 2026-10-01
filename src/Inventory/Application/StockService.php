@@ -12,7 +12,9 @@ declare( strict_types=1 );
 namespace SEOCart\Inventory\Application;
 
 use SEOCart\Inventory\Domain\Adjustment;
+use SEOCart\Inventory\Domain\Allocation;
 use SEOCart\Inventory\Domain\Event\StockAdjusted;
+use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Domain\Event\StockHoldExpired;
 use SEOCart\Inventory\Domain\Event\StockReservationReleased;
 use SEOCart\Inventory\Domain\Event\StockReserved;
@@ -24,6 +26,7 @@ use SEOCart\Inventory\Domain\StockLevel;
 use SEOCart\Inventory\Domain\StockRepository;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\Authorizer;
+use SEOCart\Platform\Database\Isolation;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\EventPublisher;
@@ -48,9 +51,13 @@ defined( 'ABSPATH' ) || exit;
  * a caller's transaction the failure goes up to the caller's policy.
  *
  * Every path takes items in ascending variant order and each item before its hold rows, and a
- * reclaim always begins with the item's lock (see StockRepository). Correctness never waits
- * for the sweep: a hold that finds too few units reclaims that item's expired holds itself and
- * claims once more, so an expired hold delays a sale by at most that one retry.
+ * reclaim always begins with the item's lock (see StockRepository). Every unit of work that
+ * writes holds or items runs at READ COMMITTED, so its statements lock the rows they match and
+ * no gap between them: under REPEATABLE READ a reclaim's lookups by token lock the gaps every
+ * new hold row of every item and every other reclaim must write into, and a hold of one item
+ * waited for, or deadlocked with, a reclaim of another. Correctness never waits for the sweep:
+ * a hold that finds too few units reclaims that item's expired holds itself and claims once
+ * more, so an expired hold delays a sale by at most that one retry.
  *
  * It decides nothing about whether a product may be sold: a caller that sells checks that first.
  *
@@ -193,7 +200,8 @@ final class StockService {
 
 		return $this->tx->transaction(
 			fn(): Hold => $this->holdInside( $lines, $ttlSeconds, $cartId, $orderId ),
-			RetryPolicy::deadlocks()
+			RetryPolicy::deadlocks(),
+			Isolation::ReadCommitted
 		);
 	}
 
@@ -231,7 +239,8 @@ final class StockService {
 
 				return $this->publishReleases( $released, $reason );
 			},
-			RetryPolicy::deadlocks()
+			RetryPolicy::deadlocks(),
+			Isolation::ReadCommitted
 		);
 	}
 
@@ -269,8 +278,57 @@ final class StockService {
 
 				$this->publishReleases( $released, $reason );
 			},
-			RetryPolicy::deadlocks()
+			RetryPolicy::deadlocks(),
+			Isolation::ReadCommitted
 		);
+	}
+
+	/**
+	 * Allocates an accepted order's units, from the hold placement took for it: inside the caller's transaction, all or nothing.
+	 *
+	 * The order's lines are taken by variant, in ascending order. For each tracked variant, the
+	 * hold's row of it is converted: its units move from `held` to `allocated` under the item's
+	 * lock and the row is deleted, so `held` and `allocated` stay equal to their rows. When the
+	 * hold no longer has that row, because it expired and another checkout reclaimed it, or a
+	 * delete released it, the units are claimed afresh from what is available, reclaiming the
+	 * item's expired holds once when too few are; still too few is `stock.insufficient`, which
+	 * undoes every line of this allocation and leaves the caller to decide. Then one allocation row
+	 * per line. An untracked variant was never held and is not allocated. StockAllocated goes out
+	 * through the outbox with the transaction.
+	 *
+	 * Outside a transaction it throws \LogicException before any statement.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException|\InvalidArgumentException `stock.insufficient` when a variant's hold is gone and too few
+	 *         units are available; `stock.item_missing` when a variant has no stock item any more;
+	 *         `stock.projection_corrupt` when a reclaim finds `held` below its rows. An \InvalidArgumentException when
+	 *         the hold id is empty, the order id is below 1, or there is no line.
+	 *
+	 * @param string       $holdGroup The hold placement took for the order.
+	 * @param int          $orderId   The order.
+	 * @param Allocation[] $lines     The order's lines: each line's variant and units.
+	 * @return list<Allocation> The lines allocated: those of tracked variants.
+	 *
+	 * @phpstan-param list<Allocation> $lines
+	 */
+	public function allocate( string $holdGroup, int $orderId, array $lines ): array {
+		$this->requireCallersTransaction( __FUNCTION__ );
+
+		if ( '' === $holdGroup || $orderId < 1 || array() === $lines ) {
+			throw new \InvalidArgumentException( 'An allocation names the hold and the order, and allocates at least one line.' );
+		}
+
+		$byVariant = array();
+
+		foreach ( $lines as $line ) {
+			$byVariant[ $line->variantId ][] = $line;
+		}
+
+		ksort( $byVariant );
+
+		// A savepoint of the caller's transaction, whose level and retry policy apply: a refusal undoes this allocation only.
+		return $this->tx->transaction( fn(): array => $this->allocateInside( $holdGroup, $orderId, $byVariant ) );
 	}
 
 	/**
@@ -320,7 +378,8 @@ final class StockService {
 
 				return $adjustment;
 			},
-			RetryPolicy::deadlocks()
+			RetryPolicy::deadlocks(),
+			Isolation::ReadCommitted
 		);
 	}
 
@@ -506,7 +565,8 @@ final class StockService {
 
 				return count( $given->rows );
 			},
-			RetryPolicy::deadlocks()
+			RetryPolicy::deadlocks(),
+			Isolation::ReadCommitted
 		);
 	}
 
@@ -635,6 +695,96 @@ final class StockService {
 				'variant_id' => $line->variantId,
 				'requested'  => $line->quantity,
 				'available'  => max( 0, $level->available() ),
+			)
+		);
+	}
+
+	/**
+	 * Allocates the order's lines inside the transaction, variant by variant.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string                       $holdGroup The hold.
+	 * @param int                          $orderId   The order.
+	 * @param array<int, list<Allocation>> $byVariant The lines by variant, ascending.
+	 * @return list<Allocation> The lines allocated.
+	 */
+	private function allocateInside( string $holdGroup, int $orderId, array $byVariant ): array {
+		// The read every hold starts with, before any lock; the expiry it also computes is not used.
+		$tracked   = $this->stock->configuration( array_keys( $byVariant ), 1 )['track'];
+		$allocated = array();
+		$units     = array();
+		$expired   = array();
+
+		foreach ( $byVariant as $variantId => $lines ) {
+			if ( ! isset( $tracked[ $variantId ] ) ) {
+				CodedException::raise( InventoryError::ItemMissing, array( 'variant_id' => $variantId ) );
+			}
+
+			if ( ! $tracked[ $variantId ] ) {
+				continue;
+			}
+
+			$quantity = array_sum( array_map( static fn( Allocation $line ): int => $line->quantity, $lines ) );
+
+			if ( ! $this->stock->convertHold( $holdGroup, $variantId, $quantity ) ) {
+				$this->claimAllocation( $variantId, $quantity, $expired );
+			}
+
+			foreach ( $lines as $line ) {
+				$this->stock->insertAllocation( $orderId, $line );
+
+				$allocated[] = $line;
+			}
+
+			$units[ $variantId ] = $quantity;
+		}
+
+		$events = $expired;
+
+		if ( array() !== $units ) {
+			$events[] = new StockAllocated( $orderId, array_keys( $units ), array_values( $units ), $this->clock->now() );
+		}
+
+		if ( array() !== $events ) {
+			$this->events->publish( ...$events );
+		}
+
+		return $allocated;
+	}
+
+	/**
+	 * Claims an allocation's units afresh when its hold is gone, reclaiming the item's expired holds and claiming once more when the first claim finds too few.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `stock.insufficient` when the second claim also finds too few units;
+	 *                        `stock.item_missing` when the item is gone.
+	 *
+	 * @param int                $variantId The item.
+	 * @param int                $quantity  The units.
+	 * @param StockHoldExpired[] $expired   The events of the reclaims so far; this reclaim's are added.
+	 *
+	 * @phpstan-param list<StockHoldExpired> $expired
+	 */
+	private function claimAllocation( int $variantId, int $quantity, array &$expired ): void {
+		if ( $this->stock->claimAllocation( $variantId, $quantity ) ) {
+			return;
+		}
+
+		$expired = array_merge( $expired, $this->expiredEvents( $this->giveBack( $this->stock->reclaimExpired( $variantId, $this->ids->generate() ), true ) ) );
+
+		if ( $this->stock->claimAllocation( $variantId, $quantity ) ) {
+			return;
+		}
+
+		// A diagnostic read under the item's lock: it classifies the refusal, it decides nothing.
+		CodedException::raise(
+			InventoryError::Insufficient,
+			array(
+				'variant_id' => $variantId,
+				'requested'  => $quantity,
+				'available'  => max( 0, $this->lockedLevel( $variantId )->available() ),
 			)
 		);
 	}

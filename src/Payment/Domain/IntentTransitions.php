@@ -81,6 +81,18 @@ final class IntentTransitions {
 	}
 
 	/**
+	 * Tells whether a state is final: no state follows it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param IntentStatus $state The state.
+	 * @return bool True for a state the table lets an intent leave for none: refunded, voided and failed.
+	 */
+	public static function isFinal( IntentStatus $state ): bool {
+		return array() === self::TABLE[ $state->value ];
+	}
+
+	/**
 	 * Returns the values of states, for a statement's IN list.
 	 *
 	 * @since 0.1.0

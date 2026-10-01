@@ -49,11 +49,14 @@ use SEOCart\Catalog\Interfaces\Admin\ProductEditorPanel;
 use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
 use SEOCart\Checkout\Application\CheckoutSessions;
 use SEOCart\Checkout\Application\IdempotencyKeys;
+use SEOCart\Checkout\Application\PlaceOrder;
+use SEOCart\Checkout\Application\SettlePlacement;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\CheckoutSession;
 use SEOCart\Checkout\Infrastructure\Doctor\CheckoutChecks;
 use SEOCart\Checkout\Infrastructure\Jobs\IdempotencyKeyRetention;
+use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
 use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Interfaces\Operations\AbilitiesAdapter;
@@ -65,6 +68,7 @@ use SEOCart\Interfaces\Operations\RestAdapter;
 use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Domain\Event\StockAdjusted;
+use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Domain\Event\StockHoldExpired;
 use SEOCart\Inventory\Domain\Event\StockReservationReleased;
 use SEOCart\Inventory\Domain\Event\StockReserved;
@@ -304,6 +308,7 @@ final class Modules {
 		PaymentStatusChanged::class,
 		RefundRecorded::class,
 		StockAdjusted::class,
+		StockAllocated::class,
 		StockHoldExpired::class,
 		StockReserved::class,
 		StockReservationReleased::class,
@@ -1170,10 +1175,10 @@ final class Modules {
 	}
 
 	/**
-	 * The checkout module: its sessions and idempotency keys, the session write, the keys' retention job and doctor's check.
+	 * The checkout module: its sessions and idempotency keys, the session write, the order placement and its settlement, the reconciliation and retention jobs, and doctor's check.
 	 *
-	 * It adds no hook: the session write is an operation's route, the retention job runs through
-	 * JOB_HOOK, and the check through doctor.
+	 * It adds no hook: the session write and the placement are operations' routes, the jobs run
+	 * through JOB_HOOK, and the check through doctor.
 	 *
 	 * @since 0.1.0
 	 *
@@ -1185,8 +1190,40 @@ final class Modules {
 		$container->bind( MysqlIdempotencyKeys::class, static fn( Container $c ): MysqlIdempotencyKeys => new MysqlIdempotencyKeys( $c->get( Database::class ) ) );
 		$container->bind( IdempotencyKeys::class, static fn( Container $c ): IdempotencyKeys => $c->get( MysqlIdempotencyKeys::class ) );
 		$container->bind( UpdateCheckoutSession::class, static fn( Container $c ): UpdateCheckoutSession => new UpdateCheckoutSession( $c->get( CartService::class ), $c->get( CheckoutSessions::class ) ) );
+		$container->bind(
+			SettlePlacement::class,
+			static fn( Container $c ): SettlePlacement => new SettlePlacement(
+				$c->get( TransactionManager::class ),
+				$c->get( PaymentService::class ),
+				$c->get( Orders::class ),
+				$c->get( StockService::class ),
+				$c->get( PromotionUsage::class ),
+				$c->get( CartService::class ),
+				$c->get( IdempotencyKeys::class )
+			)
+		);
+		$container->bind(
+			PlaceOrder::class,
+			static fn( Container $c ): PlaceOrder => new PlaceOrder(
+				$c->get( CartService::class ),
+				$c->get( CartTokens::class ),
+				$c->get( CheckoutSessions::class ),
+				$c->get( IdempotencyKeys::class ),
+				$c->get( Sellability::class ),
+				$c->get( StockService::class ),
+				$c->get( Orders::class ),
+				$c->get( ActorCustomers::class ),
+				$c->get( PromotionUsage::class ),
+				$c->get( PaymentService::class ),
+				$c->get( SettlePlacement::class ),
+				$c->get( TransactionManager::class ),
+				$c->get( RateLimiter::class ),
+				$c->get( ClientIdentities::class )
+			)
+		);
+		$container->bind( ReconcileStalePlacements::class, static fn( Container $c ): ReconcileStalePlacements => new ReconcileStalePlacements( $c->get( PaymentService::class ), $c->get( SettlePlacement::class ), $c->get( Reporter::class ) ) );
 		$container->bind( IdempotencyKeyRetention::class, static fn( Container $c ): IdempotencyKeyRetention => new IdempotencyKeyRetention( $c->get( MysqlIdempotencyKeys::class ) ) );
-		$container->bind( CheckoutChecks::class, static fn( Container $c ): CheckoutChecks => new CheckoutChecks( $c->get( MysqlIdempotencyKeys::class ) ) );
+		$container->bind( CheckoutChecks::class, static fn( Container $c ): CheckoutChecks => new CheckoutChecks( $c->get( MysqlIdempotencyKeys::class ), $c->get( Database::class ), $c->get( PaymentRepository::class ), $c->get( OrderRepository::class ) ) );
 	}
 
 	/**

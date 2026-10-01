@@ -970,6 +970,194 @@
                         }
                     }
                 }
+            },
+            "post": {
+                "operationId": "checkout.place_order",
+                "summary": "Places an order from the request's cart, at the cart version and for the grand total the client read, and has its payment authorized; the Idempotency-Key header is required. A retry with the same key never places a second order: it is answered 200 with the placement as it stands now, the same order and order key, its outcome and statuses as the settlement left them, and a declined placement is answered so too, with the outcome declined, since refusals are not kept.",
+                "description": "Public: requires no capability. The Store API's request policy requires the header `X-SEOCart-Store: 1`, the `X-WP-Nonce` header when a login cookie is sent, the cart's token, and at most 5 requests per client in 3600 seconds.",
+                "parameters": [
+                    {
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "required": true,
+                        "description": "The attempt's idempotency key, sent in the Idempotency-Key header and nowhere else: a new key, such as a UUID, for each attempt, and the same key when it is retried.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "examples": [
+                                "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "cart_version": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "description": "The version of the cart the write is based on: the version of the last answer.",
+                                        "examples": [
+                                            3
+                                        ]
+                                    },
+                                    "grand_total_minor": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "description": "The grand total the shopper agreed to, in minor units of the cart's currency, as the cart's last answer gave it; a cart whose total is now another is refused with checkout.totals_changed.",
+                                        "examples": [
+                                            3080
+                                        ]
+                                    },
+                                    "currency": {
+                                        "type": "string",
+                                        "maxLength": 3,
+                                        "description": "The ISO 4217 code of the cart's currency, as the cart's last answer gave it.",
+                                        "examples": [
+                                            "USD"
+                                        ]
+                                    },
+                                    "payment_data": {
+                                        "type": "object",
+                                        "properties": {
+                                            "payment_token": {
+                                                "type": "string",
+                                                "maxLength": 191,
+                                                "description": "The gateway's token for the shopper's payment method, never a card number."
+                                            }
+                                        },
+                                        "additionalProperties": false,
+                                        "description": "What the client sends the payment gateway, such as the token of the shopper's payment method.",
+                                        "examples": [
+                                            {
+                                                "payment_token": "stub:approve"
+                                            }
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "cart_version",
+                                    "grand_total_minor",
+                                    "currency"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the Placement resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Placement"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`checkout.idempotency_key_missing`: An order is placed only with an Idempotency-Key header: a new key, such as a UUID, for each attempt, and the same key again when the attempt is retried.\n\n`store_api.cart_token_missing`: This request changes an existing cart, so it must carry the cart's token.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "402": {
+                        "description": "`checkout.payment_declined`: The payment was declined, so the order was not placed and nothing was charged. Check the payment details, or choose another way to pay, then place the order again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "`store_api.header_missing`: This request changes the store, so it must carry the header X-SEOCart-Store: 1.\n\n`store_api.nonce_missing`: You are logged in, but this request carries no valid nonce, so it would run as a guest. Fetch a new nonce, send it as X-WP-Nonce, and try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`cart.not_found`: There is no cart for this request: it was never started, or it has expired. Start a new cart by adding a line.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "405": {
+                        "description": "`store_api.read_method`: This request changes the store, so it must be sent as a POST, PUT, PATCH or DELETE request. A GET or HEAD request never changes it, whatever method it names.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`checkout.placement_in_progress`: An order is being placed with this idempotency key right now. Wait a moment, then send the same request again.\n\n`cart.not_open`: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.\n\n`cart.version_stale`: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.\n\n`checkout.line_unsellable`: The variant {variant_id} cannot be sold now ({reason}), so no order was placed. Remove it from the cart, then place the order again.\n\n`checkout.totals_changed`: The cart's totals have changed since you read them, so no order was placed. Check the new totals, then place the order again with them.\n\n`stock.insufficient`: Variant {variant_id}: {requested} asked for, but only {available} available.\n\n`promotion.limit_reached`: That code can no longer be used. Remove it to go on.\n\n`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "Retry-After": {
+                                "description": "How many seconds to wait before sending the same request again, sent with `checkout.placement_in_progress`: 2 seconds.",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "`checkout.idempotency_key_reused`: This idempotency key was already used to place an order from a different request. Send a new key with a new request.\n\n`checkout.cart_empty`: The cart has no line, so there is no order to place. Add a line to the cart first.\n\n`checkout.session_incomplete`: The checkout is missing details an order needs: both addresses, an email address on the billing address, and a payment method. The error lists the ones missing.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "`store_api.rate_limited`: Too many requests. Wait a moment, then try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`checkout.gateway_unavailable`: The payment provider could not be reached. Your order is waiting for its answer: check its status in a few minutes before you try again.\n\n`pricing.quote_unavailable`: an internal failure, answered with a generic message and empty details. The site's error log has what went wrong, under the correlation id.\n\n`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
             }
         },
         "/orders/{uuid}": {
@@ -3219,6 +3407,105 @@
                     "code",
                     "message",
                     "data"
+                ]
+            },
+            "Placement": {
+                "type": "object",
+                "properties": {
+                    "order_uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The order's public identifier, by which its status is read.",
+                        "examples": [
+                            "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b"
+                        ]
+                    },
+                    "order_number": {
+                        "type": "string",
+                        "description": "The number shown to people on the order and in its emails.",
+                        "examples": [
+                            "000042"
+                        ]
+                    },
+                    "order_key": {
+                        "type": "string",
+                        "description": "The order's access key, which reads its status without a login, as the status read's order_key. It is shown once, in this answer and again to a retry of the same request, and the store keeps only its hash: the client must keep it.",
+                        "examples": [
+                            "0123456789abcdef0123456789abcdef"
+                        ]
+                    },
+                    "cart_version": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "The cart's version once the order was placed.",
+                        "examples": [
+                            4
+                        ]
+                    },
+                    "outcome": {
+                        "type": "string",
+                        "enum": [
+                            "pending",
+                            "approved",
+                            "declined",
+                            "requires_action",
+                            "processing",
+                            "amount_mismatch",
+                            "stock_unavailable",
+                            "late_approval",
+                            "duplicate"
+                        ],
+                        "description": "What the placement came to: approved, requires_action when the shopper must act, processing while the gateway decides, or, given to a retry with the same key, any outcome the placement came to since, declined included; pending only while the payment is not yet known.",
+                        "examples": [
+                            "approved"
+                        ]
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "pending_payment",
+                            "awaiting_review",
+                            "processing",
+                            "on_hold",
+                            "preorder",
+                            "completed",
+                            "cancelled",
+                            "failed"
+                        ],
+                        "description": "The order's status once the placement settled.",
+                        "examples": [
+                            "processing"
+                        ]
+                    },
+                    "payment_status": {
+                        "type": "string",
+                        "enum": [
+                            "unpaid",
+                            "pending",
+                            "authorized",
+                            "partially_paid",
+                            "paid",
+                            "partially_refunded",
+                            "refunded",
+                            "voided",
+                            "failed",
+                            "disputed",
+                            "terms_pending"
+                        ],
+                        "description": "How far the order is paid once the placement settled.",
+                        "examples": [
+                            "authorized"
+                        ]
+                    }
+                },
+                "required": [
+                    "order_uuid",
+                    "order_number",
+                    "order_key",
+                    "cart_version",
+                    "outcome",
+                    "status",
+                    "payment_status"
                 ]
             },
             "Settings": {

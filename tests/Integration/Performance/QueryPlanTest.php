@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Performance;
 
 use SEOCart\Cart\Domain\Cart;
+use SEOCart\Cart\Domain\CartStatus;
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Cart\Infrastructure\MysqlCartRepository;
 use SEOCart\Catalog\Application\Query\Sellability;
@@ -413,6 +414,21 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		$keys = new MysqlIdempotencyKeys( $db );
 
+		// A placement's look for the answer its key keeps, before it reads the cart: by the key's unique key.
+		$keys->replay( 'checkout.place_order', IdempotencyClaim::keyHash( hash( 'sha256', 'a query-plan cart' ), 'attempt-0' ), hash( 'sha256', 'request' ) );
+
+		// A settlement finds the cart by the order it placed: the UPDATE's plan is read here, since the recorder judges SELECTs.
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The statement is the repository's constant, with its own placeholders; this is its prepare step.
+		$settle = $wpdb->get_row( $wpdb->prepare( 'EXPLAIN ' . MysqlCartRepository::SETTLE_ORDER, $cartTable, CartStatus::Converted->value, 1 ), ARRAY_A );
+
+		$this->assertSame( 'order_id', $settle['key'] ?? null, 'A cart is settled by its order_id key: ' . (string) wp_json_encode( $settle ) );
+
+		// A settlement rewrites the answer the placement's key keeps, found by the order too.
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The statement is the repository's constant, with its own placeholders; this is its prepare step.
+		$answer = $wpdb->get_row( $wpdb->prepare( 'EXPLAIN ' . MysqlIdempotencyKeys::SETTLE_ANSWER, $this->db->table( CheckoutTables::IDEMPOTENCY_KEYS ), 'approved', 'processing', 'authorized', 1 ), ARRAY_A );
+
+		$this->assertSame( 'order_id', $answer['key'] ?? null, 'A key\'s answer is settled by its order_id key: ' . (string) wp_json_encode( $answer ) );
+
 		// The promotion read: for the one code a shopper applies, and for a calculation of a cart
 		// holding as many codes as a cart may. Doctor's check of the use counts runs with doctor below.
 		$promotions = new MysqlPromotionRepository( $db );
@@ -438,6 +454,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 					// and deletes, rolled back with the rest.
 					$this->assertNotNull( $carts->diagnose( $someCart ) );
 					$this->assertGreaterThan( 0, $carts->deleteExpired( 100 ) );
+					$carts->settleOrder( 1, CartStatus::Converted );
 					$stock->reclaimExpired( $expired, '00000000-0000-4000-8000-000000000000' );
 
 					// A key's claim, and a second claim of it, whose duplicate is read by the key's unique key.

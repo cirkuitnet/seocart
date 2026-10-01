@@ -176,6 +176,28 @@ final class QueryLog implements \Countable {
 	}
 
 	/**
+	 * Returns the statements, in the order they ran, each on one line.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<string> The SQL of each query.
+	 */
+	public function sqls(): array {
+		return array_column( $this->queries, 'sql' );
+	}
+
+	/**
+	 * Returns the queries, in the order they ran, each with its SQL and its caller.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<array{sql: string, caller: string}> The queries.
+	 */
+	public function entries(): array {
+		return $this->queries;
+	}
+
+	/**
 	 * Prints the queries with their callers, for a failure message.
 	 *
 	 * @since 0.1.0

@@ -270,6 +270,22 @@ Fires after a stock adjustment is committed: a merchant's change of on_hand, or 
 - `actorId` (int|null): The WordPress user on whose authority it moved, or null for none.
 - `ledgerEntryId` (int): The id of the ledger entry that records the change.
 
+## `seocart_stock_allocated`
+
+Fires in the transaction that allocates an order's units, naming every variant allocated and the units of each.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `order`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_stock_allocated', $callback, 10, 2 )`; the first argument is a `SEOCart\Inventory\Domain\Event\StockAllocated`.
+
+### Event properties
+
+- `orderId` (int): The order the units are allocated to.
+- `variantIds` (int[]): The variants allocated, ascending.
+- `quantities` (int[]): The units allocated of each, in the same order.
+
 ## `seocart_stock_hold_expired`
 
 Fires after an expired checkout hold of one variant was reclaimed and its units given back.

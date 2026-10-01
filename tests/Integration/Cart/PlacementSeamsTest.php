@@ -37,9 +37,9 @@ final class PlacementSeamsTest extends CartTestCase {
 	 * The repository refuses a write outside a transaction too; the service refuses first, so a
 	 * step that reads before it writes reads nothing either.
 	 *
-	 * Planted violation: remove the requireCallersTransaction() call from CartService::settle():
+	 * Planted violation: remove the requireCallersTransaction() call from CartService::settleOrder():
 	 * the refusal then comes from the repository, not the service. Remove the repository's guard
-	 * of settle() as well: the settlement then runs on its own, and this test counts its statement.
+	 * of settleOrder() as well: the settlement then runs on its own, and this test counts its statement.
 	 *
 	 * @since 0.1.0
 	 */
@@ -48,7 +48,7 @@ final class PlacementSeamsTest extends CartTestCase {
 		$steps = array(
 			'claimForPlacement' => fn() => $this->service->claimForPlacement( $cart->id, 1, self::guest() ),
 			'bindOrder'         => fn() => $this->service->bindOrder( $cart->id, 7 ),
-			'settle'            => fn() => $this->service->settle( $cart->id, 7, true ),
+			'settleOrder'       => fn() => $this->service->settleOrder( 7, true ),
 		);
 
 		foreach ( $steps as $step => $run ) {
@@ -204,7 +204,7 @@ final class PlacementSeamsTest extends CartTestCase {
 		$cart = $this->placing( 71 );
 		$b    = $this->secondConnection();
 
-		$this->db->transaction( fn() => $this->service->settle( $cart, 71, false ) );
+		$this->db->transaction( fn() => $this->service->settleOrder( 71, false ) );
 
 		$this->assertSame( array( 2, 'open', 71 ), $this->state( $b, $cart ), 'The cart opened again still names the failed order.' );
 
@@ -221,10 +221,10 @@ final class PlacementSeamsTest extends CartTestCase {
 	}
 
 	/**
-	 * Tests that the settlement converts the cart, or opens it again, in one conditional statement, and only for the order it is placing.
+	 * Tests that the settlement finds the cart by the order it is placing, and converts it or opens it again, in one conditional statement, once.
 	 *
-	 * Planted violation: in MysqlCartRepository::SETTLE, drop `AND order_id = %d` (and its value):
-	 * a settlement of another order then settles the cart.
+	 * Planted violation: in MysqlCartRepository::SETTLE_ORDER, drop `AND status = 'placing'`: a
+	 * cart already settled is then settled again, and a converted cart could open again.
 	 *
 	 * @since 0.1.0
 	 */
@@ -234,11 +234,12 @@ final class PlacementSeamsTest extends CartTestCase {
 		$b        = $this->secondConnection();
 
 		$this->db->transaction(
-			function () use ( $accepted, $declined ): void {
-				$this->assertFalse( $this->service->settle( $accepted, 99, true ), 'Another order settled the cart.' );
-				$this->assertQueryCount( 1, $this->captureQueries( fn() => $this->assertTrue( $this->service->settle( $accepted, 51, true ) ) ), 'The settlement' );
-				$this->assertTrue( $this->service->settle( $declined, 52, false ) );
-				$this->assertFalse( $this->service->settle( $declined, 52, false ), 'A cart that is no longer placing was settled again.' );
+			function (): void {
+				$this->assertFalse( $this->service->settleOrder( 99, true ), 'An order no cart is placing settled a cart.' );
+				$this->assertQueryCount( 1, $this->captureQueries( fn() => $this->assertTrue( $this->service->settleOrder( 51, true ) ) ), 'The settlement' );
+				$this->assertTrue( $this->service->settleOrder( 52, false ) );
+				$this->assertFalse( $this->service->settleOrder( 52, false ), 'A cart that is no longer placing was settled again.' );
+				$this->assertFalse( $this->service->settleOrder( 51, false ), 'A converted cart was opened again.' );
 			}
 		);
 
@@ -269,7 +270,7 @@ final class PlacementSeamsTest extends CartTestCase {
 			$this->assertSame( CartError::NotOpen, $refused->errorCode() );
 		}
 
-		$this->db->transaction( fn() => $this->service->settle( $cart->id, 61, false ) );
+		$this->db->transaction( fn() => $this->service->settleOrder( 61, false ) );
 
 		$after = $this->service->add( self::lines( array( $shirt => 1 ) ), 2, self::guest() );
 

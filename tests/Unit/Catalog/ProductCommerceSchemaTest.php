@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests ProductCommerceSchema: the `seocart` property is the commerce fields, the two translation fields and two read-only ones, compiled once
+ * Tests ProductCommerceSchema: the `seocart` property is the default variant's id, the commerce fields, the two translation fields and two more read-only ones, compiled once
  *
  * @package SEOCart
  * @since   0.1.0
@@ -17,6 +17,7 @@ use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Interfaces\Rest\ProductCommerceSchema;
 use SEOCart\Support\Schema\FieldSpec;
+use SEOCart\Support\Schema\FieldType;
 use SEOCart\Support\Schema\JsonSchemaCompiler;
 
 /**
@@ -43,7 +44,8 @@ final class ProductCommerceSchemaTest extends TestCase {
 			$fields[ $field->name() ] = $field;
 		}
 
-		$this->assertSame( array_merge( array_keys( CommerceFields::all() ), array( ProductCommerceSchema::LOCALE, ProductCommerceSchema::TRANSLATION_OF, ProductCommerceSchema::SELLABILITY, ProductCommerceSchema::GENERATION_STATE ) ), array_keys( $fields ) );
+		$this->assertSame( array_merge( array( ProductCommerceSchema::VARIANT_ID ), array_keys( CommerceFields::all() ), array( ProductCommerceSchema::LOCALE, ProductCommerceSchema::TRANSLATION_OF, ProductCommerceSchema::SELLABILITY, ProductCommerceSchema::GENERATION_STATE ) ), array_keys( $fields ) );
+		$this->assertSame( FieldType::Integer, $fields[ ProductCommerceSchema::VARIANT_ID ]->type() );
 		$this->assertSame( array_merge( array_keys( CommerceFields::all() ), array( ProductCommerceSchema::LOCALE, ProductCommerceSchema::TRANSLATION_OF ) ), ProductCommerceSchema::writable() );
 		$this->assertTrue( $fields[ ProductCommerceSchema::LOCALE ]->isNullable() && $fields[ ProductCommerceSchema::TRANSLATION_OF ]->isNullable(), 'A post that presents no product has no locale and translates nothing.' );
 
@@ -61,7 +63,7 @@ final class ProductCommerceSchemaTest extends TestCase {
 	}
 
 	/**
-	 * Tests that the compiled property refuses other keys, sends the marker in the edit context only, and makes the two read-only fields read-only.
+	 * Tests that the compiled property refuses other keys, sends the marker in the edit context only, and makes the variant's id, the verdict and the marker read-only.
 	 *
 	 * @since 0.1.0
 	 */
@@ -82,7 +84,8 @@ final class ProductCommerceSchemaTest extends TestCase {
 			}
 		}
 
-		$this->assertSame( array( ProductCommerceSchema::SELLABILITY, ProductCommerceSchema::GENERATION_STATE ), $readOnly );
+		$this->assertSame( array( ProductCommerceSchema::VARIANT_ID, ProductCommerceSchema::SELLABILITY, ProductCommerceSchema::GENERATION_STATE ), $readOnly );
+		$this->assertNotContains( ProductCommerceSchema::VARIANT_ID, ProductCommerceSchema::writable(), 'A client reads the variant\'s id; it never writes it.' );
 		$this->assertSame( array( 'edit' ), $contexts[ ProductCommerceSchema::GENERATION_STATE ] );
 
 		unset( $contexts[ ProductCommerceSchema::GENERATION_STATE ] );

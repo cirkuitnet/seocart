@@ -16,11 +16,12 @@ defined( 'ABSPATH' ) || exit;
 /**
  * What storage says about one variant, its product and the product's source post, read in one fetch.
  *
- * Owns one fact: the inputs of Sellability::verdict(), and nothing else. They are read together
- * by ProductRepository::sellabilityFacts(), so every reader judges a variant on the same facts.
- * The binding they judge is the product's source binding, or, when they were read for a locale,
- * its binding in that locale. The post status is null when that binding names no post, or a
- * post that is not a product.
+ * Owns one fact: the inputs of Sellability::verdict(), and the words a sale records with them.
+ * They are read together by ProductRepository::sellabilityFacts(), so every reader judges a
+ * variant on the same facts. The binding they judge is the product's source binding, or, when
+ * they were read for a locale, its binding in that locale. The post status is null when that
+ * binding names no post, or a post that is not a product. The SKU and the title come from the
+ * same read, so an order records what was judged: the title is that post's, as stored.
  *
  * @since 0.1.0
  */
@@ -126,6 +127,24 @@ final readonly class SellabilityFacts {
 	public bool $translated;
 
 	/**
+	 * The variant's SKU, as the merchant typed it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public string $sku;
+
+	/**
+	 * The title of the post judged, as stored; empty when there is no such product post.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public string $title;
+
+	/**
 	 * Holds the facts.
 	 *
 	 * @since 0.1.0
@@ -142,8 +161,10 @@ final readonly class SellabilityFacts {
 	 * @param bool            $hasBasePrice      Whether the variant has a base-currency price.
 	 * @param bool            $translated        Optional. Whether the product has a post in the locale the facts were read for;
 	 *                                           true when they were read for the source post. Default true.
+	 * @param string          $sku               Optional. The variant's SKU. Default empty.
+	 * @param string          $title             Optional. The title of the post judged. Default empty.
 	 */
-	public function __construct( int $variantId, int $productId, GenerationState $generation, int $activeGeneration, int $variantGeneration, bool $variantEnabled, ?int $sourcePostId, ?int $boundPostId, ?string $postStatus, bool $hasBasePrice, bool $translated = true ) {
+	public function __construct( int $variantId, int $productId, GenerationState $generation, int $activeGeneration, int $variantGeneration, bool $variantEnabled, ?int $sourcePostId, ?int $boundPostId, ?string $postStatus, bool $hasBasePrice, bool $translated = true, string $sku = '', string $title = '' ) {
 		$this->variantId         = $variantId;
 		$this->productId         = $productId;
 		$this->generation        = $generation;
@@ -155,5 +176,7 @@ final readonly class SellabilityFacts {
 		$this->postStatus        = $postStatus;
 		$this->hasBasePrice      = $hasBasePrice;
 		$this->translated        = $translated;
+		$this->sku               = $sku;
+		$this->title             = $title;
 	}
 }

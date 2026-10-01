@@ -32,8 +32,9 @@ defined( 'ABSPATH' ) || exit;
  * fetchValue(), lastInsertId() and table().
  *
  * A depth-0 transaction costs four statements: START TRANSACTION, SAVEPOINT sc_0, RELEASE
- * SAVEPOINT sc_0 and COMMIT. The release is the probe: it fails with error 1305 when anything
- * ended the transaction since it began, whoever did it and however. The connection's thread
+ * SAVEPOINT sc_0 and COMMIT, and a fifth before them when it asks for an isolation level. The
+ * release is the probe: it fails with error 1305 when anything ended the transaction since it
+ * began, whoever did it and however. The connection's thread
  * id, known from the client handshake, is compared after every statement issued inside the
  * window, at no cost; a change means wpdb reconnected.
  *
@@ -231,11 +232,13 @@ final class Database implements TransactionManager {
 	 *
 	 * @param-immediately-invoked-callable $work
 	 *
-	 * @param callable(): mixed $work  The unit of work.
-	 * @param RetryPolicy|null  $retry Optional. Honoured at the outermost level only. Default null, which never retries.
+	 * @param callable(): mixed $work      The unit of work.
+	 * @param RetryPolicy|null  $retry     Optional. Honoured at the outermost level only. Default null, which never retries.
+	 * @param Isolation         $isolation Optional. The isolation level, asked for before every attempt of the
+	 *                                     outermost level and ignored at an inner one. Default Isolation::Default.
 	 * @return mixed What the callable returned, unchanged.
 	 */
-	public function transaction( callable $work, ?RetryPolicy $retry = null ): mixed {
+	public function transaction( callable $work, ?RetryPolicy $retry = null, Isolation $isolation = Isolation::Default ): mixed {
 		if ( $this->depth + 1 > $this->maxDepth ) {
 			TransactionDepthExceeded::raise( TransactionDepthExceeded::CODE, array( 'max_depth' => $this->maxDepth ) );
 		}
@@ -253,7 +256,7 @@ final class Database implements TransactionManager {
 
 		while ( null === $committed ) {
 			try {
-				$committed = $this->unitOfWork( $work );
+				$committed = $this->unitOfWork( $work, $isolation );
 			} catch ( TransactionRetryable $retryable ) {
 				if ( $attempt >= $policy->attempts() ) {
 					throw $retryable;
@@ -486,19 +489,49 @@ final class Database implements TransactionManager {
 	}
 
 	/**
-	 * Runs the outermost level: BEGIN, the work, the checks and COMMIT.
+	 * Tells whether the server refuses writes at READ COMMITTED: its binary log is on and records statements.
 	 *
-	 * The after-commit callbacks are returned, not run: transaction() runs them once it has left
-	 * the retry loop.
+	 * InnoDB refuses every write of a READ COMMITTED transaction (error 1665) while the binary log
+	 * is on in `STATEMENT` format, and the units of work that write stock run at READ COMMITTED.
+	 * MySQL 8 logs rows by default, and MariaDB mixes the two formats; only `STATEMENT` refuses.
+	 * One read of two server variables.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws DatabaseException When the read fails.
+	 *
+	 * @return bool True when the binary log is on in `STATEMENT` format.
+	 *
+	 * @phpstan-impure
+	 */
+	public function refusesReadCommitted(): bool {
+		$server = $this->fetchRow( 'SELECT @@log_bin AS log_bin, @@binlog_format AS binlog_format' );
+
+		return null !== $server && 1 === (int) $server['log_bin'] && 'STATEMENT' === strtoupper( (string) $server['binlog_format'] );
+	}
+
+	/**
+	 * Runs the outermost level: the isolation level asked for, BEGIN, the work, the checks and COMMIT.
+	 *
+	 * The level is asked for here, on every attempt, because MySQL applies it to the next
+	 * transaction only: a re-run after a deadlock asks for it again. The after-commit callbacks
+	 * are returned, not run: transaction() runs them once it has left the retry loop.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \Throwable Whatever the work or the checks threw, after the rollback.
 	 *
-	 * @param callable(): mixed $work The unit of work.
+	 * @param callable(): mixed $work      The unit of work.
+	 * @param Isolation         $isolation The isolation level.
 	 * @return array{result: mixed, callbacks: list<callable(): mixed>} What the callable returned, and the committed level's after-commit callbacks.
 	 */
-	private function unitOfWork( callable $work ): array {
+	private function unitOfWork( callable $work, Isolation $isolation ): array {
+		$level = $isolation->statement();
+
+		if ( null !== $level ) {
+			$this->control( $level );
+		}
+
 		$this->control( 'START TRANSACTION' );
 
 		$this->openedOn = $this->threadId();

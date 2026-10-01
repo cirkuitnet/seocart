@@ -315,7 +315,11 @@ final class PaymentService {
 	 * there makes this a duplicate, which changes nothing. A request for the customer to act, or
 	 * a gateway still deciding, only moves the intent to wait, and the order's payment status with
 	 * it. An approval of an authorization accepts a pending order; a decline fails it. A declined
-	 * refund is recorded and changes nothing else.
+	 * refund is recorded and changes nothing else. An approved authorization that comes after its
+	 * intent ended, failed or voided, as when the gateway once had no record of it, still holds the
+	 * shopper's money: it is kept as recordUnapplied() keeps one, its ledger row `applied = 0` and
+	 * the order flagged, never refused and rolled back. A decline, or a result that moves no money,
+	 * for an ended intent is refused as before.
 	 *
 	 * An authorization or a capture is for the intent's whole frozen amount, whose base twin was
 	 * frozen with it. A refund of part of an order in a converted currency has no base twin of its
@@ -491,6 +495,11 @@ final class PaymentService {
 		$intent   = $this->lock( $result->intentUuid );
 		$order    = $this->orders->lockForPayment( $intent->orderId );
 		$approved = Outcome::Approved === $result->outcome;
+
+		// The intent ended without this approval, which holds the shopper's money all the same: a person settles it.
+		if ( $approved && Operation::Authorize === $result->operation && IntentTransitions::isFinal( $intent->status ) ) {
+			return $this->keepUnapplied( $result, $intent, $order, self::PAYMENT_UNRECORDED, $actor );
+		}
 
 		if ( $approved && ! AmountCheck::accepts( $result, $intent, $order ) ) {
 			return $this->keepUnapplied( $result, $intent, $order, self::AMOUNT_MISMATCH, $actor );

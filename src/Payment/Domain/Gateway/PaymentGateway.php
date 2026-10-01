@@ -105,13 +105,23 @@ interface PaymentGateway {
 	/**
 	 * Asks the provider where an intent stands now, for an intent whose result never arrived.
 	 *
+	 * "The provider has no record of this intent" is an answer, and a final one: the authorization
+	 * never reached it, so nothing can be charged, and it is answered as a declined authorization
+	 * whose error code is `not_found`, which ends the placement. It is not "still deciding", which
+	 * is null and keeps the placement waiting; nothing ends a placement on time alone. To say it
+	 * safely, an adapter sends the intent's uuid as the provider's idempotency key with every
+	 * authorization, so a call that reached the provider is always found by it, and answers
+	 * not-found only for an intent older than the reconciliation's stale threshold. An adapter
+	 * whose provider cannot be asked by that key answers null, still deciding, never not-found.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws GatewayUnavailable When the provider could not be asked or did not answer.
 	 *
 	 * @param PaymentQuery $query The intent.
-	 * @return GatewayResult|null The provider's latest answer, not yet applied; null while the
-	 *                            provider is still deciding, or has no record of the intent.
+	 * @return GatewayResult|null The provider's latest answer, not yet applied, a declined
+	 *                            authorization `not_found` when it has no record of the intent;
+	 *                            null while the provider is still deciding.
 	 */
 	public function query( PaymentQuery $query ): ?GatewayResult;
 }

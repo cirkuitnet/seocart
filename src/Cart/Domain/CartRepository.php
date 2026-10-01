@@ -183,14 +183,16 @@ interface CartRepository {
 	public function bindOrder( int $cartId, int $orderId ): bool;
 
 	/**
-	 * Moves a placing cart to the status its order's settlement decided: converted, or open again.
+	 * Moves the cart placing an order to the status the order's settlement decided: converted, or open again.
+	 *
+	 * The cart is found by the order it names, on its index; a settlement starts from the order,
+	 * and never needs to know the cart.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int        $cartId  The cart.
-	 * @param int        $orderId The order the cart is placing.
+	 * @param int        $orderId The order.
 	 * @param CartStatus $status  CartStatus::Converted or CartStatus::Open.
-	 * @return bool True when the cart was placing that order.
+	 * @return bool True when a cart was placing that order.
 	 */
-	public function settle( int $cartId, int $orderId, CartStatus $status ): bool;
+	public function settleOrder( int $orderId, CartStatus $status ): bool;
 }

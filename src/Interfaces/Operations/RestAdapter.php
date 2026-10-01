@@ -51,7 +51,9 @@ defined( 'ABSPATH' ) || exit;
  * A route parameter is read from the URL only. WP_REST_Request::get_param() would let a query or
  * body value of the same name win over the URL segment, so a request that sends a route
  * parameter anywhere else is refused as invalid; the permission check and the service therefore
- * read the one value in the URL.
+ * read the one value in the URL. A field the route reads from a request header, such as an
+ * `Idempotency-Key`, is read from that header only, in the same way. An error the route names a
+ * wait for is answered with a `Retry-After` header.
  *
  * Every response of an operation route is finished the same way: an error gets exactly the
  * documented data members from the ErrorTranslator, and every response gets CachePolicy's
@@ -540,6 +542,16 @@ final class RestAdapter {
 			$arguments[ $name ]['validate_callback'] = array( self::class, 'validatePathParameter' );
 		}
 
+		foreach ( $rest->headers() as $name => $header ) {
+			// WordPress validates an argument only when the query or the body sends it, which a header field never may.
+			$arguments[ $name ]['validate_callback'] = static fn( $value, WP_REST_Request $request, string $param ): WP_Error => new WP_Error(
+				'rest_invalid_param',
+				/* translators: 1: The name of an input field, such as idempotency_key. 2: The name of the request header it is read from, such as Idempotency-Key. */
+				sprintf( __( '%1$s is read from the %2$s header and must not be sent in the query or the body.', 'seocart' ), $param, $header->name ),
+				array( 'status' => 400 )
+			);
+		}
+
 		return $arguments;
 	}
 
@@ -594,15 +606,23 @@ final class RestAdapter {
 			}
 		}
 
-		$url    = $request->get_url_params();
-		$path   = null === $definition->rest() ? array() : $definition->rest()->pathParameters();
-		$values = array();
+		$rest    = $definition->rest();
+		$url     = $request->get_url_params();
+		$path    = null === $rest ? array() : $rest->pathParameters();
+		$headers = null === $rest ? array() : $rest->headers();
+		$values  = array();
 
 		foreach ( $definition->input() as $field ) {
 			$name = $field->name();
 
 			if ( in_array( $name, $path, true ) ) {
 				$values[ $name ] = $url[ $name ] ?? null;
+			} elseif ( isset( $headers[ $name ] ) ) {
+				$header = $request->get_header( $headers[ $name ]->name );
+
+				if ( null !== $header ) {
+					$values[ $name ] = $header;
+				}
 			} elseif ( $request->has_param( $name ) ) {
 				$values[ $name ] = $request->get_param( $name );
 			}
@@ -616,6 +636,19 @@ final class RestAdapter {
 
 		$result = $this->invoker->invoke( $operation, $input, Actor::user( get_current_user_id() ) );
 
-		return $result instanceof WP_Error ? $result : new WP_REST_Response( $result, 200 );
+		if ( ! $result instanceof WP_Error ) {
+			return new WP_REST_Response( $result, 200 );
+		}
+
+		$wait = null === $rest ? null : $rest->retryAfter( (string) $result->get_error_code() );
+
+		if ( null === $wait ) {
+			return $result;
+		}
+
+		$refusal = rest_convert_error_to_response( $result );
+		$refusal->header( 'Retry-After', (string) $wait );
+
+		return $refusal;
 	}
 }
