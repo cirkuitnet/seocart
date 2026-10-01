@@ -265,6 +265,6 @@ final class OperationInvoker {
 			$context[ $name ] = self::REDACTED;
 		}
 
-		return $error::because( $error->errorCode(), $context, $error );
+		return $error::because( $error->errorCode(), $context, $error, $error->details() );
 	}
 }

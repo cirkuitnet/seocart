@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Jobs;
 
+use SEOCart\Cart\Infrastructure\Jobs\SweepExpiredCarts;
 use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
 use SEOCart\Platform\Database\LockMode;
 use SEOCart\Platform\Database\LockService;
@@ -83,14 +84,14 @@ final class FoundationJobsTest extends JobsTestCase {
 	}
 
 	/**
-	 * Tests that the production recurring jobs are scheduled at their intervals: the catch-up and the sweep of expired holds every five minutes, the sweep of rate counters hourly, the three retention sweeps daily.
+	 * Tests that the production recurring jobs are scheduled at their intervals: the catch-up and the sweep of expired holds every five minutes, the sweeps of rate counters and of expired carts hourly, the three retention sweeps daily.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_the_production_recurring_jobs_are_scheduled_at_their_intervals(): void {
 		$this->wirePlatform();
 
-		$this->assertSame( array( OutboxCatchUp::name(), OutboxRetention::name(), JobHistoryCleanup::name(), LogRetentionJob::name(), SweepHolds::name(), SweepRateCounters::name() ), $this->queue->ensureRecurring() );
+		$this->assertSame( array( OutboxCatchUp::name(), OutboxRetention::name(), JobHistoryCleanup::name(), LogRetentionJob::name(), SweepHolds::name(), SweepRateCounters::name(), SweepExpiredCarts::name() ), $this->queue->ensureRecurring() );
 		$this->assertSame(
 			array(
 				'[{"h":"outbox.catch_up","r":300}]',
@@ -99,6 +100,7 @@ final class FoundationJobsTest extends JobsTestCase {
 				'[{"h":"logs.prune","r":86400}]',
 				'[{"h":"stock.sweep_holds","r":300}]',
 				'[{"h":"rate_counters.sweep","r":3600}]',
+				'[{"h":"carts.sweep_expired","r":3600}]',
 			),
 			array_column( $this->actions(), 'args' )
 		);

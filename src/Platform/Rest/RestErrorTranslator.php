@@ -101,8 +101,9 @@ final class RestErrorTranslator implements ErrorTranslator {
 	 * @since 0.1.0
 	 *
 	 * @param CodedException $error The failure, its context already redacted.
-	 * @return WP_Error The error: the row's code, status and message for a public row; the row's
-	 *                  code and status with a generic message and no details for an internal one.
+	 * @return WP_Error The error: the row's code, status and message for a public row, its details
+	 *                  the placeholders' values and the structured details; the row's code and
+	 *                  status with a generic message and no details for an internal one.
 	 */
 	public function translate( CodedException $error ): WP_Error {
 		$correlation_id = $this->correlationId();
@@ -130,7 +131,7 @@ final class RestErrorTranslator implements ErrorTranslator {
 		return new WP_Error(
 			(string) $error->errorCode()->value,
 			$row->render( $error->context() ),
-			ErrorShape::data( $row->httpStatus(), $error->context(), $correlation_id )
+			ErrorShape::data( $row->httpStatus(), $error->context() + $error->details(), $correlation_id )
 		);
 	}
 

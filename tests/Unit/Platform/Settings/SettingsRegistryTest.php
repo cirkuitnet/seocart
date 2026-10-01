@@ -244,6 +244,8 @@ final class SettingsRegistryTest extends TestCase {
 				'required or nullable',
 			),
 			'a nullable field'                      => array( static fn() => Setting::scalar( 'g', self::field( 'a', array( 'nullable' => true ) ), false ), 'required or nullable' ),
+			'an object'                             => array( static fn() => Setting::scalar( 'g', FieldSpec::object( 'a', 'A thing.', static fn(): string => 'A', array( self::field( 'b', array( 'default_value' => null ) ) ) ), false ), 'is an object or a list of objects' ),
+			'a list of objects'                     => array( static fn() => Setting::inDocument( 'g', FieldSpec::objectList( 'a', 'Things.', static fn(): string => 'A', array( self::field( 'b', array( 'default_value' => null ) ) ) ), false ), 'is an object or a list of objects' ),
 			'an exposed setting without a default'  => array( static fn() => Setting::scalar( 'g', self::field( 'a', array( 'default_value' => null ) ), true ), 'exposed but has no default' ),
 			'a personal-data setting'               => array( static fn() => Setting::scalar( 'g', self::field( 'a', array( 'privacy' => Privacy::Pii ) ), false ), 'holds personal data' ),
 			'a secret with a default'               => array( static fn() => Setting::scalar( 'g', self::field( 'a', array( 'privacy' => Privacy::Secret ) ), false ), 'must be text without a default' ),

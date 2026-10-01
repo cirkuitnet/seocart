@@ -13,7 +13,6 @@ namespace SEOCart\Cart\Interfaces\StoreApi;
 
 use SEOCart\Cart\Application\CartTokens;
 use SEOCart\Cart\Domain\CartToken;
-use SEOCart\Platform\DataRegistry\RetentionCatalog;
 use SEOCart\Support\Clock;
 use WP_HTTP_Response;
 use WP_REST_Request;
@@ -28,12 +27,12 @@ defined( 'ABSPATH' ) || exit;
  *
  * - Read back: the request header `X-SEOCart-Cart-Token`, which a headless client sends; else the
  *   cookie `seocart_cart_token`, which a browser sends. A value that is not a token is no token.
- * - Handed out: when a request creates a cart, the service issues its token here, and the
- *   successful response to that write carries it twice, in the same header and in the cookie. The
- *   cookie is `HttpOnly` and `SameSite=Lax`, scoped to the site's cookie path and domain, `Secure`
- *   when the site is served over HTTPS (as WordPress's own login cookies are), and lives as long as
- *   a cart of the customer's kind is kept: a guest's or a logged-in customer's period of the
- *   `carts` retention policy.
+ * - Handed out: when a write creates a cart, or extends the life of one, the service issues its
+ *   token here with the cart's new lifetime, and the successful response to that write carries it
+ *   twice, in the same header and in the cookie. The cookie is `HttpOnly` and `SameSite=Lax`,
+ *   scoped to the site's cookie path and domain, `Secure` when the site is served over HTTPS (as
+ *   WordPress's own login cookies are), and expires when the cart does: every write that extends
+ *   the cart sends it again, so the cookie of a cart in use never runs out before the cart.
  *
  * A read never sets a cookie: a token issued while answering a request that is not a write, both as
  * WordPress routes it and as it arrived over HTTP (HttpMethod), is not sent, and the developer is
@@ -68,15 +67,6 @@ final class CartTokenTransport implements CartTokens {
 	public const HEADER = 'X-SEOCart-Cart-Token';
 
 	/**
-	 * The retention policy of carts, whose periods the cookie lives for.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private const CART_RETENTION = 'carts';
-
-	/**
 	 * The clock the cookie's expiry is counted from.
 	 *
 	 * @since 0.1.0
@@ -102,6 +92,15 @@ final class CartTokenTransport implements CartTokens {
 	 * @var CartToken|null
 	 */
 	private ?CartToken $issued = null;
+
+	/**
+	 * How long the issued token's cart lives, in seconds, and so its cookie.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private int $lifetimeSeconds = 0;
 
 	/**
 	 * Whether the response filter has been added.
@@ -144,14 +143,16 @@ final class CartTokenTransport implements CartTokens {
 	}
 
 	/**
-	 * Hands a new cart's token to the client with the response to this request.
+	 * Hands a cart's token to the client with the response to this request, for as long as the cart lives.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param CartToken $token The new cart's token.
+	 * @param CartToken $token           The cart's token.
+	 * @param int       $lifetimeSeconds How long the cart now lives.
 	 */
-	public function issue( CartToken $token ): void {
-		$this->issued = $token;
+	public function issue( CartToken $token, int $lifetimeSeconds ): void {
+		$this->issued          = $token;
+		$this->lifetimeSeconds = $lifetimeSeconds;
 
 		if ( ! $this->hooked ) {
 			add_filter( 'rest_post_dispatch', array( $this, 'attach' ), 10, 3 );
@@ -206,12 +207,9 @@ final class CartTokenTransport implements CartTokens {
 	 * @return array{expires: int, path: string, domain: string, secure: bool, httponly: bool, samesite: string} The attributes.
 	 */
 	private function cookieOptions(): array {
-		$kind   = 0 === get_current_user_id() ? 'guest' : 'logged_in';
-		$period = new \DateInterval( ( new RetentionCatalog() )->defaults( self::CART_RETENTION )[ $kind ] );
-
 		// COOKIEPATH and COOKIE_DOMAIN are WordPress's, defined by wp_cookie_constants() when it loads.
 		return array(
-			'expires'  => $this->clock->now()->modify( $period->format( '+%y years +%m months +%d days +%h hours +%i minutes +%s seconds' ) )->getTimestamp(),
+			'expires'  => $this->clock->now()->getTimestamp() + $this->lifetimeSeconds,
 			'path'     => (string) constant( 'COOKIEPATH' ),
 			'domain'   => (string) constant( 'COOKIE_DOMAIN' ),
 			'secure'   => is_ssl(),

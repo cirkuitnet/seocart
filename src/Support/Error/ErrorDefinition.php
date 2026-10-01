@@ -43,6 +43,11 @@ defined( 'ABSPATH' ) || exit;
  * and its values go to the site's log. The flag is on the row and nowhere else, so there is no
  * list of internal codes to keep in step with the catalogs.
  *
+ * A row may also declare detail keys: structured values a client needs to act on the error, such
+ * as the totals of a cart that changed, which are not part of the message. The exception may
+ * carry them, and the adapter adds them to the error's details beside the placeholders' values.
+ * An internal row declares none, since a client reads nothing of it.
+ *
  * A row declared with `any_write: true` is a failure any operation that changes the store can
  * meet without declaring it, such as the store refusing writes while its schema is being
  * updated. An operation that changes the store is documented as possibly answering with it, and
@@ -108,6 +113,15 @@ final class ErrorDefinition {
 	private array $placeholders;
 
 	/**
+	 * The keys of the structured details the error may carry beyond its placeholders.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<string>
+	 */
+	private array $detailKeys;
+
+	/**
 	 * Whether a client must never read the message or the values: true for an internal row.
 	 *
 	 * @since 0.1.0
@@ -131,8 +145,9 @@ final class ErrorDefinition {
 	 * @since 0.1.0
 	 *
 	 * @throws ErrorTableException When the code is not `module.reason`, the status is not a
-	 *                             client or server error, or a placeholder name is not a
-	 *                             snake_case word or is repeated.
+	 *                             client or server error, a placeholder or detail key is not a
+	 *                             snake_case word or is repeated, or an internal row declares
+	 *                             detail keys.
 	 *
 	 * @param ErrorCode $code         The code the row defines.
 	 * @param int       $http_status  The HTTP status, 400 to 599.
@@ -144,11 +159,14 @@ final class ErrorDefinition {
 	 *                                go to the site's log. Default false, a public row.
 	 * @param bool      $any_write    Optional. Whether any operation that changes the store may
 	 *                                fail with the code without declaring it. Default false.
+	 * @param string[]  $details      Optional. The keys of the structured details the error may
+	 *                                carry beyond its placeholders. Default none.
 	 *
 	 * @phpstan-param \Closure(): string $message
 	 * @phpstan-param list<string>       $placeholders
+	 * @phpstan-param list<string>       $details
 	 */
-	public function __construct( ErrorCode $code, int $http_status, \Closure $message, array $placeholders = array(), bool $internal = false, bool $any_write = false ) {
+	public function __construct( ErrorCode $code, int $http_status, \Closure $message, array $placeholders = array(), bool $internal = false, bool $any_write = false, array $details = array() ) {
 		$value = (string) $code->value;
 
 		if ( ! is_string( $code->value ) || 1 !== preg_match( self::CODE_PATTERN, $value ) ) {
@@ -159,20 +177,27 @@ final class ErrorDefinition {
 			throw ErrorTableException::because( 'The row of %1$s answers with HTTP status %2$d; an error row answers with a client error (4xx) or a server error (5xx).', $value, $http_status );
 		}
 
-		foreach ( $placeholders as $index => $name ) {
+		$names = array_merge( $placeholders, $details );
+
+		foreach ( $names as $index => $name ) {
 			if ( 1 !== preg_match( self::PLACEHOLDER_PATTERN, $name ) ) {
-				throw ErrorTableException::because( 'The row of %1$s names a placeholder that is not one lower-case snake_case word.', $value );
+				throw ErrorTableException::because( 'The row of %1$s names a placeholder or a detail key that is not one lower-case snake_case word.', $value );
 			}
 
-			if ( array_search( $name, $placeholders, true ) !== $index ) {
-				throw ErrorTableException::because( 'The row of %1$s names the placeholder "%2$s" twice.', $value, $name );
+			if ( array_search( $name, $names, true ) !== $index ) {
+				throw ErrorTableException::because( 'The row of %1$s names "%2$s" twice among its placeholders and detail keys.', $value, $name );
 			}
+		}
+
+		if ( $internal && array() !== $details ) {
+			throw ErrorTableException::because( 'The row of %1$s is internal, so a client reads none of its details: declare no detail keys.', $value );
 		}
 
 		$this->code         = $code;
 		$this->httpStatus   = $http_status;
 		$this->message      = $message;
 		$this->placeholders = $placeholders;
+		$this->detailKeys   = $details;
 		$this->internal     = $internal;
 		$this->anyWrite     = $any_write;
 	}
@@ -234,6 +259,17 @@ final class ErrorDefinition {
 	 */
 	public function placeholders(): array {
 		return $this->placeholders;
+	}
+
+	/**
+	 * Returns the keys of the structured details the error may carry beyond its placeholders.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<string> The keys, in declaration order.
+	 */
+	public function detailKeys(): array {
+		return $this->detailKeys;
 	}
 
 	/**

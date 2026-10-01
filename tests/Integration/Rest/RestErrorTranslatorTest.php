@@ -22,6 +22,7 @@ use SEOCart\Support\Error\ErrorTable;
 use SEOCart\Support\SupportError;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockError;
 use SEOCart\Tests\Support\OperationSurfaces;
+use SEOCart\Tests\Unit\Support\Error\Fixtures\DetailedError;
 use SEOCart\Tests\Unit\Support\Error\Fixtures\FixtureError;
 use WP_Error;
 use WP_REST_Request;
@@ -137,6 +138,17 @@ final class RestErrorTranslatorTest extends WP_UnitTestCase {
 		$error = $this->translator()->translate( CodedException::because( FixtureError::NotFound ) );
 
 		$this->assertSame( '{"code":"fixture.not_found","message":"Nothing was found.","data":{"status":404,"details":{},"correlation_id":"req-7f3a9c"}}', self::body( $error ) );
+	}
+
+	/**
+	 * Tests that a row's structured details go into the details beside the placeholders' values, and never into the message.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_structured_details_join_the_values_in_the_details(): void {
+		$error = $this->translator()->translate( CodedException::because( DetailedError::Stale, array( 'current' => 3 ), null, array( 'state' => array( 'lines' => array( array( 'gross' => 1200 ) ) ) ) ) );
+
+		$this->assertSame( '{"code":"detailed.stale","message":"It is at version 3 now.","data":{"status":409,"details":{"current":3,"state":{"lines":[{"gross":1200}]}},"correlation_id":"req-7f3a9c"}}', self::body( $error ) );
 	}
 
 	/**
@@ -492,7 +504,7 @@ final class RestErrorTranslatorTest extends WP_UnitTestCase {
 	 */
 	private function translator( ?string $correlation_id = self::CORRELATION_ID, ?ErrorTable $errors = null ): RestErrorTranslator {
 		return new RestErrorTranslator(
-			$errors ?? ErrorTable::compose( SupportError::class, DatabaseError::class, FixtureStockError::class, FixtureError::class ),
+			$errors ?? ErrorTable::compose( SupportError::class, DatabaseError::class, FixtureStockError::class, FixtureError::class, DetailedError::class ),
 			static fn(): ?string => $correlation_id,
 			function ( CodedException $error, ?string $id ): void {
 				$this->reported[] = array(

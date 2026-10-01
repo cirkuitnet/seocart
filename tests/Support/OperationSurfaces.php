@@ -14,11 +14,18 @@ namespace SEOCart\Tests\Support;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\RestBinding;
+use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
+use SEOCart\Cart\Interfaces\StoreApi\StoreWrites;
 use SEOCart\Interfaces\Operations\AbilitiesAdapter;
 use SEOCart\Interfaces\Operations\CliAdapter;
 use SEOCart\Interfaces\Operations\CliCommand;
 use SEOCart\Interfaces\Operations\OperationInvoker;
+use SEOCart\Interfaces\Operations\PublicWrites;
 use SEOCart\Interfaces\Operations\RestAdapter;
+use SEOCart\Platform\RateLimiter\ClientIdentities;
+use SEOCart\Platform\RateLimiter\ObjectCacheRateLimiter;
+use SEOCart\Platform\RateLimiter\RateLimiter;
+use SEOCart\Platform\RateLimiter\TrustedClientIp;
 use SEOCart\Platform\Rest\RestErrorTranslator;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Error\ErrorTable;
@@ -26,6 +33,7 @@ use SEOCart\Tests\Fixtures\Operations\FixtureStockError;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockService;
 use SEOCart\Tests\Fixtures\Operations\FixtureStoreError;
 use SEOCart\Tests\Support\Doubles\ContextEchoError;
+use SEOCart\Tests\Support\Doubles\FrozenClock;
 use SEOCart\Tools\Docs\ErrorCatalogs;
 use WP_Abilities_Registry;
 use WP_Ability_Categories_Registry;
@@ -47,7 +55,8 @@ use WP_REST_Server;
  * and every unexpected failure the invoker reports is recorded. Errors are translated by the
  * plugin's RestErrorTranslator, with the error table of every catalog under src/ and the test
  * catalogs, and the correlation id in $correlationId; every internal failure it reports is
- * recorded too. The test framework restores the hooks after each test; discard() resets the REST
+ * recorded too. A public write is guarded by the Store API's request policy, counting in the
+ * in-memory object cache for one client, with a transport that sends no cookie. The test framework restores the hooks after each test; discard() resets the REST
  * server and the Abilities registries.
  *
  * @since 0.1.0
@@ -194,7 +203,7 @@ final class OperationSurfaces {
 
 		$abilities = new AbilitiesAdapter( $this->registry, $this->invoker );
 
-		add_action( 'rest_api_init', array( new RestAdapter( $this->registry, $this->invoker, $this->translator ), 'register' ) );
+		add_action( 'rest_api_init', array( new RestAdapter( $this->registry, $this->invoker, $this->translator, $this->publicWrites() ), 'register' ) );
 		add_action( 'wp_abilities_api_categories_init', array( $abilities, 'registerCategory' ) );
 		add_action( 'wp_abilities_api_init', array( $abilities, 'registerAbilities' ) );
 
@@ -219,6 +228,30 @@ final class OperationSurfaces {
 		);
 
 		rest_get_server();
+	}
+
+	/**
+	 * Returns what guards and counts a public write: the Store API's, as the kernel builds it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return \Closure(): PublicWrites The factory the REST adapter calls when it registers a public write.
+	 */
+	private function publicWrites(): \Closure {
+		$clock  = FrozenClock::at( '2026-09-25 10:00:00' );
+		$writes = new StoreWrites(
+			new ObjectCacheRateLimiter(
+				$clock,
+				static function (): RateLimiter {
+					throw new \LogicException( 'The in-memory object cache cannot fail.' );
+				}
+			),
+			new ClientIdentities( new TrustedClientIp( array( 'REMOTE_ADDR' => '192.0.2.20' ) ), static fn(): string => 'operation surfaces' ),
+			new CartTokenTransport( $clock, static function (): void {} ),
+			$this->translator
+		);
+
+		return static fn(): PublicWrites => $writes;
 	}
 
 	/**

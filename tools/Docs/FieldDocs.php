@@ -181,6 +181,14 @@ final class FieldDocs {
 			return 'A uuid.';
 		}
 
+		if ( FieldType::Boolean === $field->type() ) {
+			return 'True or false.';
+		}
+
+		if ( $field->type()->isComposite() ) {
+			return self::composite( $field );
+		}
+
 		if ( FieldType::Integer === $field->type() ) {
 			$minimum = $field->minimum();
 			$maximum = $field->maximum();
@@ -201,5 +209,27 @@ final class FieldDocs {
 		}
 
 		return null === $field->maxLength() ? 'Text.' : 'Text of at most ' . $field->maxLength() . ' characters.';
+	}
+
+	/**
+	 * Describes an object, or a list of objects, and the members of each.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param FieldSpec $field The composite field.
+	 * @return string The sentence.
+	 */
+	private static function composite( FieldSpec $field ): string {
+		$members = implode( ', ', array_map( static fn( FieldSpec $member ): string => '`' . $member->name() . '`', $field->fields() ) );
+
+		if ( FieldType::Object === $field->type() ) {
+			return 'An object with ' . $members . '.';
+		}
+
+		$bounds = null === $field->maxItems()
+			? ( 0 === $field->minItems() ? '' : 'at least ' . $field->minItems() . ' ' )
+			: $field->minItems() . ' to ' . $field->maxItems() . ' ';
+
+		return 'A list of ' . $bounds . 'objects, each with ' . $members . '.';
 	}
 }

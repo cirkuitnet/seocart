@@ -237,7 +237,10 @@ final class StoreApiTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Tests that the first write gets the cart token in the cookie and the header, and that a later write carrying it, in either, gets none.
+	 * Tests that the first write gets the cart token in the cookie and the header, for the guest cart's lifetime, and that a later write's token is read back from either.
+	 *
+	 * The fixture issues a token only to a write that carries none, so the later writes get none;
+	 * the cart service's later writes are CartOperationsTest's.
 	 *
 	 * @since 0.1.0
 	 */
@@ -562,7 +565,7 @@ final class StoreApiTest extends WP_UnitTestCase {
 
 		$_SERVER['REQUEST_METHOD'] = 'GET';
 
-		$transport->issue( CartToken::generate() );
+		$transport->issue( CartToken::generate(), DAY_IN_SECONDS );
 		$transport->attach( $response, $this->server, new WP_REST_Request( 'POST', self::LINES ) );
 
 		$this->assertSame( array(), $this->cookies );

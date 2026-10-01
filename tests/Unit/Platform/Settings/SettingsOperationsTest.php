@@ -52,6 +52,19 @@ final class SettingsOperationsTest extends TestCase {
 	);
 
 	/**
+	 * The parameters of FieldSpec's constructor that only an object or a list of objects has, which the copy leaves out: Setting refuses such a field.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<string>
+	 */
+	private const COMPOSITE_PARTS = array(
+		'fields',
+		'min_items',
+		'max_items',
+	);
+
+	/**
 	 * Tests the read: read-only, GET at the settings route, a command, no ability, the settings capability.
 	 *
 	 * @since 0.1.0
@@ -147,7 +160,7 @@ final class SettingsOperationsTest extends TestCase {
 	}
 
 	/**
-	 * Tests that FieldSpec has exactly the parts the copy passes on, so a new part cannot be dropped unnoticed.
+	 * Tests that FieldSpec has exactly the parts the copy passes on, and the parts of a composite field, which no setting has, so a new part cannot be dropped unnoticed.
 	 *
 	 * @since 0.1.0
 	 */
@@ -157,7 +170,7 @@ final class SettingsOperationsTest extends TestCase {
 			( new \ReflectionMethod( FieldSpec::class, '__construct' ) )->getParameters()
 		);
 
-		$this->assertSame( self::FIELD_PARTS, $parameters, 'FieldSpec gained or lost a part: update SettingsOperations::field(), then this list.' );
+		$this->assertSame( array_merge( self::FIELD_PARTS, self::COMPOSITE_PARTS ), $parameters, 'FieldSpec gained or lost a part: update SettingsOperations::field(), then these lists.' );
 	}
 
 	/**
@@ -194,6 +207,9 @@ final class SettingsOperationsTest extends TestCase {
 			'maximum'      => $field->maximum(),
 			'privacy'      => $field->privacy(),
 			'translatable' => $field->isTranslatable(),
+			'fields'       => $field->fields(),
+			'min_items'    => $field->minItems(),
+			'max_items'    => $field->maxItems(),
 		);
 	}
 }

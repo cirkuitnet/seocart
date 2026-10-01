@@ -62,7 +62,7 @@ final class ReferenceSeedTest extends DatabaseTestCase {
 	 *
 	 * @var string
 	 */
-	private const SMALL_DIGEST = '53c35f7cb060387030703dfafdf0a5f854adabdaa1f21ef0358e26e2c55c88af';
+	private const SMALL_DIGEST = '2896a96e1f5526d1d28a14fadc2826b25f0aa643a16606a25d740afe40cb6e09';
 
 	/**
 	 * The seed of the test, once it wrote.
@@ -174,6 +174,8 @@ final class ReferenceSeedTest extends DatabaseTestCase {
 		$this->assertSame( array( 200, 300, 300, 200, 200, 200 ), array( $rows['products'], $rows['posts'], $rows['product_posts'], $rows['variants'], $rows['variant_prices'], $rows['stock_items'] ) );
 		$this->assertGreaterThan( 200, $rows['stock_ledger'] );
 		$this->assertGreaterThan( 0, $rows['stock_holds'] );
+		$this->assertSame( Dataset::Small->carts(), $rows['carts'] );
+		$this->assertGreaterThan( Dataset::Small->carts(), $rows['cart_lines'] );
 
 		PluginActions::checkIn();
 

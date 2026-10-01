@@ -2,16 +2,20 @@
  * The Store API spec: what a visitor's browser receives from the storefront and the Store API
  * before it writes anything.
  *
- * A catalog page and a Store API read set no cookie: the cart cookie is issued only by the first
- * write that creates a cart, so a page cache can serve every visitor the same page. The session
+ * A catalog page and a Store API read set no cookie: the cart cookie is issued only by a cart
+ * write, the first of which creates the cart, so a page cache can serve every visitor the same
+ * page. The session
  * read answers a guest with a nonce and user 0, and is never cached. An unknown path under the
  * Store API is answered in the plugin's one error shape, and is never cached either.
  *
  * Every request here is a guest's: a request context of its own, without the administrator's
  * session the other specs share. The page read is a post the spec publishes and deletes again.
  *
- * The Store API has no write yet, so the refusal of a write without its request header is
- * proven by the integration suite, through the production wiring, until the first write lands.
+ * The cart: a write without the Store API's request header is refused and changes nothing; the
+ * first write, which creates the cart, gets the cart cookie, for the guest cart's seven days; a
+ * later write gets the same cookie again, for seven days from that write, so the cookie lives as
+ * long as the cart; a read of the cart gets none. The cart's lines name a variant no product has,
+ * which the cart keeps and reports unpriced, so the spec needs no catalog.
  */
 
 import type { APIRequestContext, APIResponse } from '@playwright/test';
@@ -23,6 +27,46 @@ const STORE_NAMESPACE = 'seocart/store/v1';
 
 /** Every Store API answer carries this, a guest's included. */
 const NO_STORE = 'no-store, private';
+
+/** The header every Store API write carries. */
+const STORE_HEADER = { 'X-SEOCart-Store': '1' };
+
+/** The cookie that carries a browser's cart token. */
+const CART_COOKIE = 'seocart_cart_token';
+
+/** A variant no product has: the cart keeps its line and reports it unpriced. */
+const UNKNOWN_VARIANT = 990001;
+
+/** How long a guest's cart lives after a write, and so its cookie: seven days, in seconds. */
+const GUEST_CART_SECONDS = 7 * 24 * 60 * 60;
+
+/**
+ * Returns a Set-Cookie header's `name=value` pair.
+ *
+ * @param cookie The header's value.
+ */
+function cookiePair( cookie: string ): string {
+	return cookie.split( ';' )[ 0 ];
+}
+
+/**
+ * Returns a Set-Cookie header's Max-Age, in seconds, or NaN when it has none.
+ *
+ * @param cookie The header's value.
+ */
+function maxAge( cookie: string ): number {
+	return Number( /;\s*max-age=(\d+)/i.exec( cookie )?.[ 1 ] );
+}
+
+/**
+ * Expects a cart cookie to live a guest cart's seven days, give or take the minute a request may take.
+ *
+ * @param cookie The header's value.
+ */
+function expectGuestCartLife( cookie: string ): void {
+	expect( maxAge( cookie ) ).toBeGreaterThan( GUEST_CART_SECONDS - 60 );
+	expect( maxAge( cookie ) ).toBeLessThanOrEqual( GUEST_CART_SECONDS );
+}
 
 /** Returns the site's home URL, with its trailing slash. */
 function home(): string {
@@ -69,9 +113,12 @@ test.describe( 'Store API, as a guest', () => {
 	let guest: APIRequestContext;
 
 	test.beforeEach( async ( { playwright } ) => {
+		// An empty storage state: a new request context otherwise takes the configured one, the
+		// administrator's session, and its login cookie would make every request a user's.
 		guest = await playwright.request.newContext( {
 			baseURL: siteBaseURL(),
 			ignoreHTTPSErrors: ignoreHTTPSErrors(),
+			storageState: { cookies: [], origins: [] },
 		} );
 	} );
 
@@ -126,6 +173,100 @@ test.describe( 'Store API, as a guest', () => {
 				params: { force: true },
 			} );
 		}
+	} );
+
+	test( 'a cart write without the Store API header is refused and changes nothing', async () => {
+		const refused = await guest.post(
+			restUrl( `/${ STORE_NAMESPACE }/cart/lines` ),
+			{
+				data: {
+					lines: [ { variant_id: UNKNOWN_VARIANT, quantity: 1 } ],
+				},
+			}
+		);
+
+		expect( refused.status() ).toBe( 403 );
+		expect(
+			setCookies( refused ),
+			'A refused write set a cookie.'
+		).toEqual( [] );
+		expect( ( await refused.json() ).code ).toBe(
+			'store_api.header_missing'
+		);
+
+		const read = await guest.get( restUrl( `/${ STORE_NAMESPACE }/cart` ) );
+		const cart = await read.json();
+
+		expect( cart.version, 'The refused write created a cart.' ).toBe( 0 );
+		expect( cart.lines ).toEqual( [] );
+	} );
+
+	test( 'every cart write gets the cart cookie for as long as the cart lives, and a read of the cart gets none', async () => {
+		const first = await guest.post(
+			restUrl( `/${ STORE_NAMESPACE }/cart/lines` ),
+			{
+				headers: STORE_HEADER,
+				data: {
+					lines: [ { variant_id: UNKNOWN_VARIANT, quantity: 2 } ],
+				},
+			}
+		);
+
+		expect( first.status() ).toBe( 200 );
+		expect( first.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+
+		const cookies = setCookies( first );
+
+		expect( cookies, 'The first write set no cart cookie.' ).toHaveLength(
+			1
+		);
+		expect( cookies[ 0 ] ).toMatch(
+			new RegExp( `^${ CART_COOKIE }=[0-9a-f]{64};` )
+		);
+		expect( cookies[ 0 ].toLowerCase() ).toContain( 'httponly' );
+		expectGuestCartLife( cookies[ 0 ] );
+
+		const created = await first.json();
+
+		expect( created.version ).toBe( 1 );
+		expect( created.unpriced_lines ).toHaveLength( 1 );
+
+		// The request context keeps the cookie, as a browser does, so this write names the cart.
+		const second = await guest.post(
+			restUrl( `/${ STORE_NAMESPACE }/cart/lines` ),
+			{
+				headers: STORE_HEADER,
+				data: {
+					lines: [ { variant_id: UNKNOWN_VARIANT, quantity: 1 } ],
+					cart_version: 1,
+				},
+			}
+		);
+
+		expect( second.status() ).toBe( 200 );
+		expect( ( await second.json() ).version ).toBe( 2 );
+
+		const again = setCookies( second );
+
+		expect(
+			again,
+			'The later write did not send the cart cookie again.'
+		).toHaveLength( 1 );
+		expect(
+			cookiePair( again[ 0 ] ),
+			'The later write sent another token.'
+		).toBe( cookiePair( cookies[ 0 ] ) );
+		expectGuestCartLife( again[ 0 ] );
+
+		const read = await guest.get( restUrl( `/${ STORE_NAMESPACE }/cart` ) );
+
+		expect( read.status() ).toBe( 200 );
+		expect(
+			setCookies( read ),
+			'A read of the cart set a cookie.'
+		).toEqual( [] );
+		expect( read.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+		expect( ( await read.json() ).version ).toBe( 2 );
 	} );
 
 	test( 'an unknown Store API path is answered in the one error shape, never cached', async () => {

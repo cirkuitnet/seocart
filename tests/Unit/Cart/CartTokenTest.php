@@ -90,6 +90,18 @@ final class CartTokenTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a cart is stored under its token's SHA-256, never the token.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_token_is_stored_as_its_sha256(): void {
+		$token = CartToken::generate();
+
+		$this->assertSame( hash( 'sha256', $token->value() ), $token->hash() );
+		$this->assertNotSame( $token->hash(), CartToken::generate()->hash() );
+	}
+
+	/**
 	 * Tests that a token never appears in debugging output.
 	 *
 	 * @since 0.1.0

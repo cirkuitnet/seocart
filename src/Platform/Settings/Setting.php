@@ -50,6 +50,7 @@ defined( 'ABSPATH' ) || exit;
  * - a group that is not snake_case, or the group `boot`, whose option name is the kernel's;
  * - an option name longer than the options table holds;
  * - a required or nullable field: a setting always has a value, the stored one or its default;
+ * - an object or a list of objects: a setting holds one value;
  * - an exposed setting without a default, which a read could not answer, unless it is a secret,
  *   which no read returns;
  * - a secret with a default, which would be a secret written in the code, or that is not text;
@@ -181,6 +182,10 @@ final class Setting {
 
 		if ( $field->isRequired() || $field->isNullable() ) {
 			SchemaException::raise( 'The setting %1$s is declared required or nullable; a setting always has a value, the stored one or its default, so declare neither.', $name );
+		}
+
+		if ( $field->type()->isComposite() ) {
+			SchemaException::raise( 'The setting %1$s is an object or a list of objects; a setting holds one value, so declare it as text, a number, a uuid or a boolean.', $name );
 		}
 
 		$secret = Privacy::Secret === $field->privacy();

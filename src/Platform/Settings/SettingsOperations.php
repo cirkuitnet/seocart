@@ -180,8 +180,9 @@ final class SettingsOperations {
 	/**
 	 * Returns a setting's field as an operation carries it: required or not, and without a default.
 	 *
-	 * Every other part of the field is passed on unchanged; a unit test fails when FieldSpec gains
-	 * a part this copy does not pass on.
+	 * Every other part of the field is passed on unchanged, except the parts of an object or a list
+	 * of objects, which a setting never is (Setting refuses one); a unit test fails when FieldSpec
+	 * gains a part this copy does not account for.
 	 *
 	 * @since 0.1.0
 	 *

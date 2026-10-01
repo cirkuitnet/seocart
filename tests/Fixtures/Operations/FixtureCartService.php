@@ -11,14 +11,16 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Fixtures\Operations;
 
+use SEOCart\Cart\Application\CartService;
 use SEOCart\Cart\Application\CartTokens;
 use SEOCart\Cart\Domain\CartToken;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Support\Error\CodedException;
 
 /**
- * Records every call, and hands out a token the way a cart service does: when a write finds no
- * token on the request, it creates the cart and issues the cart's token.
+ * Records every call, and hands out a new cart's token the way the cart service does: when a
+ * write finds no token on the request, it creates the cart and issues the cart's token, for the
+ * lifetime of the writer's kind of cart.
  *
  * The read issues a token too, which a real service must not do, so a test can show that the
  * response to a read never carries one. A write with `fail` set to `yes` issues a token and then
@@ -134,7 +136,7 @@ final class FixtureCartService {
 			$this->issued[] = $issued;
 			$token          = 'issued';
 
-			$this->tokens->issue( $issued );
+			$this->tokens->issue( $issued, CartService::lifetimeSeconds( $actor ) );
 		}
 
 		if ( 'yes' === ( $input['fail'] ?? 'no' ) ) {
