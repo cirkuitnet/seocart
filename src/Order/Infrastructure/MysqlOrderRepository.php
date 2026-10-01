@@ -54,7 +54,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * A status changes only through TRANSITION, whose WHERE clause lists the statuses the registry
  * allows the target to be entered from; the payment projection changes only through
- * RECORD_PAYMENT. No other statement writes either.
+ * RECORD_PAYMENT. No other statement writes either. MARK_UNRECONCILED raises the flag that brings
+ * a person to an order a payment did not match; nothing here lowers it.
  *
  * @since 0.1.0
  */
@@ -227,6 +228,45 @@ final class MysqlOrderRepository implements OrderRepository {
 		. 'AND authorized_minor + %d <= grand_total_minor AND paid_minor + %d <= grand_total_minor AND refunded_minor + %d <= paid_minor + %d '
 		. 'AND base_authorized_minor + %d <= base_grand_total_minor AND base_paid_minor + %d <= base_grand_total_minor AND base_refunded_minor + %d <= base_paid_minor + %d '
 		. 'AND due_minor - %d + %d >= 0';
+
+	/**
+	 * Flags the order as holding money a person must reconcile; `updated_at` moves forward, so a found order is one affected row even when it was flagged before.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const MARK_UNRECONCILED = 'UPDATE {orders} SET has_unreconciled_money = 1, updated_at = GREATEST( UTC_TIMESTAMP(6), updated_at + INTERVAL 1 MICROSECOND ) WHERE id = %d';
+
+	/**
+	 * A page of orders' payment amounts, by the primary key, after the last id of the page before.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const PAYMENT_AMOUNTS = 'SELECT id, uuid, authorized_minor, paid_minor, refunded_minor, base_authorized_minor, base_paid_minor, base_refunded_minor FROM {orders} WHERE id > %d ORDER BY id LIMIT %d';
+
+	/**
+	 * The first orders flagged as holding money a person must reconcile, in id order, on the `unreconciled` key.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const UNRECONCILED = 'SELECT id, uuid FROM {orders} WHERE has_unreconciled_money = 1 ORDER BY id LIMIT %d';
+
+	/**
+	 * The first orders, in id order, that point at no totals snapshot, or at another than the one marked current.
+	 *
+	 * The current snapshot is found on the `order_current` key, one per order at most.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const CURRENT_TOTALS_DRIFT = 'SELECT o.id, o.uuid, o.current_totals_id, t.id AS current_id FROM {orders} o LEFT JOIN {order_totals} t ON t.order_id = o.id AND t.is_current = 1 '
+		. 'WHERE o.current_totals_id IS NULL OR t.id IS NULL OR o.current_totals_id <> t.id ORDER BY o.id LIMIT %d';
 
 	/**
 	 * The order row a storefront shows, by uuid.
@@ -807,6 +847,83 @@ final class MysqlOrderRepository implements OrderRepository {
 			$baseCaptured,
 			$captured,
 			$refunded
+		);
+	}
+
+	/**
+	 * Flags the order as holding money a person must reconcile.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $orderId The order.
+	 * @return bool True when the order was found.
+	 */
+	public function markUnreconciled( int $orderId ): bool {
+		$this->statements->requireTransaction( __METHOD__ );
+
+		return 1 === $this->statements->execute( self::MARK_UNRECONCILED, $orderId );
+	}
+
+	/**
+	 * Reads a page of orders' payment amounts, in id order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId The last id of the page before, or 0 for the first page.
+	 * @param int $limit   The most orders to read.
+	 * @return list<array{id: int, uuid: string, authorized: int, paid: int, refunded: int, base_authorized: int, base_paid: int, base_refunded: int}> The orders, in minor units.
+	 */
+	public function paymentAmounts( int $afterId, int $limit ): array {
+		return array_map(
+			static fn( array $row ): array => array(
+				'id'              => (int) $row['id'],
+				'uuid'            => (string) $row['uuid'],
+				'authorized'      => (int) $row['authorized_minor'],
+				'paid'            => (int) $row['paid_minor'],
+				'refunded'        => (int) $row['refunded_minor'],
+				'base_authorized' => (int) $row['base_authorized_minor'],
+				'base_paid'       => (int) $row['base_paid_minor'],
+				'base_refunded'   => (int) $row['base_refunded_minor'],
+			),
+			$this->statements->rows( self::PAYMENT_AMOUNTS, $afterId, $limit )
+		);
+	}
+
+	/**
+	 * Reads the first orders flagged as holding money a person must reconcile, in id order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $limit The most orders to read.
+	 * @return list<array{id: int, uuid: string}> The orders.
+	 */
+	public function unreconciled( int $limit ): array {
+		return array_map(
+			static fn( array $row ): array => array(
+				'id'   => (int) $row['id'],
+				'uuid' => (string) $row['uuid'],
+			),
+			$this->statements->rows( self::UNRECONCILED, $limit )
+		);
+	}
+
+	/**
+	 * Reads the first orders whose current totals snapshot is not the one they point at, in id order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $limit The most orders to read.
+	 * @return list<array{id: int, uuid: string, points_at: int|null, current: int|null}> The orders, with the snapshot each points at and the one marked current.
+	 */
+	public function currentTotalsDrift( int $limit ): array {
+		return array_map(
+			static fn( array $row ): array => array(
+				'id'        => (int) $row['id'],
+				'uuid'      => (string) $row['uuid'],
+				'points_at' => self::nullableId( $row['current_totals_id'] ),
+				'current'   => self::nullableId( $row['current_id'] ),
+			),
+			$this->statements->rows( self::CURRENT_TOTALS_DRIFT, $limit )
 		);
 	}
 

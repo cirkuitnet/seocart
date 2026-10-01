@@ -50,10 +50,11 @@ defined( 'ABSPATH' ) || exit;
  * `order_events`, and publishes the events from the statements' own results, so a rolled-back
  * attempt publishes nothing.
  *
- * Placing an order and recording a payment run only inside the caller's transaction: an order
- * committed without its holds, its intents and its outbox rows, or a projection moved without its
- * ledger row, is the inconsistency the caller's unit of work exists to prevent. A transition runs
- * in the caller's transaction or its own.
+ * Placing an order, recording a payment and parking an order a payment did not match run only
+ * inside the caller's transaction: an order committed without its holds, its intents and its
+ * outbox rows, or a projection moved or an order parked without its ledger row, is the
+ * inconsistency the caller's unit of work exists to prevent. A transition runs in the caller's
+ * transaction or its own.
  *
  * Nothing here adds money up: every total is copied from the document the calculation produced,
  * and a payment's amounts are added by the database, in the one statement that also checks them.
@@ -106,6 +107,15 @@ final class Orders {
 	 * @var list<OrderStatus>
 	 */
 	private const NOT_YET_ACCEPTED = array( OrderStatus::PendingPayment, OrderStatus::AwaitingReview );
+
+	/**
+	 * The status an order a payment did not match is parked in, for a person.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var OrderStatus
+	 */
+	private const PARKED = OrderStatus::OnHold;
 
 	/**
 	 * A reason: a lowercase snake_case word that fits `order_events.reason`.
@@ -251,7 +261,7 @@ final class Orders {
 	 *
 	 * @param NewOrder $order The document.
 	 * @param Actor    $actor Who places it.
-	 * @return InsertedOrder The order's identity and its access key.
+	 * @return InsertedOrder The order's identity, the rate it was placed at and its access key.
 	 */
 	public function insert( NewOrder $order, Actor $actor ): InsertedOrder {
 		$this->requireCallersTransaction( __FUNCTION__ );
@@ -281,7 +291,7 @@ final class Orders {
 
 		$this->events->publish( new OrderCreated( $orderId, $uuid, $number, $order->channel->value, $order->currency()->code(), $order->totals->grandTotal->minorUnits(), $this->clock->now() ) );
 
-		return new InsertedOrder( $orderId, $uuid, $number, $accessKey );
+		return new InsertedOrder( $orderId, $uuid, $number, $contextId, $accessKey );
 	}
 
 	/**
@@ -417,6 +427,42 @@ final class Orders {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Parks an order locked by lockForPayment() for a person: flagged as holding money to reconcile, and on hold where it may be.
+	 *
+	 * For a payment that did not match the order. Inside the caller's transaction, which records
+	 * the payment: the flag always, so the record of the payment is never lost with the order's
+	 * status; then, when the registry allows on hold from the status the locked read found, the
+	 * transition, with its record and its event. An order already on hold, or in a status on hold
+	 * may not follow, such as a final one, is flagged and left in its status. Nothing else about
+	 * the order changes; a person decides what happens to it. A reason that is not a lowercase
+	 * snake_case word is an \InvalidArgumentException before any statement.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Outside a transaction; or when the flag finds no order, which the caller's lock rules out.
+	 *
+	 * @param LockedOrder $locked The order, as lockForPayment() returned it in this transaction.
+	 * @param string      $reason Why, a lowercase snake_case word such as `amount_mismatch`.
+	 * @param Actor       $actor  On whose authority.
+	 * @return Transition|null The change to on hold, or null when the order stays in its status.
+	 */
+	public function park( LockedOrder $locked, string $reason, Actor $actor ): ?Transition {
+		$this->requireCallersTransaction( __FUNCTION__ );
+		self::checkReason( $reason );
+
+		if ( ! $this->orders->markUnreconciled( $locked->id ) ) {
+			throw new \LogicException( sprintf( 'Order %d could not be flagged: it is locked by this transaction, so it cannot be gone.', $locked->id ) );
+		}
+
+		// Under the lock the status read is still the order's, so this asks the registry about the order as it is.
+		if ( ! $this->registry->isAllowed( $locked->status, self::PARKED ) ) {
+			return null;
+		}
+
+		return $this->transitionLocked( $locked, self::PARKED, $this->registry->allowedFrom( self::PARKED ), $reason, $actor );
 	}
 
 	/**

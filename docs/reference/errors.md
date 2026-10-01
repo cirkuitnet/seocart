@@ -216,6 +216,43 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: An order cannot change from {from} to {to}.
 - Values: `from`, `to`
 
+## `payment.intent_not_found`
+
+- HTTP status: 404
+- Message: The payment {intent_uuid} was not found.
+- Values: `intent_uuid`
+
+## `payment.not_capturable`
+
+- HTTP status: 409
+- Message: A payment that is {status} cannot be captured; only an authorized payment can.
+- Values: `status`
+
+## `payment.projection_conflict`
+
+- HTTP status: 500
+- Internal: a client receives the code, the status, a generic message and the correlation id. This message and its values go to the site's error log only.
+- Message: The payment amounts of order {order_id} could not be recorded.
+- Values: `order_id`
+
+## `payment.refund_exceeds_captured`
+
+- HTTP status: 409
+- Message: A refund of {requested} would exceed what is left of {captured} captured, of which {refunded} is already refunded.
+- Values: `captured`, `refunded`, `requested`
+
+## `payment.unexpected_result`
+
+- HTTP status: 409
+- Message: A payment that is {intent_status} cannot take a result of {operation}.
+- Values: `intent_status`, `operation`
+
+## `payment.unreconciled`
+
+- HTTP status: 409
+- Message: The payment has a result that does not match its order; a person must reconcile it before it is captured.
+- Values: none
+
 ## `pricing.currency_not_enabled`
 
 - HTTP status: 409

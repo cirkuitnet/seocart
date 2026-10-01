@@ -76,6 +76,101 @@ Fires after an order's status change is committed.
 - `actorType` (string): `user` for a person acting in person, `system` for a process acting on a user's authority.
 - `actorId` (int|null): The WordPress user on whose authority it changed, or null for a visitor.
 
+## `seocart_payment_authorized`
+
+Fires after an authorization is committed to the ledger and its intent.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `payment_intent`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_payment_authorized', $callback, 10, 2 )`; the first argument is a `SEOCart\Payment\Domain\Event\PaymentAuthorized`.
+
+### Event properties
+
+- `intentId` (int): The intent's internal id.
+- `orderId` (int): The order it pays for.
+- `amountMinor` (int): The amount authorized, in minor units.
+- `currency` (string): The currency of the amount, ISO 4217.
+- `transactionId` (int): The ledger row the authorization was recorded in.
+
+## `seocart_payment_captured`
+
+Fires after a capture is committed to the ledger and its intent.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `payment_intent`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_payment_captured', $callback, 10, 2 )`; the first argument is a `SEOCart\Payment\Domain\Event\PaymentCaptured`.
+
+### Event properties
+
+- `intentId` (int): The intent's internal id.
+- `orderId` (int): The order it pays for.
+- `amountMinor` (int): The amount captured, in minor units.
+- `currency` (string): The currency of the amount, ISO 4217.
+- `transactionId` (int): The ledger row the capture was recorded in.
+
+## `seocart_payment_failed`
+
+Fires after a decline is committed to the ledger and its intent has failed.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `payment_intent`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_payment_failed', $callback, 10, 2 )`; the first argument is a `SEOCart\Payment\Domain\Event\PaymentFailed`.
+
+### Event properties
+
+- `intentId` (int): The intent's internal id.
+- `orderId` (int): The order it pays for.
+- `amountMinor` (int): The amount the gateway declined, in minor units.
+- `currency` (string): The currency of the amount, ISO 4217.
+- `transactionId` (int): The ledger row the decline was recorded in.
+- `machineCode` (string|null): The gateway's machine code for the decline, for example `card_declined`, or null when it gave none.
+
+## `seocart_payment_intent_created`
+
+Fires after an intent created with its order is committed.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `payment_intent`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_payment_intent_created', $callback, 10, 2 )`; the first argument is a `SEOCart\Payment\Domain\Event\PaymentIntentCreated`.
+
+### Event properties
+
+- `intentId` (int): The intent's internal id.
+- `intentUuid` (string): The intent's public identifier.
+- `orderId` (int): The order it pays for.
+- `gatewayId` (string): The gateway it is paid through, for example `stub`.
+- `amountMinor` (int): Its frozen amount, in minor units.
+- `currency` (string): The currency of the amount, ISO 4217.
+
+## `seocart_payment_status_changed`
+
+Fires after a change of an order's payment status is committed.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `order`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_payment_status_changed', $callback, 10, 2 )`; the first argument is a `SEOCart\Payment\Domain\Event\PaymentStatusChanged`.
+
+### Event properties
+
+- `orderId` (int): The order's internal id.
+- `from` (string): The payment status before.
+- `to` (string): The payment status after.
+- `authorizedMinor` (int): Authorized so far, in minor units.
+- `paidMinor` (int): Captured so far, in minor units.
+- `refundedMinor` (int): Refunded so far, in minor units.
+- `dueMinor` (int): Still to be paid, in minor units.
+- `currency` (string): The order's currency, ISO 4217.
+
 ## `seocart_product_binding_promoted`
 
 A product's source binding moved: another of its posts, in another locale, became the post that controls its existence.

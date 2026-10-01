@@ -164,7 +164,6 @@ abstract class OrderTestCase extends DatabaseTestCase {
 	 */
 	protected function ordersOver( Database $db, IdGenerator $ids ): Orders {
 		$statements = new OrderStatements( $db );
-		$publisher  = new Publisher( $db, new Outbox( $db ), $this->bridge, new EventCatalog( Modules::EVENT_CLASSES ), $this->correlation, new RecordingWake() );
 
 		return new Orders(
 			new MysqlOrderRepository( $statements, $ids ),
@@ -173,11 +172,23 @@ abstract class OrderTestCase extends DatabaseTestCase {
 			new MysqlConversionContexts( $statements, $ids ),
 			new OrderStatusRegistry(),
 			$db,
-			$publisher,
+			$this->publisherOver( $db ),
 			$ids,
 			FrozenClock::at( self::NOW ),
 			$this->correlation
 		);
+	}
+
+	/**
+	 * Builds the event publisher over a connection, as the kernel builds it: an event is an outbox row, and the wake never drains.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Database $db The connection.
+	 * @return Publisher The publisher.
+	 */
+	protected function publisherOver( Database $db ): Publisher {
+		return new Publisher( $db, new Outbox( $db ), $this->bridge, new EventCatalog( Modules::EVENT_CLASSES ), $this->correlation, new RecordingWake() );
 	}
 
 	/**

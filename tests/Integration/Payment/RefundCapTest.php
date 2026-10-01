@@ -1,0 +1,148 @@
+<?php
+/**
+ * Tests that cumulative refunds never exceed what an intent captured
+ *
+ * @package SEOCart
+ * @since   0.1.0
+ * @license GPL-3.0-or-later
+ */
+
+declare( strict_types=1 );
+
+namespace SEOCart\Tests\Integration\Payment;
+
+use SEOCart\Payment\Application\PaymentError;
+use SEOCart\Payment\Domain\ApplicationKind;
+use SEOCart\Payment\Domain\IntentStatus;
+use SEOCart\Payment\Domain\IntentTransitions;
+use SEOCart\Payment\Domain\Operation;
+use SEOCart\Payment\Domain\Outcome;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
+use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
+use SEOCart\Support\Error\CodedException;
+use SEOCart\Tests\Support\Payment\PaymentTestCase;
+
+/**
+ * Refund results applied one after another refund what was captured and no more, through the one money path.
+ *
+ * The refund's own update carries the cap, `captured_minor - refunded_minor >= amount` and its base
+ * twin, in its WHERE clause, so the database refuses a refund past the capture; the refusal is
+ * classified from the intent's locked read, and the refund's ledger row goes back with the
+ * savepoint.
+ *
+ * Planted violations, each shown red and removed:
+ * - in MysqlPaymentRepository::APPLY_REFUND, neutralise the positive amount, `( %d > 0 OR 1 = 1 )`:
+ *   the refund of nothing moves the captured intent to partially refunded;
+ * - in MysqlPaymentRepository::APPLY_REFUND, neutralise
+ * both caps, `( captured_minor - refunded_minor >= %d OR 1 = 1 )` and its base twin: the refund
+ * past the capture lands on the intent, and only the order's projection refuses it, as a
+ * conflict rather than the refund's own error.
+ *
+ * @since 0.1.0
+ */
+final class RefundCapTest extends PaymentTestCase {
+
+	/**
+	 * Tests that refunds of 2000 and then 1080 of 3080 captured are applied, and one of 1500 between them is refused and leaves no row.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_cumulative_refunds_never_exceed_the_capture(): void {
+		list( $order, $intent ) = $this->placeCaptured();
+
+		$this->assertSame( ApplicationKind::Applied, $this->deliver( self::stubResult( $intent, Operation::Refund, Outcome::Approved, 2000, 'USD', 'stub-re-1' ) )->kind );
+		$this->assertSame( array( 'partially_refunded', '2000' ), array( $this->intentRow( $intent->uuid )['status'], (string) $this->intentRow( $intent->uuid )['refunded_minor'] ) );
+
+		$rows = count( $this->ledgerOf( $order->id ) );
+
+		try {
+			$this->deliver( self::stubResult( $intent, Operation::Refund, Outcome::Approved, 1500, 'USD', 'stub-re-2' ) );
+			$this->fail( 'A refund past what was captured was applied.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( PaymentError::RefundExceedsCaptured, $refused->errorCode() );
+			$this->assertSame(
+				array(
+					'captured'  => 3080,
+					'refunded'  => 2000,
+					'requested' => 1500,
+				),
+				$refused->context()
+			);
+		}
+
+		$this->assertCount( $rows, $this->ledgerOf( $order->id ), 'The refused refund\'s row went back with its savepoint.' );
+
+		$this->assertSame( ApplicationKind::Applied, $this->deliver( self::stubResult( $intent, Operation::Refund, Outcome::Approved, 1080, 'USD', 'stub-re-3' ) )->kind );
+
+		$intentRow = $this->intentRow( $intent->uuid );
+		$orderRow  = $this->orderRow( $order->id );
+
+		$this->assertSame( array( 'refunded', '3080', '3080' ), array( $intentRow['status'], (string) $intentRow['refunded_minor'], (string) $intentRow['base_refunded_minor'] ) );
+		$this->assertSame( array( 'refunded', '3080', '3080' ), array( $orderRow['payment_status'], (string) $orderRow['refunded_minor'], (string) $orderRow['base_refunded_minor'] ) );
+		$this->assertSame( 'processing', $orderRow['status'], 'A refund changes the payment status, not the order status.' );
+
+		try {
+			$this->deliver( self::stubResult( $intent, Operation::Refund, Outcome::Approved, 1, 'USD', 'stub-re-4' ) );
+			$this->fail( 'A refund of a refunded intent was applied.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( PaymentError::UnexpectedResult, $refused->errorCode(), 'A refunded intent takes no refund at all.' );
+		}
+	}
+
+	/**
+	 * Tests that the refund statement refunds nothing of nothing: a refund of 0 changes no row, whatever reaches it.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_refund_statement_refuses_a_refund_of_nothing(): void {
+		list( , $intent ) = $this->placeCaptured();
+
+		$b = $this->secondConnection();
+
+		$b->query(
+			$this->rawPayment(
+				MysqlPaymentRepository::APPLY_REFUND,
+				0,
+				0,
+				0,
+				(int) $this->intentRow( $intent->uuid )['id'],
+				'USD',
+				'USD',
+				IntentTransitions::values( IntentTransitions::allowedFrom( IntentStatus::Refunded ) ),
+				0,
+				0,
+				0
+			)
+		);
+
+		$this->assertSame( 0, $b->affectedRows(), 'A refund of nothing is no refund.' );
+		$this->assertSame( array( 'captured', '0' ), array( $this->intentRow( $intent->uuid )['status'], (string) $this->intentRow( $intent->uuid )['refunded_minor'] ) );
+	}
+
+	/**
+	 * Tests that a partial refund of an order in another currency than its base is refused before any write: its base share is the refund service's to allocate.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_converted_partial_refund_needs_its_base_share(): void {
+		list( $order, $intent ) = $this->placeWithIntent();
+
+		$this->deliver( $this->authorizeWith( $intent, StubGateway::APPROVE ) );
+		$this->deliver( self::stubResult( $intent, Operation::Capture, Outcome::Approved, self::GRAND_TOTAL, self::CURRENCY, 'stub-cap-' . $intent->uuid ) );
+
+		$rows = count( $this->ledgerOf( $order->id ) );
+		$log  = $this->captureQueries(
+			function () use ( $intent ): void {
+				try {
+					$this->deliver( self::stubResult( $intent, Operation::Refund, Outcome::Approved, 1000, self::CURRENCY, 'stub-re-1' ) );
+					$this->fail( 'A converted partial refund was applied without its base share.' );
+				} catch ( \LogicException $refused ) {
+					$this->assertStringContainsString( 'base share', $refused->getMessage() );
+				}
+			}
+		);
+
+		$this->assertQueryCount( 0, $log->ofType( 'INSERT', 'UPDATE', 'DELETE' ), 'writes before the refusal' );
+		$this->assertCount( $rows, $this->ledgerOf( $order->id ) );
+	}
+}

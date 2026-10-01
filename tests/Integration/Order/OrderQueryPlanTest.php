@@ -32,8 +32,8 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  * Every SELECT the order module's source writes is sent, explained and judged by the query-plan rule.
  *
  * The order module's reads run over a PlanRecorder: the reads back of placing an order, the
- * order's lock, the order's read for showing it and for its access check, and a conversion
- * context's read. Each plugin SELECT is explained, printed and judged as the catalog's and the
+ * order's lock, the order's read for showing it and for its access check, the paged reads doctor's
+ * payment check sends, and a conversion context's read. Each plugin SELECT is explained, printed and judged as the catalog's and the
  * inventory's are; the reference dataset has no orders, so the tables stay under the size at
  * which the rule gates and the run records the plans. And every SELECT the module's source writes
  * must have been sent (ReadInventory), so no read goes unexplained.
@@ -126,6 +126,11 @@ final class OrderQueryPlanTest extends OrderTestCase {
 		// The order's reads by uuid: for showing it, and for its access check.
 		$orders->findByUuid( $inserted->uuid );
 		$repository->findForAccess( $inserted->uuid );
+
+		// The reads of doctor's payment check: the payment amounts, a page at a time, the flagged orders and the totals drift.
+		$repository->paymentAmounts( 0, 500 );
+		$repository->unreconciled( 20 );
+		$repository->currentTotalsDrift( 20 );
 
 		// The order's conversion context, read back; its id is looked up unrecorded, being the test's read, not the module's.
 		$contexts->find( (int) $this->db->fetchValue( 'SELECT conversion_context_id FROM %i WHERE id = %d', $this->table( OrderTables::ORDERS ), $inserted->id ) );

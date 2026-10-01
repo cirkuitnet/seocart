@@ -23,6 +23,10 @@ use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
+use SEOCart\Order\Infrastructure\MysqlOrderRepository;
+use SEOCart\Order\Infrastructure\OrderStatements;
+use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
+use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Cli\Doctor\Doctor;
@@ -150,6 +154,7 @@ final class SeedVerifier {
 			new Outbox( $db ),
 			new ActionSchedulerQueue( $db, new LockService( $db, LockMode::Table ), new JobHandlers( JobHandlers::PRODUCTION, 'strval' ), new CorrelationId( new SequentialIdGenerator() ), $report ),
 			new StockProjectionCheck( new MysqlStockRepository( $db ) ),
+			new PaymentLedgerCheck( new MysqlPaymentRepository( $db, new SequentialIdGenerator( 980000 ) ), new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 990000 ) ) ),
 			...( new CatalogChecks( $products, $stock, $groups, $settler, new SystemClock(), $db, static fn(): Currency => Currency::of( $baseCurrency ), array( new LockService( $db, LockMode::GetLock ), 'withLock' ) ) )->checks()
 		);
 	}

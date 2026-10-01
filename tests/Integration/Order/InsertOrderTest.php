@@ -35,7 +35,8 @@ use SEOCart\Tests\Support\Order\OrderTestCase;
  * - in Orders::insert(), store the raw access key instead of its hash: the key is found in the
  *   order's row, and it no longer verifies against what is stored;
  * - in MysqlOrderRepository::insertLines(), insert each line with a statement of its own: the
- *   six-line order takes more statements than the two-line one.
+ *   six-line order takes more statements than the two-line one;
+ * - in Orders::insert(), return 0 as the conversion context: it is not the order's.
  *
  * @since 0.1.0
  */
@@ -96,6 +97,7 @@ final class InsertOrderTest extends OrderTestCase {
 		$this->assertSame( $order['current_totals_id'], $totals[0]['id'], 'The order names the snapshot its totals were copied from.' );
 		$this->assertSame( array( '1', '1', '3080', '2464', '3' ), array( $totals[0]['version'], $totals[0]['is_current'], $totals[0]['grand_total_minor'], $totals[0]['base_grand_total_minor'], $totals[0]['rate_version'] ) );
 		$this->assertSame( $order['conversion_context_id'], $totals[0]['conversion_context_id'] );
+		$this->assertSame( (int) $order['conversion_context_id'], $inserted->conversionContextId, 'The caller learns the rate the order was placed at, for its intents.' );
 		$this->assertSame( NewOrders::TRACE, json_decode( (string) $totals[0]['trace_json'], true ) );
 
 		$lines = $this->db->fetchAll( 'SELECT id, sku_snapshot, locale_snapshot, quantity, unit_compare_at_minor, line_net_minor, line_tax_minor, base_line_net_minor, base_line_discount_minor, base_line_tax_minor, base_line_gross_minor, tax_class_snapshot, sort_order FROM %i WHERE order_id = %d ORDER BY sort_order', $this->table( OrderTables::LINES ), $inserted->id );

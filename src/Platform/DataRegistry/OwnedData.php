@@ -19,6 +19,8 @@ use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
 use SEOCart\Order\Infrastructure\Migrations\CreateOrderTables;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Payment\Infrastructure\Migrations\CreatePaymentTables;
+use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Migrations\PlatformBootstrapMigration;
 use SEOCart\Platform\Database\Schema\Classification;
@@ -79,6 +81,7 @@ final class OwnedData {
 			new Contribution( tables: array( RateCountersTable::definition() ), migrations: array( new CreateRateCountersMigration() ) ),
 			new Contribution( tables: OrderTables::all(), migrations: array( new CreateOrderTables() ) ),
 			new Contribution( tables: CartTables::all(), migrations: array( new CreateCartTables() ) ),
+			new Contribution( tables: PaymentTables::all(), migrations: array( new CreatePaymentTables() ) ),
 		);
 	}
 }

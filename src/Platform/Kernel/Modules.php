@@ -82,6 +82,18 @@ use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\SequenceOrderNumberGenerator;
 use SEOCart\Order\Infrastructure\WordPressAccessKeys;
 use SEOCart\Order\Interfaces\StoreApi\OrderStatusRead;
+use SEOCart\Payment\Application\PaymentError;
+use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Domain\Event\PaymentAuthorized;
+use SEOCart\Payment\Domain\Event\PaymentCaptured;
+use SEOCart\Payment\Domain\Event\PaymentFailed;
+use SEOCart\Payment\Domain\Event\PaymentIntentCreated;
+use SEOCart\Payment\Domain\Event\PaymentStatusChanged;
+use SEOCart\Payment\Domain\Gateway\PaymentGateway;
+use SEOCart\Payment\Domain\PaymentRepository;
+use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
+use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Platform\Authorization\AuthorizationError;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
@@ -236,6 +248,7 @@ final class Modules {
 		InventoryError::class,
 		KernelError::class,
 		OrderError::class,
+		PaymentError::class,
 		PricingError::class,
 		SecretsError::class,
 		SettingsError::class,
@@ -257,6 +270,11 @@ final class Modules {
 		OrderCreated::class,
 		OrderPlaced::class,
 		OrderStatusChanged::class,
+		PaymentAuthorized::class,
+		PaymentCaptured::class,
+		PaymentFailed::class,
+		PaymentIntentCreated::class,
+		PaymentStatusChanged::class,
 		StockAdjusted::class,
 		StockHoldExpired::class,
 		StockReserved::class,
@@ -329,6 +347,7 @@ final class Modules {
 		self::cartRegister( $container );
 		self::pricingRegister( $container );
 		self::orderRegister( $container );
+		self::paymentRegister( $container );
 		self::kernelRegister( $container );
 	}
 
@@ -486,6 +505,7 @@ final class Modules {
 				$c->get( Outbox::class ),
 				$c->get( JobQueue::class ),
 				$c->get( StockProjectionCheck::class ),
+				$c->get( PaymentLedgerCheck::class ),
 				...$c->get( CatalogChecks::class )->checks()
 			)
 		);
@@ -1186,6 +1206,38 @@ final class Modules {
 		$container->bind( ActorCustomers::class, static fn(): ActorCustomers => new NoCustomers() );
 		$container->bind( OrderAccessPolicy::class, static fn( Container $c ): OrderAccessPolicy => new OrderAccessPolicy( $c->get( OrderRepository::class ), $c->get( AccessKeys::class ), $c->get( ActorCustomers::class ) ) );
 		$container->bind( OrderStatusRead::class, static fn( Container $c ): OrderStatusRead => new OrderStatusRead( $c->get( OrderAccessPolicy::class ) ) );
+	}
+
+	/**
+	 * The payment module: the payment repository and service, the gateway, and the payment check of doctor.
+	 *
+	 * It adds no hook: an intent is created and a gateway result applied by the services that call
+	 * them, inside their own transactions, and the check runs through doctor. The gateway is the
+	 * stub until a real one is installed; with one gateway there is no registry of them.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container The container.
+	 */
+	private static function paymentRegister( Container $container ): void {
+		$container->bind( MysqlPaymentRepository::class, static fn( Container $c ): MysqlPaymentRepository => new MysqlPaymentRepository( $c->get( Database::class ), $c->get( IdGenerator::class ) ) );
+		$container->bind( PaymentRepository::class, static fn( Container $c ): PaymentRepository => $c->get( MysqlPaymentRepository::class ) );
+		$container->bind( PaymentGateway::class, static fn(): PaymentGateway => new StubGateway() );
+		$container->bind(
+			PaymentService::class,
+			static fn( Container $c ): PaymentService => new PaymentService(
+				$c->get( PaymentRepository::class ),
+				$c->get( PaymentGateway::class ),
+				$c->get( Orders::class ),
+				$c->get( TransactionManager::class ),
+				$c->get( EventPublisher::class ),
+				$c->get( Authorizer::class ),
+				$c->get( IdGenerator::class ),
+				$c->get( Clock::class ),
+				$c->get( CorrelationId::class )
+			)
+		);
+		$container->bind( PaymentLedgerCheck::class, static fn( Container $c ): PaymentLedgerCheck => new PaymentLedgerCheck( $c->get( MysqlPaymentRepository::class ), $c->get( OrderRepository::class ) ) );
 	}
 
 	/**

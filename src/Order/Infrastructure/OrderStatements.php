@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Order\Infrastructure;
 
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\ModuleStatements;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -34,24 +35,6 @@ defined( 'ABSPATH' ) || exit;
  * @since 0.1.0
  */
 final class OrderStatements {
-
-	/**
-	 * A table token, the list token, or a value placeholder.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private const PLACEHOLDER = '/\{([a-z_]+)\}|%[dsi]/';
-
-	/**
-	 * The token of an IN list.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private const LIST_TOKEN = 'list';
 
 	/**
 	 * What precedes the VALUES tuple of an insert constant.
@@ -85,10 +68,11 @@ final class OrderStatements {
 	/**
 	 * Turns a statement's tokens into wpdb placeholders and its values into arguments, in order.
 	 *
-	 * A table token becomes `%i` with the table's full name as its argument. `{list}` takes the
-	 * next value, a list of ints or strings, and becomes one `%d` or `%s` per item; an empty list
-	 * becomes NULL, so `x IN ({list})` matches no row rather than being malformed. `%d`, `%s` and
-	 * `%i` each take the next value. The caller prepares the result with wpdb.
+	 * The plugin's one token expansion (ModuleStatements::expand()) over the order tables: a table
+	 * token becomes `%i` with the table's full name as its argument. `{list}` takes the next value,
+	 * a list of ints or strings, and becomes one `%d` or `%s` per item; an empty list becomes
+	 * NULL, so `x IN ({list})` matches no row rather than being malformed. `%d`, `%s` and `%i`
+	 * each take the next value. The caller prepares the result with wpdb.
 	 *
 	 * @since 0.1.0
 	 *
@@ -104,47 +88,7 @@ final class OrderStatements {
 	 * @phpstan-param callable(string): string $tableName
 	 */
 	public static function expand( string $statement, array $values, callable $tableName ): array {
-		$tables    = OrderTables::names();
-		$arguments = array();
-		$next      = 0;
-
-		$sql = (string) preg_replace_callback(
-			self::PLACEHOLDER,
-			static function ( array $found ) use ( $tables, $values, $tableName, &$arguments, &$next ): string {
-				$token = $found[1] ?? '';
-
-				if ( '' !== $token && in_array( $token, $tables, true ) ) {
-					$arguments[] = $tableName( $token );
-
-					return '%i';
-				}
-
-				if ( '' !== $token && self::LIST_TOKEN !== $token ) {
-					throw new \LogicException( sprintf( 'The statement names {%s}, which is not an order table.', $token ) );
-				}
-
-				if ( ! array_key_exists( $next, $values ) ) {
-					throw new \LogicException( 'The statement has more placeholders than values.' );
-				}
-
-				$value = $values[ $next++ ];
-
-				if ( '' === $token ) {
-					$arguments[] = $value;
-
-					return $found[0];
-				}
-
-				return self::expandList( is_array( $value ) ? $value : array( $value ), $arguments );
-			},
-			$statement
-		);
-
-		if ( count( $values ) !== $next ) {
-			throw new \LogicException( 'The statement has fewer placeholders than values.' );
-		}
-
-		return array( $sql, $arguments );
+		return ModuleStatements::expand( $statement, $values, OrderTables::names(), $tableName, 'order' );
 	}
 
 	/**
@@ -239,38 +183,5 @@ final class OrderStatements {
 		if ( 0 === $this->db->depth() ) {
 			throw new \LogicException( sprintf( '%s runs only inside a transaction: its statement is one of a group that must commit together.', $caller ) );
 		}
-	}
-
-	/**
-	 * Adds a list's items to the arguments and returns their placeholders.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @throws \LogicException When an item is neither an int nor a string.
-	 *
-	 * @param array $items     The items.
-	 * @param array $arguments The arguments so far; the items are added.
-	 * @return string The placeholders, comma-separated, or NULL for an empty list.
-	 *
-	 * @phpstan-param array<mixed> $items
-	 * @phpstan-param list<mixed>  $arguments
-	 */
-	private static function expandList( array $items, array &$arguments ): string {
-		if ( array() === $items ) {
-			return 'NULL';
-		}
-
-		$placeholders = array();
-
-		foreach ( $items as $item ) {
-			if ( ! is_int( $item ) && ! is_string( $item ) ) {
-				throw new \LogicException( 'An IN list holds ints or strings.' );
-			}
-
-			$arguments[]    = $item;
-			$placeholders[] = is_int( $item ) ? '%d' : '%s';
-		}
-
-		return implode( ', ', $placeholders );
 	}
 }

@@ -24,6 +24,9 @@ defined( 'ABSPATH' ) || exit;
  * A storefront names an order by its uuid, and nothing here finds an order by an integer id or
  * by its number. lock() takes the internal id because only the payment and order services call
  * it, inside a transaction that already knows the id, and never with a value from a request.
+ * The reads for `doctor` decide nothing: the payment amounts are read a page at a time by id,
+ * after the last id seen, for comparing every order; the flagged orders and the totals drift are
+ * read as the first orders they find, in id order.
  *
  * @since 0.1.0
  */
@@ -190,6 +193,47 @@ interface OrderRepository {
 	 * @return bool True when the order changed; false when a condition did not hold.
 	 */
 	public function recordPayment( int $orderId, PaymentDelta $delta, PaymentStatus $status ): bool;
+
+	/**
+	 * Flags the order as holding money a person must reconcile: a payment that did not match it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $orderId The order.
+	 * @return bool True when the order was found.
+	 */
+	public function markUnreconciled( int $orderId ): bool;
+
+	/**
+	 * Reads a page of orders' payment amounts, in id order, for comparing them with the payments they were derived from.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId The last id of the page before, or 0 for the first page.
+	 * @param int $limit   The most orders to read.
+	 * @return list<array{id: int, uuid: string, authorized: int, paid: int, refunded: int, base_authorized: int, base_paid: int, base_refunded: int}> The orders, in minor units.
+	 */
+	public function paymentAmounts( int $afterId, int $limit ): array;
+
+	/**
+	 * Reads the first orders flagged as holding money a person must reconcile, in id order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $limit The most orders to read.
+	 * @return list<array{id: int, uuid: string}> The orders.
+	 */
+	public function unreconciled( int $limit ): array;
+
+	/**
+	 * Reads the first orders whose current totals snapshot is not the one they point at, in id order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $limit The most orders to read.
+	 * @return list<array{id: int, uuid: string, points_at: int|null, current: int|null}> The orders, with the snapshot each points at and the one marked current; null for none.
+	 */
+	public function currentTotalsDrift( int $limit ): array;
 
 	/**
 	 * Reads an order for showing it, by its public identifier: the order row, its lines, their options and its addresses.

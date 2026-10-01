@@ -17,6 +17,7 @@ use SEOCart\Inventory\Domain\ReclaimedRows;
 use SEOCart\Inventory\Domain\StockLevel;
 use SEOCart\Inventory\Domain\StockRepository;
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\ModuleStatements;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -304,24 +305,6 @@ final class MysqlStockRepository implements StockRepository {
 	public const ORPHAN_ALLOCATIONS = "SELECT a.id, a.variant_id, a.order_id FROM {stock_allocations} a LEFT JOIN {stock_items} i ON i.variant_id = a.variant_id WHERE a.state = 'open' AND i.variant_id IS NULL ORDER BY a.id LIMIT %d";
 
 	/**
-	 * A table token, or the IN list token, or a value placeholder.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private const PLACEHOLDER = '/\{([a-z_]+)\}|%[dsi]/';
-
-	/**
-	 * The token of an IN list, expanded to one %d per id.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private const LIST_TOKEN = 'list';
-
-	/**
 	 * The connection.
 	 *
 	 * @since 0.1.0
@@ -344,13 +327,14 @@ final class MysqlStockRepository implements StockRepository {
 	/**
 	 * Turns a statement's tokens into wpdb placeholders and its values into arguments, in order.
 	 *
-	 * A table token becomes `%i` with the table's full name as its argument; `{list}` becomes one
-	 * `%d` per id of the next value, which must be a non-empty list; `%d`, `%s` and `%i` each take
-	 * the next value. The caller prepares the result with wpdb.
+	 * The plugin's one token expansion (ModuleStatements::expand()) over the inventory tables: a
+	 * table token becomes `%i` with the table's full name as its argument; `{list}` becomes one
+	 * placeholder per id of the next value, or NULL for an empty list, which matches no row; `%d`,
+	 * `%s` and `%i` each take the next value. The caller prepares the result with wpdb.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \LogicException When a token names no inventory table, a list is empty, or the values do not match the placeholders.
+	 * @throws \LogicException When a token names no inventory table, or the values do not match the placeholders.
 	 *
 	 * @param string   $statement One of this class's constants.
 	 * @param array    $values    The values, in placeholder order.
@@ -361,55 +345,7 @@ final class MysqlStockRepository implements StockRepository {
 	 * @phpstan-param callable(string): string $tableName
 	 */
 	public static function expand( string $statement, array $values, callable $tableName ): array {
-		$tables    = array( InventoryTables::ITEMS, InventoryTables::LEDGER, InventoryTables::HOLDS, InventoryTables::ALLOCATIONS );
-		$arguments = array();
-		$next      = 0;
-
-		$sql = (string) preg_replace_callback(
-			self::PLACEHOLDER,
-			static function ( array $found ) use ( $tables, $values, $tableName, &$arguments, &$next ): string {
-				$token = $found[1] ?? '';
-
-				if ( '' !== $token && in_array( $token, $tables, true ) ) {
-					$arguments[] = $tableName( $token );
-
-					return '%i';
-				}
-
-				if ( '' !== $token && self::LIST_TOKEN !== $token ) {
-					throw new \LogicException( sprintf( 'The statement names {%s}, which is not an inventory table.', $token ) );
-				}
-
-				if ( ! array_key_exists( $next, $values ) ) {
-					throw new \LogicException( 'The statement has more placeholders than values.' );
-				}
-
-				$value = $values[ $next++ ];
-
-				if ( '' === $token ) {
-					$arguments[] = $value;
-
-					return $found[0];
-				}
-
-				if ( ! is_array( $value ) || array() === $value ) {
-					throw new \LogicException( 'An IN list needs at least one id.' );
-				}
-
-				foreach ( $value as $id ) {
-					$arguments[] = (int) $id;
-				}
-
-				return implode( ', ', array_fill( 0, count( $value ), '%d' ) );
-			},
-			$statement
-		);
-
-		if ( count( $values ) !== $next ) {
-			throw new \LogicException( 'The statement has fewer placeholders than values.' );
-		}
-
-		return array( $sql, $arguments );
+		return ModuleStatements::expand( $statement, $values, array( InventoryTables::ITEMS, InventoryTables::LEDGER, InventoryTables::HOLDS, InventoryTables::ALLOCATIONS ), $tableName, 'inventory' );
 	}
 
 	/**
