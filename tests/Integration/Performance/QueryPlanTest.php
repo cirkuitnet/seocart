@@ -429,6 +429,14 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		$this->assertSame( 'order_id', $answer['key'] ?? null, 'A key\'s answer is settled by its order_id key: ' . (string) wp_json_encode( $answer ) );
 
+		// A currency switch: the cart's compare-and-swap by its primary key, and its session's quotes dropped by its cart_id key.
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The statement is the repository's constant, with its own placeholders; this is its prepare step.
+		$switch = $wpdb->get_row( $wpdb->prepare( 'EXPLAIN ' . MysqlCartRepository::SWAP_CURRENCY, $cartTable, 'EUR', 60, $someCart, 1 ), ARRAY_A );
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The statement is the repository's constant, with its own placeholders; this is its prepare step.
+		$quotes = $wpdb->get_row( $wpdb->prepare( 'EXPLAIN ' . MysqlCheckoutSessions::INVALIDATE_QUOTES, $this->db->table( CheckoutTables::SESSIONS ), $someCart ), ARRAY_A );
+
+		$this->assertSame( array( 'PRIMARY', 'cart_id' ), array( $switch['key'] ?? null, $quotes['key'] ?? null ), 'A switch writes the cart by its primary key and the session by its cart: ' . (string) wp_json_encode( array( $switch, $quotes ) ) );
+
 		// The promotion read: for the one code a shopper applies, and for a calculation of a cart
 		// holding as many codes as a cart may. Doctor's check of the use counts runs with doctor below.
 		$promotions = new MysqlPromotionRepository( $db );

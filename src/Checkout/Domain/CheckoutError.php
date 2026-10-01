@@ -17,7 +17,7 @@ use SEOCart\Support\Error\ErrorDefinition;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * The errors of the checkout: an address or a method key it cannot use, a placement request whose idempotency key it cannot honour, and an order that cannot be placed or paid.
+ * The errors of the checkout: an address or a method key it cannot use, a placement request whose idempotency key it cannot honour, an order that cannot be placed or paid, and a currency the cart cannot be switched to.
  *
  * Owns one fact: how a refused checkout request is reported. A write refused by the cart's
  * version answers with the cart's own codes, and a refusal by stock or by a promotion's limit
@@ -108,6 +108,15 @@ enum CheckoutError: string implements ErrorCode {
 	case GatewayUnavailable = 'checkout.gateway_unavailable';
 
 	/**
+	 * The store does not sell in the currency a cart was to be switched to: it is not enabled, has no current exchange rate, or is not a currency code.
+	 *
+	 * The answer is the same whatever the reason, and never lists the currencies the store sells in.
+	 *
+	 * @since 0.1.0
+	 */
+	case CurrencyNotEnabled = 'checkout.currency_not_enabled';
+
+	/**
 	 * Returns the catalog's rows.
 	 *
 	 * @since 0.1.0
@@ -183,6 +192,11 @@ enum CheckoutError: string implements ErrorCode {
 				503,
 				static fn(): string => __( 'The payment provider could not be reached. Your order is waiting for its answer: check its status in a few minutes before you try again.', 'seocart' ),
 				details: array( 'order_uuid' )
+			),
+			new ErrorDefinition(
+				self::CurrencyNotEnabled,
+				422,
+				static fn(): string => __( 'The store does not sell in that currency, so the cart was not changed. Choose one of the currencies the store offers.', 'seocart' )
 			),
 		);
 	}

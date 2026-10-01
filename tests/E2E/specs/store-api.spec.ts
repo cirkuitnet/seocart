@@ -39,6 +39,13 @@
  * creates a promotion through the Store API, so the code to apply needs one planted on the site
  * under test first, named in SEOCART_E2E_CODE: an active code with no usage limit and no fixed
  * amount, so it applies to any cart. Without it that test is skipped, and the refusal still runs.
+ *
+ * The cart's currency: a switch to a currency the store does not sell in is refused with
+ * `checkout.currency_not_enabled`, sets no cookie and changes nothing. A switch to one it sells in
+ * moves the version on, gets the cart cookie again and answers the cart in that currency, and a
+ * replay of it is refused as stale. Nothing enables a currency through the Store API, so that
+ * switch needs one enabled on the site under test first, with a rate in the current version,
+ * named in SEOCART_E2E_CURRENCY. Without it that test is skipped, and the refusal still runs.
  */
 
 import type { APIRequestContext, APIResponse } from '@playwright/test';
@@ -118,6 +125,12 @@ interface PlacedOrder {
 
 /** The promotion code planted on the site under test, if any: SEOCART_E2E_CODE names it. */
 const PLANTED_CODE = ( process.env.SEOCART_E2E_CODE ?? '' ).trim();
+
+/** A currency the site under test sells in besides its base currency, if any: SEOCART_E2E_CURRENCY names it. */
+const PLANTED_CURRENCY = ( process.env.SEOCART_E2E_CURRENCY ?? '' ).trim();
+
+/** An ISO 4217 code of no currency a store prices in: the code reserved for testing. */
+const UNSOLD_CURRENCY = 'XTS';
 
 /** Returns the site's home URL, with its trailing slash. */
 function home(): string {
@@ -651,6 +664,81 @@ test.describe( 'Store API, as a guest', () => {
 		const replay = await guest.delete(
 			codeUrl( PLANTED_CODE.toLowerCase(), 2 ),
 			{ headers: STORE_HEADER }
+		);
+
+		expect( replay.status() ).toBe( 409 );
+		expect( ( await replay.json() ).code ).toBe( 'cart.version_stale' );
+	} );
+
+	test( 'a currency the store does not sell in is refused, sets no cookie and changes nothing', async () => {
+		await startCart( guest );
+
+		const refused = await guest.post(
+			restUrl( `/${ STORE_NAMESPACE }/cart/currency` ),
+			{
+				headers: STORE_HEADER,
+				data: { cart_version: 1, currency: UNSOLD_CURRENCY },
+			}
+		);
+
+		expect( refused.status() ).toBe( 422 );
+		expect( refused.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+		expect(
+			setCookies( refused ),
+			'A refused switch set a cookie.'
+		).toEqual( [] );
+		expect( ( await refused.json() ).code ).toBe(
+			'checkout.currency_not_enabled'
+		);
+
+		const cart = await (
+			await guest.get( restUrl( `/${ STORE_NAMESPACE }/cart` ) )
+		).json();
+
+		expect( cart.version, 'The refused switch changed the cart.' ).toBe(
+			1
+		);
+	} );
+
+	test( 'a guest switches the cart to a currency the store sells in', async () => {
+		test.skip(
+			'' === PLANTED_CURRENCY,
+			'Enable a currency with a rate in the current version on the site under test and name it in SEOCART_E2E_CURRENCY.'
+		);
+
+		const cookie = await startCart( guest );
+		const base = await (
+			await guest.get( restUrl( `/${ STORE_NAMESPACE }/cart` ) )
+		).json();
+
+		expect( base.totals.currency ).not.toBe( PLANTED_CURRENCY );
+
+		const switched = await guest.post(
+			restUrl( `/${ STORE_NAMESPACE }/cart/currency` ),
+			{
+				headers: STORE_HEADER,
+				data: { cart_version: 1, currency: PLANTED_CURRENCY },
+			}
+		);
+
+		expect( switched.status() ).toBe( 200 );
+		expect( switched.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+		expect( setCookies( switched ).map( cookiePair ) ).toEqual( [
+			cookie,
+		] );
+
+		const answer = await switched.json();
+
+		expect( answer.version ).toBe( 2 );
+		expect( answer.totals.currency ).toBe( PLANTED_CURRENCY );
+		expect( answer.lines ).toHaveLength( 1 );
+
+		const replay = await guest.post(
+			restUrl( `/${ STORE_NAMESPACE }/cart/currency` ),
+			{
+				headers: STORE_HEADER,
+				data: { cart_version: 1, currency: PLANTED_CURRENCY },
+			}
 		);
 
 		expect( replay.status() ).toBe( 409 );

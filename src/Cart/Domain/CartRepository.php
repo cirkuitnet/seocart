@@ -102,6 +102,19 @@ interface CartRepository {
 	public function swapPromotionCodes( int $cartId, int $expectedVersion, int $ttlSeconds, array $codes ): bool;
 
 	/**
+	 * The compare-and-swap of a switch of the cart's currency: as compareAndSwap(), and writes the cart's new currency in the same statement.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int      $cartId          The cart.
+	 * @param int      $expectedVersion The version the switch was based on.
+	 * @param int      $ttlSeconds      How long the cart lives from now.
+	 * @param Currency $currency        The currency the cart is in after the switch.
+	 * @return bool True when the cart was open, live and at that version; false when it changed nothing.
+	 */
+	public function swapCurrency( int $cartId, int $expectedVersion, int $ttlSeconds, Currency $currency ): bool;
+
+	/**
 	 * The compare-and-swap of an order placement: as compareAndSwap(), and moves the cart to placing, naming no order until the placement binds its own.
 	 *
 	 * @since 0.1.0

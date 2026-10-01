@@ -47,6 +47,7 @@ use SEOCart\Catalog\Infrastructure\ProductPostType;
 use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
 use SEOCart\Catalog\Interfaces\Admin\ProductEditorPanel;
 use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
+use SEOCart\Checkout\Application\ChangeCartCurrency;
 use SEOCart\Checkout\Application\CheckoutSessions;
 use SEOCart\Checkout\Application\IdempotencyKeys;
 use SEOCart\Checkout\Application\PlaceOrder;
@@ -1175,10 +1176,10 @@ final class Modules {
 	}
 
 	/**
-	 * The checkout module: its sessions and idempotency keys, the session write, the order placement and its settlement, the reconciliation and retention jobs, and doctor's check.
+	 * The checkout module: its sessions and idempotency keys, the session write, the currency switch, the order placement and its settlement, the reconciliation and retention jobs, and doctor's check.
 	 *
-	 * It adds no hook: the session write and the placement are operations' routes, the jobs run
-	 * through JOB_HOOK, and the check through doctor.
+	 * It adds no hook: the session write, the currency switch and the placement are operations'
+	 * routes, the jobs run through JOB_HOOK, and the check through doctor.
 	 *
 	 * @since 0.1.0
 	 *
@@ -1190,6 +1191,7 @@ final class Modules {
 		$container->bind( MysqlIdempotencyKeys::class, static fn( Container $c ): MysqlIdempotencyKeys => new MysqlIdempotencyKeys( $c->get( Database::class ) ) );
 		$container->bind( IdempotencyKeys::class, static fn( Container $c ): IdempotencyKeys => $c->get( MysqlIdempotencyKeys::class ) );
 		$container->bind( UpdateCheckoutSession::class, static fn( Container $c ): UpdateCheckoutSession => new UpdateCheckoutSession( $c->get( CartService::class ), $c->get( CheckoutSessions::class ) ) );
+		$container->bind( ChangeCartCurrency::class, static fn( Container $c ): ChangeCartCurrency => new ChangeCartCurrency( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( PresentmentCurrencies::class ), $c->get( Orders::class ), self::baseCurrency( $c ) ) );
 		$container->bind(
 			SettlePlacement::class,
 			static fn( Container $c ): SettlePlacement => new SettlePlacement(

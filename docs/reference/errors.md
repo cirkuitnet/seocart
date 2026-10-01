@@ -148,6 +148,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The cart has no line, so there is no order to place. Add a line to the cart first.
 - Values: none
 
+## `checkout.currency_not_enabled`
+
+- HTTP status: 422
+- Message: The store does not sell in that currency, so the cart was not changed. Choose one of the currencies the store offers.
+- Values: none
+
 ## `checkout.gateway_unavailable`
 
 - HTTP status: 503

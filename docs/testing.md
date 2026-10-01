@@ -70,6 +70,10 @@ From many, fast and cheap to few, slow and high in value:
 - The Store API spec places its own order: it creates a product through the REST API as the
   administrator, walks a guest's cart to a placed order, reads the order's status with its key,
   and moves the product to the trash.
+- Two of its tests need data nothing in the Store API creates, and are skipped without it:
+  `SEOCART_E2E_CODE` names an active promotion code with no usage limit and no fixed amount, and
+  `SEOCART_E2E_CURRENCY` names a currency the site sells in besides its base currency, enabled
+  with a rate in the current exchange-rate version.
 - There is exactly one cart and checkout flow, so there is one end-to-end journey to
   maintain for it.
 - Accessibility assertions use `@axe-core/playwright` in the same suite and gate on

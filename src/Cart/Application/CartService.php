@@ -79,6 +79,11 @@ defined( 'ABSPATH' ) || exit;
  * against its cart and against its client, before it is looked at, and a refused code always gets
  * the same answer: past their caps every code is refused for the hour, valid or not.
  *
+ * A switch of the cart's currency is a write like any other, its new currency written by the
+ * compare-and-swap itself, so a cart placing an order keeps the currency its order was placed in.
+ * Each switch reprices the cart, so a cart may switch only so often (CurrencyChangeLimit);
+ * whether the store sells in the currency is the caller's to decide first.
+ *
  * Order placement claims a cart, binds its order to it and settles it through the three methods
  * below that run only inside the placement's own transaction.
  *
@@ -630,6 +635,66 @@ final class CartService {
 	}
 
 	/**
+	 * Switches the request's cart to another currency, with another module's write, behind the cart's version, and answers the cart by wire name, priced in that currency.
+	 *
+	 * A switch is a write like any other, through the same transaction as changeWith(): its
+	 * compare-and-swap writes the new currency as it moves the version on, a refusal changes
+	 * nothing, and the cart then lives the writer's lifetime and its token is issued again. The
+	 * closure runs as changeWith()'s does, after the compare-and-swap and only when it matched.
+	 * A switch to the currency the cart is in already is accepted like any other: it moves the
+	 * version on and changes nothing else of the cart. As in change(), the answer is built from the
+	 * cart's row as read before the transaction, so the switch must be based on the version that
+	 * row was read at.
+	 *
+	 * Each switch is counted against the cart's cap (CurrencyChangeLimit) once the request's token
+	 * is found to name a cart, before the compare-and-swap, so a refused switch counts too, and a
+	 * token that names no cart starts no counter. Whether the store sells in the currency is the
+	 * caller's to decide before it calls.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `cart.not_found` when the request names no live cart;
+	 *                        `store_api.rate_limited` past the cart's cap; `cart.version_stale`,
+	 *                        `cart.not_open` or `cart.not_found` when the compare-and-swap refuses;
+	 *                        what the closure raises; the codes the calculation raises.
+	 *
+	 * @param Currency $currency        The currency the cart is to be in.
+	 * @param int      $expectedVersion The version the client based the switch on.
+	 * @param Actor    $actor           Who switches: whose lifetime the cart then lives.
+	 * @param \Closure $write           Writes the other module's rows, given the cart's id.
+	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the switch, priced in its new currency.
+	 *
+	 * @phpstan-param \Closure(int): void $write
+	 */
+	public function changeCurrency( Currency $currency, int $expectedVersion, Actor $actor, \Closure $write ): array {
+		$presented = $this->presentedRow() ?? CodedException::raise( CartError::NotFound );
+		$limit     = CurrencyChangeLimit::perCart();
+
+		// Counted first and judged by the count it returns, as a code tried is, so switches sent at once cannot pass the cap together.
+		if ( $this->limiter->hit( $limit->bucket(), $this->identities->ofCart( $presented['token'] ), $limit->windowSeconds() ) > $limit->limit() ) {
+			CodedException::raise( StoreApiError::RateLimited );
+		}
+
+		$cart     = $presented['cart'];
+		$lifetime = self::lifetimeSeconds( $actor );
+		$switched = $this->commitChange(
+			$presented['token'],
+			$lifetime,
+			function () use ( $cart, $currency, $expectedVersion, $lifetime, $write ): Cart {
+				if ( $expectedVersion !== $cart->version || ! $this->carts->swapCurrency( $cart->id, $expectedVersion, $lifetime, $currency ) ) {
+					$this->refuse( $cart->id );
+				}
+
+				$write( $cart->id );
+
+				return $cart->inCurrency( $expectedVersion + 1, $currency, $this->carts->lines( $cart->id ) );
+			}
+		);
+
+		return $this->priced( $switched );
+	}
+
+	/**
 	 * Returns the token the request carries and the row of the live cart it names, without its lines, which a write reads back once it has changed them.
 	 *
 	 * @since 0.1.0
@@ -756,6 +821,12 @@ final class CartService {
 	/**
 	 * Changes an existing cart: the compare-and-swap, the write, then the counts and the lines, in one transaction; then issues its token again for its new life.
 	 *
+	 * The answer is the cart's row as read before the transaction, its codes and its currency, with
+	 * the lines after the write, so the write must be based on the version that row was read at.
+	 * One based on any other version, even the one a write that committed since has left, is
+	 * refused as the compare-and-swap's refusals are, and changes nothing: otherwise its answer
+	 * would describe a cart that no longer is.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws CodedException What the compare-and-swap's refusal, the write or the count raise; a
@@ -777,7 +848,7 @@ final class CartService {
 			$presented['token'],
 			$lifetime,
 			function () use ( $cart, $expectedVersion, $lifetime, $write ): Cart {
-				if ( ! $this->carts->compareAndSwap( $cart->id, $expectedVersion, $lifetime ) ) {
+				if ( $expectedVersion !== $cart->version || ! $this->carts->compareAndSwap( $cart->id, $expectedVersion, $lifetime ) ) {
 					$this->refuse( $cart->id );
 				}
 

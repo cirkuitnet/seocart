@@ -508,13 +508,7 @@ final class PlaceOrder {
 	 * @return never
 	 */
 	private function refuseNotOpen( Cart $cart ): never {
-		$order   = null === $cart->orderId ? null : $this->orders->statusOf( $cart->orderId );
-		$details = null === $order ? array() : array(
-			'order_uuid'   => $order['uuid'],
-			'order_status' => $order['status']->value,
-		);
-
-		CodedException::raise( CartError::NotOpen, array( 'status' => $cart->status->value ), $details );
+		NotOpenCart::refuse( $cart, $this->orders );
 	}
 
 	/**

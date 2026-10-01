@@ -56,6 +56,7 @@ final class Operations {
 		$registry->add( CheckoutOperations::PLACE_ORDER, array( CheckoutOperations::class, 'placeOrder' ) );
 		$registry->add( CartOperations::APPLY_CODE, array( CartOperations::class, 'applyCode' ) );
 		$registry->add( CartOperations::REMOVE_CODE, array( CartOperations::class, 'removeCode' ) );
+		$registry->add( CheckoutOperations::CHANGE_CURRENCY, array( CheckoutOperations::class, 'changeCurrency' ) );
 
 		return $registry;
 	}

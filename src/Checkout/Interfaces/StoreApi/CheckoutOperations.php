@@ -17,8 +17,10 @@ use SEOCart\Application\Operations\RequestHeader;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Application\Operations\WriteMethod;
 use SEOCart\Cart\Application\CartError;
+use SEOCart\Cart\Application\CurrencyChangeLimit;
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
+use SEOCart\Checkout\Application\ChangeCartCurrency;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Checkout\Domain\AddressDocument;
@@ -42,8 +44,8 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Declares the checkout's operations.
  *
- * Owns one fact: how a client tells the checkout what it needs before an order is placed, and
- * places it.
+ * Owns one fact: how a client tells the checkout what it needs before an order is placed, chooses
+ * the currency it pays in, and places it.
  *
  * - `checkout.update_session`, `PUT seocart/store/v1/checkout`: replaces the checkout details of
  *   the request's cart: the billing and shipping addresses and the shipping and payment methods.
@@ -58,9 +60,15 @@ defined( 'ABSPATH' ) || exit;
  *   is retried: a retry of a placement that went through gets its first answer again, its access
  *   key included, and never a second order.
  *
+ * - `checkout.change_currency`, `POST seocart/store/v1/cart/currency`: switches the request's cart
+ *   to another currency the store sells in, at the version the client read. The switch moves the
+ *   version on and drops the session's frozen quotes, and its answer is the cart, priced in the
+ *   new currency. A cart placing an order refuses it.
+ *
  * The operations are public, so they are routes of the Store API only, guarded by their request
- * policy. The session write is counted in the cart writes' rate limit: a checkout write is a cart
- * write; a placement has a limit of its own, per client. The addresses are personal data: a
+ * policy. The session write and the currency switch are counted in the cart writes' rate limit: a
+ * checkout write is a cart write, and a cart also counts its own switches; a placement has a limit
+ * of its own, per client. The addresses are personal data: a
  * guest's answer carries each address as an object without its fields; the order's access key and
  * what the client sends for the gateway are secrets.
  *
@@ -87,6 +95,15 @@ final class CheckoutOperations {
 	 * @var string
 	 */
 	public const PLACE_ORDER = IdempotencyClaim::PLACE_ORDER_SCOPE;
+
+	/**
+	 * The id of the switch of the cart's currency.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const CHANGE_CURRENCY = 'checkout.change_currency';
 
 	/**
 	 * The header a placement's idempotency key is sent in.
@@ -141,6 +158,15 @@ final class CheckoutOperations {
 	 * @var string
 	 */
 	public const ROUTE = '/checkout';
+
+	/**
+	 * The route of the cart's currency, relative to the Store API's namespace.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const CURRENCY_ROUTE = '/cart/currency';
 
 	/**
 	 * The payment methods a shopper may choose.
@@ -362,6 +388,43 @@ final class CheckoutOperations {
 				retry_after: array( CheckoutError::PlacementInProgress->value => self::RETRY_AFTER_SECONDS )
 			),
 			public_write: StoreRequestPolicy::write( self::PLACE_BUCKET, self::PLACE_LIMIT, self::PLACE_WINDOW, true )
+		);
+	}
+
+	/**
+	 * Declares the switch of the cart's currency.
+	 *
+	 * The answer is the cart, declared once by the cart's read.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function changeCurrency(): OperationDefinition {
+		return new OperationDefinition(
+			id: self::CHANGE_CURRENCY,
+			label: static fn(): string => __( 'Change the cart\'s currency', 'seocart' ),
+			summary: 'Switches the request\'s cart to another currency the store sells in, at the cart version the client read: the switch moves the version on, drops the checkout\'s shipping and tax quotes, keeps the shipping method chosen, and answers the cart priced in the new currency; a switch to the currency the cart is in already is accepted like any other. A cart placing an order refuses it with cart.not_open, a cart switches at most ' . CurrencyChangeLimit::LIMIT . ' times in an hour, and a currency the store does not sell in gets checkout.currency_not_enabled, whatever the reason.',
+			input: array(
+				CartOperations::cartVersion( 1 ),
+				new FieldSpec(
+					name: 'currency',
+					type: FieldType::String,
+					description: 'The ISO 4217 code of the currency to switch to, in upper case, such as EUR: the store\'s base currency, or another it sells in.',
+					label: static fn(): string => __( 'Currency', 'seocart' ),
+					example: 'EUR',
+					required: true,
+					max_length: 3
+				),
+			),
+			output: CartOperations::getCart()->output(),
+			capability: null,
+			resource_field: null,
+			errors: array( CartError::NotFound, CartError::VersionStale, CartError::NotOpen, CheckoutError::CurrencyNotEnabled, PricingError::QuoteUnavailable, PricingError::NoShippingRate, PricingError::CurrencyNotEnabled ),
+			annotations: new Annotations( read_only: false, destructive: false, idempotent: true ),
+			service: array( ChangeCartCurrency::class, 'change' ),
+			rest: new RestBinding( self::CURRENCY_ROUTE, WriteMethod::Post, store: true ),
+			public_write: StoreRequestPolicy::write( CartOperations::WRITE_BUCKET, CartOperations::WRITE_LIMIT, CartOperations::WRITE_WINDOW, true )
 		);
 	}
 

@@ -16,7 +16,10 @@ use SEOCart\Application\Operations\Operations;
 use SEOCart\Application\Operations\RequestHeader;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Cart\Application\CartError;
+use SEOCart\Cart\Application\CurrencyChangeLimit;
+use SEOCart\Cart\Application\StoreApiError;
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
+use SEOCart\Checkout\Application\ChangeCartCurrency;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Checkout\Domain\AddressDocument;
@@ -178,6 +181,60 @@ final class CheckoutOperationsTest extends TestCase {
 		$this->assertSame( array_map( static fn( PlacementOutcome $outcome ): string => $outcome->value, PlacementOutcome::cases() ), $output['outcome']->allowedValues() );
 
 		foreach ( array( CheckoutError::IdempotencyKeyMissing, CheckoutError::IdempotencyKeyReused, CheckoutError::PlacementInProgress, CheckoutError::CartEmpty, CheckoutError::SessionIncomplete, CheckoutError::TotalsChanged, CheckoutError::LineUnsellable, CheckoutError::PaymentDeclined, CheckoutError::GatewayUnavailable, CartError::NotOpen, CartError::VersionStale ) as $code ) {
+			$this->assertContains( $code->value, $codes );
+		}
+	}
+
+	/**
+	 * Tests the currency switch's surface: a POST route of the Store API under the cart, counted with the cart's writes, for a cart that must exist.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_currency_switch_is_a_post_route_counted_with_the_carts_writes(): void {
+		$definition = CheckoutOperations::changeCurrency();
+		$rest       = $definition->rest();
+		$write      = $definition->publicWrite();
+		$ids        = array_map( static fn( $registered ): string => $registered->id(), Operations::registry()->all() );
+
+		$this->assertContains( CheckoutOperations::CHANGE_CURRENCY, $ids );
+		$this->assertNotNull( $rest );
+		$this->assertNotNull( $write );
+		$this->assertSame( array( 'POST', '/cart/currency', RestBinding::STORE_NAMESPACE ), array( $definition->httpMethod(), $rest->route(), $rest->restNamespace() ) );
+		$this->assertSame( array( null, null, null ), array( $definition->capability(), $definition->abilityName(), $definition->cli() ) );
+		$this->assertSame( array( ChangeCartCurrency::class, 'change' ), $definition->service() );
+		$this->assertTrue( $write->requiresCart() );
+		$this->assertSame( array( CartOperations::WRITE_BUCKET, CartOperations::WRITE_LIMIT, CartOperations::WRITE_WINDOW ), array( $write->rateLimit()->bucket(), $write->rateLimit()->limit(), $write->rateLimit()->windowSeconds() ) );
+		$this->assertSame( array( 'cart.currency_change', 10, 3600 ), array( CurrencyChangeLimit::perCart()->bucket(), CurrencyChangeLimit::perCart()->limit(), CurrencyChangeLimit::perCart()->windowSeconds() ), 'Ten switches per cart and hour, besides the cart\'s writes.' );
+		$this->assertSame(
+			array(
+				'readonly'    => false,
+				'destructive' => false,
+				'idempotent'  => true,
+			),
+			array_intersect_key( $definition->annotations()->toArray(), array_flip( array( 'readonly', 'destructive', 'idempotent' ) ) )
+		);
+	}
+
+	/**
+	 * Tests the currency switch's input and answer: the cart's version as every cart write declares it, a currency code with no list of currencies baked in, and the cart as its read declares it.
+	 *
+	 * Planted violation: in CheckoutOperations::changeCurrency(), declare the currency with
+	 * `allowed: array( 'USD', 'EUR' )`: the enabled currencies are data, and the declaration would
+	 * freeze them.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_currency_switch_takes_a_code_and_answers_the_cart(): void {
+		$definition = CheckoutOperations::changeCurrency();
+		$input      = self::byName( $definition->input() );
+		$codes      = array_map( static fn( $code ): string => (string) $code->value, $definition->errors() );
+
+		$this->assertSame( array( 'cart_version', 'currency' ), array_keys( $input ) );
+		$this->assertEquals( CartOperations::cartVersion( 1 ), $input['cart_version'] );
+		$this->assertSame( array( FieldType::String, true, 3, array(), Privacy::Public ), array( $input['currency']->type(), $input['currency']->isRequired(), $input['currency']->maxLength(), $input['currency']->allowedValues(), $input['currency']->privacy() ) );
+		$this->assertEquals( CartOperations::getCart()->output(), $definition->output(), 'The answer is the cart, as its read declares it.' );
+
+		foreach ( array( CartError::NotFound, CartError::VersionStale, CartError::NotOpen, CheckoutError::CurrencyNotEnabled, StoreApiError::RateLimited ) as $code ) {
 			$this->assertContains( $code->value, $codes );
 		}
 	}

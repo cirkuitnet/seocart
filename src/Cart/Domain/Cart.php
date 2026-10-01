@@ -188,4 +188,20 @@ final readonly class Cart {
 	public function withPromotionCodes( int $version, array $promotionCodes, array $lines ): self {
 		return new self( $this->id, $version, $this->status, $this->orderId, $this->currency, $this->locale, $promotionCodes, $lines );
 	}
+
+	/**
+	 * Returns the same cart in another currency, as a switch of its currency left it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int        $version  The version the switch gave the cart.
+	 * @param Currency   $currency The currency after the switch.
+	 * @param CartLine[] $lines    The lines, in `cart_lines.id` order.
+	 * @return self The cart after the switch.
+	 *
+	 * @phpstan-param list<CartLine> $lines
+	 */
+	public function inCurrency( int $version, Currency $currency, array $lines ): self {
+		return new self( $this->id, $version, $this->status, $this->orderId, $currency, $this->locale, $this->promotionCodes, $lines );
+	}
 }

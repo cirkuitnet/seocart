@@ -93,6 +93,17 @@ final class MysqlCartRepository implements CartRepository {
 	public const SWAP_PROMOTION_CODES = 'UPDATE %i SET version = version + 1, promotion_codes = %s, updated_at = UTC_TIMESTAMP(6), expires_at = UTC_TIMESTAMP() + INTERVAL %d SECOND ' . self::OPEN_AT_VERSION;
 
 	/**
+	 * The compare-and-swap of a switch of the cart's currency: as COMPARE_AND_SWAP, and the new currency.
+	 *
+	 * A cart placing an order is not open, so it keeps the currency its order was placed in.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const SWAP_CURRENCY = 'UPDATE %i SET version = version + 1, currency = %s, updated_at = UTC_TIMESTAMP(6), expires_at = UTC_TIMESTAMP() + INTERVAL %d SECOND ' . self::OPEN_AT_VERSION;
+
+	/**
 	 * The compare-and-swap of an order placement: as COMPARE_AND_SWAP, and the cart becomes placing.
 	 *
 	 * It also clears the order the cart names, which a cart opened again after a failed payment
@@ -213,7 +224,7 @@ final class MysqlCartRepository implements CartRepository {
 	public const CHECKOUT_SESSIONS = 'checkout_sessions';
 
 	/**
-	 * The condition of both compare-and-swaps: this cart, at this version, open and live.
+	 * The condition of every compare-and-swap: this cart, at this version, open and live.
 	 *
 	 * @since 0.1.0
 	 *
@@ -381,6 +392,23 @@ final class MysqlCartRepository implements CartRepository {
 		$this->requireTransaction( __FUNCTION__ );
 
 		return 1 === $this->db->execute( self::SWAP_PROMOTION_CODES, $this->carts(), (string) wp_json_encode( $codes ), $ttlSeconds, $cartId, $expectedVersion );
+	}
+
+	/**
+	 * The compare-and-swap of a switch of the cart's currency, which also writes the new currency.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int      $cartId          The cart.
+	 * @param int      $expectedVersion The version the switch was based on.
+	 * @param int      $ttlSeconds      How long the cart lives from now.
+	 * @param Currency $currency        The currency the cart is in after the switch.
+	 * @return bool True when the statement matched.
+	 */
+	public function swapCurrency( int $cartId, int $expectedVersion, int $ttlSeconds, Currency $currency ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->db->execute( self::SWAP_CURRENCY, $this->carts(), $currency->code(), $ttlSeconds, $cartId, $expectedVersion );
 	}
 
 	/**
