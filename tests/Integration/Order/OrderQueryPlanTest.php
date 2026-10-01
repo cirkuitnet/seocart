@@ -127,10 +127,14 @@ final class OrderQueryPlanTest extends OrderTestCase {
 		$orders->findByUuid( $inserted->uuid );
 		$repository->findForAccess( $inserted->uuid );
 
-		// The reads of doctor's payment check: the payment amounts, a page at a time, the flagged orders and the totals drift.
+		// The reads of doctor's payment check: the payment amounts and the lines' refunded quantities, a page at a time, the flagged orders and the totals drift.
 		$repository->paymentAmounts( 0, 500 );
+		$repository->refundedQuantities( 0, 500 );
 		$repository->unreconciled( 20 );
 		$repository->currentTotalsDrift( 20 );
+
+		// A refund's reads of the order: the order with its current totals version, a line, the shipping added up, and their components. The line's uuid is the test's read.
+		$repository->findRefundable( $inserted->uuid, array( (string) $this->db->fetchValue( 'SELECT line_uuid FROM %i WHERE order_id = %d ORDER BY sort_order LIMIT 1', $this->table( OrderTables::LINES ), $inserted->id ) ), true );
 
 		// The order's conversion context, read back; its id is looked up unrecorded, being the test's read, not the module's.
 		$contexts->find( (int) $this->db->fetchValue( 'SELECT conversion_context_id FROM %i WHERE id = %d', $this->table( OrderTables::ORDERS ), $inserted->id ) );

@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Unit\Payment;
 
 use PHPUnit\Framework\TestCase;
 use SEOCart\Payment\Infrastructure\PaymentTables;
+use SEOCart\Payment\Infrastructure\RefundTables;
 use SEOCart\Platform\Database\Schema\MutationPattern;
 use SEOCart\Platform\DataRegistry\OwnedData;
 use SEOCart\Tests\Unit\Support\PhpSource;
@@ -22,8 +23,8 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  *
  * - No statement names a table outside the payment module, as a token or as a bare name: the
  *   order is reached through the order module's service, never by SQL.
- * - The ledger is appended to only: no statement updates or deletes a row of
- *   `payment_transactions`.
+ * - The ledger and the refunds are appended to only: no statement updates or deletes a row of
+ *   `payment_transactions`, `refunds`, `refund_lines` or `refund_components`.
  * - An intent's state changes only through the statements the intent state machine compiles: each
  *   assigns `status` with `status IN ({list})` in its WHERE clause.
  * - An intent's authorized, captured and refunded amounts are each written by the one statement
@@ -64,7 +65,7 @@ final class StatementsTest extends TestCase {
 	 * @since 0.1.0
 	 */
 	public function test_no_statement_names_a_table_outside_the_payment_module(): void {
-		$ours   = PaymentTables::names();
+		$ours   = PaymentTables::moduleNames();
 		$others = array();
 
 		foreach ( OwnedData::registry()->tables() as $table ) {
@@ -105,24 +106,34 @@ final class StatementsTest extends TestCase {
 	}
 
 	/**
-	 * Tests that no statement updates or deletes a ledger row, and that the declarations agree that the ledger is append-only.
+	 * Tests that no statement updates or deletes a ledger or refund row, and that the declarations agree that those tables are append-only.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_no_statement_changes_a_ledger_row(): void {
+	public function test_no_statement_changes_a_ledger_or_refund_row(): void {
+		$appendOnly = array( PaymentTables::TRANSACTIONS );
+
 		$this->assertSame( MutationPattern::AppendOnly, PaymentTables::transactions()->mutationPattern() );
+
+		foreach ( RefundTables::all() as $table ) {
+			$this->assertSame( MutationPattern::AppendOnly, $table->mutationPattern() );
+
+			$appendOnly[] = $table->name();
+		}
 
 		$changes = array();
 
 		foreach ( self::statements() as $name => $statement ) {
 			$changesRows = 1 === preg_match( '/^\s*(UPDATE|DELETE)\b/i', $statement ) || str_contains( $statement, 'ON DUPLICATE KEY UPDATE' );
 
-			if ( $changesRows && str_contains( $statement, '{' . PaymentTables::TRANSACTIONS . '}' ) ) {
-				$changes[] = $name;
+			foreach ( $appendOnly as $table ) {
+				if ( $changesRows && str_contains( $statement, '{' . $table . '}' ) ) {
+					$changes[] = $name;
+				}
 			}
 		}
 
-		$this->assertSame( array(), $changes, 'The ledger is only appended to.' );
+		$this->assertSame( array(), $changes, 'The ledger and the refunds are only appended to.' );
 	}
 
 	/**

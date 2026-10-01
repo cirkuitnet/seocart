@@ -13,15 +13,26 @@ namespace SEOCart\Tests\Integration\Payment;
 
 use SEOCart\Order\Infrastructure\MysqlOrderRepository;
 use SEOCart\Order\Infrastructure\OrderStatements;
+use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Application\RefundService;
 use SEOCart\Payment\Domain\Application;
 use SEOCart\Payment\Domain\IntentRef;
+use SEOCart\Payment\Domain\Refund\RefundLineRequest;
+use SEOCart\Payment\Domain\Refund\RefundRequest;
 use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
+use SEOCart\Payment\Infrastructure\MysqlRefundRepository;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Authorization\Authorizer;
+use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Database;
+use SEOCart\Support\Error\CodedException;
+use SEOCart\Tests\Support\Doubles\FrozenClock;
+use SEOCart\Tests\Support\Doubles\ReplayingGateway;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\Order\NewOrders;
 use SEOCart\Tests\Support\Payment\PaymentTestCase;
@@ -36,8 +47,9 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  * Every SELECT the payment module's source writes is sent, explained and judged by the query-plan rule.
  *
  * The payment module's reads run over a PlanRecorder: the locked reads of an approval and a
- * duplicate's read of the first row, a capture's plain reads, reconciliation's stale intents, and
- * every line of doctor's payment check. Each plugin SELECT is explained, printed and judged as the
+ * duplicate's read of the first row, a capture's plain reads, a refund's reads and its duplicate's
+ * read of the first document, reconciliation's stale intents, and every line of doctor's payment
+ * check. Each plugin SELECT is explained, printed and judged as the
  * order module's are; the reference dataset has no payments, so the tables stay under the size at
  * which the rule gates and the run records the plans. And every SELECT the module's source writes
  * must have been sent (ReadInventory), so no read goes unexplained.
@@ -100,7 +112,7 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 		fwrite( STDOUT, sprintf( "\nThe plans of the payment module's %d SELECTs, and the order reads its check sends:\n%s\n", count( $recorder->statements() ), implode( "\n", $report ) ) );
 
 		$heads  = ReadInventory::of( dirname( __DIR__, 3 ) . '/src/Payment' );
-		$tables = array_map( fn( string $name ): string => $this->table( $name ), PaymentTables::names() );
+		$tables = array_map( fn( string $name ): string => $this->table( $name ), PaymentTables::moduleNames() );
 
 		$this->assertSame( array(), ReadInventory::unsent( $heads, $recorder->allSent() ), 'A read the payment module\'s source writes was not sent; send it in exercise(), so its plan is judged.' );
 		$this->assertSame( array(), ReadInventory::unknown( $heads, $recorder->allSent(), $tables ), 'A read of the payment tables came from outside src/Payment.' );
@@ -132,6 +144,30 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 
 		// A capture's plain reads of the intent and of its unreconciled rows.
 		$payments->capture( $intent->uuid, $this->userWithRole() );
+
+		// A refund's reads: of the order, its intent with its unreconciled rows, and what earlier refunds returned of its lines,
+		// its components and its shipping; then another refund the gateway answers with the first, whose duplicate reads the
+		// first document before it is refused. The line's uuid is the test's read.
+		$refunds = new RefundService(
+			new MysqlRefundRepository( $db ),
+			new MysqlOrderRepository( new OrderStatements( $db ), $ids ),
+			$payments,
+			new ReplayingGateway( new StubGateway() ),
+			$db,
+			$this->publisherOver( $db ),
+			new Authorizer( new CapabilityDeclaration() ),
+			FrozenClock::at( self::NOW )
+		);
+		$line    = (string) $this->db->fetchValue( 'SELECT line_uuid FROM %i WHERE order_id = %d ORDER BY sort_order LIMIT 1', $this->table( OrderTables::LINES ), $inserted->id );
+
+		$refunds->refund( new RefundRequest( $inserted->uuid, array( new RefundLineRequest( $line, 1 ) ), true, 'customer_return' ), $this->userWithRole() );
+
+		try {
+			$refunds->refund( new RefundRequest( $inserted->uuid, array( new RefundLineRequest( $line, 1 ) ), false, 'customer_return' ), $this->userWithRole() );
+			$this->fail( 'Another refund was answered with the first one\'s document.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( PaymentError::Unreconciled, $refused->errorCode() );
+		}
 
 		// Reconciliation's stale intents.
 		$payments->staleIntents( 600, 50 );

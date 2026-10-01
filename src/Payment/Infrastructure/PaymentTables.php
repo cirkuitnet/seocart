@@ -94,6 +94,19 @@ final class PaymentTables {
 	}
 
 	/**
+	 * Returns the unprefixed names of every table of the payment module: these two and the refund tables.
+	 *
+	 * The tables the module's statements may name; each migration still creates only its own.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<string> The names.
+	 */
+	public static function moduleNames(): array {
+		return array_merge( self::names(), RefundTables::names() );
+	}
+
+	/**
 	 * Declares `payment_intents`: each attempt to pay for an order, with its frozen amount and what its ledger has moved.
 	 *
 	 * @since 0.1.0
@@ -200,7 +213,7 @@ final class PaymentTables {
 				IndexSpec::unique( 'provider_object_operation', array( 'provider', 'provider_object_id', 'operation' ), 'A gateway result is applied at most once: a second delivery of the same outcome meets this key.' ),
 			),
 			array(
-				IndexSpec::key( 'intent_created', array( 'intent_id', 'created_at' ), 'An intent\'s rows, which doctor sums against its amounts, and its unreconciled rows before a capture.' ),
+				IndexSpec::key( 'intent_created', array( 'intent_id', 'created_at' ), 'An intent\'s rows, which doctor sums against its amounts, and its unreconciled rows before a capture or a refund.' ),
 				IndexSpec::key( 'order_created', array( 'order_id', 'created_at' ), 'An order\'s ledger, in time order.' ),
 			),
 			self::FINANCIAL,

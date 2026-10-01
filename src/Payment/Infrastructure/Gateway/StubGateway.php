@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Payment\Infrastructure\Gateway;
 
 use SEOCart\Payment\Domain\Gateway\CaptureRequest;
+use SEOCart\Payment\Domain\Gateway\GatewayRefund;
 use SEOCart\Payment\Domain\Gateway\GatewayResult;
 use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
 use SEOCart\Payment\Domain\Gateway\PaymentGateway;
@@ -33,15 +34,17 @@ defined( 'ABSPATH' ) || exit;
  * request. The token names the outcome: `stub:approve`, `stub:approve_settled` (with a
  * settlement in another currency), `stub:decline`, `stub:requires_action`, `stub:pending`,
  * `stub:wrong_amount` and `stub:wrong_currency` (approvals that do not match their intent),
- * `stub:capture_wrong_amount` (an approval whose capture does not match), and `stub:throw` (the
- * gateway is unavailable). Any other token is declined.
+ * `stub:capture_wrong_amount` (an approval whose capture does not match), `stub:refund_decline`
+ * (an approval whose refunds are declined), and `stub:throw` (the gateway is unavailable). Any
+ * other token is declined.
  *
  * Like a provider, it remembers what it did with an intent by the reference it gives it, which
- * the plugin records on the intent: `stub-pi-{scenario}-{intent uuid}`. So a capture and a status
- * query, in any later request, answer from the scenario the intent was authorized with. Every
- * object it names is deterministic per intent and operation, so the same outcome delivered again
- * is the same result: `stub-ch-{uuid}` for an authorization's charge, `stub-cap-{uuid}` for a
- * capture.
+ * the plugin records on the intent: `stub-pi-{scenario}-{intent uuid}`. So a capture, a refund and
+ * a status query, in any later request, answer from the scenario the intent was authorized with.
+ * Every object it names is deterministic per intent and operation, or per refund, so the same
+ * outcome delivered again is the same result: `stub-ch-{uuid}` for an authorization's charge,
+ * `stub-cap-{uuid}` for a capture, and `stub-re-{refund uuid}` for a refund, named by the
+ * idempotency key the refund was asked with.
  *
  * @since 0.1.0
  */
@@ -129,6 +132,15 @@ final class StubGateway implements PaymentGateway {
 	public const CAPTURE_WRONG_AMOUNT = 'stub:capture_wrong_amount';
 
 	/**
+	 * Approves the authorization and its capture; every refund of it is then declined.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const REFUND_DECLINE = 'stub:refund_decline';
+
+	/**
 	 * Throws GatewayUnavailable, as a network failure would.
 	 *
 	 * @since 0.1.0
@@ -154,6 +166,15 @@ final class StubGateway implements PaymentGateway {
 	 * @var string
 	 */
 	public const INVALID_TOKEN = 'invalid_payment_token';
+
+	/**
+	 * The machine code of a declined refund.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const REFUND_DECLINED = 'refund_declined';
 
 	/**
 	 * What every token the script knows begins with.
@@ -190,6 +211,15 @@ final class StubGateway implements PaymentGateway {
 	 * @var string
 	 */
 	private const CAPTURE_PREFIX = 'stub-cap-';
+
+	/**
+	 * What a refund is named with, before the refund's uuid.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const REFUND_PREFIX = 'stub-re-';
 
 	/**
 	 * The length of a uuid, which ends an intent reference.
@@ -264,6 +294,32 @@ final class StubGateway implements PaymentGateway {
 	}
 
 	/**
+	 * Gives back the amount asked, or declines it when the intent was authorized with `stub:refund_decline`.
+	 *
+	 * Either answer names the refund by the idempotency key it was asked with, as a provider does,
+	 * so the same refund answered again is the same result.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param GatewayRefund $request The intent, the amount and the refund's idempotency key.
+	 * @return GatewayResult The approval, or the decline.
+	 */
+	public function refund( GatewayRefund $request ): GatewayResult {
+		$declined = self::scenario( self::REFUND_DECLINE ) === self::scenarioOf( $request->providerIntentId );
+
+		return new GatewayResult(
+			self::ID,
+			Operation::Refund,
+			$declined ? Outcome::Declined : Outcome::Approved,
+			$request->intentUuid,
+			$request->amount,
+			self::REFUND_PREFIX . $request->refundUuid,
+			$request->providerIntentId,
+			$declined ? self::REFUND_DECLINED : null
+		);
+	}
+
+	/**
 	 * Says where an intent stands: the final answer of the scenario it was authorized with.
 	 *
 	 * An intent that waited for the customer is found approved, as if they had confirmed; one
@@ -289,7 +345,7 @@ final class StubGateway implements PaymentGateway {
 	 * @return list<string> The tokens.
 	 */
 	public static function scripted(): array {
-		return array( self::APPROVE, self::APPROVE_SETTLED, self::DECLINE, self::REQUIRES_ACTION, self::PENDING, self::WRONG_AMOUNT, self::WRONG_CURRENCY, self::CAPTURE_WRONG_AMOUNT );
+		return array( self::APPROVE, self::APPROVE_SETTLED, self::DECLINE, self::REQUIRES_ACTION, self::PENDING, self::WRONG_AMOUNT, self::WRONG_CURRENCY, self::CAPTURE_WRONG_AMOUNT, self::REFUND_DECLINE );
 	}
 
 	/**

@@ -27,6 +27,11 @@ use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\OrderView;
 use SEOCart\Order\Domain\PaymentDelta;
 use SEOCart\Order\Domain\PaymentStatus;
+use SEOCart\Order\Domain\RefundableLine;
+use SEOCart\Order\Domain\RefundableOrder;
+use SEOCart\Order\Domain\RefundedUnits;
+use SEOCart\Order\Domain\StoredAmount;
+use SEOCart\Order\Domain\StoredTaxComponent;
 use SEOCart\Support\Address;
 use SEOCart\Support\Currency;
 use SEOCart\Support\IdGenerator;
@@ -55,7 +60,9 @@ defined( 'ABSPATH' ) || exit;
  * A status changes only through TRANSITION, whose WHERE clause lists the statuses the registry
  * allows the target to be entered from; the payment projection changes only through
  * RECORD_PAYMENT. No other statement writes either. MARK_UNRECONCILED raises the flag that brings
- * a person to an order a payment did not match; nothing here lowers it.
+ * a person to an order a payment did not match; nothing here lowers it. A line's refunded
+ * quantity moves only through ADD_REFUNDED_QUANTITIES, which a refund sends for all its lines
+ * at once.
  *
  * @since 0.1.0
  */
@@ -318,6 +325,71 @@ final class MysqlOrderRepository implements OrderRepository {
 	public const FIND_FOR_ACCESS = 'SELECT uuid, customer_id, access_key_hash, COALESCE( access_key_expires_at <= UTC_TIMESTAMP(), 1 ) AS key_expired FROM {orders} WHERE uuid = %s';
 
 	/**
+	 * The order a refund is worked out for, by uuid, with the version of its current totals: what its tax components are read at.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const FIND_REFUNDABLE_ORDER = 'SELECT o.id, o.uuid, o.currency, o.base_currency, o.conversion_context_id, t.version AS totals_version '
+		. 'FROM {orders} o JOIN {order_totals} t ON t.id = o.current_totals_id WHERE o.uuid = %s';
+
+	/**
+	 * The lines a refund asks for, by uuid, on the `(order_id, line_uuid)` key: units sold and refunded, and the stored amount after discounts.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const FIND_REFUNDABLE_LINES = 'SELECT id, line_uuid, quantity, refunded_quantity, unit_amount_basis, line_net_minor, line_tax_minor, line_gross_minor, '
+		. 'base_line_net_minor, base_line_tax_minor, base_line_gross_minor FROM {order_lines} WHERE order_id = %d AND line_uuid IN ({list})';
+
+	/**
+	 * The order's shipping adjustments, added up by the database: the shipping and any discount of it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const SHIPPING_TOTALS = 'SELECT COUNT(*) AS adjustments, COALESCE( SUM( net_minor ), 0 ) AS net_minor, COALESCE( SUM( tax_minor ), 0 ) AS tax_minor, '
+		. 'COALESCE( SUM( gross_minor ), 0 ) AS gross_minor, COALESCE( SUM( base_net_minor ), 0 ) AS base_net_minor, COALESCE( SUM( base_tax_minor ), 0 ) AS base_tax_minor, '
+		. 'COALESCE( SUM( base_gross_minor ), 0 ) AS base_gross_minor FROM {order_adjustments} WHERE order_id = %d AND scope = %s';
+
+	/**
+	 * The tax components of some lines, and of the shipping when its scope is given, at one totals version, on the `order_version` key.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const FIND_REFUNDABLE_COMPONENTS = 'SELECT c.id, c.order_line_id, c.authored_amount_basis, c.net_minor, c.tax_minor, c.gross_minor, c.base_net_minor, c.base_tax_minor, c.base_gross_minor '
+		. 'FROM {order_tax_components} c LEFT JOIN {order_adjustments} a ON a.id = c.order_adjustment_id '
+		. 'WHERE c.order_id = %d AND c.totals_version = %d AND ( c.order_line_id IN ({list}) OR a.scope = %s ) ORDER BY c.id';
+
+	/**
+	 * A refund's units, added to its lines' refunded quantities: each line only while it has the refunded quantity the refund was worked out from, and never past the units sold.
+	 *
+	 * The derived row is one line's; it is repeated once per line, so the whole refund is one
+	 * statement, and the caller compares the rows affected with the lines it sent.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const ADD_REFUNDED_QUANTITIES = 'UPDATE {order_lines} order_line JOIN ( SELECT %d AS id, %d AS quantity, %d AS refunded_before ) AS asked ON asked.id = order_line.id '
+		. 'SET order_line.refunded_quantity = order_line.refunded_quantity + asked.quantity '
+		. 'WHERE order_line.order_id = %d AND order_line.refunded_quantity = asked.refunded_before AND order_line.refunded_quantity + asked.quantity <= order_line.quantity';
+
+	/**
+	 * A page of order lines' refunded quantities, by the primary key, after the last id of the page before.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const REFUNDED_QUANTITIES = 'SELECT id, line_uuid, refunded_quantity FROM {order_lines} WHERE id > %d ORDER BY id LIMIT %d';
+
+	/**
 	 * The scope of a line's tax component.
 	 *
 	 * @since 0.1.0
@@ -334,6 +406,15 @@ final class MysqlOrderRepository implements OrderRepository {
 	 * @var string
 	 */
 	private const ADJUSTMENT_SCOPE = 'adjustment';
+
+	/**
+	 * The scope of a shipping adjustment, the shipping's discounts included.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const SHIPPING_ADJUSTMENTS = 'shipping';
 
 	/**
 	 * The role of the billing address.
@@ -998,6 +1079,157 @@ final class MysqlOrderRepository implements OrderRepository {
 			null === $row['access_key_hash'] ? null : (string) $row['access_key_hash'],
 			'1' === (string) $row['key_expired']
 		);
+	}
+
+	/**
+	 * Reads what a refund of an order allocates its shares from: four reads, three without the shipping, whatever the number of lines.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string   $orderUuid    The order's public identifier.
+	 * @param string[] $lineUuids    The public identifiers of the lines asked for.
+	 * @param bool     $withShipping Whether the shipping is asked for.
+	 * @return RefundableOrder|null The order, or null when there is none; a string that is not a UUID names none.
+	 *
+	 * @phpstan-param list<string> $lineUuids
+	 */
+	public function findRefundable( string $orderUuid, array $lineUuids, bool $withShipping ): ?RefundableOrder {
+		$row = self::isUuid( $orderUuid ) ? ( $this->statements->rows( self::FIND_REFUNDABLE_ORDER, $orderUuid )[0] ?? null ) : null;
+
+		if ( null === $row ) {
+			return null;
+		}
+
+		$orderId  = (int) $row['id'];
+		$version  = (int) $row['totals_version'];
+		$currency = Currency::of( (string) $row['currency'] );
+		$base     = Currency::of( (string) $row['base_currency'] );
+		$lines    = array();
+
+		foreach ( array() === $lineUuids ? array() : $this->statements->rows( self::FIND_REFUNDABLE_LINES, $orderId, $lineUuids ) as $line ) {
+			$lines[ (string) $line['line_uuid'] ] = new RefundableLine(
+				(int) $line['id'],
+				(string) $line['line_uuid'],
+				(int) $line['quantity'],
+				(int) $line['refunded_quantity'],
+				self::stored( AmountBasis::from( (string) $line['unit_amount_basis'] ), $line, 'line_', $currency, $base )
+			);
+		}
+
+		$shipping = $withShipping ? ( $this->statements->rows( self::SHIPPING_TOTALS, $orderId, self::SHIPPING_ADJUSTMENTS )[0] ?? null ) : null;
+		$shipped  = null !== $shipping && (int) $shipping['adjustments'] > 0;
+		$scope    = $shipped ? self::SHIPPING_ADJUSTMENTS : '';
+		$lineIds  = array_values( array_map( static fn( RefundableLine $line ): int => $line->id, $lines ) );
+
+		return new RefundableOrder(
+			$orderId,
+			(string) $row['uuid'],
+			$currency,
+			$base,
+			(int) $row['conversion_context_id'],
+			$version,
+			$lines,
+			$shipped ? self::taxed( $shipping, '', $currency ) : null,
+			$shipped ? self::taxed( $shipping, 'base_', $base ) : null,
+			array() === $lineIds && ! $shipped ? array() : $this->refundableComponents( $orderId, $version, $lineIds, $scope, $currency, $base )
+		);
+	}
+
+	/**
+	 * Adds a refund's units to its lines' refunded quantities, in one conditional update.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int             $orderId The order the lines belong to.
+	 * @param RefundedUnits[] $units   The units returned, one entry per line; at least one.
+	 * @return bool True when every line moved.
+	 *
+	 * @phpstan-param non-empty-list<RefundedUnits> $units
+	 */
+	public function addRefundedQuantities( int $orderId, array $units ): bool {
+		$this->statements->requireTransaction( __METHOD__ );
+
+		$rows = array_map( static fn( RefundedUnits $line ): array => array( $line->lineId, $line->quantity, $line->refundedBefore ), $units );
+
+		return count( $units ) === $this->statements->executeForRows( self::ADD_REFUNDED_QUANTITIES, $rows, $orderId );
+	}
+
+	/**
+	 * Reads a page of order lines' refunded quantities, in id order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId The last id of the page before, or 0 for the first page.
+	 * @param int $limit   The most lines to read.
+	 * @return list<array{id: int, uuid: string, refunded: int}> The lines, each with its public identifier.
+	 */
+	public function refundedQuantities( int $afterId, int $limit ): array {
+		return array_map(
+			static fn( array $row ): array => array(
+				'id'       => (int) $row['id'],
+				'uuid'     => (string) $row['line_uuid'],
+				'refunded' => (int) $row['refunded_quantity'],
+			),
+			$this->statements->rows( self::REFUNDED_QUANTITIES, $afterId, $limit )
+		);
+	}
+
+	/**
+	 * Reads the tax components of some lines, and of the shipping when its scope is given, at one totals version.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int      $orderId  The order.
+	 * @param int      $version  Its current totals version.
+	 * @param int[]    $lineIds  The lines.
+	 * @param string   $scope    The shipping adjustments' scope, or '' for no shipping.
+	 * @param Currency $currency The order's currency.
+	 * @param Currency $base     The base currency.
+	 * @return list<StoredTaxComponent> The components, in id order.
+	 *
+	 * @phpstan-param list<int> $lineIds
+	 */
+	private function refundableComponents( int $orderId, int $version, array $lineIds, string $scope, Currency $currency, Currency $base ): array {
+		return array_map(
+			static fn( array $row ): StoredTaxComponent => new StoredTaxComponent(
+				(int) $row['id'],
+				self::nullableId( $row['order_line_id'] ),
+				self::stored( AmountBasis::from( (string) $row['authored_amount_basis'] ), $row, '', $currency, $base )
+			),
+			$this->statements->rows( self::FIND_REFUNDABLE_COMPONENTS, $orderId, $version, $lineIds, $scope )
+		);
+	}
+
+	/**
+	 * Builds a stored amount from a row's net, tax and gross columns and their base twins.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param AmountBasis          $basis    The basis it was authored in.
+	 * @param array<string, mixed> $row      The row.
+	 * @param string               $prefix   What the columns' names begin with after `base_`, such as `line_`.
+	 * @param Currency             $currency The order's currency.
+	 * @param Currency             $base     The base currency.
+	 * @return StoredAmount The amount.
+	 */
+	private static function stored( AmountBasis $basis, array $row, string $prefix, Currency $currency, Currency $base ): StoredAmount {
+		return new StoredAmount( $basis, self::taxed( $row, $prefix, $currency ), self::taxed( $row, 'base_' . $prefix, $base ) );
+	}
+
+	/**
+	 * Builds net, tax and gross from a row's three columns of one prefix.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param array<string, mixed> $row      The row.
+	 * @param string               $prefix   What the columns' names begin with, such as `base_line_`.
+	 * @param Currency             $currency Their currency.
+	 * @return TaxedMoney The figures.
+	 */
+	private static function taxed( array $row, string $prefix, Currency $currency ): TaxedMoney {
+		$money = self::money( $currency );
+
+		return new TaxedMoney( $money( $row[ $prefix . 'net_minor' ] ), $money( $row[ $prefix . 'tax_minor' ] ), $money( $row[ $prefix . 'gross_minor' ] ) );
 	}
 
 	/**

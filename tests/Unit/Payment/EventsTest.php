@@ -17,6 +17,7 @@ use SEOCart\Payment\Domain\Event\PaymentCaptured;
 use SEOCart\Payment\Domain\Event\PaymentFailed;
 use SEOCart\Payment\Domain\Event\PaymentIntentCreated;
 use SEOCart\Payment\Domain\Event\PaymentStatusChanged;
+use SEOCart\Payment\Domain\Event\RefundRecorded;
 use SEOCart\Platform\Events\EventCatalog;
 use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Support\Events\DomainEvent;
@@ -24,7 +25,7 @@ use SEOCart\Tests\Support\Doubles\FakeTransactionManager;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 
 /**
- * The five payment events, read the way the hooks reference reads them: without a database.
+ * The six payment events, read the way the hooks reference reads them: without a database.
  *
  * The reference is generated from each event class, so the payload keys must be exactly the
  * promoted properties in snake_case, less `occurredAt`, which travels beside the payload.
@@ -53,6 +54,7 @@ final class EventsTest extends TestCase {
 			'PaymentFailed'                  => array( new PaymentFailed( 11, 7, 3080, 'EUR', 23, 'card_declined', $at ), 'payment_intent', 11 ),
 			'PaymentFailed, no machine code' => array( new PaymentFailed( 11, 7, 3080, 'EUR', 23, null, $at ), 'payment_intent', 11 ),
 			'PaymentStatusChanged'           => array( new PaymentStatusChanged( 7, 'authorized', 'paid', 3080, 3080, 0, 0, 'EUR', $at ), 'order', 7 ),
+			'RefundRecorded'                 => array( new RefundRecorded( 31, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8d', 7, 24, 1480, 247, 'EUR', 1622, 'USD', 'customer_return', $at ), 'refund', 31 ),
 		);
 	}
 
@@ -113,7 +115,7 @@ final class EventsTest extends TestCase {
 		$class = new \ReflectionClass( $event );
 
 		$this->assertTrue( $class->isFinal() && $class->isReadOnly() );
-		$this->assertMatchesRegularExpression( '/^payment_[a-z_]+$/', $event::eventName() );
+		$this->assertMatchesRegularExpression( '/^(payment|refund)_[a-z_]+$/', $event::eventName(), 'A payment event is named for a payment or for a refund.' );
 		$this->assertSame( 1, $event::payloadVersion() );
 		$this->assertSame( $aggregate, $event->aggregateType() );
 		$this->assertSame( $id, $event->aggregateId() );
@@ -122,14 +124,14 @@ final class EventsTest extends TestCase {
 	}
 
 	/**
-	 * Tests that the kernel's catalog holds the five events, and that the publisher's rules accept each.
+	 * Tests that the kernel's catalog holds the six events, and that the publisher's rules accept each.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_the_catalog_lists_them_and_the_publisher_accepts_them(): void {
 		$catalog = new EventCatalog( Modules::EVENT_CLASSES );
 
-		foreach ( array( PaymentIntentCreated::class, PaymentAuthorized::class, PaymentCaptured::class, PaymentFailed::class, PaymentStatusChanged::class ) as $class ) {
+		foreach ( array( PaymentIntentCreated::class, PaymentAuthorized::class, PaymentCaptured::class, PaymentFailed::class, PaymentStatusChanged::class, RefundRecorded::class ) as $class ) {
 			$this->assertSame( $class::eventName(), $catalog->nameOf( $class ) );
 		}
 

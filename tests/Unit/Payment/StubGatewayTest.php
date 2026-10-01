@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Unit\Payment;
 
 use PHPUnit\Framework\TestCase;
 use SEOCart\Payment\Domain\Gateway\CaptureRequest;
+use SEOCart\Payment\Domain\Gateway\GatewayRefund;
 use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
 use SEOCart\Payment\Domain\Gateway\PaymentGateway;
 use SEOCart\Payment\Domain\Gateway\PaymentQuery;
@@ -61,6 +62,7 @@ final class StubGatewayTest extends TestCase {
 			'wrong amount'         => array( StubGateway::WRONG_AMOUNT, array( Outcome::Approved, 3081, 'EUR', $charge, 'stub-pi-wrong_amount-' . self::INTENT, null ) ),
 			'wrong currency'       => array( StubGateway::WRONG_CURRENCY, array( Outcome::Approved, 3080, 'USD', $charge, 'stub-pi-wrong_currency-' . self::INTENT, null ) ),
 			'capture wrong amount' => array( StubGateway::CAPTURE_WRONG_AMOUNT, array( Outcome::Approved, 3080, 'EUR', $charge, 'stub-pi-capture_wrong_amount-' . self::INTENT, null ) ),
+			'refund decline'       => array( StubGateway::REFUND_DECLINE, array( Outcome::Approved, 3080, 'EUR', $charge, 'stub-pi-refund_decline-' . self::INTENT, null ) ),
 			'a token not scripted' => array( 'tok_visa', array( Outcome::Declined, 3080, 'EUR', $charge, null, StubGateway::INVALID_TOKEN ) ),
 		);
 	}
@@ -116,6 +118,23 @@ final class StubGatewayTest extends TestCase {
 
 		$this->assertSame( array( Operation::Capture, Outcome::Approved, 3080, 'stub-cap-' . self::INTENT ), array( $right->operation, $right->outcome, $right->amount->minorUnits(), $right->providerObjectId ) );
 		$this->assertSame( 3081, $wrong->amount->minorUnits() );
+	}
+
+	/**
+	 * Tests that a refund gives back the amount asked under an object named by its idempotency key, and is declined for an intent authorized so its refunds are.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_refund_gives_back_the_amount_asked_or_is_declined(): void {
+		$stub     = new StubGateway();
+		$key      = '01928c3e-0000-7000-8000-0000000000e1';
+		$approved = $stub->refund( new GatewayRefund( self::INTENT, 'stub-pi-approve-' . self::INTENT, Money::of( 1234, Currency::of( 'EUR' ) ), $key ) );
+		$declined = $stub->refund( new GatewayRefund( self::INTENT, 'stub-pi-refund_decline-' . self::INTENT, Money::of( 1234, Currency::of( 'EUR' ) ), $key ) );
+
+		$this->assertSame( array( Operation::Refund, Outcome::Approved, 1234, 'EUR', 'stub-re-' . $key, null ), array( $approved->operation, $approved->outcome, $approved->amount->minorUnits(), $approved->amount->currency()->code(), $approved->providerObjectId, $approved->errorCode ) );
+		$this->assertSame( array( Outcome::Declined, StubGateway::REFUND_DECLINED, 'stub-re-' . $key ), array( $declined->outcome, $declined->errorCode, $declined->providerObjectId ) );
+		$this->assertEquals( $approved, $stub->refund( new GatewayRefund( self::INTENT, 'stub-pi-approve-' . self::INTENT, Money::of( 1234, Currency::of( 'EUR' ) ), $key ) ), 'The same refund asked again is the same result.' );
+		$this->assertSame( Outcome::Approved, $stub->authorize( new PaymentRequest( self::INTENT, self::amount(), StubGateway::REFUND_DECLINE ) )->outcome, 'An intent whose refunds are declined is authorized.' );
 	}
 
 	/**

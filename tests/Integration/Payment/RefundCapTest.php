@@ -19,7 +19,9 @@ use SEOCart\Payment\Domain\Operation;
 use SEOCart\Payment\Domain\Outcome;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
+use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Support\Money;
 use SEOCart\Tests\Support\Payment\PaymentTestCase;
 
 /**
@@ -144,5 +146,72 @@ final class RefundCapTest extends PaymentTestCase {
 
 		$this->assertQueryCount( 0, $log->ofType( 'INSERT', 'UPDATE', 'DELETE' ), 'writes before the refusal' );
 		$this->assertCount( $rows, $this->ledgerOf( $order->id ) );
+	}
+
+	/**
+	 * Tests that a refund of the intent's whole amount, given no base amount, still adds the intent's whole frozen base amount.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_whole_refund_given_no_base_adds_the_frozen_base(): void {
+		list( $order, $intent ) = $this->placeConvertedCaptured();
+
+		$this->deliver( self::stubResult( $intent, Operation::Refund, Outcome::Approved, self::GRAND_TOTAL, self::CURRENCY, 'stub-re-whole' ) );
+
+		$this->assertSame( array( 'refunded', (string) self::GRAND_TOTAL, (string) self::BASE_GRAND_TOTAL ), array( $this->intentRow( $intent->uuid )['status'], (string) $this->intentRow( $intent->uuid )['refunded_minor'], (string) $this->intentRow( $intent->uuid )['base_refunded_minor'] ) );
+		$this->assertSame( (string) self::BASE_GRAND_TOTAL, (string) $this->orderRow( $order->id )['base_refunded_minor'] );
+	}
+
+	/**
+	 * Tests that a partial refund of an order in another currency adds the base amount it is given, as the refund service allocated it.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_partial_refund_adds_the_base_amount_it_is_given(): void {
+		list( $order, $intent ) = $this->placeConvertedCaptured();
+
+		$this->db->transaction( fn() => $this->payments->applyGatewayResult( self::stubResult( $intent, Operation::Refund, Outcome::Approved, 1000, self::CURRENCY, 'stub-re-part' ), self::system(), Money::of( 800, Currency::of( self::BASE ) ) ) );
+
+		$this->assertSame( array( 'partially_refunded', '1000', '800' ), array( $this->intentRow( $intent->uuid )['status'], (string) $this->intentRow( $intent->uuid )['refunded_minor'], (string) $this->intentRow( $intent->uuid )['base_refunded_minor'] ) );
+		$this->assertSame( '800', (string) $this->ledgerOf( $order->id )[2]['base_amount_minor'] );
+	}
+
+	/**
+	 * Tests that a base amount given with an authorization is refused before any statement: an authorization is for the intent's frozen amounts.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_base_amount_is_given_with_a_refund_only(): void {
+		list( , $intent ) = $this->placeWithIntent();
+
+		$result = $this->authorizeWith( $intent, StubGateway::APPROVE );
+		$log    = $this->captureQueries(
+			function () use ( $result ): void {
+				try {
+					$this->db->transaction( fn() => $this->payments->applyGatewayResult( $result, self::system(), Money::of( 1, Currency::of( self::BASE ) ) ) );
+					$this->fail( 'An authorization was given a base amount.' );
+				} catch ( \LogicException $refused ) {
+					$this->assertStringContainsString( 'Only a refund', $refused->getMessage() );
+				}
+			}
+		);
+
+		$this->assertQueryCount( 0, $log->matching( '/seocart_/' ), 'plugin statements before the refusal' );
+	}
+
+	/**
+	 * Places the fixture order in EUR with a USD base, and authorizes and captures its whole amount.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return array{0: \SEOCart\Order\Domain\InsertedOrder, 1: \SEOCart\Payment\Domain\IntentRef} The order and its intent.
+	 */
+	private function placeConvertedCaptured(): array {
+		list( $order, $intent ) = $this->placeWithIntent();
+
+		$this->deliver( $this->authorizeWith( $intent, StubGateway::APPROVE ) );
+		$this->deliver( self::stubResult( $intent, Operation::Capture, Outcome::Approved, self::GRAND_TOTAL, self::CURRENCY, 'stub-cap-' . $intent->uuid ) );
+
+		return array( $order, $intent );
 	}
 }

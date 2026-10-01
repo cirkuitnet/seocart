@@ -54,6 +54,7 @@ final class GatewayDtoTest extends TestCase {
 		'source',
 		// Requests.
 		'paymentToken',
+		'refundUuid',
 		// Exceptions.
 		'message',
 		'code',

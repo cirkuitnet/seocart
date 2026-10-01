@@ -26,16 +26,19 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: when doctor calls payments inconsistent. An intent's authorized, captured and
  * refunded amounts, and their base twins, must equal the sums of its applied, approved ledger
  * rows by operation; an order's must equal the sums over its intents; no intent may have
- * refunded more than it captured; and an order must point at its current totals snapshot. Any
- * difference is critical, named with the intent's or the order's uuid and both figures, and left
- * for a person: the ledger is the truth and the amounts are its projection, so doctor never
- * rewrites one. A ledger row that did not match its order, and an order flagged for it, are
- * warnings: money a person must reconcile.
+ * refunded more than it captured; and an order must point at its current totals snapshot. A
+ * refund's tax must be what its tax components returned, and its total less its shipping, fees
+ * and tax what its lines returned before tax, in both currencies; and an order line's refunded
+ * quantity must be the units its refunds returned. Any difference is critical, named with the
+ * uuid and both figures, and left for a person: the ledger is the truth and the amounts are its
+ * projection, so doctor never rewrites one. A ledger row that did not match its order, and an
+ * order flagged for it, are warnings: money a person must reconcile.
  *
- * The intents and the orders are compared a page at a time, by id, each page one bounded read
- * (with one more for the orders' intent sums), until every one was compared or a line has found
- * as many as it lists. The other lines are reads of what they report, the first LIMIT found. It
- * prints uuids and amounts in minor units, never anything about a person.
+ * The intents, the orders, the refunds and the order lines are compared a page at a time, by id,
+ * each page one bounded read (with one more for the orders' intent sums, and for the lines' refund
+ * units), until every one was compared or a line has found as many as it lists. The other lines
+ * are reads of what they report, the first LIMIT found. It prints uuids and amounts in minor
+ * units, never anything about a person.
  *
  * @since 0.1.0
  */
@@ -158,12 +161,14 @@ final class PaymentLedgerCheck implements Check {
 			$this->orderDrift(),
 			$overRefunded,
 			$this->totalsDrift(),
+			$this->refundDrift(),
+			$this->refundedQuantityDrift(),
 			$this->unappliedResults(),
 			$this->unreconciledOrders()
 		);
 
 		if ( array() === $findings ) {
-			return CheckResult::pass( self::NAME, 'Every intent\'s and every order\'s payment amounts agree with the ledger, and no payment waits for a person to reconcile it.' );
+			return CheckResult::pass( self::NAME, 'Every intent\'s and every order\'s payment amounts agree with the ledger, every refund with its lines and components, and no payment waits for a person to reconcile it.' );
 		}
 
 		return CheckResult::fail( self::NAME, sprintf( '%d payment %s found.', count( $findings ), 1 === count( $findings ) ? 'problem' : 'problems' ), $findings );
@@ -258,6 +263,62 @@ final class PaymentLedgerCheck implements Check {
 			),
 			$this->orders->currentTotalsDrift( self::LIMIT )
 		);
+	}
+
+	/**
+	 * Lists the refunds whose header does not state what their rows add up to, a page of refunds at a time: their components' tax, and their lines' net, in both currencies.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<string> One critical line per refund, at most LIMIT.
+	 */
+	private function refundDrift(): array {
+		$findings = array();
+
+		$this->walk(
+			fn( int $after, int $page ): array => $this->payments->refundSums( $after, $page ),
+			static function ( array $refunds ) use ( &$findings ): bool {
+				foreach ( $refunds as $refund ) {
+					if ( $refund['amounts'] !== $refund['sums'] ) {
+						$findings[] = sprintf( 'Critical: refund %1$s states %2$s.', CheckResult::identifier( $refund['uuid'] ), self::differences( $refund['amounts'], $refund['sums'], 'its lines and components add up to' ) );
+					}
+				}
+
+				return count( $findings ) >= self::LIMIT;
+			}
+		);
+
+		return array_slice( $findings, 0, self::LIMIT );
+	}
+
+	/**
+	 * Lists the order lines whose refunded quantity is not the units their refunds returned, a page of lines at a time.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<string> One critical line per order line, at most LIMIT.
+	 */
+	private function refundedQuantityDrift(): array {
+		$findings = array();
+
+		$this->walk(
+			fn( int $after, int $page ): array => $this->orders->refundedQuantities( $after, $page ),
+			function ( array $lines ) use ( &$findings ): bool {
+				$units = array() === $lines ? array() : $this->payments->refundedUnits( array_column( $lines, 'id' ) );
+
+				foreach ( $lines as $line ) {
+					$returned = $units[ $line['id'] ] ?? 0;
+
+					if ( $line['refunded'] !== $returned ) {
+						$findings[] = sprintf( 'Critical: order line %1$s records %2$d units refunded while its refunds returned %3$d.', CheckResult::identifier( $line['uuid'] ), $line['refunded'], $returned );
+					}
+				}
+
+				return count( $findings ) >= self::LIMIT;
+			}
+		);
+
+		return array_slice( $findings, 0, self::LIMIT );
 	}
 
 	/**

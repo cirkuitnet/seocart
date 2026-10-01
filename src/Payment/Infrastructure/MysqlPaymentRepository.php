@@ -232,6 +232,34 @@ final class MysqlPaymentRepository implements PaymentRepository {
 		. 'FROM {payment_intents} WHERE order_id IN ({list}) GROUP BY order_id';
 
 	/**
+	 * A page of refunds by the primary key, after the last id of the page before: the tax each states beside what its components returned, and the net it states its lines returned beside what they did, in both currencies.
+	 *
+	 * A refund's lines returned its total less its shipping, fees and tax, before tax; the database
+	 * works that out from the header. Each sum is one read of the refund's own rows, on the
+	 * `refund_line` and `refund_component` keys, which begin with the refund.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const REFUND_SUMS = 'SELECT r.id, r.uuid, r.tax_minor AS tax, r.base_tax_minor AS base_tax, '
+		. 'r.total_minor - r.shipping_minor - r.fee_minor - r.tax_minor AS lines_net, r.base_total_minor - r.base_shipping_minor - r.base_fee_minor - r.base_tax_minor AS base_lines_net, '
+		. '( SELECT COALESCE( SUM( refund_component.tax_minor ), 0 ) FROM {refund_components} refund_component WHERE refund_component.refund_id = r.id ) AS tax_sum, '
+		. '( SELECT COALESCE( SUM( refund_component.base_tax_minor ), 0 ) FROM {refund_components} refund_component WHERE refund_component.refund_id = r.id ) AS base_tax_sum, '
+		. '( SELECT COALESCE( SUM( refund_line.net_minor ), 0 ) FROM {refund_lines} refund_line WHERE refund_line.refund_id = r.id ) AS lines_net_sum, '
+		. '( SELECT COALESCE( SUM( refund_line.base_net_minor ), 0 ) FROM {refund_lines} refund_line WHERE refund_line.refund_id = r.id ) AS base_lines_net_sum '
+		. 'FROM {refunds} r WHERE r.id > %d ORDER BY r.id LIMIT %d';
+
+	/**
+	 * The units the refunds returned of some order lines, on the `order_line_id` key.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const REFUNDED_UNITS = 'SELECT order_line_id, SUM( quantity ) AS quantity FROM {refund_lines} WHERE order_line_id IN ({list}) GROUP BY order_line_id';
+
+	/**
 	 * The module's name, in the messages of a statement that names another module's table.
 	 *
 	 * @since 0.1.0
@@ -267,12 +295,12 @@ final class MysqlPaymentRepository implements PaymentRepository {
 	 * @param IdGenerator $ids Mints the uuids of the ledger rows.
 	 */
 	public function __construct( Database $db, IdGenerator $ids ) {
-		$this->statements = new ModuleStatements( $db, self::MODULE, PaymentTables::names() );
+		$this->statements = new ModuleStatements( $db, self::MODULE, PaymentTables::moduleNames() );
 		$this->ids        = $ids;
 	}
 
 	/**
-	 * Turns a statement's tokens into wpdb placeholders and its values into arguments, in order, over the payment tables.
+	 * Turns a statement's tokens into wpdb placeholders and its values into arguments, in order, over the payment module's tables.
 	 *
 	 * The plugin's one token expansion (ModuleStatements::expand()); a concurrency test prepares
 	 * the statement connection B sends with it, from the same constant.
@@ -290,7 +318,7 @@ final class MysqlPaymentRepository implements PaymentRepository {
 	 * @phpstan-param callable(string): string $tableName
 	 */
 	public static function expand( string $statement, array $values, callable $tableName ): array {
-		return ModuleStatements::expand( $statement, $values, PaymentTables::names(), $tableName, self::MODULE );
+		return ModuleStatements::expand( $statement, $values, PaymentTables::moduleNames(), $tableName, self::MODULE );
 	}
 
 	/**
@@ -598,6 +626,59 @@ final class MysqlPaymentRepository implements PaymentRepository {
 		}
 
 		return $sums;
+	}
+
+	/**
+	 * Reads a page of refunds, by id, each with the tax and the lines' net it states and what its components and its lines add up to.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId The last id of the page before, or 0 for the first page.
+	 * @param int $limit   The most refunds to read.
+	 * @return list<array{id: int, uuid: string, amounts: array<string, int>, sums: array<string, int>}> The refunds: by figure, `tax`, `lines_net` and their base twins, as stated and as added up.
+	 */
+	public function refundSums( int $afterId, int $limit ): array {
+		$figures = array( 'tax', 'base_tax', 'lines_net', 'base_lines_net' );
+
+		return array_map(
+			static function ( array $row ) use ( $figures ): array {
+				$amounts = array();
+				$sums    = array();
+
+				foreach ( $figures as $figure ) {
+					$amounts[ $figure ] = (int) $row[ $figure ];
+					$sums[ $figure ]    = (int) $row[ $figure . '_sum' ];
+				}
+
+				return array(
+					'id'      => (int) $row['id'],
+					'uuid'    => (string) $row['uuid'],
+					'amounts' => $amounts,
+					'sums'    => $sums,
+				);
+			},
+			$this->statements->rows( self::REFUND_SUMS, $afterId, $limit )
+		);
+	}
+
+	/**
+	 * Adds up the units the refunds returned of some order lines.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int[] $lineIds The order lines.
+	 * @return array<int, int> The units, by order line id; a line with none is absent.
+	 *
+	 * @phpstan-param list<int> $lineIds
+	 */
+	public function refundedUnits( array $lineIds ): array {
+		$units = array();
+
+		foreach ( array() === $lineIds ? array() : $this->statements->rows( self::REFUNDED_UNITS, $lineIds ) as $row ) {
+			$units[ (int) $row['order_line_id'] ] = (int) $row['quantity'];
+		}
+
+		return $units;
 	}
 
 	/**

@@ -52,6 +52,24 @@ final class ModuleStatements {
 	private const LIST_TOKEN = 'list';
 
 	/**
+	 * What opens a derived table of values: its row is the SELECT that follows.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const DERIVED_OPEN = '( SELECT ';
+
+	/**
+	 * What closes a derived table of values, before its name.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const DERIVED_CLOSE = ' ) AS ';
+
+	/**
 	 * The connection.
 	 *
 	 * @since 0.1.0
@@ -160,6 +178,37 @@ final class ModuleStatements {
 		}
 
 		return array( $sql, $arguments );
+	}
+
+	/**
+	 * Returns a statement with the row of its derived table of values repeated once per row, joined by UNION ALL.
+	 *
+	 * A statement that joins a table of values, such as an update of several rows each by its own
+	 * amount, or an insert that checks each row it inserts, writes that table as one derived row:
+	 * the first `( SELECT %d AS id, … ) AS name` of the statement. Its column names come from its
+	 * first row, as SQL takes them, so the statement stays one constant whatever the number of rows.
+	 * The caller sends every row's values first, in order, then the statement's other values.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When the statement has no derived table of values, or no row is asked for.
+	 *
+	 * @param string $statement A constant with one derived row.
+	 * @param int    $rows      How many rows, 1 or more.
+	 * @return string The statement with every row.
+	 */
+	public static function forDerivedRows( string $statement, int $rows ): string {
+		$open  = strpos( $statement, self::DERIVED_OPEN );
+		$close = false === $open ? false : strpos( $statement, self::DERIVED_CLOSE, $open );
+
+		if ( false === $open || false === $close || $rows < 1 ) {
+			throw new \LogicException( 'A table of values repeats the one derived row of its statement, at least once.' );
+		}
+
+		$from = $open + strlen( '( ' );
+		$row  = substr( $statement, $from, $close - $from );
+
+		return substr( $statement, 0, $from ) . implode( ' UNION ALL ', array_fill( 0, $rows, $row ) ) . substr( $statement, $close );
 	}
 
 	/**

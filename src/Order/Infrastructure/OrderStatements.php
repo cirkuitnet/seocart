@@ -30,7 +30,10 @@ defined( 'ABSPATH' ) || exit;
  * change.
  *
  * A multi-row insert is its one-row constant with the VALUES tuple repeated, once per row: one
- * statement whatever the number of rows.
+ * statement whatever the number of rows. A statement that joins a table of values, such as an
+ * update of several lines each by its own amount, writes that table as one derived row,
+ * `( SELECT %d AS id, … ) AS name`, which ModuleStatements::forDerivedRows() repeats with UNION ALL,
+ * once per row.
  *
  * @since 0.1.0
  */
@@ -112,6 +115,22 @@ final class OrderStatements {
 		$tuple = substr( $statement, $at + strlen( self::VALUES ) );
 
 		return substr( $statement, 0, $at + strlen( self::VALUES ) ) . implode( ', ', array_fill( 0, $rows, $tuple ) );
+	}
+
+	/**
+	 * Sends a statement joined to a table of values, its rows first and then the statement's other values, as one statement.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $statement A constant with one derived row, before any other placeholder.
+	 * @param array  $rows      Each row's values, in placeholder order; at least one row.
+	 * @param mixed  ...$values The statement's other values.
+	 * @return int The rows affected.
+	 *
+	 * @phpstan-param non-empty-list<list<mixed>> $rows
+	 */
+	public function executeForRows( string $statement, array $rows, mixed ...$values ): int {
+		return $this->execute( ModuleStatements::forDerivedRows( $statement, count( $rows ) ), ...array_merge( array_merge( ...$rows ), $values ) );
 	}
 
 	/**

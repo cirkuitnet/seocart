@@ -93,16 +93,20 @@ use SEOCart\Order\Infrastructure\WordPressAccessKeys;
 use SEOCart\Order\Interfaces\StoreApi\OrderStatusRead;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Application\RefundService;
 use SEOCart\Payment\Domain\Event\PaymentAuthorized;
 use SEOCart\Payment\Domain\Event\PaymentCaptured;
 use SEOCart\Payment\Domain\Event\PaymentFailed;
 use SEOCart\Payment\Domain\Event\PaymentIntentCreated;
 use SEOCart\Payment\Domain\Event\PaymentStatusChanged;
+use SEOCart\Payment\Domain\Event\RefundRecorded;
 use SEOCart\Payment\Domain\Gateway\PaymentGateway;
 use SEOCart\Payment\Domain\PaymentRepository;
+use SEOCart\Payment\Domain\Refund\RefundRepository;
 use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
+use SEOCart\Payment\Infrastructure\MysqlRefundRepository;
 use SEOCart\Platform\Authorization\AuthorizationError;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
@@ -298,6 +302,7 @@ final class Modules {
 		PaymentFailed::class,
 		PaymentIntentCreated::class,
 		PaymentStatusChanged::class,
+		RefundRecorded::class,
 		StockAdjusted::class,
 		StockHoldExpired::class,
 		StockReserved::class,
@@ -1331,7 +1336,7 @@ final class Modules {
 	}
 
 	/**
-	 * The payment module: the payment repository and service, the gateway, and the payment check of doctor.
+	 * The payment module: the payment repository and service, the gateway, the payment check of doctor, and the refund service.
 	 *
 	 * It adds no hook: an intent is created and a gateway result applied by the services that call
 	 * them, inside their own transactions, and the check runs through doctor. The gateway is the
@@ -1360,6 +1365,20 @@ final class Modules {
 			)
 		);
 		$container->bind( PaymentLedgerCheck::class, static fn( Container $c ): PaymentLedgerCheck => new PaymentLedgerCheck( $c->get( MysqlPaymentRepository::class ), $c->get( OrderRepository::class ) ) );
+		$container->bind( RefundRepository::class, static fn( Container $c ): RefundRepository => new MysqlRefundRepository( $c->get( Database::class ) ) );
+		$container->bind(
+			RefundService::class,
+			static fn( Container $c ): RefundService => new RefundService(
+				$c->get( RefundRepository::class ),
+				$c->get( OrderRepository::class ),
+				$c->get( PaymentService::class ),
+				$c->get( PaymentGateway::class ),
+				$c->get( TransactionManager::class ),
+				$c->get( EventPublisher::class ),
+				$c->get( Authorizer::class ),
+				$c->get( Clock::class )
+			)
+		);
 	}
 
 	/**

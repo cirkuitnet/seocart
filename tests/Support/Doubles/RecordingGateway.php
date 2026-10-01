@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Support\Doubles;
 
 use SEOCart\Payment\Domain\Gateway\CaptureRequest;
+use SEOCart\Payment\Domain\Gateway\GatewayRefund;
 use SEOCart\Payment\Domain\Gateway\GatewayResult;
 use SEOCart\Payment\Domain\Gateway\PaymentGateway;
 use SEOCart\Payment\Domain\Gateway\PaymentQuery;
@@ -37,6 +38,15 @@ final class RecordingGateway implements PaymentGateway {
 	 * @var list<array{method: string, depth: int}>
 	 */
 	public array $calls = array();
+
+	/**
+	 * Every refund the wrapped gateway answered, in order: the key it was asked with, and the refund object it answered with.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<array{key: string, object: string|null}>
+	 */
+	public array $refunds = array();
 
 	/**
 	 * The gateway that answers.
@@ -140,6 +150,26 @@ final class RecordingGateway implements PaymentGateway {
 		$this->record( __FUNCTION__ );
 
 		return $this->inner->capture( $request );
+	}
+
+	/**
+	 * Records the call, then refunds through the wrapped gateway, and records the key and the refund object.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param GatewayRefund $request The request.
+	 * @return GatewayResult Its answer.
+	 */
+	public function refund( GatewayRefund $request ): GatewayResult {
+		$this->record( __FUNCTION__ );
+
+		$result          = $this->inner->refund( $request );
+		$this->refunds[] = array(
+			'key'    => $request->refundUuid,
+			'object' => $result->providerObjectId,
+		);
+
+		return $result;
 	}
 
 	/**

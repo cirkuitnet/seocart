@@ -12,11 +12,14 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Payment;
 
 use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Application\RefundService;
 use SEOCart\Payment\Domain\Gateway\PaymentGateway;
 use SEOCart\Payment\Domain\PaymentRepository;
+use SEOCart\Payment\Domain\Refund\RefundRepository;
 use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
+use SEOCart\Payment\Infrastructure\MysqlRefundRepository;
 use SEOCart\Platform\Cli\Doctor\Check;
 use SEOCart\Platform\Cli\Doctor\Doctor;
 use SEOCart\Platform\Events\EventPublisher;
@@ -34,6 +37,8 @@ use SEOCart\Tests\Support\KernelContainer;
  * Planted violations, each shown red and removed:
  * - in Modules::paymentRegister(), leave out the PaymentGateway binding: the service cannot be
  *   built;
+ * - in Modules::paymentRegister(), leave out the RefundRepository binding: the refund service
+ *   cannot be built;
  * - in Modules::loggingRegister(), leave PaymentLedgerCheck out of Doctor's binding: doctor does
  *   not run the payment check.
  *
@@ -54,7 +59,7 @@ final class PaymentWiringTest extends DatabaseTestCase {
 
 		$log = $this->captureQueries(
 			static function () use ( $container, &$resolved ): void {
-				foreach ( array( PaymentRepository::class, PaymentGateway::class, PaymentService::class, PaymentLedgerCheck::class ) as $port ) {
+				foreach ( array( PaymentRepository::class, PaymentGateway::class, PaymentService::class, PaymentLedgerCheck::class, RefundRepository::class, RefundService::class ) as $port ) {
 					$resolved[ $port ] = get_class( $container->get( $port ) );
 				}
 			}
@@ -66,6 +71,8 @@ final class PaymentWiringTest extends DatabaseTestCase {
 				PaymentGateway::class     => StubGateway::class,
 				PaymentService::class     => PaymentService::class,
 				PaymentLedgerCheck::class => PaymentLedgerCheck::class,
+				RefundRepository::class   => MysqlRefundRepository::class,
+				RefundService::class      => RefundService::class,
 			),
 			$resolved
 		);

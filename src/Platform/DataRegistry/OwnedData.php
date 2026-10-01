@@ -22,7 +22,9 @@ use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
 use SEOCart\Order\Infrastructure\Migrations\CreateOrderTables;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Infrastructure\Migrations\CreatePaymentTables;
+use SEOCart\Payment\Infrastructure\Migrations\CreateRefundTables;
 use SEOCart\Payment\Infrastructure\PaymentTables;
+use SEOCart\Payment\Infrastructure\RefundTables;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Migrations\PlatformBootstrapMigration;
 use SEOCart\Platform\Database\Schema\Classification;
@@ -91,6 +93,7 @@ final class OwnedData {
 			new Contribution( tables: CheckoutTables::all(), migrations: array( new CreateCheckoutTables() ) ),
 			new Contribution( tables: PricingTables::all(), migrations: array( new CreateRateTables() ) ),
 			new Contribution( tables: PromotionTables::all(), migrations: array( new CreatePromotionTables() ) ),
+			new Contribution( tables: RefundTables::all(), migrations: array( new CreateRefundTables() ) ),
 		);
 	}
 }

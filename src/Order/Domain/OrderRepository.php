@@ -24,9 +24,9 @@ defined( 'ABSPATH' ) || exit;
  * A storefront names an order by its uuid, and nothing here finds an order by an integer id or
  * by its number. lock() takes the internal id because only the payment and order services call
  * it, inside a transaction that already knows the id, and never with a value from a request.
- * The reads for `doctor` decide nothing: the payment amounts are read a page at a time by id,
- * after the last id seen, for comparing every order; the flagged orders and the totals drift are
- * read as the first orders they find, in id order.
+ * The reads for `doctor` decide nothing: the payment amounts and the lines' refunded quantities
+ * are read a page at a time by id, after the last id seen, for comparing every row; the flagged
+ * orders and the totals drift are read as the first orders they find, in id order.
  *
  * @since 0.1.0
  */
@@ -234,6 +234,52 @@ interface OrderRepository {
 	 * @return list<array{id: int, uuid: string, points_at: int|null, current: int|null}> The orders, with the snapshot each points at and the one marked current; null for none.
 	 */
 	public function currentTotalsDrift( int $limit ): array;
+
+	/**
+	 * Reads what a refund of an order allocates its shares from, by its public identifier: the order, the lines asked for, its shipping when asked for, and their tax components.
+	 *
+	 * Four reads whatever the number of lines, three without the shipping: the order with the
+	 * version of its current totals; the lines asked for; the shipping adjustments added up, a
+	 * free-shipping discount included; and the tax components of those lines and of the shipping,
+	 * at that totals version. Every figure is the stored row's.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string   $orderUuid    The order's public identifier.
+	 * @param string[] $lineUuids    The public identifiers of the lines asked for.
+	 * @param bool     $withShipping Whether the shipping is asked for.
+	 * @return RefundableOrder|null The order, or null when there is none; a line uuid the order does not have is left out.
+	 *
+	 * @phpstan-param list<string> $lineUuids
+	 */
+	public function findRefundable( string $orderUuid, array $lineUuids, bool $withShipping ): ?RefundableOrder;
+
+	/**
+	 * Adds a refund's units to its lines' refunded quantities, in one conditional update.
+	 *
+	 * Each line moves only while it still has the refunded quantity the refund was worked out from,
+	 * and never past the units sold; the caller learns whether every line moved.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int             $orderId The order the lines belong to.
+	 * @param RefundedUnits[] $units   The units returned, one entry per line; at least one.
+	 * @return bool True when every line moved; false when any refused, which the caller's savepoint takes back.
+	 *
+	 * @phpstan-param non-empty-list<RefundedUnits> $units
+	 */
+	public function addRefundedQuantities( int $orderId, array $units ): bool;
+
+	/**
+	 * Reads a page of order lines' refunded quantities, in id order, for comparing them with the refunds' lines.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $afterId The last id of the page before, or 0 for the first page.
+	 * @param int $limit   The most lines to read.
+	 * @return list<array{id: int, uuid: string, refunded: int}> The lines, each with its public identifier.
+	 */
+	public function refundedQuantities( int $afterId, int $limit ): array;
 
 	/**
 	 * Reads an order for showing it, by its public identifier: the order row, its lines, their options and its addresses.

@@ -120,7 +120,7 @@ final class PaymentTablesMigrationTest extends DatabaseTestCase {
 			}
 		}
 
-		$this->assertSame( PaymentTables::names(), $registered, 'The production registry lists exactly the payment tables.' );
+		$this->assertSame( PaymentTables::moduleNames(), $registered, 'The production registry lists exactly the payment module\'s tables: these two and the refund tables.' );
 	}
 
 	/**

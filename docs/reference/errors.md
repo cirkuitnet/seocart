@@ -265,11 +265,41 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The payment amounts of order {order_id} could not be recorded.
 - Values: `order_id`
 
+## `payment.refund_declined`
+
+- HTTP status: 402
+- Message: The payment gateway declined the refund; no money was given back.
+- Values: none
+
 ## `payment.refund_exceeds_captured`
 
 - HTTP status: 409
 - Message: A refund of {requested} would exceed what is left of {captured} captured, of which {refunded} is already refunded.
 - Values: `captured`, `refunded`, `requested`
+
+## `payment.refund_line_exhausted`
+
+- HTTP status: 409
+- Message: Only {returnable} units of line {line_uuid} are left to refund.
+- Values: `line_uuid`, `returnable`
+
+## `payment.refund_line_not_found`
+
+- HTTP status: 404
+- Message: The order has no line {line_uuid}.
+- Values: `line_uuid`
+
+## `payment.refund_not_refundable`
+
+- HTTP status: 409
+- Message: The order {order_uuid} has no captured payment to refund.
+- Values: `order_uuid`
+
+## `payment.refund_nothing_left`
+
+- HTTP status: 409
+- Message: Nothing of what the refund asks for is left to give back.
+- Values: none
 
 ## `payment.unexpected_result`
 
@@ -280,7 +310,7 @@ An internal error carries a generic message and empty details: it is a code mark
 ## `payment.unreconciled`
 
 - HTTP status: 409
-- Message: The payment has a result that does not match its order; a person must reconcile it before it is captured.
+- Message: The payment has a result that could not be recorded against its order; a person must reconcile it before anything else is done with the payment.
 - Values: none
 
 ## `pricing.currency_not_enabled`

@@ -21,6 +21,7 @@ use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Infrastructure\PaymentTables;
+use SEOCart\Payment\Infrastructure\RefundTables;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Schema\PlatformTables;
@@ -310,6 +311,7 @@ final class ReferenceSeed {
 			PromotionTables::USAGE               => 'Only an order uses a promotion, and there are no orders yet.',
 		) + array_fill_keys( OrderTables::names(), 'The dataset has no orders yet: placing orders is a workload of its own.' )
 			+ array_fill_keys( PaymentTables::names(), 'A payment is made for an order, and the dataset has no orders yet.' )
+			+ array_fill_keys( RefundTables::names(), 'A refund gives back part of a paid order, and the dataset has no orders yet.' )
 			+ array_fill_keys( PricingTables::names(), 'The dataset sells in its base currency only; a store has a few dozen currencies and rates at most, read by their keys.' );
 	}
 

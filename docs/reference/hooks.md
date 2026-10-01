@@ -226,6 +226,29 @@ A product was saved: its post and its commerce rows, in one unit of work.
 - `priceMinor` (int|null): The default variant's price in the store's base currency, in minor units, or null for none.
 - `currency` (string|null): The ISO 4217 code of that price's currency, or null when there is no price.
 
+## `seocart_refund_recorded`
+
+Fires after a refund the gateway made, and its document, are committed.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `refund`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_refund_recorded', $callback, 10, 2 )`; the first argument is a `SEOCart\Payment\Domain\Event\RefundRecorded`.
+
+### Event properties
+
+- `refundId` (int): The refund's internal id.
+- `refundUuid` (string): Its public identifier.
+- `orderId` (int): The order refunded.
+- `transactionId` (int): The ledger row of the gateway's refund.
+- `totalMinor` (int): What it returned, tax included, in minor units.
+- `taxMinor` (int): The tax it returned, in minor units.
+- `currency` (string): The order's currency, ISO 4217.
+- `baseTotalMinor` (int): The total in the base currency, in minor units.
+- `baseCurrency` (string): The base currency, ISO 4217.
+- `reasonCode` (string): Why the order was refunded.
+
 ## `seocart_stock_adjusted`
 
 Fires after a stock adjustment is committed: a merchant's change of on_hand, or the final entry of a deleted variant.

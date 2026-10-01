@@ -91,6 +91,18 @@ interface PaymentGateway {
 	public function capture( CaptureRequest $request ): GatewayResult;
 
 	/**
+	 * Asks the provider to give back part or all of what an intent captured.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws GatewayUnavailable When the provider could not be asked or did not answer.
+	 *
+	 * @param GatewayRefund $request The intent, the amount and the refund's idempotency key.
+	 * @return GatewayResult The provider's answer, not yet applied: an approval names the provider's refund.
+	 */
+	public function refund( GatewayRefund $request ): GatewayResult;
+
+	/**
 	 * Asks the provider where an intent stands now, for an intent whose result never arrived.
 	 *
 	 * @since 0.1.0

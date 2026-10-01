@@ -72,6 +72,11 @@ use SEOCart\Support\Money;
  * in. Stock, promotion usage and the cart are the caller's, settled by the Application's kind in
  * the same transaction.
  *
+ * A declined refund is recorded and changes nothing else: the money the intent captured stays
+ * captured. An approval a caller could not go on to record, such as a refund whose document a cap
+ * refused after the gateway had given the money back, is kept the way a mismatch is
+ * (recordUnapplied()), so money the gateway moved is never left unrecorded.
+ *
  * @since 0.1.0
  */
 final class PaymentService {
@@ -120,6 +125,15 @@ final class PaymentService {
 	 * @var string
 	 */
 	public const PAYMENT_DECLINED = 'payment_declined';
+
+	/**
+	 * The reason an order is parked with when the gateway moved money that could not be recorded against it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const PAYMENT_UNRECORDED = 'payment_unrecorded';
 
 	/**
 	 * The statements.
@@ -300,7 +314,13 @@ final class PaymentService {
 	 * the order are locked, and the ledger row is appended, which claims the result; a row already
 	 * there makes this a duplicate, which changes nothing. A request for the customer to act, or
 	 * a gateway still deciding, only moves the intent to wait, and the order's payment status with
-	 * it. An approval of an authorization accepts a pending order; a decline fails it.
+	 * it. An approval of an authorization accepts a pending order; a decline fails it. A declined
+	 * refund is recorded and changes nothing else.
+	 *
+	 * An authorization or a capture is for the intent's whole frozen amount, whose base twin was
+	 * frozen with it. A refund of part of an order in a converted currency has no base twin of its
+	 * own: the refund service allocates it from the order's stored figures and passes it as the
+	 * base amount, which is then added as given. No rate is read either way.
 	 *
 	 * A refusal is a CodedException: `payment.intent_not_found`; `payment.unexpected_result` when
 	 * the intent's state cannot take the result; `payment.refund_exceeds_captured`;
@@ -309,21 +329,64 @@ final class PaymentService {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \LogicException Outside a transaction, or for a void, which nothing applies yet; before any statement.
+	 * @throws \LogicException Outside a transaction, for a void, which nothing applies yet, or for a
+	 *                         base amount given with anything but a refund; before any statement.
 	 *
-	 * @param GatewayResult $result The gateway's answer.
-	 * @param Actor         $actor  On whose authority.
+	 * @param GatewayResult $result     The gateway's answer.
+	 * @param Actor         $actor      On whose authority.
+	 * @param Money|null    $baseAmount Optional. A refund's amount in the order's base currency, at the order's
+	 *                                  frozen rate, as the refund service allocated it. Default null: the
+	 *                                  intent's frozen base amount for its whole amount.
 	 * @return Application What was done.
 	 */
-	public function applyGatewayResult( GatewayResult $result, Actor $actor ): Application {
+	public function applyGatewayResult( GatewayResult $result, Actor $actor, ?Money $baseAmount = null ): Application {
 		$this->requireCallersTransaction( __FUNCTION__ );
 
 		if ( Operation::Void === $result->operation ) {
 			throw new \LogicException( 'No void is applied yet: voiding an intent arrives with the gateway call that makes one.' );
 		}
 
+		if ( null !== $baseAmount && Operation::Refund !== $result->operation ) {
+			throw new \LogicException( 'Only a refund is given its base amount: an authorization or a capture is for the intent\'s whole amount, whose base amount was frozen with it.' );
+		}
+
 		return $this->tx->transaction(
-			fn(): Application => in_array( $result->outcome, Outcome::moneyFacts(), true ) ? $this->applyMoneyFact( $result, $actor ) : $this->applyWait( $result, $actor )
+			fn(): Application => in_array( $result->outcome, Outcome::moneyFacts(), true ) ? $this->applyMoneyFact( $result, $actor, $baseAmount ) : $this->applyWait( $result, $actor )
+		);
+	}
+
+	/**
+	 * Records an approval the caller could not go on to record, as money a person must reconcile: its ledger row kept with `applied = 0`, and the order parked.
+	 *
+	 * For a refund the gateway made whose document a cap then refused, because another refund
+	 * landed after this one was checked: the money moved at the gateway, so it is never left
+	 * unrecorded. Inside the caller's transaction, after the savepoint that tried to apply it rolled
+	 * back: the intent and the order are locked, the row is appended, which claims the result, and
+	 * the order is flagged and put `on_hold` where its status allows, as for a mismatch. Nothing
+	 * else moves. A result already recorded is a duplicate, which changes nothing. A result whose
+	 * intent does not exist raises `payment.intent_not_found`.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Outside a transaction, or for a result that is not an approval; before any statement.
+	 *
+	 * @param GatewayResult $result The approval.
+	 * @param Actor         $actor  On whose authority.
+	 * @return Application What was done: a mismatch, or a duplicate.
+	 */
+	public function recordUnapplied( GatewayResult $result, Actor $actor ): Application {
+		$this->requireCallersTransaction( __FUNCTION__ );
+
+		if ( Outcome::Approved !== $result->outcome ) {
+			throw new \LogicException( 'Only an approval moved money a person must reconcile.' );
+		}
+
+		return $this->tx->transaction(
+			function () use ( $result, $actor ): Application {
+				$intent = $this->lock( $result->intentUuid );
+
+				return $this->keepUnapplied( $result, $intent, $this->orders->lockForPayment( $intent->orderId ), self::PAYMENT_UNRECORDED, $actor );
+			}
 		);
 	}
 
@@ -416,40 +479,77 @@ final class PaymentService {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \LogicException For a partial refund in a converted currency, whose base share is the refund service's to allocate.
+	 * @throws \LogicException For a partial refund in a converted currency given no base amount, whose base share is the refund
+	 *                         service's to allocate; or for a base amount in another currency than the order's base currency.
 	 *
-	 * @param GatewayResult $result The result.
-	 * @param Actor         $actor  On whose authority.
+	 * @param GatewayResult $result     The result.
+	 * @param Actor         $actor      On whose authority.
+	 * @param Money|null    $baseAmount A refund's base amount, as allocated; null for none.
 	 * @return Application What was done.
 	 */
-	private function applyMoneyFact( GatewayResult $result, Actor $actor ): Application {
+	private function applyMoneyFact( GatewayResult $result, Actor $actor, ?Money $baseAmount ): Application {
 		$intent   = $this->lock( $result->intentUuid );
 		$order    = $this->orders->lockForPayment( $intent->orderId );
 		$approved = Outcome::Approved === $result->outcome;
-		$matches  = ! $approved || AmountCheck::accepts( $result, $intent, $order );
-		$base     = $matches ? self::baseAmount( $intent, $result->amount, $order ) : null;
 
-		if ( $approved && $matches && null === $base ) {
+		if ( $approved && ! AmountCheck::accepts( $result, $intent, $order ) ) {
+			return $this->keepUnapplied( $result, $intent, $order, self::AMOUNT_MISMATCH, $actor );
+		}
+
+		if ( null !== $baseAmount && ! $baseAmount->currency()->equals( $order->baseCurrency() ) ) {
+			throw new \LogicException( 'A refund\'s base amount is in the order\'s base currency.' );
+		}
+
+		$base = $baseAmount ?? self::baseAmount( $intent, $result->amount, $order );
+
+		if ( $approved && null === $base ) {
 			throw new \LogicException( 'Only the intent\'s whole amount has a base amount here when the order is in a converted currency: a partial refund\'s base share is the refund service\'s to allocate from the order\'s tax components.' );
 		}
 
 		list( $actorType, $actorId ) = self::actorOf( $actor );
 
-		$transactionId = $this->payments->appendResult( $intent, $result, $base ?? Money::zero( $order->baseCurrency() ), $matches, $actorType, $actorId, $this->correlation->current() );
+		$transactionId = $this->payments->appendResult( $intent, $result, $base ?? Money::zero( $order->baseCurrency() ), true, $actorType, $actorId, $this->correlation->current() );
 
 		if ( null === $transactionId ) {
 			return $this->unchanged( ApplicationKind::Duplicate, $result, $intent, $order, $this->payments->findResult( $result ) );
 		}
 
-		if ( ! $matches ) {
-			$parked = $this->orders->park( $order, self::AMOUNT_MISMATCH, $actor );
-
-			return $this->application( ApplicationKind::Mismatch, $result, $intent, $order, $transactionId, $intent->status, $order->paymentStatus, $parked?->to );
+		if ( $approved ) {
+			return $this->approve( $result, $intent, $order, $transactionId, $base, $actor );
 		}
 
-		return $approved
-			? $this->approve( $result, $intent, $order, $transactionId, $base ?? $intent->baseAmount, $actor )
+		// A declined refund gives nothing back: the intent stays captured and the order as it was.
+		return Operation::Refund === $result->operation
+			? $this->unchanged( ApplicationKind::Declined, $result, $intent, $order, $transactionId )
 			: $this->decline( $result, $intent, $order, $transactionId, $actor );
+	}
+
+	/**
+	 * Keeps an approval that moves no money, for a person: its ledger row with `applied = 0`, and the order flagged and parked.
+	 *
+	 * The row is the claim, so a result recorded before is a duplicate, which changes nothing.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param GatewayResult $result The approval.
+	 * @param PaymentIntent $intent The intent, locked.
+	 * @param LockedOrder   $order  The order, locked.
+	 * @param string        $reason Why the order is parked, such as `amount_mismatch`.
+	 * @param Actor         $actor  On whose authority.
+	 * @return Application A mismatch, or a duplicate.
+	 */
+	private function keepUnapplied( GatewayResult $result, PaymentIntent $intent, LockedOrder $order, string $reason, Actor $actor ): Application {
+		list( $actorType, $actorId ) = self::actorOf( $actor );
+
+		$transactionId = $this->payments->appendResult( $intent, $result, Money::zero( $order->baseCurrency() ), false, $actorType, $actorId, $this->correlation->current() );
+
+		if ( null === $transactionId ) {
+			return $this->unchanged( ApplicationKind::Duplicate, $result, $intent, $order, $this->payments->findResult( $result ) );
+		}
+
+		$parked = $this->orders->park( $order, $reason, $actor );
+
+		return $this->application( ApplicationKind::Mismatch, $result, $intent, $order, $transactionId, $intent->status, $order->paymentStatus, $parked?->to );
 	}
 
 	/**
@@ -638,7 +738,7 @@ final class PaymentService {
 	}
 
 	/**
-	 * Builds the Application of a result that changed nothing: a duplicate.
+	 * Builds the Application of a result that changed nothing but its ledger row: a duplicate, or a declined refund.
 	 *
 	 * @since 0.1.0
 	 *
@@ -646,7 +746,7 @@ final class PaymentService {
 	 * @param GatewayResult   $result        The result.
 	 * @param PaymentIntent   $intent        The intent, locked.
 	 * @param LockedOrder     $order         The order, locked.
-	 * @param int|null        $transactionId The row the result was first recorded in, or null for an answer that moves no money.
+	 * @param int|null        $transactionId The row the result was recorded in, first for a duplicate; null for an answer that moves no money.
 	 * @return Application The Application.
 	 */
 	private function unchanged( ApplicationKind $kind, GatewayResult $result, PaymentIntent $intent, LockedOrder $order, ?int $transactionId ): Application {

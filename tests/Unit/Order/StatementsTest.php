@@ -16,6 +16,7 @@ use SEOCart\Order\Domain\OrderRepository;
 use SEOCart\Order\Infrastructure\MysqlOrderRepository;
 use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Platform\Database\ModuleStatements;
 use SEOCart\Platform\Database\Schema\MutationPattern;
 use SEOCart\Platform\DataRegistry\OwnedData;
 use SEOCart\Tests\Unit\Support\PhpSource;
@@ -205,6 +206,26 @@ final class StatementsTest extends TestCase {
 	}
 
 	/**
+	 * Tests that only ADD_REFUNDED_QUANTITIES changes a line's refunded quantity, and only from the quantity a refund read, never past the units sold.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_only_a_refunds_update_changes_a_lines_refunded_quantity(): void {
+		$writers = array();
+
+		foreach ( self::statements() as $name => $statement ) {
+			foreach ( self::assignments( $statement ) as $clause ) {
+				if ( 1 === preg_match( '/(?<![\w`])(?:\w+\.)?refunded_quantity\s*=/', $clause ) ) {
+					$writers[] = $name;
+				}
+			}
+		}
+
+		$this->assertSame( array( 'MysqlOrderRepository::ADD_REFUNDED_QUANTITIES' ), $writers, 'A line\'s refunded quantity has one writer.' );
+		$this->assertStringContainsString( 'order_line.refunded_quantity = asked.refunded_before AND order_line.refunded_quantity + asked.quantity <= order_line.quantity', MysqlOrderRepository::ADD_REFUNDED_QUANTITIES, 'Its WHERE clause carries the quantity the refund read and the units sold.' );
+	}
+
+	/**
 	 * Tests that the scan's readers find what they are shown, so a clean result means something.
 	 *
 	 * @since 0.1.0
@@ -225,6 +246,11 @@ final class StatementsTest extends TestCase {
 		$this->assertSame(
 			'INSERT INTO {order_line_options} ( order_line_id, axis_key_snapshot, axis_label_snapshot, value_key_snapshot, value_label_snapshot, locale_snapshot, position ) VALUES ( %d, %s, %s, %s, %s, %s, %d ), ( %d, %s, %s, %s, %s, %s, %d )',
 			OrderStatements::forRows( MysqlOrderRepository::INSERT_LINE_OPTION, 2 )
+		);
+		$this->assertStringStartsWith(
+			'UPDATE {order_lines} order_line JOIN ( SELECT %d AS id, %d AS quantity, %d AS refunded_before UNION ALL SELECT %d AS id, %d AS quantity, %d AS refunded_before ) AS asked ON',
+			ModuleStatements::forDerivedRows( MysqlOrderRepository::ADD_REFUNDED_QUANTITIES, 2 ),
+			'A table of values repeats its derived row with UNION ALL.'
 		);
 
 		list( $sql, $arguments ) = OrderStatements::expand( MysqlOrderRepository::TRANSITION, array( 'processing', 7, array(), 0, array( 'paid' ) ), static fn( string $name ): string => 'wp_seocart_' . $name );

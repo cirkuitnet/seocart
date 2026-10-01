@@ -23,6 +23,7 @@ use SEOCart\Payment\Domain\Operation;
 use SEOCart\Payment\Domain\Outcome;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\Migrations\CreatePaymentTables;
+use SEOCart\Payment\Infrastructure\Migrations\CreateRefundTables;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Platform\Authorization\Actor;
@@ -48,7 +49,7 @@ use SEOCart\Tests\Support\Order\OrderTestCase;
 use SEOCart\Tests\Support\ReloadsRoles;
 
 /**
- * An OrderTestCase with the payment tables, and the payment service wired as the kernel wires it, over the stub gateway.
+ * An OrderTestCase with the payment module's tables, the refund tables included, and the payment service wired as the kernel wires it, over the stub gateway.
  *
  * Owns one fact: how a payment test gets an order with its intent, delivers a gateway result
  * the way the caller's unit of work does, and reads back what moved. The gateway is the stub
@@ -129,14 +130,17 @@ abstract class PaymentTestCase extends OrderTestCase {
 	private ?array $roles = null;
 
 	/**
-	 * Creates the payment tables and the service.
+	 * Creates the payment module's tables and the service.
 	 *
 	 * @since 0.1.0
 	 */
 	public function set_up(): void {
 		parent::set_up();
 
-		( new CreatePaymentTables() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+		$operations = new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) );
+
+		( new CreatePaymentTables() )->up( $operations );
+		( new CreateRefundTables() )->up( $operations );
 
 		$this->gateway  = new RecordingGateway( new StubGateway(), $this->db );
 		$this->payments = $this->paymentsOver( $this->db, $this->ids, $this->gateway );

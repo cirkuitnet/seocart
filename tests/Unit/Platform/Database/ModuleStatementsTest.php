@@ -91,6 +91,40 @@ final class ModuleStatementsTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a derived table of values repeats its one row with UNION ALL, once per row, and keeps the rest of the statement whole.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_derived_row_repeats_once_per_row(): void {
+		$statement = 'UPDATE {widgets} widget JOIN ( SELECT %d AS id, %d AS size ) AS asked ON asked.id = widget.id SET widget.size = asked.size WHERE widget.kind = %s';
+
+		$this->assertSame( $statement, ModuleStatements::forDerivedRows( $statement, 1 ), 'One row is the constant as written.' );
+		$this->assertSame(
+			'UPDATE {widgets} widget JOIN ( SELECT %d AS id, %d AS size UNION ALL SELECT %d AS id, %d AS size UNION ALL SELECT %d AS id, %d AS size ) AS asked '
+				. 'ON asked.id = widget.id SET widget.size = asked.size WHERE widget.kind = %s',
+			ModuleStatements::forDerivedRows( $statement, 3 )
+		);
+		$this->assertSame(
+			'INSERT INTO {widget_parts} ( widget_id, name ) SELECT row.widget_id, row.name FROM ( SELECT %d AS widget_id, %s AS name UNION ALL SELECT %d AS widget_id, %s AS name ) AS row '
+				. 'WHERE row.name IN ( SELECT name FROM {widget_parts} )',
+			ModuleStatements::forDerivedRows( 'INSERT INTO {widget_parts} ( widget_id, name ) SELECT row.widget_id, row.name FROM ( SELECT %d AS widget_id, %s AS name ) AS row WHERE row.name IN ( SELECT name FROM {widget_parts} )', 2 ),
+			'Only the first derived table is the table of values; a later subquery is left alone.'
+		);
+
+		foreach ( array(
+			'no derived table' => array( 'SELECT id FROM {widgets} WHERE id = %d', 2 ),
+			'no row'           => array( $statement, 0 ),
+		) as $case => list( $refused, $rows ) ) {
+			try {
+				ModuleStatements::forDerivedRows( $refused, $rows );
+				$this->fail( "Repeated a statement with {$case}." );
+			} catch ( \LogicException $refusal ) {
+				$this->assertStringContainsString( 'at least once', $refusal->getMessage(), $case );
+			}
+		}
+	}
+
+	/**
 	 * Tests that each module's expand() is this one, over its own tables.
 	 *
 	 * @since 0.1.0
