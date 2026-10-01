@@ -29,6 +29,9 @@ use SEOCart\Pricing\Application\CalculationRequest;
 use SEOCart\Pricing\Application\Calculator;
 use SEOCart\Pricing\Application\LineRequest;
 use SEOCart\Pricing\Application\UnpricedLine;
+use SEOCart\Promotion\Application\PromotionError;
+use SEOCart\Promotion\Application\PromotionResolver;
+use SEOCart\Promotion\Domain\Promotion;
 use SEOCart\Support\Address;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
@@ -60,11 +63,19 @@ defined( 'ABSPATH' ) || exit;
  * cart's life afterwards, each time with the cart's new lifetime, so the client keeps the token
  * exactly as long as the cart lives.
  *
- * Every answer carries the cart's totals, which the calculation works out from its lines outside
- * any transaction; the cart stores selections, never prices. A write that starts a cart prices its
- * lines before it creates anything, so a calculation that fails leaves no cart behind whose token
- * the client never received. Any other answer is priced once its transaction has ended. A write
- * refused as stale carries the totals of the cart as it is now, worked out after the rollback.
+ * Every answer carries the cart's totals, which the calculation works out from its lines and its
+ * promotion codes outside any transaction; the cart stores selections, never prices. A write that
+ * starts a cart prices its lines before it creates anything, so a calculation that fails leaves no
+ * cart behind whose token the client never received. Any other answer is priced once its
+ * transaction has ended. A write refused as stale carries the totals of the cart as it is now,
+ * worked out after the rollback.
+ *
+ * A promotion code joins a cart only once its promotion applies to the cart, which the promotion
+ * module decides before any transaction; the code's later fate is the calculation's, which leaves
+ * out, and traces, a code that no longer applies. A cart holds at most Cart::MAX_CODES codes.
+ * Trying codes is how a stranger would look for valid ones, so every code tried is counted,
+ * against its cart and against its client, before it is looked at, and a refused code always gets
+ * the same answer: past their caps every code is refused for the hour, valid or not.
  *
  * Order placement claims a cart, binds its order to it and settles it through the three methods
  * below that run only inside the placement's own transaction.
@@ -128,7 +139,7 @@ final class CartService {
 	private CartTokens $tokens;
 
 	/**
-	 * Counts the carts each client starts.
+	 * Counts the carts each client starts, and the promotion codes tried.
 	 *
 	 * @since 0.1.0
 	 *
@@ -182,6 +193,15 @@ final class CartService {
 	private Calculator $calculator;
 
 	/**
+	 * Decides whether a promotion code applies to a cart.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var PromotionResolver
+	 */
+	private PromotionResolver $promotions;
+
+	/**
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
@@ -189,20 +209,21 @@ final class CartService {
 	 * @param CartRepository     $carts      The statements.
 	 * @param TransactionManager $tx         The unit of work.
 	 * @param CartTokens         $tokens     Reads and issues cart tokens.
-	 * @param RateLimiter        $limiter    Counts the carts each client starts.
-	 * @param ClientIdentities   $identities Names the client.
+	 * @param RateLimiter        $limiter    Counts the carts each client starts, and the codes tried.
+	 * @param ClientIdentities   $identities Names the client, and a cart found by its token.
 	 * @param \Closure           $delivery   Returns, for a cart's id, where its order ships and the
 	 *                                       shipping method chosen, as its checkout has them: each
 	 *                                       null until the checkout knows it.
 	 * @param \Closure           $currency   Returns the currency a new cart is in.
 	 * @param \Closure           $locale     Returns the locale a new cart is started in.
 	 * @param Calculator         $calculator Works out the totals of a cart's lines.
+	 * @param PromotionResolver  $promotions Decides whether a promotion code applies to a cart.
 	 *
 	 * @phpstan-param \Closure(int): array{destination: Address|null, shipping_method_key: string|null} $delivery
 	 * @phpstan-param \Closure(): Currency $currency
 	 * @phpstan-param \Closure(): Locale   $locale
 	 */
-	public function __construct( CartRepository $carts, TransactionManager $tx, CartTokens $tokens, RateLimiter $limiter, ClientIdentities $identities, \Closure $delivery, \Closure $currency, \Closure $locale, Calculator $calculator ) {
+	public function __construct( CartRepository $carts, TransactionManager $tx, CartTokens $tokens, RateLimiter $limiter, ClientIdentities $identities, \Closure $delivery, \Closure $currency, \Closure $locale, Calculator $calculator, PromotionResolver $promotions ) {
 		$this->carts      = $carts;
 		$this->tx         = $tx;
 		$this->tokens     = $tokens;
@@ -212,6 +233,7 @@ final class CartService {
 		$this->currency   = $currency;
 		$this->locale     = $locale;
 		$this->calculator = $calculator;
+		$this->promotions = $promotions;
 	}
 
 	/**
@@ -331,6 +353,76 @@ final class CartService {
 	}
 
 	/**
+	 * Applies a promotion code to the request's cart, if its promotion applies to the cart now.
+	 *
+	 * The cart must be one the request's token names; a token that names none is refused before
+	 * anything is counted, so a made-up token never starts a counter. A cart that holds
+	 * Cart::MAX_CODES codes takes no other: the code is refused with `cart.too_many_codes` before it
+	 * is counted or looked at, which tells nothing about it; a code the cart holds already is not
+	 * another. Every other code is counted against the cart and the client before it is looked at
+	 * (countCodeTried()); past either cap it is refused with `store_api.rate_limited`. Then a code
+	 * not written as a code is (Promotion::CODE_PATTERN), or whose promotion does not apply to the
+	 * cart now, which the promotion module decides outside any transaction, is refused with
+	 * `promotion.code_invalid`, whatever the reason. A code that applies joins the end of the cart's
+	 * list in the compare-and-swap; a code the list holds already leaves it as it is.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `cart.not_found` when the request names no live cart;
+	 *                        `cart.too_many_codes` when the cart holds as many codes as it may;
+	 *                        `store_api.rate_limited` past a cap; `promotion.code_invalid` when the
+	 *                        code does not apply; `cart.version_stale`, `cart.not_open` or
+	 *                        `cart.not_found` when the compare-and-swap refuses; a database error the
+	 *                        transaction could not retry.
+	 *
+	 * @param string $code            The code, trimmed and upper-cased.
+	 * @param int    $expectedVersion The version the client read.
+	 * @param Actor  $actor           Who applies it: the client the codes tried are counted for, and
+	 *                                whose lifetime the cart then lives.
+	 * @return Cart The cart after the change.
+	 */
+	public function applyPromotionCode( string $code, int $expectedVersion, Actor $actor ): Cart {
+		$presented = $this->presentedRow() ?? CodedException::raise( CartError::NotFound );
+		$codes     = $presented['cart']->promotionCodes;
+		$held      = in_array( $code, $codes, true );
+
+		if ( ! $held && count( $codes ) >= Cart::MAX_CODES ) {
+			CodedException::raise( CartError::TooManyCodes, array( 'max_codes' => Cart::MAX_CODES ) );
+		}
+
+		$this->countCodeTried( $presented['token'], $actor );
+
+		if ( ! Promotion::isCode( $code ) ) {
+			CodedException::raise( PromotionError::CodeInvalid );
+		}
+
+		$this->promotions->require( $code, $presented['cart']->currency );
+
+		return $this->changeCodes( $presented, $expectedVersion, $actor, $held ? $codes : array( ...$codes, $code ) );
+	}
+
+	/**
+	 * Removes a promotion code from the request's cart, in the compare-and-swap; a code the cart does not hold leaves its list as it is.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `cart.not_found` when the request names no live cart;
+	 *                        `cart.version_stale`, `cart.not_open` or `cart.not_found` when the
+	 *                        compare-and-swap refuses; a database error the transaction could not retry.
+	 *
+	 * @param string $code            The code, trimmed and upper-cased.
+	 * @param int    $expectedVersion The version the client read.
+	 * @param Actor  $actor           Who removes it: whose lifetime the cart then lives.
+	 * @return Cart The cart after the change.
+	 */
+	public function removePromotionCode( string $code, int $expectedVersion, Actor $actor ): Cart {
+		$presented = $this->presentedRow() ?? CodedException::raise( CartError::NotFound );
+		$codes     = array_values( array_filter( $presented['cart']->promotionCodes, static fn( string $applied ): bool => $applied !== $code ) );
+
+		return $this->changeCodes( $presented, $expectedVersion, $actor, $codes );
+	}
+
+	/**
 	 * Performs `cart.get_cart`: the request's cart by wire name, or an empty cart at version 0.
 	 *
 	 * A read never writes: with no live cart, or a converted one, it answers an empty cart, with
@@ -342,7 +434,7 @@ final class CartService {
 	 *
 	 * @param array<string, mixed> $input The prepared input: nothing.
 	 * @param Actor                $actor Who reads.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart, keyed by wire name.
+	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart, keyed by wire name.
 	 */
 	public function getCart( array $input, Actor $actor ): array {
 		unset( $input, $actor );
@@ -359,7 +451,7 @@ final class CartService {
 	 *
 	 * @param array<string, mixed> $input The prepared input: lines, each with variant_id and quantity, and optionally cart_version.
 	 * @param Actor                $actor Who adds them.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
+	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
 	 */
 	public function addLines( array $input, Actor $actor ): array {
 		$lines = array();
@@ -382,13 +474,43 @@ final class CartService {
 	 *
 	 * @param array<string, mixed> $input The prepared input: line_identity, quantity and cart_version.
 	 * @param Actor                $actor Who changes it.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
+	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
 	 */
 	public function updateLine( array $input, Actor $actor ): array {
 		$sent     = (string) $input['line_identity'];
 		$identity = LineIdentity::fromString( $sent ) ?? CodedException::raise( CartError::LineNotFound, array( 'line_identity' => $sent ) );
 
 		return $this->priced( $this->changeQuantity( $identity, (int) $input['quantity'], (int) $input['cart_version'], $actor ) );
+	}
+
+	/**
+	 * Performs `cart.apply_code`: applies a promotion code, trimmed and upper-cased, and answers the cart by wire name.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException The codes applyPromotionCode() and the calculation raise.
+	 *
+	 * @param array<string, mixed> $input The prepared input: code and cart_version.
+	 * @param Actor                $actor Who applies it.
+	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
+	 */
+	public function applyCode( array $input, Actor $actor ): array {
+		return $this->priced( $this->applyPromotionCode( self::enteredCode( (string) $input['code'] ), (int) $input['cart_version'], $actor ) );
+	}
+
+	/**
+	 * Performs `cart.remove_code`: removes a promotion code, trimmed and upper-cased, and answers the cart by wire name.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException The codes removePromotionCode() and the calculation raise.
+	 *
+	 * @param array<string, mixed> $input The prepared input: code and cart_version.
+	 * @param Actor                $actor Who removes it.
+	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
+	 */
+	public function removeCode( array $input, Actor $actor ): array {
+		return $this->priced( $this->removePromotionCode( self::enteredCode( (string) $input['code'] ), (int) $input['cart_version'], $actor ) );
 	}
 
 	/**
@@ -494,7 +616,7 @@ final class CartService {
 	 * @param int      $expectedVersion The version the client based the write on.
 	 * @param Actor    $actor           Who writes: whose lifetime the cart then lives.
 	 * @param \Closure $write           Writes the other module's rows, given the cart's id.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
+	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
 	 *
 	 * @phpstan-param \Closure(int): void $write
 	 */
@@ -647,19 +769,79 @@ final class CartService {
 		$cart     = $presented['cart'];
 		$lifetime = self::lifetimeSeconds( $actor );
 
+		return $this->commitChange(
+			$presented['token'],
+			$lifetime,
+			function () use ( $cart, $expectedVersion, $lifetime, $write ): Cart {
+				if ( ! $this->carts->compareAndSwap( $cart->id, $expectedVersion, $lifetime ) ) {
+					$this->refuse( $cart->id );
+				}
+
+				$write( $cart->id );
+
+				return $cart->after( $expectedVersion + 1, $this->linesAfterWrite( $cart->id ) );
+			}
+		);
+	}
+
+	/**
+	 * Changes an existing cart's promotion codes: the compare-and-swap that writes the new list, then the lines, in one transaction; then issues its token again for its new life.
+	 *
+	 * The new list was made from the list read with the cart before the transaction, so it may
+	 * replace only that list: the write must be based on the version it was read at, and the
+	 * compare-and-swap finds the cart still at that version. Anything else is refused as the
+	 * compare-and-swap's refusals are, and changes nothing.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException What the compare-and-swap's refusal raises; a stale refusal with the
+	 *                        cart's current version and totals.
+	 *
+	 * @param array{token: CartToken, cart: Cart} $presented       The token the request carries, and its cart's row as read before the transaction.
+	 * @param int                                 $expectedVersion The version the client based the write on.
+	 * @param Actor                               $actor           Who writes: whose lifetime the cart then lives.
+	 * @param string[]                            $codes           The codes after the change, in the order they were applied.
+	 * @return Cart The cart after the change.
+	 *
+	 * @phpstan-param list<string> $codes
+	 */
+	private function changeCodes( array $presented, int $expectedVersion, Actor $actor, array $codes ): Cart {
+		$cart     = $presented['cart'];
+		$lifetime = self::lifetimeSeconds( $actor );
+
+		return $this->commitChange(
+			$presented['token'],
+			$lifetime,
+			function () use ( $cart, $expectedVersion, $lifetime, $codes ): Cart {
+				if ( $expectedVersion !== $cart->version || ! $this->carts->swapPromotionCodes( $cart->id, $expectedVersion, $lifetime, $codes ) ) {
+					$this->refuse( $cart->id );
+				}
+
+				return $cart->withPromotionCodes( $expectedVersion + 1, $codes, $this->carts->lines( $cart->id ) );
+			}
+		);
+	}
+
+	/**
+	 * Runs a change of a cart in one transaction, and then issues the cart's token again for the life the change gave it.
+	 *
+	 * A refusal as stale is raised again with the cart's current version and totals, worked out
+	 * after the rollback.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException What the change raises; a stale refusal with the cart's current version and totals.
+	 *
+	 * @param CartToken $token    The token the request carries.
+	 * @param int       $lifetime How long the cart lives from this write, in seconds.
+	 * @param \Closure  $change   The change, which begins with a compare-and-swap and returns the cart after it.
+	 * @return Cart The cart after the change.
+	 *
+	 * @phpstan-param \Closure(): Cart $change
+	 */
+	private function commitChange( CartToken $token, int $lifetime, \Closure $change ): Cart {
 		try {
-			$changed = $this->tx->transaction(
-				function () use ( $cart, $expectedVersion, $lifetime, $write ): Cart {
-					if ( ! $this->carts->compareAndSwap( $cart->id, $expectedVersion, $lifetime ) ) {
-						$this->refuse( $cart->id );
-					}
-
-					$write( $cart->id );
-
-					return $cart->after( $expectedVersion + 1, $this->linesAfterWrite( $cart->id ) );
-				},
-				RetryPolicy::deadlocks()
-			);
+			$changed = $this->tx->transaction( $change, RetryPolicy::deadlocks() );
 		} catch ( CodedException $refused ) {
 			if ( CartError::VersionStale === $refused->errorCode() ) {
 				$this->refuseAsStale( $refused );
@@ -669,9 +851,55 @@ final class CartService {
 		}
 
 		// The cart now lives $lifetime from this write, and the client keeps its token as long.
-		$this->tokens->issue( $presented['token'], $lifetime );
+		$this->tokens->issue( $token, $lifetime );
 
 		return $changed;
+	}
+
+	/**
+	 * Counts a promotion code tried, against the cart's cap and the client's, and refuses it when either count is past its cap.
+	 *
+	 * Each counter is counted first, and the count its one statement returns, this code included,
+	 * is what is compared. So of codes tried at once only as many as a cap has room for go on to be
+	 * looked at, however their requests interleave; a look at the counts before counting would let
+	 * every one of them through. A code refused for a cap is counted too, which changes nothing: the
+	 * cap stays reached until its window ends.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `store_api.rate_limited` when a count is past its cap.
+	 *
+	 * @param CartToken $token The token of the cart the request's token was found to name.
+	 * @param Actor     $actor Who applies the code.
+	 */
+	private function countCodeTried( CartToken $token, Actor $actor ): void {
+		$counters = array(
+			array( PromotionCodeLimits::perCart(), $this->identities->ofCart( $token ) ),
+			array( PromotionCodeLimits::perClient(), $this->identities->of( $actor->userId() ) ),
+		);
+		$over     = false;
+
+		foreach ( $counters as list( $limit, $identity ) ) {
+			$over = $this->limiter->hit( $limit->bucket(), $identity, $limit->windowSeconds() ) > $limit->limit() || $over;
+		}
+
+		if ( $over ) {
+			CodedException::raise( StoreApiError::RateLimited );
+		}
+	}
+
+	/**
+	 * Returns a code as a customer entered it, the way promotions store their codes: without surrounding spaces, its letters upper-cased.
+	 *
+	 * Only ASCII letters change case; a code is compared exactly as stored otherwise.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $entered The code entered.
+	 * @return string The code to look for.
+	 */
+	private static function enteredCode( string $entered ): string {
+		return strtoupper( trim( $entered ) );
 	}
 
 	/**
@@ -817,7 +1045,7 @@ final class CartService {
 	 * @param Cart|null        $cart        The cart, or null for none.
 	 * @param Calculation|null $calculation Optional. The cart's calculation, when its lines were
 	 *                                      priced already. Default null, work it out now.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The version, 0 for no cart, the lines, the totals and the unpriced lines.
+	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The version, 0 for no cart, the lines, the promotion codes, the totals and the unpriced lines.
 	 */
 	private function priced( ?Cart $cart, ?Calculation $calculation = null ): array {
 		$calculation = $calculation ?? $this->calculate( $cart );
@@ -832,10 +1060,11 @@ final class CartService {
 		}
 
 		return array(
-			'version'        => null === $cart ? 0 : $cart->version,
-			'lines'          => $lines,
-			'totals'         => $calculation->totals->toArray(),
-			'unpriced_lines' => array_map(
+			'version'         => null === $cart ? 0 : $cart->version,
+			'lines'           => $lines,
+			'promotion_codes' => array_map( static fn( string $code ): array => array( 'code' => $code ), null === $cart ? array() : $cart->promotionCodes ),
+			'totals'          => $calculation->totals->toArray(),
+			'unpriced_lines'  => array_map(
 				static fn( UnpricedLine $unpriced ): array => array(
 					'line_identity' => $unpriced->key,
 					'variant_id'    => $unpriced->variantId,

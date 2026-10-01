@@ -13,6 +13,7 @@ namespace SEOCart\Pricing\Domain\Totals;
 
 use SEOCart\Pricing\Domain\AmountBasis;
 use SEOCart\Pricing\Domain\InstantFormat;
+use SEOCart\Pricing\Domain\Source;
 use SEOCart\Support\ConversionContext;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Money;
@@ -25,10 +26,10 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Every figure of one calculation: its lines, its adjustments, their tax components, the summary and the trace.
  *
- * Owns one fact: the totals of a cart or an order, and it is the only place their summary is
- * added up. Anything that shows or stores a total reads it from here and computes nothing: the
- * Store API maps toArray(), and an order copies the lines, adjustments, components, summary and
- * trace into its rows as they are.
+ * Owns one fact: the totals of a cart or an order, and it is the only place their summary, and
+ * the discount of each source, is added up. Anything that shows or stores a total reads it from
+ * here and computes nothing: the Store API maps toArray(), and an order copies the lines,
+ * adjustments, components, summary and trace into its rows as they are.
  *
  * The grand total is the lines, which already include their discounts, plus the adjustments
  * outside a line: shipping, its discount, and fees. It is never negative: discounts are capped
@@ -49,6 +50,15 @@ final readonly class Totals {
 	 * @var TotalsSummary
 	 */
 	public TotalsSummary $summary;
+
+	/**
+	 * The net discount of each source that took something off, keyed by the source, added up with the summary.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<string, SourceDiscount>
+	 */
+	private array $discounts;
 
 	/**
 	 * Holds the result and adds up its summary.
@@ -79,7 +89,32 @@ final readonly class Totals {
 		public array $adjustments,
 		public CalculationTrace $trace
 	) {
-		$this->summary = $this->summarise();
+		$sums = $this->summarise();
+
+		$this->summary   = $sums['summary'];
+		$this->discounts = $sums['discounts'];
+	}
+
+	/**
+	 * Returns the net amount one source took off, such as one promotion, and its base-currency twin; zero when it took nothing off.
+	 *
+	 * The figure is the sum of the taxed net figures of every discount the source made, the
+	 * shares of an amount off the order and a free-shipping discount included, and the base
+	 * figure the sum of their base nets: the same members the summary's discount total adds up,
+	 * so the discounts of all sources add up to it, in both currencies. It is net because a
+	 * source's shares may be authored in different bases: an amount off the order can come to
+	 * 1.20 off a gross-priced line and 1.00 off a net-priced one, and only their nets add up to
+	 * something. Both are signed as every discount is: zero or negative. An order records what
+	 * each promotion gave from here, as its usage's net discount, never by adding adjustments up
+	 * itself.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Source $source The source, such as `promotion:<uuid>`.
+	 * @return SourceDiscount The discount.
+	 */
+	public function discountOf( Source $source ): SourceDiscount {
+		return $this->discounts[ $source->toString() ] ?? $this->noDiscount();
 	}
 
 	/**
@@ -157,7 +192,7 @@ final readonly class Totals {
 	}
 
 	/**
-	 * Adds up the summary figures, in both currencies.
+	 * Adds up the summary figures, in both currencies, and the discount of each source.
 	 *
 	 * Every figure is a sum of taxed net amounts, never of authored ones: an amount authored net
 	 * and one authored gross have no common sum, and a store with gross prices and a net shipping
@@ -166,17 +201,20 @@ final readonly class Totals {
 	 * discounts: the lines' net less the nets of the discounts inside them, which a line's figures
 	 * already include. So the subtotal, discounts, shipping and fees add up to the net, and the net
 	 * and the tax to the grand total. The base figures are the same sums of the same members' base
-	 * nets, so they add up the same way.
+	 * nets, so they add up the same way. A discount also counts toward its source's figure, with
+	 * the same taxed net and base net it adds to the discount total.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return TotalsSummary The summary.
+	 * @return array{summary: TotalsSummary, discounts: array<string, SourceDiscount>} The summary, and the discounts by source.
 	 */
-	private function summarise(): TotalsSummary {
+	private function summarise(): array {
 		$lines     = TaxedMoney::zero( $this->currency );
 		$baseLines = TaxedMoney::zero( $this->baseCurrency );
 		$inLines   = array( Money::zero( $this->currency ), Money::zero( $this->baseCurrency ) );
 		$byType    = array();
+		$bySource  = array();
+		$none      = $this->noDiscount();
 
 		foreach ( AdjustmentType::cases() as $type ) {
 			$byType[ $type->value ] = array( Money::zero( $this->currency ), Money::zero( $this->baseCurrency ) );
@@ -198,6 +236,13 @@ final readonly class Totals {
 				$byType[ $type ][1]->add( $adjustment->base->net() ),
 			);
 
+			if ( AdjustmentType::Discount === $adjustment->adjustment->type ) {
+				$source = $adjustment->source()->toString();
+				$soFar  = $bySource[ $source ] ?? $none;
+
+				$bySource[ $source ] = new SourceDiscount( $soFar->amount->add( $adjustment->amount->net() ), $soFar->base->add( $adjustment->base->net() ) );
+			}
+
 			if ( AdjustmentScope::Line === $adjustment->adjustment->scope ) {
 				$inLines = array( $inLines[0]->add( $adjustment->amount->net() ), $inLines[1]->add( $adjustment->base->net() ) );
 			} else {
@@ -206,7 +251,7 @@ final readonly class Totals {
 			}
 		}
 
-		return new TotalsSummary(
+		$summary = new TotalsSummary(
 			$lines->net()->subtract( $inLines[0] ),
 			AmountBasis::Net->value,
 			$byType[ AdjustmentType::Discount->value ][0],
@@ -223,5 +268,21 @@ final readonly class Totals {
 			$baseTaxed->tax(),
 			$baseTaxed->gross()
 		);
+
+		return array(
+			'summary'   => $summary,
+			'discounts' => $bySource,
+		);
+	}
+
+	/**
+	 * Returns a discount of zero, in both currencies.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return SourceDiscount Nothing taken off.
+	 */
+	private function noDiscount(): SourceDiscount {
+		return new SourceDiscount( Money::zero( $this->currency ), Money::zero( $this->baseCurrency ) );
 	}
 }

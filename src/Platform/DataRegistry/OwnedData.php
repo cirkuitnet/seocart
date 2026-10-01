@@ -40,6 +40,8 @@ use SEOCart\Platform\Secrets\SecretKeysTable;
 use SEOCart\Platform\Settings\Settings;
 use SEOCart\Pricing\Infrastructure\Migrations\CreateRateTables;
 use SEOCart\Pricing\Infrastructure\PricingTables;
+use SEOCart\Promotion\Infrastructure\Migrations\CreatePromotionTables;
+use SEOCart\Promotion\Infrastructure\PromotionTables;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -88,6 +90,7 @@ final class OwnedData {
 			new Contribution( tables: PaymentTables::all(), migrations: array( new CreatePaymentTables() ) ),
 			new Contribution( tables: CheckoutTables::all(), migrations: array( new CreateCheckoutTables() ) ),
 			new Contribution( tables: PricingTables::all(), migrations: array( new CreateRateTables() ) ),
+			new Contribution( tables: PromotionTables::all(), migrations: array( new CreatePromotionTables() ) ),
 		);
 	}
 }

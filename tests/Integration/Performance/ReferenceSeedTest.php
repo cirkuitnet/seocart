@@ -44,7 +44,8 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  * - take the second locales from all three, the site's included: on a site in en_GB a product
  *   gets two posts in en_GB, which the catalog's unique index refuses;
  * - in SeedVerifier::doctor(), leave out the stock check: the list no longer equals the
- *   kernel's.
+ *   kernel's;
+ * - write one promotion's `used` as 1, with no usage row: doctor's promotion check names it.
  *
  * @group performance
  *
@@ -62,7 +63,7 @@ final class ReferenceSeedTest extends DatabaseTestCase {
 	 *
 	 * @var string
 	 */
-	private const SMALL_DIGEST = '2896a96e1f5526d1d28a14fadc2826b25f0aa643a16606a25d740afe40cb6e09';
+	private const SMALL_DIGEST = '545ef5617fb82e87f8467b5c5209778d953fd0f73ce32eccb6b1dbc9af75582e';
 
 	/**
 	 * The seed of the test, once it wrote.
@@ -176,6 +177,7 @@ final class ReferenceSeedTest extends DatabaseTestCase {
 		$this->assertGreaterThan( 0, $rows['stock_holds'] );
 		$this->assertSame( Dataset::Small->carts(), $rows['carts'] );
 		$this->assertGreaterThan( Dataset::Small->carts(), $rows['cart_lines'] );
+		$this->assertSame( Dataset::Small->promotions(), $rows['promotions'] );
 
 		PluginActions::checkIn();
 

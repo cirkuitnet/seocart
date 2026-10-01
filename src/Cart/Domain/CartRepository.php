@@ -87,6 +87,21 @@ interface CartRepository {
 	public function compareAndSwap( int $cartId, int $expectedVersion, int $ttlSeconds ): bool;
 
 	/**
+	 * The compare-and-swap of a change of the promotion codes: as compareAndSwap(), and writes the cart's new list of codes in the same statement.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int      $cartId          The cart.
+	 * @param int      $expectedVersion The version the write was based on, which the list was read at.
+	 * @param int      $ttlSeconds      How long the cart lives from now.
+	 * @param string[] $codes           The codes after the change, in the order they were applied.
+	 * @return bool True when the cart was open, live and at that version; false when it changed nothing.
+	 *
+	 * @phpstan-param list<string> $codes
+	 */
+	public function swapPromotionCodes( int $cartId, int $expectedVersion, int $ttlSeconds, array $codes ): bool;
+
+	/**
 	 * The compare-and-swap of an order placement: as compareAndSwap(), and moves the cart to placing, naming no order until the placement binds its own.
 	 *
 	 * @since 0.1.0

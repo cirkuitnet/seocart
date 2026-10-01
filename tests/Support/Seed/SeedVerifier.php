@@ -47,6 +47,8 @@ use SEOCart\Platform\Localization\SiteLocale;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Pricing\Infrastructure\Doctor\RateVersionCheck;
 use SEOCart\Pricing\Infrastructure\MysqlExchangeRates;
+use SEOCart\Promotion\Infrastructure\Doctor\PromotionUsageCheck;
+use SEOCart\Promotion\Infrastructure\MysqlPromotionRepository;
 use SEOCart\Support\Currency;
 use SEOCart\Support\SystemClock;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
@@ -168,6 +170,7 @@ final class SeedVerifier {
 					throw new \LogicException( 'The seed verifier reports what doctor finds; it never repairs.' );
 				}
 			),
+			new PromotionUsageCheck( new MysqlPromotionRepository( $db ) ),
 			...( new CatalogChecks( $products, $stock, $groups, $settler, new SystemClock(), $db, static fn(): Currency => Currency::of( $baseCurrency ), array( new LockService( $db, LockMode::GetLock ), 'withLock' ) ) )->checks()
 		);
 	}

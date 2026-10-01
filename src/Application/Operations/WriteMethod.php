@@ -45,4 +45,14 @@ enum WriteMethod: string {
 	 * @since 0.1.0
 	 */
 	case Put = 'PUT';
+
+	/**
+	 * Removes something from a resource.
+	 *
+	 * A DELETE request has no body whose meaning HTTP defines, and a proxy may drop one, so the
+	 * route's other input arrives in the query string: the OpenAPI document lists it there.
+	 *
+	 * @since 0.1.0
+	 */
+	case Delete = 'DELETE';
 }

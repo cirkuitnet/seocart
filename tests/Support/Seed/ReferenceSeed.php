@@ -29,6 +29,7 @@ use SEOCart\Platform\Logging\LogsTable;
 use SEOCart\Platform\RateLimiter\RateCountersTable;
 use SEOCart\Platform\Secrets\SecretKeysTable;
 use SEOCart\Pricing\Infrastructure\PricingTables;
+use SEOCart\Promotion\Infrastructure\PromotionTables;
 
 /**
  * Generates a reference dataset and writes it with multi-row INSERTs.
@@ -50,6 +51,11 @@ use SEOCart\Pricing\Infrastructure\PricingTables;
  * seeded variants and one to five units each, its counts matching its lines. Four in five are
  * live, written within the last six days; the others expired up to three days ago, as the sweep
  * finds them.
+ *
+ * Then the Dataset's promotions, drawn after the carts: single-use codes (promotionCode()), each
+ * active, with a usage limit of one and no use yet, so doctor finds every count right. Most take a
+ * percentage off; one in five takes a fixed amount off in the base currency, and one in ten gives
+ * free shipping. A quarter ended within the last thirty days; the others end within ninety.
  *
  * The rows are deterministic: they come from one fixed RNG seed and one anchor instant, so the
  * same seed and anchor give the same bytes on every machine. write() anchors on the database's
@@ -105,6 +111,7 @@ final class ReferenceSeed {
 		InventoryTables::HOLDS,
 		CartTables::CARTS,
 		CartTables::LINES,
+		PromotionTables::PROMOTIONS,
 	);
 
 	/**
@@ -299,6 +306,8 @@ final class ReferenceSeed {
 			RateCountersTable::NAME              => 'It counts the requests of clients in their current windows; a store at rest has none, and a counter is read by its primary key only.',
 			CheckoutTables::SESSIONS             => 'A session exists only for a cart a shopper is checking out, and it is read by its cart, through its unique key.',
 			CheckoutTables::IDEMPOTENCY_KEYS     => 'Only an order placement claims a key, and there are no orders yet. A claim finds a key by its unique key, but doctor\'s search for stranded keys reads the whole table, so the query-plan run writes keys of its own to judge it.',
+			PromotionTables::CONDITIONS          => 'No condition is evaluated yet, so none is seeded.',
+			PromotionTables::USAGE               => 'Only an order uses a promotion, and there are no orders yet.',
 		) + array_fill_keys( OrderTables::names(), 'The dataset has no orders yet: placing orders is a workload of its own.' )
 			+ array_fill_keys( PaymentTables::names(), 'A payment is made for an order, and the dataset has no orders yet.' )
 			+ array_fill_keys( PricingTables::names(), 'The dataset sells in its base currency only; a store has a few dozen currencies and rates at most, read by their keys.' );
@@ -485,11 +494,33 @@ final class ReferenceSeed {
 			}
 		}
 
+		for ( $promotion = 1, $promotions = $this->dataset->promotions(); $promotion <= $promotions; $promotion++ ) {
+			$buffers[ PromotionTables::PROMOTIONS ][] = $this->promotion( $random, $promotion, $anchor );
+
+			if ( count( $buffers[ PromotionTables::PROMOTIONS ] ) >= self::CHUNK ) {
+				yield array( PromotionTables::PROMOTIONS, $buffers[ PromotionTables::PROMOTIONS ] );
+
+				$buffers[ PromotionTables::PROMOTIONS ] = array();
+			}
+		}
+
 		foreach ( $buffers as $table => $rows ) {
 			if ( array() !== $rows ) {
 				yield array( $table, $rows );
 			}
 		}
+	}
+
+	/**
+	 * Returns the code of a seeded promotion.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $promotion The promotion's id, from 1.
+	 * @return string The code, such as `ONCE-000001`.
+	 */
+	public static function promotionCode( int $promotion ): string {
+		return sprintf( 'ONCE-%06d', $promotion );
 	}
 
 	/**
@@ -578,6 +609,44 @@ final class ReferenceSeed {
 			'expires_at'          => gmdate( 'Y-m-d H:i:s', $written + self::CART_SECONDS ),
 			'created_at'          => gmdate( 'Y-m-d H:i:s', $written - 600 ) . '.000000',
 			'updated_at'          => gmdate( 'Y-m-d H:i:s', $written ) . '.000000',
+		);
+	}
+
+	/**
+	 * Draws one promotion's row: a single-use code, unused, with its effect and its end.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param \Random\Randomizer $random    The RNG.
+	 * @param int                $promotion The promotion's id.
+	 * @param int                $anchor    The anchor instant, a Unix timestamp.
+	 * @return array<string, int|string|null> The row.
+	 */
+	private function promotion( \Random\Randomizer $random, int $promotion, int $anchor ): array {
+		$kind    = $random->getInt( 0, 9 );
+		$fixed   = $kind < 2;
+		$percent = $kind > 2;
+		$ends    = 0 === $random->getInt( 0, 3 ) ? $anchor - $random->getInt( 1, 30 ) * 86400 : $anchor + $random->getInt( 1, 90 ) * 86400;
+		$created = gmdate( 'Y-m-d H:i:s', $anchor - 120 * 86400 + $promotion ) . '.000000';
+
+		return array(
+			'id'                          => $promotion,
+			'uuid'                        => self::uuid( $random ),
+			'code'                        => self::promotionCode( $promotion ),
+			'trigger_kind'                => 'code',
+			'status'                      => 'active',
+			'effect_kind'                 => $fixed ? 'fixed' : ( $percent ? 'percent' : 'free_shipping' ),
+			'effect_percent_micropercent' => $percent ? 5000000 * $random->getInt( 1, 4 ) : null,
+			'effect_amount_minor'         => $fixed ? 100 * $random->getInt( 5, 20 ) : null,
+			'effect_currency'             => $fixed ? $this->baseCurrency : null,
+			'effect_amount_basis'         => $fixed ? 'net' : null,
+			'starts_at'                   => null,
+			'ends_at'                     => gmdate( 'Y-m-d H:i:s', $ends ),
+			'usage_limit'                 => 1,
+			'used'                        => 0,
+			'priority'                    => 10,
+			'created_at'                  => $created,
+			'updated_at'                  => $created,
 		);
 	}
 

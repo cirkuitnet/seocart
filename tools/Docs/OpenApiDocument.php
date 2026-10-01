@@ -26,8 +26,8 @@ use SEOCart\Support\Schema\JsonSchemaCompiler;
  * This generator owns docs/openapi.json whole, and is the one call site of the compiler's
  * OpenAPI dialect. For each operation with a REST route it writes:
  *
- * - the route's parameters from the input fields the route names, and, for GET, every other input
- *   as a query parameter — otherwise a JSON request body of the other inputs;
+ * - the route's parameters from the input fields the route names, and, for GET and DELETE, every
+ *   other input as a query parameter — otherwise a JSON request body of the other inputs;
  * - the success response, which refers to the operation's resource schema;
  * - one error response per status: the validation and permission failures every route has, and
  *   each code the operation declares, with its English message — or, for an internal code, the
@@ -282,10 +282,11 @@ final class OpenApiDocument implements Generator {
 			}
 		}
 
-		$is_get     = 'GET' === $definition->httpMethod();
+		// A GET has no body, and a DELETE none whose meaning HTTP defines: their other inputs are query parameters.
+		$in_query   = in_array( $definition->httpMethod(), array( 'GET', 'DELETE' ), true );
 		$parameters = self::parameters( $in_path, 'path' );
 
-		if ( $is_get ) {
+		if ( $in_query ) {
 			$parameters = array_merge( $parameters, self::parameters( $in_request, 'query' ) );
 		}
 
@@ -299,7 +300,7 @@ final class OpenApiDocument implements Generator {
 			$operation['parameters'] = $parameters;
 		}
 
-		if ( ! $is_get && array() !== $in_request ) {
+		if ( ! $in_query && array() !== $in_request ) {
 			$operation['requestBody'] = array(
 				'required' => array() !== array_filter( $in_request, static fn( FieldSpec $field ): bool => $field->isRequired() ),
 				'content'  => array(

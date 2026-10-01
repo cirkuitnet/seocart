@@ -19,7 +19,7 @@ use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Application\Operations\WriteMethod;
-use SEOCart\Cart\Interfaces\StoreApi\StoreApiError;
+use SEOCart\Cart\Application\StoreApiError;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
 use SEOCart\Platform\Database\DatabaseError;
 use SEOCart\Platform\Rest\ErrorShape;
@@ -478,6 +478,27 @@ final class OpenApiDocumentTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a DELETE is documented with its other inputs as query parameters, and no request body.
+	 *
+	 * Planted violation: in OpenApiDocument::operation(), take only a GET's other inputs in the
+	 * query: the DELETE then documents a JSON body, which a proxy may drop, and no query parameter.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_delete_takes_its_other_inputs_in_the_query(): void {
+		$registry = new OperationRegistry();
+		$registry->add( 'fixture_stock.remove_stock', array( self::class, 'removalDefinition' ) );
+
+		$operation = self::decode( ( new OpenApiDocument( $registry, self::fixtureErrors() ) )->generate( '' )->content )['paths']['/fixture-stock/{item_id}']['delete'];
+
+		$this->assertArrayNotHasKey( 'requestBody', $operation, 'A DELETE carries no body whose meaning HTTP defines.' );
+		$this->assertSame(
+			array( array( 'item_id', 'path', true ), array( 'history', 'query', false ) ),
+			array_map( static fn( array $parameter ): array => array( $parameter['name'], $parameter['in'], $parameter['required'] ), $operation['parameters'] ?? array() )
+		);
+	}
+
+	/**
 	 * Tests that two different resources under one name fail the run instead of one hiding the other.
 	 *
 	 * @since 0.1.0
@@ -617,6 +638,31 @@ final class OpenApiDocumentTest extends TestCase {
 			annotations: new Annotations( read_only: true, destructive: false, idempotent: true ),
 			service: $fixture->service(),
 			rest: new RestBinding( '/fixture-stock/{item_id}' )
+		);
+	}
+
+	/**
+	 * Declares a removal of the fixture's stock level, served by DELETE, with the read-only variant's inputs.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function removalDefinition(): OperationDefinition {
+		$read = self::readOnlyDefinition();
+
+		return new OperationDefinition(
+			id: 'fixture_stock.remove_stock',
+			label: $read->label(),
+			summary: 'Removes the stock level of one fixture item.',
+			input: $read->input(),
+			output: $read->output(),
+			capability: 'seocart_manage_inventory',
+			resource_field: null,
+			errors: array(),
+			annotations: new Annotations( read_only: false, destructive: true, idempotent: true ),
+			service: $read->service(),
+			rest: new RestBinding( '/fixture-stock/{item_id}', WriteMethod::Delete )
 		);
 	}
 

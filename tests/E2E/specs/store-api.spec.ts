@@ -28,6 +28,14 @@
  * cookie again; its answer carries a guest's shipping address as an object without its fields,
  * which are personal data; a replay of it is refused as stale. With no line priced, the totals
  * charge no shipping.
+ *
+ * Promotion codes: a code no promotion has is refused with `promotion.code_invalid` and changes
+ * nothing. A code is applied with a POST, as the customer typed it, and removed with a DELETE
+ * that names it in the path and carries the cart version in the query string; each moves the
+ * version on and gets the cart cookie again, and a replayed removal is refused as stale. Nothing
+ * creates a promotion through the Store API, so the code to apply needs one planted on the site
+ * under test first, named in SEOCART_E2E_CODE: an active code with no usage limit and no fixed
+ * amount, so it applies to any cart. Without it that test is skipped, and the refusal still runs.
  */
 
 import type { APIRequestContext, APIResponse } from '@playwright/test';
@@ -94,6 +102,9 @@ const PLANTED_ORDER = ( () => {
 	return '' !== uuid && '' !== key ? { uuid, key } : null;
 } )();
 
+/** The promotion code planted on the site under test, if any: SEOCART_E2E_CODE names it. */
+const PLANTED_CODE = ( process.env.SEOCART_E2E_CODE ?? '' ).trim();
+
 /** Returns the site's home URL, with its trailing slash. */
 function home(): string {
 	return String( siteBaseURL() ).replace( /\/?$/, '/' );
@@ -125,6 +136,44 @@ function orderUrl( uuid: string, key?: string ): string {
 	}
 
 	return url.toString();
+}
+
+/**
+ * Returns the URL of the removal of a cart's promotion code: the code in the path, the cart version in the query string.
+ *
+ * @param code    The code.
+ * @param version The cart version the removal is based on.
+ */
+function codeUrl( code: string, version: number ): string {
+	const url = new URL(
+		restUrl(
+			`/${ STORE_NAMESPACE }/cart/codes/${ encodeURIComponent( code ) }`
+		)
+	);
+
+	url.searchParams.set( 'cart_version', String( version ) );
+
+	return url.toString();
+}
+
+/**
+ * Starts a guest's cart with one line of a variant no product has, and returns its cookie.
+ *
+ * @param guest The guest's request context, which keeps the cookie as a browser does.
+ */
+async function startCart( guest: APIRequestContext ): Promise< string > {
+	const started = await guest.post(
+		restUrl( `/${ STORE_NAMESPACE }/cart/lines` ),
+		{
+			headers: STORE_HEADER,
+			data: { lines: [ { variant_id: UNKNOWN_VARIANT, quantity: 1 } ] },
+		}
+	);
+
+	expect( started.status() ).toBe( 200 );
+	expect( ( await started.json() ).version ).toBe( 1 );
+
+	return cookiePair( setCookies( started )[ 0 ] );
 }
 
 /**
@@ -389,6 +438,87 @@ test.describe( 'Store API, as a guest', () => {
 		const replay = await guest.put(
 			restUrl( `/${ STORE_NAMESPACE }/checkout` ),
 			{ headers: STORE_HEADER, data: details }
+		);
+
+		expect( replay.status() ).toBe( 409 );
+		expect( ( await replay.json() ).code ).toBe( 'cart.version_stale' );
+	} );
+
+	test( 'a code no promotion has is refused, sets no cookie and changes nothing', async () => {
+		await startCart( guest );
+
+		const refused = await guest.post(
+			restUrl( `/${ STORE_NAMESPACE }/cart/codes` ),
+			{
+				headers: STORE_HEADER,
+				data: { code: 'E2E-NO-SUCH-CODE', cart_version: 1 },
+			}
+		);
+
+		expect( refused.status() ).toBe( 400 );
+		expect( refused.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+		expect( setCookies( refused ), 'A refused code set a cookie.' ).toEqual(
+			[]
+		);
+
+		const body = await refused.json();
+
+		expect( body.code ).toBe( 'promotion.code_invalid' );
+		expect( body.message ).toBe( 'That code cannot be applied.' );
+
+		const cart = await (
+			await guest.get( restUrl( `/${ STORE_NAMESPACE }/cart` ) )
+		).json();
+
+		expect( cart.version, 'The refused code changed the cart.' ).toBe( 1 );
+		expect( cart.promotion_codes ).toEqual( [] );
+	} );
+
+	test( 'a guest applies a promotion code as typed, and removes it through its path', async () => {
+		test.skip(
+			'' === PLANTED_CODE,
+			'Plant an active promotion code with no usage limit and no fixed amount on the site under test and name it in SEOCART_E2E_CODE.'
+		);
+
+		const cookie = await startCart( guest );
+		const applied = await guest.post(
+			restUrl( `/${ STORE_NAMESPACE }/cart/codes` ),
+			{
+				headers: STORE_HEADER,
+				data: {
+					code: ` ${ PLANTED_CODE.toLowerCase() } `,
+					cart_version: 1,
+				},
+			}
+		);
+
+		expect( applied.status() ).toBe( 200 );
+		expect( applied.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+		expect( setCookies( applied ).map( cookiePair ) ).toEqual( [ cookie ] );
+
+		const withCode = await applied.json();
+
+		expect( withCode.version ).toBe( 2 );
+		expect( withCode.promotion_codes ).toEqual( [
+			{ code: PLANTED_CODE.toUpperCase() },
+		] );
+
+		const removed = await guest.delete(
+			codeUrl( PLANTED_CODE.toLowerCase(), 2 ),
+			{ headers: STORE_HEADER }
+		);
+
+		expect( removed.status() ).toBe( 200 );
+		expect( setCookies( removed ).map( cookiePair ) ).toEqual( [ cookie ] );
+
+		const withoutCode = await removed.json();
+
+		expect( withoutCode.version ).toBe( 3 );
+		expect( withoutCode.promotion_codes ).toEqual( [] );
+
+		const replay = await guest.delete(
+			codeUrl( PLANTED_CODE.toLowerCase(), 2 ),
+			{ headers: STORE_HEADER }
 		);
 
 		expect( replay.status() ).toBe( 409 );

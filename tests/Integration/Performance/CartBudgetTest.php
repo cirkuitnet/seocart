@@ -30,7 +30,8 @@ use SEOCart\Tests\Support\QueryLog;
  *
  * - reading a three-line cart costs at most 6 queries, one of them the read of its checkout
  *   session, which gives its totals their destination, and its answer at most 8 KB;
- * - an add-lines write on Reference Cart B costs at most 20 queries;
+ * - an add-lines write on Reference Cart B, with its two promotion codes, costs at most 20 queries,
+ *   and so does applying each of the codes;
  * - adding lines writes them in one statement, whatever their number;
  * - reading Reference Cart B in another currency, with prices both authored in it and converted
  *   into it, costs at most 2 queries more than reading it in the base currency: the currency's
@@ -149,9 +150,10 @@ final class CartBudgetTest extends CartTestCase {
 	}
 
 	/**
-	 * Tests that an add-lines write on Reference Cart B stays within its budget, and measures Cart A.
+	 * Tests that an add-lines write on Reference Cart B, with its two promotion codes, stays within its budget, and measures applying a code and Cart A.
 	 *
-	 * The write adds a unit to one of the cart's lines, so the cart keeps Cart B's shape.
+	 * The write adds a unit to one of the cart's lines, so the cart keeps Cart B's shape. Applying
+	 * each of Cart B's codes is a cart write too, held to the same budget.
 	 *
 	 * @since 0.1.0
 	 */
@@ -178,17 +180,42 @@ final class CartBudgetTest extends CartTestCase {
 
 		$this->presentCookie( $this->cookies[ count( $this->cookies ) - 1 ]['value'] );
 
-		$write = $this->measure( 'POST', CartOperations::LINES_ROUTE, self::linesBody( array( $cartB[0] => 1 ), 1 ) );
+		$version = 1;
+		$applied = array();
+
+		foreach ( ReferenceCarts::CART_B_CODES as $code => $columns ) {
+			$this->plantPromotion( $code, $columns );
+
+			$applied[] = $this->measure(
+				'POST',
+				CartOperations::CODES_ROUTE,
+				array(
+					'code'         => $code,
+					'cart_version' => $version++,
+				)
+			);
+		}
+
+		$write = $this->measure( 'POST', CartOperations::LINES_ROUTE, self::linesBody( array( $cartB[0] => 1 ), $version ) );
 		$read  = $this->measure( 'GET', CartOperations::CART_ROUTE );
 
 		$this->assertSame( array(), $write['body']['unpriced_lines'] );
 		$this->assertCount( ReferenceCarts::CART_B_VARIANTS, $write['body']['totals']['lines'] );
+		$this->assertSame( array_keys( ReferenceCarts::CART_B_CODES ), array_column( $write['body']['promotion_codes'], 'code' ) );
+		$this->assertLessThan( 0, $write['body']['totals']['summary']['discount_total_minor'], 'Cart B\'s 10 % code took nothing off.' );
 		$this->assertQueryCountAtMost( self::WRITE_BUDGET, $write['log'], 'An add-lines write on Cart B' );
+
+		foreach ( $applied as $apply ) {
+			$this->assertQueryCountAtMost( self::WRITE_BUDGET, $apply['log'], 'Applying a code to Cart B' );
+		}
 
 		self::report(
 			sprintf(
-				"G7, an add-lines write on Cart B: %d queries (budget %d), the transaction's four statements included.\nCart B: started in %d queries; read in %d queries and %d bytes.\nCart A: started in %d queries; an add-lines write in %d; read in %d queries and %d bytes.",
+				"G7, an add-lines write on Cart B with its two codes: %d queries (budget %d), the transaction's four statements included.\nApplying Cart B's codes: %d and %d queries (budget %d).\nCart B: started in %d queries; read in %d queries and %d bytes.\nCart A: started in %d queries; an add-lines write in %d; read in %d queries and %d bytes.",
 				$write['log']->count(),
+				self::WRITE_BUDGET,
+				$applied[0]['log']->count(),
+				$applied[1]['log']->count(),
 				self::WRITE_BUDGET,
 				$bStart['log']->count(),
 				$read['log']->count(),

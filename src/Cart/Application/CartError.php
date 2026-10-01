@@ -64,6 +64,13 @@ enum CartError: string implements ErrorCode {
 	case TooManyLines = 'cart.too_many_lines';
 
 	/**
+	 * The cart holds as many promotion codes as a cart may, so another cannot be applied.
+	 *
+	 * @since 0.1.0
+	 */
+	case TooManyCodes = 'cart.too_many_codes';
+
+	/**
 	 * The client has started as many carts as it may in a day.
 	 *
 	 * @since 0.1.0
@@ -116,6 +123,14 @@ enum CartError: string implements ErrorCode {
 					/* translators: %1$s: The most lines a cart may hold. */
 					__( 'A cart holds at most %1$s lines, so these lines were not added. Remove a line, or place an order and start a new cart.', 'seocart' ),
 				array( 'max_lines' )
+			),
+			new ErrorDefinition(
+				self::TooManyCodes,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: The most promotion codes a cart may hold. */
+					__( 'A cart holds at most %1$s promotion codes, so this code was not applied. Remove a code to apply another.', 'seocart' ),
+				array( 'max_codes' )
 			),
 			new ErrorDefinition(
 				self::CreationLimited,

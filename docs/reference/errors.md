@@ -44,6 +44,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.
 - Values: `status`
 
+## `cart.too_many_codes`
+
+- HTTP status: 409
+- Message: A cart holds at most {max_codes} promotion codes, so this code was not applied. Remove a code to apply another.
+- Values: `max_codes`
+
 ## `cart.too_many_lines`
 
 - HTTP status: 409
@@ -295,6 +301,25 @@ An internal error carries a generic message and empty details: it is a code mark
 - Internal: a client receives the code, the status, a generic message and the correlation id. This message and its values go to the site's error log only.
 - Message: A total could not be worked out, because the provider {provider} did not answer or left out a tax class the cart needs.
 - Values: `provider`
+
+## `promotion.code_invalid`
+
+- HTTP status: 400
+- Message: That code cannot be applied.
+- Values: none
+
+## `promotion.limit_reached`
+
+- HTTP status: 409
+- Message: That code can no longer be used. Remove it to go on.
+- Values: none
+
+## `promotion.usage_corrupt`
+
+- HTTP status: 500
+- Internal: a client receives the code, the status, a generic message and the correlation id. This message and its values go to the site's error log only.
+- Message: The use count of promotion {promotion_id} does not match its usage records, so a use could not be given back. A person must correct it.
+- Values: `promotion_id`
 
 ## `secrets.encryption_key_invalid`
 

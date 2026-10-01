@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Cart\Interfaces\StoreApi;
 
 use SEOCart\Application\Operations\PublicWrite;
+use SEOCart\Cart\Application\StoreApiError;
 use SEOCart\Interfaces\Operations\ErrorTranslator;
 use SEOCart\Interfaces\Operations\PublicWrites;
 use SEOCart\Platform\RateLimiter\ClientIdentities;

@@ -36,10 +36,12 @@ use SEOCart\Pricing\Application\Calculator;
 use SEOCart\Pricing\Application\PriceResolver;
 use SEOCart\Pricing\Application\TaxQuoter;
 use SEOCart\Pricing\Domain\AmountBasis;
-use SEOCart\Pricing\Domain\NoPromotions;
 use SEOCart\Pricing\Infrastructure\MysqlPresentmentCurrencies;
 use SEOCart\Pricing\Infrastructure\Quotes\FixedRateTaxQuoter;
 use SEOCart\Pricing\Infrastructure\Quotes\FlatRateShippingQuoter;
+use SEOCart\Promotion\Application\PromotionResolver;
+use SEOCart\Promotion\Domain\Evaluator;
+use SEOCart\Promotion\Infrastructure\MysqlPromotionRepository;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Decimal;
 use SEOCart\Support\Locale;
@@ -50,22 +52,24 @@ use SEOCart\Tax\Domain\TaxRoundingMode;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\Doubles\FakeCartTokens;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
+use SEOCart\Tests\Support\Promotion\PlantsPromotions;
 use SEOCart\Tests\Support\SecondConnection;
 use SEOCart\Tests\Support\SecondDatabase;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- The base plants cart rows directly and reads them back through a second connection.
 
 /**
- * A DatabaseTestCase with the cart, catalog and rate-counter tables, and the cart service wired as the kernel wires it.
+ * A DatabaseTestCase with the cart, catalog, promotion and rate-counter tables, and the cart service wired as the kernel wires it.
  *
  * Owns one fact: how a cart test gets real tables, a service over them, and a second runner.
  * The tables are created by their own migrations in set_up() and dropped by the base
  * tear_down(), and every test takes fresh variant ids from a counter, so a test passes alone, in
  * any order and any number of times. The service counts new carts with the table rate limiter,
  * for one client at a documentation address, and its token seam is a FakeCartTokens the test
- * presents tokens through. It prices with the real calculator over the catalog's price table and
- * the two stub quoters, as the kernel does; a variant has a price only once a test gives it one,
- * so a line of any other variant is reported unpriced.
+ * presents tokens through. It prices with the real calculator over the catalog's price table, the
+ * two stub quoters and the stored promotions, as the kernel does; a variant has a price only once a
+ * test gives it one, so a line of any other variant is reported unpriced, and a promotion exists
+ * only once a test plants one (PlantsPromotions).
  *
  * No test reads a clock: a cart's expiry is set and compared by the database clock alone.
  *
@@ -76,6 +80,8 @@ use SEOCart\Tests\Support\SecondDatabase;
  * @since 0.1.0
  */
 abstract class CartTestCase extends DatabaseTestCase {
+
+	use PlantsPromotions;
 
 	/**
 	 * The currency every new cart is in.
@@ -181,6 +187,7 @@ abstract class CartTestCase extends DatabaseTestCase {
 		( new CreateCatalogTables() )->up( $operations );
 		( new CreateCartTables() )->up( $operations );
 		( new CreateCheckoutTables() )->up( $operations );
+		$this->createPromotionTables();
 
 		$this->identities = new ClientIdentities( new TrustedClientIp( array( 'REMOTE_ADDR' => '192.0.2.10' ) ), static fn(): string => 'cart tests' );
 		$this->repository = new MysqlCartRepository( $this->db );
@@ -223,7 +230,8 @@ abstract class CartTestCase extends DatabaseTestCase {
 			$this->deliveryOver( $db ),
 			static fn(): Currency => Currency::of( self::CURRENCY ),
 			static fn(): Locale => Locale::of( self::LOCALE ),
-			$calculator ?? self::calculatorOver( $db )
+			$calculator ?? self::calculatorOver( $db ),
+			self::promotionsOver( $db )
 		);
 	}
 
@@ -242,7 +250,7 @@ abstract class CartTestCase extends DatabaseTestCase {
 	}
 
 	/**
-	 * Builds the calculator over a connection, as the kernel builds it: the catalog's prices, the two stub quoters, no promotions, the default tax settings, and no rate version saved.
+	 * Builds the calculator over a connection, as the kernel builds it: the catalog's prices, the two stub quoters, the stored promotions, the default tax settings, and no rate version saved.
 	 *
 	 * @since 0.1.0
 	 *
@@ -257,14 +265,27 @@ abstract class CartTestCase extends DatabaseTestCase {
 			new PriceResolver( new MysqlProductRepository( $db, $base ) ),
 			new FlatRateShippingQuoter( new SequentialIdGenerator( 1 ), Decimal::of( FlatRateShippingQuoter::RATE ), AmountBasis::Net, FlatRateShippingQuoter::TAX_CLASS ),
 			$tax ?? new FixedRateTaxQuoter( Percentage::fromString( FixedRateTaxQuoter::RATE ), FixedRateTaxQuoter::JURISDICTION ),
-			new NoPromotions(),
+			new Evaluator(),
 			$db,
 			new SystemClock(),
 			$base,
 			static fn(): CrossZonePolicy => CrossZonePolicy::FixedNet,
 			static fn(): TaxRoundingMode => TaxRoundingMode::PerLine,
-			new MysqlPresentmentCurrencies( $db, static fn(): ?int => null )
+			new MysqlPresentmentCurrencies( $db, static fn(): ?int => null ),
+			self::promotionsOver( $db )
 		);
+	}
+
+	/**
+	 * Builds the promotion resolver over a connection, as the kernel builds it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Database $db The connection.
+	 * @return PromotionResolver The resolver.
+	 */
+	protected static function promotionsOver( Database $db ): PromotionResolver {
+		return new PromotionResolver( new MysqlPromotionRepository( $db ), new SystemClock() );
 	}
 
 	/**
@@ -310,8 +331,8 @@ abstract class CartTestCase extends DatabaseTestCase {
 	 * @param string               $message Optional. What is being checked. Default empty.
 	 */
 	protected function assertEmptyCart( array $answer, string $message = '' ): void {
-		$this->assertSame( array( 'version', 'lines', 'totals', 'unpriced_lines' ), array_keys( $answer ), $message );
-		$this->assertSame( array( 0, array(), array() ), array( $answer['version'], $answer['lines'], $answer['unpriced_lines'] ), $message );
+		$this->assertSame( array( 'version', 'lines', 'promotion_codes', 'totals', 'unpriced_lines' ), array_keys( $answer ), $message );
+		$this->assertSame( array( 0, array(), array(), array() ), array( $answer['version'], $answer['lines'], $answer['promotion_codes'], $answer['unpriced_lines'] ), $message );
 		$this->assertSame( array( self::CURRENCY, array(), array(), 0, 0 ), array( $answer['totals']['currency'], $answer['totals']['lines'], $answer['totals']['adjustments'], $answer['totals']['summary']['grand_minor'], $answer['totals']['amount_due_minor'] ), $message );
 	}
 

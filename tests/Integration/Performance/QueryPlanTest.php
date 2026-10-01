@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Performance;
 
+use SEOCart\Cart\Domain\Cart;
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Cart\Infrastructure\MysqlCartRepository;
 use SEOCart\Catalog\Application\Query\Sellability;
@@ -32,6 +33,10 @@ use SEOCart\Platform\RateLimiter\ClientIdentity;
 use SEOCart\Platform\RateLimiter\TableRateLimiter;
 use SEOCart\Platform\Settings\InternationalSettings;
 use SEOCart\Platform\Settings\SettingsStore;
+use SEOCart\Promotion\Application\PromotionUsage;
+use SEOCart\Promotion\Infrastructure\Doctor\PromotionUsageCheck;
+use SEOCart\Promotion\Infrastructure\MysqlPromotionRepository;
+use SEOCart\Promotion\Infrastructure\PromotionTables;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Locale;
@@ -56,17 +61,19 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  * keys; the run writes keys of its own, all placed, enough that doctor's search of them is judged. The store must then be sound: doctor passes
  * and every seeded variant may be sold (SeedVerifier). Then the plugin's reads run over a
  * PlanRecorder: the catalog's lookups by post, by source post and by variant, its sellability
- * query in a locale and without one, the price read of a calculation, the reads of its write path, the locking reads of a trash
+ * query in a locale and without one, the price read of a calculation, the promotions of a
+ * calculation's codes, the reads of its write path, the locking reads of a trash
  * and a delete, and the reads of a change of a product's posts, and every read of the stock
  * repository, doctor's
  * projection checks and the sweep's search for expired holds included; the cart's reads by
  * token, its lines, the locking read that classifies a refused write, and the sweep's search for
- * expired carts; the reads that must run in a transaction, and the write path, run in one that
- * is rolled back. Each plugin SELECT they
+ * expired carts; the lock of an order's promotion uses that a release takes; the reads that must
+ * run in a transaction, and the write path, run in one that is rolled back. Each plugin SELECT they
  * sent is explained once per query and IN-list length, and judged by QueryPlan's rule. The run
  * prints every plan, and fails on a plan that breaks the rule unless its query is on the
  * allow-list (AllowList); on an allow-list entry that names no query of the run, or a query
- * that keeps the rule; and, for the catalog, the inventory, the rate limiter and the cart, on a SELECT
+ * that keeps the rule; and, for the catalog, the inventory, the rate limiter, the cart, the
+ * checkout and promotions, on a SELECT
  * their source writes that the run did not send, or a SELECT of their tables their source does
  * not write (ReadInventory), so that no read goes unjudged.
  *
@@ -251,6 +258,8 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$this->assertGreaterThanOrEqual( QueryPlan::LARGE_TABLE, self::$written['rows'][ InventoryTables::HOLDS ], 'The holds are too few for the search of the sweep to be judged.' );
 		$this->assertSame( Dataset::Medium->carts(), self::$written['rows'][ CartTables::CARTS ] );
 		$this->assertGreaterThanOrEqual( QueryPlan::LARGE_TABLE, self::$written['rows'][ CartTables::LINES ], 'The cart lines are too few for their reads to be judged.' );
+		$this->assertSame( Dataset::Medium->promotions(), self::$written['rows'][ PromotionTables::PROMOTIONS ] );
+		$this->assertGreaterThanOrEqual( QueryPlan::LARGE_TABLE, self::$written['rows'][ PromotionTables::PROMOTIONS ], 'The promotions are too few for their reads to be judged.' );
 		$this->assertLessThanOrEqual( self::SEED_SECONDS, self::$written['seconds'], sprintf( 'Seeding the medium dataset took %.1f seconds, more than its %d.', self::$written['seconds'], self::SEED_SECONDS ) );
 	}
 
@@ -329,7 +338,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		fwrite( STDOUT, sprintf( "\nThe plans of the %d plugin SELECTs of the run, one per query and IN-list length:\n%s\n", count( $sent ), implode( "\n", $report ) ) );
 
-		$this->assertSame( array(), $this->inventoryGaps( $recorder->allSent() ), 'The run and the reads the catalog\'s, the inventory\'s, the rate limiter\'s, the cart\'s and the checkout\'s source write differ. Send each read in exercise(), so its plan is judged; a read of their tables belongs in their source.' );
+		$this->assertSame( array(), $this->inventoryGaps( $recorder->allSent() ), 'The run and the reads the catalog\'s, the inventory\'s, the rate limiter\'s, the cart\'s, the checkout\'s and the promotions\' source write differ. Send each read in exercise(), so its plan is judged; a read of their tables belongs in their source.' );
 		$this->assertSame( array(), $breaking, sprintf( "These plugin SELECTs break the query-plan rule (a full scan of, or more than %d rows examined in, a table of %d rows or more). Fix the query, or add the index it needs with a migration, or put it on %s with the reason its plan is accepted:\n%s\n", QueryPlan::MOST_ROWS, QueryPlan::LARGE_TABLE, AllowList::FILE, implode( "\n", $breaking ) ) );
 		$this->assertSame( array(), array_keys( $stale ), sprintf( 'These entries of %s name no query of the run that breaks the rule; the query changed or was fixed, so remove them.', AllowList::FILE ) );
 	}
@@ -404,11 +413,24 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		$keys = new MysqlIdempotencyKeys( $db );
 
+		// The promotion read: for the one code a shopper applies, and for a calculation of a cart
+		// holding as many codes as a cart may. Doctor's check of the use counts runs with doctor below.
+		$promotions = new MysqlPromotionRepository( $db );
+		$seeded     = Dataset::Medium->promotions();
+
+		$promotions->findByCodes( array( ReferenceSeed::promotionCode( intdiv( $seeded, 2 ) ) ) );
+		$promotions->findByCodes( array_map( static fn( int $promotion ): string => ReferenceSeed::promotionCode( $promotion ), range( $seeded - Cart::MAX_CODES + 1, $seeded ) ) );
+
+		// Doctor's promotion check walks every promotion a page at a time from the first, as the
+		// stock check's walk above does: a page part-way through is sent first, so the plan judged is
+		// a page's. EXPLAIN's estimate of a range on the primary key leaves the page's LIMIT out.
+		$promotions->usageCounts( $seeded - 1000, PromotionUsageCheck::PAGE );
+
 		$rollBack = new \RuntimeException( 'Rolled back on purpose: the reads that lock run in a transaction that changes nothing.' );
 
 		try {
 			$db->transaction(
-				function () use ( $products, $stock, $expired, $carts, $someCart, $keys, $rollBack ): void {
+				function () use ( $db, $products, $stock, $promotions, $expired, $carts, $someCart, $keys, $rollBack ): void {
 					$stock->lockedLevel( $expired );
 					$stock->hasOpenAllocation( $expired );
 
@@ -428,6 +450,9 @@ final class QueryPlanTest extends DatabaseTestCase {
 					} catch ( CodedException $held ) {
 						$this->assertSame( CheckoutError::PlacementInProgress, $held->errorCode() );
 					}
+
+					// A declined order's release: the lock of its reserved promotion uses, then the release.
+					( new PromotionUsage( $promotions, $db ) )->release( 1 );
 
 					// The catalog's write path: the mark, then a save that gives the product the SKU of
 					// another, so that the repository looks up the variant holding it.
@@ -485,12 +510,12 @@ final class QueryPlanTest extends DatabaseTestCase {
 			}
 		}
 
-		// Doctor, with the stock projection checks, and the sellability of every seeded variant.
+		// Doctor, with the stock projection checks and the promotion use counts, and the sellability of every seeded variant.
 		$this->assertSame( array(), SeedVerifier::problems( $db, $this->reporter(), self::$baseCurrency, Dataset::Medium->products() ) );
 	}
 
 	/**
-	 * Compares the SELECTs the catalog's, the inventory's, the rate limiter's and the cart's source write with the plugin SELECTs the run sent, both ways.
+	 * Compares the SELECTs the catalog's, the inventory's, the rate limiter's, the cart's, the checkout's and the promotions' source write with the plugin SELECTs the run sent, both ways.
 	 *
 	 * @since 0.1.0
 	 *
@@ -508,6 +533,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 			'RateLimiter' => 'Platform/RateLimiter',
 			'Cart'        => 'Cart',
 			'Checkout'    => 'Checkout',
+			'Promotion'   => 'Promotion',
 		);
 
 		foreach ( $sources as $module => $directory ) {

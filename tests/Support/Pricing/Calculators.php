@@ -17,6 +17,8 @@ use SEOCart\Pricing\Application\Calculator;
 use SEOCart\Pricing\Application\PresentmentCurrencies;
 use SEOCart\Pricing\Application\PresentmentCurrency;
 use SEOCart\Pricing\Application\PriceResolver;
+use SEOCart\Pricing\Application\PromotionCodes;
+use SEOCart\Pricing\Domain\PromotionEvaluator;
 use SEOCart\Support\ConversionContext;
 use SEOCart\Support\Currency;
 use SEOCart\Support\CurrencyRoundingRule;
@@ -51,20 +53,32 @@ final class Calculators {
 	 * @param CrossZonePolicy            $policy       Optional. The store's cross-zone policy. Default fixed net.
 	 * @param TaxRoundingMode            $mode         Optional. The store's tax rounding mode. Default per line.
 	 * @param PresentmentCurrencies|null $currencies   Optional. The currencies it offers. Default null, the base currency alone.
+	 * @param PromotionCodes|null        $codes        Optional. What resolves the codes entered. Default none: every code is unknown.
+	 * @param PromotionEvaluator|null    $evaluator    Optional. The promotions' evaluator. Default the quoters' own.
 	 * @return Calculator The calculator.
 	 */
-	public static function over( FixedFactsRepository $prices, PoisonedQuoters $quoters, TransactionManager $transactions, CrossZonePolicy $policy = CrossZonePolicy::FixedNet, TaxRoundingMode $mode = TaxRoundingMode::PerLine, ?PresentmentCurrencies $currencies = null ): Calculator {
+	public static function over(
+		FixedFactsRepository $prices,
+		PoisonedQuoters $quoters,
+		TransactionManager $transactions,
+		CrossZonePolicy $policy = CrossZonePolicy::FixedNet,
+		TaxRoundingMode $mode = TaxRoundingMode::PerLine,
+		?PresentmentCurrencies $currencies = null,
+		?PromotionCodes $codes = null,
+		?PromotionEvaluator $evaluator = null
+	): Calculator {
 		return new Calculator(
 			new PriceResolver( $prices ),
 			$quoters->shipping(),
 			$quoters->tax(),
-			$quoters->evaluator(),
+			$evaluator ?? $quoters->evaluator(),
 			$transactions,
 			FrozenClock::at( Inputs::AT ),
 			static fn(): Currency => Currency::of( 'USD' ),
 			static fn(): CrossZonePolicy => $policy,
 			static fn(): TaxRoundingMode => $mode,
-			$currencies ?? new FixedPresentmentCurrencies()
+			$currencies ?? new FixedPresentmentCurrencies(),
+			$codes
 		);
 	}
 

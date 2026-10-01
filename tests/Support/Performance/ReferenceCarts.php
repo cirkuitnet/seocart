@@ -26,9 +26,10 @@ use SEOCart\Tests\Support\Pricing\Inputs;
  *   cart each, the other six one each; one to four units a line, at prices chosen so that tax
  *   lands on remainders.
  *
- * Neither has an add-on, a personalization or a promotion code yet, and a cart has no destination,
- * so its totals carry no shipping: the stub flat rate applies once an address is known, at
- * checkout. A cart is built from the variant ids a test gives, one per variant slot, in slot
+ * Cart B also holds two promotion codes, applied in this order: 10 % off, and free shipping
+ * (CART_B_CODES, with the columns a test plants each promotion with). Neither cart has an add-on or
+ * a personalization yet, and a cart has no destination, so its totals carry no shipping: the stub
+ * flat rate applies once an address is known, at checkout, and so does the free shipping. A cart is built from the variant ids a test gives, one per variant slot, in slot
  * order, so the same shape holds over any catalog the test stored; productOfSlot() says which
  * product each slot's variant must belong to. seedPrices() gives the variants their prices in the
  * base currency, straight into the price table, which is all the calculation reads; a test that
@@ -64,6 +65,24 @@ final class ReferenceCarts {
 	 * @var string
 	 */
 	public const CART_A_PRICE = '19.99';
+
+	/**
+	 * Cart B's promotion codes, in the order they are applied, each with the promotion's columns that differ from a planted promotion's defaults.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<string, array<string, int|string|null>>
+	 */
+	public const CART_B_CODES = array(
+		'CARTB10'   => array(
+			'effect_kind'                 => 'percent',
+			'effect_percent_micropercent' => 10000000,
+		),
+		'CARTBSHIP' => array(
+			'effect_kind'                 => 'free_shipping',
+			'effect_percent_micropercent' => null,
+		),
+	);
 
 	/**
 	 * Cart B's lines: for each variant slot, the product it belongs to, the units and the price, net, in major units.

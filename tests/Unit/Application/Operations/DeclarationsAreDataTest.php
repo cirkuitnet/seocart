@@ -26,10 +26,10 @@ use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
  * - touch `$wpdb` in no way;
  * - open no file but the class files of the declaration mechanism, the capability declaration, the
  *   stock adjustment's declaration with the two enums it reads, the cart's declarations with the
- *   error catalogs, the two domain classes whose limits they state and the declared shape of
- *   totals with the enums it lists, the checkout's declarations with their error catalog, the
- *   address document whose fields they state and the details whose method key they bound, and
- *   the fixture — no settings file, no service, no container,
+ *   error catalogs, the two domain classes whose limits they state, the caps on refused promotion
+ *   codes and the declared shape of totals with the enums it lists, the checkout's declarations
+ *   with their error catalog, the address document whose fields they state and the details whose
+ *   method key they bound, and the fixture — no settings file, no service, no container,
  *   no kernel, no database layer.
  *
  * The probe can also add an operation whose factory translates a string, reads an option and reads
@@ -67,10 +67,12 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Inventory/Application/InventoryError.php',
 		'src/Inventory/Domain/LedgerReason.php',
 		'src/Cart/Interfaces/StoreApi/StoreOperations.php',
-		'src/Cart/Interfaces/StoreApi/StoreApiError.php',
 		'src/Cart/Interfaces/StoreApi/StoreRequestPolicy.php',
 		'src/Cart/Interfaces/StoreApi/CartOperations.php',
 		'src/Cart/Application/CartError.php',
+		'src/Cart/Application/StoreApiError.php',
+		'src/Cart/Application/PromotionCodeLimits.php',
+		'src/Promotion/Application/PromotionError.php',
 		'src/Cart/Domain/Cart.php',
 		'src/Cart/Domain/CartLine.php',
 		'src/Checkout/Interfaces/StoreApi/CheckoutOperations.php',

@@ -19,7 +19,7 @@ use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\PublicWrite;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Application\Operations\WriteMethod;
-use SEOCart\Cart\Interfaces\StoreApi\StoreApiError;
+use SEOCart\Cart\Application\StoreApiError;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
 use SEOCart\Platform\RateLimiter\RateLimit;
 use SEOCart\Support\Schema\SchemaException;

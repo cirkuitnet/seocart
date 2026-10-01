@@ -82,6 +82,266 @@
                 }
             }
         },
+        "/cart/codes": {
+            "servers": [
+                {
+                    "url": "{site}/wp-json/seocart/store/v1",
+                    "variables": {
+                        "site": {
+                            "default": "https://example.com",
+                            "description": "The address of the WordPress site."
+                        }
+                    }
+                }
+            ],
+            "post": {
+                "operationId": "cart.apply_code",
+                "summary": "Applies a promotion code to the cart, when its promotion applies to the cart now, and answers the cart with the discount in its totals. A cart holds at most 5 codes. A code that cannot be applied gets promotion.code_invalid, the same answer whatever the reason; after 10 codes tried on one cart in an hour, or 40 by one client, every code is refused with store_api.rate_limited until the hour ends.",
+                "description": "Public: requires no capability. The Store API's request policy requires the header `X-SEOCart-Store: 1`, the `X-WP-Nonce` header when a login cookie is sent, the cart's token, and at most 60 requests per client in 60 seconds.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "code": {
+                                        "type": "string",
+                                        "maxLength": 64,
+                                        "description": "The promotion code to apply, as the customer entered it: spaces around it are ignored, and its letters are compared in upper case; a code is letters, digits, hyphens and underscores.",
+                                        "examples": [
+                                            "SUMMER10"
+                                        ]
+                                    },
+                                    "cart_version": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "description": "The version of the cart the write is based on: the version of the last answer.",
+                                        "examples": [
+                                            3
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "code",
+                                    "cart_version"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the Cart resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Cart"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`promotion.code_invalid`: That code cannot be applied.\n\n`store_api.cart_token_missing`: This request changes an existing cart, so it must carry the cart's token.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "`store_api.header_missing`: This request changes the store, so it must carry the header X-SEOCart-Store: 1.\n\n`store_api.nonce_missing`: You are logged in, but this request carries no valid nonce, so it would run as a guest. Fetch a new nonce, send it as X-WP-Nonce, and try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`cart.not_found`: There is no cart for this request: it was never started, or it has expired. Start a new cart by adding a line.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "405": {
+                        "description": "`store_api.read_method`: This request changes the store, so it must be sent as a POST, PUT, PATCH or DELETE request. A GET or HEAD request never changes it, whatever method it names.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`cart.version_stale`: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.\n\n`cart.not_open`: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.\n\n`cart.too_many_codes`: A cart holds at most {max_codes} promotion codes, so this code was not applied. Remove a code to apply another.\n\n`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "`store_api.rate_limited`: Too many requests. Wait a moment, then try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`pricing.quote_unavailable`: an internal failure, answered with a generic message and empty details. The site's error log has what went wrong, under the correlation id.\n\n`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/cart/codes/{code}": {
+            "servers": [
+                {
+                    "url": "{site}/wp-json/seocart/store/v1",
+                    "variables": {
+                        "site": {
+                            "default": "https://example.com",
+                            "description": "The address of the WordPress site."
+                        }
+                    }
+                }
+            ],
+            "delete": {
+                "operationId": "cart.remove_code",
+                "summary": "Removes a promotion code from the cart, named in the path, with the cart version in the query string; removing a code the cart does not hold leaves its codes as they are.",
+                "description": "Public: requires no capability. The Store API's request policy requires the header `X-SEOCart-Store: 1`, the `X-WP-Nonce` header when a login cookie is sent, the cart's token, and at most 60 requests per client in 60 seconds.",
+                "parameters": [
+                    {
+                        "name": "code",
+                        "in": "path",
+                        "required": true,
+                        "description": "The promotion code to remove, as the cart lists it; its letters are compared in upper case.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "examples": [
+                                "SUMMER10"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "cart_version",
+                        "in": "query",
+                        "required": true,
+                        "description": "The version of the cart the write is based on: the version of the last answer. Send it in the query string.",
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "examples": [
+                                3
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the Cart resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Cart"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`store_api.cart_token_missing`: This request changes an existing cart, so it must carry the cart's token.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "`store_api.header_missing`: This request changes the store, so it must carry the header X-SEOCart-Store: 1.\n\n`store_api.nonce_missing`: You are logged in, but this request carries no valid nonce, so it would run as a guest. Fetch a new nonce, send it as X-WP-Nonce, and try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`cart.not_found`: There is no cart for this request: it was never started, or it has expired. Start a new cart by adding a line.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "405": {
+                        "description": "`store_api.read_method`: This request changes the store, so it must be sent as a POST, PUT, PATCH or DELETE request. A GET or HEAD request never changes it, whatever method it names.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`cart.version_stale`: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.\n\n`cart.not_open`: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.\n\n`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "`store_api.rate_limited`: Too many requests. Wait a moment, then try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`pricing.quote_unavailable`: an internal failure, answered with a generic message and empty details. The site's error log has what went wrong, under the correlation id.\n\n`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/cart/lines": {
             "servers": [
                 {
@@ -1193,6 +1453,32 @@
                             ]
                         ]
                     },
+                    "promotion_codes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "string",
+                                    "maxLength": 64,
+                                    "description": "The promotion code, as the store spells it."
+                                }
+                            },
+                            "required": [
+                                "code"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "maxItems": 5,
+                        "description": "The promotion codes applied to the cart, in the order they were applied. A code whose promotion no longer applies stays listed until it is removed, and takes nothing off.",
+                        "examples": [
+                            [
+                                {
+                                    "code": "SUMMER10"
+                                }
+                            ]
+                        ]
+                    },
                     "totals": {
                         "type": "object",
                         "properties": {
@@ -1956,6 +2242,7 @@
                 "required": [
                     "version",
                     "lines",
+                    "promotion_codes",
                     "totals",
                     "unpriced_lines"
                 ]

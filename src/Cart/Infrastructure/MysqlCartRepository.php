@@ -84,6 +84,15 @@ final class MysqlCartRepository implements CartRepository {
 	public const COMPARE_AND_SWAP = 'UPDATE %i SET version = version + 1, updated_at = UTC_TIMESTAMP(6), expires_at = UTC_TIMESTAMP() + INTERVAL %d SECOND ' . self::OPEN_AT_VERSION;
 
 	/**
+	 * The compare-and-swap of a change of the promotion codes: as COMPARE_AND_SWAP, and the new list of codes, as JSON.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const SWAP_PROMOTION_CODES = 'UPDATE %i SET version = version + 1, promotion_codes = %s, updated_at = UTC_TIMESTAMP(6), expires_at = UTC_TIMESTAMP() + INTERVAL %d SECOND ' . self::OPEN_AT_VERSION;
+
+	/**
 	 * The compare-and-swap of an order placement: as COMPARE_AND_SWAP, and the cart becomes placing.
 	 *
 	 * It also clears the order the cart names, which a cart opened again after a failed payment
@@ -353,6 +362,25 @@ final class MysqlCartRepository implements CartRepository {
 		$this->requireTransaction( __FUNCTION__ );
 
 		return 1 === $this->db->execute( self::COMPARE_AND_SWAP, $this->carts(), $ttlSeconds, $cartId, $expectedVersion );
+	}
+
+	/**
+	 * The compare-and-swap of a change of the promotion codes, which also writes the new list.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int      $cartId          The cart.
+	 * @param int      $expectedVersion The version the write was based on.
+	 * @param int      $ttlSeconds      How long the cart lives from now.
+	 * @param string[] $codes           The codes after the change, in the order they were applied.
+	 * @return bool True when the statement matched.
+	 *
+	 * @phpstan-param list<string> $codes
+	 */
+	public function swapPromotionCodes( int $cartId, int $expectedVersion, int $ttlSeconds, array $codes ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->db->execute( self::SWAP_PROMOTION_CODES, $this->carts(), (string) wp_json_encode( $codes ), $ttlSeconds, $cartId, $expectedVersion );
 	}
 
 	/**

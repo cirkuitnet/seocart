@@ -18,11 +18,13 @@ use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Application\Operations\WriteMethod;
 use SEOCart\Cart\Application\CartError;
 use SEOCart\Cart\Application\CartService;
+use SEOCart\Cart\Application\PromotionCodeLimits;
 use SEOCart\Cart\Domain\Cart;
 use SEOCart\Cart\Domain\CartLine;
 use SEOCart\Pricing\Application\UnpricedLine;
 use SEOCart\Pricing\Domain\PricingError;
 use SEOCart\Pricing\Interfaces\TotalsFields;
+use SEOCart\Promotion\Application\PromotionError;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
 use SEOCart\Support\Schema\ResourceSchema;
@@ -30,7 +32,7 @@ use SEOCart\Support\Schema\ResourceSchema;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Declares the cart's operations: read the cart, add lines to it, change one of its lines.
+ * Declares the cart's operations: read the cart, add lines to it, change one of its lines, apply a promotion code to it and remove one.
  *
  * Owns one fact: how a client reads and changes its cart. Each is public, so each is a route of
  * the Store API only, never an ability or a command, and every write is guarded by the Store
@@ -43,12 +45,18 @@ defined( 'ABSPATH' ) || exit;
  *   write that finds no cart, or one an accepted order was placed from, starts a new one.
  * - `cart.update_line`, `PATCH seocart/store/v1/cart/lines/{line_identity}`: sets a line's
  *   quantity; 0 removes the line.
+ * - `cart.apply_code`, `POST seocart/store/v1/cart/codes`: applies a promotion code, to a cart
+ *   that holds fewer than five. A code that cannot be applied gets `promotion.code_invalid`, the same
+ *   answer whatever the reason; after ten codes tried in an hour, for one cart, every code is refused
+ *   with `store_api.rate_limited` for the rest of the hour.
+ * - `cart.remove_code`, `DELETE seocart/store/v1/cart/codes/{code}?cart_version=…`: removes a
+ *   promotion code; the version is sent in the query string, as a DELETE carries no body.
  *
  * Every write carries the cart version it was based on, and a write based on an older version is
  * refused with `cart.version_stale`, whose details carry the cart's current totals, so a client can
  * tell an answer it has overtaken and repaint. Every accepted write's answer carries the cart's
- * token, for as long as the cart now lives. Every answer is the cart: its version, its lines, the
- * totals the calculation works out for them, and the lines it could not price.
+ * token, for as long as the cart now lives. Every answer is the cart: its version, its lines, its
+ * promotion codes, the totals the calculation works out for them, and the lines it could not price.
  *
  * Declarations are data: building a definition calls no WordPress function.
  *
@@ -84,6 +92,24 @@ final class CartOperations {
 	public const UPDATE_LINE = 'cart.update_line';
 
 	/**
+	 * The id of the write that applies a promotion code.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const APPLY_CODE = 'cart.apply_code';
+
+	/**
+	 * The id of the write that removes a promotion code.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const REMOVE_CODE = 'cart.remove_code';
+
+	/**
 	 * The route of the cart, relative to the Store API's namespace.
 	 *
 	 * @since 0.1.0
@@ -109,6 +135,24 @@ final class CartOperations {
 	 * @var string
 	 */
 	public const LINE_ROUTE = '/cart/lines/{line_identity}';
+
+	/**
+	 * The route of the cart's promotion codes.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const CODES_ROUTE = '/cart/codes';
+
+	/**
+	 * The route of one promotion code of the cart.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const CODE_ROUTE = '/cart/codes/{code}';
 
 	/**
 	 * What the rate limit of the cart's writes counts.
@@ -233,6 +277,60 @@ final class CartOperations {
 	}
 
 	/**
+	 * Declares the write that applies a promotion code.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function applyCode(): OperationDefinition {
+		return new OperationDefinition(
+			id: self::APPLY_CODE,
+			label: static fn(): string => __( 'Apply a promotion code to the cart', 'seocart' ),
+			summary: 'Applies a promotion code to the cart, when its promotion applies to the cart now, and answers the cart with the discount in its totals. A cart holds at most ' . Cart::MAX_CODES . ' codes. A code that cannot be applied gets promotion.code_invalid, the same answer whatever the reason; after ' . PromotionCodeLimits::CART_LIMIT . ' codes tried on one cart in an hour, or ' . PromotionCodeLimits::CLIENT_LIMIT . ' by one client, every code is refused with store_api.rate_limited until the hour ends.',
+			input: array(
+				self::code( 'The promotion code to apply, as the customer entered it: spaces around it are ignored, and its letters are compared in upper case; a code is letters, digits, hyphens and underscores.' ),
+				self::cartVersion( 1 ),
+			),
+			output: self::cart(),
+			capability: null,
+			resource_field: null,
+			errors: array_merge( array( CartError::NotFound, CartError::VersionStale, CartError::NotOpen, CartError::TooManyCodes, PromotionError::CodeInvalid ), self::calculationErrors() ),
+			annotations: new Annotations( read_only: false, destructive: false, idempotent: true ),
+			service: array( CartService::class, 'applyCode' ),
+			rest: new RestBinding( self::CODES_ROUTE, WriteMethod::Post, store: true ),
+			public_write: self::write( true )
+		);
+	}
+
+	/**
+	 * Declares the write that removes a promotion code.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function removeCode(): OperationDefinition {
+		return new OperationDefinition(
+			id: self::REMOVE_CODE,
+			label: static fn(): string => __( 'Remove a promotion code from the cart', 'seocart' ),
+			summary: 'Removes a promotion code from the cart, named in the path, with the cart version in the query string; removing a code the cart does not hold leaves its codes as they are.',
+			input: array(
+				self::code( 'The promotion code to remove, as the cart lists it; its letters are compared in upper case.' ),
+				self::cartVersion( 1, true ),
+			),
+			output: self::cart(),
+			capability: null,
+			resource_field: null,
+			errors: array_merge( array( CartError::NotFound, CartError::VersionStale, CartError::NotOpen ), self::calculationErrors() ),
+			annotations: new Annotations( read_only: false, destructive: true, idempotent: true ),
+			service: array( CartService::class, 'removeCode' ),
+			rest: new RestBinding( self::CODE_ROUTE, WriteMethod::Delete, store: true ),
+			public_write: self::write( true )
+		);
+	}
+
+	/**
 	 * Returns the codes the calculation of an answer's totals can end in.
 	 *
 	 * @since 0.1.0
@@ -270,6 +368,14 @@ final class CartOperations {
 					array( self::lineIdentity(), self::variantId(), self::quantity( 1 ) ),
 					required: true,
 					max_items: Cart::MAX_LINES
+				),
+				FieldSpec::objectList(
+					'promotion_codes',
+					'The promotion codes applied to the cart, in the order they were applied. A code whose promotion no longer applies stays listed until it is removed, and takes nothing off.',
+					static fn(): string => __( 'Promotion codes', 'seocart' ),
+					array( self::code( 'The promotion code, as the store spells it.' ) ),
+					required: true,
+					max_items: Cart::MAX_CODES
 				),
 				TotalsFields::totals( 'totals', 'The totals of the lines, worked out when the answer was built; zero for an empty cart.', static fn(): string => __( 'Totals', 'seocart' ) ),
 				FieldSpec::objectList(
@@ -310,6 +416,26 @@ final class CartOperations {
 			description: 'The line\'s identity: 64 hexadecimal characters that stay the same for as long as the line is in the cart.',
 			label: static fn(): string => __( 'Line', 'seocart' ),
 			example: '6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b',
+			required: true,
+			max_length: 64
+		);
+	}
+
+	/**
+	 * Returns a promotion code.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $description What the code is, in the field it appears in.
+	 * @return FieldSpec The field.
+	 */
+	private static function code( string $description ): FieldSpec {
+		return new FieldSpec(
+			name: 'code',
+			type: FieldType::String,
+			description: $description,
+			label: static fn(): string => __( 'Code', 'seocart' ),
+			example: 'SUMMER10',
 			required: true,
 			max_length: 64
 		);
@@ -362,16 +488,17 @@ final class CartOperations {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int $minimum 0 for a write that may start a cart, which is then optional; 1 for a write to a cart that must exist.
+	 * @param int  $minimum  0 for a write that may start a cart, which is then optional; 1 for a write to a cart that must exist.
+	 * @param bool $in_query Optional. Whether the write sends it in the query string, as a DELETE does. Default false.
 	 * @return FieldSpec The field.
 	 */
-	public static function cartVersion( int $minimum ): FieldSpec {
+	public static function cartVersion( int $minimum, bool $in_query = false ): FieldSpec {
 		return new FieldSpec(
 			name: 'cart_version',
 			type: FieldType::Integer,
-			description: 0 === $minimum
+			description: ( 0 === $minimum
 				? 'The version of the cart the write is based on: the version of the last answer, or 0 when the client has no cart.'
-				: 'The version of the cart the write is based on: the version of the last answer.',
+				: 'The version of the cart the write is based on: the version of the last answer.' ) . ( $in_query ? ' Send it in the query string.' : '' ),
 			label: static fn(): string => __( 'Cart version', 'seocart' ),
 			example: 3,
 			required: 0 !== $minimum,

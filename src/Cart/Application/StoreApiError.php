@@ -1,6 +1,6 @@
 <?php
 /**
- * StoreApiError: the refusals of the Store API's request policy
+ * StoreApiError: the refusals of the Store API's request policy, and of the codes a cart may try
  *
  * @package SEOCart
  * @since   0.1.0
@@ -9,7 +9,7 @@
 
 declare( strict_types=1 );
 
-namespace SEOCart\Cart\Interfaces\StoreApi;
+namespace SEOCart\Cart\Application;
 
 use SEOCart\Support\Error\ErrorCode;
 use SEOCart\Support\Error\ErrorDefinition;
@@ -17,11 +17,13 @@ use SEOCart\Support\Error\ErrorDefinition;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * The errors a Store API write is refused with before it runs.
+ * The errors a Store API write is refused with before it runs, and the cap on the promotion codes a cart may try.
  *
- * Owns one fact: how the Store API's request policy tells a client why it refused a write. Each
- * refusal has its own code, so a client can act on it: send the write as a write, send the header,
- * fetch a nonce, send the cart token, or wait. None of them names the client, the cart or the counts.
+ * Owns one fact: how the Store API tells a client why it refused a write. Each refusal has its own
+ * code, so a client can act on it: send the write as a write, send the header, fetch a nonce, send
+ * the cart token, or wait. None of them names the client, the cart or the counts. The cart's own
+ * catalog: the request policy raises these before a write runs, and the cart service raises the
+ * rate limit when a cart, or a client, has tried as many promotion codes as it may.
  *
  * @since 0.1.0
  */

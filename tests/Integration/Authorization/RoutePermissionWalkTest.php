@@ -141,7 +141,9 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 	 *   is no longer reported;
 	 * - in checkPublicWrite(), delete the check for the Store API's policy: the public write that a
 	 *   policy allowing everything guards, and the one built without a policy, are no longer
-	 *   reported.
+	 *   reported;
+	 * - in checkPublicWrite(), check the Store API's policy only on POST and PATCH: the DELETE
+	 *   public write that a policy allowing everything guards is no longer reported.
 	 *
 	 * @since 0.1.0
 	 */
@@ -175,6 +177,7 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 				array( $route . '/added-by-filter', 'POST', RoutePermissionWalker::RULE_MISSING_SCHEMA ),
 				array( $route . '/public-write-get', 'GET', RoutePermissionWalker::RULE_PUBLIC_WRITE_ON_READ ),
 				array( $route . '/public-write-allow-all', 'POST', RoutePermissionWalker::RULE_PUBLIC_WRITE_WITHOUT_POLICY ),
+				array( $route . '/public-write-delete-allow-all', 'DELETE', RoutePermissionWalker::RULE_PUBLIC_WRITE_WITHOUT_POLICY ),
 				array( $route . '/public-write-reflected', 'POST', RoutePermissionWalker::RULE_PUBLIC_WRITE_WITHOUT_POLICY ),
 			),
 			$found,
@@ -207,6 +210,7 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 			'PATCH ' . $route . '/public-read-editable',
 			'LINK ' . $route . '/public-read-link',
 			'POST ' . $route . '/public-write-allow-all',
+			'DELETE ' . $route . '/public-write-delete-allow-all',
 			'POST /' . self::UPPERCASE_NAMESPACE . '/uppercase-namespace',
 			// WordPress matches routes without regard to case, so the plugin's own spelling reaches it too.
 			'POST /' . strtolower( self::UPPERCASE_NAMESPACE ) . '/uppercase-namespace',
@@ -525,6 +529,7 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 		self::registerRoute( '/no-schema', array( self::endpoint( 'GET', PermissionCallback::requiring( 'seocart_view_orders' ) ) ), false );
 		self::registerRoute( '/public-write-get', array( self::endpoint( 'GET', PermissionCallback::publicWrite( self::storePolicy() ) ) ) );
 		self::registerRoute( '/public-write-allow-all', array( self::endpoint( 'POST', PermissionCallback::publicWrite( self::allowAllPolicy() ) ) ) );
+		self::registerRoute( '/public-write-delete-allow-all', array( self::endpoint( 'DELETE', PermissionCallback::publicWrite( self::allowAllPolicy() ) ) ) );
 		self::registerRoute( '/public-write-reflected', array( self::endpoint( 'POST', self::publicWriteWithoutPolicy() ) ) );
 
 		register_rest_route(
@@ -558,7 +563,13 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 				self::endpoint( WP_REST_Server::DELETABLE, PermissionCallback::requiringOn( 'seocart_view_order', 'id' ) ),
 			)
 		);
-		self::registerRoute( '/compliant-public-write', array( self::endpoint( 'POST', PermissionCallback::publicWrite( self::storePolicy() ) ) ) );
+		self::registerRoute(
+			'/compliant-public-write',
+			array(
+				self::endpoint( 'POST', PermissionCallback::publicWrite( self::storePolicy() ) ),
+				self::endpoint( 'DELETE', PermissionCallback::publicWrite( self::storePolicy() ) ),
+			)
+		);
 	}
 
 	/**

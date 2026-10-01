@@ -53,6 +53,8 @@ final class Operations {
 		$registry->add( CartOperations::UPDATE_LINE, array( CartOperations::class, 'updateLine' ) );
 		$registry->add( OrderStoreOperations::GET_STATUS, array( OrderStoreOperations::class, 'getStatus' ) );
 		$registry->add( CheckoutOperations::UPDATE_SESSION, array( CheckoutOperations::class, 'updateSession' ) );
+		$registry->add( CartOperations::APPLY_CODE, array( CartOperations::class, 'applyCode' ) );
+		$registry->add( CartOperations::REMOVE_CODE, array( CartOperations::class, 'removeCode' ) );
 
 		return $registry;
 	}

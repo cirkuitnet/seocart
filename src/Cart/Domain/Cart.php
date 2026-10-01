@@ -19,10 +19,10 @@ defined( 'ABSPATH' ) || exit;
 /**
  * A cart as it was read: its row and its lines, in the order they were added.
  *
- * Owns one fact: what a read of a cart returns, and how many lines a cart may hold. It is a read,
- * never a decision: every change is decided by the compare-and-swap on the cart's version, which
- * begins each write, never by the version held here. The lines are in the order of their
- * `cart_lines.id`, the order the calculation takes them in.
+ * Owns one fact: what a read of a cart returns, and how many lines and promotion codes a cart may
+ * hold. It is a read, never a decision: every change is decided by the compare-and-swap on the
+ * cart's version, which begins each write, never by the version held here. The lines are in the
+ * order of their `cart_lines.id`, the order the calculation takes them in.
  *
  * Nothing here calls WordPress.
  *
@@ -38,6 +38,15 @@ final readonly class Cart {
 	 * @var int
 	 */
 	public const MAX_LINES = 50;
+
+	/**
+	 * The most promotion codes a cart holds. A code beyond them is refused, before it is looked at.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	public const MAX_CODES = 5;
 
 	/**
 	 * The retention policy of carts: a cart lives its kind's period after its last write.
@@ -161,5 +170,22 @@ final readonly class Cart {
 	 */
 	public function after( int $version, array $lines ): self {
 		return new self( $this->id, $version, $this->status, $this->orderId, $this->currency, $this->locale, $this->promotionCodes, $lines );
+	}
+
+	/**
+	 * Returns the same cart with other promotion codes, as a write of its codes left it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int        $version        The version the write gave the cart.
+	 * @param string[]   $promotionCodes The codes after the write, in the order they were applied.
+	 * @param CartLine[] $lines          The lines, in `cart_lines.id` order.
+	 * @return self The cart after the write.
+	 *
+	 * @phpstan-param list<string>   $promotionCodes
+	 * @phpstan-param list<CartLine> $lines
+	 */
+	public function withPromotionCodes( int $version, array $promotionCodes, array $lines ): self {
+		return new self( $this->id, $version, $this->status, $this->orderId, $this->currency, $this->locale, $promotionCodes, $lines );
 	}
 }

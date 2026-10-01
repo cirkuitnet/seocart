@@ -171,6 +171,9 @@ final class PhpSource {
 	/**
 	 * Returns every fully qualified class name a file names, in `use` imports and in its code.
 	 *
+	 * The names in the `namespace` statement and in the imports themselves are not names the code
+	 * uses: the imports are listed once, resolved, and the rest is read after them.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @param string $source The PHP source.
@@ -181,6 +184,8 @@ final class PhpSource {
 		$namespace = self::namespaceOf( $tokens );
 		$imports   = self::importsOf( $tokens );
 		$names     = array();
+		$depth     = 0;
+		$statement = null;
 
 		foreach ( $imports as $imported ) {
 			$names[] = array(
@@ -190,6 +195,26 @@ final class PhpSource {
 		}
 
 		foreach ( $tokens as $token ) {
+			if ( '{' === $token->text || $token->is( array( T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES ) ) ) {
+				++$depth;
+			} elseif ( '}' === $token->text ) {
+				--$depth;
+			}
+
+			if ( null === $statement && ( $token->is( T_NAMESPACE ) || ( 0 === $depth && $token->is( T_USE ) ) ) ) {
+				$statement = $token->id;
+				continue;
+			}
+
+			if ( null !== $statement ) {
+				// A namespace statement ends at its semicolon or its brace; an import, which may group names in braces, at its semicolon.
+				if ( ';' === $token->text || ( T_NAMESPACE === $statement && '{' === $token->text ) ) {
+					$statement = null;
+				}
+
+				continue;
+			}
+
 			if ( $token->is( array( T_NAME_FULLY_QUALIFIED, T_NAME_QUALIFIED, T_NAME_RELATIVE ) ) ) {
 				$names[] = array(
 					'name' => self::resolve( $token->text, $namespace, $imports ),

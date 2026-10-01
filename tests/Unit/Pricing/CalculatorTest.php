@@ -18,16 +18,22 @@ use SEOCart\Pricing\Application\UnpricedLine;
 use SEOCart\Pricing\Domain\AmountBasis;
 use SEOCart\Pricing\Domain\PriceSource;
 use SEOCart\Pricing\Domain\PricingError;
+use SEOCart\Pricing\Domain\PromotionEffect;
+use SEOCart\Pricing\Domain\PromotionFacts;
 use SEOCart\Pricing\Domain\Quote\TaxQuote;
+use SEOCart\Pricing\Domain\Source;
 use SEOCart\Pricing\Domain\Totals\TraceEntry;
 use SEOCart\Support\Address;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Support\Percentage;
 use SEOCart\Tests\Support\Catalog\FixedFactsRepository;
 use SEOCart\Tests\Support\Doubles\FakeTransactionManager;
 use SEOCart\Tests\Support\Doubles\FixedPresentmentCurrencies;
 use SEOCart\Tests\Support\Doubles\PoisonedQuoters;
 use SEOCart\Tests\Support\Pricing\Calculators;
+use SEOCart\Tests\Support\Pricing\FactsEvaluator;
+use SEOCart\Tests\Support\Pricing\FixedPromotionCodes;
 use SEOCart\Tests\Support\Pricing\Inputs;
 
 /**
@@ -42,7 +48,10 @@ use SEOCart\Tests\Support\Pricing\Inputs;
  *   and the second test fails;
  * - in Calculator::calculate(), build the input with the identity context and the default rule
  *   whatever the currency: CalculationInput refuses a EUR calculation at a USD to USD rate, and the
- *   enabled-currency test fails.
+ *   enabled-currency test fails;
+ * - in Calculator::resolveCodes(), return ResolvedPromotions::unknown() instead of asking the
+ *   resolver: the code no longer becomes a promotion, the cart loses its discount, and the test
+ *   of resolved codes fails.
  *
  * @since 0.1.0
  */
@@ -189,6 +198,51 @@ final class CalculatorTest extends TestCase {
 		$rejected = array_values( array_filter( $calculation->totals->trace->entries, static fn( TraceEntry $entry ): bool => 'rejected_code' === ( $entry->data['record'] ?? null ) ) );
 
 		$this->assertSame( array( 'SAVE10' ), array_map( static fn( TraceEntry $entry ): string => $entry->data['code'], $rejected ) );
+	}
+
+	/**
+	 * Tests that the codes entered are resolved once, at the calculation's instant, and that a resolved code takes its discount off.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_codes_entered_are_resolved_once_into_the_promotions_that_apply(): void {
+		$uuid        = '00000000-0000-7000-8000-00000000c010';
+		$codes       = new FixedPromotionCodes( new PromotionFacts( 7, $uuid, 'SAVE10', PromotionEffect::percent( Percentage::fromString( '10' ) ), 10 ) );
+		$calculator  = Calculators::over( self::prices(), self::quoters(), new FakeTransactionManager(), codes: $codes, evaluator: new FactsEvaluator() );
+		$request     = new CalculationRequest( Currency::of( 'USD' ), array( new LineRequest( 'a', 11, 2 ) ), new Address( 'US' ), array( 'SAVE10', 'NOPE' ) );
+		$calculation = $calculator->calculate( $request );
+		$totals      = $calculation->totals;
+
+		$this->assertSame(
+			array(
+				array(
+					'codes'    => array( 'SAVE10', 'NOPE' ),
+					'currency' => 'USD',
+					'now'      => ( new \DateTimeImmutable( Inputs::AT ) )->format( DATE_ATOM ),
+				),
+			),
+			$codes->calls,
+			'One resolution for every code, at the instant the calculation is asked for.'
+		);
+		$this->assertSame( -200, $totals->summary->discountTotal->minorUnits(), '10 % off 2 � 10.00.' );
+		$this->assertSame( -200, $totals->discountOf( Source::promotion( $uuid ) )->amount->minorUnits() );
+
+		$rejected = array_values( array_filter( $totals->trace->entries, static fn( TraceEntry $entry ): bool => 'rejected_code' === ( $entry->data['record'] ?? null ) ) );
+
+		$this->assertSame( array( 'NOPE:unknown' ), array_map( static fn( TraceEntry $entry ): string => $entry->data['code'] . ':' . $entry->data['reason'], $rejected ) );
+	}
+
+	/**
+	 * Tests that a request without codes asks the resolver nothing.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_request_without_codes_resolves_nothing(): void {
+		$codes = new FixedPromotionCodes();
+
+		Calculators::over( self::prices(), self::quoters(), new FakeTransactionManager(), codes: $codes, evaluator: new FactsEvaluator() )->calculate( self::request() );
+
+		$this->assertSame( array(), $codes->calls );
 	}
 
 	/**

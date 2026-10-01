@@ -41,12 +41,12 @@ final class BindingsTest extends TestCase {
 	}
 
 	/**
-	 * Tests that no write method is GET: a change can only be declared with POST, PATCH or PUT.
+	 * Tests that no write method is GET: a change can only be declared with POST, PATCH, PUT or DELETE.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_no_write_method_is_get(): void {
-		$this->assertSame( array( 'POST', 'PATCH', 'PUT' ), array_map( static fn( WriteMethod $method ): string => $method->value, WriteMethod::cases() ) );
+		$this->assertSame( array( 'POST', 'PATCH', 'PUT', 'DELETE' ), array_map( static fn( WriteMethod $method ): string => $method->value, WriteMethod::cases() ) );
 	}
 
 	/**

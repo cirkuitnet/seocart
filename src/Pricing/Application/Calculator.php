@@ -19,7 +19,6 @@ use SEOCart\Pricing\Domain\Engine\PhaseAResult;
 use SEOCart\Pricing\Domain\PricingError;
 use SEOCart\Pricing\Domain\PromotionEvaluator;
 use SEOCart\Pricing\Domain\Quote\Quotes;
-use SEOCart\Pricing\Domain\RejectedCode;
 use SEOCart\Support\Clock;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
@@ -32,9 +31,10 @@ defined( 'ABSPATH' ) || exit;
  * The one entry to the calculation: it gathers the input, runs the engine's two phases, and takes the quotes between them.
  *
  * Owns one fact: the order in which a calculation reaches outside the engine. First the prices,
- * in one query; then the engine's first phase; then the shipping and tax quotes, once each, for
- * exactly the lines that phase resolved; then the second phase. Nothing else is read, and
- * nothing is computed here: every figure comes from the engine.
+ * in one query, and the promotions of the codes entered, in one more when there are codes; then
+ * the engine's first phase; then the shipping and tax quotes, once each, for exactly the lines
+ * that phase resolved; then the second phase. Nothing else is read, and nothing is computed
+ * here: every figure comes from the engine.
  *
  * A calculation never runs inside a transaction. Its quotes may be taken from a provider over
  * the network, and a transaction must not wait on the network: so it is refused outright, before
@@ -49,7 +49,7 @@ defined( 'ABSPATH' ) || exit;
  * The store's base currency, its cross-zone policy and its tax rounding mode are the merchant's
  * settings, read once per calculation, through the readers the calculator is given: they are one
  * group of settings, so reading them costs one query the first time in a request and none after.
- * No promotion is resolved from a code here, so every code entered is traced as unknown.
+ * A code whose promotion does not apply is left out of the totals and traced with the reason.
  *
  * @since 0.1.0
  */
@@ -70,6 +70,9 @@ final class Calculator {
 	 * @param \Closure              $crossZonePolicy Returns what stays fixed when a gross price is sold into another tax zone.
 	 * @param \Closure              $taxRoundingMode Returns where tax is rounded.
 	 * @param PresentmentCurrencies $currencies      Finds the terms the cart's currency is offered on.
+	 * @param PromotionCodes|null   $codes           Optional. Finds the promotions of the codes entered. The plugin
+	 *                                               always gives it; null is for a caller without a promotion
+	 *                                               module, and traces every code as unknown. Default null.
 	 *
 	 * @phpstan-param \Closure(): Currency        $baseCurrency
 	 * @phpstan-param \Closure(): CrossZonePolicy $crossZonePolicy
@@ -85,7 +88,8 @@ final class Calculator {
 		private \Closure $baseCurrency,
 		private \Closure $crossZonePolicy,
 		private \Closure $taxRoundingMode,
-		private PresentmentCurrencies $currencies
+		private PresentmentCurrencies $currencies,
+		private ?PromotionCodes $codes = null
 	) {
 	}
 
@@ -112,8 +116,10 @@ final class Calculator {
 			CodedException::raise( PricingError::CurrencyNotEnabled, array( 'currency' => $request->currency->code() ) );
 		}
 
-		$prices = $this->prices->resolve( $request->lines, $currency );
-		$input  = new CalculationInput(
+		$prices     = $this->prices->resolve( $request->lines, $currency );
+		$now        = $this->clock->now();
+		$promotions = $this->resolveCodes( $request, $now );
+		$input      = new CalculationInput(
 			$request->currency,
 			$base,
 			$currency->context,
@@ -121,19 +127,36 @@ final class Calculator {
 			$prices->lines,
 			$request->destination,
 			CustomerTaxFacts::notExempt(),
-			array(),
-			array_map( static fn( string $code ): RejectedCode => new RejectedCode( $code, RejectedCode::UNKNOWN ), $request->promotionCodes ),
+			$promotions->facts,
+			$promotions->rejected,
 			$request->shippingMethodKey,
 			array(),
 			( $this->crossZonePolicy )(),
 			( $this->taxRoundingMode )(),
-			$this->clock->now()
+			$now
 		);
 
 		$engine = new Engine();
 		$phaseA = $engine->phaseA( $input, $this->promotions );
 
 		return new Calculation( $engine->phaseB( $phaseA, $this->quotes( $phaseA ) ), $prices->unpriced );
+	}
+
+	/**
+	 * Finds the promotions of the codes entered, at the instant of the calculation: one read when there are codes, none otherwise.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param CalculationRequest $request The request.
+	 * @param \DateTimeImmutable $now     When the calculation is asked for.
+	 * @return ResolvedPromotions The promotions that apply, and the codes that do not.
+	 */
+	private function resolveCodes( CalculationRequest $request, \DateTimeImmutable $now ): ResolvedPromotions {
+		if ( null === $this->codes || array() === $request->promotionCodes ) {
+			return ResolvedPromotions::unknown( $request->promotionCodes );
+		}
+
+		return $this->codes->forCodes( $request->promotionCodes, $request->currency, $now );
 	}
 
 	/**

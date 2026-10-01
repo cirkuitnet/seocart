@@ -23,6 +23,7 @@ use SEOCart\Pricing\Domain\FeeDefinition;
 use SEOCart\Pricing\Domain\InputLine;
 use SEOCart\Pricing\Domain\PriceSource;
 use SEOCart\Pricing\Domain\PromotionEffect;
+use SEOCart\Pricing\Domain\PromotionEvaluator;
 use SEOCart\Pricing\Domain\PromotionFacts;
 use SEOCart\Pricing\Domain\Quote\Quotes;
 use SEOCart\Pricing\Domain\Quote\ShippingRateQuote;
@@ -46,9 +47,9 @@ use SEOCart\Tax\Domain\TaxRoundingMode;
  * Owns one fact: how a scenario file maps onto the engine. The file states the input as a cart
  * would hand it in, with its prices and its quotes, and the expected figures as decimal strings,
  * never floats. The scenario runs the engine directly: no calculator, no port, no WordPress.
- * Promotions are evaluated by FactsEvaluator. A scenario in another currency can also be run on
- * lines and a rate read from storage instead of the file's (runPricedAs()), so the same expected
- * figures hold the stored prices and rates to account.
+ * Promotions are evaluated by FactsEvaluator, or by the evaluator a test gives run(). A scenario in
+ * another currency can also be run on lines and a rate read from storage instead of the file's
+ * (runPricedAs()), so the same expected figures hold the stored prices and rates to account.
  *
  * The file's shape: `scenario` and `source` (what it tests, and where the case comes from, in
  * words), `input`, `expected`, and an optional one-line `note` where the expected figures
@@ -248,13 +249,14 @@ final class ScenarioFixture {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param array $changes Optional. Input keys to replace. Default none.
+	 * @param array                   $changes   Optional. Input keys to replace. Default none.
+	 * @param PromotionEvaluator|null $evaluator Optional. The promotions' evaluator. Default a FactsEvaluator.
 	 * @return Totals The totals.
 	 *
 	 * @phpstan-param array<string, mixed> $changes
 	 */
-	public function run( array $changes = array() ): Totals {
-		return $this->runInput( $this->input( $changes ) );
+	public function run( array $changes = array(), ?PromotionEvaluator $evaluator = null ): Totals {
+		return $this->runInput( $this->input( $changes ), $evaluator ?? new FactsEvaluator() );
 	}
 
 	/**
@@ -269,7 +271,7 @@ final class ScenarioFixture {
 	 * @phpstan-param list<InputLine> $lines
 	 */
 	public function runPricedAs( PresentmentCurrency $currency, array $lines ): Totals {
-		return $this->runInput( $this->inputOf( $this->document['input'], $currency->context, $currency->roundingRule, $lines ) );
+		return $this->runInput( $this->inputOf( $this->document['input'], $currency->context, $currency->roundingRule, $lines ), new FactsEvaluator() );
 	}
 
 	/**
@@ -277,12 +279,13 @@ final class ScenarioFixture {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param CalculationInput $input The input.
+	 * @param CalculationInput   $input     The input.
+	 * @param PromotionEvaluator $evaluator The promotions' evaluator.
 	 * @return Totals The totals.
 	 */
-	private function runInput( CalculationInput $input ): Totals {
+	private function runInput( CalculationInput $input, PromotionEvaluator $evaluator ): Totals {
 		$engine = new Engine();
-		$phaseA = $engine->phaseA( $input, new FactsEvaluator() );
+		$phaseA = $engine->phaseA( $input, $evaluator );
 
 		return $engine->phaseB( $phaseA, $this->quotes( $phaseA ) );
 	}

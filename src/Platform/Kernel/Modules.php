@@ -19,11 +19,11 @@ use SEOCart\Application\Operations\Operations;
 use SEOCart\Cart\Application\CartError;
 use SEOCart\Cart\Application\CartService;
 use SEOCart\Cart\Application\CartTokens;
+use SEOCart\Cart\Application\StoreApiError;
 use SEOCart\Cart\Domain\CartRepository;
 use SEOCart\Cart\Infrastructure\Jobs\SweepExpiredCarts;
 use SEOCart\Cart\Infrastructure\MysqlCartRepository;
 use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
-use SEOCart\Cart\Interfaces\StoreApi\StoreApiError;
 use SEOCart\Cart\Interfaces\StoreApi\StoreSession;
 use SEOCart\Cart\Interfaces\StoreApi\StoreWrites;
 use SEOCart\Catalog\Application\Doctor\ProductSettler;
@@ -178,10 +178,10 @@ use SEOCart\Pricing\Application\Calculator;
 use SEOCart\Pricing\Application\ExchangeRates;
 use SEOCart\Pricing\Application\PresentmentCurrencies;
 use SEOCart\Pricing\Application\PriceResolver;
+use SEOCart\Pricing\Application\PromotionCodes;
 use SEOCart\Pricing\Application\ShippingRateQuoter;
 use SEOCart\Pricing\Application\TaxQuoter;
 use SEOCart\Pricing\Domain\AmountBasis;
-use SEOCart\Pricing\Domain\NoPromotions;
 use SEOCart\Pricing\Domain\PricingError;
 use SEOCart\Pricing\Domain\PromotionEvaluator;
 use SEOCart\Pricing\Infrastructure\Doctor\RateVersionCheck;
@@ -189,6 +189,13 @@ use SEOCart\Pricing\Infrastructure\MysqlExchangeRates;
 use SEOCart\Pricing\Infrastructure\MysqlPresentmentCurrencies;
 use SEOCart\Pricing\Infrastructure\Quotes\FixedRateTaxQuoter;
 use SEOCart\Pricing\Infrastructure\Quotes\FlatRateShippingQuoter;
+use SEOCart\Promotion\Application\PromotionError;
+use SEOCart\Promotion\Application\PromotionRepository;
+use SEOCart\Promotion\Application\PromotionResolver;
+use SEOCart\Promotion\Application\PromotionUsage;
+use SEOCart\Promotion\Domain\Evaluator;
+use SEOCart\Promotion\Infrastructure\Doctor\PromotionUsageCheck;
+use SEOCart\Promotion\Infrastructure\MysqlPromotionRepository;
 use SEOCart\Support\Clock;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Decimal;
@@ -265,6 +272,7 @@ final class Modules {
 		OrderError::class,
 		PaymentError::class,
 		PricingError::class,
+		PromotionError::class,
 		SecretsError::class,
 		SettingsError::class,
 		StoreApiError::class,
@@ -364,6 +372,7 @@ final class Modules {
 		self::pricingRegister( $container );
 		self::orderRegister( $container );
 		self::paymentRegister( $container );
+		self::promotionRegister( $container );
 		self::kernelRegister( $container );
 	}
 
@@ -524,6 +533,7 @@ final class Modules {
 				$c->get( StockProjectionCheck::class ),
 				$c->get( PaymentLedgerCheck::class ),
 				$c->get( RateVersionCheck::class ),
+				$c->get( PromotionUsageCheck::class ),
 				...$c->get( CatalogChecks::class )->checks()
 			)
 		);
@@ -1140,7 +1150,8 @@ final class Modules {
 				self::checkoutDelivery( $c ),
 				self::baseCurrency( $c ),
 				static fn(): Locale => $c->get( PostLocales::class )->siteLocale(),
-				$c->get( Calculator::class )
+				$c->get( Calculator::class ),
+				$c->get( PromotionResolver::class )
 			)
 		);
 		$container->bind( SweepExpiredCarts::class, static fn( Container $c ): SweepExpiredCarts => new SweepExpiredCarts( $c->get( MysqlCartRepository::class ) ) );
@@ -1193,9 +1204,10 @@ final class Modules {
 	 *
 	 * It adds no hook: a cart or an order asks the calculator for totals when it needs them. The
 	 * shipping and tax providers are the two the plugin ships with, set up with their own
-	 * constants; the promotion evaluator evaluates nothing until a promotion module replaces it.
-	 * The calculator reads the base currency, the cross-zone policy and the tax rounding mode from
-	 * their settings when it calculates, never when it is built: one group, primed by the first read.
+	 * constants. The calculator's two promotion ports, which resolve codes and evaluate
+	 * promotions, are bound by the promotion module. The calculator reads the base currency, the
+	 * cross-zone policy and the tax rounding mode from their settings when it calculates, never
+	 * when it is built: one group, primed by the first read.
 	 *
 	 * @since 0.1.0
 	 *
@@ -1208,7 +1220,6 @@ final class Modules {
 			static fn( Container $c ): ShippingRateQuoter => new FlatRateShippingQuoter( $c->get( IdGenerator::class ), Decimal::of( FlatRateShippingQuoter::RATE ), AmountBasis::Net, FlatRateShippingQuoter::TAX_CLASS )
 		);
 		$container->bind( TaxQuoter::class, static fn(): TaxQuoter => new FixedRateTaxQuoter( Percentage::fromString( FixedRateTaxQuoter::RATE ), FixedRateTaxQuoter::JURISDICTION ) );
-		$container->bind( PromotionEvaluator::class, static fn(): PromotionEvaluator => new NoPromotions() );
 		$container->bind(
 			Calculator::class,
 			static fn( Container $c ): Calculator => new Calculator(
@@ -1221,7 +1232,8 @@ final class Modules {
 				self::baseCurrency( $c ),
 				static fn(): CrossZonePolicy => CrossZonePolicy::from( (string) $c->get( SettingsStore::class )->value( InternationalSettings::CROSS_ZONE_POLICY ) ),
 				static fn(): TaxRoundingMode => TaxRoundingMode::from( (string) $c->get( SettingsStore::class )->value( InternationalSettings::TAX_ROUNDING_MODE ) ),
-				$c->get( PresentmentCurrencies::class )
+				$c->get( PresentmentCurrencies::class ),
+				$c->get( PromotionCodes::class )
 			)
 		);
 		$container->bind( PresentmentCurrencies::class, static fn( Container $c ): PresentmentCurrencies => new MysqlPresentmentCurrencies( $c->get( Database::class ), self::rateVersion( $c ) ) );
@@ -1348,6 +1360,27 @@ final class Modules {
 			)
 		);
 		$container->bind( PaymentLedgerCheck::class, static fn( Container $c ): PaymentLedgerCheck => new PaymentLedgerCheck( $c->get( MysqlPaymentRepository::class ), $c->get( OrderRepository::class ) ) );
+	}
+
+	/**
+	 * The promotion module: its statements, the resolver of codes, the usage ledger and the check of doctor; and the
+	 * calculator's two promotion ports, which it implements.
+	 *
+	 * It adds no hook: a calculation resolves codes and evaluates promotions through the ports,
+	 * placing an order claims their uses through the ledger, and the check runs through doctor.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param Container $container The container.
+	 */
+	private static function promotionRegister( Container $container ): void {
+		$container->bind( MysqlPromotionRepository::class, static fn( Container $c ): MysqlPromotionRepository => new MysqlPromotionRepository( $c->get( Database::class ) ) );
+		$container->bind( PromotionRepository::class, static fn( Container $c ): PromotionRepository => $c->get( MysqlPromotionRepository::class ) );
+		$container->bind( PromotionResolver::class, static fn( Container $c ): PromotionResolver => new PromotionResolver( $c->get( PromotionRepository::class ), $c->get( Clock::class ) ) );
+		$container->bind( PromotionCodes::class, static fn( Container $c ): PromotionCodes => $c->get( PromotionResolver::class ) );
+		$container->bind( PromotionEvaluator::class, static fn(): PromotionEvaluator => new Evaluator() );
+		$container->bind( PromotionUsage::class, static fn( Container $c ): PromotionUsage => new PromotionUsage( $c->get( PromotionRepository::class ), $c->get( TransactionManager::class ) ) );
+		$container->bind( PromotionUsageCheck::class, static fn( Container $c ): PromotionUsageCheck => new PromotionUsageCheck( $c->get( MysqlPromotionRepository::class ) ) );
 	}
 
 	/**
