@@ -16,6 +16,13 @@
  * later write gets the same cookie again, for seven days from that write, so the cookie lives as
  * long as the cart; a read of the cart gets none. The cart's lines name a variant no product has,
  * which the cart keeps and reports unpriced, so the spec needs no catalog.
+ *
+ * The order-status read answers a guest who presents the order's access key, in its header or
+ * in the emailed link's `order_key` parameter, with the order's figures and lines; a guest
+ * without the key, or with a wrong one, gets the same `order.not_found` as for an order that
+ * does not exist. The Store API cannot place an order yet, so the reads of a real order need one
+ * planted on the site under test first, named in SEOCART_E2E_ORDER as `<uuid>:<key>`; without it
+ * they are skipped, and the refusal of an order that does not exist still runs.
  */
 
 import type { APIRequestContext, APIResponse } from '@playwright/test';
@@ -67,6 +74,20 @@ function expectGuestCartLife( cookie: string ): void {
 	expect( maxAge( cookie ) ).toBeGreaterThan( GUEST_CART_SECONDS - 60 );
 	expect( maxAge( cookie ) ).toBeLessThanOrEqual( GUEST_CART_SECONDS );
 }
+/** The request header a client sends an order's access key in. */
+const ORDER_KEY_HEADER = 'X-SEOCart-Order-Key';
+
+/** A well-formed uuid no order has. */
+const NO_SUCH_ORDER = '00000000-0000-7000-8000-000000000000';
+
+/** The order planted on the site under test, if any: SEOCART_E2E_ORDER is `<uuid>:<key>`. */
+const PLANTED_ORDER = ( () => {
+	const [ uuid = '', key = '' ] = (
+		process.env.SEOCART_E2E_ORDER ?? ''
+	).split( ':' );
+
+	return '' !== uuid && '' !== key ? { uuid, key } : null;
+} )();
 
 /** Returns the site's home URL, with its trailing slash. */
 function home(): string {
@@ -83,6 +104,42 @@ function restUrl( route: string ): string {
 		`?rest_route=${ encodeURIComponent( route ) }`,
 		home()
 	).toString();
+}
+
+/**
+ * Returns the URL of an order's status read, with the emailed link's key when one is given.
+ *
+ * @param uuid The order's uuid.
+ * @param key  Optional. The access key, as the `order_key` query parameter.
+ */
+function orderUrl( uuid: string, key?: string ): string {
+	const url = new URL( restUrl( `/${ STORE_NAMESPACE }/orders/${ uuid }` ) );
+
+	if ( undefined !== key ) {
+		url.searchParams.set( 'order_key', key );
+	}
+
+	return url.toString();
+}
+
+/**
+ * Asserts that a response is the one answer every refused status read gets.
+ *
+ * @param response The response.
+ */
+async function expectOrderNotFound( response: APIResponse ): Promise< void > {
+	expect( response.status() ).toBe( 404 );
+	expect( response.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+	expect( setCookies( response ) ).toEqual( [] );
+
+	const body = await response.json();
+
+	expect( body.code ).toBe( 'order.not_found' );
+	expect( Object.keys( body.data ) ).toEqual( [
+		'status',
+		'details',
+		'correlation_id',
+	] );
 }
 
 /**
@@ -287,5 +344,70 @@ test.describe( 'Store API, as a guest', () => {
 			'correlation_id',
 		] );
 		expect( body.data.status ).toBe( 404 );
+	} );
+
+	test( 'the status read of an order that does not exist is order.not_found, never cached', async () => {
+		await expectOrderNotFound(
+			await guest.get( orderUrl( NO_SUCH_ORDER ) )
+		);
+		await expectOrderNotFound(
+			await guest.get( orderUrl( NO_SUCH_ORDER, '0'.repeat( 32 ) ) )
+		);
+	} );
+
+	test( "a guest with the order's key reads its status, in the header or the link", async () => {
+		test.skip(
+			null === PLANTED_ORDER,
+			'Plant an order on the site under test and name it in SEOCART_E2E_ORDER as <uuid>:<key>.'
+		);
+
+		const order = PLANTED_ORDER as { uuid: string; key: string };
+		const reads = [
+			await guest.get( orderUrl( order.uuid ), {
+				headers: { [ ORDER_KEY_HEADER ]: order.key },
+			} ),
+			await guest.get( orderUrl( order.uuid, order.key ) ),
+		];
+
+		for ( const read of reads ) {
+			expect( read.status() ).toBe( 200 );
+			expect( read.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+			expect( varies( read ) ).toContain( 'cookie' );
+			expect(
+				setCookies( read ),
+				'The status read set a cookie.'
+			).toEqual( [] );
+
+			const body = await read.json();
+
+			expect( body.uuid ).toBe( order.uuid );
+			expect( typeof body.order_number ).toBe( 'string' );
+			expect( typeof body.grand_total_minor ).toBe( 'number' );
+			expect( body ).not.toHaveProperty( 'email' );
+			expect( body.lines.length ).toBeGreaterThan( 0 );
+
+			for ( const line of body.lines ) {
+				expect( typeof line.title ).toBe( 'string' );
+				expect( typeof line.sku ).toBe( 'string' );
+				expect( line.quantity ).toBeGreaterThan( 0 );
+				expect( typeof line.line_total_minor ).toBe( 'number' );
+			}
+		}
+	} );
+
+	test( "a guest without the order's key, or with a wrong one, gets the answer an order that does not exist gets", async () => {
+		test.skip(
+			null === PLANTED_ORDER,
+			'Plant an order on the site under test and name it in SEOCART_E2E_ORDER as <uuid>:<key>.'
+		);
+
+		const order = PLANTED_ORDER as { uuid: string; key: string };
+
+		await expectOrderNotFound( await guest.get( orderUrl( order.uuid ) ) );
+		await expectOrderNotFound(
+			await guest.get( orderUrl( order.uuid ), {
+				headers: { [ ORDER_KEY_HEADER ]: '0'.repeat( 32 ) },
+			} )
+		);
 	} );
 } );

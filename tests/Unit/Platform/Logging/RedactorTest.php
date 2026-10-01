@@ -152,6 +152,29 @@ final class RedactorTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a job's `key` is logged while an order's access key is dropped.
+	 *
+	 * The job runner logs a job's unique key under `key`. An order's access key is a declared
+	 * secret, and a secret's name is dropped from every context, so it is named `order_key`: were
+	 * it named `key`, every job line would lose its key.
+	 *
+	 * Planted violation: name the order-status read's key input `key` again
+	 * (OrderStoreOperations::KEY). The job's key is then dropped.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_jobs_key_is_logged_and_an_order_key_is_not(): void {
+		$redacted = Redactor::fromDeclarations( OwnedData::registry(), ...DeclaredFields::production() )->context(
+			array(
+				'key'       => 'seocart_sweep_holds',
+				'order_key' => '0123456789abcdef0123456789abcdef',
+			)
+		);
+
+		$this->assertSame( array( 'key' => 'seocart_sweep_holds' ), $redacted );
+	}
+
+	/**
 	 * Tests that the logging module reads declared fields, never the application layer's registries.
 	 *
 	 * Planted violation: import OperationRegistry in Redactor.php again.

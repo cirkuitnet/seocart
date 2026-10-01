@@ -29,7 +29,7 @@ final readonly class OrderAccess {
 	 * @since 0.1.0
 	 *
 	 * @param string      $uuid          The order's public identifier.
-	 * @param int|null    $customerId    The WordPress user the order belongs to, or null for a guest order.
+	 * @param int|null    $customerId    The id of the customer record the order belongs to, never a WordPress user's; null for a guest order.
 	 * @param string|null $accessKeyHash The hash of the order's access key, or null when it has none.
 	 * @param bool        $keyExpired    Whether the key's time is up, by the database clock; true when there is no key.
 	 */

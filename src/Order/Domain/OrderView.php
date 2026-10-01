@@ -43,7 +43,7 @@ final readonly class OrderView {
 	 * @param Currency           $currency          Its currency.
 	 * @param Locale             $locale            The locale it was placed in.
 	 * @param string             $email             Where its messages go.
-	 * @param int|null           $customerId        The WordPress user it belongs to, or null for a guest order.
+	 * @param int|null           $customerId        The id of the customer record it belongs to, never a WordPress user's; null for a guest order.
 	 * @param Money              $subtotal          The lines before discounts.
 	 * @param Money              $discountTotal     Every discount.
 	 * @param Money              $shippingTotal     Shipping.

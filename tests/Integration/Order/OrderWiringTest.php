@@ -11,6 +11,9 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Order;
 
+use SEOCart\Order\Application\ActorCustomers;
+use SEOCart\Order\Application\NoCustomers;
+use SEOCart\Order\Application\OrderAccessPolicy;
 use SEOCart\Order\Application\Orders;
 use SEOCart\Order\Domain\AccessKeys;
 use SEOCart\Order\Domain\ConversionContexts;
@@ -21,6 +24,7 @@ use SEOCart\Order\Infrastructure\MysqlConversionContexts;
 use SEOCart\Order\Infrastructure\MysqlOrderRepository;
 use SEOCart\Order\Infrastructure\SequenceOrderNumberGenerator;
 use SEOCart\Order\Infrastructure\WordPressAccessKeys;
+use SEOCart\Order\Interfaces\StoreApi\OrderStatusRead;
 use SEOCart\Platform\Events\EventPublisher;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\KernelContainer;
@@ -32,8 +36,12 @@ use SEOCart\Tests\Support\KernelContainer;
  * manager, are resolved before the count: the job queue behind the publisher reads its lock mode
  * when it is built, which is that module's cost, not the order module's.
  *
- * Planted violation, shown red and removed: in Modules::orderRegister(), leave out the
- * OrderNumberGenerator binding: the service cannot be built.
+ * Until the store keeps customer records, the port that says which customer an actor is resolves
+ * to NoCustomers, so no order belongs to any actor.
+ *
+ * Planted violations, each shown red and removed: in Modules::orderRegister(), leave out the
+ * OrderNumberGenerator binding: the service cannot be built; leave out the ActorCustomers
+ * binding: the access policy, and so the status read, cannot be built.
  *
  * @since 0.1.0
  */
@@ -52,7 +60,7 @@ final class OrderWiringTest extends DatabaseTestCase {
 
 		$log = $this->captureQueries(
 			static function () use ( $container, &$resolved ): void {
-				foreach ( array( OrderRepository::class, OrderNumberGenerator::class, AccessKeys::class, ConversionContexts::class, OrderStatusRegistry::class, Orders::class ) as $port ) {
+				foreach ( array( OrderRepository::class, OrderNumberGenerator::class, AccessKeys::class, ConversionContexts::class, OrderStatusRegistry::class, Orders::class, ActorCustomers::class, OrderAccessPolicy::class, OrderStatusRead::class ) as $port ) {
 					$resolved[ $port ] = get_class( $container->get( $port ) );
 				}
 			}
@@ -66,6 +74,9 @@ final class OrderWiringTest extends DatabaseTestCase {
 				ConversionContexts::class   => MysqlConversionContexts::class,
 				OrderStatusRegistry::class  => OrderStatusRegistry::class,
 				Orders::class               => Orders::class,
+				ActorCustomers::class       => NoCustomers::class,
+				OrderAccessPolicy::class    => OrderAccessPolicy::class,
+				OrderStatusRead::class      => OrderStatusRead::class,
 			),
 			$resolved
 		);

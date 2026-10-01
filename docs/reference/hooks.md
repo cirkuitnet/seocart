@@ -53,7 +53,7 @@ Fires after an order is accepted: its payment was approved and it entered its ac
 - `grandTotalMinor` (int): The grand total, in minor units of the currency.
 - `baseCurrency` (string): The store's base currency when the order was placed.
 - `baseGrandTotalMinor` (int): The grand total in minor units of the base currency.
-- `customerId` (int|null): The WordPress user the order belongs to, or null for a guest order.
+- `customerId` (int|null): The id of the customer record the order belongs to, never a WordPress user's; null for a guest order.
 - `actorType` (string): Who placed the order: `user` in person, `system` for a process on a user's authority.
 - `actorId` (int|null): The WordPress user who placed it, or null for a visitor.
 

@@ -63,6 +63,9 @@ use SEOCart\Inventory\Domain\StockRepository;
 use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
 use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
+use SEOCart\Order\Application\ActorCustomers;
+use SEOCart\Order\Application\NoCustomers;
+use SEOCart\Order\Application\OrderAccessPolicy;
 use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Application\Orders;
 use SEOCart\Order\Domain\AccessKeys;
@@ -78,6 +81,7 @@ use SEOCart\Order\Infrastructure\MysqlOrderRepository;
 use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\SequenceOrderNumberGenerator;
 use SEOCart\Order\Infrastructure\WordPressAccessKeys;
+use SEOCart\Order\Interfaces\StoreApi\OrderStatusRead;
 use SEOCart\Platform\Authorization\AuthorizationError;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
@@ -1148,7 +1152,7 @@ final class Modules {
 	}
 
 	/**
-	 * The order module: the order repository and service, the order number counter, the access keys and the conversion contexts.
+	 * The order module: the order repository and service, the order number counter, the access keys, the conversion contexts, and the storefront's access policy and status read.
 	 *
 	 * It adds no hook: an order is placed and changed by the services that call it, inside their
 	 * own transactions.
@@ -1179,6 +1183,9 @@ final class Modules {
 				$c->get( CorrelationId::class )
 			)
 		);
+		$container->bind( ActorCustomers::class, static fn(): ActorCustomers => new NoCustomers() );
+		$container->bind( OrderAccessPolicy::class, static fn( Container $c ): OrderAccessPolicy => new OrderAccessPolicy( $c->get( OrderRepository::class ), $c->get( AccessKeys::class ), $c->get( ActorCustomers::class ) ) );
+		$container->bind( OrderStatusRead::class, static fn( Container $c ): OrderStatusRead => new OrderStatusRead( $c->get( OrderAccessPolicy::class ) ) );
 	}
 
 	/**

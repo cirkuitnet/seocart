@@ -21,14 +21,18 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * a logged-in path and a guest path. The authorization path therefore has no such branch: every
  * decision goes through current_user_can(), and a visitor who is not logged in is simply a user
  * with no capabilities. The Store API's HTTP pieces, its request policy included, keep the same
- * rule. This test reads their source for the function name, as a call or as a callback string,
- * until the SEOCart coding standard carries an equivalent sniff.
+ * rule, and so do the order module, whose access policy decides who may see an order, and the
+ * REST adapter that serves every Store API route. This test reads their source for the function
+ * name, as a call or as a callback string, until the SEOCart coding standard carries an
+ * equivalent sniff.
  *
  * Planted violations, each of which must fail naming the file and the line:
  * - add `if ( is_user_logged_in() ) { return true; }` as the first line of
  *   PermissionCallback::__invoke();
  * - add `if ( is_user_logged_in() ) { return true; }` as the first line of
- *   StoreRequestPolicy::allows().
+ *   StoreRequestPolicy::allows();
+ * - add `if ( is_user_logged_in() ) { return true; }` as the first line of
+ *   OrderAccessPolicy::grants().
  *
  * @since 0.1.0
  */
@@ -44,13 +48,13 @@ final class NoLoggedInShortcutTest extends TestCase {
 	private const FORBIDDEN = 'is_user_logged_in';
 
 	/**
-	 * The directories scanned: the authorization module and the Store API's HTTP pieces.
+	 * The directories scanned: the authorization module, the Store API's HTTP pieces, the order module and the REST adapter.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var list<string>
 	 */
-	private const DIRECTORIES = array( 'src/Platform/Authorization', 'src/Cart/Interfaces' );
+	private const DIRECTORIES = array( 'src/Platform/Authorization', 'src/Cart/Interfaces', 'src/Order', 'src/Interfaces/Operations' );
 
 	/**
 	 * Tests that no file of the authorization path or the Store API names the function.
@@ -68,6 +72,8 @@ final class NoLoggedInShortcutTest extends TestCase {
 
 		$this->assertArrayHasKey( 'src/Platform/Authorization/PermissionCallback.php', $files, 'The scan did not find the permission callback, so an empty result would prove nothing.' );
 		$this->assertArrayHasKey( 'src/Cart/Interfaces/StoreApi/StoreRequestPolicy.php', $files, 'The scan did not find the Store API\'s request policy, so an empty result would prove nothing.' );
+		$this->assertArrayHasKey( 'src/Order/Application/OrderAccessPolicy.php', $files, 'The scan did not find the order access policy, so an empty result would prove nothing.' );
+		$this->assertArrayHasKey( 'src/Interfaces/Operations/RestAdapter.php', $files, 'The scan did not find the REST adapter, so an empty result would prove nothing.' );
 
 		foreach ( $files as $file => $source ) {
 			foreach ( token_get_all( $source ) as $token ) {

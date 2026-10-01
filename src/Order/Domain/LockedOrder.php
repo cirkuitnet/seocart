@@ -48,7 +48,7 @@ final readonly class LockedOrder {
 	 * @param Money         $baseAuthorized Authorized so far, in the base currency.
 	 * @param Money         $basePaid       Captured so far, in the base currency.
 	 * @param Money         $baseRefunded   Refunded so far, in the base currency.
-	 * @param int|null      $customerId     The WordPress user it belongs to, or null for a guest order.
+	 * @param int|null      $customerId     The id of the customer record it belongs to, never a WordPress user's; null for a guest order.
 	 * @param string        $actorType      Who placed it: `user` in person, `system` for a process on a user's authority.
 	 * @param int|null      $actorId        The WordPress user who placed it, or null for a visitor.
 	 * @param string|null   $holdGroup      The stock hold placement took for it, or null when nothing was held.

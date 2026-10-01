@@ -389,6 +389,84 @@
                 }
             }
         },
+        "/orders/{uuid}": {
+            "servers": [
+                {
+                    "url": "{site}/wp-json/seocart/store/v1",
+                    "variables": {
+                        "site": {
+                            "default": "https://example.com",
+                            "description": "The address of the WordPress site."
+                        }
+                    }
+                }
+            ],
+            "get": {
+                "operationId": "order.get_status",
+                "summary": "Returns an order's number, statuses, totals and lines to its customer, or to whoever presents its access key in the X-SEOCart-Order-Key header or the order_key query parameter; it carries no address and no email, and every refusal is order.not_found.",
+                "description": "Public: requires no capability, and anyone may send it.",
+                "parameters": [
+                    {
+                        "name": "uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The order's public identifier, from its confirmation or its emailed link.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "order_key",
+                        "in": "query",
+                        "required": false,
+                        "description": "The order's access key, as its emailed link carries it; a client may send it in the X-SEOCart-Order-Key header instead, which keeps it out of the URL.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "examples": [
+                                "0123456789abcdef0123456789abcdef"
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the StoreOrder resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StoreOrder"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`order.not_found`: The order was not found.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/session": {
             "servers": [
                 {
@@ -1696,6 +1774,240 @@
                     "held",
                     "available",
                     "ledger_entry_id"
+                ]
+            },
+            "StoreOrder": {
+                "type": "object",
+                "properties": {
+                    "uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The order's public identifier.",
+                        "examples": [
+                            "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b"
+                        ]
+                    },
+                    "order_number": {
+                        "type": "string",
+                        "description": "The number shown to people on the order and in its emails; a request never names an order by it.",
+                        "examples": [
+                            "000042"
+                        ]
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "pending_payment",
+                            "awaiting_review",
+                            "processing",
+                            "on_hold",
+                            "preorder",
+                            "completed",
+                            "cancelled",
+                            "failed"
+                        ],
+                        "description": "Where the order is in its life, from pending payment to completed.",
+                        "examples": [
+                            "processing"
+                        ]
+                    },
+                    "payment_status": {
+                        "type": "string",
+                        "enum": [
+                            "unpaid",
+                            "pending",
+                            "authorized",
+                            "partially_paid",
+                            "paid",
+                            "partially_refunded",
+                            "refunded",
+                            "voided",
+                            "failed",
+                            "disputed",
+                            "terms_pending"
+                        ],
+                        "description": "How far the order has been paid, or refunded.",
+                        "examples": [
+                            "paid"
+                        ]
+                    },
+                    "currency": {
+                        "type": "string",
+                        "description": "The ISO 4217 code of the currency every amount is in.",
+                        "examples": [
+                            "USD"
+                        ]
+                    },
+                    "subtotal_minor": {
+                        "type": "integer",
+                        "description": "The lines before discounts, in minor units.",
+                        "examples": [
+                            1299
+                        ]
+                    },
+                    "discount_total_minor": {
+                        "type": "integer",
+                        "description": "Every discount, in minor units.",
+                        "examples": [
+                            1299
+                        ]
+                    },
+                    "shipping_total_minor": {
+                        "type": "integer",
+                        "description": "Shipping, in minor units.",
+                        "examples": [
+                            1299
+                        ]
+                    },
+                    "fee_total_minor": {
+                        "type": "integer",
+                        "description": "Every fee, in minor units.",
+                        "examples": [
+                            1299
+                        ]
+                    },
+                    "tax_total_minor": {
+                        "type": "integer",
+                        "description": "Every tax, in minor units.",
+                        "examples": [
+                            1299
+                        ]
+                    },
+                    "grand_total_minor": {
+                        "type": "integer",
+                        "description": "The order's total, in minor units.",
+                        "examples": [
+                            1299
+                        ]
+                    },
+                    "paid_minor": {
+                        "type": "integer",
+                        "description": "What has been captured so far, in minor units.",
+                        "examples": [
+                            1299
+                        ]
+                    },
+                    "refunded_minor": {
+                        "type": "integer",
+                        "description": "What has been refunded so far, in minor units.",
+                        "examples": [
+                            1299
+                        ]
+                    },
+                    "due_minor": {
+                        "type": "integer",
+                        "description": "What is still to be paid, in minor units.",
+                        "examples": [
+                            1299
+                        ]
+                    },
+                    "lines": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "line_uuid": {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "description": "The line's public identifier."
+                                },
+                                "title": {
+                                    "type": "string",
+                                    "description": "The product's name as it was sold."
+                                },
+                                "variant_label": {
+                                    "type": "string",
+                                    "description": "The variant as it was sold, such as a size; empty for a product without variants."
+                                },
+                                "sku": {
+                                    "type": "string",
+                                    "description": "The SKU as it was sold."
+                                },
+                                "quantity": {
+                                    "type": "integer",
+                                    "description": "The units sold."
+                                },
+                                "unit_price_minor": {
+                                    "type": "integer",
+                                    "description": "The price of one unit as authored, in minor units."
+                                },
+                                "unit_amount_basis": {
+                                    "type": "string",
+                                    "enum": [
+                                        "net",
+                                        "gross"
+                                    ],
+                                    "description": "Whether the unit price was authored net or gross of tax."
+                                },
+                                "line_subtotal_minor": {
+                                    "type": "integer",
+                                    "description": "The unit price times the quantity, before discounts, in minor units."
+                                },
+                                "line_discount_minor": {
+                                    "type": "integer",
+                                    "description": "The discounts given on the line, in minor units."
+                                },
+                                "line_tax_minor": {
+                                    "type": "integer",
+                                    "description": "The tax on the line after discounts, in minor units."
+                                },
+                                "line_total_minor": {
+                                    "type": "integer",
+                                    "description": "The line's total as the order shows it, in minor units."
+                                }
+                            },
+                            "required": [
+                                "line_uuid",
+                                "title",
+                                "variant_label",
+                                "sku",
+                                "quantity",
+                                "unit_price_minor",
+                                "unit_amount_basis",
+                                "line_subtotal_minor",
+                                "line_discount_minor",
+                                "line_tax_minor",
+                                "line_total_minor"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "minItems": 1,
+                        "description": "The order's lines, in their order.",
+                        "examples": [
+                            [
+                                {
+                                    "line_uuid": "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6c",
+                                    "title": "Tee",
+                                    "variant_label": "Medium",
+                                    "sku": "TEE-M",
+                                    "quantity": 2,
+                                    "unit_price_minor": 1299,
+                                    "unit_amount_basis": "net",
+                                    "line_subtotal_minor": 1299,
+                                    "line_discount_minor": 1299,
+                                    "line_tax_minor": 1299,
+                                    "line_total_minor": 1299
+                                }
+                            ]
+                        ]
+                    }
+                },
+                "required": [
+                    "uuid",
+                    "order_number",
+                    "status",
+                    "payment_status",
+                    "currency",
+                    "subtotal_minor",
+                    "discount_total_minor",
+                    "shipping_total_minor",
+                    "fee_total_minor",
+                    "tax_total_minor",
+                    "grand_total_minor",
+                    "paid_minor",
+                    "refunded_minor",
+                    "due_minor",
+                    "lines"
                 ]
             },
             "StoreSession": {

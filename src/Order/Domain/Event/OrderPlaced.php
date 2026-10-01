@@ -50,7 +50,7 @@ final readonly class OrderPlaced implements DomainEvent {
 	 * @param int                $grandTotalMinor     The grand total, in minor units of the currency.
 	 * @param string             $baseCurrency        The store's base currency when the order was placed.
 	 * @param int                $baseGrandTotalMinor The grand total in minor units of the base currency.
-	 * @param int|null           $customerId          The WordPress user the order belongs to, or null for a guest order.
+	 * @param int|null           $customerId          The id of the customer record the order belongs to, never a WordPress user's; null for a guest order.
 	 * @param string             $actorType           Who placed the order: `user` in person, `system` for a process on a user's authority.
 	 * @param int|null           $actorId             The WordPress user who placed it, or null for a visitor.
 	 * @param \DateTimeImmutable $occurredAt          When it happened.

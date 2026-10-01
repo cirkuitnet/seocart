@@ -228,10 +228,10 @@ final class OrderTables {
 						'customer_id',
 						'bigint unsigned',
 						Classification::Pii,
-						'The WordPress user the order belongs to; NULL for a guest order.',
+						'The id of the customer record the order belongs to, never a WordPress user\'s; NULL for a guest order.',
 						nullable: true,
 						erasure: ColumnSpec::ERASE_RETAIN,
-						retainedBecause: 'The order is kept for its retention period, and the user id is what its "my orders" list and access check read; it identifies no one once the user is erased.'
+						retainedBecause: 'The order is kept for its retention period, and the customer record\'s id is what its "my orders" list and access check read; it identifies no one once the customer record is erased.'
 					),
 					new ColumnSpec( 'email', 'varchar(255)', Classification::Pii, 'The e-mail address the order\'s messages go to, as given at checkout.', erasure: ColumnSpec::ERASE_ANONYMIZE ),
 					self::currency( 'currency', 'The one currency of every amount of the order, ISO 4217.' ),

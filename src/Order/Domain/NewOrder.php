@@ -58,7 +58,7 @@ final readonly class NewOrder {
 	 *
 	 * @param OrderChannel         $channel           Where the order comes from.
 	 * @param string               $email             Where its messages go.
-	 * @param int|null             $customerId        The WordPress user it belongs to, or null for a guest order.
+	 * @param int|null             $customerId        The id of the customer record it belongs to, never a WordPress user's; null for a guest order.
 	 * @param Locale               $locale            The locale it is placed in, which its snapshots are written in.
 	 * @param int|null             $marketId          The market it is placed in, or null when the store has none.
 	 * @param ConversionContext    $conversionContext The rate it is placed at: quote currency = the order's, base currency = the store's.
