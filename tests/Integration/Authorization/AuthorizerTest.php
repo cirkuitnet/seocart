@@ -20,6 +20,7 @@ use SEOCart\Platform\Authorization\MetaCapabilityResolver;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Error\ErrorDefinition;
+use SEOCart\Tests\Support\RegistersProductType;
 use SEOCart\Tests\Support\ReloadsRoles;
 use WP_UnitTestCase;
 
@@ -29,16 +30,16 @@ use WP_UnitTestCase;
  * The authorizer with real users, real roles and the plugin's map_meta_cap callback hooked.
  *
  * The callback is hooked with a test resolver for `seocart_view_order` that knows one order,
- * 42, which needs `seocart_view_orders`. The product post type is registered the way the
- * catalog will register it, from ProductCapabilities alone; registering it also records its
- * meta capabilities in core's `$post_type_meta_caps`, which unregistering leaves behind, so that
- * global is restored afterwards. Roles are reloaded from the database around each test, because
+ * 42, which needs `seocart_view_orders`. The product post type is registered from
+ * ProductCapabilities alone, and the site's own registration is put back after each test
+ * (RegistersProductType). Roles are reloaded from the database around each test, because
  * WordPress keeps role changes in the WP_Roles object as well as in the rolled-back option.
  *
  * @since 0.1.0
  */
 final class AuthorizerTest extends WP_UnitTestCase {
 
+	use RegistersProductType;
 	use ReloadsRoles;
 
 	/**
@@ -51,29 +52,16 @@ final class AuthorizerTest extends WP_UnitTestCase {
 	private Authorizer $authorizer;
 
 	/**
-	 * Core's record of custom meta capabilities, as it was before the test.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var array<string, string>|null
-	 */
-	private ?array $metaCapabilitiesBefore;
-
-	/**
 	 * Registers the product post type, hooks the mapper with the test resolver and builds the authorizer.
 	 *
 	 * @since 0.1.0
 	 */
 	public function set_up(): void {
-		global $post_type_meta_caps;
-
 		parent::set_up();
 
 		self::reloadRoles();
 
-		$this->metaCapabilitiesBefore = is_array( $post_type_meta_caps ) ? $post_type_meta_caps : null;
-
-		register_post_type( ProductCapabilities::POST_TYPE, array_merge( array( 'public' => false ), ProductCapabilities::registrationArguments() ) );
+		$this->registerProductType();
 
 		$declaration = new CapabilityDeclaration();
 		$mapper      = new CapabilityMapper( $declaration );
@@ -103,17 +91,12 @@ final class AuthorizerTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Unregisters the product post type, rolls the test back and reloads the roles.
+	 * Puts the site's product post type back, rolls the test back and reloads the roles.
 	 *
 	 * @since 0.1.0
 	 */
 	public function tear_down(): void {
-		global $post_type_meta_caps;
-
-		unregister_post_type( ProductCapabilities::POST_TYPE );
-
-		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- core's global, restored to its state before the test registered a post type.
-		$post_type_meta_caps = $this->metaCapabilitiesBefore;
+		$this->restoreProductType();
 
 		parent::tear_down();
 

@@ -473,11 +473,17 @@ final class SafeModeTest extends KernelTestCase {
 	 * Tests the effect on jobs: the job runner the kernel wires runs nothing while Safe Mode is on,
 	 * and runs again once the site is adopted.
 	 *
+	 * The jobs are run by the runner of the test's container. The runner the plugin hooked when it
+	 * booted is taken off the hook first: it would read this test's boot record into the plugin's
+	 * own services, which keep it for the rest of the process, and every later test would then
+	 * run on a site those services take for installed.
+	 *
 	 * @since 0.1.0
 	 */
 	public function test_the_wired_job_runner_pauses_while_safe_mode_is_on(): void {
 		$this->container()->get( Lifecycle::class )->activate();
 		$this->moveSiteTo( 'https://copy.example.net' );
+		KernelHooks::detach( JobRunner::HOOK );
 
 		$this->assertTrue( $this->container()->get( JobRunner::class )->runDue( 1, 'test' )['paused'], 'A copy of the store ran its jobs.' );
 
