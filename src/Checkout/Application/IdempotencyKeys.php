@@ -90,7 +90,7 @@ interface IdempotencyKeys {
 	 *
 	 * @param int    $id           The key's row, from the claim.
 	 * @param int    $orderId      The order placed.
-	 * @param string $responseJson The answer, exactly as it is sent; a retry gets it byte for byte.
+	 * @param string $responseJson The answer as the key keeps it, its order key sealed (KeptAnswer).
 	 */
 	public function complete( int $id, int $orderId, string $responseJson ): void;
 

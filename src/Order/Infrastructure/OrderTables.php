@@ -282,6 +282,7 @@ final class OrderTables {
 			),
 			array(
 				IndexSpec::key( 'unreconciled', array( 'has_unreconciled_money' ), 'The orders a person must reconcile, which doctor reports.' ),
+				IndexSpec::key( 'status_created', array( 'status', 'created_at' ), 'The orders in a status placed before a time, such as those still pending payment that reconciliation settles.' ),
 			),
 			self::FINANCIAL,
 			array(

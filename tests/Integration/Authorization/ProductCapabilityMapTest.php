@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Authorization;
 
+use SEOCart\Catalog\Infrastructure\ProductPostType;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Authorization\CapabilityInstaller;
 use SEOCart\Platform\Authorization\CapabilityMapper;
@@ -25,9 +26,11 @@ use WP_UnitTestCase;
  * Registers `seocart_product` the way the catalog module will, from the registration
  * arguments alone, and checks what core makes of it with the plugin's callback hooked.
  *
- * The post type is registered and unregistered around each test. Registering a post type with
- * `map_meta_cap => true` also records its meta capabilities in core's `$post_type_meta_caps`
- * global, which unregistering leaves behind, so that global is restored too.
+ * The post type is registered and unregistered around each test, and registered again by the
+ * plugin's own registration afterwards when it was registered before, so the tests that follow
+ * find it. Registering a post type with `map_meta_cap => true` also records its meta capabilities
+ * in core's `$post_type_meta_caps` global, which unregistering leaves behind, so that global is
+ * restored too.
  *
  * @since 0.1.0
  */
@@ -54,6 +57,15 @@ final class ProductCapabilityMapTest extends WP_UnitTestCase {
 	private ?array $metaCapabilitiesBefore;
 
 	/**
+	 * Whether the post type was registered before the test registered it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var bool
+	 */
+	private bool $registeredBefore;
+
+	/**
 	 * Registers the post type and hooks the plugin's callback.
 	 *
 	 * @since 0.1.0
@@ -66,6 +78,7 @@ final class ProductCapabilityMapTest extends WP_UnitTestCase {
 		self::reloadRoles();
 
 		$this->metaCapabilitiesBefore = is_array( $post_type_meta_caps ) ? $post_type_meta_caps : null;
+		$this->registeredBefore       = post_type_exists( self::POST_TYPE );
 
 		register_post_type( self::POST_TYPE, array_merge( array( 'public' => false ), ProductCapabilities::registrationArguments() ) );
 
@@ -73,7 +86,7 @@ final class ProductCapabilityMapTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Unregisters the post type and restores what registering it changed.
+	 * Unregisters the post type, registers it again when it was registered before, and restores what registering it changed.
 	 *
 	 * @since 0.1.0
 	 */
@@ -81,6 +94,10 @@ final class ProductCapabilityMapTest extends WP_UnitTestCase {
 		global $post_type_meta_caps;
 
 		unregister_post_type( self::POST_TYPE );
+
+		if ( $this->registeredBefore ) {
+			ProductPostType::register();
+		}
 
 		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- core's global, restored to its state before the test registered a post type.
 		$post_type_meta_caps = $this->metaCapabilitiesBefore;

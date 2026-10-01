@@ -176,27 +176,29 @@ final class MysqlPaymentRepository implements PaymentRepository {
 		. 'WHERE id = %d AND status IN ({list})';
 
 	/**
-	 * The gateway is still deciding: the intent waits for it.
+	 * The gateway is still deciding: the intent waits for it until a time set by the database clock.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
 	public const MARK_PROCESSING = "UPDATE {payment_intents} SET status = 'processing', provider_intent_id = COALESCE( provider_intent_id, NULLIF( %s, '' ) ), "
-		. 'updated_at = GREATEST( UTC_TIMESTAMP(6), updated_at + INTERVAL 1 MICROSECOND ) WHERE id = %d AND status IN ({list})';
+		. 'customer_action_expires_at = UTC_TIMESTAMP() + INTERVAL %d SECOND, updated_at = GREATEST( UTC_TIMESTAMP(6), updated_at + INTERVAL 1 MICROSECOND ) '
+		. 'WHERE id = %d AND status IN ({list})';
 
 	/**
-	 * A page of the intents in some states that have not changed for a while by the database clock, in the order they were created, after the uuid of the page before.
+	 * A page of the intents in some states that have not changed for a while by the database clock, in the order they were created, after the uuid of the page before, each with when its wait runs out and whether it has.
 	 *
 	 * Uuids are time-ordered, so the uuid order is the order of creation, and a caller that pages
 	 * from the last uuid it read reaches every waiting intent, however many the gateway never answers.
+	 * Whether a wait has run out is judged by the database clock, the one that set it.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const STALE_INTENTS = 'SELECT uuid, order_id, status, provider_intent_id, amount_minor, currency FROM {payment_intents} '
-		. 'WHERE status IN ({list}) AND updated_at < UTC_TIMESTAMP(6) - INTERVAL %d SECOND AND uuid > %s ORDER BY uuid LIMIT %d';
+	public const STALE_INTENTS = 'SELECT uuid, order_id, status, provider_intent_id, amount_minor, currency, customer_action_expires_at, customer_action_expires_at <= UTC_TIMESTAMP() AS expired '
+		. 'FROM {payment_intents} WHERE status IN ({list}) AND updated_at < UTC_TIMESTAMP(6) - INTERVAL %d SECOND AND uuid > %s ORDER BY uuid LIMIT %d';
 
 	/**
 	 * A page of intents by the primary key, after the last id of the page before, each with what its applied, approved ledger rows add up to by operation, in both currencies.
@@ -510,7 +512,7 @@ final class MysqlPaymentRepository implements PaymentRepository {
 	 * @param int          $intentId         The intent.
 	 * @param IntentStatus $to               IntentStatus::RequiresAction or IntentStatus::Processing.
 	 * @param string|null  $providerIntentId The provider's reference to the intent.
-	 * @param int          $actionSeconds    How long the customer has to act; for RequiresAction.
+	 * @param int          $actionSeconds    How long the wait may last, for the customer to act or the gateway to decide.
 	 * @return bool True when the intent changed; false when its state refused it.
 	 */
 	public function await( int $intentId, IntentStatus $to, ?string $providerIntentId, int $actionSeconds ): bool {
@@ -518,7 +520,7 @@ final class MysqlPaymentRepository implements PaymentRepository {
 
 		return 1 === match ( $to ) {
 			IntentStatus::RequiresAction => $this->statements->execute( self::REQUIRE_ACTION, $providerIntentId ?? '', $actionSeconds, $intentId, self::from( $to ) ),
-			IntentStatus::Processing     => $this->statements->execute( self::MARK_PROCESSING, $providerIntentId ?? '', $intentId, self::from( $to ) ),
+			IntentStatus::Processing     => $this->statements->execute( self::MARK_PROCESSING, $providerIntentId ?? '', $actionSeconds, $intentId, self::from( $to ) ),
 			default                      => throw new \InvalidArgumentException( 'An intent waits only for the customer to act or for the gateway to decide.' ),
 		};
 	}
@@ -532,7 +534,7 @@ final class MysqlPaymentRepository implements PaymentRepository {
 	 * @param int            $olderThanSeconds How long they have not changed, at least, by the database's clock.
 	 * @param string         $afterUuid        The uuid of the last intent of the page before, or '' for the first page.
 	 * @param int            $limit            The most to list.
-	 * @return list<IntentRef> The intents.
+	 * @return list<IntentRef> The intents, each with when its wait runs out and whether it had by the database's clock.
 	 *
 	 * @phpstan-param list<IntentStatus> $states
 	 */
@@ -543,7 +545,9 @@ final class MysqlPaymentRepository implements PaymentRepository {
 				(int) $row['order_id'],
 				IntentStatus::from( (string) $row['status'] ),
 				null === $row['provider_intent_id'] ? null : (string) $row['provider_intent_id'],
-				Money::of( (int) $row['amount_minor'], Currency::of( (string) $row['currency'] ) )
+				Money::of( (int) $row['amount_minor'], Currency::of( (string) $row['currency'] ) ),
+				null === $row['customer_action_expires_at'] ? null : new \DateTimeImmutable( (string) $row['customer_action_expires_at'], new \DateTimeZone( 'UTC' ) ),
+				'1' === (string) $row['expired']
 			),
 			$this->statements->rows( self::STALE_INTENTS, IntentTransitions::values( $states ), $olderThanSeconds, $afterUuid, $limit )
 		);

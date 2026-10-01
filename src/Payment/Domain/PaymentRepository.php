@@ -137,7 +137,7 @@ interface PaymentRepository {
 	 * @param int          $intentId         The intent.
 	 * @param IntentStatus $to               IntentStatus::RequiresAction or IntentStatus::Processing.
 	 * @param string|null  $providerIntentId The provider's reference to the intent, kept when one is already recorded.
-	 * @param int          $actionSeconds    How long the customer has to act, from the database's clock; for RequiresAction.
+	 * @param int          $actionSeconds    How long the wait may last, from the database's clock: for the customer to act, or for the gateway to decide.
 	 * @return bool True when the intent changed; false when its state refused it.
 	 */
 	public function await( int $intentId, IntentStatus $to, ?string $providerIntentId, int $actionSeconds ): bool;
@@ -151,7 +151,7 @@ interface PaymentRepository {
 	 * @param int            $olderThanSeconds How long they have not changed, at least.
 	 * @param string         $afterUuid        The uuid of the last intent of the page before, or '' for the first page.
 	 * @param int            $limit            The most to list.
-	 * @return list<IntentRef> The intents.
+	 * @return list<IntentRef> The intents, each with when its wait runs out and whether it had, by the database's clock.
 	 *
 	 * @phpstan-param list<IntentStatus> $states
 	 */

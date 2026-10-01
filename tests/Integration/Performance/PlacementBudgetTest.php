@@ -65,6 +65,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		'i. the key completed'             => 'MysqlIdempotencyKeys->complete',
 		'gateway: the intent read'         => 'PaymentService->authorize',
 		'2. the gateway\'s answer applied' => 'PaymentService->applyGatewayResult',
+		'2. the order settled as paid'     => 'PaymentService->settleNothingDue',
 		'2. the order\'s lines read'       => 'Orders->stockLines',
 		'2. the allocation'                => 'StockService->allocate',
 		'2. the uses committed'            => 'PromotionUsage->commit',
@@ -101,6 +102,20 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	);
 
 	/**
+	 * The most statements each part of a placement of Cart A may send when its codes leave nothing to pay: no intent, and no gateway between the two units.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array{before: int, first: int, between: int, second: int}
+	 */
+	private const CART_A_NOTHING_DUE = array(
+		'before'  => 9,
+		'first'   => 33,
+		'between' => 0,
+		'second'  => 29,
+	);
+
+	/**
 	 * The most statements a placement of Cart B in a presentment currency may send beyond one in the base currency.
 	 *
 	 * @since 0.1.0
@@ -133,6 +148,35 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		$parts = $this->measure( 'Cart A' );
 
 		$this->assertWithin( self::CART_A, $parts, 'Cart A' );
+	}
+
+	/**
+	 * Tests that placing Cart A with codes that leave nothing to pay, every line's price and the shipping taken off, stays within its baseline, in two transactions with nothing between them.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_placing_cart_a_with_nothing_due_stays_within_its_baseline(): void {
+		$variant = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+
+		$this->plantPromotion(
+			'BUDGET-FULL',
+			array(
+				'effect_kind'                 => 'percent',
+				'effect_percent_micropercent' => 100000000,
+			)
+		);
+		$this->plantPromotion(
+			'BUDGET-SHIP',
+			array(
+				'effect_kind'                 => 'free_shipping',
+				'effect_percent_micropercent' => null,
+			)
+		);
+		$this->readyCart( self::quantities( ReferenceCarts::cartA( $variant ) ), array( 'BUDGET-FULL', 'BUDGET-SHIP' ) );
+
+		$parts = $this->measure( 'Cart A, nothing due' );
+
+		$this->assertWithin( self::CART_A_NOTHING_DUE, $parts, 'Cart A, nothing due' );
 	}
 
 	/**

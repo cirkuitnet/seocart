@@ -515,6 +515,24 @@ final class Orders {
 	}
 
 	/**
+	 * Lists a page of the orders placed with nothing to pay whose acceptance never came: still pending payment, with a grand total of zero, placed at least a while ago. One read.
+	 *
+	 * For reconciliation, which settles each: an order with nothing to pay is accepted in the
+	 * second unit of work of its placement, so one still pending was left by a placement that
+	 * stopped between its two units.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $olderThanSeconds How long ago they were placed, at least, by the database's clock.
+	 * @param int $afterId          The last id of the page before, or 0 for the first page.
+	 * @param int $limit            The most orders to list.
+	 * @return list<int> The orders' internal ids, in id order.
+	 */
+	public function pendingNothingDue( int $olderThanSeconds, int $afterId, int $limit ): array {
+		return $this->orders->pendingNothingDue( $olderThanSeconds, $afterId, $limit );
+	}
+
+	/**
 	 * Changes the status of an order this transaction has locked, records it and publishes it.
 	 *
 	 * @since 0.1.0

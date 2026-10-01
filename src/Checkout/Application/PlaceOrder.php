@@ -65,15 +65,18 @@ defined( 'ABSPATH' ) || exit;
  *    ascending order, the order's number and rows, the promotions in ascending order, the intent):
  *    the cart's claim, which moves it to placing; the key's claim; the sale decision, read as last
  *    committed, so a product being saved now is refused; the stock hold; the order, written from
- *    the totals; the promotions' uses; the payment intent, for the order's total; the order's
- *    binding to the cart; the quotes the totals were priced with, kept on the session; and the
- *    key's completion, with the answer a retry gets. Any refusal rolls all of it back.
+ *    the totals; the promotions' uses; the payment intent, for the order's total, when anything is
+ *    due; the order's binding to the cart; the quotes the totals were priced with, kept on the
+ *    session; and the key's completion, with the answer a retry gets. Any refusal rolls all of it
+ *    back.
  * 2. the second is SettlePlacement's: the gateway's result applied through the one money path,
- *    and the stock, the promotions and the cart settled by what it came to.
+ *    and the stock, the promotions and the cart settled by what it came to. An order with nothing
+ *    due has no intent and the gateway is not asked: the second unit settles it as paid.
  *
  * The first unit's answer is kept with the key, so a client that lost its answer and sends the same
- * request again gets it back byte for byte, its access key included; that answer says the order is
- * `pending`, as it was when it was kept, and the client reads its status from there on. When the
+ * request again gets it back, its access key included; the key is kept sealed with the cart's
+ * token and the request's idempotency key, which the store never keeps (KeptAnswer). The kept
+ * answer says the order is `pending` until the second unit writes what it came to. When the
  * gateway cannot be reached the order waits as placed, and the reconciliation job asks the gateway
  * later; a decline releases everything the order held, opens the cart again, and is refused
  * with the order's uuid. A cart is locked after DECLINES declines within an hour, which is how card
@@ -215,7 +218,7 @@ final class PlaceOrder {
 		$replay      = $this->keys->replay( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint );
 
 		if ( null !== $replay ) {
-			return self::answerOf( $replay );
+			return KeptAnswer::open( (string) $replay->responseJson, $token, $key );
 		}
 
 		$cart = $this->openCart( (int) $input['cart_version'] );
@@ -227,12 +230,12 @@ final class PlaceOrder {
 
 		try {
 			$placed = $this->tx->transaction(
-				fn(): array => $this->placeInside( $cart, $session, $calculation, $keyHash, $fingerprint, $token->hash(), $actor ),
+				fn(): array => $this->placeInside( $cart, $session, $calculation, $keyHash, $fingerprint, $token, $key, $actor ),
 				RetryPolicy::deadlocks(),
 				Isolation::ReadCommitted
 			);
 		} catch ( CodedException $refused ) {
-			return $this->answerRefusedClaim( $refused, $keyHash, $fingerprint );
+			return $this->answerRefusedClaim( $refused, $keyHash, $fingerprint, $token, $key );
 		}
 
 		return $this->paid( $placed, (array) ( $input['payment_data'] ?? array() ), $token, $actor );
@@ -251,11 +254,13 @@ final class PlaceOrder {
 	 * @param Calculation     $calculation   Its totals, priced before the transaction.
 	 * @param string          $keyHash       The key's hash.
 	 * @param string          $fingerprint   The request's fingerprint.
-	 * @param string          $cartTokenHash The hash of the cart's token.
+	 * @param CartToken       $token         The cart's token, which the request presented.
+	 * @param string          $key           The idempotency key the request sent.
 	 * @param Actor           $actor         Who places the order.
-	 * @return array{record: array<string, mixed>, intent_uuid: string} The answer the key keeps, and the intent to authorize.
+	 * @return array{record: array<string, mixed>, order_id: int, intent_uuid: string|null} The answer, the order, and the intent
+	 *                                                                                      to authorize: null when nothing is due.
 	 */
-	private function placeInside( Cart $cart, CheckoutSession $session, Calculation $calculation, string $keyHash, string $fingerprint, string $cartTokenHash, Actor $actor ): array {
+	private function placeInside( Cart $cart, CheckoutSession $session, Calculation $calculation, string $keyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): array {
 		$version = $this->carts->claimForPlacement( $cart->id, $cart->version, $actor );
 		$claim   = $this->keys->claim( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint, self::KEY_TTL_SECONDS );
 
@@ -264,24 +269,26 @@ final class PlaceOrder {
 			throw new \LogicException( 'An idempotency key of this cart was placed with at the version just claimed, which the cart\'s claim rules out.' );
 		}
 
-		$customer = $this->customers->customerOf( $actor );
-		$sold     = $this->saleOf( $cart );
-		$hold     = $this->stock->hold( array_map( static fn( CartLine $line ): HoldLine => new HoldLine( $line->variantId, $line->quantity ), $cart->lines ), self::HOLD_TTL_SECONDS, $cart->id );
-		$order    = $this->orders->insert( OrderDocument::of( $calculation->totals, $cart->locale, $session->details, $sold, $hold->holdGroup, $customer ), $actor );
-		$summary  = $calculation->totals->summary;
+		$customer  = $this->customers->customerOf( $actor );
+		$sold      = $this->saleOf( $cart );
+		$hold      = $this->stock->hold( array_map( static fn( CartLine $line ): HoldLine => new HoldLine( $line->variantId, $line->quantity ), $cart->lines ), self::HOLD_TTL_SECONDS, $cart->id );
+		$order     = $this->orders->insert( OrderDocument::of( $calculation->totals, $cart->locale, $session->details, $sold, $hold->holdGroup, $customer ), $actor );
+		$summary   = $calculation->totals->summary;
+		$tokenHash = $token->hash();
 
 		$this->usage->claim(
 			array_map(
-				static function ( array $promotion ) use ( $calculation, $order, $customer, $cartTokenHash ): UsageClaim {
+				static function ( array $promotion ) use ( $calculation, $order, $customer, $tokenHash ): UsageClaim {
 					$discount = $calculation->totals->discountOf( Source::promotion( $promotion['uuid'] ) );
 
-					return new UsageClaim( $promotion['id'], $order->id, $discount->amount, $discount->base, $customer, $cartTokenHash );
+					return new UsageClaim( $promotion['id'], $order->id, $discount->amount, $discount->base, $customer, $tokenHash );
 				},
 				$calculation->appliedPromotions()
 			)
 		);
 
-		$intent = $this->payments->createIntent( $order->id, (string) $session->details->paymentMethodKey, $summary->grand, $summary->baseGrand, $order->conversionContextId );
+		// With nothing due there is nothing to authorize: no intent, and the second unit settles the order as paid.
+		$intent = $summary->grand->isZero() ? null : $this->payments->createIntent( $order->id, (string) $session->details->paymentMethodKey, $summary->grand, $summary->baseGrand, $order->conversionContextId );
 
 		$this->carts->bindOrder( $cart->id, $order->id );
 		$this->sessions->storeQuotes( $cart->id, $version, new FrozenQuotes( $calculation->selectedShippingRate(), $calculation->taxQuoteFingerprint() ) );
@@ -296,31 +303,39 @@ final class PlaceOrder {
 			'payment_status' => PaymentStatus::Unpaid->value,
 		);
 
-		$this->keys->complete( $claim->id, $order->id, (string) wp_json_encode( $record ) );
+		$this->keys->complete( $claim->id, $order->id, KeptAnswer::seal( $record, $token, $key ) );
 
 		return array(
 			'record'      => $record,
-			'intent_uuid' => $intent->uuid,
+			'order_id'    => $order->id,
+			'intent_uuid' => $intent?->uuid,
 		);
 	}
 
 	/**
 	 * Has the gateway authorize the placed order's payment, outside any transaction, settles the result, and answers.
 	 *
+	 * An order with nothing due has no intent: the gateway is not asked, and the second unit
+	 * settles it as paid.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws CodedException `checkout.gateway_unavailable` when the gateway gives no answer, and
 	 *                        `checkout.payment_declined` when it declines; each names the order.
 	 *
-	 * @param array{record: array<string, mixed>, intent_uuid: string} $placed      What the first unit of work placed.
-	 * @param array<string, mixed>                                     $paymentData What the client sent for the gateway.
-	 * @param CartToken                                                $token       The token of the cart placed, which a decline is counted for.
-	 * @param Actor                                                    $actor       Who places the order.
+	 * @param array{record: array<string, mixed>, order_id: int, intent_uuid: string|null} $placed      What the first unit of work placed.
+	 * @param array<string, mixed>                                                         $paymentData What the client sent for the gateway.
+	 * @param CartToken                                                                    $token       The token of the cart placed, which a decline is counted for.
+	 * @param Actor                                                                        $actor       Who places the order.
 	 * @return array<string, mixed> The answer.
 	 */
 	private function paid( array $placed, array $paymentData, CartToken $token, Actor $actor ): array {
 		$record = $placed['record'];
 		$order  = array( 'order_uuid' => $record['order_uuid'] );
+
+		if ( null === $placed['intent_uuid'] ) {
+			return $this->settledAnswer( $record, $this->settlement->settleNothingDue( $placed['order_id'], $actor ) );
+		}
 
 		try {
 			$result = $this->payments->authorize( $placed['intent_uuid'], $paymentData );
@@ -475,9 +490,11 @@ final class PlaceOrder {
 	 * @param CodedException $refused     The refusal.
 	 * @param string         $keyHash     The key's hash.
 	 * @param string         $fingerprint The request's fingerprint.
+	 * @param CartToken      $token       The cart token the request presented.
+	 * @param string         $key         The idempotency key the request sent.
 	 * @return array<string, mixed> The earlier request's answer.
 	 */
-	private function answerRefusedClaim( CodedException $refused, string $keyHash, string $fingerprint ): array {
+	private function answerRefusedClaim( CodedException $refused, string $keyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key ): array {
 		if ( ! in_array( $refused->errorCode(), array( CartError::NotOpen, CartError::VersionStale, CartError::NotFound ), true ) ) {
 			throw $refused;
 		}
@@ -485,7 +502,7 @@ final class PlaceOrder {
 		$replay = $this->keys->replay( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint );
 
 		if ( null !== $replay ) {
-			return self::answerOf( $replay );
+			return KeptAnswer::open( (string) $replay->responseJson, $token, $key );
 		}
 
 		$cart = CartError::NotOpen === $refused->errorCode() ? $this->carts->current() : null;
@@ -558,26 +575,6 @@ final class PlaceOrder {
 				)
 			)
 		);
-	}
-
-	/**
-	 * Returns the answer an earlier request with the key gave, as it was kept.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @throws \UnexpectedValueException When the kept answer is not a JSON object.
-	 *
-	 * @param IdempotencyClaim $replay The replay.
-	 * @return array<string, mixed> The answer.
-	 */
-	private static function answerOf( IdempotencyClaim $replay ): array {
-		$answer = json_decode( (string) $replay->responseJson, true );
-
-		if ( ! is_array( $answer ) ) {
-			throw new \UnexpectedValueException( 'An idempotency key keeps an answer that is not a JSON object.' );
-		}
-
-		return $answer;
 	}
 
 	/**

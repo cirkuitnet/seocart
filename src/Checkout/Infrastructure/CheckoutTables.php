@@ -31,8 +31,9 @@ defined( 'ABSPATH' ) || exit;
  * nothing finds it but its cart. Its two addresses are personal data,
  * kept as JSON documents of the address's fields. An idempotency key is claimed by an order
  * placement in its own transaction and completed in the same one; `response_json` holds the
- * answer the placement sent, the order's access key included, so it is a secret, kept until the
- * key expires.
+ * answer the placement sent, kept until the key expires, with the order's access key sealed by
+ * the cart's token and the request's idempotency key, neither of which is stored; it stays
+ * classified secret.
  *
  * `updated_at` and `created_at` are `datetime(6)` and set from the database clock, so a
  * conditional UPDATE's affected-row count says whether its WHERE matched.
@@ -150,7 +151,7 @@ final class CheckoutTables {
 				new ColumnSpec( 'request_fingerprint', 'char(64)', $public, 'The SHA-256 of the canonical form of the request that claimed the key, in hexadecimal: a retry must send the same request.', collation: 'ascii_bin' ),
 				new ColumnSpec( 'state', 'varchar(12)', $public, 'claimed while the request that owns the key places its order, placed once the order is placed, in the same transaction.', collation: 'ascii_bin' ),
 				new ColumnSpec( 'order_id', 'bigint unsigned', $public, 'The order placed with the key; NULL while claimed.', nullable: true ),
-				new ColumnSpec( 'response_json', 'text', Classification::Secret, 'The answer the placement sent, exactly, with the order\'s access key, sent again to a retry; NULL while claimed.', nullable: true ),
+				new ColumnSpec( 'response_json', 'text', Classification::Secret, 'The answer the placement sent, as its settlement left it, sent again to a retry; the order\'s access key in it is sealed with the cart token and the idempotency key the retry presents, which are never stored. NULL while claimed.', nullable: true ),
 				new ColumnSpec( 'expires_at', 'datetime', $public, 'When the key expires, UTC, from the database clock: an expired key is ignored when claimed, and the retention job deletes it.' ),
 				new ColumnSpec( 'created_at', 'datetime(6)', $public, 'When the key was claimed, UTC, from the database clock.' ),
 			),

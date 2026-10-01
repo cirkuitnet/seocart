@@ -33,10 +33,13 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  *
  * The order module's reads run over a PlanRecorder: the reads back of placing an order, the
  * order's lock, the order's read for showing it and for its access check, the paged reads doctor's
- * payment check sends, and a conversion context's read. Each plugin SELECT is explained, printed and judged as the catalog's and the
+ * payment check sends, reconciliation's read of the orders with nothing due, and a conversion
+ * context's read. Each plugin SELECT is explained, printed and judged as the catalog's and the
  * inventory's are; the reference dataset has no orders, so the tables stay under the size at
  * which the rule gates and the run records the plans. And every SELECT the module's source writes
- * must have been sent (ReadInventory), so no read goes unexplained.
+ * must have been sent (ReadInventory), so no read goes unexplained. Reconciliation's read, which
+ * runs every five minutes on a live store, is judged again on a table of planted orders large
+ * enough for the rule to gate.
  *
  * It runs only when SEOCART_QUERY_PLANS is 1, as `composer test:query-plans` sets it.
  *
@@ -104,6 +107,87 @@ final class OrderQueryPlanTest extends OrderTestCase {
 	}
 
 	/**
+	 * Tests that reconciliation's read of the orders with nothing due keeps the rule on an orders table large enough to be judged, by the `status_created` key, and finds what it looks for.
+	 *
+	 * The reference dataset has no orders, so the run plants them: a store's worth, most of them
+	 * long accepted, one in fifty still pending payment and half of those with nothing to pay, all
+	 * placed an hour ago by the database clock. The table is analysed before the read is explained.
+	 *
+	 * Planted violation: in MysqlOrderRepository::NOTHING_DUE_IN_STATUS, compare `CAST( status AS
+	 * CHAR )`: no index serves the read, and the rule names its scan of the orders.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_read_of_orders_with_nothing_due_keeps_the_rule_on_a_large_table(): void {
+		global $wpdb;
+
+		$ids       = new SequentialIdGenerator( 700000 );
+		$template  = $this->db->transaction( fn() => $this->ordersOver( $this->db, $ids )->insert( NewOrders::forTwoLines( 'EUR', 'USD' ), Actor::user( 0 ) ) );
+		$planted   = QueryPlan::LARGE_TABLE + 2000;
+		$nothingIn = $this->plantOrders( $template->id, $planted );
+		$recorder  = PlanRecorder::open();
+
+		$wpdb->query( $wpdb->prepare( 'ANALYZE TABLE %i', $this->table( OrderTables::ORDERS ) ) );
+
+		try {
+			$found = ( new MysqlOrderRepository( new OrderStatements( new Database( $recorder, true, $this->reporter() ) ), $ids ) )->pendingNothingDue( 600, 0, 50 );
+		} finally {
+			$recorder->close();
+		}
+
+		$this->assertCount( 1, $recorder->statements() );
+
+		$plan = QueryPlan::explain( $wpdb, $recorder->statements()[0], static fn( string $table ): int => (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i', $table ) ) );
+
+		fwrite( STDOUT, sprintf( "\nThe plan of the read of orders with nothing due, over %d orders:\n%s\n", $planted + 1, implode( "\n", $plan->lines( array() === $plan->breaches ? 'ok' : 'BREAKS THE RULE' ) ) ) );
+
+		$this->assertSame( array(), $plan->breaches, implode( "\n", $plan->breaches ) );
+		$this->assertSame( 'status_created', $plan->accesses[0]['key'] ?? null, 'The read is served by the status_created key.' );
+		$this->assertGreaterThanOrEqual( QueryPlan::LARGE_TABLE, $plan->accesses[0]['table_rows'], 'The table is large enough for the rule to judge the read.' );
+		$this->assertSame( array_slice( $nothingIn, 0, 50 ), $found, 'The first page of the orders still pending payment with nothing to pay, in id order.' );
+	}
+
+	/**
+	 * Plants orders copied from one, each under its own uuid and number, all placed an hour ago: one in fifty pending payment, and one in a hundred pending with a grand total of zero; the rest accepted.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $templateId The order every planted one is copied from.
+	 * @param int $count      How many to plant.
+	 * @return list<int> The ids of the planted orders pending payment with nothing to pay, in id order.
+	 */
+	private function plantOrders( int $templateId, int $count ): array {
+		$orders   = $this->table( OrderTables::ORDERS );
+		$override = array(
+			'uuid'              => "CONCAT( '0192f000-0000-7000-8000-', LPAD( n.i, 12, '0' ) )",
+			'order_number'      => "CONCAT( 'QP', n.i )",
+			'status'            => "IF( MOD( n.i, 50 ) = 0, 'pending_payment', 'processing' )",
+			'grand_total_minor' => 'IF( MOD( n.i, 100 ) = 0, 0, o.grand_total_minor )',
+			'due_minor'         => 'IF( MOD( n.i, 100 ) = 0, 0, o.due_minor )',
+			'created_at'        => 'UTC_TIMESTAMP(6) - INTERVAL 1 HOUR',
+		);
+		$columns  = array();
+		$values   = array();
+
+		foreach ( $this->db->fetchAll( "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME <> 'id' ORDER BY ORDINAL_POSITION", $orders ) as $column ) {
+			$name      = (string) $column['COLUMN_NAME'];
+			$columns[] = '`' . $name . '`';
+			$values[]  = $override[ $name ] ?? 'o.`' . $name . '`';
+		}
+
+		$this->db->execute( 'SET SESSION cte_max_recursion_depth = %d', $count + 1 );
+		$this->db->execute(
+			'INSERT INTO %i ( ' . implode( ', ', $columns ) . ' ) WITH RECURSIVE n ( i ) AS ( SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < %d ) SELECT ' . implode( ', ', $values ) . ' FROM n JOIN %i o ON o.id = %d',
+			$orders,
+			$count,
+			$orders,
+			$templateId
+		);
+
+		return array_map( 'intval', array_column( $this->db->fetchAll( "SELECT id FROM %i WHERE status = 'pending_payment' AND grand_total_minor = 0 ORDER BY id", $orders ), 'id' ) );
+	}
+
+	/**
 	 * Runs the order module's reads through the Database under test.
 	 *
 	 * @since 0.1.0
@@ -130,6 +214,9 @@ final class OrderQueryPlanTest extends OrderTestCase {
 		// The reads of a placement's settlement and of a refusal that names the order: its lines' stock, its status by id.
 		$orders->stockLines( $inserted->id );
 		$orders->statusOf( $inserted->id );
+
+		// Reconciliation's read of the orders with nothing due still pending payment.
+		$orders->pendingNothingDue( 600, 0, 50 );
 
 		// The reads of doctor's payment check: the payment amounts and the lines' refunded quantities, a page at a time, the flagged orders and the totals drift.
 		$repository->paymentAmounts( 0, 500 );

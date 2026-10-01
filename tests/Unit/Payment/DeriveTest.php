@@ -30,8 +30,11 @@ use SEOCart\Support\Money;
  * due the projection reports moves by what is captured and what is refunded, as the order's own
  * update moves it.
  *
- * Planted violation, shown red and removed: in Projection::status(), call the order paid only when
- * more than the grand total was paid: the order captured in full reads as partly paid.
+ * Planted violations, each shown red and removed:
+ * - in Projection::status(), call the order paid only when more than the grand total was paid: the
+ *   order captured in full reads as partly paid;
+ * - in Projection::status(), leave out the zero grand total: an order with nothing due reads as
+ *   unpaid.
  *
  * @since 0.1.0
  */
@@ -42,10 +45,12 @@ final class DeriveTest extends TestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array<string, array{0: array{int, int, int, int}, 1: array{int, int, int}, 2: IntentStatus, 3: PaymentStatus}> Before (total, authorized, paid, refunded), the payment (authorized, captured, refunded), the intent after, the status.
+	 * @return array<string, array{0: array{int, int, int, int}, 1: array{int, int, int}, 2: IntentStatus|null, 3: PaymentStatus}> Before (total, authorized, paid, refunded), the payment (authorized, captured, refunded), the intent after (null for none), the status.
 	 */
 	public static function cases(): array {
 		return array(
+			'nothing due, so no intent'               => array( array( 0, 0, 0, 0 ), array( 0, 0, 0 ), null, PaymentStatus::Paid ),
+			'something due and no intent yet'         => array( array( 3080, 0, 0, 0 ), array( 0, 0, 0 ), null, PaymentStatus::Unpaid ),
 			'nothing happened yet'                    => array( array( 3080, 0, 0, 0 ), array( 0, 0, 0 ), IntentStatus::Created, PaymentStatus::Unpaid ),
 			'the customer must act'                   => array( array( 3080, 0, 0, 0 ), array( 0, 0, 0 ), IntentStatus::RequiresAction, PaymentStatus::Pending ),
 			'the gateway is deciding'                 => array( array( 3080, 0, 0, 0 ), array( 0, 0, 0 ), IntentStatus::Processing, PaymentStatus::Pending ),
@@ -68,15 +73,15 @@ final class DeriveTest extends TestCase {
 	 *
 	 * @dataProvider cases
 	 *
-	 * @param int[]         $before   The grand total and the authorized, paid and refunded amounts before.
-	 * @param int[]         $payment  What the payment authorizes, captures and refunds.
-	 * @param IntentStatus  $intent   The intent's state after.
-	 * @param PaymentStatus $expected The status.
+	 * @param int[]             $before   The grand total and the authorized, paid and refunded amounts before.
+	 * @param int[]             $payment  What the payment authorizes, captures and refunds.
+	 * @param IntentStatus|null $intent   The intent's state after; null for an order with none.
+	 * @param PaymentStatus     $expected The status.
 	 *
 	 * @phpstan-param array{int, int, int, int} $before
 	 * @phpstan-param array{int, int, int}      $payment
 	 */
-	public function test_the_status_is_derived_from_the_amounts_and_the_intent( array $before, array $payment, IntentStatus $intent, PaymentStatus $expected ): void {
+	public function test_the_status_is_derived_from_the_amounts_and_the_intent( array $before, array $payment, ?IntentStatus $intent, PaymentStatus $expected ): void {
 		list( $total, $authorized, $paid, $refunded ) = $before;
 
 		$order = self::order( $total, $authorized, $paid, $refunded );

@@ -50,6 +50,11 @@ defined( 'ABSPATH' ) || exit;
  * reached it (`stub:throw`), is one it has no record of; asked about it, it says so, as a declined
  * authorization `not_found` named `stub-nf-{intent uuid}`, which ends the placement.
  *
+ * It has no clock of its own: an intent it holds as pending or waiting for the customer
+ * (`stub:pending`, `stub:requires_action`) is one it has expired once the query says the
+ * intent's wait has run out, and asked about it then, it answers a declined authorization
+ * `expired` named `stub-ex-{intent uuid}`, which ends the placement too.
+ *
  * @since 0.1.0
  */
 final class StubGateway implements PaymentGateway {
@@ -181,6 +186,15 @@ final class StubGateway implements PaymentGateway {
 	public const NOT_FOUND = 'not_found';
 
 	/**
+	 * The machine code of the answer about an intent whose wait ran out, which the gateway has expired.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const EXPIRED = 'expired';
+
+	/**
 	 * The machine code of a declined refund.
 	 *
 	 * @since 0.1.0
@@ -242,6 +256,15 @@ final class StubGateway implements PaymentGateway {
 	 * @var string
 	 */
 	private const NOT_FOUND_PREFIX = 'stub-nf-';
+
+	/**
+	 * What the answer about an intent the gateway has expired is named with, before the intent's uuid.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const EXPIRED_PREFIX = 'stub-ex-';
 
 	/**
 	 * The length of a uuid, which ends an intent reference.
@@ -347,7 +370,9 @@ final class StubGateway implements PaymentGateway {
 	 * An intent that waited for the customer is found approved, as if they had confirmed; one
 	 * that is pending is still pending; any other scenario answers as it answered first. An
 	 * intent the stub never gave a reference to is one it has no record of, which it says: a
-	 * declined authorization `not_found`.
+	 * declined authorization `not_found`. One still waiting for the customer or pending when the
+	 * query says its wait has run out is one it has expired, which it says: a declined
+	 * authorization `expired`.
 	 *
 	 * @since 0.1.0
 	 *
@@ -360,6 +385,11 @@ final class StubGateway implements PaymentGateway {
 		}
 
 		$scenario = self::scenarioOf( $query->providerIntentId );
+		$waiting  = array( self::scenario( self::PENDING ), self::scenario( self::REQUIRES_ACTION ) );
+
+		if ( $query->waitEnded && in_array( $scenario, $waiting, true ) ) {
+			return new GatewayResult( self::ID, Operation::Authorize, Outcome::Declined, $query->intentUuid, $query->amount, self::EXPIRED_PREFIX . $query->intentUuid, $query->providerIntentId, self::EXPIRED );
+		}
 
 		return null === $scenario ? null : self::laterAnswer( $query->intentUuid, $query->amount, $scenario );
 	}

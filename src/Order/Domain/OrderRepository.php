@@ -211,7 +211,8 @@ interface OrderRepository {
 	 *
 	 * @param int $afterId The last id of the page before, or 0 for the first page.
 	 * @param int $limit   The most orders to read.
-	 * @return list<array{id: int, uuid: string, authorized: int, paid: int, refunded: int, base_authorized: int, base_paid: int, base_refunded: int}> The orders, in minor units.
+	 * @return list<array{id: int, uuid: string, grand_total: int, age_seconds: int, authorized: int, paid: int, refunded: int, base_authorized: int, base_paid: int, base_refunded: int}> The orders, in minor
+	 *         units, each with its grand total and how long ago it was placed, by the database's clock.
 	 */
 	public function paymentAmounts( int $afterId, int $limit ): array;
 
@@ -300,6 +301,18 @@ interface OrderRepository {
 	 * @return array{uuid: string, status: OrderStatus}|null The two, or null when there is no such order.
 	 */
 	public function statusOf( int $orderId ): ?array;
+
+	/**
+	 * Reads a page of the orders still pending payment whose grand total is zero, placed at least a while ago by the database's clock, in id order: the orders with nothing to pay whose acceptance never came.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $olderThanSeconds How long ago they were placed, at least.
+	 * @param int $afterId          The last id of the page before, or 0 for the first page.
+	 * @param int $limit            The most orders to read.
+	 * @return list<int> The orders' internal ids.
+	 */
+	public function pendingNothingDue( int $olderThanSeconds, int $afterId, int $limit ): array;
 
 	/**
 	 * Reads an order for showing it, by its public identifier: the order row, its lines, their options and its addresses.

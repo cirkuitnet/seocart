@@ -25,7 +25,8 @@ use SEOCart\Tests\Support\Order\OrderTestCase;
  * - in MysqlOrderRepository::PAYMENT_AMOUNTS, write `id >= %d`: the next page repeats the last
  *   order of the page before;
  * - in MysqlOrderRepository::CURRENT_TOTALS_DRIFT, drop `o.current_totals_id IS NULL OR`: the order
- *   pointing at no snapshot is not reported.
+ *   pointing at no snapshot is not reported;
+ * - the one named on its test.
  *
  * @since 0.1.0
  */
@@ -56,8 +57,36 @@ final class OrderDoctorReadsTest extends OrderTestCase {
 				'base_paid'       => 0,
 				'base_refunded'   => 0,
 			),
-			array_diff_key( $first[1], array_flip( array( 'id', 'uuid' ) ) )
+			array_diff_key( $first[1], array_flip( array( 'id', 'uuid', 'grand_total', 'age_seconds' ) ) )
 		);
+		$this->assertSame( 3080, $first[1]['grand_total'], 'Each order comes with its grand total.' );
+		$this->assertLessThan( 60, $first[1]['age_seconds'], 'Each order comes with its age, by the database clock.' );
+	}
+
+	/**
+	 * Tests that the orders with nothing due are read by their status, their total and their age: only those still pending payment, with a grand total of zero, placed long enough ago; in id order, after the id of the page before.
+	 *
+	 * Planted violation: in MysqlOrderRepository::NOTHING_DUE_IN_STATUS, drop `AND grand_total_minor = 0`:
+	 * an order with its total due is read as one with nothing due.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_orders_with_nothing_due_still_pending_are_read_by_status_total_and_age(): void {
+		$orders  = $this->table( OrderTables::ORDERS );
+		$first   = $this->place();
+		$due     = $this->place();
+		$fresh   = $this->place();
+		$settled = $this->place();
+		$second  = $this->place();
+
+		$this->db->execute( 'UPDATE %i SET grand_total_minor = 0, due_minor = 0 WHERE id IN ( %d, %d, %d, %d )', $orders, $first->id, $fresh->id, $settled->id, $second->id );
+		$this->db->execute( 'UPDATE %i SET created_at = UTC_TIMESTAMP(6) - INTERVAL 11 MINUTE WHERE id <> %d', $orders, $fresh->id );
+		$this->orders->accept( $settled->id, Actor::system( 'payment', 3 ) );
+
+		$this->assertSame( array( $first->id, $second->id ), $this->repository()->pendingNothingDue( 600, 0, 20 ), 'Not the one with its total due, the one placed a moment ago, or the one accepted.' );
+		$this->assertSame( array( $first->id ), $this->repository()->pendingNothingDue( 600, 0, 1 ), 'The limit is the most it reads, the first in id order.' );
+		$this->assertSame( array( $second->id ), $this->repository()->pendingNothingDue( 600, $first->id, 20 ), 'A page starts after the last id of the page before.' );
+		$this->assertNotContains( $due->id, $this->repository()->pendingNothingDue( 0, 0, 20 ) );
 	}
 
 	/**

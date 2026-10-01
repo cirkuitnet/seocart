@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Payment\Infrastructure\Doctor;
 
 use SEOCart\Order\Domain\OrderRepository;
+use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Platform\Cli\Doctor\Check;
 use SEOCart\Platform\Cli\Doctor\CheckResult;
@@ -25,8 +26,10 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: when doctor calls payments inconsistent. An intent's authorized, captured and
  * refunded amounts, and their base twins, must equal the sums of its applied, approved ledger
- * rows by operation; an order's must equal the sums over its intents; no intent may have
- * refunded more than it captured; and an order must point at its current totals snapshot. A
+ * rows by operation; an order's must equal the sums over its intents; an order with something to
+ * pay must have an intent, once it is past the stale threshold, while one whose grand total is
+ * zero has none by design; no intent may have refunded more than it captured; and an order must
+ * point at its current totals snapshot. A
  * refund's tax must be what its tax components returned, and its total less its shipping, fees
  * and tax what its lines returned before tax, in both currencies; and an order line's refunded
  * quantity must be the units its refunds returned. Any difference is critical, named with the
@@ -155,10 +158,12 @@ final class PaymentLedgerCheck implements Check {
 	 */
 	public function run(): CheckResult {
 		list( $intentDrift, $overRefunded ) = $this->intentLines();
+		list( $orderDrift, $noIntent )      = $this->orderLines();
 
 		$findings = array_merge(
 			$intentDrift,
-			$this->orderDrift(),
+			$orderDrift,
+			$noIntent,
 			$overRefunded,
 			$this->totalsDrift(),
 			$this->refundDrift(),
@@ -211,18 +216,23 @@ final class PaymentLedgerCheck implements Check {
 	}
 
 	/**
-	 * Lists the orders whose payment amounts are not the sums of their intents', a page of orders at a time.
+	 * Compares every order with its intents, a page of orders at a time: the orders whose payment amounts are not the sums of their intents', and those with something to pay and no intent.
+	 *
+	 * An order is placed with its intent in one transaction, so one with a grand total above zero
+	 * and no intent, older than PaymentService::STALE_SECONDS, can never be paid or settled. An
+	 * order whose grand total is zero has no intent by design: nothing was due.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return list<string> One critical line per order, at most LIMIT.
+	 * @return array{0: list<string>, 1: list<string>} The critical lines of each kind, at most LIMIT of each.
 	 */
-	private function orderDrift(): array {
-		$findings = array();
+	private function orderLines(): array {
+		$drift    = array();
+		$noIntent = array();
 
 		$this->walk(
 			fn( int $after, int $page ): array => $this->orders->paymentAmounts( $after, $page ),
-			function ( array $orders ) use ( &$findings ): bool {
+			function ( array $orders ) use ( &$drift, &$noIntent ): bool {
 				$sums = array() === $orders ? array() : $this->payments->orderSums( array_column( $orders, 'id' ) );
 
 				foreach ( $orders as $order ) {
@@ -235,15 +245,19 @@ final class PaymentLedgerCheck implements Check {
 					}
 
 					if ( $amounts !== $totals ) {
-						$findings[] = sprintf( 'Critical: order %1$s records %2$s.', CheckResult::identifier( $order['uuid'] ), self::differences( $amounts, $totals, 'its payments add up to' ) );
+						$drift[] = sprintf( 'Critical: order %1$s records %2$s.', CheckResult::identifier( $order['uuid'] ), self::differences( $amounts, $totals, 'its payments add up to' ) );
+					}
+
+					if ( ! isset( $sums[ $order['id'] ] ) && $order['grand_total'] > 0 && $order['age_seconds'] >= PaymentService::STALE_SECONDS ) {
+						$noIntent[] = sprintf( 'Critical: order %1$s has a grand total of %2$d and no payment intent, %3$d seconds after it was placed: no payment can be taken or settled for it.', CheckResult::identifier( $order['uuid'] ), $order['grand_total'], $order['age_seconds'] );
 					}
 				}
 
-				return count( $findings ) >= self::LIMIT;
+				return count( $drift ) >= self::LIMIT && count( $noIntent ) >= self::LIMIT;
 			}
 		);
 
-		return array_slice( $findings, 0, self::LIMIT );
+		return array( array_slice( $drift, 0, self::LIMIT ), array_slice( $noIntent, 0, self::LIMIT ) );
 	}
 
 	/**

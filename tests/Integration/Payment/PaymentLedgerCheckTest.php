@@ -118,6 +118,36 @@ final class PaymentLedgerCheckTest extends PaymentTestCase {
 	}
 
 	/**
+	 * Tests that an order with something to pay and no intent is critical once it is past the stale threshold, while one whose grand total is zero has none by design.
+	 *
+	 * Three orders lose their intents through the database: one past the threshold with its total
+	 * due, one placed a moment ago, and one past the threshold whose total is zero.
+	 *
+	 * Planted violation: in PaymentLedgerCheck::orderLines(), leave out the order with no intent:
+	 * the check then passes while it can never be paid.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_order_with_something_to_pay_and_no_intent_is_critical(): void {
+		list( $broken, $brokenIntent ) = $this->placeWithIntent();
+		list( $fresh, $freshIntent )   = $this->placeWithIntent();
+		list( $free, $freeIntent )     = $this->placeWithIntent();
+
+		$orders = $this->table( OrderTables::ORDERS );
+
+		$this->db->execute( 'DELETE FROM %i WHERE uuid IN ( %s, %s, %s )', $this->table( PaymentTables::INTENTS ), $brokenIntent->uuid, $freshIntent->uuid, $freeIntent->uuid );
+		$this->db->execute( 'UPDATE %i SET grand_total_minor = 0, due_minor = 0, base_grand_total_minor = 0 WHERE id = %d', $orders, $free->id );
+		$this->db->execute( 'UPDATE %i SET created_at = UTC_TIMESTAMP(6) - INTERVAL 11 MINUTE WHERE id IN ( %d, %d )', $orders, $broken->id, $free->id );
+
+		$result = $this->check()->run();
+
+		$this->assertFalse( $result->passed );
+		$this->assertCount( 1, $result->findings, implode( "\n", $result->findings ) );
+		$this->assertStringStartsWith( sprintf( 'Critical: order %1$s has a grand total of %2$d and no payment intent, ', $broken->uuid, self::GRAND_TOTAL ), $result->findings[0] );
+		$this->assertStringNotContainsString( $fresh->uuid, $result->findings[0] );
+	}
+
+	/**
 	 * Tests that the intents and the orders are compared a page at a time, every one of them, so a drift on the last page is found.
 	 *
 	 * @since 0.1.0

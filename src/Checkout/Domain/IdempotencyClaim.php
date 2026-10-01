@@ -53,7 +53,7 @@ final readonly class IdempotencyClaim {
 	 * @param int         $id           The key's row.
 	 * @param bool        $owned        True when this request owns the key and places the order.
 	 * @param int|null    $orderId      The order an earlier request placed with the key; null when owned.
-	 * @param string|null $responseJson The answer the earlier request sent, exactly; null when owned.
+	 * @param string|null $responseJson The answer the earlier request's key keeps; null when owned.
 	 */
 	private function __construct(
 		public int $id,
@@ -82,7 +82,7 @@ final readonly class IdempotencyClaim {
 	 *
 	 * @param int    $id           The key's row.
 	 * @param int    $orderId      The order it placed.
-	 * @param string $responseJson The answer it sent, exactly.
+	 * @param string $responseJson The answer its key keeps.
 	 * @return self The claim.
 	 */
 	public static function replay( int $id, int $orderId, string $responseJson ): self {

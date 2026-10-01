@@ -40,8 +40,9 @@ defined( 'ABSPATH' ) || exit;
  *
  * A placement whose payment intent still waits for the gateway's result after PENDING_SECONDS is
  * reported by its order's uuid. The reconciliation job settles a placement as soon as the gateway
- * answers, a "no record of it" included, so one still waiting is one the gateway keeps deciding:
- * a person looks it up there. Nothing here settles it, and repair leaves it alone.
+ * answers, a "no record of it" and an expiry included, so one still waiting is one the gateway
+ * keeps deciding with no expiry: a person looks it up there. Nothing here settles it, and repair
+ * leaves it alone.
  *
  * It prints key ids, scopes and ages, and order uuids, never a hash or an answer.
  *

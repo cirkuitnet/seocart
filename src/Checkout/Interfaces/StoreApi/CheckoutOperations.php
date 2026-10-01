@@ -314,10 +314,9 @@ final class CheckoutOperations {
 					new FieldSpec(
 						name: 'order_key',
 						type: FieldType::String,
-						description: 'The order\'s access key, which reads its status without a login, as the status read\'s order_key. It is shown once, in this answer and again to a retry of the same request, and the store keeps only its hash: the client must keep it.',
+						description: 'The order\'s access key, which reads its status without a login, as the status read\'s order_key. It is shown in this answer, and again to a retry of the same request only: to the holder of the cart token and of the idempotency key it was placed with, since the store keeps the key only as a hash and sealed with those two, which it never keeps. Send a random idempotency key, such as a UUID. A retry whose kept key cannot be opened is answered without it; the client must keep it.',
 						label: static fn(): string => __( 'Order key', 'seocart' ),
-						example: '0123456789abcdef0123456789abcdef',
-						required: true
+						example: '0123456789abcdef0123456789abcdef'
 					),
 					new FieldSpec(
 						name: 'cart_version',

@@ -246,13 +246,27 @@ final class MysqlOrderRepository implements OrderRepository {
 	public const MARK_UNRECONCILED = 'UPDATE {orders} SET has_unreconciled_money = 1, updated_at = GREATEST( UTC_TIMESTAMP(6), updated_at + INTERVAL 1 MICROSECOND ) WHERE id = %d';
 
 	/**
-	 * A page of orders' payment amounts, by the primary key, after the last id of the page before.
+	 * A page of orders' payment amounts, with each order's grand total and age by the database clock, by the primary key, after the last id of the page before.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const PAYMENT_AMOUNTS = 'SELECT id, uuid, authorized_minor, paid_minor, refunded_minor, base_authorized_minor, base_paid_minor, base_refunded_minor FROM {orders} WHERE id > %d ORDER BY id LIMIT %d';
+	public const PAYMENT_AMOUNTS = 'SELECT id, uuid, grand_total_minor, TIMESTAMPDIFF( SECOND, created_at, UTC_TIMESTAMP() ) AS age_seconds, authorized_minor, paid_minor, refunded_minor, '
+		. 'base_authorized_minor, base_paid_minor, base_refunded_minor FROM {orders} WHERE id > %d ORDER BY id LIMIT %d';
+
+	/**
+	 * A page of the orders in a status, placed before a time by the database clock, whose grand total is zero, by the primary key after the last id of the page before.
+	 *
+	 * For the orders still pending payment with nothing to pay: on the `status_created` key, which
+	 * holds only the few orders pending payment, each read once, filtered by its total and put in id
+	 * order. The `%s` is the status.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const NOTHING_DUE_IN_STATUS = 'SELECT id FROM {orders} WHERE status = %s AND created_at <= UTC_TIMESTAMP(6) - INTERVAL %d SECOND AND grand_total_minor = 0 AND id > %d ORDER BY id LIMIT %d';
 
 	/**
 	 * The first orders flagged as holding money a person must reconcile, in id order, on the `unreconciled` key.
@@ -970,13 +984,16 @@ final class MysqlOrderRepository implements OrderRepository {
 	 *
 	 * @param int $afterId The last id of the page before, or 0 for the first page.
 	 * @param int $limit   The most orders to read.
-	 * @return list<array{id: int, uuid: string, authorized: int, paid: int, refunded: int, base_authorized: int, base_paid: int, base_refunded: int}> The orders, in minor units.
+	 * @return list<array{id: int, uuid: string, grand_total: int, age_seconds: int, authorized: int, paid: int, refunded: int, base_authorized: int, base_paid: int, base_refunded: int}> The orders, in minor
+	 *         units, each with its grand total and how long ago it was placed.
 	 */
 	public function paymentAmounts( int $afterId, int $limit ): array {
 		return array_map(
 			static fn( array $row ): array => array(
 				'id'              => (int) $row['id'],
 				'uuid'            => (string) $row['uuid'],
+				'grand_total'     => (int) $row['grand_total_minor'],
+				'age_seconds'     => (int) $row['age_seconds'],
 				'authorized'      => (int) $row['authorized_minor'],
 				'paid'            => (int) $row['paid_minor'],
 				'refunded'        => (int) $row['refunded_minor'],
@@ -1283,6 +1300,23 @@ final class MysqlOrderRepository implements OrderRepository {
 		return null === $row ? null : array(
 			'uuid'   => (string) $row['uuid'],
 			'status' => OrderStatus::from( (string) $row['status'] ),
+		);
+	}
+
+	/**
+	 * Reads a page of the orders still pending payment whose grand total is zero, placed at least a while ago, in id order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $olderThanSeconds How long ago they were placed, at least, by the database's clock.
+	 * @param int $afterId          The last id of the page before, or 0 for the first page.
+	 * @param int $limit            The most orders to read.
+	 * @return list<int> The orders' internal ids.
+	 */
+	public function pendingNothingDue( int $olderThanSeconds, int $afterId, int $limit ): array {
+		return array_map(
+			static fn( array $row ): int => (int) $row['id'],
+			$this->statements->rows( self::NOTHING_DUE_IN_STATUS, OrderStatus::PendingPayment->value, $olderThanSeconds, $afterId, $limit )
 		);
 	}
 

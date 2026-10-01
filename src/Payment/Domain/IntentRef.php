@@ -31,18 +31,24 @@ final readonly class IntentRef {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string       $uuid             The intent's public identifier.
-	 * @param int          $orderId          The order it pays for.
-	 * @param IntentStatus $status           Its state when it was read.
-	 * @param string|null  $providerIntentId The gateway's reference to it, once the gateway gave one.
-	 * @param Money        $amount           Its frozen amount.
+	 * @param string                  $uuid             The intent's public identifier.
+	 * @param int                     $orderId          The order it pays for.
+	 * @param IntentStatus            $status           Its state when it was read.
+	 * @param string|null             $providerIntentId The gateway's reference to it, once the gateway gave one.
+	 * @param Money                   $amount           Its frozen amount.
+	 * @param \DateTimeImmutable|null $waitEndsAt       Optional. When its wait for the customer or the gateway runs
+	 *                                                  out, UTC; null when it waits for neither. Default null.
+	 * @param bool                    $waitEnded        Optional. Whether that time had passed, by the database's
+	 *                                                  clock, when the intent was read. Default false.
 	 */
 	public function __construct(
 		public string $uuid,
 		public int $orderId,
 		public IntentStatus $status,
 		public ?string $providerIntentId,
-		public Money $amount
+		public Money $amount,
+		public ?\DateTimeImmutable $waitEndsAt = null,
+		public bool $waitEnded = false
 	) {
 	}
 }

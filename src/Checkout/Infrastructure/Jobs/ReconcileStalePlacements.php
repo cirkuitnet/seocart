@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Checkout\Infrastructure\Jobs;
 
 use SEOCart\Checkout\Application\SettlePlacement;
+use SEOCart\Order\Application\Orders;
 use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
 use SEOCart\Platform\Authorization\Actor;
@@ -28,24 +29,33 @@ defined( 'ABSPATH' ) || exit;
  * a time in a cursor's order, asks the gateway about each, outside any transaction, and settles
  * each answer through SettlePlacement, the path every answer takes. An intent the gateway still
  * has no answer for, or cannot be asked about now, is left as it is for the next run: a placement
- * is never released because time has passed. STALE_SECONDS must exceed the longest an
+ * is never released only because time has passed here. It is released when the gateway answers,
+ * and an intent the provider expired is answered so, as a decline: the query carries the intent's
+ * expiry, which stands for a provider that reports none. STALE_SECONDS must exceed the longest an
  * authorization call may take, so no intent is asked about while its own call is still on its way.
- * Applying the same answer twice is a no-op, so two
+ *
+ * An order placed with nothing to pay has no intent: its placement settles it without the
+ * gateway. One still pending payment STALE_SECONDS after it was placed was left by a placement
+ * that stopped between its two units of work, and the run settles it too, through the same
+ * path, a page at a time after the intents, within the same budget.
+ *
+ * Applying the same answer twice, or settling an order with nothing due twice, is a no-op, so two
  * runners at once, the schedule and a command, settle each placement once. A failure is reported
- * with the intent and the run goes on; the job is never retried, the next run is the retry.
+ * with the intent or the order and the run goes on; the job is never retried, the next run is the
+ * retry.
  *
  * @since 0.1.0
  */
 final class ReconcileStalePlacements implements JobHandler {
 
 	/**
-	 * How long an intent must have waited unchanged before the gateway is asked about it, in seconds.
+	 * How long an intent must have waited unchanged before the gateway is asked about it, and an order with nothing due waited since it was placed before it is settled, in seconds.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var int
 	 */
-	public const STALE_SECONDS = 600;
+	public const STALE_SECONDS = PaymentService::STALE_SECONDS;
 
 	/**
 	 * How many intents one page takes.
@@ -107,6 +117,7 @@ final class ReconcileStalePlacements implements JobHandler {
 	 * @since 0.1.0
 	 *
 	 * @param PaymentService  $payments   The stale intents, and the gateway.
+	 * @param Orders          $orders     The orders with nothing due still pending payment.
 	 * @param SettlePlacement $settlement The settlement every answer goes through.
 	 * @param callable        $report     Receives a report code (string) and its context (array).
 	 * @param callable|null   $clock      Optional. Returns a monotonic time in nanoseconds (int). Default
@@ -117,6 +128,7 @@ final class ReconcileStalePlacements implements JobHandler {
 	 */
 	public function __construct(
 		private PaymentService $payments,
+		private Orders $orders,
 		private SettlePlacement $settlement,
 		callable $report,
 		?callable $clock = null
@@ -159,7 +171,7 @@ final class ReconcileStalePlacements implements JobHandler {
 	}
 
 	/**
-	 * Asks the gateway about each stale intent, page by page, and settles each answer, until a page comes back short or the budget is spent.
+	 * Asks the gateway about each stale intent and settles each answer, then settles each stale order with nothing due, page by page, until a page comes back short or the budget is spent.
 	 *
 	 * @since 0.1.0
 	 *
@@ -168,7 +180,22 @@ final class ReconcileStalePlacements implements JobHandler {
 	 */
 	public function handle( array $payload ): ?int {
 		$deadline = ( $this->clock )() + self::BUDGET_SECONDS * self::NANOSECONDS;
-		$after    = '';
+
+		$this->settleAnswered( $deadline );
+		$this->settleNothingDue( $deadline );
+
+		return null;
+	}
+
+	/**
+	 * Asks the gateway about each stale intent, page by page, and settles each answer, until a page comes back short or the budget is spent.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $deadline When the budget is spent, on the clock's scale.
+	 */
+	private function settleAnswered( int $deadline ): void {
+		$after = '';
 
 		do {
 			$page = $this->payments->staleIntents( self::STALE_SECONDS, self::PAGE, $after );
@@ -196,7 +223,39 @@ final class ReconcileStalePlacements implements JobHandler {
 
 			$full = count( $page ) >= self::PAGE;
 		} while ( $full && ( $this->clock )() < $deadline );
+	}
 
-		return null;
+	/**
+	 * Settles each order placed with nothing due that is still pending payment STALE_SECONDS after it was placed, page by page, until a page comes back short or the budget is spent.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $deadline When the budget is spent, on the clock's scale.
+	 */
+	private function settleNothingDue( int $deadline ): void {
+		$after = 0;
+
+		do {
+			$page = $this->orders->pendingNothingDue( self::STALE_SECONDS, $after, self::PAGE );
+
+			foreach ( $page as $orderId ) {
+				$after = $orderId;
+
+				try {
+					// A job acts on no user's authority: what it records is recorded without a user.
+					$this->settlement->settleNothingDue( $orderId, Actor::user( 0 ) );
+				} catch ( CodedException $deferred ) {
+					( $this->report )(
+						self::DEFERRED,
+						array(
+							'order_id' => $orderId,
+							'reason'   => (string) $deferred->errorCode()->value,
+						)
+					);
+				}
+			}
+
+			$full = count( $page ) >= self::PAGE;
+		} while ( $full && ( $this->clock )() < $deadline );
 	}
 }

@@ -15,6 +15,7 @@ use SEOCart\Cart\Application\CartError;
 use SEOCart\Cart\Application\StoreApiError;
 use SEOCart\Cart\Domain\CartToken;
 use SEOCart\Cart\Infrastructure\CartTables;
+use SEOCart\Checkout\Application\KeptAnswer;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\SettlePlacement;
 use SEOCart\Checkout\Domain\CheckoutError;
@@ -22,6 +23,7 @@ use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Domain\Event\StockReservationReleased;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
+use SEOCart\Order\Domain\AccessKeys;
 use SEOCart\Order\Domain\Event\OrderCreated;
 use SEOCart\Order\Domain\Event\OrderPlaced;
 use SEOCart\Order\Domain\Event\OrderStatusChanged;
@@ -272,7 +274,7 @@ final class PlaceOrderTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Tests that the same request sent twice places one order, and the second is answered with the placement as it stands: before its payment is known, the answer unit of work 1 kept, byte for byte; once settled, the first answer, the order key included.
+	 * Tests that the same request sent twice places one order, and the second is answered with the placement as it stands: before its payment is known, the answer unit of work 1 kept, with the order key it lost; once settled, the first answer, the order key included.
 	 *
 	 * Planted violations:
 	 * - in PlaceOrder::placeInside(), skip $this->keys->complete(): the second request then finds
@@ -293,10 +295,13 @@ final class PlaceOrderTest extends PlacementTestCase {
 
 		$this->assertRefused( CheckoutError::GatewayUnavailable, fn() => $this->placement->place( $unknown, self::guest() ) );
 
-		$kept = (string) $b->fetchValue( sprintf( 'SELECT response_json FROM `%s`', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ) ) );
+		$kept     = (array) json_decode( (string) $b->fetchValue( sprintf( 'SELECT response_json FROM `%s`', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ) ) ), true );
+		$replayed = $this->placement->place( $unknown, self::guest() );
+		$hash     = (string) $b->fetchValue( sprintf( "SELECT access_key_hash FROM `%s` WHERE uuid = '%s'", $this->table( OrderTables::ORDERS ), (string) ( $kept['order_uuid'] ?? '' ) ) );
 
-		$this->assertSame( $kept, (string) wp_json_encode( $this->placement->place( $unknown, self::guest() ) ), 'Before its payment is known, the retry gets the answer unit of work 1 kept, byte for byte.' );
-		$this->assertSame( 'pending', json_decode( $kept, true )['outcome'] );
+		$this->assertSame( 'pending', $kept['outcome'] ?? null );
+		$this->assertSame( array_diff_key( $kept, array( KeptAnswer::SEALED => true ) ), array_diff_key( $replayed, array( KeptAnswer::ORDER_KEY => true ) ), 'Before its payment is known, the retry gets the answer unit of work 1 kept.' );
+		$this->assertTrue( $this->kernel->get( AccessKeys::class )->verify( (string) ( $replayed['order_key'] ?? '' ), $hash ), 'The retry gets the order key the refused request never received.' );
 
 		$mug  = $this->sellable();
 		$cart = $this->readyCart( array( $mug => 1 ) );
@@ -312,7 +317,7 @@ final class PlaceOrderTest extends PlacementTestCase {
 		);
 
 		$this->assertSame( 'approved', $first['outcome'] );
-		$this->assertEquals( $first, $stored, 'The key keeps the settled placement.' );
+		$this->assertEquals( array_diff_key( $first, array( KeptAnswer::ORDER_KEY => true ) ), array_diff_key( $stored, array( KeptAnswer::SEALED => true ) ), 'The key keeps the settled placement.' );
 		$this->assertEquals( $first, $again, 'The retry gets the placement as it stands: the first answer, its order key included.' );
 		$this->assertSame( 2, $this->committedCount( $b, OrderTables::ORDERS ) );
 		$this->assertSame( 2, $this->committedCount( $b, CheckoutTables::IDEMPOTENCY_KEYS ) );

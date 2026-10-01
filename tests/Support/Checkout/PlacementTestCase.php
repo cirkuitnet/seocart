@@ -453,6 +453,8 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 	 * @param SecondConnection $b    Connection B.
 	 * @param string           $uuid The order's uuid.
 	 * @return array{id: int, status: string, payment_status: string, hold_group: string|null, has_unreconciled_money: int}|null The order, or null.
+	 *
+	 * @phpstan-impure
 	 */
 	protected function committedOrder( SecondConnection $b, string $uuid ): ?array {
 		$row = $b->fetchRow( sprintf( "SELECT id, status, payment_status, hold_group, has_unreconciled_money FROM `%s` WHERE uuid = '%s'", $this->table( OrderTables::ORDERS ), $uuid ) );

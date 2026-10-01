@@ -139,7 +139,7 @@ final class PaymentTables {
 				new ColumnSpec( 'provider_intent_id', 'varchar(191)', Classification::Public, 'The gateway\'s reference to the intent, recorded from its first answer that carries one; NULL until then.', nullable: true, collation: 'ascii_bin' ),
 				new ColumnSpec( 'payment_schedule_id', 'bigint unsigned', Classification::Public, 'The payment schedule the intent pays an instalment of; NULL for an order paid at once.', nullable: true ),
 				new ColumnSpec( 'voided_reason', 'varchar(32)', Classification::Public, 'Why the intent was voided; NULL unless it was.', nullable: true, collation: 'ascii_bin' ),
-				new ColumnSpec( 'customer_action_expires_at', 'datetime', Classification::Public, 'When the customer\'s time to act, for example to confirm with their bank, runs out, UTC, from the database clock; NULL when no action was asked.', nullable: true ),
+				new ColumnSpec( 'customer_action_expires_at', 'datetime', Classification::Public, 'When the intent\'s wait runs out, for the customer to act (for example to confirm with their bank) or for the gateway to decide, UTC, from the database clock; NULL while it waits for neither. Reconciliation sends it to the gateway, which answers an intent waiting past it as expired.', nullable: true ),
 				self::createdAt( 'When the intent was created, UTC, from the database clock.' ),
 				new ColumnSpec( 'updated_at', 'datetime(6)', Classification::Public, 'When the intent last changed, UTC, from the database clock; what reconciliation measures an intent\'s wait by.' ),
 			),

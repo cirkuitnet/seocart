@@ -36,6 +36,7 @@ use SEOCart\Payment\Domain\Gateway\PaymentRequest;
 use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\IntentTransitions;
+use SEOCart\Payment\Domain\NothingDue;
 use SEOCart\Payment\Domain\Operation;
 use SEOCart\Payment\Domain\Outcome;
 use SEOCart\Payment\Domain\PaymentIntent;
@@ -77,6 +78,9 @@ use SEOCart\Support\Money;
  * refused after the gateway had given the money back, is kept the way a mismatch is
  * (recordUnapplied()), so money the gateway moved is never left unrecorded.
  *
+ * An order with nothing to pay has no intent, and moves no money: settleNothingDue() records it
+ * paid and accepts it, with no ledger row.
+ *
  * @since 0.1.0
  */
 final class PaymentService {
@@ -91,13 +95,38 @@ final class PaymentService {
 	public const CAPTURE_CAPABILITY = 'seocart_capture_payments';
 
 	/**
-	 * How long a customer asked to act, for example to confirm with their bank, has to do it, in seconds.
+	 * How long an intent waits, for a customer asked to act (for example to confirm with their bank) or for a gateway still deciding, before the attempt is taken as expired, in seconds.
+	 *
+	 * The window a provider that reports none of its own is held to: reconciliation sends it with
+	 * its query, and the gateway answers an intent waiting past it as expired.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var int
 	 */
 	public const ACTION_WINDOW_SECONDS = 900;
+
+	/**
+	 * How long a placement's payment may wait unchanged before it is called stale, in seconds: longer than any call to a gateway takes.
+	 *
+	 * Reconciliation asks the gateway about an intent, and settles an order with nothing due, only
+	 * once it has waited this long; doctor calls an order with something to pay and no intent
+	 * broken only once it is this old.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	public const STALE_SECONDS = 600;
+
+	/**
+	 * The reason an order with nothing to pay is recorded as paid with.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const NOTHING_DUE = 'nothing_due';
 
 	/**
 	 * The key of the customer's payment token in the payment data a placement passes.
@@ -247,12 +276,16 @@ final class PaymentService {
 	 * Creates an order's intent, with its amounts frozen, inside the caller's transaction.
 	 *
 	 * One insert and PaymentIntentCreated. The amounts are the caller's: the grand total and the
-	 * base grand total of the order's totals, for its one tender. The gateway is not called.
-	 * Outside a transaction it throws a \LogicException, before any statement.
+	 * base grand total of the order's totals, for its one tender. An order with nothing due has no
+	 * intent (settleNothingDue()), so the amount in the order's currency is positive; its base
+	 * equivalent may round to zero, for a small order in a currency worth far less than the base
+	 * one. The gateway is not called. Outside a transaction it throws a \LogicException, before any
+	 * statement.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \InvalidArgumentException When the gateway is not the one installed, or an amount is not positive; before any statement.
+	 * @throws \InvalidArgumentException When the gateway is not the one installed, the amount is not
+	 *                                   positive, or the base amount is negative; before any statement.
 	 *
 	 * @param int    $orderId             The order, inserted in this transaction.
 	 * @param string $gatewayId           The gateway to pay through: the installed gateway's id.
@@ -268,8 +301,8 @@ final class PaymentService {
 			throw new \InvalidArgumentException( sprintf( 'An intent is paid through the installed gateway, %s.', $this->gateway->id() ) );
 		}
 
-		if ( ! self::isPositive( $amount ) || ! self::isPositive( $baseAmount ) ) {
-			throw new \InvalidArgumentException( 'An intent is for a positive amount, in both currencies.' );
+		if ( ! self::isPositive( $amount ) || $baseAmount->isNegative() ) {
+			throw new \InvalidArgumentException( 'An intent is for a positive amount in the order\'s currency, and an amount in the base currency that is not negative: an order with nothing due has no intent.' );
 		}
 
 		$uuid     = $this->ids->generate();
@@ -395,6 +428,55 @@ final class PaymentService {
 	}
 
 	/**
+	 * Settles an order with nothing to pay, inside the caller's transaction: its payment status becomes paid and the order is accepted.
+	 *
+	 * An order whose grand total is zero has no intent and no gateway is asked: no money moves,
+	 * so there is no ledger row. In a savepoint of the caller's transaction the order is locked,
+	 * its payment amounts are recorded with nothing added, so that the status they derive, paid,
+	 * is written with its record and its event, and then the order is accepted, as an approval
+	 * accepts one. An order no longer pending payment was settled before, by another runner or an
+	 * earlier request, and nothing changes. Stock, promotion usage and the cart are the caller's,
+	 * as for an approval.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Outside a transaction, before any statement; when the order has
+	 *                         something to pay, or its amounts do not derive the status paid, which
+	 *                         rolls back the savepoint.
+	 * @throws CodedException  `order.not_found`; `payment.projection_conflict`.
+	 *
+	 * @param int   $orderId The order: its grand total and its amount due are zero.
+	 * @param Actor $actor   On whose authority.
+	 * @return NothingDue What was done.
+	 */
+	public function settleNothingDue( int $orderId, Actor $actor ): NothingDue {
+		$this->requireCallersTransaction( __FUNCTION__ );
+
+		return $this->tx->transaction(
+			function () use ( $orderId, $actor ): NothingDue {
+				$order = $this->orders->lockForPayment( $orderId );
+
+				if ( ! $order->grandTotal->isZero() || ! $order->due->isZero() ) {
+					throw new \LogicException( sprintf( 'Order %1$d has %2$d due of a grand total of %3$d: only an order with nothing to pay is settled without a payment.', $order->id, $order->due->minorUnits(), $order->grandTotal->minorUnits() ) );
+				}
+
+				if ( OrderStatus::PendingPayment !== $order->status ) {
+					return new NothingDue( $order->id, $order->holdGroup, $order->paymentStatus, null );
+				}
+
+				$paid = $this->record( $order, self::nothing( $order ), null, self::NOTHING_DUE, $actor );
+
+				// The acceptance claims the order is paid for: its amounts must say so.
+				if ( PaymentStatus::Paid !== $paid ) {
+					throw new \LogicException( sprintf( 'Order %1$d has nothing to pay, but its payment amounts derive the status %2$s: it is not accepted.', $order->id, $paid->value ) );
+				}
+
+				return new NothingDue( $order->id, $order->holdGroup, $paid, $this->orders->accept( $order->id, $actor )->to );
+			}
+		);
+	}
+
+	/**
 	 * Captures an authorized intent in full: the gateway outside any transaction, then the result applied in a transaction of its own.
 	 *
 	 * Capture is always asked for: no status change captures a payment. The plain read of the
@@ -436,9 +518,9 @@ final class PaymentService {
 	 * Lists a page of the intents still waiting for the gateway's answer that have not changed for a while, oldest first, for reconciliation.
 	 *
 	 * One read on the intents' state and last change, measured by the database clock, in the
-	 * order the intents were created. A caller that reads more than one page passes the uuid of
-	 * the last intent of the page before, so intents the gateway never answers cannot keep the
-	 * ones after them from being asked.
+	 * order the intents were created, each with when its wait runs out and whether it had. A
+	 * caller that reads more than one page passes the uuid of the last intent of the page before,
+	 * so intents the gateway never answers cannot keep the ones after them from being asked.
 	 *
 	 * @since 0.1.0
 	 *
@@ -460,18 +542,21 @@ final class PaymentService {
 	/**
 	 * Asks the gateway where an intent stands, outside any transaction, and returns its answer unapplied.
 	 *
+	 * The query carries the intent's expiry as it was read, so a gateway can answer an intent
+	 * waiting past it as expired.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \LogicException     Inside a transaction, before the call.
 	 * @throws GatewayUnavailable When the gateway has no answer.
 	 *
 	 * @param IntentRef $intent The intent.
-	 * @return GatewayResult|null The gateway's answer; null while it is still deciding, or knows nothing of the intent.
+	 * @return GatewayResult|null The gateway's answer, a declined authorization when it has no record of the intent or it expired; null while it is still deciding.
 	 */
 	public function queryGateway( IntentRef $intent ): ?GatewayResult {
 		$this->requireNoTransaction( __FUNCTION__ );
 
-		return $this->gateway->query( new PaymentQuery( $intent->uuid, $intent->providerIntentId, $intent->amount ) );
+		return $this->gateway->query( new PaymentQuery( $intent->uuid, $intent->providerIntentId, $intent->amount, $intent->waitEndsAt, $intent->waitEnded ) );
 	}
 
 	/**
@@ -677,14 +762,14 @@ final class PaymentService {
 	 *
 	 * @throws CodedException `payment.projection_conflict` when the update refused the change.
 	 *
-	 * @param LockedOrder  $order    The order, locked.
-	 * @param PaymentDelta $delta    What the payment adds.
-	 * @param IntentStatus $intentTo The intent's state after the payment.
-	 * @param string       $reason   Why, for the order's event.
-	 * @param Actor        $actor    On whose authority.
+	 * @param LockedOrder       $order    The order, locked.
+	 * @param PaymentDelta      $delta    What the payment adds.
+	 * @param IntentStatus|null $intentTo The intent's state after the payment; null for an order that has none.
+	 * @param string            $reason   Why, for the order's event.
+	 * @param Actor             $actor    On whose authority.
 	 * @return PaymentStatus The order's payment status after.
 	 */
-	private function record( LockedOrder $order, PaymentDelta $delta, IntentStatus $intentTo, string $reason, Actor $actor ): PaymentStatus {
+	private function record( LockedOrder $order, PaymentDelta $delta, ?IntentStatus $intentTo, string $reason, Actor $actor ): PaymentStatus {
 		$after  = Projection::after( $order, $delta );
 		$status = $after->status( $intentTo );
 

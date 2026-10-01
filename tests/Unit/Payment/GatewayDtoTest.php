@@ -55,6 +55,9 @@ final class GatewayDtoTest extends TestCase {
 		// Requests.
 		'paymentToken',
 		'refundUuid',
+		// Queries: when the intent's wait, for the customer or the gateway, runs out.
+		'waitEndsAt',
+		'waitEnded',
 		// Exceptions.
 		'message',
 		'code',

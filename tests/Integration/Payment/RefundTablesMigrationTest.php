@@ -83,22 +83,15 @@ final class RefundTablesMigrationTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Tests the migration's place and what it declares: three append-only tables of financial retention, which the production registry lists.
+	 * Tests the migration's place and what it declares: three append-only tables of financial retention, after the order and payment tables they refer to, which the production registry lists.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_migration_declares_the_three_tables_after_every_other(): void {
+	public function test_the_migration_declares_the_three_tables_after_those_it_refers_to(): void {
 		$migration = new CreateRefundTables();
-		$others    = array();
 
-		foreach ( OwnedData::registry()->migrations() as $registered ) {
-			if ( CreateRefundTables::ID !== $registered->id() ) {
-				$others[] = $registered->id();
-			}
-		}
-
-		$this->assertNotSame( array(), $others );
-		$this->assertGreaterThan( max( $others ), $migration->id(), 'The refund tables\' migration sorts after every other one.' );
+		$this->assertContains( CreateRefundTables::ID, array_map( static fn( Migration $registered ): string => $registered->id(), OwnedData::registry()->migrations() ) );
+		$this->assertGreaterThan( max( CreateOrderTables::ID, CreatePaymentTables::ID ), $migration->id(), 'The refund tables\' migration sorts after the order and payment tables a refund refers to.' );
 		$this->assertTrue( $migration->canOperateHalfApplied(), 'Nothing a customer does needs the refund tables.' );
 		$this->assertEquals( RefundTables::all(), $migration->tables() );
 

@@ -114,14 +114,23 @@ interface PaymentGateway {
 	 * not-found only for an intent older than the reconciliation's stale threshold. An adapter
 	 * whose provider cannot be asked by that key answers null, still deciding, never not-found.
 	 *
+	 * "The provider has expired or cancelled this intent" is a final answer too: nothing can be
+	 * charged any more, and it is answered as a declined authorization whose error code is
+	 * `expired`, which ends the placement as a decline does. A real adapter answers it from its
+	 * provider's own state. The query carries the intent's expiry, the window the plugin gives a
+	 * wait for the customer or the gateway, which stands for a provider that reports no window of
+	 * its own, and whether it had passed by the database's clock; an intent with no expiry, or one
+	 * not yet past it, is never answered expired on that account.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws GatewayUnavailable When the provider could not be asked or did not answer.
 	 *
 	 * @param PaymentQuery $query The intent.
 	 * @return GatewayResult|null The provider's latest answer, not yet applied, a declined
-	 *                            authorization `not_found` when it has no record of the intent;
-	 *                            null while the provider is still deciding.
+	 *                            authorization `not_found` when it has no record of the intent, or
+	 *                            `expired` when it expired or cancelled it; null while the provider
+	 *                            is still deciding.
 	 */
 	public function query( PaymentQuery $query ): ?GatewayResult;
 }

@@ -19,6 +19,7 @@ use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Domain\Allocation;
 use SEOCart\Order\Application\Orders;
 use SEOCart\Order\Domain\OrderStatus;
+use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Domain\Application;
 use SEOCart\Payment\Domain\ApplicationKind;
@@ -58,6 +59,10 @@ defined( 'ABSPATH' ) || exit;
  * - the shopper must act, or the gateway is still deciding: nothing more; the order keeps its hold
  *   and its cart keeps placing it;
  * - an answer applied before: nothing.
+ *
+ * An order placed with nothing to pay has no answer to wait for: settleNothingDue() runs the
+ * same unit of work with the payment path recording it paid instead of applying an answer, the
+ * order locked first, and settles it as an approval.
  *
  * Last, after the cart, the answer the placement's key keeps is rewritten to what the settlement
  * came to, so a retry of the placement is told where it stands now; an answer applied before
@@ -135,6 +140,38 @@ final class SettlePlacement {
 	}
 
 	/**
+	 * Settles an order placed with nothing to pay, in one transaction: the payment path records it paid and accepts it, and the order's stock, promotion uses and cart are settled as for an approval.
+	 *
+	 * The order has no intent and no gateway was asked. Its units are allocated, its uses committed
+	 * and its cart converted, and the answer its key keeps is rewritten; when its units are gone, it
+	 * goes on hold as an approved one does. An order settled before is answered as a duplicate, and
+	 * nothing changes.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException|\LogicException What the payment path refuses: nothing is changed.
+	 *
+	 * @param int   $orderId The order: its grand total is zero.
+	 * @param Actor $actor   On whose authority: the shopper, or the system for a job.
+	 * @return SettledPlacement What the settlement came to.
+	 */
+	public function settleNothingDue( int $orderId, Actor $actor ): SettledPlacement {
+		return $this->tx->transaction(
+			function () use ( $orderId, $actor ): SettledPlacement {
+				$paid = $this->payments->settleNothingDue( $orderId, $actor );
+
+				if ( null === $paid->acceptedAs ) {
+					return new SettledPlacement( PlacementOutcome::Duplicate, $paid->orderId, null, $paid->paymentStatus );
+				}
+
+				return $this->accept( $paid->orderId, self::holdGroup( $paid->orderId, $paid->holdGroup ), $paid->acceptedAs, $paid->paymentStatus, $actor );
+			},
+			RetryPolicy::deadlocks(),
+			Isolation::ReadCommitted
+		);
+	}
+
+	/**
 	 * Settles what an applied answer leaves to the order's placement.
 	 *
 	 * @since 0.1.0
@@ -144,18 +181,9 @@ final class SettlePlacement {
 	 * @return SettledPlacement What the settlement came to.
 	 */
 	private function settle( Application $applied, Actor $actor ): SettledPlacement {
-		$orderStatus = $applied->orderStatusTo;
-
 		switch ( $applied->kind ) {
 			case ApplicationKind::Applied:
-				$outcome = $this->allocate( $applied ) ? PlacementOutcome::Approved : PlacementOutcome::StockUnavailable;
-
-				if ( PlacementOutcome::StockUnavailable === $outcome ) {
-					$orderStatus = $this->orders->transition( $applied->orderId, OrderStatus::OnHold, self::STOCK_UNAVAILABLE, $actor )->to;
-				}
-
-				$this->close( $applied->orderId, true );
-				break;
+				return $this->accept( $applied->orderId, self::holdGroup( $applied->orderId, $applied->holdGroup ), $applied->orderStatusTo, $applied->paymentTo, $actor );
 
 			case ApplicationKind::Mismatch:
 				if ( IntentTransitions::isFinal( $applied->intentFrom ) ) {
@@ -163,14 +191,14 @@ final class SettlePlacement {
 					break;
 				}
 
-				$this->allocate( $applied );
+				$this->allocate( $applied->orderId, self::holdGroup( $applied->orderId, $applied->holdGroup ) );
 				$this->close( $applied->orderId, true );
 
 				$outcome = PlacementOutcome::AmountMismatch;
 				break;
 
 			case ApplicationKind::Declined:
-				$this->stock->release( self::holdGroupOf( $applied ), self::PAYMENT_DECLINED );
+				$this->stock->release( self::holdGroup( $applied->orderId, $applied->holdGroup ), self::PAYMENT_DECLINED );
 				$this->close( $applied->orderId, false );
 
 				$outcome = PlacementOutcome::Declined;
@@ -185,12 +213,52 @@ final class SettlePlacement {
 				break;
 
 			default:
-				return new SettledPlacement( PlacementOutcome::Duplicate, $applied->orderId, $orderStatus, $applied->paymentTo );
+				return new SettledPlacement( PlacementOutcome::Duplicate, $applied->orderId, $applied->orderStatusTo, $applied->paymentTo );
 		}
 
-		$this->keys->settleAnswer( $applied->orderId, $outcome, $orderStatus, $applied->paymentTo );
+		return $this->answered( $applied->orderId, $outcome, $applied->orderStatusTo, $applied->paymentTo );
+	}
 
-		return new SettledPlacement( $outcome, $applied->orderId, $orderStatus, $applied->paymentTo );
+	/**
+	 * Settles an order whose payment stands: its units allocated, or the order on hold when they are gone; its uses committed and its cart converted.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int              $orderId       The order, accepted by the payment path.
+	 * @param string           $holdGroup     Its stock hold.
+	 * @param OrderStatus|null $orderStatus   Its status after the payment path, or null when that did not change it.
+	 * @param PaymentStatus    $paymentStatus Its payment status after the payment path.
+	 * @param Actor            $actor         On whose authority.
+	 * @return SettledPlacement What the settlement came to.
+	 */
+	private function accept( int $orderId, string $holdGroup, ?OrderStatus $orderStatus, PaymentStatus $paymentStatus, Actor $actor ): SettledPlacement {
+		$outcome = PlacementOutcome::Approved;
+
+		if ( ! $this->allocate( $orderId, $holdGroup ) ) {
+			$outcome     = PlacementOutcome::StockUnavailable;
+			$orderStatus = $this->orders->transition( $orderId, OrderStatus::OnHold, self::STOCK_UNAVAILABLE, $actor )->to;
+		}
+
+		$this->close( $orderId, true );
+
+		return $this->answered( $orderId, $outcome, $orderStatus, $paymentStatus );
+	}
+
+	/**
+	 * Rewrites the answer the placement's key keeps to what the settlement came to, last in the lock order, and returns it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int              $orderId       The order.
+	 * @param PlacementOutcome $outcome       What the settlement came to.
+	 * @param OrderStatus|null $orderStatus   The order's status after it, or null when it did not change.
+	 * @param PaymentStatus    $paymentStatus The order's payment status after it.
+	 * @return SettledPlacement What the settlement came to.
+	 */
+	private function answered( int $orderId, PlacementOutcome $outcome, ?OrderStatus $orderStatus, PaymentStatus $paymentStatus ): SettledPlacement {
+		$this->keys->settleAnswer( $orderId, $outcome, $orderStatus, $paymentStatus );
+
+		return new SettledPlacement( $outcome, $orderId, $orderStatus, $paymentStatus );
 	}
 
 	/**
@@ -200,17 +268,18 @@ final class SettlePlacement {
 	 *
 	 * @throws CodedException What the allocation refuses, but that the units are gone.
 	 *
-	 * @param Application $applied What the payment path did.
+	 * @param int    $orderId   The order.
+	 * @param string $holdGroup Its stock hold.
 	 * @return bool True when the units are allocated; false when they are gone, and nothing was allocated.
 	 */
-	private function allocate( Application $applied ): bool {
+	private function allocate( int $orderId, string $holdGroup ): bool {
 		$lines = array_map(
 			static fn( array $line ): Allocation => new Allocation( $line['orderLineId'], $line['variantId'], $line['quantity'] ),
-			$this->orders->stockLines( $applied->orderId )
+			$this->orders->stockLines( $orderId )
 		);
 
 		try {
-			$this->stock->allocate( self::holdGroupOf( $applied ), $applied->orderId, $lines );
+			$this->stock->allocate( $holdGroup, $orderId, $lines );
 		} catch ( CodedException $short ) {
 			if ( ! in_array( $short->errorCode(), array( InventoryError::Insufficient, InventoryError::ItemMissing ), true ) ) {
 				throw $short;
@@ -247,10 +316,11 @@ final class SettlePlacement {
 	 *
 	 * @throws \LogicException When the order has none: it was not placed through checkout.
 	 *
-	 * @param Application $applied What the payment path did.
+	 * @param int         $orderId   The order.
+	 * @param string|null $holdGroup Its stock hold, as the payment path read it with the order's lock.
 	 * @return string The hold's id.
 	 */
-	private static function holdGroupOf( Application $applied ): string {
-		return $applied->holdGroup ?? throw new \LogicException( sprintf( 'Order %d has no stock hold, so it was not placed through checkout and has no placement to settle.', $applied->orderId ) );
+	private static function holdGroup( int $orderId, ?string $holdGroup ): string {
+		return $holdGroup ?? throw new \LogicException( sprintf( 'Order %d has no stock hold, so it was not placed through checkout and has no placement to settle.', $orderId ) );
 	}
 }

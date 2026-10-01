@@ -1223,7 +1223,7 @@ final class Modules {
 				$c->get( ClientIdentities::class )
 			)
 		);
-		$container->bind( ReconcileStalePlacements::class, static fn( Container $c ): ReconcileStalePlacements => new ReconcileStalePlacements( $c->get( PaymentService::class ), $c->get( SettlePlacement::class ), $c->get( Reporter::class ) ) );
+		$container->bind( ReconcileStalePlacements::class, static fn( Container $c ): ReconcileStalePlacements => new ReconcileStalePlacements( $c->get( PaymentService::class ), $c->get( Orders::class ), $c->get( SettlePlacement::class ), $c->get( Reporter::class ) ) );
 		$container->bind( IdempotencyKeyRetention::class, static fn( Container $c ): IdempotencyKeyRetention => new IdempotencyKeyRetention( $c->get( MysqlIdempotencyKeys::class ) ) );
 		$container->bind( CheckoutChecks::class, static fn( Container $c ): CheckoutChecks => new CheckoutChecks( $c->get( MysqlIdempotencyKeys::class ), $c->get( Database::class ), $c->get( PaymentRepository::class ), $c->get( OrderRepository::class ) ) );
 	}

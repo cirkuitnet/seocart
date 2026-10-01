@@ -110,6 +110,36 @@ final class StubGatewayTest extends TestCase {
 	}
 
 	/**
+	 * Tests that an intent waiting for the customer or pending is expired once the query says its wait ran out, and answered as a declined authorization `expired`; before then, and for any other scenario, the expiry changes nothing.
+	 *
+	 * Planted violations:
+	 * - in StubGateway::query(), leave out the expiry: the expired intents are answered as before;
+	 * - in StubGateway::query(), expire every waiting intent, whatever the query says: the ones not
+	 *   yet expired are declined too.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_an_intent_waiting_past_its_expiry_is_answered_expired(): void {
+		$stub = new StubGateway();
+
+		foreach ( array( 'requires_action', 'pending' ) as $scenario ) {
+			$expired = $stub->query( self::query( 'stub-pi-' . $scenario . '-' . self::INTENT, true ) );
+
+			$this->assertNotNull( $expired, $scenario );
+			$this->assertSame(
+				array( Operation::Authorize, Outcome::Declined, StubGateway::EXPIRED, 'stub-ex-' . self::INTENT, 'stub-pi-' . $scenario . '-' . self::INTENT, 3080 ),
+				array( $expired->operation, $expired->outcome, $expired->errorCode, $expired->providerObjectId, $expired->providerIntentId, $expired->amount->minorUnits() ),
+				$scenario
+			);
+		}
+
+		$this->assertSame( Outcome::Approved, $stub->query( self::query( 'stub-pi-requires_action-' . self::INTENT, false ) )?->outcome, 'Before its expiry, the customer confirmed.' );
+		$this->assertNull( $stub->query( self::query( 'stub-pi-pending-' . self::INTENT, false ) ), 'Before its expiry, still pending.' );
+		$this->assertSame( Outcome::Approved, $stub->query( self::query( 'stub-pi-approve-' . self::INTENT, true ) )?->outcome, 'An approval is not taken back by an expiry.' );
+		$this->assertSame( StubGateway::NOT_FOUND, $stub->query( self::query( null, true ) )?->errorCode, 'An intent never heard of is not found, expired or not.' );
+	}
+
+	/**
 	 * Tests that a capture takes the amount asked, or one minor unit more for an intent authorized to capture wrongly, under its own object.
 	 *
 	 * @since 0.1.0
@@ -173,9 +203,10 @@ final class StubGatewayTest extends TestCase {
 	 * @since 0.1.0
 	 *
 	 * @param string|null $reference The reference the stub gave the intent, or null.
+	 * @param bool        $waitEnded Optional. Whether the intent's wait has run out. Default false.
 	 * @return PaymentQuery The query.
 	 */
-	private static function query( ?string $reference ): PaymentQuery {
-		return new PaymentQuery( self::INTENT, $reference, self::amount() );
+	private static function query( ?string $reference, bool $waitEnded = false ): PaymentQuery {
+		return new PaymentQuery( self::INTENT, $reference, self::amount(), new \DateTimeImmutable( '2026-10-01 12:15:00', new \DateTimeZone( 'UTC' ) ), $waitEnded );
 	}
 }

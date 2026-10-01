@@ -82,4 +82,48 @@ final class PlacementTransactionsTest extends PlacementTestCase {
 		$this->assertSame( array( 'authorize:0', 'authorize:0' ), array_map( static fn( array $call ): string => $call['method'] . ':' . $call['depth'], $this->gateway->calls ), 'Each call to the gateway was made at depth 0.' );
 		$this->assertSame( 0, $requests, 'No outbound request was made.' );
 	}
+
+	/**
+	 * Tests that a placement with nothing to pay is two transactions too, each at READ COMMITTED, with no intent read and no gateway call between them.
+	 *
+	 * Planted violation: in PlaceOrder::paid(), settle an order with nothing due in a transaction of
+	 * its own before the settlement (`$this->tx->transaction( fn() => null )`, as a separate step
+	 * would): the log then holds three START TRANSACTION.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_placement_with_nothing_due_is_two_transactions_with_no_gateway_call(): void {
+		$this->plantPromotion(
+			'FULL',
+			array(
+				'effect_kind'                 => 'percent',
+				'effect_percent_micropercent' => 100000000,
+			)
+		);
+		$this->plantPromotion(
+			'SHIP',
+			array(
+				'effect_kind'                 => 'free_shipping',
+				'effect_percent_micropercent' => null,
+			)
+		);
+		$this->readyCart( array( $this->sellable() => 1 ), array( 'FULL', 'SHIP' ) );
+
+		$input  = $this->placeInput();
+		$answer = array();
+		$log    = $this->captureQueries(
+			function () use ( $input, &$answer ): void {
+				$answer = $this->placement->place( $input, self::guest() );
+			}
+		);
+
+		$this->assertSame( array( 0, 'approved' ), array( $input['grand_total_minor'], $answer['outcome'] ?? null ) );
+		$this->assertSame(
+			array( 'SET TRANSACTION ISOLATION LEVEL READ COMMITTED', 'START TRANSACTION', 'COMMIT', 'SET TRANSACTION ISOLATION LEVEL READ COMMITTED', 'START TRANSACTION', 'COMMIT' ),
+			$log->matching( '/^(SET TRANSACTION|START TRANSACTION|COMMIT|ROLLBACK)\b/' )->sqls(),
+			'Two transactions, each asked for at READ COMMITTED.'
+		);
+		$this->assertSame( 0, $log->matching( '/`' . preg_quote( $this->table( PaymentTables::INTENTS ), '/' ) . '`/' )->count(), 'No statement names an intent.' );
+		$this->assertSame( array(), $this->gateway->calls, 'The gateway was never called.' );
+	}
 }

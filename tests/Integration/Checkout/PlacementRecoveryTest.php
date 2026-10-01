@@ -221,6 +221,72 @@ final class PlacementRecoveryTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Tests that a placement whose payment waits past its intent's expiry, pending or for the shopper, ends once reconciled: the gateway answers the expiry, which releases everything the order held; one not yet past its expiry is left to the gateway's own answer.
+	 *
+	 * Each waits eleven minutes unchanged by the database clock, so reconciliation asks about all
+	 * of them; two have their wait run out a minute ago.
+	 *
+	 * Planted violations:
+	 * - in StubGateway::query(), leave out the expiry: the expired placements keep their holds,
+	 *   their promotion uses and their carts;
+	 * - in StubGateway::query(), expire every waiting intent, whatever the query says: the pending
+	 *   placement not yet past its expiry is declined too;
+	 * - in MysqlPaymentRepository::MARK_PROCESSING, leave out the window: a pending intent then
+	 *   has no expiry, and waits for ever.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_placement_past_its_expiry_is_released_when_reconciled(): void {
+		$b       = $this->secondConnection();
+		$intents = $this->table( PaymentTables::INTENTS );
+		$orders  = $this->table( OrderTables::ORDERS );
+		$expired = array();
+
+		foreach ( array( StubGateway::PENDING, StubGateway::REQUIRES_ACTION ) as $round => $paymentToken ) {
+			$variant   = $this->sellable();
+			$promotion = $this->plantPromotion( 'EXPIRY' . $round );
+			$cart      = $this->readyCart( array( $variant => 1 ), array( 'EXPIRY' . $round ) );
+			$answer    = $this->placement->place( $this->placeInput( 'expiring-' . $round, $paymentToken ), self::guest() );
+
+			$expired[ $paymentToken ] = array(
+				'answer'    => $answer,
+				'cart'      => $cart,
+				'variant'   => $variant,
+				'promotion' => $promotion,
+			);
+		}
+
+		$deciding  = $this->waitingPlacement( StubGateway::PENDING );
+		$confirmed = $this->waitingPlacement( StubGateway::REQUIRES_ACTION );
+
+		$this->assertSame( 4, $this->committedCount( $b, PaymentTables::INTENTS, 'customer_action_expires_at > UTC_TIMESTAMP()' ), 'Every wait, pending or for the shopper, has its window.' );
+
+		$this->db->execute( 'UPDATE %i SET updated_at = UTC_TIMESTAMP(6) - INTERVAL 11 MINUTE', $intents );
+
+		foreach ( $expired as $placement ) {
+			$this->db->execute( 'UPDATE %i i JOIN %i o ON o.id = i.order_id SET i.customer_action_expires_at = UTC_TIMESTAMP() - INTERVAL 1 MINUTE WHERE o.uuid = %s', $intents, $orders, $placement['answer']['order_uuid'] );
+		}
+
+		$this->assertNull( $this->kernel->get( ReconcileStalePlacements::class )->handle( array() ) );
+
+		foreach ( $expired as $paymentToken => $placement ) {
+			$order = $this->committedOrder( $b, (string) $placement['answer']['order_uuid'] );
+
+			$this->assertNotNull( $order );
+			$this->assertSame( array( 'failed', 'failed' ), array( $order['status'], $order['payment_status'] ), $paymentToken );
+			$this->assertSame( StubGateway::EXPIRED, $b->fetchValue( sprintf( 'SELECT error_code FROM `%s` WHERE order_id = %d', $this->table( PaymentTables::TRANSACTIONS ), $order['id'] ) ), $paymentToken );
+			$this->assertSame( array( 5, 0, 0 ), $this->committedStock( $b, $placement['variant'] ), 'The hold is given back: ' . $paymentToken );
+			$this->assertSame( array( 'released', '0' ), array( $b->fetchValue( sprintf( 'SELECT state FROM `%s` WHERE order_id = %d', $this->table( PromotionTables::USAGE ), $order['id'] ) ), $b->fetchValue( sprintf( 'SELECT used FROM `%s` WHERE id = %d', $this->table( PromotionTables::PROMOTIONS ), $placement['promotion'] ) ) ), 'The promotion\'s use is given back: ' . $paymentToken );
+			$this->assertSame( 'open', $this->committedCart( $b, $placement['cart']->id )['status'] ?? null, $paymentToken );
+			$this->assertSame( 'declined', json_decode( (string) $b->fetchValue( sprintf( 'SELECT response_json FROM `%s` WHERE order_id = %d', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ), $order['id'] ) ), true )['outcome'] ?? null, $paymentToken );
+		}
+
+		$this->assertSettled( $b, $deciding, 'pending_payment', array( 5, 0, 1 ), 'placing' );
+		$this->assertSettled( $b, $confirmed, 'processing', array( 5, 1, 0 ), 'converted' );
+		$this->assertSame( array(), $this->reports, 'Nothing was deferred.' );
+	}
+
+	/**
 	 * Tests that an approval the gateway delivers after the placement ended on its "no record" answer is kept for a person: the ledger holds it unapplied, the order is flagged and doctor names it, and the stock, the promotion's use and the reopened cart stay as they were; delivered again, it is recorded once.
 	 *
 	 * Planted violation: in PaymentService::applyMoneyFact(), drop the keeping of an approved

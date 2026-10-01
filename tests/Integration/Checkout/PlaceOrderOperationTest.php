@@ -16,6 +16,7 @@ use SEOCart\Cart\Domain\CartToken;
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
+use SEOCart\Checkout\Application\KeptAnswer;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
@@ -103,12 +104,20 @@ final class PlaceOrderOperationTest extends PlacementTestCase {
 		$this->assertSame( 'processing', $status['body']['status'] ?? null );
 
 		$again = $this->place( $body, 'attempt-1' );
-		$kept  = (string) $this->secondConnection()->fetchValue( sprintf( 'SELECT response_json FROM `%s`', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ) ) );
+		$kept  = (array) json_decode( (string) $this->secondConnection()->fetchValue( sprintf( 'SELECT response_json FROM `%s`', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ) ) ), true );
 
 		$this->assertSame( 200, $again['status'] );
-		$this->assertEquals( json_decode( $kept, true ), $again['body'], 'The same request answers what the key keeps.' );
-		$this->assertEquals( $sent['body'], $again['body'], 'What the key keeps is the placement as it stands: the first answer.' );
+		$this->assertEquals( array_diff_key( $kept, array( KeptAnswer::SEALED => true ) ), array_diff_key( $again['body'], array( KeptAnswer::ORDER_KEY => true ) ), 'The same request answers what the key keeps.' );
+		$this->assertEquals( $sent['body'], $again['body'], 'What the key keeps is the placement as it stands: the first answer, its order key opened.' );
 		$this->assertSame( 1, $this->committedCount( $this->secondConnection(), OrderTables::ORDERS ) );
+
+		// A kept key that no longer opens is left out of the answer, which the operation still gives.
+		$this->db->execute( "UPDATE %i SET response_json = JSON_SET( response_json, '$.order_key_sealed.box', 'AAAA' )", $this->table( CheckoutTables::IDEMPOTENCY_KEYS ) );
+
+		$damaged = $this->place( $body, 'attempt-1' );
+
+		$this->assertSame( 200, $damaged['status'], (string) wp_json_encode( $damaged['body'] ) );
+		$this->assertEquals( array_diff_key( $sent['body'], array( KeptAnswer::ORDER_KEY => true ) ), $damaged['body'] );
 	}
 
 	/**
@@ -172,6 +181,7 @@ final class PlaceOrderOperationTest extends PlacementTestCase {
 		( new CreateLogsMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
 
 		$refusals = array();
+		$keys     = array();
 
 		foreach ( array( StubGateway::APPROVE, StubGateway::DECLINE, StubGateway::THROW ) as $token ) {
 			$body = $this->readyOverTheWire();
@@ -184,17 +194,22 @@ final class PlaceOrderOperationTest extends PlacementTestCase {
 
 			if ( 200 !== $sent['status'] ) {
 				$refusals[] = $sent['body'];
-			}
-		}
 
-		$keys = array_map( static fn( array $answer ): string => (string) $answer['order_key'], $this->keptAnswers() );
+				// A refused placement's key reaches the client through its retry, which opens the key its answer keeps.
+				$sent = $this->place( $body, 'attempt-' . $token );
+			}
+
+			$keys[] = (string) ( $sent['body'][ KeptAnswer::ORDER_KEY ] ?? '' );
+		}
 
 		$this->assertCount( 3, array_filter( $keys ), 'Each placement keeps its answer, with its key.' );
 		$this->assertCount( 2, $refusals );
 
 		$payloads = array_column( $this->db->fetchAll( 'SELECT payload_json FROM %i', $this->table( OutboxTable::NAME ) ), 'payload_json' );
+		$kept     = array_column( $this->db->fetchAll( 'SELECT response_json FROM %i', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ) ), 'response_json' );
 
 		$this->assertNotSame( array(), $payloads );
+		$this->assertCount( 3, $kept );
 
 		foreach ( $keys as $key ) {
 			foreach ( $refusals as $refusal ) {
@@ -203,6 +218,10 @@ final class PlaceOrderOperationTest extends PlacementTestCase {
 
 			foreach ( $payloads as $payload ) {
 				$this->assertStringNotContainsString( $key, (string) $payload, 'A stored event carries an order key.' );
+			}
+
+			foreach ( $kept as $answer ) {
+				$this->assertStringNotContainsString( $key, (string) $answer, 'A kept answer carries an order key readable.' );
 			}
 		}
 
@@ -235,20 +254,6 @@ final class PlaceOrderOperationTest extends PlacementTestCase {
 		);
 
 		$this->assertSame( array( 'order_uuid' => 'kept' ), $redacted, 'The logs drop the key by its name, as a secret.' );
-	}
-
-	/**
-	 * Returns the answers the placements' keys keep, in the order they were placed.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return list<array<string, mixed>> The answers.
-	 */
-	private function keptAnswers(): array {
-		return array_map(
-			static fn( array $row ): array => (array) json_decode( (string) $row['response_json'], true ),
-			$this->db->fetchAll( 'SELECT response_json FROM %i ORDER BY id', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ) )
-		);
 	}
 
 	/**

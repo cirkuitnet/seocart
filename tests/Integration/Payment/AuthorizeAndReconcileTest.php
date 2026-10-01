@@ -167,6 +167,12 @@ final class AuthorizeAndReconcileTest extends PaymentTestCase {
 		$this->assertSame( array( null, 'stub-pi-requires_action-' . $waiting->uuid, 'stub-pi-pending-' . $pending->uuid ), array_map( static fn( IntentRef $intent ): ?string => $intent->providerIntentId, $stale ) );
 		$this->assertSame( array( $created->uuid, $waiting->uuid ), array_map( static fn( IntentRef $intent ): string => $intent->uuid, $this->payments->staleIntents( 600, 2 ) ), 'The limit keeps the first page.' );
 		$this->assertNotContains( $fresh->uuid, array_map( static fn( IntentRef $intent ): string => $intent->uuid, $stale ) );
+		$this->assertSame( array( false, true, true ), array_map( static fn( IntentRef $intent ): bool => null !== $intent->waitEndsAt, $stale ), 'A wait for the shopper or the gateway has its window; an intent not yet answered has none.' );
+		$this->assertSame( array( false, false, false ), array_map( static fn( IntentRef $intent ): bool => $intent->waitEnded, $stale ), 'No window has run out yet.' );
+
+		$this->db->execute( 'UPDATE %i SET customer_action_expires_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE uuid = %s', $this->table( PaymentTables::INTENTS ), $pending->uuid );
+
+		$this->assertSame( array( false, false, true ), array_map( static fn( IntentRef $intent ): bool => $intent->waitEnded, $this->payments->staleIntents( 600, 10 ) ), 'A window that ran out by the database clock is read as expired.' );
 	}
 
 	/**
