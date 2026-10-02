@@ -73,7 +73,20 @@ From many, fast and cheap to few, slow and high in value:
 - Two of its tests need data nothing in the Store API creates, and are skipped without it:
   `SEOCART_E2E_CODE` names an active promotion code with no usage limit and no fixed amount, and
   `SEOCART_E2E_CURRENCY` names a currency the site sells in besides its base currency, enabled
-  with a rate in the current exchange-rate version.
+  with a rate in the current exchange-rate version. `tests/E2E/seed.php` plants both, and is
+  not part of the release zip. Run it inside the site with `wp eval-file`, from the checkout; it
+  is safe to run twice, and it prints the two variables, one `NAME=value` per line. It refuses a
+  site that is not marked disposable, as `tests/Support/Seed/seed-site.php` does:
+
+    ```sh
+    wp --path=<the instance directory> eval-file tests/E2E/seed.php
+    ```
+
+    Export what it printed in the shell that runs `npm run test:e2e`. The test run stays
+    green without them, with the two tests skipped. `SEOCART_E2E_REQUIRE_SEEDS=1` makes a missing
+    seed fail them instead; the end-to-end workflow sets it, and passes the seed's output on to
+    the suite itself.
+
 - There is exactly one cart and checkout flow, so there is one end-to-end journey to
   maintain for it.
 - Accessibility assertions use `@axe-core/playwright` in the same suite and gate on

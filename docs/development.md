@@ -188,6 +188,10 @@ copy them into a tracked file, an issue, a pull request or a log.
 file in the repository root, which git ignores. Load the instance file that
 `provision-site.sh` wrote, or copy its three values into `.env`.
 
+Two Store API tests need a promotion code and a second currency on the site. Seed a disposable
+site once with `tests/E2E/seed.php`, and give the suite the two names it prints; see
+[testing.md](testing.md#end-to-end-tests).
+
 ## The two setups
 
 ### Maintainers and their coding agents

@@ -22,7 +22,6 @@ use SEOCart\Platform\Kernel\BootRecord;
 use SEOCart\Pricing\Application\ManualRate;
 use SEOCart\Pricing\Infrastructure\Migrations\CreateRateTables;
 use SEOCart\Pricing\Infrastructure\MysqlExchangeRates;
-use SEOCart\Pricing\Infrastructure\PricingTables;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Decimal;
 use SEOCart\Support\RoundingMode;
@@ -85,15 +84,7 @@ trait PricesInCurrencies {
 	 * @param bool         $enabled       Optional. Whether prices are offered in it. Default true.
 	 */
 	protected function enableCurrency( string $code, bool $fallback = true, RoundingMode $mode = RoundingMode::HalfUp, int $cashStepMinor = 0, bool $enabled = true ): void {
-		$this->db->execute(
-			'INSERT INTO %i ( code, is_enabled, rounding_mode, cash_rounding_step_minor, conversion_fallback_allowed ) VALUES ( %s, %d, %s, %d, %d )',
-			$this->db->table( PricingTables::CURRENCIES ),
-			$code,
-			(int) $enabled,
-			$mode->value,
-			$cashStepMinor,
-			(int) $fallback
-		);
+		CurrencyRows::enable( $this->db, $code, $fallback, $mode, $cashStepMinor, $enabled );
 	}
 
 	/**

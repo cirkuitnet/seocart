@@ -60,38 +60,7 @@ trait PlantsPromotions {
 	 * @phpstan-param array<string, int|string|null> $columns
 	 */
 	protected function plantPromotion( string $code, array $columns = array() ): int {
-		$row = array_replace(
-			array(
-				'uuid'                        => Promotions::uuid( 900000 + ++self::$plantedPromotions ),
-				'code'                        => $code,
-				'trigger_kind'                => 'code',
-				'status'                      => 'active',
-				'effect_kind'                 => 'percent',
-				'effect_percent_micropercent' => 10000000,
-				'priority'                    => 10,
-				'used'                        => 0,
-			),
-			$columns
-		);
-
-		$values = array();
-		$args   = array( $this->db->table( PromotionTables::PROMOTIONS ) );
-
-		foreach ( $row as $value ) {
-			if ( null === $value ) {
-				$values[] = 'NULL';
-			} else {
-				$values[] = is_int( $value ) ? '%d' : '%s';
-				$args[]   = $value;
-			}
-		}
-
-		$this->db->execute(
-			'INSERT INTO %i ( ' . implode( ', ', array_keys( $row ) ) . ', created_at, updated_at ) VALUES ( ' . implode( ', ', $values ) . ', UTC_TIMESTAMP(6), UTC_TIMESTAMP(6) )',
-			...$args
-		);
-
-		return $this->db->lastInsertId();
+		return PromotionRows::plant( $this->db, Promotions::uuid( 900000 + ++self::$plantedPromotions ), $code, $columns );
 	}
 
 	/**

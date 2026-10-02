@@ -36,36 +36,9 @@ use SEOCart\Tests\Support\Seed\ReferenceSeed;
 defined( 'ABSPATH' ) || exit;
 
 ( static function (): void {
-	// The plugin loads the classes under src/ only; this loads the test classes the seed needs, and nothing else.
-	spl_autoload_register(
-		static function ( string $class_name ): void {
-			$namespace = 'SEOCart\\Tests\\';
+	require_once __DIR__ . '/test-autoloader.php';
 
-			if ( 0 === strncmp( $class_name, $namespace, strlen( $namespace ) ) && 1 === preg_match( '/^[A-Za-z0-9_\\\\]+$/D', $class_name ) ) {
-				$file = dirname( __DIR__, 2 ) . '/' . str_replace( '\\', '/', substr( $class_name, strlen( $namespace ) ) ) . '.php';
-
-				if ( is_file( $file ) ) {
-					require $file;
-				}
-			}
-		}
-	);
-
-	$environment = wp_get_environment_type();
-	$missing     = array();
-
-	if ( ! in_array( $environment, array( 'local', 'development' ), true ) ) {
-		$missing[] = 'an environment type of local or development (this site\'s is ' . $environment . ')';
-	}
-
-	if ( '1' !== getenv( 'SEOCART_SEED_DISPOSABLE' ) ) {
-		$missing[] = 'SEOCART_SEED_DISPOSABLE=1';
-	}
-
-	if ( array() !== $missing ) {
-		fwrite( STDERR, 'Error: refused, and nothing was written. The seed runs only on a site marked disposable; this run lacks ' . implode( ' and ', $missing ) . ".\n" );
-		exit( 1 );
-	}
+	require_once __DIR__ . '/disposable-guard.php';
 
 	$dataset = Dataset::from( (string) ( getenv( 'SEOCART_SEED_DATASET' ) ? getenv( 'SEOCART_SEED_DATASET' ) : Dataset::Small->value ) );
 	$seed    = new ReferenceSeed( $dataset, (string) Kernel::container()->get( SettingsStore::class )->value( InternationalSettings::BASE_CURRENCY ), get_locale() );

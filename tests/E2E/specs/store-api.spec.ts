@@ -38,14 +38,19 @@
  * version on and gets the cart cookie again, and a replayed removal is refused as stale. Nothing
  * creates a promotion through the Store API, so the code to apply needs one planted on the site
  * under test first, named in SEOCART_E2E_CODE: an active code with no usage limit and no fixed
- * amount, so it applies to any cart. Without it that test is skipped, and the refusal still runs.
+ * amount, so it applies to any cart. tests/E2E/seed.php plants one. Without it that test is
+ * skipped, and the refusal still runs.
  *
  * The cart's currency: a switch to a currency the store does not sell in is refused with
  * `checkout.currency_not_enabled`, sets no cookie and changes nothing. A switch to one it sells in
  * moves the version on, gets the cart cookie again and answers the cart in that currency, and a
  * replay of it is refused as stale. Nothing enables a currency through the Store API, so that
  * switch needs one enabled on the site under test first, with a rate in the current version,
- * named in SEOCART_E2E_CURRENCY. Without it that test is skipped, and the refusal still runs.
+ * named in SEOCART_E2E_CURRENCY. tests/E2E/seed.php enables one. Without it that test is skipped,
+ * and the refusal still runs.
+ *
+ * Continuous integration sets SEOCART_E2E_REQUIRE_SEEDS=1, and then a missing seed fails those two
+ * tests instead of skipping them, so a seed step that stopped working cannot pass unnoticed.
  */
 
 import type { APIRequestContext, APIResponse } from '@playwright/test';
@@ -128,6 +133,23 @@ const PLANTED_CODE = ( process.env.SEOCART_E2E_CODE ?? '' ).trim();
 
 /** A currency the site under test sells in besides its base currency, if any: SEOCART_E2E_CURRENCY names it. */
 const PLANTED_CURRENCY = ( process.env.SEOCART_E2E_CURRENCY ?? '' ).trim();
+
+/** Set by continuous integration: a seed that did not run then fails the tests that need it, instead of skipping them. */
+const SEEDS_REQUIRED = '1' === process.env.SEOCART_E2E_REQUIRE_SEEDS;
+
+/**
+ * Skips the running test when the site under test has no seed for it, or fails it when seeds are required.
+ *
+ * @param value   What the seed names; empty when it did not run.
+ * @param message What to plant, shown with the skip or the failure.
+ */
+function needsSeed( value: string, message: string ): void {
+	if ( SEEDS_REQUIRED ) {
+		expect( value, message ).not.toBe( '' );
+	} else {
+		test.skip( '' === value, message );
+	}
+}
 
 /** An ISO 4217 code of no currency a store prices in: the code reserved for testing. */
 const UNSOLD_CURRENCY = 'XTS';
@@ -620,9 +642,9 @@ test.describe( 'Store API, as a guest', () => {
 	} );
 
 	test( 'a guest applies a promotion code as typed, and removes it through its path', async () => {
-		test.skip(
-			'' === PLANTED_CODE,
-			'Plant an active promotion code with no usage limit and no fixed amount on the site under test and name it in SEOCART_E2E_CODE.'
+		needsSeed(
+			PLANTED_CODE,
+			'Run tests/E2E/seed.php on the site under test and name the code it prints in SEOCART_E2E_CODE.'
 		);
 
 		const cookie = await startCart( guest );
@@ -701,9 +723,9 @@ test.describe( 'Store API, as a guest', () => {
 	} );
 
 	test( 'a guest switches the cart to a currency the store sells in', async () => {
-		test.skip(
-			'' === PLANTED_CURRENCY,
-			'Enable a currency with a rate in the current version on the site under test and name it in SEOCART_E2E_CURRENCY.'
+		needsSeed(
+			PLANTED_CURRENCY,
+			'Run tests/E2E/seed.php on the site under test and name the currency it prints in SEOCART_E2E_CURRENCY.'
 		);
 
 		const cookie = await startCart( guest );

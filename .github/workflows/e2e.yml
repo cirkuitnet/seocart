@@ -10,7 +10,8 @@
 # It is never a required check.
 #
 # The same command and the same three variables are used in both places: WP_BASE_URL,
-# WP_USERNAME and WP_PASSWORD.
+# WP_USERNAME and WP_PASSWORD. So is the seed, tests/E2E/seed.php, which plants what two Store
+# API tests need and names it in SEOCART_E2E_CODE and SEOCART_E2E_CURRENCY.
 
 name: E2E (wp-env, secondary)
 
@@ -26,6 +27,10 @@ on:
             - package-lock.json
             - playwright.config.ts
             - tests/E2E/**
+            - tests/Support/Seed/**
+            - tests/Support/Promotion/PromotionRows.php
+            - tests/Support/Promotion/Promotions.php
+            - tests/Support/Pricing/CurrencyRows.php
             - .github/workflows/e2e.yml
     workflow_dispatch:
 
@@ -49,6 +54,8 @@ env:
     WP_BASE_URL: http://localhost:8888
     WP_USERNAME: admin
     WP_PASSWORD: password
+    # A missing seed fails the two tests that need it instead of skipping them.
+    SEOCART_E2E_REQUIRE_SEEDS: '1'
 
 jobs:
     e2e:
@@ -86,6 +93,19 @@ jobs:
             # A mapped directory is mounted but not activated.
             - name: Activate the plugin
               run: npm run env:cli -- wp plugin activate seocart
+
+            # The seed refuses a site not marked disposable. wp-env sets the environment type
+            # `local`; the marker for the run is given to the command inside the container, which
+            # does not see this job's environment.
+            #
+            # The seed prints SEOCART_E2E_CODE and SEOCART_E2E_CURRENCY, the one place that states
+            # them; the lines that match are exported to the steps after this one. Carriage returns
+            # are dropped as a safeguard, in case a terminal adds them.
+            - name: Seed the promotion code and the second currency
+              shell: bash
+              run: |
+                  npm run env:cli -- env SEOCART_SEED_DISPOSABLE=1 wp eval-file wp-content/plugins/seocart/tests/E2E/seed.php | tr -d '\r' | tee "$RUNNER_TEMP/seed.out"
+                  grep -E '^SEOCART_E2E_(CODE|CURRENCY)=[A-Za-z0-9_-]+$' "$RUNNER_TEMP/seed.out" >> "$GITHUB_ENV"
 
             - name: Run the end-to-end suite
               run: npm run test:e2e
