@@ -18,7 +18,9 @@ use SEOCart\Inventory\Domain\Event\StockHoldExpired;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
+use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Database\Exception\DuplicateKey;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Inventory\StockTestCase;
 use SEOCart\Tests\Support\SecondConnection;
@@ -82,7 +84,7 @@ final class AllocateTest extends StockTestCase {
 		$this->assertTrue( $this->projectionCheck()->passed, implode( "\n", $this->projectionCheck()->findings ) );
 		$stock = '/`(' . implode( '|', array_map( fn( string $name ): string => preg_quote( $this->table( $name ), '/' ), array( InventoryTables::ITEMS, InventoryTables::HOLDS, InventoryTables::ALLOCATIONS ) ) ) . ')`/';
 
-		$this->assertQueryCount( 1 + 3 * 2, $log->matching( $stock ), 'One configuration read, then per item the conversion, the delete of its row and the allocation row' );
+		$this->assertQueryCount( 1 + 2 * 2 + 1, $log->matching( $stock ), 'One configuration read, then per item the conversion and the delete of its row, then one insert of both allocation rows' );
 	}
 
 	/**
@@ -230,6 +232,109 @@ final class AllocateTest extends StockTestCase {
 
 		$this->assertSame( array( 0, 1 ), array( $this->committedItem( $b, $variant )['held'] ?? null, $this->committedItem( $b, $variant )['allocated'] ?? null ) );
 		$this->assertSame( 0, $this->committedEvents( $b, StockHoldExpired::eventName() ), 'Nothing was reclaimed.' );
+	}
+
+	/**
+	 * Tests that a second allocation of an order fails on the order line's unique key at its first variant, though a later variant is sold out by the first allocation, and changes nothing.
+	 *
+	 * The first variant's hold is gone and it still has units, so its fresh claim succeeds; the
+	 * second variant has none left. The rows claimed so far are written right after the fresh
+	 * claim, so the duplicate is refused there, as it is when every row is written as its units
+	 * are claimed, and never reported as units that are gone.
+	 *
+	 * Planted violation: in StockService::allocateInside(), write the rows only once every variant
+	 * is claimed, after a fresh claim too: the second allocation is then refused with
+	 * `stock.insufficient` for the second variant, which a settlement takes for an order whose
+	 * units are gone.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_second_allocation_of_an_order_fails_at_its_first_variant(): void {
+		$first  = self::variant();
+		$second = self::variant();
+
+		$this->stockItem( $first, 3 );
+		$this->stockItem( $second, 1 );
+
+		$hold  = $this->service->hold( array( new HoldLine( $first, 1 ), new HoldLine( $second, 1 ) ), 900 );
+		$lines = array( new Allocation( 10, $first, 1 ), new Allocation( 11, $second, 1 ) );
+
+		$this->db->transaction( fn(): array => $this->service->allocate( $hold->holdGroup, self::ORDER, $lines ) );
+
+		$refused = null;
+
+		try {
+			$this->db->transaction( fn(): array => $this->service->allocate( $hold->holdGroup, self::ORDER, $lines ) );
+		} catch ( DuplicateKey $duplicate ) {
+			$refused = $duplicate;
+		}
+
+		$b = $this->secondConnection();
+
+		$this->assertInstanceOf( DuplicateKey::class, $refused, 'The second allocation is refused by the order line\'s unique key.' );
+
+		foreach ( array( $first, $second ) as $variant ) {
+			$item = $this->committedItem( $b, $variant );
+
+			$this->assertSame( array( 0, 1 ), array( $item['held'] ?? null, $item['allocated'] ?? null ), 'Nothing was allocated twice.' );
+		}
+
+		$this->assertSame( array( array( 10, $first, 1 ), array( 11, $second, 1 ) ), $this->committedAllocations( $b ) );
+		$this->assertTrue( $this->projectionCheck()->passed, implode( "\n", $this->projectionCheck()->findings ) );
+	}
+
+	/**
+	 * Tests that a hold and an order with more lines than one insert carries are written in bounded statements, and every line gets its rows.
+	 *
+	 * Planted violation: in MysqlStockRepository::insertRows(), send every row in one statement,
+	 * without array_chunk(): one insert carries every hold row, and one every allocation row.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_large_hold_and_its_allocation_are_written_in_bounded_inserts(): void {
+		$lines    = MysqlStockRepository::ROWS_PER_INSERT + 1;
+		$holds    = array();
+		$expected = array();
+
+		for ( $line = 1; $line <= $lines; $line++ ) {
+			$variant = self::variant();
+
+			$this->stockItem( $variant, 1 );
+
+			$holds[]    = new HoldLine( $variant, 1 );
+			$expected[] = array( $line, $variant, 1 );
+		}
+
+		$hold = null;
+		$held = $this->captureQueries(
+			function () use ( $holds, &$hold ): void {
+				$hold = $this->service->hold( $holds, 900 );
+			}
+		);
+
+		$this->assertNotNull( $hold );
+		$this->assertQueryCount( 2, $held->matching( $this->insertInto( InventoryTables::HOLDS ) ), 'A full insert of hold rows, then one of the row left over' );
+		$this->assertSame( (string) $lines, $this->secondConnection()->fetchValue( sprintf( "SELECT COUNT(*) FROM `%s` WHERE hold_group = '%s'", $this->table( InventoryTables::HOLDS ), $hold->holdGroup ) ), 'Every line has its hold row.' );
+
+		$allocated = $this->captureQueries(
+			fn() => $this->db->transaction( fn(): array => $this->service->allocate( $hold->holdGroup, self::ORDER, array_map( static fn( array $row ): Allocation => new Allocation( ...$row ), $expected ) ) )
+		);
+
+		$this->assertQueryCount( 2, $allocated->matching( $this->insertInto( InventoryTables::ALLOCATIONS ) ), 'A full insert of allocation rows, then one of the row left over' );
+		$this->assertSame( $expected, $this->committedAllocations( $this->secondConnection() ) );
+		$this->assertTrue( $this->projectionCheck()->passed, implode( "\n", $this->projectionCheck()->findings ) );
+	}
+
+	/**
+	 * Returns the pattern of an insert into one of the stock tables.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $table The table's unprefixed name.
+	 * @return string The pattern.
+	 */
+	private function insertInto( string $table ): string {
+		return '/^INSERT INTO `' . preg_quote( $this->table( $table ), '/' ) . '`/';
 	}
 
 	/**

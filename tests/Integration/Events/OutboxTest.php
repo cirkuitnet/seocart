@@ -197,6 +197,42 @@ final class OutboxTest extends OutboxTestCase {
 	}
 
 	/**
+	 * The outbox events of one publish are stored together, in bounded inserts and in the order given, and an after-commit event among them still waits for the commit.
+	 *
+	 * Planted violations: in Outbox::insertAll(), send every row in one statement, without
+	 * array_chunk(): the publish then sends one insert; and add each chunk's rows in reverse
+	 * order: the ids then no longer follow the publish order.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_outbox_events_of_one_publish_are_stored_together_in_order(): void {
+		$things = range( 1, Outbox::ROWS_PER_INSERT + 1 );
+		$events = array_map( static fn( int $thing ): DomainEvent => new ThingHappened( $thing, 'note ' . $thing ), $things );
+
+		array_splice( $events, 1, 0, array( new ThingNoticed( 1 ) ) );
+
+		$this->listen( self::NOTICED );
+
+		$log = $this->captureQueries( fn() => $this->db->transaction( fn() => $this->publisher->publish( ...$events ) ) );
+
+		$this->assertQueryCount( 2, $log->matching( '/^INSERT INTO `' . preg_quote( $this->outboxTable(), '/' ) . '`/' ), 'A full insert, then one of the row left over' );
+
+		$rows = $this->db->fetchAll( 'SELECT event_name, aggregate_type, aggregate_id, payload_json, correlation_id, state, attempts, claim_token FROM %i ORDER BY id', $this->outboxTable() );
+
+		$this->assertSame( $things, array_map( static fn( array $row ): int => (int) $row['aggregate_id'], $rows ), 'The ids follow the order the events were published in.' );
+
+		foreach ( $rows as $index => $row ) {
+			$stored = Outbox::decode( (string) $row['payload_json'] );
+
+			$this->assertSame( array( ThingHappened::eventName(), 'thing', 'note ' . $things[ $index ] ), array( $row['event_name'], $row['aggregate_type'], $stored['p']['note'] ?? null ) );
+			$this->assertSame( array( $this->correlation->current(), Outbox::PENDING, '0', null ), array( $row['correlation_id'], $row['state'], $row['attempts'], $row['claim_token'] ) );
+		}
+
+		$this->assertSame( 1, $this->wake->calls(), 'One wake for the publish.' );
+		$this->assertSame( array( array( self::NOTICED, 1 ) ), $this->heard(), 'The after-commit event fired once, after COMMIT.' );
+	}
+
+	/**
 	 * A row whose event is unknown, or was stored by a newer payload version, is parked; the rows around it are delivered.
 	 *
 	 * Planted violation: in OutboxDrainer::dispatchRow(), throw a \LogicException for an unknown

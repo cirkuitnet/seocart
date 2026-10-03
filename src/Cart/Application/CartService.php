@@ -1065,19 +1065,31 @@ final class CartService {
 	 * address is known the totals carry its shipping. With no cart it prices no line, in the
 	 * currency a new cart would have, which comes to zero totals, and asks the checkout nothing.
 	 *
+	 * A caller that has just read the cart's checkout passes what it gives, and the checkout is
+	 * not read a second time. That is safe when the caller's write is decided by the cart's
+	 * compare-and-swap at the version it read the cart at: a checkout is only ever written in the
+	 * transaction of a write to its cart, which moves the cart's version on (or deleted with its
+	 * cart once that expired), so a checkout that changed after the caller read it is refused there
+	 * with the cart.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws CodedException The codes the calculation raises.
 	 *
-	 * @param Cart|null $cart The cart, or null for none.
+	 * @param Cart|null  $cart     The cart, or null for none.
+	 * @param array|null $delivery Optional. Where the order ships and the shipping method chosen, as the
+	 *                             cart's checkout gave them to the caller; null to ask the checkout.
+	 *                             Default null.
 	 * @return Calculation The totals, and the lines that could not be priced.
+	 *
+	 * @phpstan-param array{destination: Address|null, shipping_method_key: string|null}|null $delivery
 	 */
-	public function calculation( ?Cart $cart ): Calculation {
+	public function calculation( ?Cart $cart, ?array $delivery = null ): Calculation {
 		if ( null === $cart ) {
 			return $this->priceLines( ( $this->currency )(), array(), array() );
 		}
 
-		$delivery = ( $this->delivery )( $cart->id );
+		$delivery ??= ( $this->delivery )( $cart->id );
 
 		return $this->priceLines( $cart->currency, $cart->lines, $cart->promotionCodes, $delivery['destination'], $delivery['shipping_method_key'] );
 	}

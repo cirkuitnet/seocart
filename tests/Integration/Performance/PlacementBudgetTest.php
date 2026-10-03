@@ -11,7 +11,6 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Performance;
 
-use SEOCart\Cart\Domain\CartLine;
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Platform\Authorization\Actor;
@@ -23,14 +22,19 @@ use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
 /**
  * A placement of Cart A, of Cart B, and of Cart B in a presentment currency: every statement it sends, attributed to the step that sent it.
  *
- * The numbers are the first baseline of a placement's cost: the statements before the first
- * transaction, in each of the two, and the gateway's read between them. Each is asserted at most
- * the baseline, so a placement that grows fails here and names the step that grew. The step of a
- * statement is the first placement step its caller passed through; a transaction's own control
- * statements are counted apart.
+ * The numbers are the baseline of a placement's cost, as measured: the statements before the
+ * first transaction, in each of the two, and the gateway's read between them. Each is asserted at
+ * most the baseline, so a placement that grows fails here and names the step that grew. The step
+ * of a statement is the first placement step its caller passed through; a transaction's own
+ * control statements are counted apart. The session is read once, before the transaction; a
+ * cart's hold rows are one insert, and so are its allocation rows and the outbox rows of one
+ * publish.
  *
- * Planted violation: in PlaceOrder::placeInside(), read the session again before storing its
- * quotes: the first unit's count grows by one, and the step is named.
+ * Planted violations: in PlaceOrder::placeInside(), read the session again before storing its
+ * quotes: the first unit's count grows by one, and the step is named; and in
+ * StockService::allocateInside(), read the items' configuration twice: the second unit's count
+ * grows by one, under the allocation; and in PlaceOrder::priced(), price the cart without the
+ * session just read: the part before the transaction grows by one, under the calculation.
  *
  * @group performance
  *
@@ -81,7 +85,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 * @var array{before: int, first: int, between: int, second: int}
 	 */
 	private const CART_A = array(
-		'before'  => 8,
+		'before'  => 7,
 		'first'   => 31,
 		'between' => 1,
 		'second'  => 33,
@@ -95,10 +99,24 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 * @var array{before: int, first: int, between: int, second: int}
 	 */
 	private const CART_B = array(
-		'before'  => 9,
-		'first'   => 53,
+		'before'  => 8,
+		'first'   => 44,
 		'between' => 1,
-		'second'  => 60,
+		'second'  => 51,
+	);
+
+	/**
+	 * The most statements each part of a placement of Cart B in a presentment currency may send: its calculation sends one more read before the transaction.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array{before: int, first: int, between: int, second: int}
+	 */
+	private const CART_B_PRESENTMENT = array(
+		'before'  => 9,
+		'first'   => 44,
+		'between' => 1,
+		'second'  => 51,
 	);
 
 	/**
@@ -109,7 +127,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 * @var array{before: int, first: int, between: int, second: int}
 	 */
 	private const CART_A_NOTHING_DUE = array(
-		'before'  => 9,
+		'before'  => 8,
 		'first'   => 33,
 		'between' => 0,
 		'second'  => 29,
@@ -185,7 +203,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_placing_cart_b_stays_within_its_baseline(): void {
-		$this->readyCart( self::quantities( ReferenceCarts::cartB( $this->cartBVariants() ) ), $this->cartBCodes() );
+		$this->readyCartB();
 
 		$parts = $this->measure( 'Cart B' );
 
@@ -193,14 +211,14 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Tests that placing Cart B in a presentment currency costs at most PRESENTMENT_EXTRA statements more than in the base currency.
+	 * Tests that placing Cart B in a presentment currency stays within its baseline, and costs at most PRESENTMENT_EXTRA statements more than in the base currency.
 	 *
 	 * @group international
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_placing_cart_b_in_a_presentment_currency_costs_at_most_two_statements_more(): void {
-		$this->readyCart( self::quantities( ReferenceCarts::cartB( $this->cartBVariants() ) ), $this->cartBCodes() );
+		$this->readyCartB();
 
 		$base = array_sum( $this->measure( 'Cart B, USD' ) );
 
@@ -208,12 +226,13 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		self::ratesOver( $this->db, static function (): void {} )->saveVersion( array( self::rateTo( 'EUR', '0.91230' ) ), Actor::user( 0 ) );
 		$this->plantBootRecord( 1 );
 
-		$this->readyCart( self::quantities( ReferenceCarts::cartB( $this->cartBVariants() ) ), $this->cartBCodes() );
+		$this->readyCartB();
 		$this->assertSame( 1, $this->db->execute( "UPDATE %i SET currency = 'EUR' WHERE status = 'open'", $this->table( CartTables::CARTS ) ), 'One cart is open.' );
 
-		$presentment = array_sum( $this->measure( 'Cart B, EUR' ) );
+		$parts = $this->measure( 'Cart B, EUR' );
 
-		$this->assertLessThanOrEqual( $base + self::PRESENTMENT_EXTRA, $presentment, 'Placing Cart B in EUR, against placing it in USD.' );
+		$this->assertWithin( self::CART_B_PRESENTMENT, $parts, 'Cart B, EUR' );
+		$this->assertLessThanOrEqual( $base + self::PRESENTMENT_EXTRA, array_sum( $parts ), 'Placing Cart B in EUR, against placing it in USD.' );
 	}
 
 	/**
@@ -300,71 +319,6 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		foreach ( $baseline as $key => $most ) {
 			$this->assertLessThanOrEqual( $most, $parts[ $key ], sprintf( '%1$s: the %2$s part of the placement.', $name, $key ) );
 		}
-	}
-
-	/**
-	 * Plants Cart B's ten variants across eight products, each priced and stocked.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return list<int> One variant per slot, in slot order.
-	 */
-	private function cartBVariants(): array {
-		$variants = array();
-		$products = array();
-
-		for ( $slot = 0; $slot < ReferenceCarts::CART_B_VARIANTS; $slot++ ) {
-			$product    = ReferenceCarts::productOfSlot( $slot );
-			$variant    = $this->sellable( 10, Inputs::money( ReferenceCarts::unitPrice( $slot ), self::CURRENCY )->minorUnits(), 'Product ' . $product, $products[ $product ] ?? 0 );
-			$variants[] = $variant;
-
-			$products[ $product ] ??= $variant;
-		}
-
-		return $variants;
-	}
-
-	/**
-	 * Plants Cart B's promotions, under codes no other cart of the test used, and returns the codes.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return list<string> The codes, in the order they are applied.
-	 */
-	private function cartBCodes(): array {
-		static $round = 0;
-
-		++$round;
-
-		$codes = array();
-
-		foreach ( ReferenceCarts::CART_B_CODES as $code => $columns ) {
-			$codes[] = $code . $round;
-
-			$this->plantPromotion( $code . $round, $columns );
-		}
-
-		return $codes;
-	}
-
-	/**
-	 * Returns the units of lines, by variant.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param CartLine[] $lines The lines.
-	 * @return array<int, int> Units by variant id.
-	 *
-	 * @phpstan-param list<CartLine> $lines
-	 */
-	private static function quantities( array $lines ): array {
-		$quantities = array();
-
-		foreach ( $lines as $line ) {
-			$quantities[ $line->variantId ] = $line->quantity;
-		}
-
-		return $quantities;
 	}
 
 	/**

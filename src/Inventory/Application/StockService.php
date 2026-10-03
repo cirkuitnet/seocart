@@ -167,7 +167,8 @@ final class StockService {
 	 * An untracked variant is always available: it gets no hold and is listed on the result. For
 	 * each tracked line one conditional update claims the units; when it finds too few, the item's
 	 * expired holds are reclaimed and the claim is sent once more, and a second refusal is
-	 * `stock.insufficient`. Inside a caller's transaction a refusal undoes this hold's lines only.
+	 * `stock.insufficient`. Once every line is claimed, the hold's rows are written together.
+	 * Inside a caller's transaction a refusal undoes this hold's lines only.
 	 *
 	 * A hold is a stock operation, not a sale: it does not ask whether the product may be sold.
 	 * A caller that sells checks that first, and holds only the lines that may be.
@@ -293,8 +294,11 @@ final class StockService {
 	 * delete released it, the units are claimed afresh from what is available, reclaiming the
 	 * item's expired holds once when too few are; still too few is `stock.insufficient`, which
 	 * undoes every line of this allocation and leaves the caller to decide. Then one allocation row
-	 * per line. An untracked variant was never held and is not allocated. StockAllocated goes out
-	 * through the outbox with the transaction.
+	 * per line, the rows written together once every line's units are the order's; when a variant's
+	 * units were claimed afresh, the rows so far are written right after that claim, so an order
+	 * allocated a second time fails on the order line's unique key at its first variant. An
+	 * untracked variant was never held and is not allocated. StockAllocated goes out through the
+	 * outbox with the transaction.
 	 *
 	 * Outside a transaction it throws \LogicException before any statement.
 	 *
@@ -627,8 +631,6 @@ final class StockService {
 
 		foreach ( $lines as $line ) {
 			if ( $configuration['track'][ $line->variantId ] && $this->claim( $line, $expired ) ) {
-				$this->stock->insertHold( $line->variantId, $line->quantity, $holdGroup, $expiresAt, $cartId, $orderId );
-
 				$held[] = $line;
 
 				continue;
@@ -636,6 +638,9 @@ final class StockService {
 
 			$untracked[] = $line->variantId;
 		}
+
+		// Every held line's units are claimed now, each under its item's lock until the commit: their rows go in together.
+		$this->stock->insertHolds( $held, $holdGroup, $expiresAt, $cartId, $orderId );
 
 		$events = $expired;
 
@@ -713,6 +718,7 @@ final class StockService {
 		// The read every hold starts with, before any lock; the expiry it also computes is not used.
 		$tracked   = $this->stock->configuration( array_keys( $byVariant ), 1 )['track'];
 		$allocated = array();
+		$unwritten = array();
 		$units     = array();
 		$expired   = array();
 
@@ -727,18 +733,23 @@ final class StockService {
 
 			$quantity = array_sum( array_map( static fn( Allocation $line ): int => $line->quantity, $lines ) );
 
+			array_push( $allocated, ...$lines );
+			array_push( $unwritten, ...$lines );
+
 			if ( ! $this->stock->convertHold( $holdGroup, $variantId, $quantity ) ) {
 				$this->claimAllocation( $variantId, $quantity, $expired );
-			}
 
-			foreach ( $lines as $line ) {
-				$this->stock->insertAllocation( $orderId, $line );
+				// A hold that is gone may have been converted by an earlier allocation of this very order: the rows so far are written at once, so a second allocation fails on the order line's unique key here, at its first variant, before it can find a later variant sold out.
+				$this->stock->insertAllocations( $orderId, $unwritten );
 
-				$allocated[] = $line;
+				$unwritten = array();
 			}
 
 			$units[ $variantId ] = $quantity;
 		}
+
+		// Every other line's units are the order's now, each under its item's lock until the commit: their rows go in together.
+		$this->stock->insertAllocations( $orderId, $unwritten );
 
 		$events = $expired;
 

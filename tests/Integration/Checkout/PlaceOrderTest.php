@@ -462,6 +462,58 @@ final class PlaceOrderTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Tests that the same answer delivered again for an order of two lines, the second line's variant sold out by the first delivery, changes nothing and leaves the order processing.
+	 *
+	 * The first variant's hold is gone and it still has units, so a second allocation of the order
+	 * would find units for it and none for the second variant. Whatever reaches the allocation a
+	 * second time must fail on the order line's unique key at the first variant, as an allocation
+	 * written one variant at a time does, and roll everything back; it must never go on to the sold
+	 * out variant and settle the order on hold for stock that is in fact allocated to it.
+	 *
+	 * Planted violation: in SettlePlacement::settle(), settle a duplicate as an approval: the second
+	 * delivery is refused with database.duplicate_key and changes nothing, and the order stays
+	 * processing. With the allocation rows written only after every variant is claimed, the same
+	 * plant settles the order on hold with its stock unavailable instead.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_duplicate_answer_for_an_order_with_a_line_now_sold_out_changes_nothing(): void {
+		$mug  = $this->sellable( 3, 1000 );
+		$cup  = $this->sellable( 1, 500 );
+		$cart = $this->readyCart(
+			array(
+				$mug => 1,
+				$cup => 1,
+			)
+		);
+
+		$answer     = $this->placement->place( $this->placeInput( 'attempt-1', StubGateway::REQUIRES_ACTION ), self::guest() );
+		$completion = $this->completionOf( $answer['order_uuid'] );
+		$settlement = $this->kernel->get( SettlePlacement::class );
+		$b          = $this->secondConnection();
+
+		$this->assertLessThan( $cup, $mug, 'The variant with units left is allocated first.' );
+		$this->assertSame( 'approved', $settlement->apply( $completion, self::guest() )->outcome->value );
+		$this->assertSame( array( array( 3, 1, 0 ), array( 1, 1, 0 ) ), array( $this->committedStock( $b, $mug ), $this->committedStock( $b, $cup ) ), 'The cup is sold out now.' );
+
+		$again   = null;
+		$refused = null;
+
+		try {
+			$again = $settlement->apply( $completion, self::guest() );
+		} catch ( \Throwable $failure ) {
+			$refused = $failure;
+		}
+
+		$this->assertSame( 'processing', $this->statusRead( $answer )['status'], 'The order is not put on hold.' );
+		$this->assertSame( array( array( 3, 1, 0 ), array( 1, 1, 0 ) ), array( $this->committedStock( $b, $mug ), $this->committedStock( $b, $cup ) ), 'Nothing was allocated twice.' );
+		$this->assertSame( 2, $this->committedCount( $b, InventoryTables::ALLOCATIONS ) );
+		$this->assertSame( 'converted', $this->committedCart( $b, $cart->id )['status'] ?? null );
+		$this->assertNull( $refused, 'The second delivery was refused: ' . ( null === $refused ? '' : get_class( $refused ) . ' ' . $refused->getMessage() ) );
+		$this->assertSame( 'duplicate', $again?->outcome->value, 'The redirect delivers the same answer again.' );
+	}
+
+	/**
 	 * Tests that when the gateway's webhook delivers the approval before the authorization call returns it, the placement answers that the result came already, with the order's status as it now is.
 	 *
 	 * Planted violation: in PlaceOrder::settledAnswer(), answer `pending_payment` when the

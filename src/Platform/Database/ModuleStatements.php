@@ -26,6 +26,10 @@ defined( 'ABSPATH' ) || exit;
  * constant of the class that sends it lets a concurrency test send exactly the statement the
  * module sends, and lets a test read from the constants alone which tables they change.
  *
+ * A statement of a variable number of rows is still one constant: an insert of several rows
+ * repeats the VALUES tuple of its one-row constant (forRows()), and a statement that joins a
+ * table of values repeats its one derived row (forDerivedRows()).
+ *
  * Every module that writes its statements this way expands them here; a module that also
  * sends them through an instance of this class needs no sender of its own.
  *
@@ -68,6 +72,15 @@ final class ModuleStatements {
 	 * @var string
 	 */
 	private const DERIVED_CLOSE = ' ) AS ';
+
+	/**
+	 * What opens the VALUES tuple of a one-row insert: the tuple is the parenthesised group after it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const VALUES = ' VALUES ';
 
 	/**
 	 * The connection.
@@ -212,6 +225,39 @@ final class ModuleStatements {
 	}
 
 	/**
+	 * Returns a one-row insert with its VALUES tuple repeated once per row: one statement whatever the number of rows.
+	 *
+	 * A multi-row insert is written as its one-row constant, `INSERT … VALUES ( %d, … )`, which
+	 * stays the one declaration of its shape. The tuple is the parenthesised group right after the
+	 * first ` VALUES `, its own parentheses included; whatever follows it, such as an ON DUPLICATE
+	 * KEY UPDATE clause, is kept once. The rows are inserted in the order their tuples are written.
+	 * The caller sends the values in placeholder order: those before the tuple, such as the
+	 * table's, then every row's, then those after it. A tuple's string literals hold no
+	 * parenthesis.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException When the statement has no VALUES tuple, or no row is asked for.
+	 *
+	 * @param string $statement A one-row insert constant.
+	 * @param int    $rows      How many rows, 1 or more.
+	 * @return string The multi-row statement.
+	 */
+	public static function forRows( string $statement, int $rows ): string {
+		$values = strpos( $statement, self::VALUES );
+		$from   = false === $values ? false : $values + strlen( self::VALUES );
+		$to     = false === $from || '(' !== ( $statement[ $from ] ?? '' ) ? false : self::closingParenthesis( $statement, $from );
+
+		if ( false === $from || false === $to || $rows < 1 ) {
+			throw new \LogicException( 'A multi-row insert repeats the VALUES tuple of a one-row insert, at least once.' );
+		}
+
+		$tuple = substr( $statement, $from, $to - $from + 1 );
+
+		return substr( $statement, 0, $from ) . implode( ', ', array_fill( 0, $rows, $tuple ) ) . substr( $statement, $to + 1 );
+	}
+
+	/**
 	 * Sends a statement that changes rows.
 	 *
 	 * @since 0.1.0
@@ -298,5 +344,28 @@ final class ModuleStatements {
 		}
 
 		return implode( ', ', $placeholders );
+	}
+
+	/**
+	 * Finds the parenthesis that closes the one at a position, counting the pairs nested inside.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $statement The statement.
+	 * @param int    $open      The position of an opening parenthesis.
+	 * @return int|false The position of its closing parenthesis, or false when it is never closed.
+	 */
+	private static function closingParenthesis( string $statement, int $open ): int|false {
+		$depth = 0;
+
+		for ( $at = $open, $length = strlen( $statement ); $at < $length; $at++ ) {
+			if ( '(' === $statement[ $at ] ) {
+				++$depth;
+			} elseif ( ')' === $statement[ $at ] && 0 === --$depth ) {
+				return $at;
+			}
+		}
+
+		return false;
 	}
 }

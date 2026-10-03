@@ -13,6 +13,7 @@ namespace SEOCart\Inventory\Infrastructure;
 
 use SEOCart\Inventory\Domain\Allocation;
 use SEOCart\Inventory\Domain\BackorderPolicy;
+use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Domain\ReclaimedRows;
 use SEOCart\Inventory\Domain\StockLevel;
@@ -30,8 +31,10 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: the text of every stock statement. Each is a public constant, so a
  * concurrency test sends exactly the statement this class sends. A statement names its tables
  * as `{stock_items}`, `{stock_holds}`, `{stock_ledger}` and `{stock_allocations}`, and an IN
- * list as `{list}`; expand() turns them into wpdb placeholders and arguments. Written that way,
- * a test can read from the constants alone that no statement updates or deletes the ledger.
+ * list as `{list}`; expand() turns them into wpdb placeholders and arguments. An insert of
+ * several rows is its one-row constant with the VALUES tuple repeated once per row
+ * (ModuleStatements::forRows(), through insertRows()). Written that way, a test can read from the
+ * constants alone that no statement updates or deletes the ledger.
  *
  * It keeps the one-lock rule StockRepository states: the claims, of a hold and of an allocation,
  * the conversion of a hold into an allocation and the item lock are the only statements that
@@ -69,7 +72,7 @@ final class MysqlStockRepository implements StockRepository {
 	public const CLAIM = 'UPDATE {stock_items} SET held = held + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND track = 1 AND ( on_hand - allocated - held ) >= %d';
 
 	/**
-	 * A hold row, inserted right after its claim; 0 stands for no cart or no order.
+	 * A hold row, inserted once every line of the hold was claimed, the hold's rows together; 0 stands for no cart or no order.
 	 *
 	 * @since 0.1.0
 	 *
@@ -114,13 +117,22 @@ final class MysqlStockRepository implements StockRepository {
 	public const CLAIM_ALLOCATION = 'UPDATE {stock_items} SET allocated = allocated + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND track = 1 AND ( on_hand - allocated - held ) >= %d';
 
 	/**
-	 * An open allocation row, inserted right after its units were added to `allocated`.
+	 * An open allocation row, inserted once every line of the order had its units added to `allocated`; the rows of one order go in together.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
 	public const INSERT_ALLOCATION = "INSERT INTO {stock_allocations} ( variant_id, order_id, order_line_id, quantity, posted_quantity, state, created_at ) VALUES ( %d, %d, %d, %d, 0, 'open', UTC_TIMESTAMP(6) )";
+
+	/**
+	 * The most rows one insert of hold or allocation rows writes, so that a hold or an order of any size sends statements of a few kilobytes each.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	public const ROWS_PER_INSERT = 100;
 
 	/**
 	 * The item lock: the first statement of every reclaim, and of the delete. Moves `updated_at` forward, so it always changes the row.
@@ -436,24 +448,25 @@ final class MysqlStockRepository implements StockRepository {
 	}
 
 	/**
-	 * Inserts a hold row, after its claim.
+	 * Inserts a hold's rows, in the order given, after their claims: one statement for every ROWS_PER_INSERT rows.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int      $variantId The item.
-	 * @param int      $quantity  The units.
-	 * @param string   $holdGroup The hold's id.
-	 * @param string   $expiresAt The expiry, UTC.
-	 * @param int|null $cartId    The cart, or null.
-	 * @param int|null $orderId   The order, or null.
-	 * @return int The row's id.
+	 * @param HoldLine[] $lines     The lines claimed, one per item; none sends nothing.
+	 * @param string     $holdGroup The hold's id.
+	 * @param string     $expiresAt The expiry, UTC.
+	 * @param int|null   $cartId    The cart, or null.
+	 * @param int|null   $orderId   The order, or null.
+	 *
+	 * @phpstan-param list<HoldLine> $lines
 	 */
-	public function insertHold( int $variantId, int $quantity, string $holdGroup, string $expiresAt, ?int $cartId, ?int $orderId ): int {
+	public function insertHolds( array $lines, string $holdGroup, string $expiresAt, ?int $cartId, ?int $orderId ): void {
 		$this->requireTransaction( __FUNCTION__ );
 
-		$this->write( self::INSERT_HOLD, $variantId, $cartId ?? 0, $orderId ?? 0, $holdGroup, $quantity, $expiresAt );
-
-		return $this->db->lastInsertId();
+		$this->insertRows(
+			self::INSERT_HOLD,
+			array_map( static fn( HoldLine $line ): array => array( $line->variantId, $cartId ?? 0, $orderId ?? 0, $holdGroup, $line->quantity, $expiresAt ), $lines )
+		);
 	}
 
 	/**
@@ -499,20 +512,22 @@ final class MysqlStockRepository implements StockRepository {
 	}
 
 	/**
-	 * Inserts an open allocation row.
+	 * Inserts an order's open allocation rows, in the order given: one statement for every ROWS_PER_INSERT rows.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int        $orderId    The order.
-	 * @param Allocation $allocation The order line, the variant and the units.
-	 * @return int The row's id.
+	 * @param int          $orderId     The order.
+	 * @param Allocation[] $allocations The order lines, each with its variant and units; none sends nothing.
+	 *
+	 * @phpstan-param list<Allocation> $allocations
 	 */
-	public function insertAllocation( int $orderId, Allocation $allocation ): int {
+	public function insertAllocations( int $orderId, array $allocations ): void {
 		$this->requireTransaction( __FUNCTION__ );
 
-		$this->write( self::INSERT_ALLOCATION, $allocation->variantId, $orderId, $allocation->orderLineId, $allocation->quantity );
-
-		return $this->db->lastInsertId();
+		$this->insertRows(
+			self::INSERT_ALLOCATION,
+			array_map( static fn( Allocation $allocation ): array => array( $allocation->variantId, $orderId, $allocation->orderLineId, $allocation->quantity ), $allocations )
+		);
 	}
 
 	/**
@@ -909,6 +924,22 @@ final class MysqlStockRepository implements StockRepository {
 		list( $sql, $arguments ) = self::expand( $statement, $values, array( $this->db, 'table' ) );
 
 		return $this->db->execute( $sql, ...$arguments );
+	}
+
+	/**
+	 * Sends a one-row insert for several rows, in the order given: its VALUES tuple once per row, ROWS_PER_INSERT rows to a statement at most.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $statement One of this class's one-row insert constants.
+	 * @param array  $rows      Each row's values, in placeholder order; none sends nothing.
+	 *
+	 * @phpstan-param list<list<mixed>> $rows
+	 */
+	private function insertRows( string $statement, array $rows ): void {
+		foreach ( array_chunk( $rows, self::ROWS_PER_INSERT ) as $chunk ) {
+			$this->write( ModuleStatements::forRows( $statement, count( $chunk ) ), ...array_merge( ...$chunk ) );
+		}
 	}
 
 	/**

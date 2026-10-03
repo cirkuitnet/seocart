@@ -17,6 +17,7 @@ use SEOCart\Cart\Domain\CartRepository;
 use SEOCart\Cart\Domain\CartStatus;
 use SEOCart\Cart\Domain\LineIdentity;
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\ModuleStatements;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Locale;
 
@@ -28,9 +29,9 @@ defined( 'ABSPATH' ) || exit;
  * The cart repository on MySQL: the one class that sends SQL to the cart tables.
  *
  * Owns one fact: the text of every cart statement. Each is a public constant, so a concurrency
- * test sends exactly the statement this class sends. The tables are `%i` placeholders; a
- * statement of a variable number of rows or ids holds `{rows}` or `{ids}`, which forRows() and
- * forIds() expand into placeholders.
+ * test sends exactly the statement this class sends. The tables are `%i` placeholders; the
+ * insert of several lines repeats its one-row VALUES tuple (ModuleStatements::forRows()), and a
+ * statement of a variable number of ids holds `{ids}`, which forIds() expands into placeholders.
  *
  * Every read and every compare-and-swap carries `expires_at > UTC_TIMESTAMP()`, so an expired
  * cart is invisible to them without a sweep. Every conditional UPDATE sets `updated_at` from the
@@ -125,22 +126,13 @@ final class MysqlCartRepository implements CartRepository {
 	public const DIAGNOSE = 'SELECT version, status, order_id, expires_at > UTC_TIMESTAMP() AS live FROM %i WHERE id = %d FOR UPDATE';
 
 	/**
-	 * Adds lines: a new identity is inserted, a known one gains the units, up to a cap. `{rows}` is LINE_ROW once per line.
+	 * Adds a line: a new identity is inserted, a known one gains the units, up to a cap. Its row is the cart, the identity, the variant and the units; ModuleStatements::forRows() repeats it once per line.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const ADD_LINES = 'INSERT INTO %i ( cart_id, line_identity, variant_id, quantity, created_at, updated_at ) VALUES {rows} ON DUPLICATE KEY UPDATE quantity = LEAST( quantity + VALUES( quantity ), %d ), updated_at = UTC_TIMESTAMP(6)';
-
-	/**
-	 * One row of ADD_LINES: the cart, the identity, the variant and the units.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	public const LINE_ROW = '( %d, %s, %d, %d, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6) )';
+	public const ADD_LINES = 'INSERT INTO %i ( cart_id, line_identity, variant_id, quantity, created_at, updated_at ) VALUES ( %d, %s, %d, %d, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6) ) ON DUPLICATE KEY UPDATE quantity = LEAST( quantity + VALUES( quantity ), %d ), updated_at = UTC_TIMESTAMP(6)';
 
 	/**
 	 * Sets one line's quantity.
@@ -250,18 +242,6 @@ final class MysqlCartRepository implements CartRepository {
 	 */
 	public function __construct( Database $db ) {
 		$this->db = $db;
-	}
-
-	/**
-	 * Returns ADD_LINES for a number of lines.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param int $rows The lines, 1 or more.
-	 * @return string The statement, with LINE_ROW once per line.
-	 */
-	public static function forRows( int $rows ): string {
-		return str_replace( '{rows}', implode( ', ', array_fill( 0, max( 1, $rows ), self::LINE_ROW ) ), self::ADD_LINES );
 	}
 
 	/**
@@ -469,7 +449,7 @@ final class MysqlCartRepository implements CartRepository {
 
 		$values[] = CartLine::MAX_QUANTITY;
 
-		$this->db->execute( self::forRows( count( $lines ) ), ...$values );
+		$this->db->execute( ModuleStatements::forRows( self::ADD_LINES, count( $lines ) ), ...$values );
 	}
 
 	/**

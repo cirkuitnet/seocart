@@ -125,6 +125,44 @@ final class ModuleStatementsTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a one-row insert repeats its VALUES tuple, nested parentheses included, once per row, and keeps what follows the tuple once.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_values_tuple_repeats_once_per_row(): void {
+		$statement = "INSERT INTO {widgets} ( id, size, kind, created_at ) VALUES ( %d, NULLIF( %d, 0 ), 'open', UTC_TIMESTAMP(6) )";
+
+		$this->assertSame( $statement, ModuleStatements::forRows( $statement, 1 ), 'One row is the constant as written.' );
+		$this->assertSame(
+			"INSERT INTO {widgets} ( id, size, kind, created_at ) VALUES ( %d, NULLIF( %d, 0 ), 'open', UTC_TIMESTAMP(6) ), ( %d, NULLIF( %d, 0 ), 'open', UTC_TIMESTAMP(6) ), ( %d, NULLIF( %d, 0 ), 'open', UTC_TIMESTAMP(6) )",
+			ModuleStatements::forRows( $statement, 3 )
+		);
+
+		$upsert   = 'INSERT INTO {widgets} ( id, size ) VALUES ( %d, %d ) ON DUPLICATE KEY UPDATE size = LEAST( size + VALUES( size ), %d )';
+		$repeated = ModuleStatements::forRows( $upsert, 2 );
+
+		$this->assertSame( 'INSERT INTO {widgets} ( id, size ) VALUES ( %d, %d ), ( %d, %d ) ON DUPLICATE KEY UPDATE size = LEAST( size + VALUES( size ), %d )', $repeated, 'The clause after the tuple is kept once.' );
+
+		list( $sql, $arguments ) = self::expand( $repeated, array( 1, 2, 3, 4, 5 ) );
+
+		$this->assertSame( 'INSERT INTO %i ( id, size ) VALUES ( %d, %d ), ( %d, %d ) ON DUPLICATE KEY UPDATE size = LEAST( size + VALUES( size ), %d )', $sql );
+		$this->assertSame( array( 'wp_seocart_widgets', 1, 2, 3, 4, 5 ), $arguments, 'Each row\'s values, then the statement\'s own.' );
+
+		foreach ( array(
+			'no VALUES tuple' => array( 'INSERT INTO {widgets} SET id = %d', 2 ),
+			'an open tuple'   => array( 'INSERT INTO {widgets} ( id ) VALUES ( %d', 2 ),
+			'no row'          => array( $statement, 0 ),
+		) as $case => list( $refused, $rows ) ) {
+			try {
+				ModuleStatements::forRows( $refused, $rows );
+				$this->fail( "Repeated a statement with {$case}." );
+			} catch ( \LogicException $refusal ) {
+				$this->assertStringContainsString( 'at least once', $refusal->getMessage(), $case );
+			}
+		}
+	}
+
+	/**
 	 * Tests that each module's expand() is this one, over its own tables.
 	 *
 	 * @since 0.1.0

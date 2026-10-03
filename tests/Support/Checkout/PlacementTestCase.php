@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Support\Checkout;
 
 use SEOCart\Cart\Application\CartService;
 use SEOCart\Cart\Domain\Cart;
+use SEOCart\Cart\Domain\CartLine;
 use SEOCart\Cart\Domain\CartToken;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Checkout\Application\PlaceOrder;
@@ -37,6 +38,8 @@ use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\Doubles\FakeCartTokens;
 use SEOCart\Tests\Support\Doubles\RecordingGateway;
 use SEOCart\Tests\Support\Doubles\RecordingWake;
+use SEOCart\Tests\Support\Performance\ReferenceCarts;
+use SEOCart\Tests\Support\Pricing\Inputs;
 use SEOCart\Tests\Support\RunningProbe;
 use SEOCart\Tests\Support\SecondConnection;
 use SEOCart\Tests\Support\SecondDatabase;
@@ -372,6 +375,51 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 	}
 
 	/**
+	 * Plants Cart B's ten variants across eight products, each priced and stocked.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<int> One variant per slot, in slot order.
+	 */
+	private function plantCartBVariants(): array {
+		$variants = array();
+		$products = array();
+
+		for ( $slot = 0; $slot < ReferenceCarts::CART_B_VARIANTS; $slot++ ) {
+			$product    = ReferenceCarts::productOfSlot( $slot );
+			$variant    = $this->sellable( 10, Inputs::money( ReferenceCarts::unitPrice( $slot ), self::CURRENCY )->minorUnits(), 'Product ' . $product, $products[ $product ] ?? 0 );
+			$variants[] = $variant;
+
+			$products[ $product ] ??= $variant;
+		}
+
+		return $variants;
+	}
+
+	/**
+	 * Plants Cart B's promotions, under codes no other cart of the test used, and returns the codes.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<string> The codes, in the order they are applied.
+	 */
+	private function plantCartBCodes(): array {
+		static $round = 0;
+
+		++$round;
+
+		$codes = array();
+
+		foreach ( ReferenceCarts::CART_B_CODES as $code => $columns ) {
+			$codes[] = $code . $round;
+
+			$this->plantPromotion( $code . $round, $columns );
+		}
+
+		return $codes;
+	}
+
+	/**
 	 * Starts a cart with lines of sellable variants and gives it a complete checkout: both addresses, an e-mail address and the stub payment method.
 	 *
 	 * @since 0.1.0
@@ -417,6 +465,43 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 		$this->assertNotNull( $ready );
 
 		return $ready;
+	}
+
+	/**
+	 * Plants Cart B's variants and promotions, and starts Cart B with its codes and a complete checkout.
+	 *
+	 * Each call plants new variants, and its codes under names no earlier call of the test used.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<int> Cart B's variants, one per slot, in slot order.
+	 */
+	protected function readyCartB(): array {
+		$variants = $this->plantCartBVariants();
+
+		$this->readyCart( self::quantities( ReferenceCarts::cartB( $variants ) ), $this->plantCartBCodes() );
+
+		return $variants;
+	}
+
+	/**
+	 * Returns the units of lines, by variant.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param CartLine[] $lines The lines.
+	 * @return array<int, int> Units by variant id.
+	 *
+	 * @phpstan-param list<CartLine> $lines
+	 */
+	protected static function quantities( array $lines ): array {
+		$quantities = array();
+
+		foreach ( $lines as $line ) {
+			$quantities[ $line->variantId ] = $line->quantity;
+		}
+
+		return $quantities;
 	}
 
 	/**

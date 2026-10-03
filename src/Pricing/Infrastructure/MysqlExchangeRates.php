@@ -55,22 +55,13 @@ final class MysqlExchangeRates implements ExchangeRates {
 	public const NEWEST_VERSION = 'SELECT MAX( version ) AS version FROM {exchange_rates}';
 
 	/**
-	 * A rate set, its rows in place of `{rows}`, each RATE_ROW.
+	 * A rate of a set: the pair, the rate and its scale, the version, the source and the user who saved it, 0 for none. ModuleStatements::forRows() repeats its row once per rate.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const INSERT_RATES = 'INSERT INTO {exchange_rates} ( base_currency, quote_currency, rate, rate_scale, version, source, created_by, created_at ) VALUES {rows}';
-
-	/**
-	 * One rate of INSERT_RATES: the pair, the rate and its scale, the version, the source and the user who saved it, 0 for none.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	public const RATE_ROW = '( %s, %s, %s, %d, %d, %s, NULLIF( %d, 0 ), UTC_TIMESTAMP(6) )';
+	public const INSERT_RATES = 'INSERT INTO {exchange_rates} ( base_currency, quote_currency, rate, rate_scale, version, source, created_by, created_at ) VALUES ( %s, %s, %s, %d, %d, %s, NULLIF( %d, 0 ), UTC_TIMESTAMP(6) )';
 
 	/**
 	 * Where every rate saved here comes from.
@@ -178,18 +169,6 @@ final class MysqlExchangeRates implements ExchangeRates {
 	}
 
 	/**
-	 * Returns INSERT_RATES for a number of rates.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param int $rates The rates, 1 or more.
-	 * @return string The statement, with RATE_ROW once per rate.
-	 */
-	public static function forRows( int $rates ): string {
-		return str_replace( '{rows}', implode( ', ', array_fill( 0, max( 1, $rates ), self::RATE_ROW ) ), self::INSERT_RATES );
-	}
-
-	/**
 	 * Saves a complete set of rates as the next version, and makes it the current one once it is committed.
 	 *
 	 * @since 0.1.0
@@ -262,7 +241,7 @@ final class MysqlExchangeRates implements ExchangeRates {
 					array_push( $values, $rate->base->code(), $rate->quote->code(), $rate->rate->toString(), $rate->rate->scale(), $version, self::SOURCE, $actor->userId() );
 				}
 
-				$this->statements->execute( self::forRows( count( $rates ) ), ...$values );
+				$this->statements->execute( ModuleStatements::forRows( self::INSERT_RATES, count( $rates ) ), ...$values );
 
 				return $version;
 			}

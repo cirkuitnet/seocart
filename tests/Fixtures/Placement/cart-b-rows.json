@@ -1,0 +1,247 @@
+{
+	"allocations": [
+		{
+			"variant_id": "variant 0",
+			"order_id": "order",
+			"order_line_id": "line 0",
+			"quantity": 1,
+			"posted_quantity": 0,
+			"state": "open"
+		},
+		{
+			"variant_id": "variant 1",
+			"order_id": "order",
+			"order_line_id": "line 1",
+			"quantity": 2,
+			"posted_quantity": 0,
+			"state": "open"
+		},
+		{
+			"variant_id": "variant 2",
+			"order_id": "order",
+			"order_line_id": "line 2",
+			"quantity": 3,
+			"posted_quantity": 0,
+			"state": "open"
+		},
+		{
+			"variant_id": "variant 3",
+			"order_id": "order",
+			"order_line_id": "line 3",
+			"quantity": 1,
+			"posted_quantity": 0,
+			"state": "open"
+		},
+		{
+			"variant_id": "variant 4",
+			"order_id": "order",
+			"order_line_id": "line 4",
+			"quantity": 1,
+			"posted_quantity": 0,
+			"state": "open"
+		},
+		{
+			"variant_id": "variant 5",
+			"order_id": "order",
+			"order_line_id": "line 5",
+			"quantity": 4,
+			"posted_quantity": 0,
+			"state": "open"
+		},
+		{
+			"variant_id": "variant 6",
+			"order_id": "order",
+			"order_line_id": "line 6",
+			"quantity": 1,
+			"posted_quantity": 0,
+			"state": "open"
+		},
+		{
+			"variant_id": "variant 7",
+			"order_id": "order",
+			"order_line_id": "line 7",
+			"quantity": 2,
+			"posted_quantity": 0,
+			"state": "open"
+		},
+		{
+			"variant_id": "variant 8",
+			"order_id": "order",
+			"order_line_id": "line 8",
+			"quantity": 1,
+			"posted_quantity": 0,
+			"state": "open"
+		},
+		{
+			"variant_id": "variant 9",
+			"order_id": "order",
+			"order_line_id": "line 9",
+			"quantity": 3,
+			"posted_quantity": 0,
+			"state": "open"
+		}
+	],
+	"outbox": [
+		{
+			"event_name": "order_created",
+			"aggregate_type": "order",
+			"aggregate_id": "order",
+			"payload": {
+				"v": 1,
+				"p": {
+					"order_id": "order",
+					"order_uuid": "order uuid",
+					"order_number": "order number",
+					"channel": "storefront",
+					"currency": "USD",
+					"grand_total_minor": 21910
+				}
+			},
+			"correlation_id": "request 0",
+			"state": "pending",
+			"claim_token": null,
+			"attempts": 0,
+			"last_error": null
+		},
+		{
+			"event_name": "payment_intent_created",
+			"aggregate_type": "payment_intent",
+			"aggregate_id": "intent 0",
+			"payload": {
+				"v": 1,
+				"p": {
+					"intent_id": "intent 0",
+					"intent_uuid": "intent uuid 0",
+					"order_id": "order",
+					"gateway_id": "stub",
+					"amount_minor": 21910,
+					"currency": "USD"
+				}
+			},
+			"correlation_id": "request 0",
+			"state": "pending",
+			"claim_token": null,
+			"attempts": 0,
+			"last_error": null
+		},
+		{
+			"event_name": "payment_authorized",
+			"aggregate_type": "payment_intent",
+			"aggregate_id": "intent 0",
+			"payload": {
+				"v": 1,
+				"p": {
+					"intent_id": "intent 0",
+					"order_id": "order",
+					"amount_minor": 21910,
+					"currency": "USD",
+					"transaction_id": "transaction 0"
+				}
+			},
+			"correlation_id": "request 0",
+			"state": "pending",
+			"claim_token": null,
+			"attempts": 0,
+			"last_error": null
+		},
+		{
+			"event_name": "payment_status_changed",
+			"aggregate_type": "order",
+			"aggregate_id": "order",
+			"payload": {
+				"v": 1,
+				"p": {
+					"order_id": "order",
+					"from": "unpaid",
+					"to": "authorized",
+					"authorized_minor": 21910,
+					"paid_minor": 0,
+					"refunded_minor": 0,
+					"due_minor": 21910,
+					"currency": "USD"
+				}
+			},
+			"correlation_id": "request 0",
+			"state": "pending",
+			"claim_token": null,
+			"attempts": 0,
+			"last_error": null
+		},
+		{
+			"event_name": "order_status_changed",
+			"aggregate_type": "order",
+			"aggregate_id": "order",
+			"payload": {
+				"v": 1,
+				"p": {
+					"order_id": "order",
+					"from": "pending_payment",
+					"to": "processing",
+					"reason": "payment_approved",
+					"actor_type": "user",
+					"actor_id": null
+				}
+			},
+			"correlation_id": "request 0",
+			"state": "pending",
+			"claim_token": null,
+			"attempts": 0,
+			"last_error": null
+		},
+		{
+			"event_name": "order_placed",
+			"aggregate_type": "order",
+			"aggregate_id": "order",
+			"payload": {
+				"v": 1,
+				"p": {
+					"order_id": "order",
+					"order_uuid": "order uuid",
+					"order_number": "order number",
+					"channel": "storefront",
+					"currency": "USD",
+					"grand_total_minor": 21910,
+					"base_currency": "USD",
+					"base_grand_total_minor": 21910,
+					"customer_id": null,
+					"actor_type": "user",
+					"actor_id": null
+				}
+			},
+			"correlation_id": "request 0",
+			"state": "pending",
+			"claim_token": null,
+			"attempts": 0,
+			"last_error": null
+		},
+		{
+			"event_name": "stock_allocated",
+			"aggregate_type": "order",
+			"aggregate_id": "order",
+			"payload": {
+				"v": 1,
+				"p": {
+					"order_id": "order",
+					"variant_ids": [
+						"variant 0",
+						"variant 1",
+						"variant 2",
+						"variant 3",
+						"variant 4",
+						"variant 5",
+						"variant 6",
+						"variant 7",
+						"variant 8",
+						"variant 9"
+					],
+					"quantities": [ 1, 2, 3, 1, 1, 4, 1, 2, 1, 3 ]
+				}
+			},
+			"correlation_id": "request 0",
+			"state": "pending",
+			"claim_token": null,
+			"attempts": 0,
+			"last_error": null
+		}
+	]
+}

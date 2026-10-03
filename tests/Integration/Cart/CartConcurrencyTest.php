@@ -68,7 +68,7 @@ final class CartConcurrencyTest extends CartTestCase {
 		$swap = $this->raw( MysqlCartRepository::COMPARE_AND_SWAP, $this->table( CartTables::CARTS ), self::TTL_SECONDS, $cart->id, 1 );
 
 		$raced = $this->beforeStatement(
-			self::shapeOf( MysqlCartRepository::forRows( 1 ) ),
+			self::shapeOf( MysqlCartRepository::ADD_LINES ),
 			function () use ( $b, $swap ): void {
 				$b->query( 'START TRANSACTION' );
 				$b->queryAsync( $swap );

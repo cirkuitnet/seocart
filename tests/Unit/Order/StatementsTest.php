@@ -245,7 +245,7 @@ final class StatementsTest extends TestCase {
 	public function test_a_multi_row_insert_repeats_the_tuple_and_an_empty_list_matches_nothing(): void {
 		$this->assertSame(
 			'INSERT INTO {order_line_options} ( order_line_id, axis_key_snapshot, axis_label_snapshot, value_key_snapshot, value_label_snapshot, locale_snapshot, position ) VALUES ( %d, %s, %s, %s, %s, %s, %d ), ( %d, %s, %s, %s, %s, %s, %d )',
-			OrderStatements::forRows( MysqlOrderRepository::INSERT_LINE_OPTION, 2 )
+			ModuleStatements::forRows( MysqlOrderRepository::INSERT_LINE_OPTION, 2 )
 		);
 		$this->assertStringStartsWith(
 			'UPDATE {order_lines} order_line JOIN ( SELECT %d AS id, %d AS quantity, %d AS refunded_before UNION ALL SELECT %d AS id, %d AS quantity, %d AS refunded_before ) AS asked ON',

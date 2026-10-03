@@ -1,0 +1,82 @@
+[
+	{
+		"variant_id": "variant 0",
+		"cart_id": "cart",
+		"order_id": null,
+		"hold_group": "hold",
+		"quantity": 1,
+		"reclaim_token": null
+	},
+	{
+		"variant_id": "variant 1",
+		"cart_id": "cart",
+		"order_id": null,
+		"hold_group": "hold",
+		"quantity": 2,
+		"reclaim_token": null
+	},
+	{
+		"variant_id": "variant 2",
+		"cart_id": "cart",
+		"order_id": null,
+		"hold_group": "hold",
+		"quantity": 3,
+		"reclaim_token": null
+	},
+	{
+		"variant_id": "variant 3",
+		"cart_id": "cart",
+		"order_id": null,
+		"hold_group": "hold",
+		"quantity": 1,
+		"reclaim_token": null
+	},
+	{
+		"variant_id": "variant 4",
+		"cart_id": "cart",
+		"order_id": null,
+		"hold_group": "hold",
+		"quantity": 1,
+		"reclaim_token": null
+	},
+	{
+		"variant_id": "variant 5",
+		"cart_id": "cart",
+		"order_id": null,
+		"hold_group": "hold",
+		"quantity": 4,
+		"reclaim_token": null
+	},
+	{
+		"variant_id": "variant 6",
+		"cart_id": "cart",
+		"order_id": null,
+		"hold_group": "hold",
+		"quantity": 1,
+		"reclaim_token": null
+	},
+	{
+		"variant_id": "variant 7",
+		"cart_id": "cart",
+		"order_id": null,
+		"hold_group": "hold",
+		"quantity": 2,
+		"reclaim_token": null
+	},
+	{
+		"variant_id": "variant 8",
+		"cart_id": "cart",
+		"order_id": null,
+		"hold_group": "hold",
+		"quantity": 1,
+		"reclaim_token": null
+	},
+	{
+		"variant_id": "variant 9",
+		"cart_id": "cart",
+		"order_id": null,
+		"hold_group": "hold",
+		"quantity": 3,
+		"reclaim_token": null
+	}
+]

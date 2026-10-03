@@ -11,7 +11,6 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Performance;
 
-use SEOCart\Cart\Domain\CartLine;
 use SEOCart\Checkout\Application\ChangeCartCurrency;
 use SEOCart\Tests\Support\Checkout\CurrencySwitchTestCase;
 use SEOCart\Tests\Support\Performance\ReferenceCarts;
@@ -241,25 +240,5 @@ final class CurrencySwitchBudgetTest extends CurrencySwitchTestCase {
 		}
 
 		return array_keys( ReferenceCarts::CART_B_CODES );
-	}
-
-	/**
-	 * Returns the units of lines, by variant.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param CartLine[] $lines The lines.
-	 * @return array<int, int> Units by variant id.
-	 *
-	 * @phpstan-param list<CartLine> $lines
-	 */
-	private static function quantities( array $lines ): array {
-		$quantities = array();
-
-		foreach ( $lines as $line ) {
-			$quantities[ $line->variantId ] = $line->quantity;
-		}
-
-		return $quantities;
 	}
 }

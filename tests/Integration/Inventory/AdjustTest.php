@@ -262,12 +262,17 @@ final class AdjustTest extends StockTestCase {
 	 *
 	 * The append-only test reads the constants; a statement written inline in a method would pass
 	 * it. So only the two helpers that expand a constant, write() and rows(), may call the
-	 * connection's statement methods, and every call to them names a constant: `self::NAME`, or the
-	 * claim a reclaim is given, which its callers name as `self::CLAIM_*`.
+	 * connection's statement methods, and every call to them names a constant: `self::NAME`; the
+	 * claim a reclaim is given, which its callers name as `self::CLAIM_*`; or, in insertRows(), the
+	 * one-row insert it is given repeated by the shared ModuleStatements::forRows(), which its
+	 * callers name as `self::NAME`.
 	 *
-	 * Planted violation: add to MysqlStockRepository a method that deletes a ledger entry with an
-	 * inline `$this->db->execute( 'DELETE FROM %i WHERE id = %d', … )`. The append-only test still
-	 * passes; this one names the method.
+	 * Planted violations:
+	 * - add to MysqlStockRepository a method that deletes a ledger entry with an inline
+	 *   `$this->db->execute( 'DELETE FROM %i WHERE id = %d', … )`. The append-only test still
+	 *   passes; this one names the method;
+	 * - in insertAllocations(), give insertRows() the statement inline in place of
+	 *   `self::INSERT_ALLOCATION`: this one names insertAllocations().
 	 *
 	 * @since 0.1.0
 	 */
@@ -293,7 +298,9 @@ final class AdjustTest extends StockTestCase {
 			foreach ( $statements[1] as $statement ) {
 				$statement = trim( $statement );
 
-				if ( 1 !== preg_match( '/^self::[A-Z][A-Z_]*$/', $statement ) && ! ( 'reclaim' === $method->getName() && '$claim' === $statement ) ) {
+				$given = ( 'reclaim' === $method->getName() && '$claim' === $statement ) || ( 'insertRows' === $method->getName() && 'ModuleStatements::forRows( $statement' === $statement );
+
+				if ( 1 !== preg_match( '/^self::[A-Z][A-Z_]*$/', $statement ) && ! $given ) {
 					$inline[] = $method->getName() . '(): ' . $statement;
 				}
 			}
@@ -303,6 +310,14 @@ final class AdjustTest extends StockTestCase {
 			foreach ( $claims[1] as $claim ) {
 				if ( 1 !== preg_match( '/^self::CLAIM_[A-Z_]+$/', trim( $claim ) ) ) {
 					$inline[] = $method->getName() . '(): ' . trim( $claim );
+				}
+			}
+
+			preg_match_all( '/\$this->insertRows\(\s*([^,]+),/', $body, $inserts );
+
+			foreach ( $inserts[1] as $insert ) {
+				if ( 1 !== preg_match( '/^self::[A-Z][A-Z_]*$/', trim( $insert ) ) ) {
+					$inline[] = $method->getName() . '(): ' . trim( $insert );
 				}
 			}
 		}

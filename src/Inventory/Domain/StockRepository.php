@@ -79,23 +79,24 @@ interface StockRepository {
 	public function claim( int $variantId, int $quantity ): bool;
 
 	/**
-	 * Inserts a hold row, after its claim.
+	 * Inserts a hold's rows, in the order given, after every one's claim added its units to its item's `held`.
+	 *
+	 * The rows go in together, in as few statements as a bounded statement allows. Each row's item
+	 * is locked already, by its claim, so the one-lock rule holds.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \LogicException When called outside a transaction.
 	 *
-	 * @param int      $variantId The item.
-	 * @param int      $quantity  The units the claim added to `held`.
-	 * @param string   $holdGroup The hold's id.
-	 * @param string   $expiresAt When the hold expires, UTC, `Y-m-d H:i:s`.
-	 * @param int|null $cartId    The cart, when there is one.
-	 * @param int|null $orderId   The order, when there is one.
-	 * @return int The row's id.
+	 * @param HoldLine[] $lines     The lines claimed, one per item, each with the units its claim added; none sends nothing.
+	 * @param string     $holdGroup The hold's id.
+	 * @param string     $expiresAt When the hold expires, UTC, `Y-m-d H:i:s`.
+	 * @param int|null   $cartId    The cart, when there is one.
+	 * @param int|null   $orderId   The order, when there is one.
 	 *
-	 * @phpstan-impure
+	 * @phpstan-param list<HoldLine> $lines
 	 */
-	public function insertHold( int $variantId, int $quantity, string $holdGroup, string $expiresAt, ?int $cartId, ?int $orderId ): int;
+	public function insertHolds( array $lines, string $holdGroup, string $expiresAt, ?int $cartId, ?int $orderId ): void;
 
 	/**
 	 * Turns a hold's units of one item into allocated units, when the hold still has its row of the item.
@@ -136,19 +137,22 @@ interface StockRepository {
 	public function claimAllocation( int $variantId, int $quantity ): bool;
 
 	/**
-	 * Inserts an open allocation row, after its units were added to the item's `allocated`.
+	 * Inserts an order's open allocation rows, in the order given, after every one's units were added to its item's `allocated`.
+	 *
+	 * The rows go in together, in as few statements as a bounded statement allows. An order line
+	 * that already has its row of the variant is refused by the table's unique key, and the
+	 * statement then writes none of its rows.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \LogicException When called outside a transaction.
 	 *
-	 * @param int        $orderId    The order the units are promised to.
-	 * @param Allocation $allocation The order line, the variant and the units.
-	 * @return int The row's id.
+	 * @param int          $orderId     The order the units are promised to.
+	 * @param Allocation[] $allocations The order lines, each with its variant and units; none sends nothing.
 	 *
-	 * @phpstan-impure
+	 * @phpstan-param list<Allocation> $allocations
 	 */
-	public function insertAllocation( int $orderId, Allocation $allocation ): int;
+	public function insertAllocations( int $orderId, array $allocations ): void;
 
 	/**
 	 * Takes the item's lock.

@@ -412,7 +412,8 @@ final class PlaceOrder {
 			CodedException::raise( CheckoutError::SessionIncomplete, array(), array( 'missing' => $missing ) );
 		}
 
-		$calculation = $this->carts->calculation( $cart );
+		// Priced with the session just read: the cart's claim, at the version read with it, refuses a session changed since.
+		$calculation = $this->carts->calculation( $cart, CheckoutSession::deliveryOf( $session ) );
 
 		foreach ( $calculation->unpricedLines as $unpriced ) {
 			CodedException::raise(

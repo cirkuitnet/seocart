@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Support\Doubles;
 
 use SEOCart\Inventory\Domain\Allocation;
 use SEOCart\Inventory\Domain\BackorderPolicy;
+use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Domain\ReclaimedRows;
 use SEOCart\Inventory\Domain\StockLevel;
@@ -251,22 +252,28 @@ final class FakeStockRepository implements StockRepository {
 	}
 
 	/**
-	 * Inserts a hold row.
+	 * Records a hold's rows, one call for all of them; none records nothing, as none sends nothing.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int      $variantId The item.
-	 * @param int      $quantity  The units.
-	 * @param string   $holdGroup The hold.
-	 * @param string   $expiresAt The expiry.
-	 * @param int|null $cartId    The cart.
-	 * @param int|null $orderId   The order.
-	 * @return int The row's id.
+	 * @param HoldLine[] $lines     The lines.
+	 * @param string     $holdGroup The hold.
+	 * @param string     $expiresAt The expiry.
+	 * @param int|null   $cartId    The cart.
+	 * @param int|null   $orderId   The order.
+	 *
+	 * @phpstan-param list<HoldLine> $lines
 	 */
-	public function insertHold( int $variantId, int $quantity, string $holdGroup, string $expiresAt, ?int $cartId, ?int $orderId ): int {
-		$this->write( 'insertHold:' . $variantId . ':' . $quantity );
+	public function insertHolds( array $lines, string $holdGroup, string $expiresAt, ?int $cartId, ?int $orderId ): void {
+		if ( array() === $lines ) {
+			return;
+		}
 
-		return $this->addHold( $variantId, $quantity, $holdGroup, (int) strtotime( $expiresAt . ' UTC' ) );
+		$this->write( 'insertHolds:' . implode( ',', array_map( static fn( HoldLine $line ): string => $line->variantId . ':' . $line->quantity, $lines ) ) );
+
+		foreach ( $lines as $line ) {
+			$this->addHold( $line->variantId, $line->quantity, $holdGroup, (int) strtotime( $expiresAt . ' UTC' ) );
+		}
 	}
 
 	/**
@@ -320,20 +327,25 @@ final class FakeStockRepository implements StockRepository {
 	}
 
 	/**
-	 * Records an open allocation.
+	 * Records an order's open allocations, one call for all of them.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int        $orderId    The order.
-	 * @param Allocation $allocation The allocation.
-	 * @return int The row's id: a count of the allocations recorded.
+	 * @param int          $orderId     The order.
+	 * @param Allocation[] $allocations The allocations.
+	 *
+	 * @phpstan-param list<Allocation> $allocations
 	 */
-	public function insertAllocation( int $orderId, Allocation $allocation ): int {
-		$this->write( 'insertAllocation:' . $orderId . ':' . $allocation->orderLineId . ':' . $allocation->variantId . ':' . $allocation->quantity );
+	public function insertAllocations( int $orderId, array $allocations ): void {
+		$rows = array();
 
-		$this->openAllocations[ $allocation->variantId ] = true;
+		foreach ( $allocations as $allocation ) {
+			$rows[] = $allocation->orderLineId . ':' . $allocation->variantId . ':' . $allocation->quantity;
 
-		return count( $this->calls );
+			$this->openAllocations[ $allocation->variantId ] = true;
+		}
+
+		$this->write( 'insertAllocations:' . $orderId . ':' . implode( ',', $rows ) );
 	}
 
 	/**

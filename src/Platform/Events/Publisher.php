@@ -35,14 +35,14 @@ defined( 'ABSPATH' ) || exit;
  *    own would make the row durable without the change it describes: the very lie the outbox
  *    exists to prevent. A service that publishes one runs its write in transaction().
  *
- * Then an outbox event becomes a row, inserted in the caller's transaction at the caller's
- * savepoint level, so a rollback at any level removes exactly that level's rows. An
- * after-commit event becomes an after-commit callback at the current level, which fires its
- * action once the outermost level has committed, or at once outside a transaction; a rolled
- * back level drops it. Once per call that stored a row, the wake is registered after the
- * commit too; it costs nothing when it runs. The kernel binds Jobs\EventWake, which only notes
- * the site and delivers at the end of the request, after the response has ended, or hands the
- * delivery to the job runner.
+ * Then the outbox events of a call become rows, inserted together in the order given
+ * (Outbox::insertAll()), in the caller's transaction at the caller's savepoint level, so a
+ * rollback at any level removes exactly that level's rows. An after-commit event becomes an
+ * after-commit callback at the current level, which fires its action once the outermost level
+ * has committed, or at once outside a transaction; a rolled back level drops it. Once per call
+ * that stored a row, the wake is registered after the commit too; it costs nothing when it
+ * runs. The kernel binds Jobs\EventWake, which only notes the site and delivers at the end of
+ * the request, after the response has ended, or hands the delivery to the job runner.
  *
  * Every event carries the correlation id of the request that publishes it.
  *
@@ -172,25 +172,28 @@ final class Publisher implements EventPublisher {
 			$checked[] = array( $event, $this->check( $event ) );
 		}
 
-		$stored = false;
+		$stored   = array();
+		$inMemory = array();
 
 		foreach ( $checked as $entry ) {
-			list( $event, $payloadJson ) = $entry;
-
-			if ( DeliveryMode::Outbox === $event::deliveryMode() ) {
-				$this->outbox->insert( $event, $payloadJson, $this->correlation->current() );
-
-				$stored = true;
-
-				continue;
+			if ( DeliveryMode::Outbox === $entry[0]::deliveryMode() ) {
+				$stored[] = $entry;
+			} else {
+				$inMemory[] = $entry[0];
 			}
+		}
 
+		if ( array() !== $stored ) {
+			$this->outbox->insertAll( $stored, $this->correlation->current() );
+		}
+
+		foreach ( $inMemory as $event ) {
 			$envelope = EventEnvelope::inMemory( $event, $this->correlation->current() );
 
 			$this->tx->afterCommit( fn() => $this->bridge->dispatch( $envelope ) );
 		}
 
-		if ( $stored ) {
+		if ( array() !== $stored ) {
 			$this->tx->afterCommit( $this->wake );
 		}
 	}

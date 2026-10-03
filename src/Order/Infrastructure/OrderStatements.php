@@ -29,24 +29,15 @@ defined( 'ABSPATH' ) || exit;
  * statement the module sends, and a test can read from the constants alone which tables they
  * change.
  *
- * A multi-row insert is its one-row constant with the VALUES tuple repeated, once per row: one
- * statement whatever the number of rows. A statement that joins a table of values, such as an
- * update of several lines each by its own amount, writes that table as one derived row,
- * `( SELECT %d AS id, … ) AS name`, which ModuleStatements::forDerivedRows() repeats with UNION ALL,
- * once per row.
+ * A multi-row insert is its one-row constant with the VALUES tuple repeated, once per row, by
+ * ModuleStatements::forRows(): one statement whatever the number of rows. A statement that joins
+ * a table of values, such as an update of several lines each by its own amount, writes that
+ * table as one derived row, `( SELECT %d AS id, … ) AS name`, which
+ * ModuleStatements::forDerivedRows() repeats with UNION ALL, once per row.
  *
  * @since 0.1.0
  */
 final class OrderStatements {
-
-	/**
-	 * What precedes the VALUES tuple of an insert constant.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var string
-	 */
-	private const VALUES = ' VALUES ';
 
 	/**
 	 * The connection.
@@ -95,29 +86,6 @@ final class OrderStatements {
 	}
 
 	/**
-	 * Returns an insert constant with its VALUES tuple repeated once per row.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @throws \LogicException When the statement has no VALUES tuple, or no row is asked for.
-	 *
-	 * @param string $statement A one-row insert constant.
-	 * @param int    $rows      How many rows, 1 or more.
-	 * @return string The multi-row statement.
-	 */
-	public static function forRows( string $statement, int $rows ): string {
-		$at = strrpos( $statement, self::VALUES );
-
-		if ( false === $at || $rows < 1 ) {
-			throw new \LogicException( 'A multi-row insert repeats the VALUES tuple of a one-row insert, at least once.' );
-		}
-
-		$tuple = substr( $statement, $at + strlen( self::VALUES ) );
-
-		return substr( $statement, 0, $at + strlen( self::VALUES ) ) . implode( ', ', array_fill( 0, $rows, $tuple ) );
-	}
-
-	/**
 	 * Sends a statement joined to a table of values, its rows first and then the statement's other values, as one statement.
 	 *
 	 * @since 0.1.0
@@ -160,7 +128,7 @@ final class OrderStatements {
 	 * @phpstan-param non-empty-list<list<mixed>> $rows
 	 */
 	public function insertRows( string $statement, array $rows ): int {
-		return $this->execute( self::forRows( $statement, count( $rows ) ), ...array_merge( ...$rows ) );
+		return $this->execute( ModuleStatements::forRows( $statement, count( $rows ) ), ...array_merge( ...$rows ) );
 	}
 
 	/**

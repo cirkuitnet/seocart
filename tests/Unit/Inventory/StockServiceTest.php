@@ -101,7 +101,7 @@ final class StockServiceTest extends TestCase {
 
 		$hold = $this->service->hold( array( new HoldLine( 9, 1 ), new HoldLine( 4, 2 ), new HoldLine( 9, 2 ) ), 600 );
 
-		$this->assertSame( array( 'configuration:4,9', 'claim:4:2', 'insertHold:4:2', 'claim:9:3', 'insertHold:9:3' ), $this->stock->calls() );
+		$this->assertSame( array( 'configuration:4,9', 'claim:4:2', 'claim:9:3', 'insertHolds:4:2,9:3' ), $this->stock->calls() );
 		$this->assertEquals( array( new HoldLine( 4, 2 ), new HoldLine( 9, 3 ) ), $hold->lines );
 		$this->assertSame( 1, $this->tx->attempts() );
 
@@ -124,7 +124,7 @@ final class StockServiceTest extends TestCase {
 
 		$this->service->hold( array( new HoldLine( 4, 1 ) ), 600 );
 
-		$this->assertSame( array( 'configuration:4', 'claim:4:1', 'reclaimExpired:4', 'lockItem:4', 'claim:4:1', 'insertHold:4:1' ), $this->stock->calls() );
+		$this->assertSame( array( 'configuration:4', 'claim:4:1', 'reclaimExpired:4', 'lockItem:4', 'claim:4:1', 'insertHolds:4:1' ), $this->stock->calls() );
 		$this->assertCount( 1, $this->events->publishedOf( StockHoldExpired::class ) );
 		$this->assertCount( 1, $this->events->publishedOf( StockReserved::class ) );
 	}
@@ -168,7 +168,7 @@ final class StockServiceTest extends TestCase {
 		$hold = $this->service->hold( array( new HoldLine( 4, 3 ), new HoldLine( 5, 1 ) ), 600 );
 
 		$this->assertSame( array( 4 ), $hold->untracked );
-		$this->assertSame( array( 'configuration:4,5', 'claim:5:1', 'insertHold:5:1' ), $this->stock->calls() );
+		$this->assertSame( array( 'configuration:4,5', 'claim:5:1', 'insertHolds:5:1' ), $this->stock->calls() );
 	}
 
 	/**

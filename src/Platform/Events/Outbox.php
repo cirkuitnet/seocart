@@ -14,6 +14,7 @@ namespace SEOCart\Platform\Events;
 use SEOCart\Platform\DataRegistry\RetentionCatalog;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Exception\DatabaseException;
+use SEOCart\Platform\Database\ModuleStatements;
 use SEOCart\Support\Events\DomainEvent;
 
 defined( 'ABSPATH' ) || exit;
@@ -87,6 +88,24 @@ final class Outbox {
 	 * @var string
 	 */
 	public const CLAIM = "UPDATE %i SET claim_token = %s, claimed_until = UTC_TIMESTAMP(6) + INTERVAL %d SECOND WHERE state = 'pending' AND available_at <= UTC_TIMESTAMP(6) AND ( claimed_until IS NULL OR claimed_until < UTC_TIMESTAMP(6) ) ORDER BY id LIMIT %d";
+
+	/**
+	 * The insert of a pending row, due at once: the event's name, its aggregate's type and id, its payload and the correlation id. ModuleStatements::forRows() repeats its row once per event.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private const INSERT = "INSERT INTO %i ( event_name, aggregate_type, aggregate_id, payload_json, correlation_id, state, available_at, attempts, created_at ) VALUES ( %s, %s, %d, %s, %s, 'pending', UTC_TIMESTAMP(6), 0, UTC_TIMESTAMP(6) )";
+
+	/**
+	 * The most rows one INSERT writes: fifty payloads at the publisher's default cap come to about 1.6 MB of SQL at most, escaping included, well under the smallest default max_allowed_packet of a supported server (16 MB on MariaDB).
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	public const ROWS_PER_INSERT = 50;
 
 	/**
 	 * The format of the instant stored with an event.
@@ -167,29 +186,31 @@ final class Outbox {
 	}
 
 	/**
-	 * Stores an event as a pending row, due at once. One INSERT, inside the caller's transaction.
+	 * Stores events as pending rows, due at once, in the order given: one INSERT for every ROWS_PER_INSERT rows, inside the caller's transaction.
+	 *
+	 * The rows get ascending ids in that order, and the drainer delivers in id order, so the events
+	 * are delivered in the order they were published. A row's id is the event id listeners
+	 * deduplicate on.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws DatabaseException When the database refuses the row.
+	 * @throws DatabaseException When the database refuses a row; the statement then stores none of its rows.
 	 *
-	 * @param DomainEvent $event         The event.
-	 * @param string      $payloadJson   What encode() returned for the event.
-	 * @param string      $correlationId The correlation id of the request publishing it.
-	 * @return int The row's id: the event id listeners deduplicate on.
+	 * @param array  $events        Each event with what encode() returned for it; none sends nothing.
+	 * @param string $correlationId The correlation id of the request publishing them.
+	 *
+	 * @phpstan-param list<array{0: DomainEvent, 1: string}> $events
 	 */
-	public function insert( DomainEvent $event, string $payloadJson, string $correlationId ): int {
-		$this->db->execute(
-			"INSERT INTO %i ( event_name, aggregate_type, aggregate_id, payload_json, correlation_id, state, available_at, attempts, created_at ) VALUES ( %s, %s, %d, %s, %s, 'pending', UTC_TIMESTAMP(6), 0, UTC_TIMESTAMP(6) )",
-			$this->table(),
-			$event::eventName(),
-			$event->aggregateType(),
-			$event->aggregateId(),
-			$payloadJson,
-			$correlationId
-		);
+	public function insertAll( array $events, string $correlationId ): void {
+		foreach ( array_chunk( $events, self::ROWS_PER_INSERT ) as $chunk ) {
+			$values = array();
 
-		return $this->db->lastInsertId();
+			foreach ( $chunk as list( $event, $payloadJson ) ) {
+				array_push( $values, $event::eventName(), $event->aggregateType(), $event->aggregateId(), $payloadJson, $correlationId );
+			}
+
+			$this->db->execute( ModuleStatements::forRows( self::INSERT, count( $chunk ) ), $this->table(), ...$values );
+		}
 	}
 
 	/**

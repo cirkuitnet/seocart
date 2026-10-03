@@ -116,7 +116,7 @@ final class SweepConcurrencyTest extends CartTestCase {
 
 		$delete = $this->raw( MysqlCartRepository::forIds( MysqlCartRepository::DELETE_EXPIRED, 1 ), $carts, $this->table( CartTables::LINES ), $this->table( MysqlCartRepository::CHECKOUT_SESSIONS ), $cart->id );
 		$raced  = $this->beforeStatement(
-			self::shapeOf( MysqlCartRepository::forRows( 1 ) ),
+			self::shapeOf( MysqlCartRepository::ADD_LINES ),
 			function () use ( $b, $carts, $cart, $delete ): void {
 				$this->assertSame( (string) $cart->id, $b->fetchValue( $this->raw( MysqlCartRepository::EXPIRED, $carts, SweepExpiredCarts::BATCH ) ), 'The sweep\'s search did not find the cart, so nothing raced A.' );
 
