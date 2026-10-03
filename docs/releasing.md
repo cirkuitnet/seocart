@@ -78,22 +78,65 @@ the zip.
 `.gitattributes` marks development paths `export-ignore` as well, so that GitHub's "Download
 ZIP" is not mistaken for a release. A unit test keeps that list and `.distignore` in step.
 
+## Prove the package
+
+The package is proved from the zip, never from the source tree. `bin/ci/install-smoke.sh`
+installs the file `bin/build-zip.php` wrote on clean WordPress sites, with WP-CLI and `WP_DEBUG`
+on, and fails when the debug log gains a single byte. In order, it proves that:
+
+1. **Install and upgrade.** The earlier zip installs and activates, a product with stock is
+   written, and a guest buys it with the stub gateway. Installing this zip over it queues the
+   migrations since as a job, and once the job runner has run it (`wp seocart jobs run`, what
+   cron does) every migration since is recorded once, as applied, none of the earlier ones ran
+   again, and the product, its stock, the order and every data table are as they were (each
+   table's `CHECKSUM TABLE`, so a changed value shows). The earlier commit is named once, in `bin/ci/upgrade-from.env`, and
+   `bin/ci/build-older-zip.sh` builds its zip. The script refuses an earlier zip whose migrations
+   are not a strict prefix of this zip's.
+2. **An order.** A guest buys the product through the Store API and reads the order back (with
+   the earlier zip when there is one).
+3. **Deactivate and reactivate.**
+4. **Uninstall keeps the store.** After `wp plugin uninstall` every table of the plugin, every
+   value in it (`CHECKSUM TABLE`) and its options are still there, as `uninstall.php` promises.
+   Installing the zip again recognises the same store (the boot record's identity) and its order.
+5. **A network.** Network activation installs the main site only. A site that existed before
+   installs itself on its first request, and a site created afterwards as soon as it exists, each
+   with its own identity and roles. The plugin can be switched on and off for one site, and
+   deleting a site drops its plugin tables.
+
+To run it by hand, give it a database it may fill (it uses tables of its own prefix and drops
+them again) and the earlier zip:
+
+```sh
+export SEOCART_CI_DB_HOST=127.0.0.1:3306 SEOCART_CI_DB_USER=root SEOCART_CI_DB_PASSWORD=secret SEOCART_CI_DB_NAME=seocart_smoke
+sh bin/ci/build-older-zip.sh dist-older
+SEOCART_CI_OLD_ZIP=$(echo dist-older/seocart-*.zip) sh bin/ci/install-smoke.sh dist/seocart-X.Y.Z.zip
+```
+
+Without `SEOCART_CI_OLD_ZIP` the upgrade is skipped, and the run says so. The pull request
+workflow builds the earlier zip in its own job, so every `package / install-smoke` cell proves the
+upgrade. Move `bin/ci/upgrade-from.env` forward, never back; once a version has been released, it names the
+commit of the previous release. The file is read as data, never run: one `SEOCART_UPGRADE_FROM=`
+line with a full commit hash, which must be an ancestor of the checkout.
+
+The same run is check 17, and the base of checks 1, 2, 4, 5, 7 and 16, of the baseline smoke tests
+in [testing.md](testing.md#the-baseline-smoke-tests).
+
 ## The WordPress.org gates
 
 Every gate below blocks a release. Most of them also run on every pull request, so that a
 release is never the first time a problem is seen.
 
-| Gate                      | Fails when                                                                                                                                                                                                   | How it runs                            |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
-| **Zip size**              | The zip is larger than the project's **5 MB budget**. The directory's hard limit is **10 MB**; the check fails there whatever the budget says                                                                | `php bin/check-zip.php <zip>`          |
-| **Zip contents**          | The zip holds tests, `docs/`, development configuration, `node_modules/` or an unscoped `vendor/`; omits `composer.json`, the generated autoloader or a locked runtime package; or prefixes Action Scheduler | `php bin/check-zip.php <zip>`          |
-| **Version agreement**     | The `Version` header, the `Stable tag` in `readme.txt` and the git tag do not all agree                                                                                                                      | `php bin/check-wporg.php --tag=vX.Y.Z` |
-| **Readme validator**      | `Stable tag` is `trunk`; `Tested up to` is not a real WordPress version; the license is not `GPLv3 or later` with a license URI; there are more than five tags; a tag names a competitor                     | `composer wporg:check`                 |
-| **Licence allow-list**    | A Composer or npm **runtime** dependency has a license that is not compatible with GPLv3                                                                                                                     | `composer licenses:check`              |
-| **External services**     | The generated "External services" section of `readme.txt` has drifted from the registry of outbound endpoints                                                                                                | `composer docs:check`                  |
-| **No executable content** | `eval` or `create_function` appears anywhere in the plugin                                                                                                                                                   | `composer cs`                          |
-| **Plugin Check**          | The official Plugin Check tool reports any error or security finding **against the built zip**, not against the source tree. Warnings are tracked and must reach zero before 1.0                             | The continuous integration workflow    |
-| **Install smoke**         | The built zip does not install and activate on a clean WordPress site, or it produces a PHP notice under `WP_DEBUG`                                                                                          | The continuous integration workflow    |
+| Gate                      | Fails when                                                                                                                                                                                                                      | How it runs                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| **Zip size**              | The zip is larger than the project's **5 MB budget**. The directory's hard limit is **10 MB**; the check fails there whatever the budget says                                                                                   | `php bin/check-zip.php <zip>`          |
+| **Zip contents**          | The zip holds tests, `docs/`, development configuration, `node_modules/` or an unscoped `vendor/`; omits `composer.json`, the generated autoloader or a locked runtime package; or prefixes Action Scheduler                    | `php bin/check-zip.php <zip>`          |
+| **Version agreement**     | The `Version` header, the `Stable tag` in `readme.txt` and the git tag do not all agree                                                                                                                                         | `php bin/check-wporg.php --tag=vX.Y.Z` |
+| **Readme validator**      | `Stable tag` is `trunk`; `Tested up to` is not a real WordPress version; the license is not `GPLv3 or later` with a license URI; there are more than five tags; a tag names a competitor                                        | `composer wporg:check`                 |
+| **Licence allow-list**    | A Composer or npm **runtime** dependency has a license that is not compatible with GPLv3                                                                                                                                        | `composer licenses:check`              |
+| **External services**     | The generated "External services" section of `readme.txt` has drifted from the registry of outbound endpoints                                                                                                                   | `composer docs:check`                  |
+| **No executable content** | `eval` or `create_function` appears anywhere in the plugin                                                                                                                                                                      | `composer cs`                          |
+| **Plugin Check**          | The official Plugin Check tool reports any error or security finding **against the built zip**, not against the source tree. Warnings are tracked and must reach zero before 1.0                                                | The continuous integration workflow    |
+| **Install smoke**         | The built zip does not install, upgrade from the earlier zip with its data intact, deactivate, reactivate or uninstall with the store preserved, on a clean site and on a network, or it produces a PHP notice under `WP_DEBUG` | The continuous integration workflow    |
 
 Three more directory rules are enforced by tests as the features they concern arrive: no
 credit link on the storefront with default settings, no third-party `iframe` on an admin
@@ -105,6 +148,26 @@ screen, and no sitewide admin notice that cannot be dismissed.
    release notes from the version's section of `CHANGELOG.md`.
 2. It installs **that exact zip** on a clean WordPress site. A release that fails its own
    install check is not published.
+3. It attests the zip's build provenance with `actions/attest-build-provenance`: a signed
+   statement of the repository, the workflow run and the commit that produced the file, stored
+   with the repository. Only the `publish` job holds the two permissions this needs
+   (`id-token: write` and `attestations: write`).
+
+## Verify a download
+
+Anyone who downloads a release can check where the zip came from, and that it is the file the
+workflow built. With the [GitHub CLI](https://cli.github.com/):
+
+```sh
+gh attestation verify seocart-X.Y.Z.zip --repo cirkuitnet/seocart \
+  --signer-workflow cirkuitnet/seocart/.github/workflows/release.yml
+sha256sum --check --strict SHA256SUMS
+```
+
+The first command fails for a file that no attestation of this repository covers, or that a
+workflow other than the release workflow attested. The second compares the file with the
+checksum the build wrote. Pushing a tag is the only thing that runs the release workflow, so the
+attestation step is exercised when the first release is published, and not before.
 
 ## Deploy to the WordPress.org directory
 

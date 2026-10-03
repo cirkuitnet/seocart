@@ -149,6 +149,27 @@ else, pass the same `--checkout=<path>` to `teardown-site.sh` and `check-residue
 they cannot find it on their own. What would be left behind names an account that no
 longer exists.
 
+## The smoke suite on a worktree
+
+`new-worktree.sh` leaves a worktree ready for the baseline smoke tests
+([docs/testing.md](../../docs/testing.md#the-baseline-smoke-tests)):
+
+```sh
+sh bin/ci/smoke-suite.sh --list    # the 17 checks and their commands, nothing runs
+sh bin/ci/smoke-suite.sh           # builds the zips, runs the checks, one line each
+```
+
+- It builds the release zip (`npm run build`, `php bin/build-zip.php`) and the earlier zip the
+  upgrade proof starts from (`bin/ci/build-older-zip.sh`, which checks the commit named in
+  `bin/ci/upgrade-from.env` out into a temporary worktree and builds it there). Pass a zip as the
+  argument, and `SEOCART_CI_OLD_ZIP`, to use ones you built already.
+- `install-smoke.sh` installs WordPress sites in a temporary directory and serves them with PHP's
+  built-in server. It takes its database from `tests/wp-tests-config.local.php`, the file
+  `provision-test-db.sh` writes: the sites use tables of a prefix of their own in the worktree's
+  test database, and drop them when the run ends.
+- It runs the whole integration suite, so it is a long, heavy command: allow several minutes, and
+  serialise it with other heavy work on the machine.
+
 ## Environment
 
 Every path is derived from `HOME`; the defaults are at the top of `lib.sh`.

@@ -161,6 +161,57 @@ annotation is wrong.
 | `npm run env:cli`           | Runs a command in that site, for example `npm run env:cli -- wp plugin list`          |
 | `npm audit`                 | npm's own check of the dependencies against known security advisories                 |
 
+## The baseline smoke tests
+
+Seventeen checks answer one question: does the plugin start, install, migrate, refuse and keep
+its data the way it promises? `bin/ci/smoke-suite.sh` runs them in order, prints one line each
+(`ok`, `FAIL`, or `ci` for a check a CI job proves that the machine cannot run, where the suite
+checks the thing it can) and exits non-zero when any fails. `sh bin/ci/smoke-suite.sh --list`
+prints the live mapping without running it; the script is the source of truth, and this table
+is a reading of it.
+
+| #   | What it proves                                          | The command                                                                                                                                                                                                                |
+| --- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | A clean WordPress and PHP start                         | `install-smoke.sh`, the baseline step                                                                                                                                                                                      |
+| 2   | Install and activation raise no notice under `WP_DEBUG` | `install-smoke.sh`: activation, and the debug log of the whole run                                                                                                                                                         |
+| 3   | Activation and migrations run on an empty database      | `composer test:migration`, filtered to `LifecycleTest::test_activating_a_fresh_site_installs_it` and `MigratorTest::test_the_bootstrap_creates_the_platform_tables_and_records_itself`                                     |
+| 4   | Deactivation leaves no broken hooks or corrupt data     | `install-smoke.sh` deactivation, and `composer test:integration` filtered to the two deactivation tests of `LifecycleTest`                                                                                                 |
+| 5   | Reactivation succeeds                                   | `install-smoke.sh`, the reactivation step                                                                                                                                                                                  |
+| 6   | Migrations are idempotent and can run again             | `composer test:migration`, filtered to `LifecycleTest::test_activating_again_changes_nothing` and `MigratorTest::test_a_chain_applies_in_order_once`                                                                       |
+| 7   | An order is written and read back                       | `install-smoke.sh`: a guest orders through the Store API and reads the order back                                                                                                                                          |
+| 8   | Authorization rejects unauthorized access               | `composer test:integration`, filtered to `AuthorizerTest`, `PermissionCallbackTest` and `OrderStatusRouteTest`                                                                                                             |
+| 9   | Every REST route has an explicit permission behaviour   | `composer test:integration`, filtered to `RoutePermissionWalkTest`                                                                                                                                                         |
+| 10  | Unrelated requests do not start expensive subsystems    | `composer test:integration`, filtered to `IdleBudgetTest`                                                                                                                                                                  |
+| 11  | PHPCS passes                                            | `composer cs`                                                                                                                                                                                                              |
+| 12  | Static analysis passes                                  | `composer stan`                                                                                                                                                                                                            |
+| 13  | PHPUnit passes                                          | `composer test:unit`                                                                                                                                                                                                       |
+| 14  | The WordPress integration tests pass                    | `composer test:integration`                                                                                                                                                                                                |
+| 15  | The Playwright smoke test passes                        | `ci`: the end-to-end workflow runs it; the suite checks that the specs, the `test:e2e` script and the job's command exist                                                                                                  |
+| 16  | Uninstall keeps the data, as the policy says            | `install-smoke.sh`, the uninstall step, and `composer test:integration` filtered to `LifecycleTest::test_deactivation_and_uninstallation_remove_nothing` and `CoverageTest::test_every_retention_policy_is_in_the_catalog` |
+| 17  | A clean second site installs the packaged zip           | `install-smoke.sh`, the whole run                                                                                                                                                                                          |
+
+Every test a check names gets a PHPUnit call of its own, and each call fails when its filter
+selects no test (`--fail-on-empty-test-suite`), so a renamed test fails its check instead of hiding
+behind one that still exists. `install-smoke.sh` runs once, for the first check that needs it, and
+prints a `proved <name>` line for each fact; the checks read those lines. The same run also proves
+the upgrade from an earlier release and a WordPress network (see
+[releasing.md](releasing.md#prove-the-package)); the suite fails when either is missing.
+
+On a development machine the suite builds the zip and the earlier zip itself, reads the database
+of `install-smoke.sh` from `tests/wp-tests-config.local.php`, and runs the whole integration
+suite, so it takes several minutes. `--only 3,9` runs just the checks numbered, to find out why
+one of them fails; that is not "all 17 green".
+
+In CI the `smoke-suite` job of `ci.yml` runs `smoke-suite.sh --report` and does no work the other
+jobs did not do. It waits for the gate jobs and for `package`. Checks 11 to 14 take their result
+from the jobs that ran `composer cs`, `stan`, `test:unit` and `test:integration`. Checks 1, 2, 5, 7
+and 17, and the install half of 4 and 16, read the `proved` lines that every
+`package / install-smoke` cell uploaded, and fail unless `package` succeeded: a cell that failed
+uploads nothing, so the files that are there cannot vouch for it. Only the filtered PHPUnit checks (3, 4, 6, 8, 9, 10 and the
+test half of 16) run in the job. Check 15 is the conclusion of the end-to-end workflow's run for the
+commit, when there is one; a commit without a run reads `ci: not run for this commit`, never `ok`.
+The job is not a required check.
+
 ## Static gates
 
 - **Coding standards have no warning allowance.** `composer cs` must report nothing.
@@ -260,6 +311,7 @@ A test that can fail because of when or where it ran is a defect in the test.
 | Multilingual conformance              | On a disposable site with Polylang (free) active                                   | Every pull request and every push to main; not a required check                                                  |
 | End-to-end and accessibility          | From any machine with a browser, against a disposable site                         | A secondary job against a disposable site                                                                        |
 | Packaging and the WordPress.org gates | `composer wporg:check`, `composer licenses:check`, the zip scripts                 | Every pull request and every release                                                                             |
+| Install smoke and the smoke suite     | `sh bin/ci/install-smoke.sh`, `sh bin/ci/smoke-suite.sh`                           | Every pull request: `package / install-smoke` on two PHP and WordPress pairs, and the `smoke-suite` job          |
 
 `bin/ci/polylang-pin.env` states the one Polylang (free) version, and its checksum, that both
 places install. To run the suite by hand: `sh bin/ci/download-polylang.sh <dir>` downloads

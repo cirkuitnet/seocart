@@ -1,7 +1,10 @@
 # The build chain: build the release zip, then validate, check and install that exact zip.
 #
 #   build -> packaging-validate -> plugin-check
-#                               -> install-smoke
+#                               -> install-smoke (also needs build-upgrade-base)
+#
+# build-upgrade-base builds the zip of an earlier commit, the one the upgrade proof of
+# install-smoke starts from.
 #
 # Reusable because two workflows run it: ci.yml on every pull request and release.yml on
 # every tag. A release is therefore built and proven by the same jobs as a pull request,
@@ -19,12 +22,16 @@ on:
             artifact:
                 description: 'Name of the workflow artifact that holds seocart-<version>.zip and its SHA256SUMS.'
                 value: ${{ jobs.build.outputs.artifact }}
+            upgrade-base-artifact:
+                description: 'Name of the workflow artifact that holds the zip of the earlier commit the upgrade proof starts from.'
+                value: ${{ jobs.build-upgrade-base.outputs.artifact }}
 
 permissions:
     contents: read
 
 env:
     ZIP_ARTIFACT: seocart-zip
+    UPGRADE_BASE_ARTIFACT: seocart-zip-upgrade-base
     # The zip is built on the PHP floor (the README.md requirements table) and installed on
     # both the floor and the version the plugin is developed on.
     PHP_FLOOR: '8.3'
@@ -80,6 +87,50 @@ jobs:
                   path: |
                       dist/seocart-*.zip
                       dist/SHA256SUMS
+                  if-no-files-found: error
+                  retention-days: 14
+
+    # The zip install-smoke installs first, to prove an upgrade. The commit is named once, in
+    # bin/ci/upgrade-from.env, and the script builds it the way a release is built, so a
+    # developer's machine builds the same zip. The earlier zip is not validated or checked: it
+    # is what shipped then, not what ships now.
+    build-upgrade-base:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+        outputs:
+            artifact: ${{ env.UPGRADE_BASE_ARTIFACT }}
+        steps:
+            # Full history: the earlier commit is not the tip of anything a default checkout fetches.
+            - name: Check out the repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  fetch-depth: 0
+                  persist-credentials: false
+
+            # PHP and Composer only: the script runs `composer install` in a checkout of the
+            # earlier commit, which has its own composer.lock.
+            - name: Set up PHP and Composer
+              uses: ./.github/actions/setup-php-composer
+              with:
+                  php-version: ${{ env.PHP_FLOOR }}
+                  install: none
+
+            - name: Set up Node from .nvmrc
+              uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with:
+                  node-version-file: .nvmrc
+                  cache: npm
+
+            - name: Build the zip of the earlier commit
+              run: sh bin/ci/build-older-zip.sh upgrade-base
+
+            - name: Upload the earlier zip
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: ${{ env.UPGRADE_BASE_ARTIFACT }}
+                  path: |
+                      upgrade-base/seocart-*.zip
+                      upgrade-base/SHA256SUMS
                   if-no-files-found: error
                   retention-days: 14
 
@@ -139,10 +190,12 @@ jobs:
                   repo-token: ''
 
     install-smoke:
-        needs: packaging-validate
+        needs:
+            - packaging-validate
+            - build-upgrade-base
         name: install-smoke (${{ matrix.php }}, WordPress ${{ matrix.wordpress }})
         runs-on: ubuntu-24.04
-        timeout-minutes: 15
+        timeout-minutes: 25
         strategy:
             fail-fast: false
             matrix:
@@ -181,5 +234,27 @@ jobs:
 
             - *download-zip
 
-            - name: Install the zip on a fresh WordPress site
-              run: sh bin/ci/install-smoke.sh dist/seocart-*.zip "${{ matrix.wordpress }}"
+            # Outside the checkout: nothing the checkout's own tests scan holds a stray zip.
+            - name: Download the earlier zip
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+              with:
+                  name: ${{ env.UPGRADE_BASE_ARTIFACT }}
+                  path: ${{ runner.temp }}/upgrade-base
+
+            # The lifecycle of the zip: install, upgrade from the earlier zip with data in the
+            # tables, deactivate, reactivate, uninstall with the store preserved, and a network.
+            # The facts it proved are kept for the smoke-suite job of ci.yml, which reports them.
+            - name: Install the zip on fresh WordPress sites
+              run: |
+                  mkdir -p "$RUNNER_TEMP/proof"
+                  set -- "$RUNNER_TEMP"/upgrade-base/seocart-*.zip
+                  SEOCART_CI_OLD_ZIP=$1 SEOCART_CI_PROOF_FILE="$RUNNER_TEMP/proof/proved.txt" \
+                    sh bin/ci/install-smoke.sh dist/seocart-*.zip "${{ matrix.wordpress }}"
+
+            - name: Keep what the install smoke test proved
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: install-smoke-proof-${{ matrix.wordpress }}
+                  path: ${{ runner.temp }}/proof/proved.txt
+                  if-no-files-found: error
+                  retention-days: 14
