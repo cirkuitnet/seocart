@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Order;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Application\Operations\RequestHeader;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Interfaces\StoreApi\OrderStoreOperations;
@@ -45,6 +46,7 @@ final class OrderStoreOperationsTest extends TestCase {
 		$this->assertNotNull( $rest );
 		$this->assertSame( RestBinding::STORE_NAMESPACE, $rest->restNamespace() );
 		$this->assertSame( array( 'uuid' ), $rest->pathParameters() );
+		$this->assertSame( array( OrderStoreOperations::KEY => OrderStoreOperations::KEY_HEADER ), array_map( static fn( RequestHeader $header ): string => $header->name, $rest->headers() ), 'The access key is read from its header and nowhere else.' );
 		$this->assertSame( array( OrderError::NotFound ), $definition->errors(), 'Every refusal is order.not_found, so the read declares no other code.' );
 		$this->assertNull( $definition->abilityName() );
 		$this->assertNull( $definition->cli() );
@@ -63,7 +65,7 @@ final class OrderStoreOperationsTest extends TestCase {
 		$this->assertSame( FieldType::Uuid, $input['uuid']->type() );
 		$this->assertTrue( $input['uuid']->isRequired() );
 		$this->assertSame( Privacy::Secret, $input[ OrderStoreOperations::KEY ]->privacy(), 'The key is a secret: no answer carries it, and the logs redact it.' );
-		$this->assertFalse( $input[ OrderStoreOperations::KEY ]->isRequired(), 'The key may come in the header instead, or not at all for the order\'s customer.' );
+		$this->assertFalse( $input[ OrderStoreOperations::KEY ]->isRequired(), 'The key is optional: the order\'s customer needs none.' );
 	}
 
 	/**

@@ -22,9 +22,9 @@
  * variant's id from the product's `seocart` object. The guest adds a line of it, writes a
  * complete checkout and places the order with an Idempotency-Key header; the stub gateway
  * approves it, and the answer carries the order's key, once. The order-status read answers a
- * guest who presents that key, in its header or in the emailed link's `order_key` parameter,
- * with the order's figures and lines; a guest without the key, or with a wrong one, gets the
- * same `order.not_found` as for an order that does not exist. The product is moved to the trash
+ * guest who presents that key in its header, with the order's figures and lines; a guest
+ * without the key or with a wrong one gets the same `order.not_found` as for an order that does
+ * not exist, and a request that sends the key in the URL's query is refused as a bad request. The product is moved to the trash
  * afterwards: the order's allocation keeps its variant from being deleted.
  *
  * The checkout: a write of the checkout's details moves the cart's version on and gets the cart
@@ -172,19 +172,12 @@ function restUrl( route: string ): string {
 }
 
 /**
- * Returns the URL of an order's status read, with the emailed link's key when one is given.
+ * Returns the URL of an order's status read. The access key is not part of it: it travels in a header.
  *
  * @param uuid The order's uuid.
- * @param key  Optional. The access key, as the `order_key` query parameter.
  */
-function orderUrl( uuid: string, key?: string ): string {
-	const url = new URL( restUrl( `/${ STORE_NAMESPACE }/orders/${ uuid }` ) );
-
-	if ( undefined !== key ) {
-		url.searchParams.set( 'order_key', key );
-	}
-
-	return url.toString();
+function orderUrl( uuid: string ): string {
+	return restUrl( `/${ STORE_NAMESPACE }/orders/${ uuid }` );
 }
 
 /**
@@ -792,7 +785,9 @@ test.describe( 'Store API, as a guest', () => {
 			await guest.get( orderUrl( NO_SUCH_ORDER ) )
 		);
 		await expectOrderNotFound(
-			await guest.get( orderUrl( NO_SUCH_ORDER, '0'.repeat( 32 ) ) )
+			await guest.get( orderUrl( NO_SUCH_ORDER ), {
+				headers: { [ ORDER_KEY_HEADER ]: '0'.repeat( 32 ) },
+			} )
 		);
 	} );
 
@@ -815,41 +810,36 @@ test.describe( 'Store API, as a guest', () => {
 			order = await placeOrder( guest, requestUtils );
 		} );
 
-		test( "a guest with the order's key reads its status, in the header or the link", async () => {
+		test( "a guest with the order's key in the header reads its status", async () => {
 			test.skip( null === order, 'The order was not placed.' );
 
 			const placed = order as PlacedOrder;
-			const reads = [
-				await guest.get( orderUrl( placed.uuid ), {
-					headers: { [ ORDER_KEY_HEADER ]: placed.key },
-				} ),
-				await guest.get( orderUrl( placed.uuid, placed.key ) ),
-			];
+			const read = await guest.get( orderUrl( placed.uuid ), {
+				headers: { [ ORDER_KEY_HEADER ]: placed.key },
+			} );
 
-			for ( const read of reads ) {
-				expect( read.status() ).toBe( 200 );
-				expect( read.headers()[ 'cache-control' ] ).toBe( NO_STORE );
-				expect( varies( read ) ).toContain( 'cookie' );
-				expect(
-					setCookies( read ),
-					'The status read set a cookie.'
-				).toEqual( [] );
+			expect( read.status() ).toBe( 200 );
+			expect( read.headers()[ 'cache-control' ] ).toBe( NO_STORE );
+			expect( varies( read ) ).toContain( 'cookie' );
+			expect(
+				setCookies( read ),
+				'The status read set a cookie.'
+			).toEqual( [] );
 
-				const body = await read.json();
+			const body = await read.json();
 
-				expect( body.uuid ).toBe( placed.uuid );
-				expect( body.status ).toBe( 'processing' );
-				expect( typeof body.order_number ).toBe( 'string' );
-				expect( typeof body.grand_total_minor ).toBe( 'number' );
-				expect( body ).not.toHaveProperty( 'email' );
-				expect( body.lines.length ).toBeGreaterThan( 0 );
+			expect( body.uuid ).toBe( placed.uuid );
+			expect( body.status ).toBe( 'processing' );
+			expect( typeof body.order_number ).toBe( 'string' );
+			expect( typeof body.grand_total_minor ).toBe( 'number' );
+			expect( body ).not.toHaveProperty( 'email' );
+			expect( body.lines.length ).toBeGreaterThan( 0 );
 
-				for ( const line of body.lines ) {
-					expect( typeof line.title ).toBe( 'string' );
-					expect( typeof line.sku ).toBe( 'string' );
-					expect( line.quantity ).toBeGreaterThan( 0 );
-					expect( typeof line.line_total_minor ).toBe( 'number' );
-				}
+			for ( const line of body.lines ) {
+				expect( typeof line.title ).toBe( 'string' );
+				expect( typeof line.sku ).toBe( 'string' );
+				expect( line.quantity ).toBeGreaterThan( 0 );
+				expect( typeof line.line_total_minor ).toBe( 'number' );
 			}
 		} );
 
@@ -866,6 +856,26 @@ test.describe( 'Store API, as a guest', () => {
 					headers: { [ ORDER_KEY_HEADER ]: '0'.repeat( 32 ) },
 				} )
 			);
+		} );
+
+		test( 'a guest who sends the order key in the URL is refused as a bad request, whatever the key', async () => {
+			test.skip( null === order, 'The order was not placed.' );
+
+			const placed = order as PlacedOrder;
+
+			for ( const key of [ placed.key, '0'.repeat( 32 ) ] ) {
+				const inQuery = new URL( orderUrl( placed.uuid ) );
+
+				inQuery.searchParams.set( 'order_key', key );
+
+				const read = await guest.get( inQuery.toString() );
+
+				expect( read.status() ).toBe( 400 );
+				expect( ( await read.json() ).code ).toBe(
+					'rest_invalid_param'
+				);
+				expect( await read.text() ).not.toContain( placed.key );
+			}
 		} );
 	} );
 } );

@@ -1316,14 +1316,14 @@
             ],
             "get": {
                 "operationId": "order.get_status",
-                "summary": "Returns an order's number, statuses, totals and lines to its customer, or to whoever presents its access key in the X-SEOCart-Order-Key header or the order_key query parameter; it carries no address and no email, and every refusal is order.not_found.",
+                "summary": "Returns an order's number, statuses, totals and lines to its customer, or to whoever presents its access key in the X-SEOCart-Order-Key header; it carries no address and no email, and every refusal is order.not_found.",
                 "description": "Public: requires no capability, and anyone may send it.",
                 "parameters": [
                     {
                         "name": "uuid",
                         "in": "path",
                         "required": true,
-                        "description": "The order's public identifier, from its confirmation or its emailed link.",
+                        "description": "The order's public identifier, from its confirmation.",
                         "schema": {
                             "type": "string",
                             "format": "uuid",
@@ -1333,10 +1333,10 @@
                         }
                     },
                     {
-                        "name": "order_key",
-                        "in": "query",
+                        "name": "X-SEOCart-Order-Key",
+                        "in": "header",
                         "required": false,
-                        "description": "The order's access key, as its emailed link carries it; a client may send it in the X-SEOCart-Order-Key header instead, which keeps it out of the URL.",
+                        "description": "The order's access key, sent in the X-SEOCart-Order-Key header and nowhere else: a key in the URL is refused.",
                         "schema": {
                             "type": "string",
                             "maxLength": 64,
@@ -3571,7 +3571,7 @@
                     },
                     "order_key": {
                         "type": "string",
-                        "description": "The order's access key, which reads its status without a login, as the status read's order_key. It is shown in this answer, and again to a retry of the same request only: to the holder of the cart token and of the idempotency key it was placed with, since the store keeps the key only as a hash and sealed with those two, which it never keeps. Send a random idempotency key, such as a UUID. A retry whose kept key cannot be opened is answered without it; the client must keep it.",
+                        "description": "The order's access key, which reads its status without a login when the status read's header input carries it. It is shown in this answer, and again to a retry of the same request only: to the holder of the cart token and of the idempotency key it was placed with, since the store keeps the key only as a hash and sealed with those two, which it never keeps. Send a random idempotency key, such as a UUID. A retry whose kept key cannot be opened is answered without it; the client must keep it.",
                         "examples": [
                             "0123456789abcdef0123456789abcdef"
                         ]

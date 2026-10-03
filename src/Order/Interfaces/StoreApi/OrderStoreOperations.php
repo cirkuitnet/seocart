@@ -13,6 +13,7 @@ namespace SEOCart\Order\Interfaces\StoreApi;
 
 use SEOCart\Application\Operations\Annotations;
 use SEOCart\Application\Operations\OperationDefinition;
+use SEOCart\Application\Operations\RequestHeader;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Domain\AmountBasis;
@@ -31,10 +32,13 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: how an order is offered to a storefront. The route is
  * `GET seocart/store/v1/orders/{uuid}`: an order is named by its uuid, never by its internal id or
  * its number. The read is public, so anyone may send it, and the service answers only whoever
- * OrderAccessPolicy lets see the order: its customer, or whoever presents its access key, in the
- * header KEY_HEADER or in the query parameter KEY, which the emailed link carries. Every refusal
- * is `order.not_found`, so an answer never tells an order that exists from one that is not the
- * caller's.
+ * OrderAccessPolicy lets see the order: its customer, or whoever presents its access key in the
+ * header KEY_HEADER. The key is a header input, declared once as the secret `order_key`: the
+ * route reads it from that header and nowhere else, so a key in a URL, which would land in
+ * web-server, proxy, browser-history and analytics logs that the plugin's redaction cannot reach,
+ * is refused as a bad request before the service runs, and says nothing about the order. Every
+ * other refusal is `order.not_found`, so an answer never tells an order that exists from one that
+ * is not the caller's.
  *
  * The answer carries the order's number, its statuses, its totals and its lines as the order
  * recorded them when it was sold, and no address and no email: a status page needs neither, so no
@@ -67,7 +71,7 @@ final class OrderStoreOperations {
 	public const STATUS_ROUTE = '/orders/{uuid}';
 
 	/**
-	 * The request header a client may send the access key in, which keeps it out of the URL.
+	 * The request header that carries the access key, the only place the read accepts it.
 	 *
 	 * @since 0.1.0
 	 *
@@ -76,7 +80,7 @@ final class OrderStoreOperations {
 	public const KEY_HEADER = 'X-SEOCart-Order-Key';
 
 	/**
-	 * The input, and the query parameter of the emailed link, that carries the access key.
+	 * The input that carries the access key, read from the header KEY_HEADER.
 	 *
 	 * @since 0.1.0
 	 *
@@ -104,13 +108,13 @@ final class OrderStoreOperations {
 		return new OperationDefinition(
 			id: self::GET_STATUS,
 			label: static fn(): string => __( 'Get an order\'s status', 'seocart' ),
-			summary: 'Returns an order\'s number, statuses, totals and lines to its customer, or to whoever presents its access key in the X-SEOCart-Order-Key header or the order_key query parameter; it carries no address and no email, and every refusal is order.not_found.',
+			summary: 'Returns an order\'s number, statuses, totals and lines to its customer, or to whoever presents its access key in the X-SEOCart-Order-Key header; it carries no address and no email, and every refusal is order.not_found.',
 			input: array(
-				self::uuid( 'The order\'s public identifier, from its confirmation or its emailed link.' ),
+				self::uuid( 'The order\'s public identifier, from its confirmation.' ),
 				new FieldSpec(
 					name: self::KEY,
 					type: FieldType::String,
-					description: 'The order\'s access key, as its emailed link carries it; a client may send it in the X-SEOCart-Order-Key header instead, which keeps it out of the URL.',
+					description: 'The order\'s access key, sent in the X-SEOCart-Order-Key header and nowhere else: a key in the URL is refused.',
 					label: static fn(): string => __( 'Access key', 'seocart' ),
 					example: '0123456789abcdef0123456789abcdef',
 					max_length: 64,
@@ -172,7 +176,7 @@ final class OrderStoreOperations {
 			errors: array( OrderError::NotFound ),
 			annotations: new Annotations( read_only: true, destructive: false, idempotent: true ),
 			service: array( OrderStatusRead::class, 'read' ),
-			rest: new RestBinding( self::STATUS_ROUTE, store: true )
+			rest: new RestBinding( self::STATUS_ROUTE, store: true, headers: array( self::KEY => new RequestHeader( self::KEY_HEADER ) ) )
 		);
 	}
 

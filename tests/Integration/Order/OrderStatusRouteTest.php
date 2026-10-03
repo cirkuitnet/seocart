@@ -177,13 +177,12 @@ final class OrderStatusRouteTest extends OrderTestCase {
 		$this->customers[ $user ] = self::SOMEONE_ELSE;
 
 		$attempts = array(
-			'without a key'                         => array( array(), array() ),
-			'with another order\'s key, as header'  => array( array( OrderStoreOperations::KEY_HEADER => $another->accessKey ), array() ),
-			'with another order\'s key, in the URL' => array( array(), array( OrderStoreOperations::KEY => $another->accessKey ) ),
+			'without a key'             => array(),
+			'with another order\'s key' => array( OrderStoreOperations::KEY_HEADER => $another->accessKey ),
 		);
 
-		foreach ( $attempts as $attempt => list( $headers, $query ) ) {
-			$this->assertNotFound( $this->read( $order->uuid, $this->logIn( $user ) + $headers, $query ), "A logged-in user who does not own the order, {$attempt}" );
+		foreach ( $attempts as $attempt => $headers ) {
+			$this->assertNotFound( $this->read( $order->uuid, $this->logIn( $user ) + $headers ), "A logged-in user who does not own the order, {$attempt}" );
 		}
 
 		$own = $this->read( $another->uuid, $this->logIn( $user ) + array( OrderStoreOperations::KEY_HEADER => $another->accessKey ) );
@@ -193,7 +192,7 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	}
 
 	/**
-	 * Tests that a guest with the order's key reads it, from the header or from the emailed link's query parameter.
+	 * Tests that a guest with the order's key in the header reads the order.
 	 *
 	 * The answer is exactly the declared figures and the lines as the order recorded them: no
 	 * email, no address, never cached, no cookie.
@@ -251,16 +250,51 @@ final class OrderStatusRouteTest extends OrderTestCase {
 			),
 		);
 
-		$reads = array(
-			'the header' => $this->read( $order->uuid, $this->asGuest() + array( OrderStoreOperations::KEY_HEADER => $order->accessKey ) ),
-			'the query'  => $this->read( $order->uuid, $this->asGuest(), array( OrderStoreOperations::KEY => $order->accessKey ) ),
-		);
+		$read = $this->read( $order->uuid, $this->asGuest() + array( OrderStoreOperations::KEY_HEADER => $order->accessKey ) );
 
-		foreach ( $reads as $where => $read ) {
-			$this->assertSame( 200, $read['status'], "The key in {$where}: " . (string) wp_json_encode( $read['body'] ) );
-			$this->assertSame( $expected, $read['body'], "The key in {$where}: the answer is the order's figures, and nothing personal." );
-			$this->assertNotStore( $read );
+		$this->assertSame( 200, $read['status'], (string) wp_json_encode( $read['body'] ) );
+		$this->assertSame( $expected, $read['body'], 'The answer is the order\'s figures, and nothing personal.' );
+		$this->assertNotStore( $read );
+	}
+
+	/**
+	 * Tests that a key in the query never opens an order, and its refusal does not tell a right key from a wrong one.
+	 *
+	 * A key in a URL lands in logs the plugin cannot redact. The key is a header input, so a
+	 * request that sends it in the query is refused as a bad request (`rest_invalid_param`, 400)
+	 * before the service runs: the order is never looked up, so the answer is the same whether the
+	 * key is the order's, another order's or made up, whether the order exists or not, and it
+	 * does not carry the key. The key in the header still opens the order.
+	 *
+	 * Planted violation: in OrderStoreOperations::getStatus(), drop the `headers:` argument of the
+	 * RestBinding. `order_key` is then an ordinary query input, and the right key in the query
+	 * opens the order with a 200.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_key_in_the_query_is_refused_whatever_it_is(): void {
+		$order   = $this->place();
+		$another = $this->place();
+
+		$refusals = array(
+			'the right key'        => $this->read( $order->uuid, $this->asGuest(), array( OrderStoreOperations::KEY => $order->accessKey ) ),
+			'another order\'s key' => $this->read( $order->uuid, $this->asGuest(), array( OrderStoreOperations::KEY => $another->accessKey ) ),
+			'a made-up key'        => $this->read( $order->uuid, $this->asGuest(), array( OrderStoreOperations::KEY => str_repeat( '0', 32 ) ) ),
+			'no such order'        => $this->read( SequentialIdGenerator::nth( 999999 ), $this->asGuest(), array( OrderStoreOperations::KEY => $order->accessKey ) ),
+		);
+		$answers  = array();
+
+		foreach ( $refusals as $refusal => $read ) {
+			$this->assertSame( 400, $read['status'], "A request with {$refusal} in the query: " . (string) wp_json_encode( $read['body'] ) );
+			$this->assertErrorShape( $read['body'], 'rest_invalid_param', 400 );
+			$this->assertStringNotContainsString( $order->accessKey, $read['raw'], 'The refusal carries the key.' );
+
+			$answers[ $refusal ] = $this->comparable( $read );
 		}
+
+		$this->assertCount( 1, array_unique( array_map( 'wp_json_encode', $answers ) ), "A key in the query is answered differently by what it is:\n" . (string) wp_json_encode( $answers, JSON_PRETTY_PRINT ) );
+		$this->assertSame( 200, $this->read( $order->uuid, $this->asGuest() + array( OrderStoreOperations::KEY_HEADER => $order->accessKey ) )['status'], 'The same key in the header opens the order.' );
+		$this->assertSame( 400, $this->read( $order->uuid, $this->asGuest() + array( OrderStoreOperations::KEY_HEADER => $order->accessKey ), array( OrderStoreOperations::KEY => $order->accessKey ) )['status'], 'The right key in the header does not excuse a copy in the query: the copy has already reached the URL.' );
 	}
 
 	/**
@@ -275,7 +309,8 @@ final class OrderStatusRouteTest extends OrderTestCase {
 		$order = $this->place();
 
 		$this->assertNotFound( $this->read( $order->uuid, $this->asGuest() ), 'A guest without a key' );
-		$this->assertNotFound( $this->read( $order->uuid, $this->asGuest() + array( OrderStoreOperations::KEY_HEADER => '' ), array( OrderStoreOperations::KEY => ' ' ) ), 'A guest with an empty key' );
+		$this->assertNotFound( $this->read( $order->uuid, $this->asGuest() + array( OrderStoreOperations::KEY_HEADER => '' ) ), 'A guest with an empty key' );
+		$this->assertNotFound( $this->read( $order->uuid, $this->asGuest() + array( OrderStoreOperations::KEY_HEADER => ' ' ) ), 'A guest with a blank key' );
 	}
 
 	/**
@@ -352,14 +387,7 @@ final class OrderStatusRouteTest extends OrderTestCase {
 		foreach ( $refusals as $refusal => $read ) {
 			$this->assertNotFound( $read, ucfirst( $refusal ) );
 
-			$correlation = (string) $read['body']['data']['correlation_id'];
-
-			$answers[ $refusal ] = array(
-				'status'  => $read['status'],
-				'bytes'   => str_replace( $correlation, '', $read['raw'] ),
-				'headers' => array_map( static fn( string $value ): string => str_replace( $correlation, '', $value ), $read['headers'] ),
-				'cookies' => $read['cookies'],
-			);
+			$answers[ $refusal ] = $this->comparable( $read );
 		}
 
 		$this->assertCount( 1, array_unique( array_map( 'wp_json_encode', $answers ) ), "The refusals can be told apart:\n" . (string) wp_json_encode( $answers, JSON_PRETTY_PRINT ) );
@@ -443,6 +471,25 @@ final class OrderStatusRouteTest extends OrderTestCase {
 		return $answer + array(
 			'raw'     => (string) $this->server->sent_body,
 			'cookies' => array_slice( $this->cookies, $sent ),
+		);
+	}
+
+	/**
+	 * Returns what makes two refusals the same answer: the status, the bytes, the headers and the cookies, set apart from the correlation id.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param array{status: int|null, headers: array<string, string>, body: array<string, mixed>, raw: string, cookies: list<string>} $read The refusal.
+	 * @return array{status: int|null, bytes: string, headers: array<string, string>, cookies: list<string>} What to compare.
+	 */
+	private function comparable( array $read ): array {
+		$correlation = (string) $read['body']['data']['correlation_id'];
+
+		return array(
+			'status'  => $read['status'],
+			'bytes'   => str_replace( $correlation, '', $read['raw'] ),
+			'headers' => array_map( static fn( string $value ): string => str_replace( $correlation, '', $value ), $read['headers'] ),
+			'cookies' => $read['cookies'],
 		);
 	}
 
