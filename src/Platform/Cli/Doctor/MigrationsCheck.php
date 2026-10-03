@@ -23,7 +23,11 @@ defined( 'ABSPATH' ) || exit;
  * Reports where the current site's migrations stand, and every applied one whose file changed.
  *
  * Owns one fact: when doctor calls the migrations healthy. The migrator's status decides
- * pending, failed and running migrations, and whether commerce writes are refused. A migration
+ * pending, failed and running migrations. Whether commerce writes are refused is the migrator's
+ * writesBlocked() answer for the newest applied id, the call the per-request gate makes, so
+ * doctor never says writes are refused when the gate lets them through. A pending migration that
+ * sorts before the newest applied one is such a case: the gate counts only migrations after the
+ * head, so doctor names it as out of order and says writes are not refused for it. A migration
  * whose class file no longer has the checksum recorded when it was applied is reported too:
  * the migrator only reports that during a run, and a release that edits an applied migration
  * ships a schema no site will ever get. The checksum is the migrator's own,
@@ -114,6 +118,7 @@ final class MigrationsCheck implements Check {
 	 */
 	public function run(): CheckResult {
 		$status   = $this->migrator->status();
+		$applied  = $this->appliedChecksums();
 		$findings = array();
 
 		if ( null !== $status->failed() ) {
@@ -128,11 +133,15 @@ final class MigrationsCheck implements Check {
 			$findings[] = sprintf( 'Not applied: %s. Run `wp seocart migrate`.', implode( ', ', $status->pending() ) );
 		}
 
-		if ( $status->writesBlocked() ) {
+		foreach ( $status->outOfOrder() as $id ) {
+			$findings[] = sprintf( 'Migration %1$s is out of order: it is not applied, but %2$s, which sorts after it, is. Apply it with `wp seocart migrate`. Commerce writes are not refused for it.', $id, (string) $status->schemaHead() );
+		}
+
+		if ( $this->migrator->writesBlocked( $status->schemaHead() ) ) {
 			$findings[] = 'Commerce writes are refused until the schema matches the code.';
 		}
 
-		$findings = array_merge( $findings, $this->changedSinceApplied() );
+		$findings = array_merge( $findings, $this->changedSinceApplied( $applied ) );
 
 		if ( array() === $findings ) {
 			return CheckResult::pass( self::NAME, sprintf( 'All %d migrations are applied, and none changed since.', count( $this->registry->migrations() ) ) );
@@ -142,15 +151,15 @@ final class MigrationsCheck implements Check {
 	}
 
 	/**
-	 * Lists every applied migration whose class file changed since it was applied.
+	 * Reads the checksum recorded for each applied migration. Sends one query.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @throws QueryFailed When the recorded migrations cannot be read for a reason other than a missing table.
 	 *
-	 * @return list<string> One line per changed migration.
+	 * @return array<string, string> The checksums, by migration id; empty when the table does not exist yet.
 	 */
-	private function changedSinceApplied(): array {
+	private function appliedChecksums(): array {
 		try {
 			$rows = $this->db->fetchAll( "SELECT migration_id, checksum FROM %i WHERE state = 'applied'", $this->db->table( 'migrations' ) );
 		} catch ( QueryFailed $failed ) {
@@ -161,7 +170,24 @@ final class MigrationsCheck implements Check {
 			throw $failed;
 		}
 
-		$recorded = array_column( $rows, 'checksum', 'migration_id' );
+		$checksums = array();
+
+		foreach ( $rows as $row ) {
+			$checksums[ (string) $row['migration_id'] ] = (string) $row['checksum'];
+		}
+
+		return $checksums;
+	}
+
+	/**
+	 * Lists every applied migration whose class file changed since it was applied.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param array<string, string> $recorded The checksum recorded for each applied migration, by id.
+	 * @return list<string> One line per changed migration.
+	 */
+	private function changedSinceApplied( array $recorded ): array {
 		$findings = array();
 
 		foreach ( $this->registry->migrations() as $migration ) {
@@ -171,12 +197,12 @@ final class MigrationsCheck implements Check {
 
 			$current = Migrator::checksum( $migration );
 
-			if ( $current !== (string) $recorded[ $migration->id() ] ) {
+			if ( $current !== $recorded[ $migration->id() ] ) {
 				$findings[] = sprintf(
 					'Migration %1$s changed after it was applied: its file hashes to %2$s..., and %3$s... was recorded. An applied migration must never change; ship a new one.',
 					$migration->id(),
 					substr( $current, 0, self::SHOWN_DIGITS ),
-					substr( (string) $recorded[ $migration->id() ], 0, self::SHOWN_DIGITS )
+					substr( $recorded[ $migration->id() ], 0, self::SHOWN_DIGITS )
 				);
 			}
 		}

@@ -69,6 +69,24 @@ final class MigrationStatus {
 	private bool $writesBlocked;
 
 	/**
+	 * The newest applied migration, or null when none is applied.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string|null
+	 */
+	private ?string $schemaHead;
+
+	/**
+	 * The declared migrations that are not applied but sort before the schema head, in order.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var list<string>
+	 */
+	private array $outOfOrder;
+
+	/**
 	 * Describes the chain.
 	 *
 	 * @since 0.1.0
@@ -78,13 +96,17 @@ final class MigrationStatus {
 	 * @param string|null $failed        The first failed migration.
 	 * @param string|null $running       The first running migration.
 	 * @param bool        $writesBlocked Whether commerce writes must be refused.
+	 * @param string|null $schemaHead    The newest applied migration.
+	 * @param string[]    $outOfOrder    The declared migrations not applied that sort before the schema head.
 	 */
-	public function __construct( string $codeHead, array $pending, ?string $failed, ?string $running, bool $writesBlocked ) {
+	public function __construct( string $codeHead, array $pending, ?string $failed, ?string $running, bool $writesBlocked, ?string $schemaHead, array $outOfOrder ) {
 		$this->codeHead      = $codeHead;
 		$this->pending       = $pending;
 		$this->failed        = $failed;
 		$this->running       = $running;
 		$this->writesBlocked = $writesBlocked;
+		$this->schemaHead    = $schemaHead;
+		$this->outOfOrder    = $outOfOrder;
 	}
 
 	/**
@@ -142,5 +164,27 @@ final class MigrationStatus {
 	 */
 	public function writesBlocked(): bool {
 		return $this->writesBlocked;
+	}
+
+	/**
+	 * Returns the newest applied migration, the head the per-request gate decides from.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string|null The id, or null when no migration is applied.
+	 */
+	public function schemaHead(): ?string {
+		return $this->schemaHead;
+	}
+
+	/**
+	 * Returns the declared migrations that are not applied but sort before the schema head.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<string> Ids, in order.
+	 */
+	public function outOfOrder(): array {
+		return $this->outOfOrder;
 	}
 }

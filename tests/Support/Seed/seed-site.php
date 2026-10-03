@@ -7,12 +7,9 @@
  *
  *     SEOCART_SEED_DISPOSABLE=1 SEOCART_SEED_DATASET=medium wp eval-file tests/Support/Seed/seed-site.php
  *
- * It writes thousands of rows into whichever database the site uses, so it refuses, before it
- * writes anything, unless the site is marked disposable twice: its environment type
- * (wp_get_environment_type()) is `local` or `development`, and SEOCART_SEED_DISPOSABLE is 1 for
- * the run. The sites bin/dev/provision-site.sh builds set no environment type, so they report
- * `production` and satisfy neither on their own: give the run WP_ENVIRONMENT_TYPE=development
- * as well, or set the constant once with `wp config set WP_ENVIRONMENT_TYPE development`.
+ * It writes thousands of rows into whichever database the site uses, so before it writes anything
+ * it runs disposable-guard.php, which refuses a site not marked disposable. That file's header
+ * says what the marking is and which sites already have it.
  *
  * The dataset is `small` (the default), `medium` or `large`. The site must have SEOCart active,
  * no products and no stock yet, and no post with an id from ReferenceSeed::FIRST_POST_ID; the

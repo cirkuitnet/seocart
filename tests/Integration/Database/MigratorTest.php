@@ -773,6 +773,8 @@ final class MigratorTest extends DatabaseTestCase {
 
 		$this->assertSame( array( $m->id() ), $status->pending() );
 		$this->assertTrue( $status->writesBlocked(), 'An inconsistent chain refuses writes, although M can operate half-applied.' );
+		$this->assertSame( $z->id(), $status->schemaHead(), 'The status carries the newest applied id, the head the gate decides from.' );
+		$this->assertSame( array( $m->id() ), $status->outOfOrder() );
 		$this->assertSame(
 			array(
 				array(
@@ -791,7 +793,10 @@ final class MigratorTest extends DatabaseTestCase {
 
 		$this->reports = array();
 
-		$this->assertFalse( $this->migrator( $chain )->status()->writesBlocked(), 'Once M is applied, the chain is consistent again.' );
+		$status = $this->migrator( $chain )->status();
+
+		$this->assertFalse( $status->writesBlocked(), 'Once M is applied, the chain is consistent again.' );
+		$this->assertSame( array(), $status->outOfOrder() );
 		$this->assertSame( array(), $this->reports );
 	}
 

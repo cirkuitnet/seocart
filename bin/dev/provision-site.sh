@@ -338,8 +338,8 @@ enable_pretty_permalinks
 instance_wp plugin activate seocart
 
 # -------------------------------------------------------------------------------------
-# HOOK POINT. `wp seocart migrate` and `wp seocart test-seed` do not exist yet.
-# When they do, run them here, in that order:
+# HOOK POINT. `wp seocart migrate` exists; `wp seocart test-seed` does not yet.
+# When it does, run both here, in that order:
 #     instance_wp seocart migrate
 #     instance_wp seocart test-seed
 # -------------------------------------------------------------------------------------

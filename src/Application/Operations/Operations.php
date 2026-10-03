@@ -26,9 +26,10 @@ defined( 'ABSPATH' ) || exit;
  * This class owns one fact: which operations the plugin exposes. The kernel registers the REST
  * routes, abilities and commands from this registry, the documentation generators document it,
  * and the contract tests walk it, so all three see the same list. A module adds one line per
- * operation, naming the id and the static method that returns the definition:
+ * operation, naming the id (a constant on the module's operations class) and the static method
+ * that returns the definition:
  *
- *     $registry->add( 'inventory.adjust_stock', array( AdjustStockOperation::class, 'definition' ) );
+ *     $registry->add( InventoryOperations::ADJUST_STOCK, array( InventoryOperations::class, 'adjustStock' ) );
  *
  * @since 0.1.0
  */

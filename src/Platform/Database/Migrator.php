@@ -282,7 +282,9 @@ final class Migrator {
 	 *
 	 * Admin and command-line requests call it, so it also checks what the zero-query gate
 	 * cannot see: a migration that is not applied but sorts before the newest applied one.
-	 * Each such migration is reported as ReportCode::MigrationOutOfOrder, and it refuses writes.
+	 * Each such migration is reported as ReportCode::MigrationOutOfOrder, and the returned status
+	 * reports writes as blocked for it. The per-request gate, which calls writesBlocked(), does
+	 * not refuse writes for it.
 	 *
 	 * @since 0.1.0
 	 *
@@ -312,7 +314,9 @@ final class Migrator {
 			}
 		}
 
-		foreach ( self::outOfOrder( $outstanding, $appliedHead ) as $migration ) {
+		$outOfOrder = self::outOfOrder( $outstanding, $appliedHead );
+
+		foreach ( $outOfOrder as $migration ) {
 			( $this->report )(
 				ReportCode::MigrationOutOfOrder->value,
 				array(
@@ -324,7 +328,7 @@ final class Migrator {
 
 		$codeHead = $this->codeHead();
 
-		return new MigrationStatus( $codeHead, self::ids( $outstanding ), $failed, $running, self::blocksWrites( $outstanding, $appliedHead, $codeHead ) );
+		return new MigrationStatus( $codeHead, self::ids( $outstanding ), $failed, $running, self::blocksWrites( $outstanding, $appliedHead, $codeHead ), $appliedHead, self::ids( $outOfOrder ) );
 	}
 
 	/**

@@ -263,6 +263,57 @@ final class DoctorTest extends DatabaseTestCase {
 	}
 
 	/**
+	 * Tests that doctor claims refused writes only where the per-request gate refuses them.
+	 *
+	 * An unapplied migration that sorts before the newest applied one is reported as out of order,
+	 * with `wp seocart migrate` named as the fix, and doctor says writes are not refused for it:
+	 * the gate counts only migrations after the head, so they are not. A schema head newer than the
+	 * code is the control: the gate refuses writes there, and doctor says so.
+	 *
+	 * Planted violation: in MigrationsCheck::run(), take the refusal from `$status->writesBlocked()`
+	 * (which counts the out-of-order migration) instead of the migrator's writesBlocked() for the head.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_doctor_says_writes_are_refused_only_when_the_gate_refuses_them(): void {
+		global $wpdb;
+
+		$records    = $this->db->table( 'migrations' );
+		$migrations = $this->registry->migrations();
+		$head       = end( $migrations )->id();
+		$future     = '29990101_0001_from_a_newer_release';
+		$rename     = static function ( string $from, string $to ) use ( $wpdb, $records ): void {
+			$wpdb->query( $wpdb->prepare( 'UPDATE %i SET migration_id = %s WHERE migration_id = %s', $records, $to, $from ) );
+		};
+
+		// Recording the logs migration under another id leaves it unapplied, while later ones stay applied.
+		$rename( CreateLogsMigration::ID, '00000000_0000_placeholder' );
+
+		$this->assertSame( DoctorCommand::EXIT_FAILED, $this->doctor() );
+
+		$output = implode( "\n", $this->printed );
+
+		$this->assertStringContainsString( 'Migration ' . CreateLogsMigration::ID . ' is out of order: it is not applied, but ' . $head . ', which sorts after it, is. Apply it with `wp seocart migrate`. Commerce writes are not refused for it.', $output );
+		$this->assertStringNotContainsString( 'Commerce writes are refused', $output );
+		$this->assertFalse( $this->migrator->writesBlocked( $head ), 'The gate lets writes through, so doctor must not say it refuses them.' );
+
+		$rename( '00000000_0000_placeholder', CreateLogsMigration::ID );
+
+		$this->assertSame( DoctorCommand::EXIT_OK, $this->doctor(), implode( "\n", $this->printed ) );
+
+		// Recording the newest migration under an id from a newer release makes the schema newer than the code.
+		$rename( $head, $future );
+
+		$this->assertSame( DoctorCommand::EXIT_FAILED, $this->doctor() );
+		$this->assertStringContainsString( 'Commerce writes are refused until the schema matches the code.', implode( "\n", $this->printed ) );
+		$this->assertTrue( $this->migrator->writesBlocked( $future ), 'The gate refuses writes when the schema is newer than the code.' );
+
+		$rename( $future, $head );
+
+		$this->assertSame( DoctorCommand::EXIT_OK, $this->doctor(), implode( "\n", $this->printed ) );
+	}
+
+	/**
 	 * Tests that a check that cannot run fails with its error code, and the other checks still run.
 	 *
 	 * Planted violation: in Doctor::run(), let a check's exception through (the test errors).

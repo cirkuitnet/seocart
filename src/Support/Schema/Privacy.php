@@ -19,7 +19,9 @@ defined( 'ABSPATH' ) || exit;
  * This enum owns one fact for the wire: the four classes every field is declared with, and so
  * which surface may carry its value. ResourceSchema applies them when an output is serialized:
  * a secret is never serialized by any surface, and personal data only for a user who may see
- * it. The personal-data exporter and eraser are generated from the same declarations.
+ * it. Log redaction reads the same declarations today (Redactor masks a field declared `pii`
+ * or `secret`). The personal-data exporter and eraser are not built yet; when they are, they
+ * read these declarations too.
  *
  * The database layer declares the same four classes, with the same values, for the columns of
  * its tables. They are one list: when both are on the main branch, one enum replaces the other.
