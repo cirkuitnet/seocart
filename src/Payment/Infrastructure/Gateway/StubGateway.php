@@ -55,6 +55,13 @@ defined( 'ABSPATH' ) || exit;
  * intent's wait has run out, and asked about it then, it answers a declined authorization
  * `expired` named `stub-ex-{intent uuid}`, which ends the placement too.
  *
+ * It keeps no record of the refunds it made. Asked what became of one, it answers as refund()
+ * answers the same request: the refund `stub-re-{refund uuid}`, made, or declined for an intent
+ * authorized with `stub:refund_decline`. So it answers a refund it was never actually asked for,
+ * whose request died before reaching it, as made. That is acceptable only because the stub moves
+ * no money: a real adapter answers from what its provider made, and says not-found or that it
+ * cannot say when it does not know.
+ *
  * @since 0.1.0
  */
 final class StubGateway implements PaymentGateway {
@@ -183,7 +190,7 @@ final class StubGateway implements PaymentGateway {
 	 *
 	 * @var string
 	 */
-	public const NOT_FOUND = 'not_found';
+	public const NOT_FOUND = PaymentGateway::NOT_FOUND;
 
 	/**
 	 * The machine code of the answer about an intent whose wait ran out, which the gateway has expired.
@@ -362,6 +369,21 @@ final class StubGateway implements PaymentGateway {
 			$request->providerIntentId,
 			$declined ? self::REFUND_DECLINED : null
 		);
+	}
+
+	/**
+	 * Says what became of a refund: what refund() answers for the same request.
+	 *
+	 * The stub keeps no record of its refunds, so it cannot tell a refund it made from one it was
+	 * never asked for; it answers both as made. Acceptable only because it moves no money.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param GatewayRefund $request The refund, as it was asked.
+	 * @return GatewayResult The approval, or the decline, named by the refund's uuid.
+	 */
+	public function queryRefund( GatewayRefund $request ): GatewayResult {
+		return $this->refund( $request );
 	}
 
 	/**

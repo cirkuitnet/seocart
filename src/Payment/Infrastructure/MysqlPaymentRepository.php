@@ -223,6 +223,30 @@ final class MysqlPaymentRepository implements PaymentRepository {
 	public const UNAPPLIED_RESULTS = 'SELECT t.uuid, t.operation, i.uuid AS intent_uuid FROM {payment_transactions} t JOIN {payment_intents} i ON i.id = t.intent_id WHERE t.applied = 0 ORDER BY t.id LIMIT %d';
 
 	/**
+	 * Refund claims still claimed longer after they were made than any call to the gateway takes, oldest first, with their intents, on the `state_created` key.
+	 *
+	 * Their age is measured by the database clock, which made them.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const UNSETTLED_REFUND_CLAIMS = 'SELECT c.uuid, i.uuid AS intent_uuid, c.amount_minor, c.currency, TIMESTAMPDIFF( SECOND, c.created_at, UTC_TIMESTAMP() ) AS age_seconds '
+		. "FROM {refund_claims} c JOIN {payment_intents} i ON i.id = c.intent_id WHERE c.state = 'claimed' AND c.created_at <= UTC_TIMESTAMP(6) - INTERVAL %d SECOND "
+		. 'ORDER BY c.created_at, c.id LIMIT %d';
+
+	/**
+	 * Refund claims left for a person that name no ledger row, oldest first, with their intents, on the `state_created` key: the gateway answered each with another refund's result.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const UNRECORDED_REFUND_CLAIMS = 'SELECT c.uuid, i.uuid AS intent_uuid, c.amount_minor, c.currency '
+		. "FROM {refund_claims} c JOIN {payment_intents} i ON i.id = c.intent_id WHERE c.state = 'unreconciled' AND c.transaction_id IS NULL "
+		. 'ORDER BY c.created_at, c.id LIMIT %d';
+
+	/**
 	 * What some orders' intents add up to, in both currencies.
 	 *
 	 * @since 0.1.0
@@ -602,6 +626,48 @@ final class MysqlPaymentRepository implements PaymentRepository {
 				'intent_uuid' => (string) $row['intent_uuid'],
 			),
 			$this->statements->rows( self::UNAPPLIED_RESULTS, $limit )
+		);
+	}
+
+	/**
+	 * Lists the refund claims still claimed longer after they were made than a call to the gateway may take.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $olderThanSeconds How long ago a claim must have been made.
+	 * @param int $limit            The most claims to list.
+	 * @return list<array{uuid: string, intent_uuid: string, amount: int, currency: string, age_seconds: int}> The claims, oldest first.
+	 */
+	public function unsettledRefundClaims( int $olderThanSeconds, int $limit ): array {
+		return array_map(
+			static fn( array $row ): array => array(
+				'uuid'        => (string) $row['uuid'],
+				'intent_uuid' => (string) $row['intent_uuid'],
+				'amount'      => (int) $row['amount_minor'],
+				'currency'    => (string) $row['currency'],
+				'age_seconds' => (int) $row['age_seconds'],
+			),
+			$this->statements->rows( self::UNSETTLED_REFUND_CLAIMS, $olderThanSeconds, $limit )
+		);
+	}
+
+	/**
+	 * Lists the refund claims left for a person that name no ledger row: what the gateway did with each is not known.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $limit The most claims to list.
+	 * @return list<array{uuid: string, intent_uuid: string, amount: int, currency: string}> The claims, oldest first.
+	 */
+	public function unrecordedRefundClaims( int $limit ): array {
+		return array_map(
+			static fn( array $row ): array => array(
+				'uuid'        => (string) $row['uuid'],
+				'intent_uuid' => (string) $row['intent_uuid'],
+				'amount'      => (int) $row['amount_minor'],
+				'currency'    => (string) $row['currency'],
+			),
+			$this->statements->rows( self::UNRECORDED_REFUND_CLAIMS, $limit )
 		);
 	}
 

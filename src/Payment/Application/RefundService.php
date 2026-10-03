@@ -27,9 +27,11 @@ use SEOCart\Payment\Domain\Gateway\GatewayResult;
 use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
 use SEOCart\Payment\Domain\Gateway\PaymentGateway;
 use SEOCart\Payment\Domain\Outcome;
+use SEOCart\Payment\Domain\Refund\ClaimState;
 use SEOCart\Payment\Domain\Refund\LinePortion;
 use SEOCart\Payment\Domain\Refund\Refund;
 use SEOCart\Payment\Domain\Refund\RefundAllocation;
+use SEOCart\Payment\Domain\Refund\RefundClaim;
 use SEOCart\Payment\Domain\Refund\RefundIdentity;
 use SEOCart\Payment\Domain\Refund\RefundLineRequest;
 use SEOCart\Payment\Domain\Refund\RefundPlan;
@@ -60,51 +62,78 @@ use SEOCart\Support\TaxedMoney;
  * 2. Outside any transaction, plain reads: the order with the lines asked for, its shipping and
  *    their tax components at its current totals version; its captured intent, with whether the
  *    ledger holds a result of it applied to nothing, which refuses the refund until a person has
- *    reconciled that money; and what earlier refunds returned. RefundAllocation allocates the
- *    shares from those stored figures, and every cap is checked against the same reads: the units
- *    each line has left, what is left of each component and of the shipping, and what the intent
- *    captured and has not refunded, in both currencies. A refusal here happens before the gateway
- *    is asked.
- * 3. The gateway's refund, at transaction depth 0: it may go over the network. Its idempotency key
+ *    reconciled that money, and its oldest refund still claimed, which refuses any other refund
+ *    of it (below); and what earlier refunds returned. RefundAllocation allocates the shares from
+ *    those stored figures, and every cap is checked against the same reads: the units each line
+ *    has left, what is left of each component and of the shipping, and what the intent captured
+ *    and has not refunded, in both currencies. A refusal here happens before the gateway is asked,
+ *    and leaves nothing behind.
+ * 3. The refund's claim, in a short transaction of its own under the intent's lock, committed
+ *    before the gateway is asked. The lock reads, as they now stand, whether the intent has money
+ *    a person must reconcile, which refuses the refund `payment.unreconciled` as the reads would
+ *    have; what the refund's uuid is named by; and the intent's oldest claim still open. A claim of
+ *    this refund already open is not made again: the gateway is asked what became of it (below).
+ *    A claim of another refund open
+ *    refuses this one `payment.refund_unresolved`, naming that claim. What the refund's uuid is
+ *    named by having moved since the reads refuses it `payment.refund_retry`: another refund was
+ *    recorded or declined meanwhile, and asking again works the refund out anew. Otherwise the
+ *    claim is inserted: the refund's uuid, the intent, the amount, who asks and when. A refusal
+ *    here writes nothing and asks nothing of the gateway.
+ * 4. The gateway's refund, at transaction depth 0: it may go over the network. Its idempotency key
  *    is the refund's uuid, derived from the refund itself (below).
- * 4. One transaction, which locks the intent and then the order: the gateway's answer applied to
+ * 5. One transaction, which locks the intent and then the order: the gateway's answer applied to
  *    the ledger with the refund's base share (applyGatewayResult()), then the document, its lines
- *    and its components, each insert carrying its cap, and the lines' refunded quantities by one
- *    conditional update, then RefundRecorded, all in one savepoint. If anything there refuses or
- *    fails after the gateway gave the money back (a cap, because another refund landed after the
- *    reads, or any other error), the savepoint takes it all back, the money is recorded for a
- *    person (recordUnapplied()), and the caller is answered `payment.unreconciled`, with what
- *    failed as its previous exception. So is an approval of another amount than was asked. A lost
- *    deadlock and a transaction whose integrity was lost are not caught: there is no transaction
- *    left to record the money in. A deadlock runs the whole transaction again; when every attempt
- *    is lost, nothing was recorded, and the same refund asked again asks with the same key.
+ *    and its components, each insert carrying its cap, the lines' refunded quantities by one
+ *    conditional update, the claim ended `recorded`, then RefundRecorded, all in one savepoint.
+ *    If anything there refuses or fails after the gateway gave the money back (a cap, or any other
+ *    error), the savepoint takes it all back, the money is recorded for a person
+ *    (recordUnapplied()), the claim ends `unreconciled`, and the caller is answered
+ *    `payment.unreconciled`, with what failed as its previous exception. So is an approval of
+ *    another amount than was asked. A decline is recorded on the ledger and ends the claim
+ *    `declined`, and nothing else changes; a decline whose claim another request ended first is
+ *    taken back with its savepoint, and the request is answered from the claim. An answer the
+ *    ledger already had for another refund ends the claim `unreconciled`, naming no row, whatever
+ *    its outcome: what the gateway did with this refund is not known. A lost deadlock and a
+ *    transaction whose integrity was lost are not caught: there is no transaction left to record
+ *    the money in. A deadlock runs the whole transaction again; when every attempt is lost,
+ *    nothing was recorded, and the claim is left `claimed`.
  *
  * The refund's uuid is RefundIdentity's: a name-based uuid of the order, the units asked of each
- * line, whether the shipping is asked for, and what the intent had refunded when it was read. So
- * the same refund asked again before the first was recorded (after the gateway's answer was lost,
- * after the process died between the gateway's call and the transaction, or by two people at
- * once) asks the gateway again with the same key, and a gateway that honours the key answers with
- * the refund it already made: it is recorded once. A delivery of it the ledger already has
- * returns its document; a delivery whose document is another refund's is answered
- * `payment.unreconciled`, and moves nothing. What the key does not cover:
+ * line, whether the shipping is asked for, what the intent had refunded and how many of its
+ * refunds were declined when it was read. A claim is made only under the intent's lock, only while
+ * no other claim of the intent is open, and only from those figures as they then stand; while it is
+ * open (`claimed`: asked of the gateway, its answer not recorded), the intent takes no other
+ * refund, so those figures cannot move. So the same refund asked again while its claim is open
+ * (after the answer was lost, after the process died between the gateway's call and the
+ * transaction, or by two people at once) is always the same refund, and finds its claim. A refund
+ * whose claim exists is never asked of the gateway again. It is answered from its claim: its
+ * document when it was recorded, `payment.refund_declined` when it was declined,
+ * `payment.unreconciled` when what the gateway answered was left for a person. While the claim is
+ * still `claimed`, the gateway is asked what became of the refund (queryRefund()): a refund it made,
+ * or declined, is recorded as a first answer would be. A claim the gateway cannot account for waits
+ * for a person: when it cannot say, or says it made no such refund, nothing is written, the claim
+ * stays `claimed`, and the request is refused `payment.refund_unresolved`, naming the refund. A
+ * not-found is never taken for a decline: the first request may still be on its way to the
+ * gateway, however long ago it was claimed, and a refund made then would be a second one. So a
+ * refund is given back at most once for its claim, even by a gateway that does not honour the key,
+ * and a refund the gateway made whose answer was lost is recorded the next time it is asked for.
  *
- * - a refund that was recorded but whose answer the caller lost: the intent's refunded amount
- *   moved, so the same request asked again is a new refund, with a new key, which the caps allow
- *   while the units are left;
- * - nobody asking again: a refund the gateway made, whose answer was lost before anything was
- *   recorded, stays unrecorded until someone asks again or reconciliation finds it;
- * - a gateway that does not honour the key: asked again, it makes a second refund, of which only
- *   the one whose answer arrived is recorded;
- * - a declined refund asked again: the same key, so a gateway that keeps its answers by key
- *   answers with the same decline until it forgets the key or the intent's refunded amount moves.
+ * What the claim does not cover:
  *
- * So the admin operation that calls this must persist a claim of the refund it asks for (who
- * asked, what, and when) before the gateway is called, so that a refund whose answer was lost is
- * found and asked again; this service persists no claim.
+ * - a refund recorded whose answer the caller lost: the intent's refunded amount moved, so the same
+ *   request asked again is a new refund, with a new claim, which the caps allow while the units are
+ *   left. Telling a retry from a second refund of the same units needs a key the caller sends with
+ *   the request; that is the refund operation's, which does not exist yet;
+ * - nobody asking again: a claim the gateway's answer never ended stays `claimed`, and doctor's
+ *   payments check reports it once it is older than PaymentService::STALE_SECONDS; nothing asks the
+ *   gateway about it until the same refund is asked for again, and until then the intent takes no
+ *   other refund;
+ * - a claim the gateway cannot account for: it stays `claimed`, and every refund of the intent is
+ *   refused until a person settles it; no operation settles a claim yet;
+ * - a refund refused `payment.refund_retry`: its caller must ask for it again.
  *
  * Nothing here reads a rate, a tax rate, a price or the calculation: the order's conversion
- * context is copied, and every figure is a share of what the order stored. A declined refund
- * records the decline and nothing else.
+ * context is copied, and every figure is a share of what the order stored.
  *
  * @since 0.1.0
  */
@@ -222,55 +251,105 @@ final class RefundService {
 	 * @since 0.1.0
 	 *
 	 * @throws \LogicException      Inside a transaction, before any statement: the gateway is called.
-	 * @throws GatewayUnavailable   When the gateway has no answer; nothing was recorded.
-	 * @throws TransactionRetryable When every attempt to record the answer lost a deadlock; nothing was recorded.
+	 * @throws GatewayUnavailable   When the gateway has no answer; nothing was recorded, and the claim is left `claimed`.
+	 * @throws TransactionRetryable When every attempt to record the answer lost a deadlock; nothing was recorded, and the claim is left `claimed`.
 	 * @throws CodedException       `authorization.denied`, before any read; `order.not_found`;
 	 *                              `payment.refund_not_refundable` when the order has no captured intent;
 	 *                              `payment.unreconciled` when the ledger holds a result of the intent
-	 *                              applied to nothing; `payment.refund_line_not_found`;
+	 *                              applied to nothing; `payment.refund_unresolved`, naming the other
+	 *                              refund, when another refund of the intent is still claimed;
+	 *                              `payment.refund_line_not_found`;
 	 *                              `payment.refund_line_exhausted` with the units the line has left;
 	 *                              `payment.refund_exceeds_captured`; `payment.refund_nothing_left` —
-	 *                              each before the gateway is asked; `payment.refund_declined` when the
-	 *                              gateway declined; and `payment.unreconciled` when the gateway gave the
-	 *                              money back but the refund could not be recorded, which is then left
-	 *                              for a person, with what kept it from being recorded as the previous
-	 *                              exception, when something did.
+	 *                              each before the refund is claimed and the gateway asked;
+	 *                              `payment.refund_retry` when another refund was recorded or declined
+	 *                              after this one was worked out, and `payment.refund_unresolved` when
+	 *                              another refund was claimed meanwhile, both under the intent's lock,
+	 *                              before the gateway is asked; `payment.refund_declined` when the
+	 *                              gateway declined, now or when the refund was asked for before;
+	 *                              `payment.unreconciled` when the gateway gave the money back but the
+	 *                              refund could not be recorded, which is then left for a person, with
+	 *                              what kept it from being recorded as the previous exception, when
+	 *                              something did; and `payment.refund_unresolved`, with the refund's
+	 *                              uuid, when the refund was asked for before and the gateway cannot
+	 *                              account for it.
 	 *
 	 * @param RefundRequest $request What to refund.
 	 * @param Actor         $actor   Who refunds it.
-	 * @return Refund The refund; for the same refund asked again, which the gateway answered with the refund it had already made, its document.
+	 * @return Refund The refund; for the same refund asked again, recorded since or found made by the gateway, its document.
 	 */
 	public function refund( RefundRequest $request, Actor $actor ): Refund {
 		$this->authorizer->authorize( $actor, self::CAPABILITY );
 		$this->requireNoTransaction();
 
-		$plan     = $this->plan( $request );
-		$result   = $this->askGateway( $plan );
-		$recorded = $this->tx->transaction( fn(): Refund|\Throwable|null => $this->record( $plan, $result, $actor ), RetryPolicy::deadlocks() );
+		$plan = $this->plan( $request );
 
-		if ( $recorded instanceof Refund ) {
-			return $recorded;
+		if ( ! $this->claim( $plan, $actor ) ) {
+			return $this->askedBefore( $plan, $actor );
 		}
 
-		if ( Outcome::Approved !== $result->outcome ) {
-			CodedException::raise( PaymentError::RefundDeclined );
-		}
+		return $this->record( $plan, $this->askGateway( $plan ), $actor );
+	}
 
-		// Raised only now, once the transaction has committed the money kept for a person.
-		$unreconciled = CodedException::because( PaymentError::Unreconciled, array(), $recorded );
+	/**
+	 * Claims the refund under its intent's lock, in a short transaction of its own that commits before the gateway is asked.
+	 *
+	 * Under the lock it reads, as they now stand, whether the intent has money a person must
+	 * reconcile, what the refund's uuid is named by, and the intent's oldest claim still open. Money
+	 * a person must reconcile refuses the refund, as it does before the claim: it may have landed
+	 * since the plan read the intent. A claim of this refund already open is left as it is. A claim
+	 * of another refund open, or those figures having moved since the plan read them, refuses the
+	 * refund. A refusal writes nothing. Otherwise the claim is inserted. So at most one claim of an
+	 * intent is open, and what refund uuids are named by cannot move while it is.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `payment.unreconciled`; `payment.refund_unresolved`, naming the other
+	 *                        refund's open claim; `payment.refund_retry`.
+	 *
+	 * @param RefundPlan $plan  The refund.
+	 * @param Actor      $actor Who asks for it.
+	 * @return bool True when this request claimed the refund; false when its claim exists already.
+	 */
+	private function claim( RefundPlan $plan, Actor $actor ): bool {
+		list( $actorType, $actorId ) = self::actorOf( $actor );
 
-		throw $unreconciled;
+		return $this->tx->transaction(
+			function () use ( $plan, $actorType, $actorId ): bool {
+				$intent = $this->refunds->lockForClaim( $plan->intent->id );
+
+				if ( $intent['has_unapplied_result'] ) {
+					CodedException::raise( PaymentError::Unreconciled );
+				}
+
+				if ( $plan->uuid === $intent['open_claim'] ) {
+					return false;
+				}
+
+				if ( null !== $intent['open_claim'] ) {
+					CodedException::raise( PaymentError::RefundUnresolved, array( 'refund_uuid' => $intent['open_claim'] ) );
+				}
+
+				if ( $intent['refunded_minor'] !== $plan->intent->refunded->minorUnits() || $intent['declined_refunds'] !== $plan->intent->declinedRefunds ) {
+					CodedException::raise( PaymentError::RefundRetry );
+				}
+
+				return $this->refunds->claim( $plan, $actorType, $actorId );
+			},
+			RetryPolicy::deadlocks()
+		);
 	}
 
 	/**
 	 * Works the refund out from plain reads, and checks every cap, before the gateway is asked.
 	 *
 	 * Reads the order with the lines asked for, its shipping and their components; its captured
-	 * intent, with whether the ledger holds a result of it applied to nothing; and what earlier
-	 * refunds returned of the lines, the components and the shipping: one read of each kind,
-	 * whatever the number of lines. Money of the intent that a person has not reconciled refuses
-	 * the refund: what it did is not known, so a refund worked out without it could give back more
-	 * than is left.
+	 * intent, with whether the ledger holds a result of it applied to nothing and its oldest refund
+	 * still claimed; and what earlier refunds returned of the lines, the components and the
+	 * shipping: one read of each kind, whatever the number of lines. Money of the intent that a
+	 * person has not reconciled refuses the refund: what it did is not known, so a refund worked out
+	 * without it could give back more than is left. So does another refund of the intent still
+	 * claimed, for the same reason.
 	 *
 	 * @since 0.1.0
 	 *
@@ -294,8 +373,15 @@ final class RefundService {
 		$portions     = array_map( fn( RefundLineRequest $asked ): LinePortion => $this->linePortion( $order, $asked, $lines, $components ), $request->lines );
 		$shipping     = $request->shipping ? $this->shippingPortion( $order, $components ) : null;
 		$units        = array_combine( array_map( static fn( LinePortion $portion ): string => $portion->line->lineUuid, $portions ), array_map( static fn( LinePortion $portion ): int => $portion->quantity, $portions ) );
-		$uuid         = RefundIdentity::uuid( $order->uuid, $units, $request->shipping, $intent->refunded );
-		$plan         = new RefundPlan( $uuid, $order, $intent, $portions, $shipping, RefundAllocation::total( $portions, $shipping, $order->currency, $order->baseCurrency ), $request->reasonCode );
+		$uuid         = RefundIdentity::uuid( $order->uuid, $units, $request->shipping, $intent->refunded, $intent->declinedRefunds );
+
+		// Another refund of the intent is claimed and its answer is not recorded: what it did is not
+		// known, and once recorded it would move what refund uuids are named by. This one waits for it.
+		if ( null !== $intent->openClaim && $intent->openClaim !== $uuid ) {
+			CodedException::raise( PaymentError::RefundUnresolved, array( 'refund_uuid' => $intent->openClaim ) );
+		}
+
+		$plan = new RefundPlan( $uuid, $order, $intent, $portions, $shipping, RefundAllocation::total( $portions, $shipping, $order->currency, $order->baseCurrency ), $request->reasonCode );
 
 		$this->checkCaps( $plan, $components );
 
@@ -406,11 +492,133 @@ final class RefundService {
 	private function askGateway( RefundPlan $plan ): GatewayResult {
 		$this->requireNoTransaction();
 
-		return $this->gateway->refund( new GatewayRefund( $plan->intent->uuid, $plan->intent->providerIntentId, $plan->total->amount->gross(), $plan->uuid ) );
+		return $this->gateway->refund( self::gatewayRefund( $plan ) );
 	}
 
 	/**
-	 * Records the gateway's answer, in the transaction the caller opened: the refund and its document, or, when it cannot be recorded as worked out, the money for a person.
+	 * Answers a refund whose claim an earlier request made, without asking the gateway for it again.
+	 *
+	 * The claim says how the refund ended: its document when it was recorded, a decline, or what
+	 * was left for a person. A refund still claimed may be on its way, or may have been made by the
+	 * gateway while its answer was lost: the gateway is asked what became of it, at transaction
+	 * depth 0, and a refund it made, or declined, is recorded as a first answer is. When it cannot
+	 * say, or says it made no such refund, however old the claim, the refund is refused, nothing is
+	 * written, and the claim waits for a person.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws GatewayUnavailable When the gateway has no answer; the claim stays as it was.
+	 * @throws CodedException     `payment.refund_declined`; `payment.unreconciled`;
+	 *                            `payment.refund_unresolved` with the refund's uuid.
+	 *
+	 * @param RefundPlan $plan  The refund, which an earlier request claimed.
+	 * @param Actor      $actor Who refunds.
+	 * @return Refund The refund's document.
+	 */
+	private function askedBefore( RefundPlan $plan, Actor $actor ): Refund {
+		$claim = $this->refunds->findClaim( $plan->uuid );
+
+		if ( null !== $claim && ClaimState::Claimed === $claim->state ) {
+			return $this->askWhatBecameOf( $plan, $actor );
+		}
+
+		return $this->answerFrom( $plan, $claim );
+	}
+
+	/**
+	 * Answers a refund from how its claim ended: its document when it was recorded, a decline, or what was left for a person.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws CodedException `payment.refund_declined`; `payment.unreconciled` when what the gateway
+	 *                        answered was left for a person, or there is no claim where one was found.
+	 *
+	 * @param RefundPlan       $plan  The refund.
+	 * @param RefundClaim|null $claim Its claim, ended.
+	 * @return Refund The refund's document.
+	 */
+	private function answerFrom( RefundPlan $plan, ?RefundClaim $claim ): Refund {
+		return match ( $claim?->state ) {
+			ClaimState::Recorded => $this->recordedDocument( $plan, $claim->transactionId ) ?? CodedException::raise( PaymentError::Unreconciled ),
+			ClaimState::Declined => CodedException::raise( PaymentError::RefundDeclined ),
+			// What the gateway answered was left for a person; or no claim, where one was found: a person must look.
+			default              => CodedException::raise( PaymentError::Unreconciled ),
+		};
+	}
+
+	/**
+	 * Asks the gateway what became of a refund still claimed, at transaction depth 0, and records its answer as a first answer is recorded.
+	 *
+	 * A refund the gateway made, or declined, is recorded. A claim the gateway cannot account for
+	 * waits for a person: when it cannot say, or says it made no such refund, nothing is written and
+	 * the claim stays `claimed`. A not-found is never taken for a decline, however old the claim:
+	 * the first request may still be on its way to the gateway.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws GatewayUnavailable When the gateway has no answer.
+	 * @throws CodedException     `payment.refund_unresolved` with the refund's uuid; what record() raises.
+	 *
+	 * @param RefundPlan $plan  The refund, still claimed.
+	 * @param Actor      $actor Who refunds.
+	 * @return Refund The refund's document.
+	 */
+	private function askWhatBecameOf( RefundPlan $plan, Actor $actor ): Refund {
+		$this->requireNoTransaction();
+
+		$answer = $this->gateway->queryRefund( self::gatewayRefund( $plan ) );
+
+		if ( null === $answer || ( Outcome::Declined === $answer->outcome && PaymentGateway::NOT_FOUND === $answer->errorCode ) ) {
+			CodedException::raise( PaymentError::RefundUnresolved, array( 'refund_uuid' => $plan->uuid ) );
+		}
+
+		return $this->record( $plan, $answer, $actor );
+	}
+
+	/**
+	 * Records the gateway's answer in one transaction, and answers with the refund, or raises what the answer came to.
+	 *
+	 * A decline is answered as its claim then stands, read once the transaction has ended: declined
+	 * when this answer ended it; left for a person when the gateway answered with a result the ledger
+	 * already had; or as another request ended it first, in which case the decline this answer
+	 * wrote was taken back with its savepoint.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws TransactionRetryable When every attempt lost a deadlock; nothing was recorded.
+	 * @throws CodedException       `payment.refund_declined` for a decline; `payment.unreconciled` when
+	 *                              an approval could not be recorded as the refund, raised once the
+	 *                              transaction has committed the money kept for a person, or when a
+	 *                              decline's claim was left for a person.
+	 *
+	 * @param RefundPlan    $plan   The refund.
+	 * @param GatewayResult $result The gateway's answer.
+	 * @param Actor         $actor  Who refunds.
+	 * @return Refund The refund.
+	 */
+	private function record( RefundPlan $plan, GatewayResult $result, Actor $actor ): Refund {
+		try {
+			$recorded = $this->tx->transaction( fn(): Refund|\Throwable|null => $this->recordAnswer( $plan, $result, $actor ), RetryPolicy::deadlocks() );
+		} catch ( ClaimEndedElsewhere $ended ) {
+			$recorded = null;
+		}
+
+		if ( $recorded instanceof Refund ) {
+			return $recorded;
+		}
+
+		if ( Outcome::Approved !== $result->outcome ) {
+			return $this->answerFrom( $plan, $this->refunds->findClaim( $plan->uuid ) );
+		}
+
+		// Raised only now, once the transaction has committed the money kept for a person.
+		$unreconciled = CodedException::because( PaymentError::Unreconciled, array(), $recorded );
+
+		throw $unreconciled;
+	}
+
+	/**
+	 * Records the gateway's answer, in the transaction the caller opened: the refund and its document, or, when it cannot be recorded as worked out, the money for a person; and ends the refund's claim.
 	 *
 	 * The answer is applied in a savepoint. An approval of another amount than was asked does not
 	 * state this refund, and is kept for a person without one. For an approval, whatever the
@@ -433,7 +641,7 @@ final class RefundService {
 	 * @param Actor         $actor  Who refunds.
 	 * @return Refund|\Throwable|null The refund; what kept an approval from being recorded, now kept for a person; null for a decline, or for an approval kept for a person with nothing thrown.
 	 */
-	private function record( RefundPlan $plan, GatewayResult $result, Actor $actor ): Refund|\Throwable|null {
+	private function recordAnswer( RefundPlan $plan, GatewayResult $result, Actor $actor ): Refund|\Throwable|null {
 		$approved = Outcome::Approved === $result->outcome;
 
 		if ( $approved && ! $result->amount->equals( $plan->total->amount->gross() ) ) {
@@ -465,7 +673,7 @@ final class RefundService {
 	 * @return Refund|null This refund's document, recorded before; null when the money is now kept for a person, or was already.
 	 */
 	private function keepForAPerson( RefundPlan $plan, GatewayResult $result, Actor $actor ): ?Refund {
-		return $this->documentOf( $plan, $this->payments->recordUnapplied( $result, $actor ) );
+		return $this->endWithout( $plan, $result, $this->payments->recordUnapplied( $result, $actor ) );
 	}
 
 	/**
@@ -485,7 +693,47 @@ final class RefundService {
 			return $this->writeDocument( $plan, (int) $application->transactionId, $actor );
 		}
 
-		return $this->documentOf( $plan, $application );
+		return $this->endWithout( $plan, $result, $application );
+	}
+
+	/**
+	 * Answers with the refund's document when the ledger already had it; otherwise ends the refund's claim: declined, or left for a person.
+	 *
+	 * A decline this answer wrote ends the claim `declined`, naming its ledger row. Anything else is
+	 * left for a person: money kept unapplied ends the claim `unreconciled`, naming the row that keeps
+	 * it; a duplicate's row was written by whichever answer the ledger had first, which may be
+	 * another refund's, as when a gateway answers with a refund, or a decline, it gave another
+	 * request, so whatever its outcome it ends the claim `unreconciled`, naming no row, and doctor
+	 * reports it. A claim another request ended first is left as it ended. A decline this answer
+	 * wrote for such a claim is taken back with the savepoint it was written in: a gateway may decline
+	 * without naming a provider object, which the ledger's unique key could tell apart, so the claim
+	 * is what keeps one decline per refund.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws ClaimEndedElsewhere For a decline this answer wrote for a claim that had ended, inside its savepoint.
+	 *
+	 * @param RefundPlan    $plan        The refund.
+	 * @param GatewayResult $result      The gateway's answer.
+	 * @param Application   $application What the ledger did with it: anything but an application.
+	 * @return Refund|null The refund's document, recorded before; null otherwise.
+	 */
+	private function endWithout( RefundPlan $plan, GatewayResult $result, Application $application ): ?Refund {
+		$document = $this->documentOf( $plan, $application );
+
+		if ( null !== $document ) {
+			return $document;
+		}
+
+		$duplicate = ApplicationKind::Duplicate === $application->kind;
+		$declined  = ! $duplicate && Outcome::Declined === $result->outcome;
+		$ended     = $this->refunds->settleClaim( $plan->uuid, $declined ? ClaimState::Declined : ClaimState::Unreconciled, $duplicate ? null : $application->transactionId );
+
+		if ( $declined && ! $ended ) {
+			throw new ClaimEndedElsewhere( 'The refund\'s claim had ended before its decline was recorded.' );
+		}
+
+		return null;
 	}
 
 	/**
@@ -501,13 +749,22 @@ final class RefundService {
 	 * @return Refund|null The document; null when the answer was not a duplicate, or its row has no document of this refund.
 	 */
 	private function documentOf( RefundPlan $plan, Application $application ): ?Refund {
-		if ( ApplicationKind::Duplicate !== $application->kind || null === $application->transactionId ) {
-			return null;
-		}
+		return ApplicationKind::Duplicate === $application->kind ? $this->recordedDocument( $plan, $application->transactionId ) : null;
+	}
 
-		$first = $this->refunds->findByTransaction( $application->transactionId );
+	/**
+	 * Returns the document that states a ledger row, when it is this refund's: of the same uuid.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param RefundPlan $plan          The refund.
+	 * @param int|null   $transactionId The ledger row, or null for none.
+	 * @return Refund|null The document; null when the row has no document of this refund.
+	 */
+	private function recordedDocument( RefundPlan $plan, ?int $transactionId ): ?Refund {
+		$document = null === $transactionId ? null : $this->refunds->findByTransaction( $transactionId );
 
-		return null !== $first && $first->uuid === $plan->uuid ? $first : null;
+		return null !== $document && $document->uuid === $plan->uuid ? $document : null;
 	}
 
 	/**
@@ -534,6 +791,12 @@ final class RefundService {
 		}
 
 		if ( array() !== $plan->lines && ! $this->orders->addRefundedQuantities( $plan->order->id, $plan->units() ) ) {
+			CodedException::raise( PaymentError::Unreconciled );
+		}
+
+		// Another request's answer ended the claim first: two refunds for one claim, and the money the
+		// gateway gave back for this one goes to a person.
+		if ( ! $this->refunds->settleClaim( $plan->uuid, ClaimState::Recorded, $transactionId ) ) {
 			CodedException::raise( PaymentError::Unreconciled );
 		}
 
@@ -632,6 +895,20 @@ final class RefundService {
 			$shipping->base->net(),
 			$plan->reasonCode
 		);
+	}
+
+	/**
+	 * Builds what the gateway is asked: the intent, the provider's reference to it, the refund's total and its uuid.
+	 *
+	 * The same request asks for the refund and asks what became of it.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param RefundPlan $plan The refund.
+	 * @return GatewayRefund The request.
+	 */
+	private static function gatewayRefund( RefundPlan $plan ): GatewayRefund {
+		return new GatewayRefund( $plan->intent->uuid, $plan->intent->providerIntentId, $plan->total->amount->gross(), $plan->uuid );
 	}
 
 	/**

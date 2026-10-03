@@ -48,6 +48,15 @@ interface PaymentGateway {
 	public const PARTIAL_CAPTURE = 'partial_capture';
 
 	/**
+	 * The error code of a decline that says the provider has no record of what it was asked about: an intent it never authorized, or a refund it has not made.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const NOT_FOUND = 'not_found';
+
+	/**
 	 * Returns the gateway's id, which `payment_intents.gateway_id` and the ledger's provider record.
 	 *
 	 * @since 0.1.0
@@ -101,6 +110,41 @@ interface PaymentGateway {
 	 * @return GatewayResult The provider's answer, not yet applied: an approval names the provider's refund.
 	 */
 	public function refund( GatewayRefund $request ): GatewayResult;
+
+	/**
+	 * Asks the provider what became of a refund it was asked for before, whose answer was never recorded.
+	 *
+	 * The refund service asks this, never refund() again, when it finds a refund already claimed:
+	 * the earlier request may still be waiting for the provider, or its answer may have been lost,
+	 * or its process may have died after the provider gave the money back. Asked twice, a provider
+	 * that does not honour the idempotency key would give the money back twice.
+	 *
+	 * An adapter must be able to find a refund by the refund's uuid alone. It sends the uuid as the
+	 * provider's idempotency key with every refund, and also in a field of the refund the provider
+	 * can be searched by, such as its metadata or its reference, because an idempotency key is not
+	 * a lookup: some providers forget it within a day, and some have none. It answers:
+	 *
+	 * - the refund's result, approved or declined, naming the same provider refund object refund()
+	 *   named, so the ledger records it once whichever answer arrives;
+	 * - a declined refund whose error code is `not_found` only when the provider says, for certain,
+	 *   that it has made no refund under that uuid so far;
+	 * - null when it cannot say: the provider cannot be searched by the uuid, or it has not decided.
+	 *
+	 * In this version a not-found is information for a person, never acted on: the refund service
+	 * treats it as it treats null, and leaves the refund's claim open for a person to settle. The
+	 * first request may still be on its way to the provider, however long ago it was claimed, and
+	 * taking its not-found for a decline would let a second refund of the same units be made.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws GatewayUnavailable When the provider could not be asked or did not answer.
+	 *
+	 * @param GatewayRefund $request The refund, as it was asked: the intent, the amount and the refund's uuid.
+	 * @return GatewayResult|null The provider's answer about the refund, not yet applied; a declined
+	 *                            refund `not_found` when the provider made none under the uuid; null
+	 *                            when it cannot say.
+	 */
+	public function queryRefund( GatewayRefund $request ): ?GatewayResult;
 
 	/**
 	 * Asks the provider where an intent stands now, for an intent whose result never arrived.

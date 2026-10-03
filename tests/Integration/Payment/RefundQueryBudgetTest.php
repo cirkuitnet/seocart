@@ -25,15 +25,18 @@ use SEOCart\Tests\Support\QueryLog;
  * - 8 reads before the gateway is asked: the order with its current totals version, the lines
  *   asked for, the shipping added up, the tax components; the captured intent, and what earlier
  *   refunds returned of the lines, of the components and of the shipping;
- * - 4 statements of the transaction itself, and 2 for each of its two savepoints, the refund's and
- *   the money path's;
+ * - 6 of the claim, before the gateway is asked: the 4 statements of its own short transaction,
+ *   the intent's lock, which reads what the refund's uuid is named by and the intent's open claim,
+ *   and the claim;
+ * - 4 statements of the recording transaction itself, and 2 for each of its two savepoints, the
+ *   refund's and the money path's;
  * - 7 of the money path: the intent's lock, the order's lock, the ledger row, the intent's
  *   refund, the order's payment amounts, the order event of its new payment status and its
  *   PaymentStatusChanged;
- * - 5 of the document: the refund, its lines, its components, the lines' refunded quantities and
- *   RefundRecorded.
+ * - 6 of the document: the refund, its lines, its components, the lines' refunded quantities, the
+ *   claim ended `recorded`, and RefundRecorded.
  *
- * So 28, for one line as for three; a later refund that leaves the payment status as it is costs 2
+ * So 35, for one line as for three; a later refund that leaves the payment status as it is costs 2
  * fewer.
  *
  * @since 0.1.0
@@ -49,7 +52,7 @@ final class RefundQueryBudgetTest extends RefundTestCase {
 	 *
 	 * @var int
 	 */
-	private const STATEMENTS = 28;
+	private const STATEMENTS = 35;
 
 	/**
 	 * Tests that a refund of one line and the shipping, and one of three lines and the shipping, each send the budget's statements.

@@ -25,8 +25,12 @@ defined( 'ABSPATH' ) || exit;
  * retry meets the same answer. A duplicate and a mismatch are not errors but outcomes, which the
  * transaction commits. A refund is refused, wherever it can be, before the gateway is asked; one
  * the gateway made that a cap then refused is recorded for a person and answered
- * `payment.unreconciled`. A caller's programming error, such as a gateway call inside a
- * transaction, is a \LogicException, never a row here.
+ * `payment.unreconciled`; one asked for before, whose fate the gateway cannot account for, is
+ * refused `payment.refund_unresolved` and not asked for again, and so is every other refund of
+ * the same payment until a person settles it; and one worked out from figures another refund
+ * moved before it was claimed is refused `payment.refund_retry`, to be asked for again. A
+ * caller's programming error, such as a gateway call inside a transaction, is a \LogicException,
+ * never a row here.
  *
  * @since 0.1.0
  */
@@ -108,6 +112,23 @@ enum PaymentError: string implements ErrorCode {
 	 * @since 0.1.0
 	 */
 	case RefundDeclined = 'payment.refund_declined';
+
+	/**
+	 * The gateway was asked for a refund of the payment before and cannot say whether it made it; nothing in the plugin settles such a refund yet, and until a person does, the payment takes no other refund.
+	 *
+	 * The refund named is the one asked for before: this request's own, asked again, or another of
+	 * the same payment, which this one waits for.
+	 *
+	 * @since 0.1.0
+	 */
+	case RefundUnresolved = 'payment.refund_unresolved';
+
+	/**
+	 * Another refund of the payment was recorded or declined after this one was worked out, so this one was not asked for; asking again works it out anew.
+	 *
+	 * @since 0.1.0
+	 */
+	case RefundRetry = 'payment.refund_retry';
 
 	/**
 	 * Returns the catalog's rows.
@@ -197,6 +218,19 @@ enum PaymentError: string implements ErrorCode {
 				self::RefundDeclined,
 				402,
 				static fn(): string => __( 'The payment gateway declined the refund; no money was given back.', 'seocart' )
+			),
+			new ErrorDefinition(
+				self::RefundUnresolved,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: The refund's identifier. */
+					__( 'The payment gateway was asked for the refund %1$s before and cannot say whether it gave the money back. Nothing in the plugin settles such a refund yet, and until a person does, this payment takes no other refund.', 'seocart' ),
+				array( 'refund_uuid' )
+			),
+			new ErrorDefinition(
+				self::RefundRetry,
+				409,
+				static fn(): string => __( 'Another refund of this payment was recorded or declined while this one was being worked out, so the payment gateway was not asked for it; ask for the refund again.', 'seocart' )
 			),
 		);
 	}

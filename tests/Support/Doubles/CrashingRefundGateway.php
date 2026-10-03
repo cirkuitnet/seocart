@@ -1,6 +1,6 @@
 <?php
 /**
- * ReplayingGateway: a gateway that answers every refund with the first refund it made
+ * CrashingRefundGateway: a gateway whose process dies once it has given a refund's money back
  *
  * @package SEOCart
  * @since   0.1.0
@@ -18,24 +18,47 @@ use SEOCart\Payment\Domain\Gateway\PaymentGateway;
 use SEOCart\Payment\Domain\Gateway\PaymentQuery;
 use SEOCart\Payment\Domain\Gateway\PaymentRequest;
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- The call is logged to the file the test reads after the process died.
+
 /**
- * Wraps a gateway and answers every refund after the first with the first refund's result, as a provider does when it is asked again for a refund it already made.
+ * Wraps a gateway, has it make each refund, logs the refund to a file, then runs the crash it was given before the answer is returned.
  *
- * Owns one fact, for the test of a duplicate delivery: the same refund delivered again. Every
- * other call is the wrapped gateway's.
+ * Owns one fact, for the test of a refund killed between the gateway's approval and the
+ * transaction that records it: the refund probe gives a crash that kills its own process, so
+ * nothing after the gateway's answer runs, not even PHP's shutdown. The log, one line per refund
+ * with its key and the provider's refund object, is written before the crash and is how the test
+ * counts what the gateway did in a process that never reported.
  *
  * @since 0.1.0
  */
-final class ReplayingGateway implements PaymentGateway {
+final class CrashingRefundGateway implements PaymentGateway {
 
 	/**
-	 * The first refund's result, once there was one.
+	 * The gateway that answers.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var GatewayResult|null
+	 * @var PaymentGateway
 	 */
-	private ?GatewayResult $first = null;
+	private PaymentGateway $inner;
+
+	/**
+	 * The file each refund is logged to.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	private string $log;
+
+	/**
+	 * What runs once a refund is made and logged: the crash.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var \Closure(): void
+	 */
+	private \Closure $crash;
 
 	/**
 	 * Wraps a gateway.
@@ -43,8 +66,15 @@ final class ReplayingGateway implements PaymentGateway {
 	 * @since 0.1.0
 	 *
 	 * @param PaymentGateway $inner The gateway that answers.
+	 * @param string         $log   The file each refund is logged to.
+	 * @param \Closure       $crash What runs once a refund is made and logged.
+	 *
+	 * @phpstan-param \Closure(): void $crash
 	 */
-	public function __construct( private PaymentGateway $inner ) {
+	public function __construct( PaymentGateway $inner, string $log, \Closure $crash ) {
+		$this->inner = $inner;
+		$this->log   = $log;
+		$this->crash = $crash;
 	}
 
 	/**
@@ -95,21 +125,25 @@ final class ReplayingGateway implements PaymentGateway {
 	}
 
 	/**
-	 * Refunds through the wrapped gateway the first time, and answers with that refund ever after.
+	 * Has the wrapped gateway make the refund, logs it, then crashes before the answer is returned.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param GatewayRefund $request The request.
-	 * @return GatewayResult The first refund's result.
+	 * @return GatewayResult The wrapped gateway's answer, when the crash returns.
 	 */
 	public function refund( GatewayRefund $request ): GatewayResult {
-		$this->first ??= $this->inner->refund( $request );
+		$answer = $this->inner->refund( $request );
 
-		return $this->first;
+		file_put_contents( $this->log, $request->refundUuid . ' ' . (string) $answer->providerObjectId . "\n", FILE_APPEND );
+
+		( $this->crash )();
+
+		return $answer;
 	}
 
 	/**
-	 * Asks the wrapped gateway.
+	 * Asks the wrapped gateway where an intent stands.
 	 *
 	 * @since 0.1.0
 	 *
@@ -121,14 +155,14 @@ final class ReplayingGateway implements PaymentGateway {
 	}
 
 	/**
-	 * Answers what became of a refund as refund() does: with the first refund it made, once it made one.
+	 * Asks the wrapped gateway what became of a refund.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param GatewayRefund $request The refund, as it was asked.
-	 * @return GatewayResult|null The first refund's result, or the wrapped gateway's answer before any.
+	 * @return GatewayResult|null Its answer.
 	 */
 	public function queryRefund( GatewayRefund $request ): ?GatewayResult {
-		return $this->first ?? $this->inner->queryRefund( $request );
+		return $this->inner->queryRefund( $request );
 	}
 }

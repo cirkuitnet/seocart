@@ -95,8 +95,32 @@ final class OvergivingGateway implements PaymentGateway {
 	 * @return GatewayResult The answer, overgiving.
 	 */
 	public function refund( GatewayRefund $request ): GatewayResult {
-		$answer = $this->inner->refund( $request );
+		return self::overgiving( $this->inner->refund( $request ) );
+	}
 
+	/**
+	 * Asks the wrapped gateway what became of a refund, and reports one minor unit more than it was asked, as refund() does.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param GatewayRefund $request The refund, as it was asked.
+	 * @return GatewayResult|null The answer, overgiving; null when the wrapped gateway cannot say.
+	 */
+	public function queryRefund( GatewayRefund $request ): ?GatewayResult {
+		$answer = $this->inner->queryRefund( $request );
+
+		return null === $answer ? null : self::overgiving( $answer );
+	}
+
+	/**
+	 * Returns an answer for one minor unit more than it reports.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param GatewayResult $answer The answer.
+	 * @return GatewayResult The same answer, overgiving.
+	 */
+	private static function overgiving( GatewayResult $answer ): GatewayResult {
 		return new GatewayResult( $answer->provider, $answer->operation, $answer->outcome, $answer->intentUuid, Money::of( $answer->amount->minorUnits() + 1, $answer->amount->currency() ), $answer->providerObjectId, $answer->providerIntentId, $answer->errorCode );
 	}
 

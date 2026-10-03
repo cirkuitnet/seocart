@@ -22,19 +22,27 @@ use SEOCart\Payment\Domain\Gateway\PaymentGateway;
 use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Payment\Domain\Refund\Refund;
 use SEOCart\Payment\Domain\Refund\RefundLineRequest;
+use SEOCart\Payment\Domain\Refund\RefundRepository;
 use SEOCart\Payment\Domain\Refund\RefundRequest;
+use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
+use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Payment\Infrastructure\MysqlRefundRepository;
+use SEOCart\Payment\Infrastructure\PaymentTables;
+use SEOCart\Payment\Infrastructure\RefundClaimTables;
 use SEOCart\Payment\Infrastructure\RefundTables;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\ModuleStatements;
+use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\EventPublisher;
 use SEOCart\Support\IdGenerator;
+use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
+use SEOCart\Tests\Support\RunningProbe;
 
 /**
  * A PaymentTestCase with the refund service wired as the kernel wires it, over the recorded stub gateway.
@@ -56,6 +64,15 @@ abstract class RefundTestCase extends PaymentTestCase {
 	 * @var string
 	 */
 	protected const REASON = 'customer_return';
+
+	/**
+	 * How long a refund probe may take to end, in milliseconds.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var int
+	 */
+	private const PROBE_END_MS = 30000;
 
 	/**
 	 * The refund service over `$this->db`, calling `$this->gateway`.
@@ -92,19 +109,21 @@ abstract class RefundTestCase extends PaymentTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param Database            $db      The connection.
-	 * @param IdGenerator         $ids     The ids the order and payment code mints: a second runner needs its own range.
-	 * @param PaymentGateway      $gateway The gateway it calls.
-	 * @param EventPublisher|null $events  Optional. What publishes the refund's event. Default the outbox's publisher over the connection.
+	 * @param Database                $db      The connection.
+	 * @param IdGenerator             $ids     The ids the order and payment code mints: a second runner needs its own range.
+	 * @param PaymentGateway          $gateway The gateway it calls.
+	 * @param EventPublisher|null     $events  Optional. What publishes the refund's event. Default the outbox's publisher over the connection.
+	 * @param RefundRepository|null   $refunds Optional. The refund statements. Default MysqlRefundRepository over the connection.
+	 * @param TransactionManager|null $tx      Optional. The refund's own unit of work. Default the connection.
 	 * @return RefundService The service.
 	 */
-	protected function refundsOver( Database $db, IdGenerator $ids, PaymentGateway $gateway, ?EventPublisher $events = null ): RefundService {
+	protected function refundsOver( Database $db, IdGenerator $ids, PaymentGateway $gateway, ?EventPublisher $events = null, ?RefundRepository $refunds = null, ?TransactionManager $tx = null ): RefundService {
 		return new RefundService(
-			new MysqlRefundRepository( $db ),
+			$refunds ?? new MysqlRefundRepository( $db ),
 			new MysqlOrderRepository( new OrderStatements( $db ), $ids ),
 			$this->paymentsOver( $db, $ids, $gateway ),
 			$gateway,
-			$db,
+			$tx ?? $db,
 			$events ?? $this->publisherOver( $db ),
 			new Authorizer( new CapabilityDeclaration() ),
 			FrozenClock::at( self::NOW )
@@ -201,6 +220,143 @@ abstract class RefundTestCase extends PaymentTestCase {
 	 */
 	protected function refundCalls(): int {
 		return count( array_filter( $this->gateway->calls, static fn( array $call ): bool => 'refund' === $call['method'] ) );
+	}
+
+	/**
+	 * Counts the times the gateway was asked what became of a refund.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return int The count.
+	 */
+	protected function refundQueries(): int {
+		return count( array_filter( $this->gateway->calls, static fn( array $call ): bool => 'queryRefund' === $call['method'] ) );
+	}
+
+	/**
+	 * Reads an order's refund claims, oldest first: the uuid, the state, the amount and who asked, and the ledger row that ended each.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $orderId The order.
+	 * @return list<array<string, mixed>> The claims, each with `uuid`, `state`, `amount_minor`, `actor_type`, `actor_id`, `transaction_id`, and `settled`, 1 when the claim has its settled time.
+	 */
+	protected function claimRows( int $orderId ): array {
+		return $this->db->fetchAll(
+			'SELECT uuid, state, amount_minor, actor_type, actor_id, transaction_id, settled_at IS NOT NULL AS settled FROM %i WHERE order_id = %d ORDER BY id',
+			$this->table( RefundClaimTables::CLAIMS ),
+			$orderId
+		);
+	}
+
+	/**
+	 * Makes every refund claim older, by the database clock: as if each was made that many seconds before now.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $seconds How old each claim is to be.
+	 */
+	protected function ageClaims( int $seconds ): void {
+		$this->db->execute( 'UPDATE %i SET created_at = UTC_TIMESTAMP(6) - INTERVAL %d SECOND', $this->table( RefundClaimTables::CLAIMS ), $seconds );
+	}
+
+	/**
+	 * Reads an order's refund rows on the ledger, in order: the provider's refund object, the result, whether it was applied, and its error code.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $orderId The order.
+	 * @return list<array<string, mixed>> The rows.
+	 */
+	protected function refundLedgerRows( int $orderId ): array {
+		return $this->db->fetchAll( "SELECT id, provider_object_id, result, applied, error_code FROM %i WHERE order_id = %d AND operation = 'refund' ORDER BY id", $this->table( PaymentTables::TRANSACTIONS ), $orderId );
+	}
+
+	/**
+	 * Builds doctor's payment check over the test's connection.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return PaymentLedgerCheck The check.
+	 */
+	protected function ledgerCheck(): PaymentLedgerCheck {
+		return new PaymentLedgerCheck( new MysqlPaymentRepository( $this->db, $this->ids ), new MysqlOrderRepository( new OrderStatements( $this->db ), $this->ids ) );
+	}
+
+	/**
+	 * Starts, in a process of its own, a refund of some units of an order as the order agent, through the kernel's wiring and the stub gateway.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string             $orderUuid The order.
+	 * @param array<string, int> $units     The units of each line, by line uuid.
+	 * @param string|null        $crashLog  Optional. The file the gateway's refund is logged to before
+	 *                                      the process kills itself, once the gateway gave the money
+	 *                                      back; null for a refund that runs to its end. Default null.
+	 * @return RunningProbe The running refund; its report, unless it was killed, says how it ended.
+	 */
+	protected function startRefundProbe( string $orderUuid, array $units, ?string $crashLog = null ): RunningProbe {
+		$request = array(
+			'order_uuid' => $orderUuid,
+			'units'      => $units,
+			'shipping'   => false,
+			'user_id'    => $this->agent()->userId(),
+			'call_log'   => (string) $crashLog,
+			'crash'      => null !== $crashLog,
+		);
+
+		return ChildProcessProbe::start( __DIR__ . '/refund-probe.php', array( base64_encode( (string) wp_json_encode( $request ) ) ) );
+	}
+
+	/**
+	 * Waits for a probe to end, watching its output, never pausing; fails the test at the deadline.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param RunningProbe $probe The probe.
+	 */
+	protected function awaitProbeEnd( RunningProbe $probe ): void {
+		$deadline = hrtime( true ) + self::PROBE_END_MS * 1000000;
+
+		while ( ! $probe->watch( 50 ) ) {
+			if ( hrtime( true ) >= $deadline ) {
+				$this->fail( "The probe did not end.\n" . $probe->output() );
+			}
+		}
+	}
+
+	/**
+	 * Asserts that every ended claim of an order that names a ledger row names one its own answer wrote.
+	 *
+	 * The row is a refund row of the order; no other claim names it; a document that states it is
+	 * the claim's own; and its provider object, when it has one, is named by the claim's uuid, as
+	 * every gateway of these tests names a refund by the key it was asked with.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $orderId The order.
+	 */
+	protected function assertClaimsNameOnlyTheirOwnRows( int $orderId ): void {
+		$ledger    = array_column( $this->refundLedgerRows( $orderId ), null, 'id' );
+		$documents = array_column( $this->refundRows( $orderId ), 'uuid', 'transaction_id' );
+		$named     = array();
+
+		foreach ( $this->claimRows( $orderId ) as $claim ) {
+			if ( null === $claim['transaction_id'] ) {
+				continue;
+			}
+
+			$uuid   = (string) $claim['uuid'];
+			$row    = $ledger[ $claim['transaction_id'] ] ?? null;
+			$object = (string) ( $row['provider_object_id'] ?? '' );
+
+			$this->assertNotNull( $row, "Claim {$uuid} names a refund row of its order." );
+			$this->assertTrue( '' === $object || str_contains( $object, $uuid ), "Claim {$uuid} names the row of refund object {$object}, another refund's." );
+			$this->assertSame( $uuid, $documents[ $claim['transaction_id'] ] ?? $uuid, "Claim {$uuid} names a row another refund's document states." );
+			$this->assertNotContains( $claim['transaction_id'], $named, "Claim {$uuid} names a row another claim names." );
+
+			$named[] = $claim['transaction_id'];
+		}
 	}
 
 	/**

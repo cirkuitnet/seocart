@@ -187,6 +187,20 @@ final class RecordingGateway implements PaymentGateway {
 	}
 
 	/**
+	 * Records the call, then asks the wrapped gateway what became of a refund.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param GatewayRefund $request The refund, as it was asked.
+	 * @return GatewayResult|null Its answer.
+	 */
+	public function queryRefund( GatewayRefund $request ): ?GatewayResult {
+		$this->record( __FUNCTION__ );
+
+		return $this->inner->queryRefund( $request );
+	}
+
+	/**
 	 * Records one call at the current depth, and does what every call does.
 	 *
 	 * @since 0.1.0

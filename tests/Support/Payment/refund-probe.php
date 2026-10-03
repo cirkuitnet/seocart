@@ -1,0 +1,103 @@
+<?php
+/**
+ * Refunds an order in a process of its own, through the kernel's wiring, and dies once the gateway has given the money back
+ *
+ * Usage: php tests/Support/Payment/refund-probe.php <result-file> <request>
+ *
+ * The refund recovery test starts this script through ChildProcessProbe::start(), so that a
+ * refund can die the way a request does: after the gateway gave the money back and before the
+ * transaction that would record it. It boots WordPress against the installed test site without
+ * loading the plugin, and builds the kernel's container over a Database whose guards throw, as the
+ * tests' do, with the stub gateway wrapped in a CrashingRefundGateway: once the stub made the
+ * refund, the refund is logged to the call log and the process kills itself with SIGKILL, so
+ * nothing after the gateway's answer runs, not even PHP's shutdown.
+ *
+ * The request is base64 of a JSON object: `order_uuid`; `units`, the units of each line by the
+ * line's uuid; `shipping`; `user_id`, the user who refunds; `call_log`, the file each refund is
+ * logged to; and optionally `crash`, false for a refund that is not killed, with the plain stub
+ * gateway, as the refund race test runs a second refund while its own holds a lock. A probe that
+ * was not killed reports how the refund ended: `refund_uuid`, the refusal (`refused`, `context`),
+ * or any other failure.
+ *
+ * @package SEOCart
+ * @since   0.1.0
+ * @license GPL-3.0-or-later
+ */
+
+declare( strict_types=1 );
+
+use SEOCart\Payment\Application\RefundService;
+use SEOCart\Payment\Domain\Gateway\PaymentGateway;
+use SEOCart\Payment\Domain\Refund\RefundLineRequest;
+use SEOCart\Payment\Domain\Refund\RefundRequest;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
+use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\TransactionManager;
+use SEOCart\Platform\Events\EventCatalog;
+use SEOCart\Platform\Events\EventPublisher;
+use SEOCart\Platform\Events\HookBridge;
+use SEOCart\Platform\Events\Outbox;
+use SEOCart\Platform\Events\Publisher;
+use SEOCart\Platform\Kernel\Container;
+use SEOCart\Platform\Kernel\Modules;
+use SEOCart\Platform\Logging\CorrelationId;
+use SEOCart\Support\Error\CodedException;
+use SEOCart\Tests\Support\Doubles\CrashingRefundGateway;
+use SEOCart\Tests\Support\KernelContainer;
+
+// phpcs:disable WordPress.WP.AlternativeFunctions -- The probe writes its report to the file its parent reads.
+
+if ( 'cli' !== PHP_SAPI || ! isset( $argv[1], $argv[2] ) ) {
+	fwrite( STDERR, 'Usage: php tests/Support/Payment/refund-probe.php <result-file> <request>' . PHP_EOL );
+
+	exit( 2 );
+}
+
+putenv( 'SEOCART_TESTS_LOAD_PLUGIN=0' );
+
+require dirname( __DIR__, 2 ) . '/bootstrap-integration.php';
+
+global $wpdb;
+
+$seocart_probe_request = (array) json_decode( (string) base64_decode( $argv[2], true ), true );
+$seocart_probe_db      = new Database( $wpdb, true, static function (): void {} );
+$seocart_probe_kernel  = KernelContainer::build(
+	$seocart_probe_db,
+	static function (): void {},
+	array(
+		TransactionManager::class => static fn(): TransactionManager => $seocart_probe_db,
+		PaymentGateway::class     => static fn(): PaymentGateway => false === ( $seocart_probe_request['crash'] ?? true ) ? new StubGateway() : new CrashingRefundGateway(
+			new StubGateway(),
+			(string) ( $seocart_probe_request['call_log'] ?? '' ),
+			static function (): void {
+				// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.system_calls_exec -- No posix extension on every host: the shell kills the process.
+				exec( 'kill -9 ' . getmypid() );
+			}
+		),
+		EventPublisher::class     => static fn( Container $c ): EventPublisher => new Publisher( $seocart_probe_db, new Outbox( $seocart_probe_db ), $c->get( HookBridge::class ), new EventCatalog( Modules::EVENT_CLASSES ), $c->get( CorrelationId::class ), static function (): void {} ),
+	)
+);
+
+$seocart_probe_lines = array();
+
+foreach ( (array) ( $seocart_probe_request['units'] ?? array() ) as $seocart_probe_line => $seocart_probe_quantity ) {
+	$seocart_probe_lines[] = new RefundLineRequest( (string) $seocart_probe_line, (int) $seocart_probe_quantity );
+}
+
+try {
+	$seocart_probe_refund  = $seocart_probe_kernel->get( RefundService::class )->refund(
+		new RefundRequest( (string) ( $seocart_probe_request['order_uuid'] ?? '' ), $seocart_probe_lines, (bool) ( $seocart_probe_request['shipping'] ?? false ), 'customer_return' ),
+		Actor::user( (int) ( $seocart_probe_request['user_id'] ?? 0 ) )
+	);
+	$seocart_probe_outcome = array( 'refund_uuid' => $seocart_probe_refund->uuid );
+} catch ( CodedException $seocart_probe_refusal ) {
+	$seocart_probe_outcome = array(
+		'refused' => $seocart_probe_refusal->errorCode()->value,
+		'context' => $seocart_probe_refusal->context(),
+	);
+} catch ( Throwable $seocart_probe_failure ) {
+	$seocart_probe_outcome = array( 'failure' => get_class( $seocart_probe_failure ) . ': ' . $seocart_probe_failure->getMessage() );
+}
+
+file_put_contents( $argv[1], (string) wp_json_encode( $seocart_probe_outcome ) );

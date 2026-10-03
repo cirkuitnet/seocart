@@ -16,7 +16,7 @@ use SEOCart\Support\Money;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * An order's captured intent, read without a lock before a refund's gateway call: what it captured and what was refunded of it, in both currencies, and whether it has money a person must reconcile.
+ * An order's captured intent, read without a lock before a refund's gateway call: what it captured and what was refunded of it, in both currencies, whether it has money a person must reconcile, how many of its refunds the gateway declined, and the refund it is still waiting for.
  *
  * Owns one fact: what a refund is checked against before the gateway is asked. The read decides
  * nothing for good: the refund's update of the intent carries the same cap in its WHERE clause.
@@ -38,6 +38,9 @@ final readonly class RefundableIntent {
 	 * @param Money       $baseCaptured       Captured so far in the base currency.
 	 * @param Money       $baseRefunded       Refunded so far in the base currency.
 	 * @param bool        $hasUnappliedResult Whether the ledger holds a result of the intent applied to nothing: money a person must reconcile before anything else is done with the payment.
+	 * @param int         $declinedRefunds    Optional. How many refunds of the intent the ledger holds declined. Default 0.
+	 * @param string|null $openClaim          Optional. The uuid of the intent's oldest refund still claimed: asked of the
+	 *                                        gateway, its answer not recorded yet. Default null, when there is none.
 	 */
 	public function __construct(
 		public int $id,
@@ -47,7 +50,9 @@ final readonly class RefundableIntent {
 		public Money $refunded,
 		public Money $baseCaptured,
 		public Money $baseRefunded,
-		public bool $hasUnappliedResult
+		public bool $hasUnappliedResult,
+		public int $declinedRefunds = 0,
+		public ?string $openClaim = null
 	) {
 	}
 }

@@ -35,7 +35,14 @@ defined( 'ABSPATH' ) || exit;
  * quantity must be the units its refunds returned. Any difference is critical, named with the
  * uuid and both figures, and left for a person: the ledger is the truth and the amounts are its
  * projection, so doctor never rewrites one. A ledger row that did not match its order, and an
- * order flagged for it, are warnings: money a person must reconcile.
+ * order flagged for it, are warnings: money a person must reconcile. So is a refund claim still
+ * claimed longer after it was made than any call to the gateway takes (PaymentService::STALE_SECONDS):
+ * the gateway may have given that money back with nothing recorded, nothing asks it until the same
+ * refund is asked for again, and a claim the gateway cannot account for waits for a person: nothing
+ * in the plugin settles such a claim yet, and until a person does, the payment takes no other
+ * refund. And so is a claim
+ * left for a person that names no ledger row: the gateway answered it with another refund's
+ * result, so what it did with this one is not known.
  *
  * The intents, the orders, the refunds and the order lines are compared a page at a time, by id,
  * each page one bounded read (with one more for the orders' intent sums, and for the lines' refund
@@ -169,7 +176,9 @@ final class PaymentLedgerCheck implements Check {
 			$this->refundDrift(),
 			$this->refundedQuantityDrift(),
 			$this->unappliedResults(),
-			$this->unreconciledOrders()
+			$this->unreconciledOrders(),
+			$this->unsettledRefundClaims(),
+			$this->unrecordedRefundClaims()
 		);
 
 		if ( array() === $findings ) {
@@ -360,6 +369,47 @@ final class PaymentLedgerCheck implements Check {
 		return array_map(
 			static fn( array $order ): string => sprintf( 'Warning: order %1$s holds money a person must reconcile.', CheckResult::identifier( $order['uuid'] ) ),
 			$this->orders->unreconciled( self::LIMIT )
+		);
+	}
+
+	/**
+	 * Lists the refund claims the gateway's answer never ended, once they are older than any call to it takes.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<string> One warning line per claim.
+	 */
+	private function unsettledRefundClaims(): array {
+		return array_map(
+			static fn( array $claim ): string => sprintf(
+				'Warning: refund %1$s of payment %2$s, %3$d %4$s, was asked of the gateway %5$d seconds ago and its answer was never recorded; the gateway may have given the money back. Asking for the same refund again asks the gateway what became of it; a refund the gateway cannot account for waits for a person. Nothing in the plugin settles such a claim yet, and until a person does, the payment takes no other refund.',
+				CheckResult::identifier( $claim['uuid'] ),
+				CheckResult::identifier( $claim['intent_uuid'] ),
+				$claim['amount'],
+				CheckResult::identifier( $claim['currency'] ),
+				$claim['age_seconds']
+			),
+			$this->payments->unsettledRefundClaims( PaymentService::STALE_SECONDS, self::LIMIT )
+		);
+	}
+
+	/**
+	 * Lists the refund claims left for a person that name no ledger row.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return list<string> One warning line per claim.
+	 */
+	private function unrecordedRefundClaims(): array {
+		return array_map(
+			static fn( array $claim ): string => sprintf(
+				'Warning: refund %1$s of payment %2$s, %3$d %4$s, was answered by the gateway with another refund\'s result, so what it did with this one is not known; a person must reconcile it.',
+				CheckResult::identifier( $claim['uuid'] ),
+				CheckResult::identifier( $claim['intent_uuid'] ),
+				$claim['amount'],
+				CheckResult::identifier( $claim['currency'] )
+			),
+			$this->payments->unrecordedRefundClaims( self::LIMIT )
 		);
 	}
 

@@ -21,6 +21,7 @@ use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Infrastructure\PaymentTables;
+use SEOCart\Payment\Infrastructure\RefundClaimTables;
 use SEOCart\Payment\Infrastructure\RefundTables;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Database;
@@ -312,6 +313,7 @@ final class ReferenceSeed {
 		) + array_fill_keys( OrderTables::names(), 'The dataset has no orders yet: placing orders is a workload of its own.' )
 			+ array_fill_keys( PaymentTables::names(), 'A payment is made for an order, and the dataset has no orders yet.' )
 			+ array_fill_keys( RefundTables::names(), 'A refund gives back part of a paid order, and the dataset has no orders yet.' )
+			+ array_fill_keys( RefundClaimTables::names(), 'A refund is claimed before the gateway is asked for it, and the dataset has no orders yet; doctor\'s search for claims never settled reads it by its state and age.' )
 			+ array_fill_keys( PricingTables::names(), 'The dataset sells in its base currency only; a store has a few dozen currencies and rates at most, read by their keys.' );
 	}
 

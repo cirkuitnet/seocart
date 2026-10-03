@@ -17,19 +17,21 @@ use SEOCart\Support\Money;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * The refund service's port to the payment tables: what earlier refunds returned, and the refund document.
+ * The refund service's port to the payment tables: what earlier refunds returned, the refund's claim, and the refund document.
  *
  * Owns one fact: which statements a refund sends. The reads are plain and batched, one per kind
- * of row whatever the number of lines, and decide nothing for good. The writes run only inside
- * the caller's transaction, each carrying a cap in its WHERE clause: the document is written
- * only while what it was worked out from still holds.
+ * of row whatever the number of lines, and decide nothing for good. Every write runs only inside
+ * the caller's transaction: the claim inside a short one of its own, under the intent's lock,
+ * committed before the gateway is asked; every other write inside the one that records the answer,
+ * each carrying its condition in its WHERE clause: the document is written only while what it was
+ * worked out from still holds, and a claim ends only while it is still claimed.
  *
  * @since 0.1.0
  */
 interface RefundRepository {
 
 	/**
-	 * Reads an order's captured intent, which a refund gives money back through, and whether the ledger holds a result of it applied to nothing, without a lock.
+	 * Reads an order's captured intent, which a refund gives money back through, whether the ledger holds a result of it applied to nothing, how many of its refunds were declined, and its oldest refund still claimed, without a lock.
 	 *
 	 * @since 0.1.0
 	 *
@@ -37,6 +39,64 @@ interface RefundRepository {
 	 * @return RefundableIntent|null The first captured or partly refunded intent, or null when the order has none.
 	 */
 	public function refundableIntent( int $orderId ): ?RefundableIntent;
+
+	/**
+	 * Locks an intent for a refund's claim, inside the caller's transaction, and reads, as they now stand, whether it has money a person must reconcile, what refund uuids are named by, and its oldest refund still claimed.
+	 *
+	 * The lock is held until the caller's transaction ends, so no other refund of the intent is
+	 * claimed, and nothing a refund's uuid is named by moves, while the caller decides.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Outside a transaction, or when the intent does not exist.
+	 *
+	 * @param int $intentId The intent.
+	 * @return array{has_unapplied_result: bool, refunded_minor: int, declined_refunds: int, open_claim: string|null} Whether the ledger holds a result of it applied to nothing; what it refunded, in minor units; how many of its refunds were declined; its oldest refund claim still claimed.
+	 */
+	public function lockForClaim( int $intentId ): array;
+
+	/**
+	 * Claims a refund before the gateway is asked for it: one insert, inside the caller's transaction, which holds the intent's lock and commits before the gateway is asked.
+	 *
+	 * The claim's unique uuid refuses a second claim of the same refund.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param RefundPlan $plan      The refund.
+	 * @param string     $actorType `user` or `system`.
+	 * @param int|null   $actorId   The user who asks for it, or null.
+	 * @return bool True when this request claimed the refund; false when it was claimed before.
+	 */
+	public function claim( RefundPlan $plan, string $actorType, ?int $actorId ): bool;
+
+	/**
+	 * Reads a refund's claim, without a lock.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $uuid The refund's uuid.
+	 * @return RefundClaim|null The claim, or null when the refund was never claimed.
+	 */
+	public function findClaim( string $uuid ): ?RefundClaim;
+
+	/**
+	 * Ends a refund's claim with the ledger row that ended it, inside the caller's transaction, only while it is still claimed.
+	 *
+	 * A claim names only a row its own refund's answer wrote, never one the gateway answered it with
+	 * that another refund's answer wrote: such a claim ends with none.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Outside a transaction, or for a state that ends nothing.
+	 *
+	 * @param string     $uuid          The refund's uuid.
+	 * @param ClaimState $to            Recorded, declined or unreconciled.
+	 * @param int|null   $transactionId The ledger row this refund's answer wrote, or null for none.
+	 * @return bool True when the claim ended here; false when it had ended already.
+	 */
+	public function settleClaim( string $uuid, ClaimState $to, ?int $transactionId ): bool;
 
 	/**
 	 * Adds up what earlier refunds returned of some order lines.

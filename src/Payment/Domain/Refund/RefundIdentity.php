@@ -27,12 +27,16 @@ defined( 'ABSPATH' ) || exit;
  * 2. `line {line_uuid} {quantity}`: each line asked for, by its stored uuid with the units asked
  *    of it, sorted by line uuid, so the order the lines were asked in does not matter;
  * 3. `shipping 1` when the request asks for the shipping, `shipping 0` when not;
- * 4. `refunded {minor units}`: the intent's `refunded_minor` as the refund's reads found it.
+ * 4. `refunded {minor units}`: the intent's `refunded_minor` as the refund's reads found it;
+ * 5. `declined {count}`: how many refunds of the intent the ledger held declined, only when there
+ *    was at least one, so a refund asked before any decline keeps the name it always had.
  *
- * The reason and the restock flag are not in it: they move no money. The last item is what
- * makes a refund of the same units asked after an earlier refund committed a new refund: the
- * intent's refunded amount moved, so the name, and the key, are new. Uuids are hexadecimal digits
- * and dashes, so no item can be read as another.
+ * The reason and the restock flag are not in it: they move no money. The last two items are what
+ * make a refund of the same units asked after an earlier one ended a new refund: after one was
+ * recorded the intent's refunded amount moved, and after one was declined the count of declines
+ * did, so the name, and the key, are new, and so is the claim the refund makes before the gateway
+ * is asked. Asked before the earlier one ended, it is the same refund, whose claim it finds. Uuids
+ * are hexadecimal digits and dashes, so no item can be read as another.
  *
  * @since 0.1.0
  */
@@ -56,11 +60,12 @@ final class RefundIdentity {
 	 * @param array  $units     The units asked of each line, by the line's stored uuid; empty for the shipping alone.
 	 * @param bool   $shipping  Whether the request asks for the shipping.
 	 * @param Money  $refunded  What the intent had refunded when the refund read it.
+	 * @param int    $declined  Optional. How many refunds of the intent the ledger held declined when the refund read it. Default 0.
 	 * @return string A lowercase version 5 uuid.
 	 *
 	 * @phpstan-param array<string, int> $units
 	 */
-	public static function uuid( string $orderUuid, array $units, bool $shipping, Money $refunded ): string {
+	public static function uuid( string $orderUuid, array $units, bool $shipping, Money $refunded, int $declined = 0 ): string {
 		ksort( $units, SORT_STRING );
 
 		$name = array( 'order ' . $orderUuid );
@@ -71,6 +76,10 @@ final class RefundIdentity {
 
 		$name[] = 'shipping ' . ( $shipping ? '1' : '0' );
 		$name[] = 'refunded ' . $refunded->minorUnits();
+
+		if ( $declined > 0 ) {
+			$name[] = 'declined ' . $declined;
+		}
 
 		return self::nameBased( implode( "\n", $name ) );
 	}

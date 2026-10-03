@@ -11,6 +11,9 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\DataRegistry;
 
+// Before the imports: Plugin Check looks for this guard only in the first 50 lines of a namespaced file.
+defined( 'ABSPATH' ) || exit;
+
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Cart\Infrastructure\Migrations\CreateCartTables;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
@@ -23,8 +26,10 @@ use SEOCart\Order\Infrastructure\Migrations\AddOrderStatusIndex;
 use SEOCart\Order\Infrastructure\Migrations\CreateOrderTables;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Infrastructure\Migrations\CreatePaymentTables;
+use SEOCart\Payment\Infrastructure\Migrations\CreateRefundClaimTable;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundTables;
 use SEOCart\Payment\Infrastructure\PaymentTables;
+use SEOCart\Payment\Infrastructure\RefundClaimTables;
 use SEOCart\Payment\Infrastructure\RefundTables;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Migrations\PlatformBootstrapMigration;
@@ -45,8 +50,6 @@ use SEOCart\Pricing\Infrastructure\Migrations\CreateRateTables;
 use SEOCart\Pricing\Infrastructure\PricingTables;
 use SEOCart\Promotion\Infrastructure\Migrations\CreatePromotionTables;
 use SEOCart\Promotion\Infrastructure\PromotionTables;
-
-defined( 'ABSPATH' ) || exit;
 
 /**
  * Builds the data registry the plugin runs with.
@@ -95,6 +98,7 @@ final class OwnedData {
 			new Contribution( tables: PricingTables::all(), migrations: array( new CreateRateTables() ) ),
 			new Contribution( tables: PromotionTables::all(), migrations: array( new CreatePromotionTables() ) ),
 			new Contribution( tables: RefundTables::all(), migrations: array( new CreateRefundTables() ) ),
+			new Contribution( tables: RefundClaimTables::all(), migrations: array( new CreateRefundClaimTable() ) ),
 		);
 	}
 }

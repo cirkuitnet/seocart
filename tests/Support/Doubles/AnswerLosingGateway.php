@@ -130,4 +130,16 @@ final class AnswerLosingGateway implements PaymentGateway {
 	public function query( PaymentQuery $query ): ?GatewayResult {
 		return $this->inner->query( $query );
 	}
+
+	/**
+	 * Asks the wrapped gateway what became of a refund; that answer arrives.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param GatewayRefund $request The refund, as it was asked.
+	 * @return GatewayResult|null Its answer.
+	 */
+	public function queryRefund( GatewayRefund $request ): ?GatewayResult {
+		return $this->inner->queryRefund( $request );
+	}
 }

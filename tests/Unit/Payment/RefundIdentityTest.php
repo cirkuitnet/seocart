@@ -127,6 +127,25 @@ final class RefundIdentityTest extends TestCase {
 	}
 
 	/**
+	 * Tests that the count of declined refunds is a sixth item of the name only when there was one: a refund asked again after a decline is a new refund, and one asked before any keeps its uuid.
+	 *
+	 * The expected value is Python's `uuid.uuid5()` of the stated name with `declined 2` as its last
+	 * line; the count 0 gives the uuid the first test pins.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_a_count_of_declines_names_a_new_refund_and_none_keeps_the_name(): void {
+		$units = array(
+			self::MUG => 2,
+			self::TEE => 1,
+		);
+
+		$this->assertSame( 'e5484c93-10bd-58ac-8215-97fd38e9d86f', RefundIdentity::uuid( self::ORDER, $units, true, self::eur( 1234 ), 0 ) );
+		$this->assertSame( 'faf6324f-6484-5173-962e-42218a05773d', RefundIdentity::uuid( self::ORDER, $units, true, self::eur( 1234 ), 2 ) );
+		$this->assertNotSame( RefundIdentity::uuid( self::ORDER, $units, true, self::eur( 1234 ), 1 ), RefundIdentity::uuid( self::ORDER, $units, true, self::eur( 1234 ), 2 ), 'Each decline names a new refund.' );
+	}
+
+	/**
 	 * Returns the uuid of a refund of the order.
 	 *
 	 * @since 0.1.0

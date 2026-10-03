@@ -94,7 +94,7 @@ final class PaymentTables {
 	}
 
 	/**
-	 * Returns the unprefixed names of every table of the payment module: these two and the refund tables.
+	 * Returns the unprefixed names of every table of the payment module: these two, the refund tables and the refund claims.
 	 *
 	 * The tables the module's statements may name; each migration still creates only its own.
 	 *
@@ -103,7 +103,7 @@ final class PaymentTables {
 	 * @return list<string> The names.
 	 */
 	public static function moduleNames(): array {
-		return array_merge( self::names(), RefundTables::names() );
+		return array_merge( self::names(), RefundTables::names(), RefundClaimTables::names() );
 	}
 
 	/**

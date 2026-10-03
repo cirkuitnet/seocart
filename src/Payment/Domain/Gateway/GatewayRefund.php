@@ -20,8 +20,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: what a refund sends a provider. The amount is in the intent's currency and was
  * allocated from the order's stored figures before the call. The refund's uuid is the
- * idempotency key the provider receives, so a provider that is asked again with it answers with
- * the refund it already made.
+ * idempotency key the provider receives, and what the refund is found by when the gateway is
+ * asked what became of it (PaymentGateway::queryRefund()), which is asked with the same request.
  *
  * @since 0.1.0
  */

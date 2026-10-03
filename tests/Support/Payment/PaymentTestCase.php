@@ -23,6 +23,7 @@ use SEOCart\Payment\Domain\Operation;
 use SEOCart\Payment\Domain\Outcome;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\Migrations\CreatePaymentTables;
+use SEOCart\Payment\Infrastructure\Migrations\CreateRefundClaimTable;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundTables;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Payment\Infrastructure\PaymentTables;
@@ -141,6 +142,7 @@ abstract class PaymentTestCase extends OrderTestCase {
 
 		( new CreatePaymentTables() )->up( $operations );
 		( new CreateRefundTables() )->up( $operations );
+		( new CreateRefundClaimTable() )->up( $operations );
 
 		$this->gateway  = new RecordingGateway( new StubGateway(), $this->db );
 		$this->payments = $this->paymentsOver( $this->db, $this->ids, $this->gateway );

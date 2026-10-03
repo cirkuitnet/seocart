@@ -354,6 +354,18 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: Nothing of what the refund asks for is left to give back.
 - Values: none
 
+## `payment.refund_retry`
+
+- HTTP status: 409
+- Message: Another refund of this payment was recorded or declined while this one was being worked out, so the payment gateway was not asked for it; ask for the refund again.
+- Values: none
+
+## `payment.refund_unresolved`
+
+- HTTP status: 409
+- Message: The payment gateway was asked for the refund {refund_uuid} before and cannot say whether it gave the money back. Nothing in the plugin settles such a refund yet, and until a person does, this payment takes no other refund.
+- Values: `refund_uuid`
+
 ## `payment.unexpected_result`
 
 - HTTP status: 409

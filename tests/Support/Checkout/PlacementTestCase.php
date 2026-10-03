@@ -24,6 +24,7 @@ use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Domain\Gateway\PaymentGateway;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\Migrations\CreatePaymentTables;
+use SEOCart\Payment\Infrastructure\Migrations\CreateRefundClaimTable;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundTables;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Database;
@@ -146,6 +147,7 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 		( new CreateOrderTables() )->up( $operations );
 		( new CreatePaymentTables() )->up( $operations );
 		( new CreateRefundTables() )->up( $operations );
+		( new CreateRefundClaimTable() )->up( $operations );
 		( new CreateRateTables() )->up( $operations );
 
 		$this->posts     = array();

@@ -48,16 +48,18 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  *
  * The payment module's reads run over a PlanRecorder: the locked reads of an approval and a
  * duplicate's read of the first row, a capture's plain reads, a refund's reads and its duplicate's
- * read of the first document, reconciliation's stale intents, and every line of doctor's payment
- * check. Each plugin SELECT is explained, printed and judged as the
+ * read of the first document, the read of a refund's claim, reconciliation's stale intents, and
+ * every line of doctor's payment check, the refund claims never settled among them. Each plugin
+ * SELECT is explained, printed and judged as the
  * order module's are; the reference dataset has no payments, so the tables stay under the size at
  * which the rule gates and the run records the plans. And every SELECT the module's source writes
  * must have been sent (ReadInventory), so no read goes unexplained.
  *
  * It runs only when SEOCART_QUERY_PLANS is 1, as `composer test:query-plans` sets it.
  *
- * Planted violation, shown red and removed: leave reconciliation's stale intents out of
- * exercise(): the run names MysqlPaymentRepository's STALE_INTENTS as a read it did not send.
+ * Planted violations, each shown red and removed: leave reconciliation's stale intents out of
+ * exercise(): the run names MysqlPaymentRepository's STALE_INTENTS as a read it did not send; leave
+ * the read of a refund's claim out: it names MysqlRefundRepository's FIND_CLAIM.
  *
  * @group performance
  *
@@ -160,7 +162,10 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 		);
 		$line    = (string) $this->db->fetchValue( 'SELECT line_uuid FROM %i WHERE order_id = %d ORDER BY sort_order LIMIT 1', $this->table( OrderTables::LINES ), $inserted->id );
 
-		$refunds->refund( new RefundRequest( $inserted->uuid, array( new RefundLineRequest( $line, 1 ) ), true, 'customer_return' ), $this->userWithRole() );
+		$first = $refunds->refund( new RefundRequest( $inserted->uuid, array( new RefundLineRequest( $line, 1 ) ), true, 'customer_return' ), $this->userWithRole() );
+
+		// The read of a refund's claim that a request for a refund already claimed sends, by the claim's unique uuid.
+		( new MysqlRefundRepository( $db ) )->findClaim( $first->uuid );
 
 		try {
 			$refunds->refund( new RefundRequest( $inserted->uuid, array( new RefundLineRequest( $line, 1 ) ), false, 'customer_return' ), $this->userWithRole() );
@@ -172,7 +177,8 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 		// Reconciliation's stale intents.
 		$payments->staleIntents( 600, 50 );
 
-		// Every line of doctor's payment check, which reads the order tables through the order repository.
+		// Every line of doctor's payment check, which reads the order tables through the order repository, and the refund
+		// claims never settled.
 		( new PaymentLedgerCheck( new MysqlPaymentRepository( $db, $ids ), new MysqlOrderRepository( new OrderStatements( $db ), $ids ) ) )->run();
 	}
 }

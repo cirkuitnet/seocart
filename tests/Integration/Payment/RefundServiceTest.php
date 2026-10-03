@@ -331,7 +331,7 @@ final class RefundServiceTest extends RefundTestCase {
 	}
 
 	/**
-	 * Tests that the same refund asked again after the gateway's answer was lost asks with the same key, and is recorded once, as the refund the gateway made the first time; other refunds have other keys.
+	 * Tests that the same refund asked again after the gateway's answer was lost finds its claim, asks the gateway what became of it, never for it again, and is recorded once, as the refund the gateway made the first time; other refunds have other keys.
 	 *
 	 * @since 0.1.0
 	 */
@@ -353,7 +353,8 @@ final class RefundServiceTest extends RefundTestCase {
 			'object' => 'stub-re-' . $refund->uuid,
 		);
 
-		$this->assertSame( array( $made, $made ), $this->gateway->refunds, 'Asked twice with one key, the gateway answered with one refund.' );
+		$this->assertSame( array( $made ), $this->gateway->refunds, 'The gateway was asked for the refund once.' );
+		$this->assertSame( array( 'refund', 'queryRefund' ), array_column( $this->gateway->calls, 'method' ), 'Asked again, the gateway was asked what became of the refund.' );
 		$this->assertSame( array( 1, 1, 1 ), array_map( 'count', array( $this->refundRows( $order->id ), $this->refundLedger( $order->id ), $this->db->fetchAll( 'SELECT id FROM %i WHERE refund_id = %d', $this->table( RefundTables::LINES ), $refund->id ) ) ), 'One document, one ledger row, one line.' );
 		$this->assertSame( array( $made['object'], '1' ), array_values( $this->refundLedger( $order->id )[0] ) );
 
@@ -361,7 +362,7 @@ final class RefundServiceTest extends RefundTestCase {
 		$again = $this->refund( $order->uuid, array( $tee => 1 ) );
 		$mugs  = $this->refund( $order->uuid, array( $mug => 1 ) );
 
-		$this->assertSame( array( $refund->uuid, $refund->uuid, $again->uuid, $mugs->uuid ), array_column( $this->gateway->refunds, 'key' ) );
+		$this->assertSame( array( $refund->uuid, $again->uuid, $mugs->uuid ), array_column( $this->gateway->refunds, 'key' ) );
 		$this->assertCount( 3, array_unique( array( $refund->uuid, $again->uuid, $mugs->uuid ) ), 'Each refund has its own key.' );
 	}
 
