@@ -173,6 +173,20 @@ final class CatalogDoctorTest extends CatalogTestCase {
 	}
 
 	/**
+	 * Removes the ping event that turning a published post into a `post` schedules.
+	 *
+	 * WordPress schedules `do_pings` when a post of that type is published, and the event is
+	 * stored with the options, committed like everything else this test writes.
+	 *
+	 * @since 0.1.0
+	 */
+	public function tear_down(): void {
+		wp_clear_scheduled_hook( 'do_pings' );
+
+		parent::tear_down();
+	}
+
+	/**
 	 * Runs a list of checks and returns their results, the same way Doctor::runList() does — this
 	 * test exercises the catalog's checks and --repair's sequencing directly, without building the
 	 * platform's own checks or their dependencies (migrations, jobs, the outbox), which this test

@@ -32,6 +32,16 @@ Every release must also **raise** the version (WordPress.org guideline 15). The 
 workflow runs `sh bin/ci/require-version-increase.sh vX.Y.Z`, which accepts only a tag of the
 form `vX.Y.Z` and fails unless it is greater than every earlier release tag in its history.
 
+A raised version also decides when a migration runs. A site records the version that last
+installed it (`plugin_version` in the boot record). When a request finds that version older
+than `SEOCART_VERSION`, `Lifecycle::installSite()` runs and applies the pending migrations
+there and then, within a time budget. A deploy that changes code without raising the version
+skips that step. The kernel then migrates inline only when a pending migration cannot let the
+store trade; a migration that returns true from `canOperateHalfApplied()` waits for the queued
+migration job. In that window the new code can meet a table that does not exist yet, for
+example a refund before `refund_claims` exists. A release that carries a migration always
+carries a new version.
+
 ## Prepare the release
 
 1. Make sure `main` is green: every gate in [testing.md](testing.md), including the
@@ -40,11 +50,32 @@ form `vX.Y.Z` and fails unless it is greater than every earlier release tag in i
 3. In [CHANGELOG.md](../CHANGELOG.md), move the entries under `[Unreleased]` to a new heading
    for the version, with the release date. Leave an empty `[Unreleased]` section.
 4. Update `Tested up to` in `readme.txt` if a new WordPress version has been tested.
-5. Run `composer docs:check`. The generated parts of `readme.txt` and of `docs/` must be
+5. Keep the bundled Action Scheduler current. Compare the version of `woocommerce/action-scheduler`
+   in `composer.lock` with its newest release; when they differ, update it in `composer.json`
+   and `composer.lock` and rebuild. Action Scheduler loads the newest copy among the plugins
+   that bundle it, and that copy runs every plugin's queue. On a site with WooCommerce, which
+   bundles its own, our copy runs WooCommerce's queue as well as ours whenever it is the newer.
+6. Run `composer docs:check`. The generated parts of `readme.txt` and of `docs/` must be
    free of drift.
-6. Merge that change through a pull request like any other. Then create the annotated tag
+7. Merge that change through a pull request like any other. Then create the annotated tag
    `vX.Y.Z` on the merge commit. Pushing the tag starts the release workflow. Tags are
    created for releases only, and only by a maintainer.
+
+## The system cron in the install guide
+
+Background jobs run on WP-Cron, from `wp seocart jobs run` and from a short tick on admin
+requests. An install guide that tells a merchant to set up a system crontab, for a site where
+WP-Cron does not fire reliably, must put both commands in it:
+
+```sh
+* * * * * wp --path=/path/to/wordpress cron event run --due-now --quiet
+* * * * * wp --path=/path/to/wordpress seocart jobs run --quiet
+```
+
+`wp seocart jobs run` drains the outbox and runs SEOCart's own due jobs and nothing else: a
+WP-Cron event that is due is still due after it. `wp cron event run --due-now` runs the due
+events, among them the queue runner of Action Scheduler, which runs the actions of every plugin
+on the site, WooCommerce's included. A crontab with only the second line leaves those waiting.
 
 ## Build the package
 

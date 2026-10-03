@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Integration\Jobs;
 
 use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\Jobs\JobsTestCase;
+use SEOCart\Tests\Support\Jobs\PluginActions;
 
 /**
  * The highest version wins whatever the load order, SEOCart's jobs run under it, the report names it, and another group is never touched.
@@ -65,6 +66,21 @@ final class CoexistenceTest extends JobsTestCase {
 		}
 
 		parent::tear_down_after_class();
+	}
+
+	/**
+	 * Removes the library's own daily housekeeping action, which the child processes schedule.
+	 *
+	 * Each child process runs the library's queue, and the library then schedules its recurring
+	 * `action_scheduler_run_recurring_actions_schedule_hook` in a group of its own, which neither
+	 * the plugin's group nor the plugin's hook covers, so it would be left in the database.
+	 *
+	 * @since 0.1.0
+	 */
+	public function tear_down(): void {
+		PluginActions::purge( array( 'action_scheduler_run_recurring_actions_schedule_hook' ) );
+
+		parent::tear_down();
 	}
 
 	/**

@@ -276,18 +276,12 @@ final class DoctorTest extends DatabaseTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_doctor_says_writes_are_refused_only_when_the_gate_refuses_them(): void {
-		global $wpdb;
-
-		$records    = $this->db->table( 'migrations' );
 		$migrations = $this->registry->migrations();
 		$head       = end( $migrations )->id();
 		$future     = '29990101_0001_from_a_newer_release';
-		$rename     = static function ( string $from, string $to ) use ( $wpdb, $records ): void {
-			$wpdb->query( $wpdb->prepare( 'UPDATE %i SET migration_id = %s WHERE migration_id = %s', $records, $to, $from ) );
-		};
 
 		// Recording the logs migration under another id leaves it unapplied, while later ones stay applied.
-		$rename( CreateLogsMigration::ID, '00000000_0000_placeholder' );
+		$this->renameRecord( CreateLogsMigration::ID, '00000000_0000_placeholder' );
 
 		$this->assertSame( DoctorCommand::EXIT_FAILED, $this->doctor() );
 
@@ -297,20 +291,92 @@ final class DoctorTest extends DatabaseTestCase {
 		$this->assertStringNotContainsString( 'Commerce writes are refused', $output );
 		$this->assertFalse( $this->migrator->writesBlocked( $head ), 'The gate lets writes through, so doctor must not say it refuses them.' );
 
-		$rename( '00000000_0000_placeholder', CreateLogsMigration::ID );
+		$this->renameRecord( '00000000_0000_placeholder', CreateLogsMigration::ID );
 
 		$this->assertSame( DoctorCommand::EXIT_OK, $this->doctor(), implode( "\n", $this->printed ) );
 
 		// Recording the newest migration under an id from a newer release makes the schema newer than the code.
-		$rename( $head, $future );
+		$this->renameRecord( $head, $future );
 
 		$this->assertSame( DoctorCommand::EXIT_FAILED, $this->doctor() );
 		$this->assertStringContainsString( 'Commerce writes are refused until the schema matches the code.', implode( "\n", $this->printed ) );
 		$this->assertTrue( $this->migrator->writesBlocked( $future ), 'The gate refuses writes when the schema is newer than the code.' );
 
-		$rename( $future, $head );
+		$this->renameRecord( $future, $head );
 
 		$this->assertSame( DoctorCommand::EXIT_OK, $this->doctor(), implode( "\n", $this->printed ) );
+	}
+
+	/**
+	 * Tests that doctor names a migration once: an out-of-order one in its own line, the rest as not applied.
+	 *
+	 * Recording a migration under another id leaves it unapplied. Done to the logs migration, which
+	 * sorts before the newest applied one, it is out of order. Done to the newest migration, it
+	 * is only not applied, because nothing applied sorts after it. Each case alone, then both:
+	 * an id is in one line, and the other output is what it was.
+	 *
+	 * Planted violation: in MigrationsCheck::run(), list `$status->pending()` in the "Not applied"
+	 * line, as it was before, so an out-of-order migration is named there too.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_doctor_names_each_unapplied_migration_once(): void {
+		$migrations  = $this->registry->migrations();
+		$head        = end( $migrations )->id();
+		$outOfOrder  = CreateLogsMigration::ID;
+		$notApplied  = 'Not applied: ' . $head . '. Run `wp seocart migrate`.';
+		$placeholder = static fn( string $id ): string => '00000000_0000_placeholder_of_' . $id;
+
+		$this->renameRecord( $outOfOrder, $placeholder( $outOfOrder ) );
+
+		$this->assertSame( DoctorCommand::EXIT_FAILED, $this->doctor() );
+
+		$output = implode( "\n", $this->printed );
+
+		$this->assertSame( 1, substr_count( $output, $outOfOrder ), "An out-of-order migration is named once.\n" . $output );
+		$this->assertStringContainsString( 'Migration ' . $outOfOrder . ' is out of order', $output );
+		$this->assertStringNotContainsString( 'Not applied', $output, 'The out-of-order migration is the only one unapplied, so no line lists it as not applied.' );
+
+		$this->renameRecord( $placeholder( $outOfOrder ), $outOfOrder );
+		$this->renameRecord( $head, $placeholder( $head ) );
+
+		$this->assertSame( DoctorCommand::EXIT_FAILED, $this->doctor() );
+
+		$output = implode( "\n", $this->printed );
+
+		$this->assertSame( 1, substr_count( $output, $head ), "A migration that is only not applied is named once.\n" . $output );
+		$this->assertStringContainsString( $notApplied, $output );
+		$this->assertStringNotContainsString( 'out of order', $output );
+
+		$this->renameRecord( $outOfOrder, $placeholder( $outOfOrder ) );
+
+		$this->assertSame( DoctorCommand::EXIT_FAILED, $this->doctor() );
+
+		$output = implode( "\n", $this->printed );
+
+		$this->assertSame( 1, substr_count( $output, $outOfOrder ), "With both, the out-of-order migration is still named once.\n" . $output );
+		$this->assertSame( 1, substr_count( $output, $head ), "With both, the other is still named once.\n" . $output );
+		$this->assertStringContainsString( $notApplied, $output );
+		$this->assertStringContainsString( 'Migration ' . $outOfOrder . ' is out of order', $output );
+
+		$this->renameRecord( $placeholder( $outOfOrder ), $outOfOrder );
+		$this->renameRecord( $placeholder( $head ), $head );
+
+		$this->assertSame( DoctorCommand::EXIT_OK, $this->doctor(), implode( "\n", $this->printed ) );
+	}
+
+	/**
+	 * Records an applied migration under another id, or back under its own.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $from The id it is recorded under.
+	 * @param string $to   The id to record it under.
+	 */
+	private function renameRecord( string $from, string $to ): void {
+		global $wpdb;
+
+		$wpdb->query( $wpdb->prepare( 'UPDATE %i SET migration_id = %s WHERE migration_id = %s', $this->db->table( 'migrations' ), $to, $from ) );
 	}
 
 	/**

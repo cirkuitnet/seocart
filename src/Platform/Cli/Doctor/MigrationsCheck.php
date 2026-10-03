@@ -27,7 +27,7 @@ defined( 'ABSPATH' ) || exit;
  * writesBlocked() answer for the newest applied id, the call the per-request gate makes, so
  * doctor never says writes are refused when the gate lets them through. A pending migration that
  * sorts before the newest applied one is such a case: the gate counts only migrations after the
- * head, so doctor names it as out of order and says writes are not refused for it. A migration
+ * head, so doctor names it as out of order, once, and says writes are not refused for it. A migration
  * whose class file no longer has the checksum recorded when it was applied is reported too:
  * the migrator only reports that during a run, and a release that edits an applied migration
  * ships a schema no site will ever get. The checksum is the migrator's own,
@@ -129,8 +129,11 @@ final class MigrationsCheck implements Check {
 			$findings[] = sprintf( 'Migration %s is recorded as running: a run is in progress, or one was interrupted.', $status->running() );
 		}
 
-		if ( array() !== $status->pending() ) {
-			$findings[] = sprintf( 'Not applied: %s. Run `wp seocart migrate`.', implode( ', ', $status->pending() ) );
+		// A migration that is out of order has a line of its own below, which says more.
+		$notApplied = array_diff( $status->pending(), $status->outOfOrder() );
+
+		if ( array() !== $notApplied ) {
+			$findings[] = sprintf( 'Not applied: %s. Run `wp seocart migrate`.', implode( ', ', $notApplied ) );
 		}
 
 		foreach ( $status->outOfOrder() as $id ) {
