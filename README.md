@@ -12,14 +12,18 @@ plugin directory lives in `readme.txt`.
 
 ## Status
 
-**Pre-release foundation. The plugin sells nothing yet.**
+**Pre-release. The plugin cannot take a real payment and has no storefront.**
 
-The repository currently holds the skeleton that the store will be built on: a main file
-that checks versions and boots an empty kernel, the directory layout, the build tooling, the
-quality gates and the test harnesses. There are no products, no cart, no checkout, no
-database tables and no admin screens. Do not install it on a production site.
+The repository holds the store's engine, reached through the REST API, the Abilities API and
+WP-CLI: products with variants and prices, stock, a cart and a checkout through a Store API,
+orders, payments through a stub gateway, promotion codes and prices in more than one currency.
+Refunds are in the code, but no route or command reaches them yet. There are no storefront
+blocks, no payment gateway (the plugin ships only a stub that answers from a script) and no
+admin screen of its own beyond the product editor panel. Do not install it on a production
+site.
 
-The architecture is decided. The developer documentation is in [docs/](docs/README.md).
+The architecture is decided. The developer documentation is in [docs/](docs/README.md), and
+[docs/architecture.md](docs/architecture.md) is the place to start reading the code.
 [CHANGELOG.md](CHANGELOG.md) records what exists so far.
 
 ## Principles
@@ -69,8 +73,11 @@ npm run build
 against the size budget in `budget.json`.
 
 To try the plugin in WordPress, place or symlink the checkout at
-`wp-content/plugins/seocart` and activate **SEOCart** on the Plugins screen. It activates
-cleanly and does nothing else yet.
+`wp-content/plugins/seocart` and activate **SEOCart** on the Plugins screen. Activation
+creates the plugin's database tables, its roles and capabilities and its recurring jobs. The
+REST routes under `seocart/v1`, `seocart/store/v1` and `wp/v2/seocart-products` and the
+`wp seocart` commands are then available;
+[docs/adding-an-operation.md](docs/adding-an-operation.md) uses them.
 
 [docs/development.md](docs/development.md) has the full setup, including the database for
 the integration suite and disposable test sites.
@@ -93,6 +100,12 @@ of them a change must pass.
 
 - [docs/README.md](docs/README.md) — the index of all documentation.
 - [docs/development.md](docs/development.md) — setting up a working copy.
+- [docs/architecture.md](docs/architecture.md) — how the code is organised: modules, layers,
+  and how a request reaches a service.
+- [docs/adding-an-operation.md](docs/adding-an-operation.md) — add a field to an operation and
+  see the REST route, the Ability, the command and the OpenAPI document change together.
+- [docs/migrations.md](docs/migrations.md) — how to write a migration, and add a table or a
+  column.
 - [docs/testing.md](docs/testing.md) — the test layers, the commands and the rules for
   writing tests.
 - [docs/releasing.md](docs/releasing.md) — how a release is packaged and checked.

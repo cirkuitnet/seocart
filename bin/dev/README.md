@@ -116,8 +116,12 @@ leave nothing behind.
 - The smoke check runs on the server. If the site's public name does not answer from
   there (split DNS, TLS terminated elsewhere), it asks the machine's own addresses for the
   same URL; `SEOCART_DEV_SMOKE_CONNECT_TO=<address>` names one explicitly.
-- `wp seocart migrate` and `wp seocart test-seed` do not exist yet. `provision-site.sh` has
-  one marked hook point for them.
+- Activating the plugin applies its migrations, so the script never runs `wp seocart migrate`
+  (the command exists; use it to apply migrations later). There is no `wp seocart test-seed`:
+  to seed an instance, run `wp --path=<the instance directory> eval-file tests/Support/Seed/seed-site.php` from the
+  checkout, as
+  [docs/testing.md](../../docs/testing.md#reference-datasets-and-query-plans) describes.
+  `provision-site.sh` keeps one marked hook point for such a command, which nothing uses.
 
 ## The residue guarantee
 

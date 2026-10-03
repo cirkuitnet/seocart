@@ -29,14 +29,14 @@ definition of done, so it is not repeated here.
 
 From many, fast and cheap to few, slow and high in value:
 
-| Layer                 | Tooling                                                             | Lives in             | What belongs there                                                                                                                                                          |
-| --------------------- | ------------------------------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unit                  | PHPUnit. No WordPress, no database                                  | `tests/Unit/`        | Domain and Application code, `src/Support/`: value objects, the calculation pipeline, state machines, promotion and stock rules                                             |
-| Tool self-tests       | PHPUnit. No WordPress                                               | `tools/`             | The custom PHP_CodeSniffer sniffs and the packaging, readme and licence checkers. Each one is shown to fail on a fixture that violates its rule                             |
-| JavaScript unit       | Jest, through `@wordpress/scripts`                                  | `tests/JS/`          | Interactivity API store logic as plain functions, client-side formatting helpers, the plugin's own admin components                                                         |
-| WordPress integration | PHPUnit with `wp-phpunit` and `WP_UnitTestCase`, against real MySQL | `tests/Integration/` | Anything that needs a real `$wpdb`, real hooks or a real request lifecycle: repositories, migrations, transactions, the hook bridge, capabilities, REST routes, jobs, cache |
-| API contract          | PHPUnit, group `contract`                                           | both PHPUnit suites  | The DRY derivation checks: every route, Ability and command resolves to one declaration; every compiled schema and declared example is valid                                |
-| End-to-end            | Playwright with `@wordpress/e2e-test-utils-playwright` and axe      | `tests/E2E/`         | The smallest number of real journeys through a real browser against a real site. Accessibility assertions run in the same suite                                             |
+| Layer                 | Tooling                                                             | Lives in                                                 | What belongs there                                                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit                  | PHPUnit. No WordPress, no database                                  | `tests/Unit/`                                            | Domain and Application code, `src/Support/`: value objects, the calculation pipeline, state machines, promotion and stock rules                                             |
+| Tool self-tests       | PHPUnit. No WordPress                                               | `tools/`                                                 | The custom PHP_CodeSniffer sniffs and the packaging, readme and licence checkers. Each one is shown to fail on a fixture that violates its rule                             |
+| JavaScript unit       | Jest, through `@wordpress/scripts`                                  | `tests/JS/`, and `test/` beside the code under `assets/` | Client-side logic as plain functions: the asset-budget check, and the product editor panel in `assets/admin/product-editor/` (its amount and translation helpers)           |
+| WordPress integration | PHPUnit with `wp-phpunit` and `WP_UnitTestCase`, against real MySQL | `tests/Integration/`                                     | Anything that needs a real `$wpdb`, real hooks or a real request lifecycle: repositories, migrations, transactions, the hook bridge, capabilities, REST routes, jobs, cache |
+| API contract          | PHPUnit, group `contract`                                           | both PHPUnit suites                                      | The DRY derivation checks: every route, Ability and command resolves to one declaration; every compiled schema and declared example is valid                                |
+| End-to-end            | Playwright with `@wordpress/e2e-test-utils-playwright` and axe      | `tests/E2E/`                                             | The smallest number of real journeys through a real browser against a real site. Accessibility assertions run in the same suite                                             |
 
 ### Unit tests
 
@@ -115,7 +115,7 @@ the source of truth. Run `composer list` or `npm run` to see them with their des
 | `composer lint:php`                      | A syntax check of every PHP file, with parallel-lint                                                            |
 | `composer cs`                            | PHP_CodeSniffer: the WordPress Coding Standards, PHPCompatibilityWP and the SEOCart DRY and compliance sniffs   |
 | `composer cs:fix`                        | PHP Code Beautifier: fixes the violations that can be fixed automatically                                       |
-| `composer cs:dry`                        | Only the SEOCart DRY and compliance sniffs, on `seocart.php`, `uninstall.php` and `src/`                        |
+| `composer cs:dry`                        | Only the SEOCart DRY and compliance sniffs, on `seocart.php`, `uninstall.php`, `src/` and `templates/`          |
 | `composer stan`                          | PHPStan at the level set in `phpstan.neon.dist`                                                                 |
 | `composer test`                          | `test:unit`, then `test:integration`                                                                            |
 | `composer test:unit`                     | The `unit` suite. WordPress is never loaded                                                                     |
@@ -138,8 +138,9 @@ the source of truth. Run `composer list` or `npm run` to see them with their des
 | `composer scope-vendor`                  | Runs Strauss. Not a gate; `composer install` runs it for you                                                    |
 | `composer audit`                         | Composer's own check of the dependencies against known security advisories                                      |
 
-A group command fails while its group has no test, because an empty run proves nothing. That
-is expected until that group has its first test.
+A group command fails when its group selects no test, because an empty run proves nothing. Every
+group has tests today, so if one fails for that reason, the group name or the test's `@group`
+annotation is wrong.
 
 ### npm
 
@@ -179,7 +180,8 @@ is expected until that group has its first test.
 
 `tests/Support/Seed/ReferenceSeed.php` writes a reference dataset: products with their posts
 (every second one also in a second locale), variants, base-currency prices, stock items with
-a ledger of merchant movements, and a share of live and expired holds. It is deterministic: a
+a ledger of merchant movements, a share of live and expired holds, carts with their lines (most
+live, the rest expired), and single-use promotion codes. It writes no orders. It is deterministic: a
 fixed RNG seed and one anchor time give byte-identical rows. It writes the tables directly
 with multi-row `INSERT`s, for speed, so a seeded store is checked rather than trusted:
 `wp seocart doctor` must pass, and the catalog must answer `sellable` for every seeded variant.
@@ -203,7 +205,7 @@ that now keeps the rule; and it fails when the catalog's or the inventory's sour
 `SELECT` the run did not send. Give it a test database of its own: the seed refuses a store that
 already has products, and `WP_PHPUNIT__TESTS_CONFIG` names the configuration to use. CI runs it
 as the required `query-plans` job. To seed a disposable development site by hand, run
-`SEOCART_SEED_DISPOSABLE=1 SEOCART_SEED_DATASET=medium wp eval-file tests/Support/Seed/seed-site.php`
+`SEOCART_SEED_DISPOSABLE=1 SEOCART_SEED_DATASET=medium wp --path=<the instance directory> eval-file tests/Support/Seed/seed-site.php`
 from the checkout; it refuses a site whose environment type is not `local` or `development`.
 
 ## The planted-violation rule
@@ -249,15 +251,15 @@ A test that can fail because of when or where it ran is a defect in the test.
 
 ## Where the suites run
 
-| Suite or gate                         | On a development machine                                           | In continuous integration                                       |
-| ------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------- |
-| Static gates, unit, tool self-tests   | Anywhere PHP and Composer are installed                            | Every pull request, on each supported PHP version               |
-| JavaScript lint and unit              | Anywhere Node.js is installed                                      | Every pull request                                              |
-| Integration and its groups            | Against a dedicated MySQL database                                 | Every pull request, against a MySQL service                     |
-| Action Scheduler coexistence          | On a disposable site with WooCommerce active                       | A scheduled job, not a gate on every pull request               |
-| Multilingual conformance              | On a disposable site with Polylang (free) active                   | Every pull request and every push to main; not a required check |
-| End-to-end and accessibility          | From any machine with a browser, against a disposable site         | A secondary job against a disposable site                       |
-| Packaging and the WordPress.org gates | `composer wporg:check`, `composer licenses:check`, the zip scripts | Every pull request and every release                            |
+| Suite or gate                         | On a development machine                                                           | In continuous integration                                                                                        |
+| ------------------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Static gates, unit, tool self-tests   | Anywhere PHP and Composer are installed                                            | Every pull request, on each supported PHP version                                                                |
+| JavaScript lint and unit              | Anywhere Node.js is installed                                                      | Every pull request                                                                                               |
+| Integration and its groups            | Against a dedicated MySQL database                                                 | Every pull request, against a MySQL service, also as a multisite and, for the query plans, on the medium dataset |
+| Action Scheduler coexistence          | In the integration suite, and by hand on a disposable site with WooCommerce active | In the integration suite (`tests/Integration/Jobs/CoexistenceTest.php`); no job installs WooCommerce             |
+| Multilingual conformance              | On a disposable site with Polylang (free) active                                   | Every pull request and every push to main; not a required check                                                  |
+| End-to-end and accessibility          | From any machine with a browser, against a disposable site                         | A secondary job against a disposable site                                                                        |
+| Packaging and the WordPress.org gates | `composer wporg:check`, `composer licenses:check`, the zip scripts                 | Every pull request and every release                                                                             |
 
 `bin/ci/polylang-pin.env` states the one Polylang (free) version, and its checksum, that both
 places install. To run the suite by hand: `sh bin/ci/download-polylang.sh <dir>` downloads

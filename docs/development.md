@@ -185,8 +185,9 @@ copy them into a tracked file, an issue, a pull request or a log.
 
 `npm run test:e2e` runs Playwright against a running site. It reads the same three variables
 — `WP_BASE_URL`, `WP_USERNAME` and `WP_PASSWORD` — from the environment or from a `.env`
-file in the repository root, which git ignores. Load the instance file that
-`provision-site.sh` wrote, or copy its three values into `.env`.
+file in the repository root, which git ignores. Copy `.env.example` to `.env` and fill it in,
+point `SEOCART_E2E_ENV_FILE` at the instance file that `provision-site.sh` wrote, or copy that
+file's three values into `.env`.
 
 Two Store API tests need a promotion code and a second currency on the site. Seed a disposable
 site once with `tests/E2E/seed.php`, and give the suite the two names it prints; see
@@ -219,10 +220,12 @@ needed to contribute.
 Any local WordPress site that meets the [README requirements](../README.md#requirements)
 works: place or symlink your clone at `wp-content/plugins/seocart`. If you have Docker,
 [`wp-env`](https://developer.wordpress.org/block-editor/reference-guides/packages/packages-env/)
-is the standard way to get one: run `npx @wordpress/env start` in the clone, and it starts a
-WordPress site with the current directory mounted as a plugin. The repository does not ship
-a `.wp-env.json` yet, so set the WordPress and PHP versions yourself if the defaults are too
-old or too new.
+is the standard way to get one: run `npm run env:start` in the clone, and it starts a
+WordPress site with the current directory mounted as the plugin. The repository ships a
+`.wp-env.json` that does the mounting and, after the site starts, defines
+`SEOCART_ENCRYPTION_KEY` in its `wp-config.php` if it is not defined. It does not pin a
+WordPress or PHP version, so set `core` and `phpVersion` in that file yourself if the defaults
+are too old or too new. `npm run env:cli -- wp plugin list` runs WP-CLI in that site.
 
 `wp-env` is a convenient way to run the plugin. It is not the project's source of truth for
 integration tests; a real MySQL server is.

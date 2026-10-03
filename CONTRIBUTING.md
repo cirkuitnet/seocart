@@ -78,7 +78,7 @@ which needs Docker. The integration suite needs a MySQL database;
 Every change is reviewed by someone who did not write it, and nothing is merged without that
 review. A second, senior WordPress review is also required for:
 
-- the first slice of a new module;
+- the first pull request of a new module;
 - any change to the platform kernel;
 - any deviation from the agreed architecture.
 
