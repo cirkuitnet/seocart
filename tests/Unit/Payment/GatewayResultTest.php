@@ -12,9 +12,9 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Payment;
 
 use PHPUnit\Framework\TestCase;
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
-use SEOCart\Payment\Domain\Operation;
-use SEOCart\Payment\Domain\Outcome;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Money;
 

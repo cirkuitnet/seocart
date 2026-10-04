@@ -11,14 +11,14 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
+use SEOCart\Contracts\Payment\GatewayUnavailable;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Domain\ApplicationKind;
-use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
 use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Payment\Domain\IntentStatus;
-use SEOCart\Payment\Domain\Operation;
-use SEOCart\Payment\Domain\Outcome;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Support\Error\CodedException;
@@ -74,12 +74,12 @@ final class AuthorizeAndReconcileTest extends PaymentTestCase {
 	public function test_a_missing_token_is_declined_and_an_unknown_intent_is_not_found(): void {
 		list( , $intent ) = $this->placeWithIntent();
 
-		$declined = $this->payments->authorize( $intent->uuid, array( 'payment_token' => array( 'not', 'a', 'token' ) ) );
+		$declined = $this->payments->authorize( $intent->uuid, array( 'payment_token' => array( 'not', 'a', 'token' ) ), self::ORDER_UUID, self::ORDER_NUMBER );
 
 		$this->assertSame( array( Outcome::Declined, StubGateway::INVALID_TOKEN ), array( $declined->outcome, $declined->errorCode ) );
 
 		try {
-			$this->payments->authorize( '00000000-0000-7000-8000-000000000000', array( PaymentService::PAYMENT_TOKEN => StubGateway::APPROVE ) );
+			$this->payments->authorize( '00000000-0000-7000-8000-000000000000', array( PaymentService::PAYMENT_TOKEN => StubGateway::APPROVE ), self::ORDER_UUID, self::ORDER_NUMBER );
 			$this->fail( 'An unknown intent was authorized.' );
 		} catch ( CodedException $refused ) {
 			$this->assertSame( PaymentError::IntentNotFound, $refused->errorCode() );
@@ -110,9 +110,10 @@ final class AuthorizeAndReconcileTest extends PaymentTestCase {
 	}
 
 	/**
-	 * Tests that a gateway that does not answer leaves the intent as it was, for reconciliation, which then learns the gateway has no record of it: a declined authorization `not_found`.
+	 * Tests that a gateway that does not answer leaves the intent as it was, for reconciliation, which then learns the gateway has no record of it: a declined authorization `not_found`, believed once the intent is stale.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 A not-found about an intent too young for the provider to have found it is taken for no answer.
 	 */
 	public function test_a_gateway_that_does_not_answer_changes_nothing(): void {
 		list( , $intent ) = $this->placeWithIntent();
@@ -127,8 +128,12 @@ final class AuthorizeAndReconcileTest extends PaymentTestCase {
 		}
 
 		$this->assertSame( $before, $this->snapshot() );
+		$this->assertNull( $this->payments->queryGateway( $intent ), 'The intent was just made: the provider could not have found it yet.' );
+		$this->assertContains( PaymentService::NOT_FOUND_IGNORED, array_column( $this->reports, 'code' ) );
 
-		$answer = $this->payments->queryGateway( $intent );
+		$this->age( $intent, 900, 900 );
+
+		$answer = $this->payments->queryGateway( $this->payments->staleIntents( 600, 1 )[0] );
 
 		$this->assertNotNull( $answer, 'The stub never gave the intent a reference, so it says it has no record of it.' );
 		$this->assertSame(
@@ -293,7 +298,7 @@ final class AuthorizeAndReconcileTest extends PaymentTestCase {
 		foreach ( $intents as $intent ) {
 			$row = $this->intentRow( $intent->uuid );
 
-			$refs[ $intent->uuid ] = new IntentRef( $intent->uuid, $intent->orderId, IntentStatus::from( (string) $row['status'] ), null === $row['provider_intent_id'] ? null : (string) $row['provider_intent_id'], $intent->amount );
+			$refs[ $intent->uuid ] = new IntentRef( $intent->uuid, $intent->orderId, $intent->gatewayId, $intent->mode, IntentStatus::from( (string) $row['status'] ), null === $row['provider_intent_id'] ? null : (string) $row['provider_intent_id'], $intent->amount );
 		}
 
 		return $refs;

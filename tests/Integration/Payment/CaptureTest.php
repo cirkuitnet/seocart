@@ -11,12 +11,12 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
+use SEOCart\Contracts\Payment\PaymentRequest;
 use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Domain\ApplicationKind;
 use SEOCart\Payment\Domain\Event\PaymentCaptured;
-use SEOCart\Payment\Domain\Gateway\PaymentRequest;
 use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
@@ -208,7 +208,7 @@ final class CaptureTest extends PaymentTestCase {
 
 		$capturer = $this->userWithRole();
 		$calls    = array(
-			'authorize'    => fn() => $this->payments->authorize( $intent->uuid, array() ),
+			'authorize'    => fn() => $this->payments->authorize( $intent->uuid, array(), self::ORDER_UUID, self::ORDER_NUMBER ),
 			'capture'      => fn() => $this->payments->capture( $intent->uuid, $capturer ),
 			'queryGateway' => fn() => $this->payments->queryGateway( $intent ),
 		);
@@ -255,7 +255,7 @@ final class CaptureTest extends PaymentTestCase {
 		);
 
 		try {
-			$this->db->transaction( fn() => $this->gateway->authorize( new PaymentRequest( $intent->uuid, $intent->amount, StubGateway::APPROVE ) ) );
+			$this->db->transaction( fn() => $this->gateway->authorize( new PaymentRequest( $intent->uuid, $intent->amount, StubGateway::APPROVE, $intent->mode, self::ORDER_UUID, self::ORDER_NUMBER ) ) );
 			$this->fail( 'A gateway request was sent inside a transaction.' );
 		} catch ( ForbiddenInsideTransaction $refused ) {
 			$this->assertSame( ForbiddenInsideTransaction::KIND_HTTP, $refused->kind() );

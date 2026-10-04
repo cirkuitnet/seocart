@@ -11,11 +11,12 @@ declare( strict_types=1 );
 
 namespace SEOCart\Payment\Infrastructure;
 
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\IntentTransitions;
-use SEOCart\Payment\Domain\Operation;
 use SEOCart\Payment\Domain\PaymentIntent;
 use SEOCart\Payment\Domain\PaymentRepository;
 use SEOCart\Platform\Database\Database;
@@ -60,7 +61,7 @@ final class MysqlPaymentRepository implements PaymentRepository {
 	 *
 	 * @var string
 	 */
-	public const INSERT_INTENT = "INSERT INTO {payment_intents} SET uuid = %s, order_id = %d, gateway_id = %s, status = 'created', amount_minor = %d, currency = %s, "
+	public const INSERT_INTENT = "INSERT INTO {payment_intents} SET uuid = %s, order_id = %d, gateway_id = %s, mode = %s, status = 'created', amount_minor = %d, currency = %s, "
 		. 'conversion_context_id = %d, base_currency = %s, base_amount_minor = %d, created_at = UTC_TIMESTAMP(6), updated_at = UTC_TIMESTAMP(6)';
 
 	/**
@@ -70,7 +71,7 @@ final class MysqlPaymentRepository implements PaymentRepository {
 	 *
 	 * @var string
 	 */
-	public const LOCK_INTENT = 'SELECT id, uuid, order_id, gateway_id, status, amount_minor, currency, base_amount_minor, base_currency, conversion_context_id, '
+	public const LOCK_INTENT = 'SELECT id, uuid, order_id, gateway_id, mode, status, amount_minor, currency, base_amount_minor, base_currency, conversion_context_id, '
 		. 'authorized_minor, captured_minor, refunded_minor, provider_intent_id FROM {payment_intents} WHERE uuid = %s FOR UPDATE';
 
 	/**
@@ -80,7 +81,7 @@ final class MysqlPaymentRepository implements PaymentRepository {
 	 *
 	 * @var string
 	 */
-	public const FIND_INTENT = 'SELECT id, uuid, order_id, gateway_id, status, amount_minor, currency, base_amount_minor, base_currency, conversion_context_id, '
+	public const FIND_INTENT = 'SELECT id, uuid, order_id, gateway_id, mode, status, amount_minor, currency, base_amount_minor, base_currency, conversion_context_id, '
 		. 'authorized_minor, captured_minor, refunded_minor, provider_intent_id FROM {payment_intents} WHERE uuid = %s';
 
 	/**
@@ -187,17 +188,19 @@ final class MysqlPaymentRepository implements PaymentRepository {
 		. 'WHERE id = %d AND status IN ({list})';
 
 	/**
-	 * A page of the intents in some states that have not changed for a while by the database clock, in the order they were created, after the uuid of the page before, each with when its wait runs out and whether it has.
+	 * A page of the intents in some states that have not changed for a while by the database clock, in the order they were created, after the uuid of the page before, each with its gateway, mode and age, and when its wait runs out and whether it has.
 	 *
 	 * Uuids are time-ordered, so the uuid order is the order of creation, and a caller that pages
 	 * from the last uuid it read reaches every waiting intent, however many the gateway never answers.
-	 * Whether a wait has run out is judged by the database clock, the one that set it.
+	 * Whether a wait has run out, and how old an intent is, are judged by the database clock, the
+	 * one that set them.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const STALE_INTENTS = 'SELECT uuid, order_id, status, provider_intent_id, amount_minor, currency, customer_action_expires_at, customer_action_expires_at <= UTC_TIMESTAMP() AS expired '
+	public const STALE_INTENTS = 'SELECT uuid, order_id, gateway_id, mode, status, provider_intent_id, amount_minor, currency, customer_action_expires_at, customer_action_expires_at <= UTC_TIMESTAMP() AS expired, '
+		. 'TIMESTAMPDIFF( SECOND, created_at, UTC_TIMESTAMP(6) ) AS age_seconds '
 		. 'FROM {payment_intents} WHERE status IN ({list}) AND updated_at < UTC_TIMESTAMP(6) - INTERVAL %d SECOND AND uuid > %s ORDER BY uuid LIMIT %d';
 
 	/**
@@ -355,14 +358,15 @@ final class MysqlPaymentRepository implements PaymentRepository {
 	 * @param int    $orderId             The order it pays for.
 	 * @param string $uuid                Its public identifier.
 	 * @param string $gatewayId           The gateway it is paid through.
+	 * @param Mode   $mode                The provider mode it is created in.
 	 * @param Money  $amount              Its amount, in the order's currency.
 	 * @param Money  $baseAmount          Its amount in the base currency, at the order's rate.
 	 * @param int    $conversionContextId The rate it is frozen at.
 	 * @return int The intent's id.
 	 */
-	public function insertIntent( int $orderId, string $uuid, string $gatewayId, Money $amount, Money $baseAmount, int $conversionContextId ): int {
+	public function insertIntent( int $orderId, string $uuid, string $gatewayId, Mode $mode, Money $amount, Money $baseAmount, int $conversionContextId ): int {
 		$this->statements->requireTransaction( __METHOD__ );
-		$this->statements->execute( self::INSERT_INTENT, $uuid, $orderId, $gatewayId, $amount->minorUnits(), $amount->currency()->code(), $conversionContextId, $baseAmount->currency()->code(), $baseAmount->minorUnits() );
+		$this->statements->execute( self::INSERT_INTENT, $uuid, $orderId, $gatewayId, $mode->value, $amount->minorUnits(), $amount->currency()->code(), $conversionContextId, $baseAmount->currency()->code(), $baseAmount->minorUnits() );
 
 		return $this->statements->lastInsertId();
 	}
@@ -558,7 +562,8 @@ final class MysqlPaymentRepository implements PaymentRepository {
 	 * @param int            $olderThanSeconds How long they have not changed, at least, by the database's clock.
 	 * @param string         $afterUuid        The uuid of the last intent of the page before, or '' for the first page.
 	 * @param int            $limit            The most to list.
-	 * @return list<IntentRef> The intents, each with when its wait runs out and whether it had by the database's clock.
+	 * @return list<IntentRef> The intents, each with its gateway and mode, its age, and when its wait runs out and
+	 *                         whether it had, by the database's clock.
 	 *
 	 * @phpstan-param list<IntentStatus> $states
 	 */
@@ -567,9 +572,12 @@ final class MysqlPaymentRepository implements PaymentRepository {
 			static fn( array $row ): IntentRef => new IntentRef(
 				(string) $row['uuid'],
 				(int) $row['order_id'],
+				(string) $row['gateway_id'],
+				Mode::from( (string) $row['mode'] ),
 				IntentStatus::from( (string) $row['status'] ),
 				null === $row['provider_intent_id'] ? null : (string) $row['provider_intent_id'],
 				Money::of( (int) $row['amount_minor'], Currency::of( (string) $row['currency'] ) ),
+				(int) $row['age_seconds'],
 				null === $row['customer_action_expires_at'] ? null : new \DateTimeImmutable( (string) $row['customer_action_expires_at'], new \DateTimeZone( 'UTC' ) ),
 				'1' === (string) $row['expired']
 			),
@@ -791,6 +799,7 @@ final class MysqlPaymentRepository implements PaymentRepository {
 			(string) $row['uuid'],
 			(int) $row['order_id'],
 			(string) $row['gateway_id'],
+			Mode::from( (string) $row['mode'] ),
 			IntentStatus::from( (string) $row['status'] ),
 			$money( $row['amount_minor'] ),
 			Money::of( (int) $row['base_amount_minor'], Currency::of( (string) $row['base_currency'] ) ),

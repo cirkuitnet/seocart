@@ -35,8 +35,9 @@
 #      and an order for it, installing this zip over it queues the migrations since as a job;
 #      once the plugin's job runner has run it (`wp seocart jobs run`: what cron does), every
 #      migration since is recorded once, as applied, none of the earlier ones ran again, and the
-#      product, its stock, the order and every data table are as they were (CHECKSUM TABLE, so
-#      a changed value shows);
+#      product, its stock, the order and every value of every data table are as they were:
+#      each column a table had before reads the same, so a column the upgrade adds is allowed
+#      and a value it changed or lost shows;
 #   3. a guest buys the product through the Store API with the stub gateway and reads the
 #      order back, with the earlier zip when there is one (the new tables are written and read);
 #   4. deactivate and reactivate;
@@ -388,13 +389,17 @@ plugin_tables() {
 	printf '%s\n' "$found" | sed -e "s/^$1//" | sort
 }
 
-# Prints one line per plugin table of the current site: its name, how many rows it holds and its
-# CHECKSUM TABLE, which changes when any value of any row does. $1 is an optional extended
-# regular expression of table names, without the prefix, to leave out.
+# Prints one line per plugin table of the current site: its name, how many rows it holds, a hash
+# of every value of every row, and the columns hashed. $1 is an optional extended regular
+# expression of table names, without the prefix, to leave out. $2 is an optional earlier output
+# of this function: each table it names is then read by the columns it had then, so a migration
+# that adds a column keeps the hash of the values that were there, and one that drops or changes
+# a value does not.
 table_checksums() {
 	SMOKE_PREFIX=$table_prefix
 	SMOKE_SKIP=${1:-}
-	export SMOKE_PREFIX SMOKE_SKIP
+	SMOKE_COLUMNS=${2:-}
+	export SMOKE_PREFIX SMOKE_SKIP SMOKE_COLUMNS
 	# The PHP source is a literal: nothing in it is meant to expand in the shell.
 	# shellcheck disable=SC2016
 	site_wp --skip-plugins --skip-themes eval '
@@ -407,17 +412,25 @@ table_checksums() {
 			fwrite( STDERR, "install-smoke: no plugin tables could be listed: " . $wpdb->last_error . PHP_EOL );
 			exit( 1 );
 		}
+		$earlier = array();
+		foreach ( explode( "\n", (string) getenv( "SMOKE_COLUMNS" ) ) as $line ) {
+			$fields = explode( "\t", $line );
+			if ( 4 === count( $fields ) ) {
+				$earlier[ $fields[0] ] = $fields[3];
+			}
+		}
 		foreach ( $tables as $table ) {
 			if ( "" !== $skip && 1 === preg_match( "/^(" . $skip . ")$/", substr( $table, strlen( $prefix ) + 8 ) ) ) {
 				continue;
 			}
-			$sum   = $wpdb->get_row( "CHECKSUM TABLE `$table`", ARRAY_N );
-			$count = $wpdb->get_var( "SELECT COUNT(*) FROM `$table`" );
-			if ( ! is_array( $sum ) || null === $count || "" !== $wpdb->last_error ) {
-				fwrite( STDERR, "install-smoke: could not checksum $table: " . $wpdb->last_error . PHP_EOL );
+			$columns = $earlier[ $table ] ?? implode( ",", (array) $wpdb->get_col( "SHOW COLUMNS FROM `$table`" ) );
+			$listed  = implode( ", ", array_map( static fn( string $column ): string => "`" . $column . "`", explode( ",", $columns ) ) );
+			$rows    = $wpdb->get_results( "SELECT $listed FROM `$table` ORDER BY $listed", ARRAY_N );
+			if ( ! is_array( $rows ) || "" !== $wpdb->last_error ) {
+				fwrite( STDERR, "install-smoke: could not read $table by the columns $columns: " . $wpdb->last_error . PHP_EOL );
 				exit( 1 );
 			}
-			echo $table, "\t", $count, "\t", $sum[1], PHP_EOL;
+			echo $table, "\t", count( $rows ), "\t", md5( serialize( $rows ) ), "\t", $columns, PHP_EOL;
 		}
 	'
 }
@@ -741,7 +754,7 @@ $product_after"
 $order_before
 After:
 $order_after"
-	same_tables "$data_before" "$(table_checksums "$operational_tables")" 'in the upgrade'
+	same_tables "$data_before" "$(table_checksums "$operational_tables" "$data_before")" 'in the upgrade'
 	printf 'The product, its prices, its stock and the order read back unchanged, and so does every one of the %s data tables.\n' "$(count_lines "$data_before")"
 	prove upgrade
 else
@@ -785,7 +798,7 @@ exercise 'after uninstalling'
 
 assert_the_store_has_its_rows ordered
 tables_after=$(table_checksums)
-[ "$tables_after" = "$tables_before" ] || fail "uninstalling changed the plugin's tables or what they hold (name, rows, checksum). Before:
+[ "$tables_after" = "$tables_before" ] || fail "uninstalling changed the plugin's tables or what they hold (name, rows, a hash of every value, the columns). Before:
 $tables_before
 After:
 $tables_after"

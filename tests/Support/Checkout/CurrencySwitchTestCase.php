@@ -21,7 +21,7 @@ use SEOCart\Checkout\Application\ChangeCartCurrency;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Domain\FrozenQuotes;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
+use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\RateLimiter\RateCountersTable;
 use SEOCart\Pricing\Infrastructure\Quotes\FlatRateShippingQuoter;

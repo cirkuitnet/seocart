@@ -15,6 +15,7 @@ use SEOCart\Cart\Application\CartService;
 use SEOCart\Checkout\Domain\AddressDocument;
 use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Checkout\Domain\CheckoutError;
+use SEOCart\Payment\Application\Gateways;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Support\Address;
 use SEOCart\Support\Error\CodedException;
@@ -34,7 +35,12 @@ defined( 'ABSPATH' ) || exit;
  * The cart's totals are then worked out after the transaction, for the shipping address and
  * method just written.
  *
+ * A payment method is the id of a payment gateway the store has, set up for the mode it takes new
+ * payments in. Whether it can take this cart's payment, by its currency and total, is checked when
+ * the order is placed, once the total is known.
+ *
  * @since 0.1.0
+ * @since 0.2.0 Checks the payment method against the store's gateways.
  */
 final class UpdateCheckoutSession {
 
@@ -57,16 +63,28 @@ final class UpdateCheckoutSession {
 	private CheckoutSessions $sessions;
 
 	/**
+	 * The store's payment gateways, which a payment method must be one of.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var Gateways
+	 */
+	private Gateways $gateways;
+
+	/**
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The gateways were added.
 	 *
 	 * @param CartService      $carts    The cart.
 	 * @param CheckoutSessions $sessions The stored sessions.
+	 * @param Gateways         $gateways The store's payment gateways.
 	 */
-	public function __construct( CartService $carts, CheckoutSessions $sessions ) {
+	public function __construct( CartService $carts, CheckoutSessions $sessions, Gateways $gateways ) {
 		$this->carts    = $carts;
 		$this->sessions = $sessions;
+		$this->gateways = $gateways;
 	}
 
 	/**
@@ -76,7 +94,8 @@ final class UpdateCheckoutSession {
 	 *
 	 * @throws CodedException `checkout.invalid_address` when an address has a field the checkout
 	 *                        cannot use, or `checkout.invalid_method_key` when a method key is not
-	 *                        one, before anything is written; `cart.not_found`,
+	 *                        one, or the payment method is not a gateway the store has set up for
+	 *                        its mode, before anything is written; `cart.not_found`,
 	 *                        `cart.version_stale` or `cart.not_open` when the cart's
 	 *                        compare-and-swap refuses; the codes the calculation raises.
 	 *
@@ -91,7 +110,7 @@ final class UpdateCheckoutSession {
 			self::address( 'billing_address', $input ),
 			self::address( 'shipping_address', $input ),
 			self::methodKey( 'shipping_method_key', $input ),
-			self::methodKey( 'payment_method_key', $input )
+			$this->paymentMethod( $input )
 		);
 
 		$cart = $this->carts->changeWith(
@@ -144,6 +163,28 @@ final class UpdateCheckoutSession {
 			// The schema has made every field a string, so what Address refuses is its country.
 			throw CodedException::because( CheckoutError::InvalidAddress, array( 'field' => $field . '.country' ), $refused );
 		}
+	}
+
+	/**
+	 * Reads the input's payment method, refusing one that is not a gateway the store has set up for the mode it takes new payments in.
+	 *
+	 * Reads the gateway's settings, when it has any; the stand-in has none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `checkout.invalid_method_key`, naming the field.
+	 *
+	 * @param array<string, mixed> $input The prepared input.
+	 * @return string|null The gateway's id, or null when the input leaves it out.
+	 */
+	private function paymentMethod( array $input ): ?string {
+		$key = self::methodKey( 'payment_method_key', $input );
+
+		if ( null !== $key && null === $this->gateways->configuredMode( $key ) ) {
+			CodedException::raise( CheckoutError::InvalidMethodKey, array( 'field' => 'payment_method_key' ) );
+		}
+
+		return $key;
 	}
 
 	/**

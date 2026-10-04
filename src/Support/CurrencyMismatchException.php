@@ -22,6 +22,9 @@ defined( 'ABSPATH' ) || exit;
  * is a LogicException and has no row in the error table.
  *
  * @since 0.1.0
+ * @since 0.2.0 Public, by reference from the payment contract.
+ *
+ * @api
  */
 final class CurrencyMismatchException extends \LogicException {
 

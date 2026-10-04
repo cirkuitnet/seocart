@@ -9,7 +9,7 @@
 
 declare( strict_types=1 );
 
-namespace SEOCart\Payment\Domain;
+namespace SEOCart\Contracts\Payment;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -21,6 +21,9 @@ defined( 'ABSPATH' ) || exit;
  * moves no money and only changes the intent's state.
  *
  * @since 0.1.0
+ * @since 0.2.0 Moved to the public contract.
+ *
+ * @api
  */
 enum Outcome: string {
 

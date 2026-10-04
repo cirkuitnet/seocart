@@ -11,11 +11,11 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\IntentTransitions;
-use SEOCart\Payment\Domain\Operation;
-use SEOCart\Payment\Domain\Outcome;
 use SEOCart\Payment\Domain\PaymentIntent;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Payment\Infrastructure\PaymentTables;

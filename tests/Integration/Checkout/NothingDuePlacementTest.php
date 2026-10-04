@@ -15,6 +15,9 @@ use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Checkout\Application\SettlePlacement;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
+use SEOCart\Contracts\Payment\GatewayRegistry;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\Operations;
 use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Order\Domain\Event\OrderCreated;
@@ -37,6 +40,7 @@ use SEOCart\Promotion\Infrastructure\PromotionTables;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 use SEOCart\Tests\Support\CreatesUsers;
+use SEOCart\Tests\Support\Doubles\DeclaredGateway;
 use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
 use SEOCart\Tests\Support\RunningProbe;
 
@@ -360,7 +364,8 @@ final class NothingDuePlacementTest extends PlacementTestCase {
 	 * Tests that an order whose amount is positive but whose base equivalent rounds to zero is placed and paid through the gateway: a small order in a currency worth far less than the base one.
 	 *
 	 * One yen at 250 to the dollar is 0.4 cents, which rounds to none; the line's tax rounds to none
-	 * too, and the shipping is free.
+	 * too, and the shipping is free. The stand-in takes dollars, pounds and euros only, so the order
+	 * is paid through a gateway that takes yen.
 	 *
 	 * Planted violation: in PaymentService::createIntent(), refuse a base amount of zero again: the
 	 * placement rolls back.
@@ -368,8 +373,15 @@ final class NothingDuePlacementTest extends PlacementTestCase {
 	 * @group international
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Paid through a gateway that takes yen.
 	 */
 	public function test_an_order_whose_base_amount_rounds_to_zero_is_placed(): void {
+		add_action(
+			GatewayRegistry::ACTION,
+			static function ( GatewayRegistry $registry ): void {
+				$registry->register( new DeclaredGateway( DeclaredGateway::descriptor( 'yen', array( Mode::Test ), array(), DeclaredGateway::matrix( array( 'JPY' ), Operations::REQUIRED ) ) ) );
+			}
+		);
 		$this->enableCurrency( 'JPY' );
 		self::ratesOver( $this->db, static function (): void {} )->saveVersion( array( self::rateTo( 'JPY', '250' ) ), Actor::user( 0 ) );
 		$this->plantBootRecord( 1 );
@@ -380,6 +392,7 @@ final class NothingDuePlacementTest extends PlacementTestCase {
 		$this->plantPromotion( 'SHIPFREE', self::FREE_SHIPPING );
 		$this->readyCart( array( $sticker => 1 ), array( 'SHIPFREE' ) );
 		$this->assertSame( 1, $this->db->execute( "UPDATE %i SET currency = 'JPY' WHERE status = 'open'", $this->table( CartTables::CARTS ) ), 'One cart is open.' );
+		$this->assertSame( 1, $this->db->execute( "UPDATE %i SET payment_method_key = 'yen'", $this->table( CheckoutTables::SESSIONS ) ), 'One checkout is ready.' );
 
 		$input  = $this->placeInput();
 		$answer = $this->placement->place( $input, self::guest() );

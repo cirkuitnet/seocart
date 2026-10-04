@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Payment\Infrastructure;
 
+use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\IntentTransitions;
 use SEOCart\Payment\Domain\Refund\ClaimState;
@@ -98,7 +99,7 @@ final class MysqlRefundRepository implements RefundRepository {
 	 *
 	 * @var string
 	 */
-	public const REFUNDABLE_INTENT = 'SELECT intent.id, intent.uuid, intent.provider_intent_id, intent.currency, intent.base_currency, intent.captured_minor, intent.refunded_minor, '
+	public const REFUNDABLE_INTENT = 'SELECT intent.id, intent.uuid, intent.gateway_id, intent.mode, intent.provider_intent_id, intent.currency, intent.base_currency, intent.captured_minor, intent.refunded_minor, '
 		. 'intent.base_captured_minor, intent.base_refunded_minor, '
 		. self::UNAPPLIED_RESULT . ', ' . self::DECLINED_REFUNDS . ', ' . self::OPEN_CLAIM . ' '
 		. 'FROM {payment_intents} intent WHERE intent.order_id = %d AND intent.status IN ({list}) ORDER BY intent.id LIMIT 1';
@@ -306,6 +307,8 @@ final class MysqlRefundRepository implements RefundRepository {
 		return new RefundableIntent(
 			(int) $row['id'],
 			(string) $row['uuid'],
+			(string) $row['gateway_id'],
+			Mode::from( (string) $row['mode'] ),
 			null === $row['provider_intent_id'] ? null : (string) $row['provider_intent_id'],
 			Money::of( (int) $row['captured_minor'], $currency ),
 			Money::of( (int) $row['refunded_minor'], $currency ),

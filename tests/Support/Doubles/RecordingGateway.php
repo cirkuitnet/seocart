@@ -11,12 +11,12 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Doubles;
 
-use SEOCart\Payment\Domain\Gateway\CaptureRequest;
-use SEOCart\Payment\Domain\Gateway\GatewayRefund;
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
-use SEOCart\Payment\Domain\Gateway\PaymentQuery;
-use SEOCart\Payment\Domain\Gateway\PaymentRequest;
+use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\GatewayRefund;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Contracts\Payment\PaymentQuery;
+use SEOCart\Contracts\Payment\PaymentRequest;
 use SEOCart\Platform\Database\TransactionManager;
 
 /**
@@ -29,6 +29,8 @@ use SEOCart\Platform\Database\TransactionManager;
  * @since 0.1.0
  */
 final class RecordingGateway implements PaymentGateway {
+
+	use DecoratesGateway;
 
 	/**
 	 * Every call so far, in order: the method and the depth it was made at.
@@ -99,29 +101,6 @@ final class RecordingGateway implements PaymentGateway {
 	 */
 	public function during( \Closure $during ): void {
 		$this->during = $during;
-	}
-
-	/**
-	 * Returns the wrapped gateway's id.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return string The id.
-	 */
-	public function id(): string {
-		return $this->inner->id();
-	}
-
-	/**
-	 * Tells whether the wrapped gateway has a capability.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $capability The capability.
-	 * @return bool Its answer.
-	 */
-	public function supports( string $capability ): bool {
-		return $this->inner->supports( $capability );
 	}
 
 	/**

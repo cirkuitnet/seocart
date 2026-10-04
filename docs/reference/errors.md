@@ -182,7 +182,7 @@ An internal error carries a generic message and empty details: it is a code mark
 ## `checkout.invalid_method_key`
 
 - HTTP status: 422
-- Message: The {field} is not a method key. A method key uses only lower-case letters, digits, dots, colons, hyphens and underscores, such as flat.
+- Message: The {field} is not a method the store can use. A method key uses only lower-case letters, digits, dots, colons, hyphens and underscores, such as flat, and a payment method is one the store offers.
 - Values: `field`
 
 ## `checkout.line_unsellable`
@@ -197,6 +197,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The payment was declined, so the order was not placed and nothing was charged. Check the payment details, or choose another way to pay, then place the order again.
 - Values: none
 - Details: `order_uuid`, beside the values
+
+## `checkout.payment_method_unavailable`
+
+- HTTP status: 409
+- Message: The payment method {payment_method_key} cannot take this order's payment now, so the order was not placed. Choose another way to pay, then place the order again.
+- Values: `payment_method_key`
 
 ## `checkout.placement_in_progress`
 
@@ -299,6 +305,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: An order cannot change from {from} to {to}.
 - Values: `from`, `to`
 
+## `payment.gateway_unavailable`
+
+- HTTP status: 503
+- Message: The payment gateway {gateway_id} cannot be used now ({reason}); nothing was sent to it.
+- Values: `gateway_id`, `reason`
+
 ## `payment.intent_not_found`
 
 - HTTP status: 404
@@ -310,6 +322,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 409
 - Message: A payment that is {status} cannot be captured; only an authorized payment can.
 - Values: `status`
+
+## `payment.operation_unsupported`
+
+- HTTP status: 409
+- Message: The payment gateway {gateway_id} does not support {operation} for this payment; nothing was sent to it.
+- Values: `gateway_id`, `operation`
 
 ## `payment.projection_conflict`
 

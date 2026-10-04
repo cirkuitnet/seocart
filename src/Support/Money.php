@@ -33,6 +33,9 @@ defined( 'ABSPATH' ) || exit;
  * (DRY rule 7), which the SEOCart.DRY.MoneyArithmeticInInterfaces sniff checks by method name.
  *
  * @since 0.1.0
+ * @since 0.2.0 Public, by reference from the payment contract.
+ *
+ * @api
  */
 final class Money {
 

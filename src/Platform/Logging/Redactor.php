@@ -69,9 +69,12 @@ defined( 'ABSPATH' ) || exit;
  * Output is bounded: strings, arrays, nesting and the total number of values have limits, so
  * a runaway context cannot fill the log.
  *
- * Building one from the declarations does no I/O and calls no WordPress function.
+ * Building one from the declarations does no I/O and calls no WordPress function. Fields
+ * declared later, such as the settings of a payment gateway registered while the request runs,
+ * join it through declareFields(), which only ever adds names to redact.
  *
  * @since 0.1.0
+ * @since 0.2.0 Learns fields declared after it was built.
  */
 final class Redactor {
 
@@ -388,15 +391,34 @@ final class Redactor {
 			}
 		}
 
+		$redactor = new self( $personal, $secret );
+
+		$redactor->declareFields( ...$fields );
+
+		return $redactor;
+	}
+
+	/**
+	 * Adds the names of declared fields: a `pii` field's value is replaced from now on, and a `secret` field's dropped.
+	 *
+	 * Only ever adds: a name that is a secret stays one, whatever is declared after it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param FieldSpec ...$fields The fields.
+	 */
+	public function declareFields( FieldSpec ...$fields ): void {
 		foreach ( $fields as $field ) {
-			if ( Privacy::Pii === $field->privacy() ) {
-				$personal[ strtolower( $field->name() ) ] = true;
-			} elseif ( Privacy::Secret === $field->privacy() ) {
-				$secret[ strtolower( $field->name() ) ] = true;
+			$name = strtolower( $field->name() );
+
+			if ( Privacy::Secret === $field->privacy() ) {
+				$this->secret[ $name ] = true;
+
+				unset( $this->personal[ $name ] );
+			} elseif ( Privacy::Pii === $field->privacy() && ! isset( $this->secret[ $name ] ) ) {
+				$this->personal[ $name ] = true;
 			}
 		}
-
-		return new self( $personal, $secret );
 	}
 
 	/**

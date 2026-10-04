@@ -9,10 +9,8 @@
 
 declare( strict_types=1 );
 
-namespace SEOCart\Payment\Domain\Gateway;
+namespace SEOCart\Contracts\Payment;
 
-use SEOCart\Payment\Domain\Operation;
-use SEOCart\Payment\Domain\Outcome;
 use SEOCart\Support\Money;
 
 defined( 'ABSPATH' ) || exit;
@@ -31,9 +29,14 @@ defined( 'ABSPATH' ) || exit;
  * makes a new charge, and it is that new charge that keys the ledger, so the retry is not taken
  * for the decline. A result without an object, an error before the provider made one, is not
  * deduplicated; the intent's state still refuses to apply it twice. A request for the customer
- * to act, or an answer still pending, carries no object.
+ * to act, or an answer still pending, carries no object. A void names the provider's cancellation
+ * object where the provider makes one, and otherwise the provider's intent: an intent is voided
+ * once, so the key stays unique.
  *
  * @since 0.1.0
+ * @since 0.2.0 Moved to the public contract.
+ *
+ * @api
  */
 final readonly class GatewayResult {
 

@@ -27,6 +27,9 @@ defined( 'ABSPATH' ) || exit;
  * its tables. They are one list: when both are on the main branch, one enum replaces the other.
  *
  * @since 0.1.0
+ * @since 0.2.0 Public, by reference from the payment contract.
+ *
+ * @api
  */
 enum Privacy: string {
 

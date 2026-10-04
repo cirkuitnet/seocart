@@ -34,11 +34,19 @@ final class Settings {
 	/**
 	 * Returns a new registry holding every setting. Reads and writes nothing.
 	 *
-	 * @since 0.1.0
+	 * The settings declared only once something registers them, such as the payment gateways',
+	 * join it through the late declarations, the first time a read needs them: a registry the
+	 * store builds for a cart, the settings screen or the canary never asks for them.
 	 *
+	 * @since 0.1.0
+	 * @since 0.2.0 The late declarations were added.
+	 *
+	 * @param callable|null $late Optional. Returns the late declarations, as SettingsRegistry takes them. Default none.
 	 * @return SettingsRegistry The registry.
+	 *
+	 * @phpstan-param (callable(): array{settings: list<Setting>, documents: array<string, string>})|null $late
 	 */
-	public static function registry(): SettingsRegistry {
+	public static function registry( ?callable $late = null ): SettingsRegistry {
 		return new SettingsRegistry(
 			array_merge(
 				InternationalSettings::settings(),
@@ -48,7 +56,8 @@ final class Settings {
 			array(
 				OptionGrantLedger::GROUP => OptionGrantLedger::PURPOSE,
 				SecretKeys::GROUP        => SecretKeys::PURPOSE,
-			)
+			),
+			$late
 		);
 	}
 }

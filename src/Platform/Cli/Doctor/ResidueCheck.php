@@ -160,10 +160,9 @@ final class ResidueCheck implements Check {
 			$this->db->prefix() . 'options',
 			...$patterns
 		);
-		$declared = $this->registry->optionNames();
 
 		return array_map(
-			static fn( array $row ): string => sprintf( 'option %s (%s)', CheckResult::identifier( (string) $row['name'] ), in_array( (string) $row['name'], $declared, true ) ? 'declared' : 'undeclared' ),
+			fn( array $row ): string => sprintf( 'option %s (%s)', CheckResult::identifier( (string) $row['name'] ), $this->registry->declaresOption( (string) $row['name'] ) ? 'declared' : 'undeclared' ),
 			$rows
 		);
 	}

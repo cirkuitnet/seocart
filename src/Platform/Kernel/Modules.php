@@ -60,6 +60,8 @@ use SEOCart\Checkout\Infrastructure\Jobs\IdempotencyKeyRetention;
 use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
 use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
+use SEOCart\Contracts\HttpClient;
+use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Interfaces\Operations\AbilitiesAdapter;
 use SEOCart\Interfaces\Operations\CliAdapter;
 use SEOCart\Interfaces\Operations\ErrorTranslator;
@@ -96,6 +98,8 @@ use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\SequenceOrderNumberGenerator;
 use SEOCart\Order\Infrastructure\WordPressAccessKeys;
 use SEOCart\Order\Interfaces\StoreApi\OrderStatusRead;
+use SEOCart\Payment\Application\GatewayContext;
+use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Application\RefundService;
@@ -105,7 +109,6 @@ use SEOCart\Payment\Domain\Event\PaymentFailed;
 use SEOCart\Payment\Domain\Event\PaymentIntentCreated;
 use SEOCart\Payment\Domain\Event\PaymentStatusChanged;
 use SEOCart\Payment\Domain\Event\RefundRecorded;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
 use SEOCart\Payment\Domain\PaymentRepository;
 use SEOCart\Payment\Domain\Refund\RefundRepository;
 use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
@@ -140,6 +143,8 @@ use SEOCart\Platform\Events\HookBridge;
 use SEOCart\Platform\Events\Outbox;
 use SEOCart\Platform\Events\OutboxDrainer;
 use SEOCart\Platform\Events\Publisher;
+use SEOCart\Platform\Http\OutboundClient;
+use SEOCart\Platform\Http\WordPressTransport;
 use SEOCart\Platform\Jobs\ActionSchedulerQueue;
 use SEOCart\Platform\Jobs\Cli\JobsCommand;
 use SEOCart\Platform\Jobs\EventWake;
@@ -660,14 +665,17 @@ final class Modules {
 	 * The settings module: the store that reads and writes every setting, and the service behind the settings operations.
 	 *
 	 * The store and the service are built over Settings::registry(), the production list and the
-	 * only settings registry the plugin builds, so the registry itself is not a service here.
+	 * only settings registry the plugin builds, so the registry itself is not a service here. The
+	 * store's registry takes the payment gateways' settings documents as late declarations
+	 * (gatewaySettings()): they join it only when the store is asked for a gateway's setting, so
+	 * reading the store's other settings never registers the gateways.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param Container $container The container.
 	 */
 	private static function settingsRegister( Container $container ): void {
-		$container->bind( SettingsStore::class, static fn( Container $c ): SettingsStore => new SettingsStore( Settings::registry(), $c->get( Database::class ) ) );
+		$container->bind( SettingsStore::class, static fn( Container $c ): SettingsStore => new SettingsStore( Settings::registry( self::gatewaySettings( $c ) ), $c->get( Database::class ) ) );
 		$container->bind(
 			SettingsService::class,
 			static fn( Container $c ): SettingsService => new SettingsService(
@@ -678,6 +686,18 @@ final class Modules {
 				$c->get( TransactionManager::class )
 			)
 		);
+	}
+
+	/**
+	 * Returns the late declarations of the settings registry: the payment gateways' settings documents, asked of the gateway registry when a read needs them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Container $container The container the registry is resolved from.
+	 * @return \Closure(): array{settings: list<Setting>, documents: array<string, string>} The declarations.
+	 */
+	private static function gatewaySettings( Container $container ): \Closure {
+		return static fn(): array => $container->get( Gateways::class )->settings();
 	}
 
 	/**
@@ -692,7 +712,7 @@ final class Modules {
 	private static function secretsRegister( Container $container ): void {
 		$container->bind( EncryptionKey::class, static fn(): EncryptionKey => EncryptionKey::fromEnvironment() );
 		$container->bind( SecretKeys::class, static fn( Container $c ): SecretKeys => new SecretKeys( Settings::registry(), $c->get( SettingsStore::class ), $c->get( Database::class ), $c->get( EncryptionKey::class ) ) );
-		$container->bind( SecretVault::class, static fn( Container $c ): SecretVault => new SecretVault( Settings::registry(), $c->get( SettingsStore::class ), $c->get( SecretKeys::class ) ) );
+		$container->bind( SecretVault::class, static fn( Container $c ): SecretVault => new SecretVault( Settings::registry( self::gatewaySettings( $c ) ), $c->get( SettingsStore::class ), $c->get( SecretKeys::class ) ) );
 		$container->bind( SecretSealer::class, static fn( Container $c ): SecretSealer => $c->get( SecretVault::class ) );
 		$container->bind( SecretsCanary::class, static fn( Container $c ): SecretsCanary => new SecretsCanary( $c->get( SecretKeys::class ) ) );
 		$container->bind( SecretsStatus::class, static fn( Container $c ): SecretsStatus => new SecretsStatus( $c->get( SecretKeys::class ), $c->get( SecretVault::class ), $c->get( SecretsCanary::class ) ) );
@@ -1190,7 +1210,7 @@ final class Modules {
 		$container->bind( CheckoutSessions::class, static fn( Container $c ): CheckoutSessions => $c->get( MysqlCheckoutSessions::class ) );
 		$container->bind( MysqlIdempotencyKeys::class, static fn( Container $c ): MysqlIdempotencyKeys => new MysqlIdempotencyKeys( $c->get( Database::class ) ) );
 		$container->bind( IdempotencyKeys::class, static fn( Container $c ): IdempotencyKeys => $c->get( MysqlIdempotencyKeys::class ) );
-		$container->bind( UpdateCheckoutSession::class, static fn( Container $c ): UpdateCheckoutSession => new UpdateCheckoutSession( $c->get( CartService::class ), $c->get( CheckoutSessions::class ) ) );
+		$container->bind( UpdateCheckoutSession::class, static fn( Container $c ): UpdateCheckoutSession => new UpdateCheckoutSession( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( Gateways::class ) ) );
 		$container->bind( ChangeCartCurrency::class, static fn( Container $c ): ChangeCartCurrency => new ChangeCartCurrency( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( PresentmentCurrencies::class ), $c->get( Orders::class ), self::baseCurrency( $c ) ) );
 		$container->bind(
 			SettlePlacement::class,
@@ -1220,7 +1240,8 @@ final class Modules {
 				$c->get( SettlePlacement::class ),
 				$c->get( TransactionManager::class ),
 				$c->get( RateLimiter::class ),
-				$c->get( ClientIdentities::class )
+				$c->get( ClientIdentities::class ),
+				$c->get( Gateways::class )
 			)
 		);
 		$container->bind( ReconcileStalePlacements::class, static fn( Container $c ): ReconcileStalePlacements => new ReconcileStalePlacements( $c->get( PaymentService::class ), $c->get( Orders::class ), $c->get( SettlePlacement::class ), $c->get( Reporter::class ) ) );
@@ -1375,13 +1396,16 @@ final class Modules {
 	}
 
 	/**
-	 * The payment module: the payment repository and service, the gateway, the payment check of doctor, and the refund service.
+	 * The payment module: the payment repository and service, the gateway registry, the payment check of doctor, and the refund service.
 	 *
 	 * It adds no hook: an intent is created and a gateway result applied by the services that call
-	 * them, inside their own transactions, and the check runs through doctor. The gateway is the
-	 * stub until a real one is installed; with one gateway there is no registry of them.
+	 * them, inside their own transactions, and the check runs through doctor. The registry fires
+	 * the gateways' registration action the first time something asks it for a gateway, never
+	 * here. PaymentGateway::class is the stand-in gateway the plugin ships, which the registry
+	 * registers first where the site allows it; the tests replace it with their doubles.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The gateway registry.
 	 *
 	 * @param Container $container The container.
 	 */
@@ -1390,17 +1414,38 @@ final class Modules {
 		$container->bind( PaymentRepository::class, static fn( Container $c ): PaymentRepository => $c->get( MysqlPaymentRepository::class ) );
 		$container->bind( PaymentGateway::class, static fn(): PaymentGateway => new StubGateway() );
 		$container->bind(
+			Gateways::class,
+			static fn( Container $c ): Gateways => new Gateways(
+				Gateways::stubAllowed( wp_get_environment_type(), defined( 'SEOCART_STUB_GATEWAY' ) ? constant( 'SEOCART_STUB_GATEWAY' ) : null ) ? $c->get( PaymentGateway::class ) : null,
+				static fn( string $gatewayId ): GatewayContext => new GatewayContext(
+					$gatewayId,
+					$c->get( Gateways::class ),
+					$c->get( Logger::class ),
+					$c->get( Clock::class ),
+					$c->get( SettingsStore::class ),
+					$c->get( SecretVault::class ),
+					// Each gateway's client knows that gateway's declared hosts and no other.
+					static fn( array $hosts ): HttpClient => new OutboundClient( $hosts, new WordPressTransport(), array( $c->get( Logger::class ), 'log' ) )
+				),
+				$c->get( Reporter::class ),
+				static function ( FieldSpec ...$fields ) use ( $c ): void {
+					$c->get( Redactor::class )->declareFields( ...$fields );
+				}
+			)
+		);
+		$container->bind(
 			PaymentService::class,
 			static fn( Container $c ): PaymentService => new PaymentService(
 				$c->get( PaymentRepository::class ),
-				$c->get( PaymentGateway::class ),
+				$c->get( Gateways::class ),
 				$c->get( Orders::class ),
 				$c->get( TransactionManager::class ),
 				$c->get( EventPublisher::class ),
 				$c->get( Authorizer::class ),
 				$c->get( IdGenerator::class ),
 				$c->get( Clock::class ),
-				$c->get( CorrelationId::class )
+				$c->get( CorrelationId::class ),
+				$c->get( Reporter::class )
 			)
 		);
 		$container->bind( PaymentLedgerCheck::class, static fn( Container $c ): PaymentLedgerCheck => new PaymentLedgerCheck( $c->get( MysqlPaymentRepository::class ), $c->get( OrderRepository::class ) ) );
@@ -1411,7 +1456,7 @@ final class Modules {
 				$c->get( RefundRepository::class ),
 				$c->get( OrderRepository::class ),
 				$c->get( PaymentService::class ),
-				$c->get( PaymentGateway::class ),
+				$c->get( Gateways::class ),
 				$c->get( TransactionManager::class ),
 				$c->get( EventPublisher::class ),
 				$c->get( Authorizer::class ),

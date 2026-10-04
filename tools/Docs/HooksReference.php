@@ -1,6 +1,6 @@
 <?php
 /**
- * HooksReference: generates docs/reference/hooks.md from the event catalog and the filter declarations
+ * HooksReference: generates docs/reference/hooks.md from the event catalog and the hook declarations
  *
  * @package SEOCart
  * @since   0.1.0
@@ -12,13 +12,15 @@ declare( strict_types=1 );
 namespace SEOCart\Tools\Docs;
 
 use SEOCart\Platform\Events\EventEnvelope;
+use SEOCart\Platform\Hooks\ActionDeclaration;
 use SEOCart\Platform\Hooks\FilterDeclaration;
 use SEOCart\Support\Events\DeliveryMode;
 use SEOCart\Support\Events\DomainEvent;
 
 /**
  * Documents every public `seocart_` hook: the action the event bridge fires for each catalogued
- * domain event, and every filter the plugin applies. One section per hook, sorted by hook name.
+ * domain event, every other action the plugin fires for extensions, and every filter the plugin
+ * applies. One section per hook, sorted by hook name.
  *
  * This generator owns docs/reference/hooks.md whole. WordPress is never loaded: the events are
  * the classes listed in Modules::EVENT_CLASSES, which a companion test (KernelListsTest) holds
@@ -46,7 +48,10 @@ use SEOCart\Support\Events\DomainEvent;
  * message naming the class. No method is added to DomainEvent, and nothing here does I/O.
  *
  * A filter documents itself the same way: its class doc comment's first sentence and `@since`
- * tag, and the name, value, default and effects its FilterDeclaration methods return.
+ * tag, and the name, value, default and effects its FilterDeclaration methods return. So does an
+ * action: its class doc comment's first sentence and `@since` tag, and the name, the moment it
+ * fires and the arguments its ActionDeclaration methods return. The actions are the classes listed
+ * in ActionDeclarations::ALL, which FilterDeclarationsTest holds equal to what src/ declares.
  *
  * Nothing is skipped: an event or a filter that cannot be rendered fails the run.
  *
@@ -70,7 +75,7 @@ final class HooksReference implements Generator {
 	 *
 	 * @var string
 	 */
-	public const INTRO = 'Every public `seocart_` hook: the action the event bridge fires for each catalogued domain event, and every filter the plugin applies. A hook not listed here is internal and may change without notice.';
+	public const INTRO = 'Every public `seocart_` hook: the action the event bridge fires for each catalogued domain event, every other action the plugin fires for extensions, and every filter the plugin applies. A hook not listed here is internal and may change without notice.';
 
 	/**
 	 * The listener arguments every bridged event's action is called with.
@@ -100,19 +105,33 @@ final class HooksReference implements Generator {
 	private array $filters;
 
 	/**
+	 * The action declaration classes to document.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<class-string<ActionDeclaration>>
+	 */
+	private array $actions;
+
+	/**
 	 * Constructor.
 	 *
 	 * @since 0.1.0
 	 *
+	 * @since 0.2.0 The actions were added.
+	 *
 	 * @param array $events  The event classes, typically Modules::EVENT_CLASSES.
 	 * @param array $filters The filter declaration classes, typically FilterDeclarations::ALL.
+	 * @param array $actions Optional. The action declaration classes, typically ActionDeclarations::ALL. Default none.
 	 *
 	 * @phpstan-param list<class-string<DomainEvent>>       $events
 	 * @phpstan-param list<class-string<FilterDeclaration>> $filters
+	 * @phpstan-param list<class-string<ActionDeclaration>> $actions
 	 */
-	public function __construct( array $events, array $filters ) {
+	public function __construct( array $events, array $filters, array $actions = array() ) {
 		$this->events  = $events;
 		$this->filters = $filters;
+		$this->actions = $actions;
 	}
 
 	/**
@@ -153,7 +172,7 @@ final class HooksReference implements Generator {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \RuntimeException When an event or a filter cannot be rendered.
+	 * @throws \RuntimeException When an event, a filter or an action cannot be rendered.
 	 *
 	 * @param string $current The current content. Ignored: the file is generated whole.
 	 * @return GenerationResult The document. Nothing is skipped.
@@ -162,13 +181,13 @@ final class HooksReference implements Generator {
 		$lines = array(
 			self::TITLE,
 			'',
-			FieldDocs::generatedNotice( 'the event catalog and the filter declarations' ),
+			FieldDocs::generatedNotice( 'the event catalog and the hook declarations' ),
 			'',
 			self::INTRO,
 		);
 
-		// Events and filters share one hook-name namespace (`seocart_…`), so they are sorted
-		// together into a single map, not two separately sorted groups.
+		// Events, filters and actions share one hook-name namespace (`seocart_…`), so they are
+		// sorted together into a single map, not separately sorted groups.
 		$sections = array();
 
 		foreach ( $this->events as $eventClass ) {
@@ -185,6 +204,14 @@ final class HooksReference implements Generator {
 			}
 
 			$sections[ $filterClass::name() ] = $this->renderFilter( $filterClass );
+		}
+
+		foreach ( $this->actions as $actionClass ) {
+			if ( ! is_subclass_of( $actionClass, ActionDeclaration::class ) ) {
+				throw new \RuntimeException( $actionClass . ' does not implement ' . ActionDeclaration::class . '.' );
+			}
+
+			$sections[ $actionClass::name() ] = $this->renderAction( $actionClass );
 		}
 
 		ksort( $sections );
@@ -284,6 +311,48 @@ final class HooksReference implements Generator {
 		}
 
 		return $lines;
+	}
+
+	/**
+	 * Renders one action's section.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \RuntimeException When the class declares no argument, or its class doc comment has no `@since` tag.
+	 *
+	 * @param string $actionClass The action declaration class. Already proven to implement ActionDeclaration.
+	 *
+	 * @phpstan-param class-string<ActionDeclaration> $actionClass
+	 *
+	 * @return list<string> The section's lines, starting with its `## ` heading.
+	 */
+	private function renderAction( string $actionClass ): array {
+		$doc   = (string) ( new \ReflectionClass( $actionClass ) )->getDocComment();
+		$since = DocBlockText::since( $doc );
+
+		if ( null === $since ) {
+			throw new \RuntimeException( $actionClass . ' has no @since tag in its class doc comment.' );
+		}
+
+		$arguments = $actionClass::arguments();
+
+		if ( array() === $arguments ) {
+			throw new \RuntimeException( $actionClass . '::arguments() lists nothing; an action documents what its listener receives.' );
+		}
+
+		$listed   = implode( ', ', array_map( static fn( string $name, string $type ): string => $type . ' $' . $name, array_keys( $arguments ), $arguments ) );
+		$accepted = count( $arguments ) > 1 ? ', 10, ' . count( $arguments ) : '';
+
+		return array(
+			'## `' . $actionClass::name() . '`',
+			'',
+			DocBlockText::firstSentence( $doc ),
+			'',
+			'- Fires: ' . $actionClass::firesWhen(),
+			'- Listener arguments: `( ' . $listed . ' )`',
+			'- Register with: `add_action( \'' . $actionClass::name() . '\', $callback' . $accepted . ' )`, naming the action as a string: an extension\'s main file runs before the plugin\'s classes exist.',
+			'- Since: ' . $since,
+		);
 	}
 
 	/**

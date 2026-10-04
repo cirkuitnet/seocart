@@ -11,13 +11,13 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Doubles;
 
-use SEOCart\Payment\Domain\Gateway\CaptureRequest;
-use SEOCart\Payment\Domain\Gateway\GatewayRefund;
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
-use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
-use SEOCart\Payment\Domain\Gateway\PaymentQuery;
-use SEOCart\Payment\Domain\Gateway\PaymentRequest;
+use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\GatewayRefund;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\GatewayUnavailable;
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Contracts\Payment\PaymentQuery;
+use SEOCart\Contracts\Payment\PaymentRequest;
 
 /**
  * Wraps a gateway, has it make the first refund, and loses that refund's answer; every later call is answered.
@@ -30,6 +30,8 @@ use SEOCart\Payment\Domain\Gateway\PaymentRequest;
  * @since 0.1.0
  */
 final class AnswerLosingGateway implements PaymentGateway {
+
+	use DecoratesGateway;
 
 	/**
 	 * Whether the first refund's answer was lost yet.
@@ -48,29 +50,6 @@ final class AnswerLosingGateway implements PaymentGateway {
 	 * @param PaymentGateway $inner The gateway that makes the refunds.
 	 */
 	public function __construct( private PaymentGateway $inner ) {
-	}
-
-	/**
-	 * Returns the wrapped gateway's id.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return string The id.
-	 */
-	public function id(): string {
-		return $this->inner->id();
-	}
-
-	/**
-	 * Tells whether the wrapped gateway has a capability.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $capability The capability.
-	 * @return bool Its answer.
-	 */
-	public function supports( string $capability ): bool {
-		return $this->inner->supports( $capability );
 	}
 
 	/**

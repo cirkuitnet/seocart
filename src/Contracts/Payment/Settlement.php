@@ -9,7 +9,7 @@
 
 declare( strict_types=1 );
 
-namespace SEOCart\Payment\Domain\Gateway;
+namespace SEOCart\Contracts\Payment;
 
 use SEOCart\Support\CurrencyMismatchException;
 use SEOCart\Support\Decimal;
@@ -25,6 +25,9 @@ defined( 'ABSPATH' ) || exit;
  * from the rate the order was placed at.
  *
  * @since 0.1.0
+ * @since 0.2.0 Moved to the public contract.
+ *
+ * @api
  */
 final readonly class Settlement {
 

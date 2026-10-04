@@ -27,6 +27,7 @@ use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\PlacementOutcome;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
+use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
 use SEOCart\Support\Schema\Privacy;
@@ -104,7 +105,8 @@ final class CheckoutOperationsTest extends TestCase {
 			}
 		}
 
-		$this->assertSame( CheckoutOperations::PAYMENT_METHODS, $fields['payment_method_key']->allowedValues() );
+		// Any gateway the store offers, checked against its gateways; as long as a gateway id may be.
+		$this->assertSame( array( array(), GatewayDescriptor::ID_MAX_LENGTH ), array( $fields['payment_method_key']->allowedValues(), $fields['payment_method_key']->maxLength() ) );
 		$this->assertSame( CheckoutDetails::METHOD_KEY_MAX_LENGTH, $fields['shipping_method_key']->maxLength() );
 	}
 
@@ -180,7 +182,7 @@ final class CheckoutOperationsTest extends TestCase {
 		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status' ), array_keys( $output ) );
 		$this->assertSame( array_map( static fn( PlacementOutcome $outcome ): string => $outcome->value, PlacementOutcome::cases() ), $output['outcome']->allowedValues() );
 
-		foreach ( array( CheckoutError::IdempotencyKeyMissing, CheckoutError::IdempotencyKeyReused, CheckoutError::PlacementInProgress, CheckoutError::CartEmpty, CheckoutError::SessionIncomplete, CheckoutError::TotalsChanged, CheckoutError::LineUnsellable, CheckoutError::PaymentDeclined, CheckoutError::GatewayUnavailable, CartError::NotOpen, CartError::VersionStale ) as $code ) {
+		foreach ( array( CheckoutError::IdempotencyKeyMissing, CheckoutError::IdempotencyKeyReused, CheckoutError::PlacementInProgress, CheckoutError::CartEmpty, CheckoutError::SessionIncomplete, CheckoutError::TotalsChanged, CheckoutError::PaymentMethodUnavailable, CheckoutError::LineUnsellable, CheckoutError::PaymentDeclined, CheckoutError::GatewayUnavailable, CartError::NotOpen, CartError::VersionStale ) as $code ) {
 			$this->assertContains( $code->value, $codes );
 		}
 	}

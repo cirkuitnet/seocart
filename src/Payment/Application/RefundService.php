@@ -14,6 +14,12 @@ namespace SEOCart\Payment\Application;
 // Before the imports: Plugin Check looks for this guard only in the first 50 lines of a namespaced file.
 defined( 'ABSPATH' ) || exit;
 
+use SEOCart\Contracts\Payment\GatewayRefund;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\GatewayUnavailable;
+use SEOCart\Contracts\Payment\Operations;
+use SEOCart\Contracts\Payment\Outcome;
+use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Domain\OrderRepository;
 use SEOCart\Order\Domain\RefundableLine;
@@ -22,11 +28,6 @@ use SEOCart\Order\Domain\StoredTaxComponent;
 use SEOCart\Payment\Domain\Application;
 use SEOCart\Payment\Domain\ApplicationKind;
 use SEOCart\Payment\Domain\Event\RefundRecorded;
-use SEOCart\Payment\Domain\Gateway\GatewayRefund;
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
-use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
-use SEOCart\Payment\Domain\Outcome;
 use SEOCart\Payment\Domain\Refund\ClaimState;
 use SEOCart\Payment\Domain\Refund\LinePortion;
 use SEOCart\Payment\Domain\Refund\Refund;
@@ -176,13 +177,13 @@ final class RefundService {
 	private PaymentService $payments;
 
 	/**
-	 * The gateway.
+	 * The gateways, which each refund's intent's own is found in.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
-	 * @var PaymentGateway
+	 * @var Gateways
 	 */
-	private PaymentGateway $gateway;
+	private Gateways $gateways;
 
 	/**
 	 * The unit of work.
@@ -224,21 +225,22 @@ final class RefundService {
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Takes the gateway registry in place of the one gateway.
 	 *
 	 * @param RefundRepository   $refunds    The refund statements.
 	 * @param OrderRepository    $orders     The order statements.
 	 * @param PaymentService     $payments   The money path.
-	 * @param PaymentGateway     $gateway    The gateway.
+	 * @param Gateways           $gateways   The gateways.
 	 * @param TransactionManager $tx         The unit of work.
 	 * @param EventPublisher     $events     Publishes the events.
 	 * @param Authorizer         $authorizer Checks capabilities.
 	 * @param Clock              $clock      Says when an event happened.
 	 */
-	public function __construct( RefundRepository $refunds, OrderRepository $orders, PaymentService $payments, PaymentGateway $gateway, TransactionManager $tx, EventPublisher $events, Authorizer $authorizer, Clock $clock ) {
+	public function __construct( RefundRepository $refunds, OrderRepository $orders, PaymentService $payments, Gateways $gateways, TransactionManager $tx, EventPublisher $events, Authorizer $authorizer, Clock $clock ) {
 		$this->refunds    = $refunds;
 		$this->orders     = $orders;
 		$this->payments   = $payments;
-		$this->gateway    = $gateway;
+		$this->gateways   = $gateways;
 		$this->tx         = $tx;
 		$this->events     = $events;
 		$this->authorizer = $authorizer;
@@ -255,13 +257,17 @@ final class RefundService {
 	 * @throws TransactionRetryable When every attempt to record the answer lost a deadlock; nothing was recorded, and the claim is left `claimed`.
 	 * @throws CodedException       `authorization.denied`, before any read; `order.not_found`;
 	 *                              `payment.refund_not_refundable` when the order has no captured intent;
+	 *                              `payment.gateway_unavailable` when the intent's gateway is not registered
+	 *                              or its credentials for the intent's mode cannot be used;
 	 *                              `payment.unreconciled` when the ledger holds a result of the intent
 	 *                              applied to nothing; `payment.refund_unresolved`, naming the other
 	 *                              refund, when another refund of the intent is still claimed;
 	 *                              `payment.refund_line_not_found`;
 	 *                              `payment.refund_line_exhausted` with the units the line has left;
-	 *                              `payment.refund_exceeds_captured`; `payment.refund_nothing_left` —
-	 *                              each before the refund is claimed and the gateway asked;
+	 *                              `payment.refund_exceeds_captured`; `payment.refund_nothing_left`;
+	 *                              `payment.operation_unsupported` when the gateway does not declare the
+	 *                              refund, or the partial refund — each before the refund is claimed and
+	 *                              the gateway asked;
 	 *                              `payment.refund_retry` when another refund was recorded or declined
 	 *                              after this one was worked out, and `payment.refund_unresolved` when
 	 *                              another refund was claimed meanwhile, both under the intent's lock,
@@ -282,13 +288,14 @@ final class RefundService {
 		$this->authorizer->authorize( $actor, self::CAPABILITY );
 		$this->requireNoTransaction();
 
-		$plan = $this->plan( $request );
+		$plan    = $this->plan( $request );
+		$gateway = $this->gateways->get( $plan->intent->gatewayId, $plan->intent->mode );
 
 		if ( ! $this->claim( $plan, $actor ) ) {
-			return $this->askedBefore( $plan, $actor );
+			return $this->askedBefore( $plan, $gateway, $actor );
 		}
 
-		return $this->record( $plan, $this->askGateway( $plan ), $actor );
+		return $this->record( $plan, $this->askGateway( $plan, $gateway ), $actor );
 	}
 
 	/**
@@ -349,9 +356,11 @@ final class RefundService {
 	 * shipping: one read of each kind, whatever the number of lines. Money of the intent that a
 	 * person has not reconciled refuses the refund: what it did is not known, so a refund worked out
 	 * without it could give back more than is left. So does another refund of the intent still
-	 * claimed, for the same reason.
+	 * claimed, for the same reason. Last, the intent's gateway must declare the refund in its
+	 * capability matrix: a partial refund, for less than was captured, or a whole one.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Checks the gateway's capability matrix.
 	 *
 	 * @throws CodedException The refusals refund() lists before the gateway is asked.
 	 *
@@ -384,6 +393,11 @@ final class RefundService {
 		$plan = new RefundPlan( $uuid, $order, $intent, $portions, $shipping, RefundAllocation::total( $portions, $shipping, $order->currency, $order->baseCurrency ), $request->reasonCode );
 
 		$this->checkCaps( $plan, $components );
+
+		// Less than was captured is a partial refund to the provider, whether or not a refund came before it.
+		$operation = $plan->total->amount->gross()->compare( $intent->captured ) < 0 ? Operations::PARTIAL_REFUND : Operations::REFUND;
+
+		$this->payments->require( $intent->gatewayId, $operation, $intent->mode, $order->currency );
 
 		return $plan;
 	}
@@ -482,17 +496,19 @@ final class RefundService {
 	 * Asks the gateway for the refund, at transaction depth 0.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The gateway was added.
 	 *
 	 * @throws \LogicException     Inside a transaction.
 	 * @throws GatewayUnavailable When the gateway has no answer.
 	 *
-	 * @param RefundPlan $plan The refund.
+	 * @param RefundPlan     $plan    The refund.
+	 * @param PaymentGateway $gateway The intent's gateway.
 	 * @return GatewayResult The gateway's answer, not yet applied.
 	 */
-	private function askGateway( RefundPlan $plan ): GatewayResult {
+	private function askGateway( RefundPlan $plan, PaymentGateway $gateway ): GatewayResult {
 		$this->requireNoTransaction();
 
-		return $this->gateway->refund( self::gatewayRefund( $plan ) );
+		return $gateway->refund( self::gatewayRefund( $plan ) );
 	}
 
 	/**
@@ -511,15 +527,16 @@ final class RefundService {
 	 * @throws CodedException     `payment.refund_declined`; `payment.unreconciled`;
 	 *                            `payment.refund_unresolved` with the refund's uuid.
 	 *
-	 * @param RefundPlan $plan  The refund, which an earlier request claimed.
-	 * @param Actor      $actor Who refunds.
+	 * @param RefundPlan     $plan    The refund, which an earlier request claimed.
+	 * @param PaymentGateway $gateway The intent's gateway.
+	 * @param Actor          $actor   Who refunds.
 	 * @return Refund The refund's document.
 	 */
-	private function askedBefore( RefundPlan $plan, Actor $actor ): Refund {
+	private function askedBefore( RefundPlan $plan, PaymentGateway $gateway, Actor $actor ): Refund {
 		$claim = $this->refunds->findClaim( $plan->uuid );
 
 		if ( null !== $claim && ClaimState::Claimed === $claim->state ) {
-			return $this->askWhatBecameOf( $plan, $actor );
+			return $this->askWhatBecameOf( $plan, $gateway, $actor );
 		}
 
 		return $this->answerFrom( $plan, $claim );
@@ -557,16 +574,19 @@ final class RefundService {
 	 * @since 0.1.0
 	 *
 	 * @throws GatewayUnavailable When the gateway has no answer.
-	 * @throws CodedException     `payment.refund_unresolved` with the refund's uuid; what record() raises.
+	 * @throws CodedException     `payment.operation_unsupported`, before the gateway is asked;
+	 *                            `payment.refund_unresolved` with the refund's uuid; what record() raises.
 	 *
-	 * @param RefundPlan $plan  The refund, still claimed.
-	 * @param Actor      $actor Who refunds.
+	 * @param RefundPlan     $plan    The refund, still claimed.
+	 * @param PaymentGateway $gateway The intent's gateway.
+	 * @param Actor          $actor   Who refunds.
 	 * @return Refund The refund's document.
 	 */
-	private function askWhatBecameOf( RefundPlan $plan, Actor $actor ): Refund {
+	private function askWhatBecameOf( RefundPlan $plan, PaymentGateway $gateway, Actor $actor ): Refund {
 		$this->requireNoTransaction();
+		$this->payments->require( $plan->intent->gatewayId, Operations::QUERY_REFUND, $plan->intent->mode, $plan->order->currency );
 
-		$answer = $this->gateway->queryRefund( self::gatewayRefund( $plan ) );
+		$answer = $gateway->queryRefund( self::gatewayRefund( $plan ) );
 
 		if ( null === $answer || ( Outcome::Declined === $answer->outcome && PaymentGateway::NOT_FOUND === $answer->errorCode ) ) {
 			CodedException::raise( PaymentError::RefundUnresolved, array( 'refund_uuid' => $plan->uuid ) );
@@ -898,7 +918,7 @@ final class RefundService {
 	}
 
 	/**
-	 * Builds what the gateway is asked: the intent, the provider's reference to it, the refund's total and its uuid.
+	 * Builds what the gateway is asked: the intent, the provider's reference to it, the refund's total, its uuid and the intent's mode.
 	 *
 	 * The same request asks for the refund and asks what became of it.
 	 *
@@ -908,7 +928,7 @@ final class RefundService {
 	 * @return GatewayRefund The request.
 	 */
 	private static function gatewayRefund( RefundPlan $plan ): GatewayRefund {
-		return new GatewayRefund( $plan->intent->uuid, $plan->intent->providerIntentId, $plan->total->amount->gross(), $plan->uuid );
+		return new GatewayRefund( $plan->intent->uuid, $plan->intent->providerIntentId, $plan->total->amount->gross(), $plan->uuid, $plan->intent->mode );
 	}
 
 	/**

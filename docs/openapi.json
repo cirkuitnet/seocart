@@ -1004,10 +1004,8 @@
                                     },
                                     "payment_method_key": {
                                         "type": "string",
-                                        "enum": [
-                                            "stub"
-                                        ],
-                                        "description": "The payment method chosen; leave it out to clear it.",
+                                        "maxLength": 32,
+                                        "description": "The payment method chosen, the id of a payment gateway the store offers; leave it out to clear it.",
                                         "examples": [
                                             "stub"
                                         ]
@@ -1082,7 +1080,7 @@
                         }
                     },
                     "422": {
-                        "description": "`checkout.invalid_address`: The address field {field} is not valid. A country is a two-letter code, such as GB, and an email address looks like name@example.com.\n\n`checkout.invalid_method_key`: The {field} is not a method key. A method key uses only lower-case letters, digits, dots, colons, hyphens and underscores, such as flat.",
+                        "description": "`checkout.invalid_address`: The address field {field} is not valid. A country is a two-letter code, such as GB, and an email address looks like name@example.com.\n\n`checkout.invalid_method_key`: The {field} is not a method the store can use. A method key uses only lower-case letters, digits, dots, colons, hyphens and underscores, such as flat, and a payment method is one the store offers.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -1252,7 +1250,7 @@
                         }
                     },
                     "409": {
-                        "description": "`checkout.placement_in_progress`: An order is being placed with this idempotency key right now. Wait a moment, then send the same request again.\n\n`cart.not_open`: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.\n\n`cart.version_stale`: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.\n\n`checkout.line_unsellable`: The variant {variant_id} cannot be sold now ({reason}), so no order was placed. Remove it from the cart, then place the order again.\n\n`checkout.totals_changed`: The cart's totals have changed since you read them, so no order was placed. Check the new totals, then place the order again with them.\n\n`stock.insufficient`: Variant {variant_id}: {requested} asked for, but only {available} available.\n\n`promotion.limit_reached`: That code can no longer be used. Remove it to go on.\n\n`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.",
+                        "description": "`checkout.placement_in_progress`: An order is being placed with this idempotency key right now. Wait a moment, then send the same request again.\n\n`cart.not_open`: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.\n\n`cart.version_stale`: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.\n\n`checkout.line_unsellable`: The variant {variant_id} cannot be sold now ({reason}), so no order was placed. Remove it from the cart, then place the order again.\n\n`checkout.totals_changed`: The cart's totals have changed since you read them, so no order was placed. Check the new totals, then place the order again with them.\n\n`checkout.payment_method_unavailable`: The payment method {payment_method_key} cannot take this order's payment now, so the order was not placed. Choose another way to pay, then place the order again.\n\n`stock.insufficient`: Variant {variant_id}: {requested} asked for, but only {available} available.\n\n`promotion.limit_reached`: That code can no longer be used. Remove it to go on.\n\n`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -2736,6 +2734,7 @@
                                     "string",
                                     "null"
                                 ],
+                                "maxLength": 32,
                                 "description": "The payment method chosen, or null when none was."
                             }
                         },

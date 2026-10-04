@@ -161,6 +161,7 @@ final class CheckoutOperationsTest extends CheckoutTestCase {
 	 * Tests that the write is refused without the Store API's header, without a cart, with an address it cannot use, and with a payment method it does not offer; each changes nothing.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 A payment method the store does not offer is refused by the store's gateways, `checkout.invalid_method_key`.
 	 */
 	public function test_a_write_the_checkout_cannot_take_is_refused_and_changes_nothing(): void {
 		$headerless = $this->serve( $this->server, 'PUT', '/seocart/store/v1' . CheckoutOperations::ROUTE, array(), array( 'cart_version' => 1 ) );
@@ -198,8 +199,10 @@ final class CheckoutOperationsTest extends CheckoutTestCase {
 			)
 		);
 
-		$this->assertSame( 400, $unoffered['status'] );
-		$this->assertSame( 'rest_invalid_param', $unoffered['body']['code'] ?? null );
+		// The method is checked against the store's gateways, which no `card` gateway is one of.
+		$this->assertSame( 422, $unoffered['status'] );
+		$this->assertErrorShape( $unoffered['body'], 'checkout.invalid_method_key', 422 );
+		$this->assertStringContainsString( 'payment_method_key', (string) ( $unoffered['body']['message'] ?? '' ) );
 		$this->assertSame( 0, $this->checkoutRows( CheckoutTables::SESSIONS ) );
 	}
 }

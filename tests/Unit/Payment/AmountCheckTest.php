@@ -12,15 +12,16 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Payment;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Order\Domain\LockedOrder;
 use SEOCart\Order\Domain\OrderChannel;
 use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Payment\Domain\AmountCheck;
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
 use SEOCart\Payment\Domain\IntentStatus;
-use SEOCart\Payment\Domain\Operation;
-use SEOCart\Payment\Domain\Outcome;
 use SEOCart\Payment\Domain\PaymentIntent;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Money;
@@ -81,7 +82,7 @@ final class AmountCheckTest extends TestCase {
 		$usd    = static fn( int $amount ): Money => Money::of( $amount, Currency::of( 'USD' ) );
 		$order  = new LockedOrder( 7, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8b', '000007', OrderChannel::Storefront, OrderStatus::PendingPayment, PaymentStatus::Unpaid, $eur( 3080 ), $eur( $authorized ), $eur( $paid ), $eur( 0 ), $eur( 3080 - $paid ), $usd( 2464 ), $usd( 0 ), $usd( 0 ), $usd( 0 ), null, 'user', null, null );
 		$amount = Money::of( 3080, Currency::of( $intentCurrency ) );
-		$intent = new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', IntentStatus::Created, $amount, $usd( 2464 ), 1, Money::zero( $amount->currency() ), Money::zero( $amount->currency() ), Money::zero( $amount->currency() ), null );
+		$intent = new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', Mode::Test, IntentStatus::Created, $amount, $usd( 2464 ), 1, Money::zero( $amount->currency() ), Money::zero( $amount->currency() ), Money::zero( $amount->currency() ), null );
 		$result = new GatewayResult( 'stub', $operation, Outcome::Approved, $intent->uuid, Money::of( $minor, Currency::of( $currency ) ), 'stub-x' );
 
 		$this->assertSame( $matches, AmountCheck::accepts( $result, $intent, $order ) );
@@ -95,7 +96,7 @@ final class AmountCheckTest extends TestCase {
 	public function test_an_intent_in_another_base_currency_than_its_order_matches_nothing(): void {
 		$eur    = static fn( int $amount ): Money => Money::of( $amount, Currency::of( 'EUR' ) );
 		$order  = new LockedOrder( 7, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8b', '000007', OrderChannel::Storefront, OrderStatus::PendingPayment, PaymentStatus::Unpaid, $eur( 3080 ), $eur( 0 ), $eur( 0 ), $eur( 0 ), $eur( 3080 ), Money::of( 2464, Currency::of( 'USD' ) ), Money::zero( Currency::of( 'USD' ) ), Money::zero( Currency::of( 'USD' ) ), Money::zero( Currency::of( 'USD' ) ), null, 'user', null, null );
-		$intent = new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', IntentStatus::Created, $eur( 3080 ), Money::of( 2900, Currency::of( 'GBP' ) ), 1, $eur( 0 ), $eur( 0 ), $eur( 0 ), null );
+		$intent = new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', Mode::Test, IntentStatus::Created, $eur( 3080 ), Money::of( 2900, Currency::of( 'GBP' ) ), 1, $eur( 0 ), $eur( 0 ), $eur( 0 ), null );
 
 		$this->assertFalse( AmountCheck::accepts( new GatewayResult( 'stub', Operation::Authorize, Outcome::Approved, $intent->uuid, $eur( 3080 ), 'stub-x' ), $intent, $order ) );
 	}

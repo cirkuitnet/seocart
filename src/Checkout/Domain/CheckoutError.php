@@ -38,9 +38,10 @@ enum CheckoutError: string implements ErrorCode {
 	case InvalidAddress = 'checkout.invalid_address';
 
 	/**
-	 * A method key the checkout was given is not one.
+	 * A method key the checkout was given is not one, or the payment method is not one the store offers.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Also a payment method that is not a payment gateway the store has set up.
 	 */
 	case InvalidMethodKey = 'checkout.invalid_method_key';
 
@@ -108,6 +109,13 @@ enum CheckoutError: string implements ErrorCode {
 	case GatewayUnavailable = 'checkout.gateway_unavailable';
 
 	/**
+	 * The payment method chosen cannot take this order's payment now: its gateway is gone, or does not take the order's currency or total. Nothing was written.
+	 *
+	 * @since 0.2.0
+	 */
+	case PaymentMethodUnavailable = 'checkout.payment_method_unavailable';
+
+	/**
 	 * The store does not sell in the currency a cart was to be switched to: it is not enabled, has no current exchange rate, or is not a currency code.
 	 *
 	 * The answer is the same whatever the reason, and never lists the currencies the store sells in.
@@ -138,7 +146,7 @@ enum CheckoutError: string implements ErrorCode {
 				422,
 				static fn(): string =>
 					/* translators: %1$s: The field that is not a method key, such as shipping_method_key. */
-					__( 'The %1$s is not a method key. A method key uses only lower-case letters, digits, dots, colons, hyphens and underscores, such as flat.', 'seocart' ),
+					__( 'The %1$s is not a method the store can use. A method key uses only lower-case letters, digits, dots, colons, hyphens and underscores, such as flat, and a payment method is one the store offers.', 'seocart' ),
 				array( 'field' )
 			),
 			new ErrorDefinition(
@@ -192,6 +200,14 @@ enum CheckoutError: string implements ErrorCode {
 				503,
 				static fn(): string => __( 'The payment provider could not be reached. Your order is waiting for its answer: check its status in a few minutes before you try again.', 'seocart' ),
 				details: array( 'order_uuid' )
+			),
+			new ErrorDefinition(
+				self::PaymentMethodUnavailable,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: The payment method chosen, for example stripe. */
+					__( 'The payment method %1$s cannot take this order\'s payment now, so the order was not placed. Choose another way to pay, then place the order again.', 'seocart' ),
+				array( 'payment_method_key' )
 			),
 			new ErrorDefinition(
 				self::CurrencyNotEnabled,

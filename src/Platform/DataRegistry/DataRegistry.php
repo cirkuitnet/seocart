@@ -36,7 +36,8 @@ defined( 'ABSPATH' ) || exit;
  * class). OwnedData builds the production instance.
  *
  * Construction refuses a registration that could not be right: a table, option, migration or
- * job group registered twice; a table whose retention policy the catalog does not declare; a
+ * job group registered twice, or an option that a family registered covers too; a table whose
+ * retention policy the catalog does not declare; a
  * table with a `created_at` column kept permanently without its purpose saying why; and more
  * than one option that autoloads. A `pii` column without its privacy handling never gets this
  * far: ColumnSpec refuses to be built without it.
@@ -163,6 +164,8 @@ final class DataRegistry {
 		ksort( $migrations, SORT_STRING );
 		$this->migrations = array_values( $migrations );
 
+		$this->refuseCoveredOptions();
+
 		$autoloaded = array_keys( array_filter( $this->options, static fn( OptionDefinition $option ): bool => $option->autoloads() ) );
 
 		if ( count( $autoloaded ) > 1 ) {
@@ -261,6 +264,24 @@ final class DataRegistry {
 	}
 
 	/**
+	 * Tells whether an option is the plugin's: registered by its name, or one of a registered family.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $option An option name.
+	 * @return bool True when a registered option or family covers it.
+	 */
+	public function declaresOption( string $option ): bool {
+		foreach ( $this->options as $definition ) {
+			if ( $definition->covers( $option ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
 	 * Returns every registered job group.
 	 *
 	 * @since 0.1.0
@@ -291,6 +312,30 @@ final class DataRegistry {
 	 */
 	public function retention(): RetentionCatalog {
 		return $this->retention;
+	}
+
+	/**
+	 * Refuses an option, or a family, that a registered family covers as well: it would be declared twice.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When a family covers another registration's name.
+	 */
+	private function refuseCoveredOptions(): void {
+		$families = array_filter( $this->options, static fn( OptionDefinition $option ): bool => $option->isFamily() );
+
+		foreach ( $families as $familyName => $family ) {
+			$prefix = substr( $familyName, 0, -1 );
+
+			foreach ( $this->options as $name => $other ) {
+				// Another family is covered when its prefix begins with this one's.
+				$covered = $other->isFamily() ? $name !== $familyName && str_starts_with( $name, $prefix ) : $family->covers( $name );
+
+				if ( $covered ) {
+					throw new \LogicException( sprintf( 'Option %1$s is covered by the family %2$s, so it is registered twice.', $name, $familyName ) );
+				}
+			}
+		}
 	}
 
 	/**

@@ -11,16 +11,18 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Payment;
 
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Outcome;
+use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Order\Domain\InsertedOrder;
 use SEOCart\Order\Domain\NewOrder;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Domain\Application;
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
 use SEOCart\Payment\Domain\IntentRef;
-use SEOCart\Payment\Domain\Operation;
-use SEOCart\Payment\Domain\Outcome;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\Migrations\CreatePaymentTables;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundClaimTable;
@@ -102,6 +104,24 @@ abstract class PaymentTestCase extends OrderTestCase {
 	 * @var int
 	 */
 	protected const BASE_GRAND_TOTAL = 2464;
+
+	/**
+	 * The order uuid an authorization is asked with, which the stub does not read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	protected const ORDER_UUID = '01928c3e-0000-7000-8000-0000000000a1';
+
+	/**
+	 * The order number an authorization is asked with, which the stub does not read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	protected const ORDER_NUMBER = '1001';
 
 	/**
 	 * The payment service over `$this->db`.
@@ -200,16 +220,31 @@ abstract class PaymentTestCase extends OrderTestCase {
 	 * @return PaymentService The service.
 	 */
 	protected function paymentsOver( Database $db, IdGenerator $ids, PaymentGateway $gateway ): PaymentService {
+		return $this->paymentsWith( $db, $ids, TestGateways::of( $gateway ) );
+	}
+
+	/**
+	 * Builds the payment service over a connection and a gateway registry.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Database    $db       The connection.
+	 * @param IdGenerator $ids      The ids it mints.
+	 * @param Gateways    $gateways The gateways it finds each intent's in.
+	 * @return PaymentService The service.
+	 */
+	protected function paymentsWith( Database $db, IdGenerator $ids, Gateways $gateways ): PaymentService {
 		return new PaymentService(
 			new MysqlPaymentRepository( $db, $ids ),
-			$gateway,
+			$gateways,
 			$this->ordersOver( $db, $ids ),
 			$db,
 			$this->publisherOver( $db ),
 			new Authorizer( new CapabilityDeclaration() ),
 			$ids,
 			FrozenClock::at( self::NOW ),
-			$this->correlation
+			$this->correlation,
+			$this->reporter()
 		);
 	}
 
@@ -240,7 +275,7 @@ abstract class PaymentTestCase extends OrderTestCase {
 		return $this->db->transaction(
 			function () use ( $order ): array {
 				$inserted = $this->orders->insert( $order, Actor::user( 0 ) );
-				$intent   = $this->payments->createIntent( $inserted->id, StubGateway::ID, $order->totals->grandTotal, $order->totals->baseGrandTotal, $inserted->conversionContextId );
+				$intent   = $this->payments->createIntent( $inserted->id, StubGateway::ID, Mode::Test, $order->totals->grandTotal, $order->totals->baseGrandTotal, $inserted->conversionContextId );
 
 				return array( $inserted, $intent );
 			}
@@ -290,7 +325,7 @@ abstract class PaymentTestCase extends OrderTestCase {
 	 * @return GatewayResult The stub's answer, not applied.
 	 */
 	protected function authorizeWith( IntentRef $intent, string $token ): GatewayResult {
-		return $this->payments->authorize( $intent->uuid, array( PaymentService::PAYMENT_TOKEN => $token ) );
+		return $this->payments->authorize( $intent->uuid, array( PaymentService::PAYMENT_TOKEN => $token ), self::ORDER_UUID, self::ORDER_NUMBER );
 	}
 
 	/**

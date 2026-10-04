@@ -256,7 +256,9 @@ final class CoverageTest extends KernelTestCase {
 
 		$this->assertCount( 1, $grants, 'The settings registry declares no one document for the capability installer\'s record.' );
 		$this->assertArrayHasKey( $grants[0], $stored, 'The activation recorded no capability grant, so the scan saw nothing of the ledger.' );
-		$this->assertSame( array(), array_values( array_diff( array_keys( $stored ), $registered ) ), 'These plugin options are in the options table, but no module registers them.' );
+		$this->assertSame( array(), array_values( array_filter( array_keys( $stored ), static fn( string $option ): bool => ! $registry->declaresOption( $option ) ) ), 'These plugin options are in the options table, but no module registers them.' );
+		$this->assertTrue( $registry->declaresOption( 'seocart_gateway_example' ), 'A payment gateway\'s settings document is one of the family the registry declares.' );
+		$this->assertFalse( $registry->declaresOption( self::PLANTED_OPTION ), 'The family covers no other option.' );
 
 		foreach ( $registry->options() as $option ) {
 			if ( isset( $stored[ $option->name() ] ) ) {

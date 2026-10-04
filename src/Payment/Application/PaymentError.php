@@ -131,6 +131,20 @@ enum PaymentError: string implements ErrorCode {
 	case RefundRetry = 'payment.refund_retry';
 
 	/**
+	 * The payment's gateway cannot be used now: it is not installed, or its credentials for the payment's mode are missing or do not open. Nothing was sent to it, and nothing was written.
+	 *
+	 * @since 0.2.0
+	 */
+	case GatewayUnavailable = 'payment.gateway_unavailable';
+
+	/**
+	 * The payment's gateway does not declare the operation asked of it for the payment's currency and the account's country. Nothing was sent to it, and nothing was written.
+	 *
+	 * @since 0.2.0
+	 */
+	case OperationUnsupported = 'payment.operation_unsupported';
+
+	/**
 	 * Returns the catalog's rows.
 	 *
 	 * @since 0.1.0
@@ -231,6 +245,22 @@ enum PaymentError: string implements ErrorCode {
 				self::RefundRetry,
 				409,
 				static fn(): string => __( 'Another refund of this payment was recorded or declined while this one was being worked out, so the payment gateway was not asked for it; ask for the refund again.', 'seocart' )
+			),
+			new ErrorDefinition(
+				self::GatewayUnavailable,
+				503,
+				static fn(): string =>
+					/* translators: %1$s: The payment gateway's id, for example stripe. %2$s: Why it cannot be used, for example not_registered. */
+					__( 'The payment gateway %1$s cannot be used now (%2$s); nothing was sent to it.', 'seocart' ),
+				array( 'gateway_id', 'reason' )
+			),
+			new ErrorDefinition(
+				self::OperationUnsupported,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: The payment gateway's id, for example stripe. %2$s: The operation, for example partial_refund. */
+					__( 'The payment gateway %1$s does not support %2$s for this payment; nothing was sent to it.', 'seocart' ),
+				array( 'gateway_id', 'operation' )
 			),
 		);
 	}

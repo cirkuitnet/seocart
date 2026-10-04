@@ -11,8 +11,9 @@ declare( strict_types=1 );
 
 namespace SEOCart\Payment\Domain;
 
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Order\Domain\LockedOrder;
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
 use SEOCart\Support\Money;
 
 defined( 'ABSPATH' ) || exit;

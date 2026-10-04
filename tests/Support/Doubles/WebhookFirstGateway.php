@@ -11,12 +11,12 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Doubles;
 
-use SEOCart\Payment\Domain\Gateway\CaptureRequest;
-use SEOCart\Payment\Domain\Gateway\GatewayRefund;
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
-use SEOCart\Payment\Domain\Gateway\PaymentQuery;
-use SEOCart\Payment\Domain\Gateway\PaymentRequest;
+use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\GatewayRefund;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Contracts\Payment\PaymentQuery;
+use SEOCart\Contracts\Payment\PaymentRequest;
 
 /**
  * Wraps a gateway, and hands each authorization's result to a webhook before returning it.
@@ -29,6 +29,8 @@ use SEOCart\Payment\Domain\Gateway\PaymentRequest;
  */
 final class WebhookFirstGateway implements PaymentGateway {
 
+	use DecoratesGateway;
+
 	/**
 	 * Creates the gateway.
 	 *
@@ -40,29 +42,6 @@ final class WebhookFirstGateway implements PaymentGateway {
 	 * @phpstan-param \Closure(GatewayResult): mixed $webhook
 	 */
 	public function __construct( private PaymentGateway $inner, private \Closure $webhook ) {
-	}
-
-	/**
-	 * Returns the wrapped gateway's id.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return string The id.
-	 */
-	public function id(): string {
-		return $this->inner->id();
-	}
-
-	/**
-	 * Tells whether the wrapped gateway supports a capability.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $capability The capability.
-	 * @return bool The wrapped gateway's answer.
-	 */
-	public function supports( string $capability ): bool {
-		return $this->inner->supports( $capability );
 	}
 
 	/**

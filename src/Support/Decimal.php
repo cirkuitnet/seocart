@@ -36,6 +36,9 @@ defined( 'ABSPATH' ) || exit;
  * as an integer, can overflow; it checks and throws.
  *
  * @since 0.1.0
+ * @since 0.2.0 Public, by reference from the payment contract.
+ *
+ * @api
  */
 final class Decimal {
 

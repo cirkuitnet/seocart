@@ -11,6 +11,9 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Order\Domain\Event\OrderPlaced;
 use SEOCart\Order\Domain\Event\OrderStatusChanged;
 use SEOCart\Order\Domain\OrderStatus;
@@ -22,8 +25,6 @@ use SEOCart\Payment\Domain\Event\PaymentFailed;
 use SEOCart\Payment\Domain\Event\PaymentStatusChanged;
 use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Payment\Domain\IntentStatus;
-use SEOCart\Payment\Domain\Operation;
-use SEOCart\Payment\Domain\Outcome;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Platform\Events\OutboxTable;
@@ -256,7 +257,7 @@ final class ApplyGatewayResultTest extends PaymentTestCase {
 		$this->assertSame( ApplicationKind::Duplicate, $this->deliver( $waiting )->kind, 'The same request delivered again changes nothing.' );
 		$this->assertSame( $before, $this->snapshot() );
 
-		$completion = $this->payments->queryGateway( new IntentRef( $intent->uuid, $order->id, IntentStatus::RequiresAction, (string) $row['provider_intent_id'], $intent->amount ) );
+		$completion = $this->payments->queryGateway( new IntentRef( $intent->uuid, $order->id, StubGateway::ID, Mode::Test, IntentStatus::RequiresAction, (string) $row['provider_intent_id'], $intent->amount ) );
 
 		$this->assertNotNull( $completion );
 		$this->assertSame( ApplicationKind::Applied, $this->deliver( $completion )->kind, 'The webhook delivers the completion first.' );
@@ -545,7 +546,7 @@ final class ApplyGatewayResultTest extends PaymentTestCase {
 		return $this->db->transaction(
 			function () use ( $order, $intentCurrency ): array {
 				$inserted = $this->orders->insert( $order, self::system() );
-				$intent   = $this->payments->createIntent( $inserted->id, StubGateway::ID, Money::of( self::GRAND_TOTAL, Currency::of( $intentCurrency ) ), $order->totals->baseGrandTotal, $inserted->conversionContextId );
+				$intent   = $this->payments->createIntent( $inserted->id, StubGateway::ID, Mode::Test, Money::of( self::GRAND_TOTAL, Currency::of( $intentCurrency ) ), $order->totals->baseGrandTotal, $inserted->conversionContextId );
 
 				return array( $inserted, $intent );
 			}

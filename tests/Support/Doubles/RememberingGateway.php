@@ -11,15 +11,15 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Doubles;
 
-use SEOCart\Payment\Domain\Gateway\CaptureRequest;
-use SEOCart\Payment\Domain\Gateway\GatewayRefund;
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
-use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
-use SEOCart\Payment\Domain\Gateway\PaymentQuery;
-use SEOCart\Payment\Domain\Gateway\PaymentRequest;
-use SEOCart\Payment\Domain\Operation;
-use SEOCart\Payment\Domain\Outcome;
+use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\GatewayRefund;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\GatewayUnavailable;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Outcome;
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Contracts\Payment\PaymentQuery;
+use SEOCart\Contracts\Payment\PaymentRequest;
 
 /**
  * Wraps a gateway and plays a provider that keeps every refund it made, by the key it was asked with, so it can say what became of one.
@@ -39,6 +39,8 @@ use SEOCart\Payment\Domain\Outcome;
  * @since 0.1.0
  */
 final class RememberingGateway implements PaymentGateway {
+
+	use DecoratesGateway;
 
 	/**
 	 * Whether every refund it is asked for is a new one, whatever its key.
@@ -114,29 +116,6 @@ final class RememberingGateway implements PaymentGateway {
 	 */
 	public function refundsMade(): int {
 		return array_sum( array_map( 'count', $this->made ) );
-	}
-
-	/**
-	 * Returns the wrapped gateway's id.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return string The id.
-	 */
-	public function id(): string {
-		return $this->inner->id();
-	}
-
-	/**
-	 * Tells whether the wrapped gateway has a capability.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $capability The capability.
-	 * @return bool Its answer.
-	 */
-	public function supports( string $capability ): bool {
-		return $this->inner->supports( $capability );
 	}
 
 	/**
@@ -225,6 +204,6 @@ final class RememberingGateway implements PaymentGateway {
 		}
 
 		return $this->made[ $request->refundUuid ][0]
-			?? new GatewayResult( $this->inner->id(), Operation::Refund, Outcome::Declined, $request->intentUuid, $request->amount, null, $request->providerIntentId, PaymentGateway::NOT_FOUND );
+			?? new GatewayResult( $this->inner->describe()->id, Operation::Refund, Outcome::Declined, $request->intentUuid, $request->amount, null, $request->providerIntentId, PaymentGateway::NOT_FOUND );
 	}
 }

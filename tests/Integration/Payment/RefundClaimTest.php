@@ -11,10 +11,10 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
+use SEOCart\Contracts\Payment\GatewayUnavailable;
 use SEOCart\Order\Domain\NewOrder;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
-use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
 use SEOCart\Payment\Domain\Refund\ClaimState;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\MysqlRefundRepository;

@@ -11,16 +11,26 @@ declare( strict_types=1 );
 
 namespace SEOCart\Payment\Infrastructure\Gateway;
 
-use SEOCart\Payment\Domain\Gateway\CaptureRequest;
-use SEOCart\Payment\Domain\Gateway\GatewayRefund;
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
-use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
-use SEOCart\Payment\Domain\Gateway\PaymentQuery;
-use SEOCart\Payment\Domain\Gateway\PaymentRequest;
-use SEOCart\Payment\Domain\Gateway\Settlement;
-use SEOCart\Payment\Domain\Operation;
-use SEOCart\Payment\Domain\Outcome;
+use SEOCart\Contracts\Payment\AvailabilityContext;
+use SEOCart\Contracts\Payment\CapabilityMatrix;
+use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\GatewayDescriptor;
+use SEOCart\Contracts\Payment\GatewayRefund;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\GatewayUnavailable;
+use SEOCart\Contracts\Payment\IdempotencyProfile;
+use SEOCart\Contracts\Payment\MatrixRow;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Operations;
+use SEOCart\Contracts\Payment\Outcome;
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Contracts\Payment\PaymentQuery;
+use SEOCart\Contracts\Payment\PaymentRequest;
+use SEOCart\Contracts\Payment\Settlement;
+use SEOCart\Contracts\Payment\VoidRequest;
+use SEOCart\Contracts\Payment\WebhookEnvelope;
+use SEOCart\Contracts\Payment\WebhookReading;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Decimal;
 use SEOCart\Support\Money;
@@ -43,8 +53,12 @@ defined( 'ABSPATH' ) || exit;
  * a status query, in any later request, answer from the scenario the intent was authorized with.
  * Every object it names is deterministic per intent and operation, or per refund, so the same
  * outcome delivered again is the same result: `stub-ch-{uuid}` for an authorization's charge,
- * `stub-cap-{uuid}` for a capture, and `stub-re-{refund uuid}` for a refund, named by the
- * idempotency key the refund was asked with.
+ * `stub-cap-{uuid}` for a capture, `stub-void-{uuid}` for a void, and `stub-re-{refund uuid}` for
+ * a refund, named by the idempotency key the refund was asked with.
+ *
+ * It approves every payment, so it must never be offered on a live store: the registry registers
+ * it only on a site whose environment type is not `production`, or where SEOCART_STUB_GATEWAY is
+ * defined true. It has one mode, test, and no settings, so it has no settings document either.
  *
  * An intent it never gave a reference to, because the call that would have authorized it never
  * reached it (`stub:throw`), is one it has no record of; asked about it, it says so, as a declined
@@ -256,6 +270,24 @@ final class StubGateway implements PaymentGateway {
 	private const REFUND_PREFIX = 'stub-re-';
 
 	/**
+	 * What a void is named with, before the intent's uuid.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const VOID_PREFIX = 'stub-void-';
+
+	/**
+	 * The currencies the stub takes.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<string>
+	 */
+	private const CURRENCIES = array( 'USD', 'GBP', 'EUR' );
+
+	/**
 	 * What the answer about an intent the gateway has no record of is named with, before the intent's uuid.
 	 *
 	 * @since 0.1.0
@@ -283,26 +315,44 @@ final class StubGateway implements PaymentGateway {
 	private const UUID_LENGTH = 36;
 
 	/**
-	 * Returns the gateway's id.
+	 * Describes the stub: test mode only, no settings, and every operation but capturing in parts, charging without the customer, and webhooks, in USD, GBP and EUR.
 	 *
-	 * @since 0.1.0
+	 * Its provider can always be searched, at once: it remembers every intent by the reference it
+	 * gave it, and has no key to forget.
 	 *
-	 * @return string `stub`.
+	 * @since 0.2.0
+	 *
+	 * @return GatewayDescriptor The descriptor.
 	 */
-	public function id(): string {
-		return self::ID;
+	public function describe(): GatewayDescriptor {
+		$operations = array_values( array_diff( Operations::ALL, array( Operations::MULTI_CAPTURE, Operations::OFF_SESSION, Operations::WEBHOOKS ) ) );
+
+		return new GatewayDescriptor(
+			self::ID,
+			static fn(): string => __( 'Stand-in gateway', 'seocart' ),
+			GatewayDescriptor::TYPE_PAYMENTS,
+			PaymentGateway::CONTRACT_VERSION,
+			array( Mode::Test ),
+			array(),
+			new CapabilityMatrix( array_map( static fn( string $code ): MatrixRow => new MatrixRow( Currency::of( $code ), MatrixRow::ANY_COUNTRY, $operations ), self::CURRENCIES ) ),
+			new IdempotencyProfile( null, true, 0 ),
+			// The stand-in answers from its script and calls no external service.
+			array()
+		);
 	}
 
 	/**
-	 * Tells whether the stub has a capability: it can ask the customer to act, and capture only in full.
+	 * Tells whether the stub can take a payment: always, where its matrix allows it.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
-	 * @param string $capability One of PaymentGateway's capability constants.
-	 * @return bool True for PaymentGateway::SCA.
+	 * @param AvailabilityContext $context The payment.
+	 * @return bool True.
 	 */
-	public function supports( string $capability ): bool {
-		return PaymentGateway::SCA === $capability;
+	public function isAvailable( AvailabilityContext $context ): bool {
+		unset( $context );
+
+		return true;
 	}
 
 	/**
@@ -343,6 +393,32 @@ final class StubGateway implements PaymentGateway {
 			: $request->amount;
 
 		return new GatewayResult( self::ID, Operation::Capture, Outcome::Approved, $request->intentUuid, $amount, self::CAPTURE_PREFIX . $request->intentUuid, $request->providerIntentId );
+	}
+
+	/**
+	 * Voids an authorization: approved, and named by the intent, so the same void answered again is the same result.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param VoidRequest $request The intent and why it is voided.
+	 * @return GatewayResult The approval.
+	 */
+	public function void( VoidRequest $request ): GatewayResult {
+		return new GatewayResult( self::ID, Operation::Void, Outcome::Approved, $request->intentUuid, $request->amount, self::VOID_PREFIX . $request->intentUuid, $request->providerIntentId );
+	}
+
+	/**
+	 * Rejects every webhook delivery: the stub sends none, so whatever claims to come from it is not genuine.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param WebhookEnvelope $envelope The delivery.
+	 * @return WebhookReading Rejected, its signature unverified.
+	 */
+	public function readWebhook( WebhookEnvelope $envelope ): WebhookReading {
+		unset( $envelope );
+
+		return WebhookReading::rejected( WebhookReading::BAD_SIGNATURE );
 	}
 
 	/**

@@ -40,9 +40,19 @@ defined( 'ABSPATH' ) || exit;
  *   operation exposes;
  * - a document has no purpose, or a purpose names a group that is not a document.
  *
- * It is pure data: it performs no I/O and calls no WordPress function.
+ * Some settings are declared only once something registers them, such as a payment gateway's
+ * settings document, and declaring them must not cost a request that never reads them. Such
+ * settings are given as late declarations: a callable, asked once, the first time the registry
+ * is asked for a setting or a group it does not hold, or for every setting, every option or
+ * every option's declaration. They are checked by the same rules, as one set with the rest, and
+ * none of them may be exposed, so the exposed settings are known without asking. A late
+ * declaration that throws is asked again at the next read that needs it.
+ *
+ * Building it and reading it performs no I/O and calls no WordPress function; asking for the
+ * late declarations does what the callable does.
  *
  * @since 0.1.0
+ * @since 0.2.0 Takes late declarations.
  */
 final class SettingsRegistry {
 
@@ -99,7 +109,16 @@ final class SettingsRegistry {
 	 *
 	 * @var array<string, string>
 	 */
-	private array $purposes;
+	private array $purposes = array();
+
+	/**
+	 * Returns the late declarations, until they joined the registry.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var (\Closure(): array{settings: list<Setting>, documents: array<string, string>})|null
+	 */
+	private ?\Closure $late;
 
 	/**
 	 * Builds the registry.
@@ -108,13 +127,44 @@ final class SettingsRegistry {
 	 *
 	 * @throws SchemaException When the settings break one of the rules the class lists.
 	 *
+	 * @since 0.2.0 The late declarations were added.
+	 *
 	 * @param Setting[]             $settings  The settings, in the order the operations list them.
 	 * @param array<string, string> $documents Optional. One sentence saying what each document holds,
 	 *                                         keyed by its group. Default none.
+	 * @param callable|null         $late      Optional. Returns the late declarations: `settings`, a list of
+	 *                                         settings none of which is exposed, and `documents`, their
+	 *                                         documents' purposes by group. Default none.
+	 *
+	 * @phpstan-param list<Setting> $settings
+	 * @phpstan-param (callable(): array{settings: list<Setting>, documents: array<string, string>})|null $late
+	 */
+	public function __construct( array $settings, array $documents = array(), ?callable $late = null ) {
+		$this->add( $settings, $documents );
+
+		$this->late = null === $late ? null : \Closure::fromCallable( $late );
+	}
+
+	/**
+	 * Checks settings with the purposes of their documents, against each other and against the settings held, and adds them.
+	 *
+	 * Nothing is added unless all of them pass.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws SchemaException When the settings break one of the rules the class lists.
+	 *
+	 * @param Setting[]             $settings  The settings.
+	 * @param array<string, string> $documents One sentence saying what each of their documents holds, keyed by its group.
 	 *
 	 * @phpstan-param list<Setting> $settings
 	 */
-	public function __construct( array $settings, array $documents = array() ) {
+	private function add( array $settings, array $documents ): void {
+		$byName   = $this->settings;
+		$byOption = $this->options;
+		$groups   = $this->groups;
+		$added    = array();
+
 		foreach ( $settings as $setting ) {
 			// @phpstan-ignore instanceof.alwaysTrue (Declarations are written by hand; a stray value must be refused, not stored.)
 			if ( ! $setting instanceof Setting ) {
@@ -125,15 +175,15 @@ final class SettingsRegistry {
 			$group  = $setting->group();
 			$option = $setting->optionName();
 
-			if ( isset( $this->settings[ $name ] ) ) {
+			if ( isset( $byName[ $name ] ) ) {
 				SchemaException::raise( 'Two settings are named %1$s.', $name );
 			}
 
-			if ( isset( $this->groups[ $group ] ) && $this->groups[ $group ] !== $setting->storage() ) {
+			if ( isset( $groups[ $group ] ) && $groups[ $group ] !== $setting->storage() ) {
 				SchemaException::raise( 'The group %1$s mixes independent options and a document; the setting %2$s must be stored like the rest of its group.', $group, $name );
 			}
 
-			$sharing = array_values( $this->options[ $option ] ?? array() )[0] ?? null;
+			$sharing = array_values( $byOption[ $option ] ?? array() )[0] ?? null;
 
 			if ( null !== $sharing && $sharing->group() !== $group ) {
 				SchemaException::raise( 'The settings %1$s and %2$s of the groups %3$s and %4$s would both be stored in the option %5$s.', $sharing->name(), $name, $sharing->group(), $group, $option );
@@ -143,26 +193,55 @@ final class SettingsRegistry {
 				SchemaException::raise( 'The setting %1$s is in a document and exposed; exposing a document needs its version on the wire, which the settings operations do not carry yet.', $name );
 			}
 
-			$this->settings[ $name ]           = $setting;
-			$this->options[ $option ][ $name ] = $setting;
-			$this->groups[ $group ]            = $setting->storage();
+			$byName[ $name ]              = $setting;
+			$byOption[ $option ][ $name ] = $setting;
+			$groups[ $group ]             = $setting->storage();
+			$added[ $group ]              = true;
 		}
 
-		foreach ( $this->groups as $group => $storage ) {
-			$purpose = $documents[ $group ] ?? '';
+		foreach ( array_keys( $added ) as $group ) {
+			$purpose = $documents[ $group ] ?? $this->purposes[ $group ] ?? '';
 
-			if ( Storage::Document === $storage && ( '' === trim( $purpose ) || 1 === preg_match( '/[\r\n]/', $purpose ) ) ) {
+			if ( Storage::Document === $groups[ $group ] && ( '' === trim( $purpose ) || 1 === preg_match( '/[\r\n]/', $purpose ) ) ) {
 				SchemaException::raise( 'The document %1$s needs a purpose: one sentence, on one line, saying what it holds.', $group );
 			}
 		}
 
 		foreach ( array_keys( $documents ) as $group ) {
-			if ( Storage::Document !== ( $this->groups[ $group ] ?? null ) ) {
+			if ( Storage::Document !== ( $groups[ $group ] ?? null ) ) {
 				SchemaException::raise( 'A purpose is declared for %1$s, which is not a document of the registry.', (string) $group );
 			}
 		}
 
-		$this->purposes = $documents;
+		$this->settings = $byName;
+		$this->options  = $byOption;
+		$this->groups   = $groups;
+		$this->purposes = $documents + $this->purposes;
+	}
+
+	/**
+	 * Adds the late declarations, the first time a read needs them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws SchemaException When a late setting is exposed, or the late declarations break another rule the class lists.
+	 */
+	private function compose(): void {
+		if ( null === $this->late ) {
+			return;
+		}
+
+		$late = ( $this->late )();
+
+		foreach ( $late['settings'] as $setting ) {
+			if ( $setting->isExposed() ) {
+				SchemaException::raise( 'The setting %1$s is declared late and exposed; the settings operations expose only the settings declared at once.', $setting->name() );
+			}
+		}
+
+		$this->add( $late['settings'], $late['documents'] );
+
+		$this->late = null;
 	}
 
 	/**
@@ -173,6 +252,8 @@ final class SettingsRegistry {
 	 * @return list<Setting> The settings, in declaration order.
 	 */
 	public function all(): array {
+		$this->compose();
+
 		return array_values( $this->settings );
 	}
 
@@ -199,6 +280,10 @@ final class SettingsRegistry {
 	 */
 	public function setting( string $name ): Setting {
 		if ( ! isset( $this->settings[ $name ] ) ) {
+			$this->compose();
+		}
+
+		if ( ! isset( $this->settings[ $name ] ) ) {
 			throw new \InvalidArgumentException( 'No setting is named ' . $name . '.' );
 		}
 
@@ -216,6 +301,10 @@ final class SettingsRegistry {
 	 * @return list<Setting> The settings, in declaration order.
 	 */
 	public function group( string $group ): array {
+		if ( ! isset( $this->groups[ $group ] ) ) {
+			$this->compose();
+		}
+
 		if ( ! isset( $this->groups[ $group ] ) ) {
 			throw new \InvalidArgumentException( 'No setting is in the group ' . $group . '.' );
 		}
@@ -235,6 +324,8 @@ final class SettingsRegistry {
 	 * @return array<string, list<Setting>> The settings, keyed by option name, in declaration order.
 	 */
 	public function options(): array {
+		$this->compose();
+
 		return array_map( 'array_values', $this->options );
 	}
 

@@ -11,6 +11,9 @@ declare( strict_types=1 );
 
 namespace SEOCart\Checkout\Application;
 
+// Before the imports: Plugin Check looks for this guard only in the first 50 lines of a namespaced file.
+defined( 'ABSPATH' ) || exit;
+
 use SEOCart\Cart\Application\CartError;
 use SEOCart\Cart\Application\CartService;
 use SEOCart\Cart\Application\CartTokens;
@@ -26,14 +29,17 @@ use SEOCart\Checkout\Domain\FrozenQuotes;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Domain\PlacementOutcome;
 use SEOCart\Checkout\Domain\SettledPlacement;
+use SEOCart\Contracts\Payment\GatewayUnavailable;
+use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Order\Application\ActorCustomers;
 use SEOCart\Order\Application\Orders;
 use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\PaymentStatus;
+use SEOCart\Payment\Application\Gateways;
+use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
-use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Isolation;
 use SEOCart\Platform\Database\RetryPolicy;
@@ -47,8 +53,6 @@ use SEOCart\Promotion\Application\PromotionUsage;
 use SEOCart\Promotion\Application\UsageClaim;
 use SEOCart\Support\Error\CodedException;
 
-defined( 'ABSPATH' ) || exit;
-
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- These exceptions report a programming error to the developer; they are never HTML. Coded errors go through CodedException.
 
 /**
@@ -57,7 +61,10 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: the order in which a placement does its work. Before anything is written, a
  * request whose key an earlier request placed its order with is answered as that one was; then
  * the cart, its checkout and its totals are checked, and the cart is priced from what the store
- * holds, never from the client: the client's grand total must be the one priced. Then two units of
+ * holds, never from the client: the client's grand total must be the one priced. The payment
+ * method chosen must still be able to take that total, by its gateway's capability matrix and the
+ * gateway's own rules, before anything is written; the payment is created in the mode the gateway
+ * takes new payments in now. Then two units of
  * work, each at READ COMMITTED and run again whole on a deadlock, with the gateway called between
  * them, outside any transaction:
  *
@@ -84,6 +91,7 @@ defined( 'ABSPATH' ) || exit;
  * never locked out by one, and it is counted only for a cart the request's token was found to name.
  *
  * @since 0.1.0
+ * @since 0.2.0 Checks the payment method can take the payment, and records the payment's mode.
  */
 final class PlaceOrder {
 
@@ -151,6 +159,7 @@ final class PlaceOrder {
 	 * @param TransactionManager $tx          The unit of work.
 	 * @param RateLimiter        $limiter     Counts each cart's declined payments.
 	 * @param ClientIdentities   $identities  Names the cart a count is kept for.
+	 * @param Gateways           $gateways    The store's payment gateways, which say whether the payment method can take the payment.
 	 */
 	public function __construct(
 		private CartService $carts,
@@ -166,7 +175,8 @@ final class PlaceOrder {
 		private SettlePlacement $settlement,
 		private TransactionManager $tx,
 		private RateLimiter $limiter,
-		private ClientIdentities $identities
+		private ClientIdentities $identities,
+		private Gateways $gateways
 	) {
 	}
 
@@ -191,8 +201,9 @@ final class PlaceOrder {
 	 *                        `cart.not_found`; `store_api.rate_limited` after too many declines of the cart;
 	 *                        `cart.not_open` (naming the order being placed) and
 	 *                        `cart.version_stale`; `checkout.cart_empty`,
-	 *                        `checkout.session_incomplete`, `checkout.line_unsellable` and
-	 *                        `checkout.totals_changed`; `stock.insufficient` and
+	 *                        `checkout.session_incomplete`, `checkout.line_unsellable`,
+	 *                        `checkout.totals_changed` and `checkout.payment_method_unavailable`,
+	 *                        before anything is written; `stock.insufficient` and
 	 *                        `promotion.limit_reached`, which roll the placement back;
 	 *                        `checkout.gateway_unavailable` and `checkout.payment_declined`, naming
 	 *                        the order; the codes the calculation raises.
@@ -227,10 +238,11 @@ final class PlaceOrder {
 
 		$session     = $this->sessions->find( $cart->id );
 		$calculation = $this->priced( $cart, $session, $input );
+		$mode        = $this->paymentMode( $session, $calculation );
 
 		try {
 			$placed = $this->tx->transaction(
-				fn(): array => $this->placeInside( $cart, $session, $calculation, $keyHash, $fingerprint, $token, $key, $actor ),
+				fn(): array => $this->placeInside( $cart, $session, $calculation, $mode, $keyHash, $fingerprint, $token, $key, $actor ),
 				RetryPolicy::deadlocks(),
 				Isolation::ReadCommitted
 			);
@@ -252,6 +264,7 @@ final class PlaceOrder {
 	 * @param Cart            $cart          The cart, as read before the transaction.
 	 * @param CheckoutSession $session       Its checkout.
 	 * @param Calculation     $calculation   Its totals, priced before the transaction.
+	 * @param Mode|null       $mode          The mode the payment is created in; null when nothing is due.
 	 * @param string          $keyHash       The key's hash.
 	 * @param string          $fingerprint   The request's fingerprint.
 	 * @param CartToken       $token         The cart's token, which the request presented.
@@ -260,7 +273,7 @@ final class PlaceOrder {
 	 * @return array{record: array<string, mixed>, order_id: int, intent_uuid: string|null} The answer, the order, and the intent
 	 *                                                                                      to authorize: null when nothing is due.
 	 */
-	private function placeInside( Cart $cart, CheckoutSession $session, Calculation $calculation, string $keyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): array {
+	private function placeInside( Cart $cart, CheckoutSession $session, Calculation $calculation, ?Mode $mode, string $keyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): array {
 		$version = $this->carts->claimForPlacement( $cart->id, $cart->version, $actor );
 		$claim   = $this->keys->claim( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint, self::KEY_TTL_SECONDS );
 
@@ -287,8 +300,8 @@ final class PlaceOrder {
 			)
 		);
 
-		// With nothing due there is nothing to authorize: no intent, and the second unit settles the order as paid.
-		$intent = $summary->grand->isZero() ? null : $this->payments->createIntent( $order->id, (string) $session->details->paymentMethodKey, $summary->grand, $summary->baseGrand, $order->conversionContextId );
+		// With nothing due there is no mode and nothing to authorize: no intent, and the second unit settles the order as paid.
+		$intent = null === $mode ? null : $this->payments->createIntent( $order->id, (string) $session->details->paymentMethodKey, $mode, $summary->grand, $summary->baseGrand, $order->conversionContextId );
 
 		$this->carts->bindOrder( $cart->id, $order->id );
 		$this->sessions->storeQuotes( $cart->id, $version, new FrozenQuotes( $calculation->selectedShippingRate(), $calculation->taxQuoteFingerprint() ) );
@@ -320,8 +333,9 @@ final class PlaceOrder {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws CodedException `checkout.gateway_unavailable` when the gateway gives no answer, and
-	 *                        `checkout.payment_declined` when it declines; each names the order.
+	 * @throws CodedException `checkout.gateway_unavailable` when the gateway gives no answer, or can
+	 *                        no longer be used for the payment, and `checkout.payment_declined`
+	 *                        when it declines; each names the order.
 	 *
 	 * @param array{record: array<string, mixed>, order_id: int, intent_uuid: string|null} $placed      What the first unit of work placed.
 	 * @param array<string, mixed>                                                         $paymentData What the client sent for the gateway.
@@ -338,9 +352,17 @@ final class PlaceOrder {
 		}
 
 		try {
-			$result = $this->payments->authorize( $placed['intent_uuid'], $paymentData );
+			$result = $this->payments->authorize( $placed['intent_uuid'], $paymentData, (string) $record['order_uuid'], (string) $record['order_number'] );
 		} catch ( GatewayUnavailable $unavailable ) {
 			throw CodedException::because( CheckoutError::GatewayUnavailable, array(), $unavailable, $order );
+		} catch ( CodedException $refused ) {
+			// The gateway was found able to take the payment before the order was placed; one that cannot be used now,
+			// or no longer declares the payment, is unavailable alike, and the order waits as placed.
+			if ( ! in_array( $refused->errorCode(), array( PaymentError::GatewayUnavailable, PaymentError::OperationUnsupported ), true ) ) {
+				throw $refused;
+			}
+
+			throw CodedException::because( CheckoutError::GatewayUnavailable, array(), $refused, $order );
 		}
 
 		$settled = $this->settlement->apply( $result, $actor );
@@ -439,6 +461,35 @@ final class PlaceOrder {
 		}
 
 		return $calculation;
+	}
+
+	/**
+	 * Returns the mode the order's payment is created in, once the payment method is found able to take it now; nothing is written before.
+	 *
+	 * The method was checked when it was chosen, without the total; here the gateway must still be
+	 * registered and set up for its mode, its capability matrix must allow the order's currency for
+	 * its account's country, and the gateway itself must agree to the total. An order with nothing
+	 * due asks no gateway.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `checkout.payment_method_unavailable`, naming the method.
+	 *
+	 * @param CheckoutSession $session     The checkout, with the payment method and the billing address.
+	 * @param Calculation     $calculation The totals the order is placed with.
+	 * @return Mode|null The mode; null when nothing is due.
+	 */
+	private function paymentMode( CheckoutSession $session, Calculation $calculation ): ?Mode {
+		$grand = $calculation->totals->summary->grand;
+
+		if ( $grand->isZero() ) {
+			return null;
+		}
+
+		$method = (string) $session->details->paymentMethodKey;
+
+		return $this->gateways->availableMode( $method, $grand, $session->details->billingAddress?->country(), OrderDocument::CHANNEL->value )
+			?? CodedException::raise( CheckoutError::PaymentMethodUnavailable, array( 'payment_method_key' => $method ) );
 	}
 
 	/**

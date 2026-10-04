@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tools\Docs;
 
 use SEOCart\Application\Operations\Operations;
+use SEOCart\Platform\Hooks\ActionDeclarations;
 use SEOCart\Platform\Hooks\FilterDeclarations;
 use SEOCart\Platform\Http\OutboundEndpoints;
 use SEOCart\Platform\Kernel\Modules;
@@ -46,7 +47,7 @@ final class Generators {
 			new AbilitiesReference( $operations, $errors ),
 			new CliReference( $operations, $errors ),
 			new ErrorsReference( $errors ),
-			new HooksReference( Modules::EVENT_CLASSES, FilterDeclarations::ALL ),
+			new HooksReference( Modules::EVENT_CLASSES, FilterDeclarations::ALL, ActionDeclarations::ALL ),
 		);
 	}
 }

@@ -14,6 +14,16 @@ namespace SEOCart\Payment\Application;
 // Before the imports: Plugin Check looks for this guard only in the first 50 lines of a namespaced file.
 defined( 'ABSPATH' ) || exit;
 
+use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\GatewayUnavailable;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Operations;
+use SEOCart\Contracts\Payment\Outcome;
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Contracts\Payment\PaymentQuery;
+use SEOCart\Contracts\Payment\PaymentRequest;
 use SEOCart\Order\Application\Orders;
 use SEOCart\Order\Domain\LockedOrder;
 use SEOCart\Order\Domain\OrderStatus;
@@ -27,18 +37,10 @@ use SEOCart\Payment\Domain\Event\PaymentCaptured;
 use SEOCart\Payment\Domain\Event\PaymentFailed;
 use SEOCart\Payment\Domain\Event\PaymentIntentCreated;
 use SEOCart\Payment\Domain\Event\PaymentStatusChanged;
-use SEOCart\Payment\Domain\Gateway\CaptureRequest;
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
-use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
-use SEOCart\Payment\Domain\Gateway\PaymentQuery;
-use SEOCart\Payment\Domain\Gateway\PaymentRequest;
 use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\IntentTransitions;
 use SEOCart\Payment\Domain\NothingDue;
-use SEOCart\Payment\Domain\Operation;
-use SEOCart\Payment\Domain\Outcome;
 use SEOCart\Payment\Domain\PaymentIntent;
 use SEOCart\Payment\Domain\PaymentRepository;
 use SEOCart\Payment\Domain\Projection;
@@ -49,6 +51,7 @@ use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\EventPublisher;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Support\Clock;
+use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\IdGenerator;
 use SEOCart\Support\Money;
@@ -81,7 +84,16 @@ use SEOCart\Support\Money;
  * An order with nothing to pay has no intent, and moves no money: settleNothingDue() records it
  * paid and accepts it, with no ledger row.
  *
+ * Each call to a gateway goes to the intent's own gateway, found in the registry by the gateway
+ * and the mode the intent recorded when it was created (Gateways::get()); a gateway that is not
+ * registered, or whose credentials for that mode cannot be used, is refused
+ * `payment.gateway_unavailable` before a request is built. Before that, every call is checked
+ * against the gateway's capability matrix (require()): an operation the matrix does not declare
+ * for the intent's currency and the account's country is refused `payment.operation_unsupported`,
+ * and nothing is asked of the gateway.
+ *
  * @since 0.1.0
+ * @since 0.2.0 Finds each intent's gateway in the registry, and refuses what its matrix does not declare.
  */
 final class PaymentService {
 
@@ -165,6 +177,15 @@ final class PaymentService {
 	public const PAYMENT_UNRECORDED = 'payment_unrecorded';
 
 	/**
+	 * The code a provider's "not found" is reported with when it is taken for no answer: the provider could not have found the intent yet.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const NOT_FOUND_IGNORED = 'payment.not_found_ignored';
+
+	/**
 	 * The statements.
 	 *
 	 * @since 0.1.0
@@ -174,13 +195,13 @@ final class PaymentService {
 	private PaymentRepository $payments;
 
 	/**
-	 * The gateway.
+	 * The gateways, which each intent's own is found in.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
-	 * @var PaymentGateway
+	 * @var Gateways
 	 */
-	private PaymentGateway $gateway;
+	private Gateways $gateways;
 
 	/**
 	 * The orders the payments are for.
@@ -246,12 +267,22 @@ final class PaymentService {
 	private CorrelationId $correlation;
 
 	/**
+	 * Receives a report code and its context.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var \Closure(string, array<string, mixed>): void
+	 */
+	private \Closure $report;
+
+	/**
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Takes the gateway registry in place of the one gateway, and a reporter.
 	 *
 	 * @param PaymentRepository  $payments    The statements.
-	 * @param PaymentGateway     $gateway     The gateway.
+	 * @param Gateways           $gateways    The gateways.
 	 * @param Orders             $orders      The orders the payments are for.
 	 * @param TransactionManager $tx          The unit of work.
 	 * @param EventPublisher     $events      Publishes the events.
@@ -259,10 +290,13 @@ final class PaymentService {
 	 * @param IdGenerator        $ids         Mints intent uuids.
 	 * @param Clock              $clock       Says when an event happened.
 	 * @param CorrelationId      $correlation The request's correlation id.
+	 * @param callable           $report      Receives a report code (string) and its context (array).
+	 *
+	 * @phpstan-param callable(string, array<string, mixed>): void $report
 	 */
-	public function __construct( PaymentRepository $payments, PaymentGateway $gateway, Orders $orders, TransactionManager $tx, EventPublisher $events, Authorizer $authorizer, IdGenerator $ids, Clock $clock, CorrelationId $correlation ) {
+	public function __construct( PaymentRepository $payments, Gateways $gateways, Orders $orders, TransactionManager $tx, EventPublisher $events, Authorizer $authorizer, IdGenerator $ids, Clock $clock, CorrelationId $correlation, callable $report ) {
 		$this->payments    = $payments;
-		$this->gateway     = $gateway;
+		$this->gateways    = $gateways;
 		$this->orders      = $orders;
 		$this->tx          = $tx;
 		$this->events      = $events;
@@ -270,12 +304,15 @@ final class PaymentService {
 		$this->ids         = $ids;
 		$this->clock       = $clock;
 		$this->correlation = $correlation;
+		$this->report      = \Closure::fromCallable( $report );
 	}
 
 	/**
 	 * Creates an order's intent, with its amounts frozen, inside the caller's transaction.
 	 *
-	 * One insert and PaymentIntentCreated. The amounts are the caller's: the grand total and the
+	 * One insert and PaymentIntentCreated. The intent records the mode it is created in, which every
+	 * later call about it uses, whatever the store is set to by then. The amounts are the caller's:
+	 * the grand total and the
 	 * base grand total of the order's totals, for its one tender. An order with nothing due has no
 	 * intent (settleNothingDue()), so the amount in the order's currency is positive; its base
 	 * equivalent may round to zero, for a small order in a currency worth far less than the base
@@ -283,34 +320,36 @@ final class PaymentService {
 	 * statement.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The mode was added.
 	 *
-	 * @throws \InvalidArgumentException When the gateway is not the one installed, the amount is not
-	 *                                   positive, or the base amount is negative; before any statement.
+	 * @throws \InvalidArgumentException When the amount is not positive, or the base amount is
+	 *                                   negative; before any statement.
+	 * @phpstan-throws \InvalidArgumentException|CodedException `payment.gateway_unavailable` when the gateway is not registered.
 	 *
 	 * @param int    $orderId             The order, inserted in this transaction.
-	 * @param string $gatewayId           The gateway to pay through: the installed gateway's id.
+	 * @param string $gatewayId           The gateway to pay through: a registered gateway's id.
+	 * @param Mode   $mode                The mode the intent is created in: the gateway's mode now.
 	 * @param Money  $amount              The amount, in the order's currency.
 	 * @param Money  $baseAmount          The amount in the base currency, at the order's rate.
 	 * @param int    $conversionContextId The order's rate.
 	 * @return IntentRef The intent, created.
 	 */
-	public function createIntent( int $orderId, string $gatewayId, Money $amount, Money $baseAmount, int $conversionContextId ): IntentRef {
+	public function createIntent( int $orderId, string $gatewayId, Mode $mode, Money $amount, Money $baseAmount, int $conversionContextId ): IntentRef {
 		$this->requireCallersTransaction( __FUNCTION__ );
 
-		if ( $gatewayId !== $this->gateway->id() ) {
-			throw new \InvalidArgumentException( sprintf( 'An intent is paid through the installed gateway, %s.', $this->gateway->id() ) );
-		}
+		// Placement found the gateway available before its transaction began, which built the registry.
+		$this->gateways->descriptor( $gatewayId );
 
 		if ( ! self::isPositive( $amount ) || $baseAmount->isNegative() ) {
 			throw new \InvalidArgumentException( 'An intent is for a positive amount in the order\'s currency, and an amount in the base currency that is not negative: an order with nothing due has no intent.' );
 		}
 
 		$uuid     = $this->ids->generate();
-		$intentId = $this->payments->insertIntent( $orderId, $uuid, $gatewayId, $amount, $baseAmount, $conversionContextId );
+		$intentId = $this->payments->insertIntent( $orderId, $uuid, $gatewayId, $mode, $amount, $baseAmount, $conversionContextId );
 
 		$this->events->publish( new PaymentIntentCreated( $intentId, $uuid, $orderId, $gatewayId, $amount->minorUnits(), $amount->currency()->code(), $this->clock->now() ) );
 
-		return new IntentRef( $uuid, $orderId, IntentStatus::Created, null, $amount );
+		return new IntentRef( $uuid, $orderId, $gatewayId, $mode, IntentStatus::Created, null, $amount );
 	}
 
 	/**
@@ -318,25 +357,37 @@ final class PaymentService {
 	 *
 	 * The caller applies the answer with applyGatewayResult() in a transaction of its own. The
 	 * payment data is what the customer's browser sent; the gateway reads its payment token, and a
-	 * missing token is the gateway's to decline, as a provider declines a token it cannot use.
+	 * missing token is the gateway's to decline, as a provider declines a token it cannot use. The
+	 * order's uuid and number are the caller's, which placed the order: a provider shows them to the
+	 * merchant, and reading them here would cost the placement a statement.
+	 *
+	 * The gateway's matrix is checked again right before the call, for the intent's currency and
+	 * recorded mode: placement checked it before writing the order, but the account's country, or
+	 * the gateway itself, may have changed since.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The order's uuid and number were added, and the matrix is checked before the call.
 	 *
 	 * @throws \LogicException     Inside a transaction, before any statement.
-	 * @throws CodedException      `payment.intent_not_found`.
+	 * @throws CodedException      `payment.intent_not_found`; `payment.operation_unsupported`;
+	 *                             `payment.gateway_unavailable`; each before the gateway is asked.
 	 * @throws GatewayUnavailable When the gateway has no answer.
 	 *
 	 * @param string               $intentUuid  The intent.
 	 * @param array<string, mixed> $paymentData What the customer's browser sent: `payment_token`, the gateway's token for their payment method.
+	 * @param string               $orderUuid   The order's uuid.
+	 * @param string               $orderNumber The order's number.
 	 * @return GatewayResult The gateway's answer.
 	 */
-	public function authorize( string $intentUuid, array $paymentData ): GatewayResult {
+	public function authorize( string $intentUuid, array $paymentData, string $orderUuid, string $orderNumber ): GatewayResult {
 		$this->requireNoTransaction( __FUNCTION__ );
 
 		$intent = $this->find( $intentUuid );
-		$token  = $paymentData[ self::PAYMENT_TOKEN ] ?? '';
+		$token  = $paymentData[ self::PAYMENT_TOKEN ] ?? null;
 
-		return $this->gateway->authorize( new PaymentRequest( $intent->uuid, $intent->amount, is_string( $token ) ? $token : '' ) );
+		$this->require( $intent->gatewayId, Operations::AUTHORIZE, $intent->mode, $intent->amount->currency() );
+
+		return $this->gateways->get( $intent->gatewayId, $intent->mode )->authorize( new PaymentRequest( $intent->uuid, $intent->amount, is_string( $token ) && '' !== $token ? $token : null, $intent->mode, $orderUuid, $orderNumber ) );
 	}
 
 	/**
@@ -489,7 +540,8 @@ final class PaymentService {
 	 * @throws CodedException      `authorization.denied`, before any read; `payment.intent_not_found`;
 	 *                             `payment.not_capturable` when the intent is not authorized;
 	 *                             `payment.unreconciled` when it has a result a person must reconcile;
-	 *                             and what applying the capture raises.
+	 *                             `payment.operation_unsupported`; `payment.gateway_unavailable`; and
+	 *                             what applying the capture raises.
 	 *
 	 * @param string $intentUuid The intent.
 	 * @param Actor  $actor      Who captures it.
@@ -509,7 +561,10 @@ final class PaymentService {
 			CodedException::raise( PaymentError::Unreconciled );
 		}
 
-		$result = $this->gateway->capture( new CaptureRequest( $intent->uuid, $intent->providerIntentId, $intent->amount ) );
+		// Always the whole amount: a capture of less waits for a capture that takes an amount.
+		$this->require( $intent->gatewayId, Operations::CAPTURE, $intent->mode, $intent->amount->currency() );
+
+		$result = $this->gateways->get( $intent->gatewayId, $intent->mode )->capture( new CaptureRequest( $intent->uuid, $intent->providerIntentId, $intent->amount, $intent->mode ) );
 
 		return $this->tx->transaction( fn(): Application => $this->applyGatewayResult( $result, $actor ), RetryPolicy::deadlocks() );
 	}
@@ -545,9 +600,17 @@ final class PaymentService {
 	 * The query carries the intent's expiry as it was read, so a gateway can answer an intent
 	 * waiting past it as expired.
 	 *
+	 * A provider's "not found" ends a placement, so the plugin decides when it may be believed, not
+	 * the gateway: only from a provider its gateway declares searchable, and only about an intent
+	 * older than the provider's search delay and STALE_SECONDS, by the database's clock. Before
+	 * that, the provider may simply not have found the intent yet: the answer is taken for none, and
+	 * reported NOT_FOUND_IGNORED.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Believes a provider's "not found" only when it may.
 	 *
 	 * @throws \LogicException     Inside a transaction, before the call.
+	 * @throws CodedException      `payment.operation_unsupported`; `payment.gateway_unavailable`.
 	 * @throws GatewayUnavailable When the gateway has no answer.
 	 *
 	 * @param IntentRef $intent The intent.
@@ -555,8 +618,83 @@ final class PaymentService {
 	 */
 	public function queryGateway( IntentRef $intent ): ?GatewayResult {
 		$this->requireNoTransaction( __FUNCTION__ );
+		$this->require( $intent->gatewayId, Operations::QUERY, $intent->mode, $intent->amount->currency() );
 
-		return $this->gateway->query( new PaymentQuery( $intent->uuid, $intent->providerIntentId, $intent->amount, $intent->waitEndsAt, $intent->waitEnded ) );
+		$answer = $this->gateways->get( $intent->gatewayId, $intent->mode )->query( new PaymentQuery( $intent->uuid, $intent->providerIntentId, $intent->amount, $intent->mode, $intent->waitEndsAt, $intent->waitEnded ) );
+
+		if ( null === $answer || ! self::saysNotFound( $answer ) || $this->mayBelieveNotFound( $intent ) ) {
+			return $answer;
+		}
+
+		( $this->report )(
+			self::NOT_FOUND_IGNORED,
+			array(
+				'gateway_id'  => $intent->gatewayId,
+				'intent_uuid' => $intent->uuid,
+				'age_seconds' => $intent->ageSeconds,
+			)
+		);
+
+		return null;
+	}
+
+	/**
+	 * Tells whether an answer says the provider has no record of the intent.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayResult $answer The answer to a status query.
+	 * @return bool True for a declined authorization whose error code is PaymentGateway::NOT_FOUND.
+	 */
+	private static function saysNotFound( GatewayResult $answer ): bool {
+		return Operation::Authorize === $answer->operation && Outcome::Declined === $answer->outcome && PaymentGateway::NOT_FOUND === $answer->errorCode;
+	}
+
+	/**
+	 * Tells whether a provider's "not found" about an intent may be believed: the provider can be searched, and the intent is old enough for it to have been found.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param IntentRef $intent The intent, with its age by the database's clock.
+	 * @return bool True when the intent is older than STALE_SECONDS and the provider's search delay, and the provider is searchable.
+	 */
+	private function mayBelieveNotFound( IntentRef $intent ): bool {
+		$profile = $this->gateways->descriptor( $intent->gatewayId )->idempotency;
+
+		return $profile->searchable && $intent->ageSeconds >= max( self::STALE_SECONDS, $profile->searchDelaySeconds );
+	}
+
+	/**
+	 * Refuses an operation an intent's gateway does not declare, before anything is asked of the gateway.
+	 *
+	 * The gateway's capability matrix is its one declaration of what it can do: the cell of the
+	 * intent's currency and the country of the gateway's account for the intent's mode must declare
+	 * the operation. Every call to a gateway is checked here first, an authorization included,
+	 * which the checkout's availability check also checked before the order was written.
+	 * Reads nothing for a gateway without an account country.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `payment.operation_unsupported`, naming the gateway and the operation;
+	 *                        `payment.gateway_unavailable` when the gateway is not registered.
+	 *
+	 * @param string   $gatewayId The intent's gateway.
+	 * @param string   $operation A name of Operations::ALL.
+	 * @param Mode     $mode      The intent's mode, whose account's country selects the matrix's row.
+	 * @param Currency $currency  The intent's currency.
+	 */
+	public function require( string $gatewayId, string $operation, Mode $mode, Currency $currency ): void {
+		$matrix = $this->gateways->descriptor( $gatewayId )->matrix;
+
+		if ( ! $matrix->allows( $operation, $currency, $this->gateways->accountCountry( $gatewayId, $mode ) ) ) {
+			CodedException::raise(
+				PaymentError::OperationUnsupported,
+				array(
+					'gateway_id' => $gatewayId,
+					'operation'  => $operation,
+				)
+			);
+		}
 	}
 
 	/**

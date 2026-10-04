@@ -26,8 +26,8 @@
 
 declare( strict_types=1 );
 
+use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Payment\Application\RefundService;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
 use SEOCart\Payment\Domain\Refund\RefundLineRequest;
 use SEOCart\Payment\Domain\Refund\RefundRequest;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;

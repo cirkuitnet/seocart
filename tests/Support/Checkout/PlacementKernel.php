@@ -12,7 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Support\Checkout;
 
 use SEOCart\Cart\Application\CartTokens;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
+use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\TransactionManager;

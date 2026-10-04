@@ -19,6 +19,8 @@ use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\Doctor\CheckoutChecks;
 use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\PaymentRequest;
 use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Order\Domain\Event\OrderCreated;
@@ -27,7 +29,6 @@ use SEOCart\Order\Domain\Event\OrderStatusChanged;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Domain\Event\PaymentAuthorized;
 use SEOCart\Payment\Domain\Event\PaymentIntentCreated;
-use SEOCart\Payment\Domain\Gateway\PaymentRequest;
 use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
@@ -205,7 +206,8 @@ final class PlacementRecoveryTest extends PlacementTestCase {
 		$this->assertSame( 'pending_payment', $order['status'] );
 		$this->assertSame( array( 5, 0, 1 ), $this->committedStock( $b, $mug ), 'The order waits with its hold.' );
 
-		$this->db->execute( 'UPDATE %i SET updated_at = UTC_TIMESTAMP(6) - INTERVAL 11 MINUTE WHERE order_id = %d', $this->table( PaymentTables::INTENTS ), $order['id'] );
+		// Made and left eleven minutes ago, by the database clock: the provider has had time to find it.
+		$this->db->execute( 'UPDATE %i SET created_at = UTC_TIMESTAMP(6) - INTERVAL 11 MINUTE, updated_at = UTC_TIMESTAMP(6) - INTERVAL 11 MINUTE WHERE order_id = %d', $this->table( PaymentTables::INTENTS ), $order['id'] );
 
 		$this->assertNull( $this->kernel->get( ReconcileStalePlacements::class )->handle( array() ) );
 
@@ -312,13 +314,14 @@ final class PlacementRecoveryTest extends PlacementTestCase {
 		$order = $this->committedOrder( $b, $uuid );
 
 		$this->assertNotNull( $order );
-		$this->db->execute( 'UPDATE %i SET updated_at = UTC_TIMESTAMP(6) - INTERVAL 11 MINUTE WHERE order_id = %d', $this->table( PaymentTables::INTENTS ), $order['id'] );
+		// Made and left eleven minutes ago, by the database clock: the provider has had time to find it.
+		$this->db->execute( 'UPDATE %i SET created_at = UTC_TIMESTAMP(6) - INTERVAL 11 MINUTE, updated_at = UTC_TIMESTAMP(6) - INTERVAL 11 MINUTE WHERE order_id = %d', $this->table( PaymentTables::INTENTS ), $order['id'] );
 		$this->kernel->get( ReconcileStalePlacements::class )->handle( array() );
 		$this->assertSame( 'failed', $this->committedOrder( $b, $uuid )['status'] ?? null, 'The placement ended on the gateway\'s "no record".' );
 
 		$ended    = $this->committedCart( $b, $cart->id );
 		$intent   = $b->fetchRow( sprintf( 'SELECT uuid, amount_minor, currency FROM `%s` WHERE order_id = %d', $this->table( PaymentTables::INTENTS ), $order['id'] ) );
-		$approval = ( new StubGateway() )->authorize( new PaymentRequest( (string) $intent['uuid'], Money::of( (int) $intent['amount_minor'], Currency::of( (string) $intent['currency'] ) ), StubGateway::APPROVE ) );
+		$approval = ( new StubGateway() )->authorize( new PaymentRequest( (string) $intent['uuid'], Money::of( (int) $intent['amount_minor'], Currency::of( (string) $intent['currency'] ) ), StubGateway::APPROVE, Mode::Test, $uuid, '1001' ) );
 		$settle   = $this->kernel->get( SettlePlacement::class );
 		$late     = $settle->apply( $approval, Actor::user( 0 ) );
 		$again    = $settle->apply( $approval, Actor::user( 0 ) );

@@ -33,6 +33,7 @@
 
 declare( strict_types=1 );
 
+use SEOCart\Contracts\Payment\GatewayRegistry;
 use SEOCart\Tests\Support\BootstrapProbes;
 use SEOCart\Tests\Support\LibraryShare;
 use SEOCart\Tests\Support\PluginOwnership;
@@ -89,6 +90,10 @@ foreach ( $wpdb->queries as $seocart_probe_query ) {
 
 $seocart_probe_files = LibraryShare::splitFiles( $seocart_probe_probes->loadedPluginFiles() );
 
+// The files first: reading the action's name loads the contract's file, which the request itself did not.
+$seocart_probe_included      = get_included_files();
+$seocart_probe_registrations = did_action( GatewayRegistry::ACTION );
+
 file_put_contents(
 	$seocart_probe_result_file,
 	json_encode(
@@ -102,7 +107,9 @@ file_put_contents(
 			// Every registration, so the test can tell what loading the plugin and its bundled library added.
 			'all_hooks'      => LibraryShare::describeAll( (array) $GLOBALS['wp_filter'], $seocart_probe_probes ),
 			// Every file, so a test can tell what loading an extension added.
-			'included_files' => get_included_files(),
+			'included_files' => $seocart_probe_included,
+			// How often the payment gateways were registered: an idle request needs no gateway.
+			'registrations'  => $seocart_probe_registrations,
 		),
 		JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE
 	)

@@ -20,6 +20,9 @@ use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\SettlePlacement;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Contracts\Payment\PaymentQuery;
 use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Domain\Event\StockReservationReleased;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
@@ -34,9 +37,6 @@ use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Domain\Event\PaymentAuthorized;
 use SEOCart\Payment\Domain\Event\PaymentFailed;
 use SEOCart\Payment\Domain\Event\PaymentIntentCreated;
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
-use SEOCart\Payment\Domain\Gateway\PaymentQuery;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Platform\Authorization\Actor;
@@ -638,12 +638,12 @@ final class PlaceOrderTest extends PlacementTestCase {
 	 * @since 0.1.0
 	 *
 	 * @param string $orderUuid The order.
-	 * @return \SEOCart\Payment\Domain\Gateway\GatewayResult The approval.
+	 * @return \SEOCart\Contracts\Payment\GatewayResult The approval.
 	 */
-	private function completionOf( string $orderUuid ): \SEOCart\Payment\Domain\Gateway\GatewayResult {
+	private function completionOf( string $orderUuid ): \SEOCart\Contracts\Payment\GatewayResult {
 		$b      = $this->secondConnection();
 		$row    = $b->fetchRow( sprintf( "SELECT i.uuid, i.provider_intent_id, i.amount_minor, i.currency FROM `%s` i JOIN `%s` o ON o.id = i.order_id WHERE o.uuid = '%s'", $this->table( PaymentTables::INTENTS ), $this->table( OrderTables::ORDERS ), $orderUuid ) );
-		$answer = null === $row ? null : ( new StubGateway() )->query( new PaymentQuery( (string) $row['uuid'], (string) $row['provider_intent_id'], Money::of( (int) $row['amount_minor'], \SEOCart\Support\Currency::of( (string) $row['currency'] ) ) ) );
+		$answer = null === $row ? null : ( new StubGateway() )->query( new PaymentQuery( (string) $row['uuid'], (string) $row['provider_intent_id'], Money::of( (int) $row['amount_minor'], \SEOCart\Support\Currency::of( (string) $row['currency'] ) ), \SEOCart\Contracts\Payment\Mode::Test ) );
 
 		$this->assertNotNull( $answer, 'The stub has no answer for the intent.' );
 

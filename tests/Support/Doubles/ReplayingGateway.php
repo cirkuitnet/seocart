@@ -11,12 +11,12 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Doubles;
 
-use SEOCart\Payment\Domain\Gateway\CaptureRequest;
-use SEOCart\Payment\Domain\Gateway\GatewayRefund;
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
-use SEOCart\Payment\Domain\Gateway\PaymentQuery;
-use SEOCart\Payment\Domain\Gateway\PaymentRequest;
+use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\GatewayRefund;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Contracts\Payment\PaymentQuery;
+use SEOCart\Contracts\Payment\PaymentRequest;
 
 /**
  * Wraps a gateway and answers every refund after the first with the first refund's result, as a provider does when it is asked again for a refund it already made.
@@ -27,6 +27,8 @@ use SEOCart\Payment\Domain\Gateway\PaymentRequest;
  * @since 0.1.0
  */
 final class ReplayingGateway implements PaymentGateway {
+
+	use DecoratesGateway;
 
 	/**
 	 * The first refund's result, once there was one.
@@ -45,29 +47,6 @@ final class ReplayingGateway implements PaymentGateway {
 	 * @param PaymentGateway $inner The gateway that answers.
 	 */
 	public function __construct( private PaymentGateway $inner ) {
-	}
-
-	/**
-	 * Returns the wrapped gateway's id.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return string The id.
-	 */
-	public function id(): string {
-		return $this->inner->id();
-	}
-
-	/**
-	 * Tells whether the wrapped gateway has a capability.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $capability The capability.
-	 * @return bool Its answer.
-	 */
-	public function supports( string $capability ): bool {
-		return $this->inner->supports( $capability );
 	}
 
 	/**

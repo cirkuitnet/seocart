@@ -12,14 +12,23 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Payment;
 
 use PHPUnit\Framework\TestCase;
-use SEOCart\Payment\Domain\Gateway\CaptureRequest;
-use SEOCart\Payment\Domain\Gateway\GatewayRefund;
-use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
-use SEOCart\Payment\Domain\Gateway\PaymentQuery;
-use SEOCart\Payment\Domain\Gateway\PaymentRequest;
-use SEOCart\Payment\Domain\Operation;
-use SEOCart\Payment\Domain\Outcome;
+use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\GatewayDescriptor;
+use SEOCart\Contracts\Payment\GatewayRefund;
+use SEOCart\Contracts\Payment\GatewayUnavailable;
+use SEOCart\Contracts\Payment\IdempotencyProfile;
+use SEOCart\Contracts\Payment\MatrixRow;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Operations;
+use SEOCart\Contracts\Payment\Outcome;
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Contracts\Payment\PaymentQuery;
+use SEOCart\Contracts\Payment\PaymentRequest;
+use SEOCart\Contracts\Payment\VoidRequest;
+use SEOCart\Contracts\Payment\WebhookEnvelope;
+use SEOCart\Contracts\Payment\WebhookReading;
+use SEOCart\Contracts\Payment\WebhookReadingKind;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Money;
@@ -80,7 +89,7 @@ final class StubGatewayTest extends TestCase {
 	 * @phpstan-param array{Outcome, int, string, string|null, string|null, string|null} $expected
 	 */
 	public function test_each_token_answers_as_scripted( string $token, array $expected ): void {
-		$result = ( new StubGateway() )->authorize( new PaymentRequest( self::INTENT, self::amount(), $token ) );
+		$result = ( new StubGateway() )->authorize( self::authorization( $token ) );
 
 		$this->assertSame( array( StubGateway::ID, Operation::Authorize, self::INTENT ), array( $result->provider, $result->operation, $result->intentUuid ) );
 		$this->assertSame( $expected, array( $result->outcome, $result->amount->minorUnits(), $result->amount->currency()->code(), $result->providerObjectId, $result->providerIntentId, $result->errorCode ) );
@@ -100,7 +109,7 @@ final class StubGatewayTest extends TestCase {
 		$this->assertNotNull( $confirmed );
 		$this->assertSame( array( Outcome::Approved, 'stub-ch-' . self::INTENT ), array( $confirmed->outcome, $confirmed->providerObjectId ) );
 		$this->assertNull( $stub->query( self::query( 'stub-pi-pending-' . self::INTENT ) ), 'Still pending.' );
-		$this->assertEquals( $stub->authorize( new PaymentRequest( self::INTENT, self::amount(), StubGateway::DECLINE ) ), $stub->query( self::query( 'stub-pi-decline-' . self::INTENT ) ) );
+		$this->assertEquals( $stub->authorize( self::authorization( StubGateway::DECLINE ) ), $stub->query( self::query( 'stub-pi-decline-' . self::INTENT ) ) );
 		$unheard = $stub->query( self::query( null ) );
 
 		$this->assertNotNull( $unheard, 'An intent the stub gave no reference to is one it has no record of: an answer.' );
@@ -146,8 +155,8 @@ final class StubGatewayTest extends TestCase {
 	 */
 	public function test_a_capture_takes_the_amount_asked(): void {
 		$stub  = new StubGateway();
-		$right = $stub->capture( new CaptureRequest( self::INTENT, 'stub-pi-approve-' . self::INTENT, self::amount() ) );
-		$wrong = $stub->capture( new CaptureRequest( self::INTENT, 'stub-pi-capture_wrong_amount-' . self::INTENT, self::amount() ) );
+		$right = $stub->capture( new CaptureRequest( self::INTENT, 'stub-pi-approve-' . self::INTENT, self::amount(), Mode::Test ) );
+		$wrong = $stub->capture( new CaptureRequest( self::INTENT, 'stub-pi-capture_wrong_amount-' . self::INTENT, self::amount(), Mode::Test ) );
 
 		$this->assertSame( array( Operation::Capture, Outcome::Approved, 3080, 'stub-cap-' . self::INTENT ), array( $right->operation, $right->outcome, $right->amount->minorUnits(), $right->providerObjectId ) );
 		$this->assertSame( 3081, $wrong->amount->minorUnits() );
@@ -161,29 +170,67 @@ final class StubGatewayTest extends TestCase {
 	public function test_a_refund_gives_back_the_amount_asked_or_is_declined(): void {
 		$stub     = new StubGateway();
 		$key      = '01928c3e-0000-7000-8000-0000000000e1';
-		$approved = $stub->refund( new GatewayRefund( self::INTENT, 'stub-pi-approve-' . self::INTENT, Money::of( 1234, Currency::of( 'EUR' ) ), $key ) );
-		$declined = $stub->refund( new GatewayRefund( self::INTENT, 'stub-pi-refund_decline-' . self::INTENT, Money::of( 1234, Currency::of( 'EUR' ) ), $key ) );
+		$approved = $stub->refund( new GatewayRefund( self::INTENT, 'stub-pi-approve-' . self::INTENT, Money::of( 1234, Currency::of( 'EUR' ) ), $key, Mode::Test ) );
+		$declined = $stub->refund( new GatewayRefund( self::INTENT, 'stub-pi-refund_decline-' . self::INTENT, Money::of( 1234, Currency::of( 'EUR' ) ), $key, Mode::Test ) );
 
 		$this->assertSame( array( Operation::Refund, Outcome::Approved, 1234, 'EUR', 'stub-re-' . $key, null ), array( $approved->operation, $approved->outcome, $approved->amount->minorUnits(), $approved->amount->currency()->code(), $approved->providerObjectId, $approved->errorCode ) );
 		$this->assertSame( array( Outcome::Declined, StubGateway::REFUND_DECLINED, 'stub-re-' . $key ), array( $declined->outcome, $declined->errorCode, $declined->providerObjectId ) );
-		$this->assertEquals( $approved, $stub->refund( new GatewayRefund( self::INTENT, 'stub-pi-approve-' . self::INTENT, Money::of( 1234, Currency::of( 'EUR' ) ), $key ) ), 'The same refund asked again is the same result.' );
-		$this->assertSame( Outcome::Approved, $stub->authorize( new PaymentRequest( self::INTENT, self::amount(), StubGateway::REFUND_DECLINE ) )->outcome, 'An intent whose refunds are declined is authorized.' );
+		$this->assertEquals( $approved, $stub->refund( new GatewayRefund( self::INTENT, 'stub-pi-approve-' . self::INTENT, Money::of( 1234, Currency::of( 'EUR' ) ), $key, Mode::Test ) ), 'The same refund asked again is the same result.' );
+		$this->assertSame( Outcome::Approved, $stub->authorize( self::authorization( StubGateway::REFUND_DECLINE ) )->outcome, 'An intent whose refunds are declined is authorized.' );
 	}
 
 	/**
-	 * Tests that the stub can be told to be unavailable, and declares only the confirmation capability.
+	 * Tests that the stub can be told to be unavailable.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_it_can_be_unavailable_and_supports_only_confirmation(): void {
-		$stub = new StubGateway();
-
-		$this->assertTrue( $stub->supports( PaymentGateway::SCA ) );
-		$this->assertFalse( $stub->supports( PaymentGateway::PARTIAL_CAPTURE ) );
-
+	public function test_it_can_be_unavailable(): void {
 		$this->expectException( GatewayUnavailable::class );
 
-		$stub->authorize( new PaymentRequest( self::INTENT, self::amount(), StubGateway::THROW ) );
+		( new StubGateway() )->authorize( self::authorization( StubGateway::THROW ) );
+	}
+
+	/**
+	 * Tests the stub's declaration: test mode only, no settings, USD, GBP and EUR for an account of any country, every operation but capturing in parts, charging without the customer and webhooks, and a provider searchable at once.
+	 *
+	 * The unit suite loads no WordPress, so describe() calling any WordPress function would fail here.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_it_describes_itself_as_a_test_mode_stand_in(): void {
+		$descriptor = ( new StubGateway() )->describe();
+		$expected   = array_values( array_diff( Operations::ALL, array( Operations::MULTI_CAPTURE, Operations::OFF_SESSION, Operations::WEBHOOKS ) ) );
+
+		$this->assertSame( array( StubGateway::ID, GatewayDescriptor::TYPE_PAYMENTS, PaymentGateway::CONTRACT_VERSION ), array( $descriptor->id, $descriptor->type, $descriptor->contract ) );
+		$this->assertSame( array( Mode::Test ), $descriptor->modes );
+		$this->assertSame( array(), $descriptor->settings, 'The stub has no settings, so it has no settings document either.' );
+		$this->assertSame( array(), $descriptor->hosts, 'The stub answers from its script and calls no external service.' );
+		$this->assertSame( array( 'USD', 'GBP', 'EUR' ), $descriptor->matrix->currencies() );
+
+		foreach ( $descriptor->matrix->rows as $row ) {
+			$this->assertSame( array( MatrixRow::ANY_COUNTRY, $expected ), array( $row->accountCountry, $row->operations ), $row->currency->code() );
+		}
+
+		$this->assertFalse( $descriptor->matrix->allows( Operations::AUTHORIZE, Currency::of( 'JPY' ), null ), 'A currency the stub does not take.' );
+		$this->assertEquals( new IdempotencyProfile( null, true, 0 ), $descriptor->idempotency );
+	}
+
+	/**
+	 * Tests that a void is approved under an object named by the intent, the same every time, and that every webhook delivery is rejected.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_void_is_approved_and_a_webhook_rejected(): void {
+		$stub    = new StubGateway();
+		$request = new VoidRequest( self::INTENT, 'stub-pi-approve-' . self::INTENT, self::amount(), Mode::Test, 'requested' );
+		$voided  = $stub->void( $request );
+
+		$this->assertSame( array( Operation::Void, Outcome::Approved, 3080, 'stub-void-' . self::INTENT ), array( $voided->operation, $voided->outcome, $voided->amount->minorUnits(), $voided->providerObjectId ) );
+		$this->assertEquals( $voided, $stub->void( $request ), 'The same void asked again is the same result.' );
+
+		$reading = $stub->readWebhook( new WebhookEnvelope( StubGateway::ID, Mode::Test, array(), '{"id":"evt_1"}', new \DateTimeImmutable( '2026-10-03 12:00:00', new \DateTimeZone( 'UTC' ) ) ) );
+
+		$this->assertSame( array( WebhookReadingKind::Rejected, WebhookReading::BAD_SIGNATURE, null ), array( $reading->kind, $reading->reason, $reading->eventId ) );
 	}
 
 	/**
@@ -198,6 +245,18 @@ final class StubGatewayTest extends TestCase {
 	}
 
 	/**
+	 * Builds an authorization request for the intent, with a token.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $token The token.
+	 * @return PaymentRequest The request.
+	 */
+	private static function authorization( string $token ): PaymentRequest {
+		return new PaymentRequest( self::INTENT, self::amount(), $token, Mode::Test, '01928c3e-0000-7000-8000-0000000000a1', '1001' );
+	}
+
+	/**
 	 * Builds a status query.
 	 *
 	 * @since 0.1.0
@@ -207,6 +266,6 @@ final class StubGatewayTest extends TestCase {
 	 * @return PaymentQuery The query.
 	 */
 	private static function query( ?string $reference, bool $waitEnded = false ): PaymentQuery {
-		return new PaymentQuery( self::INTENT, $reference, self::amount(), new \DateTimeImmutable( '2026-10-01 12:15:00', new \DateTimeZone( 'UTC' ) ), $waitEnded );
+		return new PaymentQuery( self::INTENT, $reference, self::amount(), Mode::Test, new \DateTimeImmutable( '2026-10-01 12:15:00', new \DateTimeZone( 'UTC' ) ), $waitEnded );
 	}
 }

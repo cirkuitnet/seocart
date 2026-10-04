@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Unit\Platform\Hooks;
 
 use PHPUnit\Framework\TestCase;
 use SEOCart\Platform\Events\EventEnvelope;
+use SEOCart\Platform\Hooks\ActionDeclarations;
 use SEOCart\Platform\Hooks\FilterDeclarations;
 use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Tests\Unit\Support\PhpSource;
@@ -54,7 +55,7 @@ final class UndeclaredHookLiteralsTest extends TestCase {
 		// needs each list's declared names, to compare against what src/ literally calls.
 		$declared = array();
 
-		foreach ( FilterDeclarations::ALL as $class ) {
+		foreach ( array_merge( FilterDeclarations::ALL, ActionDeclarations::ALL ) as $class ) {
 			$declared[] = $class::name();
 		}
 

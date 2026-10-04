@@ -25,6 +25,9 @@ defined( 'ABSPATH' ) || exit;
  * is refused on input and dropped on output.
  *
  * @since 0.1.0
+ * @since 0.2.0 Public, by reference from the payment contract.
+ *
+ * @api
  */
 enum FieldType {
 

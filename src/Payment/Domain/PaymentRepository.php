@@ -11,7 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Payment\Domain;
 
-use SEOCart\Payment\Domain\Gateway\GatewayResult;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Support\Money;
 
 defined( 'ABSPATH' ) || exit;
@@ -33,19 +34,21 @@ defined( 'ABSPATH' ) || exit;
 interface PaymentRepository {
 
 	/**
-	 * Inserts an intent in its first state, with its amounts frozen.
+	 * Inserts an intent in its first state, with its amounts frozen and the mode it is created in.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The mode was added.
 	 *
 	 * @param int    $orderId             The order it pays for.
 	 * @param string $uuid                Its public identifier.
 	 * @param string $gatewayId           The gateway it is paid through.
+	 * @param Mode   $mode                The provider mode it is created in.
 	 * @param Money  $amount              Its amount, in the order's currency.
 	 * @param Money  $baseAmount          Its amount in the base currency, at the order's rate.
 	 * @param int    $conversionContextId The rate it is frozen at.
 	 * @return int The intent's id.
 	 */
-	public function insertIntent( int $orderId, string $uuid, string $gatewayId, Money $amount, Money $baseAmount, int $conversionContextId ): int;
+	public function insertIntent( int $orderId, string $uuid, string $gatewayId, Mode $mode, Money $amount, Money $baseAmount, int $conversionContextId ): int;
 
 	/**
 	 * Reads an intent with a locking read: its latest committed row, locked until the caller commits.
@@ -151,7 +154,8 @@ interface PaymentRepository {
 	 * @param int            $olderThanSeconds How long they have not changed, at least.
 	 * @param string         $afterUuid        The uuid of the last intent of the page before, or '' for the first page.
 	 * @param int            $limit            The most to list.
-	 * @return list<IntentRef> The intents, each with when its wait runs out and whether it had, by the database's clock.
+	 * @return list<IntentRef> The intents, each with its gateway and mode, its age, and when its wait runs out and
+	 *                         whether it had, by the database's clock.
 	 *
 	 * @phpstan-param list<IntentStatus> $states
 	 */

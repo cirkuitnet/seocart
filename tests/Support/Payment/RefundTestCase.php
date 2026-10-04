@@ -11,14 +11,14 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Payment;
 
+use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Order\Domain\InsertedOrder;
 use SEOCart\Order\Domain\NewOrder;
 use SEOCart\Order\Infrastructure\MysqlOrderRepository;
 use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Application\RefundService;
-use SEOCart\Payment\Domain\Gateway\CaptureRequest;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
 use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Payment\Domain\Refund\Refund;
 use SEOCart\Payment\Domain\Refund\RefundLineRequest;
@@ -118,11 +118,13 @@ abstract class RefundTestCase extends PaymentTestCase {
 	 * @return RefundService The service.
 	 */
 	protected function refundsOver( Database $db, IdGenerator $ids, PaymentGateway $gateway, ?EventPublisher $events = null, ?RefundRepository $refunds = null, ?TransactionManager $tx = null ): RefundService {
+		$gateways = TestGateways::of( $gateway );
+
 		return new RefundService(
 			$refunds ?? new MysqlRefundRepository( $db ),
 			new MysqlOrderRepository( new OrderStatements( $db ), $ids ),
-			$this->paymentsOver( $db, $ids, $gateway ),
-			$gateway,
+			$this->paymentsWith( $db, $ids, $gateways ),
+			$gateways,
 			$tx ?? $db,
 			$events ?? $this->publisherOver( $db ),
 			new Authorizer( new CapabilityDeclaration() ),
@@ -156,7 +158,7 @@ abstract class RefundTestCase extends PaymentTestCase {
 		list( $inserted, $intent ) = $this->placeWithIntent( $order );
 
 		$this->deliver( $this->authorizeWith( $intent, $token ) );
-		$this->deliver( $this->gateway->capture( new CaptureRequest( $intent->uuid, (string) $this->intentRow( $intent->uuid )['provider_intent_id'], $order->totals->grandTotal ) ) );
+		$this->deliver( $this->gateway->capture( new CaptureRequest( $intent->uuid, (string) $this->intentRow( $intent->uuid )['provider_intent_id'], $order->totals->grandTotal, $intent->mode ) ) );
 
 		$this->gateway->calls = array();
 

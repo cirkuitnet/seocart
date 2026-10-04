@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
+use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Order\Infrastructure\MysqlOrderRepository;
 use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\OrderTables;
@@ -36,6 +37,7 @@ use SEOCart\Tests\Support\Doubles\ReplayingGateway;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\Order\NewOrders;
 use SEOCart\Tests\Support\Payment\PaymentTestCase;
+use SEOCart\Tests\Support\Payment\TestGateways;
 use SEOCart\Tests\Support\QueryPlan\AllowList;
 use SEOCart\Tests\Support\QueryPlan\PlanRecorder;
 use SEOCart\Tests\Support\QueryPlan\QueryPlan;
@@ -136,10 +138,10 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 
 		// Placing an order, and its intent at the rate the order was placed at.
 		$inserted = $db->transaction( static fn() => $orders->insert( $document, Actor::user( 0 ) ) );
-		$intent   = $db->transaction( fn(): IntentRef => $payments->createIntent( $inserted->id, StubGateway::ID, $document->totals->grandTotal, $document->totals->baseGrandTotal, $inserted->conversionContextId ) );
+		$intent   = $db->transaction( fn(): IntentRef => $payments->createIntent( $inserted->id, StubGateway::ID, Mode::Test, $document->totals->grandTotal, $document->totals->baseGrandTotal, $inserted->conversionContextId ) );
 
 		// An approval's locked reads; the same approval again, whose duplicate reads the first row.
-		$approval = $payments->authorize( $intent->uuid, array( PaymentService::PAYMENT_TOKEN => StubGateway::APPROVE ) );
+		$approval = $payments->authorize( $intent->uuid, array( PaymentService::PAYMENT_TOKEN => StubGateway::APPROVE ), $inserted->uuid, $inserted->orderNumber );
 
 		$db->transaction( static fn(): Application => $payments->applyGatewayResult( $approval, Actor::system( 'payment', 3 ) ) );
 		$db->transaction( static fn(): Application => $payments->applyGatewayResult( $approval, Actor::system( 'payment', 3 ) ) );
@@ -154,7 +156,7 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 			new MysqlRefundRepository( $db ),
 			new MysqlOrderRepository( new OrderStatements( $db ), $ids ),
 			$payments,
-			new ReplayingGateway( new StubGateway() ),
+			TestGateways::of( new ReplayingGateway( new StubGateway() ) ),
 			$db,
 			$this->publisherOver( $db ),
 			new Authorizer( new CapabilityDeclaration() ),

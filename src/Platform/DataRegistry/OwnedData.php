@@ -25,6 +25,8 @@ use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
 use SEOCart\Order\Infrastructure\Migrations\AddOrderStatusIndex;
 use SEOCart\Order\Infrastructure\Migrations\CreateOrderTables;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Payment\Application\GatewaySettingsDeclaration;
+use SEOCart\Payment\Infrastructure\Migrations\AddIntentMode;
 use SEOCart\Payment\Infrastructure\Migrations\CreatePaymentTables;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundClaimTable;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundTables;
@@ -84,6 +86,7 @@ final class OwnedData {
 			new Contribution( tables: array( PlatformTables::migrations(), PlatformTables::locks() ), migrations: array( new PlatformBootstrapMigration() ) ),
 			new Contribution( tables: array( OutboxTable::definition() ), migrations: array( new CreateOutboxMigration() ) ),
 			new Contribution( options: Settings::registry()->optionDefinitions() ),
+			new Contribution( options: array( GatewaySettingsDeclaration::optionFamily() ) ),
 			new Contribution( options: array( new OptionDefinition( BootOption::NAME, 'Kernel', 'The installation record: the plugin version and schema head the site was installed to, how locks are held, the install identity and address Safe Mode compares with, the recorded Safe Mode reason, and the current exchange-rate version.', true, Classification::Public ) ) ),
 			new Contribution( tables: array( SecretKeysTable::definition() ), migrations: array( new CreateSecretKeysMigration() ) ),
 			new Contribution( tables: array( LogsTable::definition() ), migrations: array( new CreateLogsMigration() ) ),
@@ -93,7 +96,7 @@ final class OwnedData {
 			new Contribution( tables: array( RateCountersTable::definition() ), migrations: array( new CreateRateCountersMigration() ) ),
 			new Contribution( tables: OrderTables::all(), migrations: array( new CreateOrderTables(), new AddOrderStatusIndex() ) ),
 			new Contribution( tables: CartTables::all(), migrations: array( new CreateCartTables() ) ),
-			new Contribution( tables: PaymentTables::all(), migrations: array( new CreatePaymentTables() ) ),
+			new Contribution( tables: PaymentTables::all(), migrations: array( new CreatePaymentTables(), new AddIntentMode() ) ),
 			new Contribution( tables: CheckoutTables::all(), migrations: array( new CreateCheckoutTables() ) ),
 			new Contribution( tables: PricingTables::all(), migrations: array( new CreateRateTables() ) ),
 			new Contribution( tables: PromotionTables::all(), migrations: array( new CreatePromotionTables() ) ),

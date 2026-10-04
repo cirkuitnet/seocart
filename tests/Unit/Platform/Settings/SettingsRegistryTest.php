@@ -175,7 +175,8 @@ final class SettingsRegistryTest extends TestCase {
 	 * @since 0.1.0
 	 */
 	public function test_the_data_registry_lists_every_settings_option(): void {
-		$listed = array_values( array_filter( OwnedData::registry()->options(), static fn( OptionDefinition $option ): bool => SettingsRegistry::MODULE === $option->module() ) );
+		// The payment gateways' documents are the one family, declared apart from the settings registry's own options.
+		$listed = array_values( array_filter( OwnedData::registry()->options(), static fn( OptionDefinition $option ): bool => SettingsRegistry::MODULE === $option->module() && ! $option->isFamily() ) );
 
 		$this->assertNotEmpty( $listed, 'The data registry lists no settings option.' );
 		$this->assertEquals( Settings::registry()->optionDefinitions(), $listed );

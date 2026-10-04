@@ -114,6 +114,16 @@ if ( ! defined( 'SAVEQUERIES' ) ) {
 	define( 'SAVEQUERIES', true );
 }
 
+/*
+ * The test site's environment type is WordPress's default, `production`, where the plugin
+ * registers its stand-in gateway only when SEOCART_STUB_GATEWAY says so. The suite places its
+ * orders through the stand-in, so it says so, except in the child process that proves the
+ * stand-in absent from a production site, which sets SEOCART_TESTS_WITHOUT_STUB_GATEWAY.
+ */
+if ( '1' !== getenv( 'SEOCART_TESTS_WITHOUT_STUB_GATEWAY' ) && ! defined( 'SEOCART_STUB_GATEWAY' ) ) {
+	define( 'SEOCART_STUB_GATEWAY', true );
+}
+
 require_once $seocart_tests_library . '/includes/functions.php';
 
 /*

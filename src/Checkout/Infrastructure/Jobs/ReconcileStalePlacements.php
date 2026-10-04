@@ -12,9 +12,9 @@ declare( strict_types=1 );
 namespace SEOCart\Checkout\Infrastructure\Jobs;
 
 use SEOCart\Checkout\Application\SettlePlacement;
+use SEOCart\Contracts\Payment\GatewayUnavailable;
 use SEOCart\Order\Application\Orders;
 use SEOCart\Payment\Application\PaymentService;
-use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Jobs\JobHandler;
 use SEOCart\Support\Error\CodedException;

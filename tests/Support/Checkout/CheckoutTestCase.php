@@ -16,8 +16,10 @@ use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Support\Address;
 use SEOCart\Tests\Support\Cart\CartTestCase;
+use SEOCart\Tests\Support\Payment\TestGateways;
 use SEOCart\Tests\Support\SecondConnection;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- The base plants key rows directly and reads them back through a second connection.
@@ -89,7 +91,7 @@ abstract class CheckoutTestCase extends CartTestCase {
 
 		$this->sessions = new MysqlCheckoutSessions( $this->db );
 		$this->keys     = new MysqlIdempotencyKeys( $this->db );
-		$this->checkout = new UpdateCheckoutSession( $this->service, $this->sessions );
+		$this->checkout = new UpdateCheckoutSession( $this->service, $this->sessions, TestGateways::of( new StubGateway() ) );
 	}
 
 	/**

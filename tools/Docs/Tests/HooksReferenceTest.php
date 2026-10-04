@@ -24,6 +24,7 @@ use SEOCart\Tools\Docs\Tests\Fixtures\Events\FixtureNonPromotedEvent;
 use SEOCart\Tools\Docs\Tests\Fixtures\Events\FixtureValidatingEvent;
 use SEOCart\Tools\Docs\Tests\Fixtures\Hooks\FixtureAaaFilter;
 use SEOCart\Tools\Docs\Tests\Fixtures\Hooks\FixtureFilterMissingSince;
+use SEOCart\Tools\Docs\Tests\Fixtures\Hooks\FixtureRegisterAction;
 use SEOCart\Tools\Docs\Tests\Fixtures\Hooks\FixtureToggleFilter;
 
 /**
@@ -58,7 +59,7 @@ final class HooksReferenceTest extends TestCase {
 			array(
 				HooksReference::TITLE,
 				'',
-				FieldDocs::generatedNotice( 'the event catalog and the filter declarations' ),
+				FieldDocs::generatedNotice( 'the event catalog and the hook declarations' ),
 				'',
 				HooksReference::INTRO,
 				'',
@@ -126,6 +127,33 @@ final class HooksReferenceTest extends TestCase {
 		$this->assertIsInt( $toggle );
 		$this->assertLessThan( $bin, $aaa, 'seocart_aaa_filter sorts before seocart_bin_restocked and must appear before it.' );
 		$this->assertLessThan( $toggle, $bin, 'seocart_bin_restocked sorts before seocart_fixture_toggle and must appear before it.' );
+	}
+
+	/**
+	 * Tests that an action documents itself from its declaration, sorted among the other hooks, and that one without an argument is refused.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_action_documents_itself_from_its_declaration(): void {
+		$content = ( new HooksReference( array(), array( FixtureToggleFilter::class ), array( FixtureRegisterAction::class ) ) )->generate( '' )->content;
+
+		$this->assertStringContainsString(
+			implode(
+				"\n",
+				array(
+					'## `seocart_fixture_register`',
+					'',
+					'Fires when the fixture warehouse first needs its bins, so a bin plugin can register its bins.',
+					'',
+					'- Fires: Once per request, the first time a bin is needed.',
+					'- Listener arguments: `( ' . FixtureBinRestocked::class . ' $registry )`',
+					'- Register with: `add_action( \'seocart_fixture_register\', $callback )`, naming the action as a string: an extension\'s main file runs before the plugin\'s classes exist.',
+					'- Since: 0.2.0',
+				)
+			),
+			$content
+		);
+		$this->assertLessThan( strpos( $content, '## `seocart_fixture_toggle`' ), strpos( $content, '## `seocart_fixture_register`' ), 'Sorted among the other hooks by name.' );
 	}
 
 	/**
@@ -252,7 +280,7 @@ final class HooksReferenceTest extends TestCase {
 	 */
 	public function test_the_hand_written_preamble_byte_count_is_pinned(): void {
 		$this->assertSame( 7, strlen( HooksReference::TITLE ), 'HooksReference::TITLE grew or shrank; update this pin deliberately.' );
-		$this->assertSame( 200, strlen( HooksReference::INTRO ), 'HooksReference::INTRO grew or shrank; update this pin deliberately.' );
+		$this->assertSame( 252, strlen( HooksReference::INTRO ), 'HooksReference::INTRO grew or shrank; update this pin deliberately.' );
 	}
 
 	/**

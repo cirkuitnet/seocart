@@ -57,6 +57,15 @@ final class OrderDocument {
 	public const MIXED_ENTRY = 'mixed';
 
 	/**
+	 * Where a checkout's order comes from: the storefront.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var OrderChannel
+	 */
+	public const CHANNEL = OrderChannel::Storefront;
+
+	/**
 	 * Builds the document.
 	 *
 	 * @since 0.1.0
@@ -75,7 +84,7 @@ final class OrderDocument {
 		$billing = $details->billingAddress ?? throw new \InvalidArgumentException( 'An order is placed with a billing address.' );
 
 		return new NewOrder(
-			channel: OrderChannel::Storefront,
+			channel: self::CHANNEL,
 			email: $billing->email(),
 			customerId: $customerId,
 			locale: $locale,

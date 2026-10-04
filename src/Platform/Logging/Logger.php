@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Logging;
 
+use SEOCart\Contracts\Logger as PublicLogger;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Exception\QueryFailed;
 use SEOCart\Support\Error\CodedException;
@@ -61,7 +62,7 @@ defined( 'ABSPATH' ) || exit;
  *
  * @since 0.1.0
  */
-final class Logger {
+final class Logger implements PublicLogger {
 
 	/**
 	 * The most characters a message keeps: the width of the `message` column.

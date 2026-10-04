@@ -25,6 +25,9 @@ defined( 'ABSPATH' ) || exit;
  * is the production adapter; the doubles in tests/Support/Doubles/ are the ones tests use.
  *
  * @since 0.1.0
+ * @since 0.2.0 Public, by reference from the payment contract.
+ *
+ * @api
  */
 interface Clock {
 

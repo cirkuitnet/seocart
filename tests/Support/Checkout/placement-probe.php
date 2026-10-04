@@ -32,8 +32,9 @@ declare( strict_types=1 );
 use SEOCart\Cart\Domain\CartToken;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\SettlePlacement;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\PaymentQuery;
 use SEOCart\Order\Infrastructure\OrderTables;
-use SEOCart\Payment\Domain\Gateway\PaymentQuery;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Platform\Authorization\Actor;
@@ -125,7 +126,7 @@ try {
 			),
 			ARRAY_A
 		);
-		$seocart_probe_answer = null === $seocart_probe_intent ? null : ( new StubGateway() )->query( new PaymentQuery( (string) $seocart_probe_intent['uuid'], (string) $seocart_probe_intent['provider_intent_id'], Money::of( (int) $seocart_probe_intent['amount_minor'], Currency::of( (string) $seocart_probe_intent['currency'] ) ) ) );
+		$seocart_probe_answer = null === $seocart_probe_intent ? null : ( new StubGateway() )->query( new PaymentQuery( (string) $seocart_probe_intent['uuid'], (string) $seocart_probe_intent['provider_intent_id'], Money::of( (int) $seocart_probe_intent['amount_minor'], Currency::of( (string) $seocart_probe_intent['currency'] ) ), Mode::Test ) );
 
 		if ( null === $seocart_probe_answer ) {
 			throw new RuntimeException( 'The stub has no answer for the order\'s intent.' );

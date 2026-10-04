@@ -11,14 +11,14 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
+use SEOCart\Contracts\Payment\GatewayUnavailable;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Domain\NewOrder;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Domain\Event\RefundRecorded;
-use SEOCart\Payment\Domain\Gateway\GatewayUnavailable;
-use SEOCart\Payment\Domain\Operation;
-use SEOCart\Payment\Domain\Outcome;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Payment\Infrastructure\RefundTables;

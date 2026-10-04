@@ -28,8 +28,9 @@ use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
  *   stock adjustment's declaration with the two enums it reads, the cart's declarations with the
  *   error catalogs, the two domain classes whose limits they state, the caps on refused promotion
  *   codes and on currency switches, and the declared shape of totals with the enums it lists, the
- *   checkout's declarations with their error catalog, the address document whose fields they state
- *   and the details whose method key they bound, and the fixture — no settings file, no service,
+ *   checkout's declarations with their error catalog, the address document whose fields they state,
+ *   the details whose method key they bound and the payment gateway descriptor whose id length
+ *   bounds the payment method, and the fixture — no settings file, no service,
  *   no container, no kernel, no database layer.
  *
  * The probe can also add an operation whose factory translates a string, reads an option and reads
@@ -82,6 +83,7 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Checkout/Domain/CheckoutDetails.php',
 		'src/Checkout/Domain/IdempotencyClaim.php',
 		'src/Checkout/Domain/PlacementOutcome.php',
+		'src/Contracts/Payment/GatewayDescriptor.php',
 		'src/Pricing/Interfaces/TotalsFields.php',
 		'src/Pricing/Application/UnpricedLine.php',
 		'src/Pricing/Domain/PricingError.php',

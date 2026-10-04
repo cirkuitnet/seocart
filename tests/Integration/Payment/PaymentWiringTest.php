@@ -11,9 +11,10 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Application\RefundService;
-use SEOCart\Payment\Domain\Gateway\PaymentGateway;
 use SEOCart\Payment\Domain\PaymentRepository;
 use SEOCart\Payment\Domain\Refund\RefundRepository;
 use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
@@ -34,8 +35,11 @@ use SEOCart\Tests\Support\KernelContainer;
  * when it is built, which is that module's cost, not the payment module's. The module adds no
  * hook; the idle budget test holds it to that.
  *
+ * Building the gateway registry registers nothing: the gateways are registered the first time
+ * something asks the registry for one.
+ *
  * Planted violations, each shown red and removed:
- * - in Modules::paymentRegister(), leave out the PaymentGateway binding: the service cannot be
+ * - in Modules::paymentRegister(), leave out the Gateways binding: the service cannot be
  *   built;
  * - in Modules::paymentRegister(), leave out the RefundRepository binding: the refund service
  *   cannot be built;
@@ -59,7 +63,7 @@ final class PaymentWiringTest extends DatabaseTestCase {
 
 		$log = $this->captureQueries(
 			static function () use ( $container, &$resolved ): void {
-				foreach ( array( PaymentRepository::class, PaymentGateway::class, PaymentService::class, PaymentLedgerCheck::class, RefundRepository::class, RefundService::class ) as $port ) {
+				foreach ( array( PaymentRepository::class, PaymentGateway::class, Gateways::class, PaymentService::class, PaymentLedgerCheck::class, RefundRepository::class, RefundService::class ) as $port ) {
 					$resolved[ $port ] = get_class( $container->get( $port ) );
 				}
 			}
@@ -69,6 +73,7 @@ final class PaymentWiringTest extends DatabaseTestCase {
 			array(
 				PaymentRepository::class  => MysqlPaymentRepository::class,
 				PaymentGateway::class     => StubGateway::class,
+				Gateways::class           => Gateways::class,
 				PaymentService::class     => PaymentService::class,
 				PaymentLedgerCheck::class => PaymentLedgerCheck::class,
 				RefundRepository::class   => MysqlRefundRepository::class,
@@ -77,6 +82,7 @@ final class PaymentWiringTest extends DatabaseTestCase {
 			$resolved
 		);
 		$this->assertQueryCount( 0, $log, 'Building the payment module\'s services' );
+		$this->assertSame( 0, did_action( Gateways::ACTION ), 'Building the registry registers no gateway.' );
 	}
 
 	/**

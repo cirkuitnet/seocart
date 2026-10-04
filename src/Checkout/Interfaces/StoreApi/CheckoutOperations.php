@@ -28,6 +28,7 @@ use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Domain\PlacementOutcome;
+use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\PaymentStatus;
@@ -167,15 +168,6 @@ final class CheckoutOperations {
 	 * @var string
 	 */
 	public const CURRENCY_ROUTE = '/cart/currency';
-
-	/**
-	 * The payment methods a shopper may choose.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var list<string>
-	 */
-	public const PAYMENT_METHODS = array( 'stub' );
 
 	/**
 	 * Declares the session write.
@@ -369,6 +361,7 @@ final class CheckoutOperations {
 				CheckoutError::SessionIncomplete,
 				CheckoutError::LineUnsellable,
 				CheckoutError::TotalsChanged,
+				CheckoutError::PaymentMethodUnavailable,
 				InventoryError::Insufficient,
 				PromotionError::LimitReached,
 				CheckoutError::PaymentDeclined,
@@ -511,11 +504,11 @@ final class CheckoutOperations {
 			type: FieldType::String,
 			description: $output
 				? 'The payment method chosen, or null when none was.'
-				: 'The payment method chosen; leave it out to clear it.',
+				: 'The payment method chosen, the id of a payment gateway the store offers; leave it out to clear it.',
 			label: static fn(): string => __( 'Payment method', 'seocart' ),
 			example: 'stub',
 			nullable: $output,
-			allowed: $output ? array() : self::PAYMENT_METHODS
+			max_length: GatewayDescriptor::ID_MAX_LENGTH
 		);
 	}
 }

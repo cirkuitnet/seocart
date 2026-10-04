@@ -124,6 +124,7 @@ final class PaymentTables {
 				self::uuid( 'The intent\'s public identifier, and the idempotency key its gateway receives: stable across retries of the one attempt.' ),
 				new ColumnSpec( 'order_id', 'bigint unsigned', Classification::Public, 'The order the intent pays for; an intent is created with its order and never without one.' ),
 				new ColumnSpec( 'gateway_id', 'varchar(32)', Classification::Public, 'The gateway the intent is paid through, for example stub.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'mode', 'char(4)', Classification::Public, 'The provider system the intent was created in, test or live; every later call about the intent uses that mode\'s credentials, whatever the store is set to by then.', defaultValue: 'test', collation: 'ascii_bin' ),
 				new ColumnSpec( 'status', 'varchar(24)', Classification::Public, 'The intent\'s state; changed only by the conditional updates the intent state machine compiles to.', defaultValue: 'created', collation: 'ascii_bin' ),
 				self::money( 'amount_minor', 'The amount the intent is for, frozen from the order\'s totals when it was created and never changed.' ),
 				self::currency( 'currency', 'The currency of every amount of the intent: the order\'s, ISO 4217.' ),

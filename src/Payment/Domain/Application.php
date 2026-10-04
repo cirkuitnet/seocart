@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Payment\Domain;
 
+use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\PaymentStatus;
 

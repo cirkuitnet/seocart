@@ -48,6 +48,9 @@ defined( 'ABSPATH' ) || exit;
  * translates nothing.
  *
  * @since 0.1.0
+ * @since 0.2.0 Public, by reference from the payment contract.
+ *
+ * @api
  */
 final class FieldSpec {
 
@@ -400,6 +403,30 @@ final class FieldSpec {
 	public function asOptional(): self {
 		$copy           = clone $this;
 		$copy->required = false;
+
+		return $copy;
+	}
+
+	/**
+	 * Returns a copy of the field under another wire name, everything else the same.
+	 *
+	 * The settings registry keeps a payment gateway's setting once per gateway and mode, so the
+	 * field the gateway declared as `secret_key` is stored as, for example, `stripe_test_secret_key`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws SchemaException When the name is not snake_case.
+	 *
+	 * @param string $name The wire name, lower-case snake_case.
+	 * @return self The copy. This field is left unchanged.
+	 */
+	public function renamed( string $name ): self {
+		if ( 1 !== preg_match( self::NAME_PATTERN, $name ) ) {
+			SchemaException::raise( 'The field name "%1$s" is not lower-case snake_case, such as item_id.', $name );
+		}
+
+		$copy       = clone $this;
+		$copy->name = $name;
 
 		return $copy;
 	}

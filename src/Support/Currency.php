@@ -33,6 +33,9 @@ defined( 'ABSPATH' ) || exit;
  * change reviewed against a newer publication; nothing reads it at run time.
  *
  * @since 0.1.0
+ * @since 0.2.0 Public, by reference from the payment contract.
+ *
+ * @api
  */
 final class Currency {
 
