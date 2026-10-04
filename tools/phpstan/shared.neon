@@ -1,0 +1,19 @@
+# What SEOCart and every SEOCart extension analyse with: the level, the WP-CLI symbols and the
+# WordPress test library. Core's phpstan.neon.dist includes this file, and so does
+# tools/phpstan/extension.neon, the file an extension's phpstan.neon.dist includes from the core
+# checkout beside it. Paths are relative to this file.
+#
+# PHPStan starts at level 5 with NO baseline. A baseline file may exist only to grandfather
+# issues at the moment the level is raised, and may only shrink.
+# The WordPress extension and stubs are loaded by phpstan/extension-installer.
+parameters:
+	level: 5
+	# The WordPress test library (WP_UnitTestCase, tests_add_filter) ships without Composer
+	# autoloading, so PHPStan is told where its symbols live. It is scanned for discovery only,
+	# never analysed. The integration tests of SEOCart and of every extension use it.
+	scanDirectories:
+		- ../../vendor/wp-phpunit/wp-phpunit/includes
+	# WP-CLI's own stubs conflict with the WordPress 7.1 stubs; the few WP_CLI symbols the
+	# plugin calls are declared by hand in this file instead.
+	scanFiles:
+		- stubs/wp-cli.stub

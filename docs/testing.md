@@ -116,7 +116,7 @@ the source of truth. Run `composer list` or `npm run` to see them with their des
 | `composer cs`                            | PHP_CodeSniffer: the WordPress Coding Standards, PHPCompatibilityWP and the SEOCart DRY and compliance sniffs   |
 | `composer cs:fix`                        | PHP Code Beautifier: fixes the violations that can be fixed automatically                                       |
 | `composer cs:dry`                        | Only the SEOCart DRY and compliance sniffs, on `seocart.php`, `uninstall.php`, `src/` and `templates/`          |
-| `composer stan`                          | PHPStan at the level set in `phpstan.neon.dist`                                                                 |
+| `composer stan`                          | PHPStan at the level set in `tools/phpstan/shared.neon`, which `phpstan.neon.dist` includes                     |
 | `composer test`                          | `test:unit`, then `test:integration`                                                                            |
 | `composer test:unit`                     | The `unit` suite. WordPress is never loaded                                                                     |
 | `composer test:tools`                    | The `tools` suite: self-tests for the custom sniffs and checkers                                                |
@@ -141,6 +141,10 @@ the source of truth. Run `composer list` or `npm run` to see them with their des
 A group command fails when its group selects no test, because an empty run proves nothing. Every
 group has tests today, so if one fails for that reason, the group name or the test's `@group`
 annotation is wrong.
+
+A SEOCart extension runs these tools from SEOCart's checkout through one script,
+`sh ../seocart/bin/ci/extension.sh <gate> .`, and so does its continuous integration;
+[writing-an-extension.md](writing-an-extension.md) lists its gates.
 
 ### npm
 

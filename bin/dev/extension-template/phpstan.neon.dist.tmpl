@@ -1,0 +1,9 @@
+# SEOCart's PHPStan settings (the level, the WordPress stubs, SEOCart's own symbols), from the
+# SEOCart checkout beside this one. This file says what the extension analyses.
+includes:
+	- ../seocart/tools/phpstan/extension.neon
+parameters:
+	paths:
+		- {{slug}}.php
+		- src
+		- tests

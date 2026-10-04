@@ -119,7 +119,7 @@ final class MoneyApiListsTest extends TestCase {
 	public function test_no_ruleset_overrides_the_lists(): void {
 		$root = dirname( __DIR__, 4 );
 
-		foreach ( array( 'tools/phpcs/SEOCart/ruleset.xml', 'phpcs.xml.dist' ) as $ruleset ) {
+		foreach ( array( 'tools/phpcs/SEOCart/ruleset.xml', 'tools/phpcs/seocart-project.xml', 'phpcs.xml.dist' ) as $ruleset ) {
 			$this->assertDoesNotMatchRegularExpression(
 				'/<property\s+name="(?:arithmeticMethods|accessors)"/',
 				(string) file_get_contents( $root . '/' . $ruleset ),

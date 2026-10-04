@@ -481,5 +481,70 @@ PATH=$saved_path
 export PATH
 unset SEOCART_SELFTEST_GIT_WORKTREE SEOCART_SELFTEST_GIT_DIRECTORY SEOCART_SELFTEST_GIT_STATUS SEOCART_SELFTEST_GIT_LOG SEOCART_SELFTEST_TEARDOWN_LOG
 
+# The extension kit: the generator and the pin mover. An extension lives beside a SEOCart
+# checkout called seocart/, so the sandbox holds a link of that name to this checkout. Needs
+# php and git, and this checkout's `composer install`.
+printf '\n== the extension kit: new-extension.sh and bump-core.sh\n'
+core_root=$(sc_physical_dir "$SC_DEV_DIR/../..")
+extension_dir=$sandbox/extensions/seocart-gateway-for-example
+mkdir -p "$sandbox/extensions"
+ln -s "$core_root" "$sandbox/extensions/seocart"
+
+expect_exit 2 "new-extension: no argument" run_script new-extension
+expect_output 'usage:' "new-extension: no argument prints the usage"
+expect_exit 0 "new-extension: --help" run_script new-extension --help
+expect_exit 2 "new-extension: an unknown type" run_script new-extension seocart-gateway-for-example --type=shipping --label=Example --dir="$extension_dir"
+expect_output 'is not an extension type' "new-extension: names the unknown type"
+expect_exit 2 "new-extension: a slug without the seocart- prefix" run_script new-extension example --type=payments --label=Example --dir="$extension_dir"
+expect_exit 2 "new-extension: a slug that is not the plugin name's" run_script new-extension seocart-example --type=payments --label=Example --dir="$extension_dir"
+expect_output 'which gives "seocart-gateway-for-example"' "new-extension: names the slug WordPress.org would make"
+expect_exit 2 "new-extension: a label with a quote" run_script new-extension seocart-gateway-for-example --type=payments '--label=Ex"ample' --dir="$extension_dir"
+expect_absent "$extension_dir" "new-extension: a refused command writes nothing"
+
+expect_exit 0 "new-extension: writes the skeleton" run_script new-extension seocart-gateway-for-example --type=payments --label=Example --dir="$extension_dir"
+expect_output "pinned to SEOCart $(git -C "$core_root" rev-parse HEAD)" "new-extension: pins the commit SEOCart is at"
+expect_equal 22 "$(git -C "$extension_dir" ls-files | wc -l | tr -d ' ')" "new-extension: stages the 22 files it wrote"
+expect_equal '' "$(grep -rlE '\{\{[a-z_]+\}\}' "$extension_dir" --exclude-dir=.git || true)" "new-extension: no placeholder is left"
+expect_exit 1 "new-extension: refuses a directory that exists" run_script new-extension seocart-gateway-for-example --type=payments --label=Example --dir="$extension_dir"
+expect_output 'exists already' "new-extension: says the directory exists"
+
+core_head=$(git -C "$core_root" rev-parse HEAD)
+core_parent=$(git -C "$core_root" rev-parse HEAD~1)
+expect_exit 2 "bump-core: no argument" sh "$extension_dir/bin/dev/bump-core.sh"
+expect_exit 1 "bump-core: refuses a commit SEOCart does not have" sh "$extension_dir/bin/dev/bump-core.sh" 0000000000000000000000000000000000000000
+expect_equal "SEOCART_CORE_REF=$core_head" "$(grep '^SEOCART_CORE_REF=' "$extension_dir/seocart-core.env")" "bump-core: a refused move leaves the pin"
+expect_exit 0 "bump-core: moves to the parent commit" sh "$extension_dir/bin/dev/bump-core.sh" HEAD~1
+expect_output 'and 3 workflow call(s)' "bump-core: moves the three workflow calls"
+expect_equal "SEOCART_CORE_REF=$core_parent" "$(grep '^SEOCART_CORE_REF=' "$extension_dir/seocart-core.env")" "bump-core: moves seocart-core.env"
+expect_equal 3 "$(cat "$extension_dir"/.github/workflows/*.yml | grep -c "workflows/extension-[a-z]*\.yml@$core_parent")" "bump-core: every call names the new pin"
+expect_exit 0 "bump-core: moving to the pinned commit changes nothing" sh "$extension_dir/bin/dev/bump-core.sh" "$core_parent"
+expect_output 'nothing to move' "bump-core: says nothing moved"
+sed "s/@$core_parent/@$core_head/" "$extension_dir/.github/workflows/nightly.yml" >"$sandbox/nightly.yml"
+mv "$sandbox/nightly.yml" "$extension_dir/.github/workflows/nightly.yml"
+expect_exit 1 "bump-core: refuses to leave a call at a third commit" sh "$extension_dir/bin/dev/bump-core.sh" HEAD~2
+expect_output 'do not name the pinned commit' "bump-core: names the call it cannot move"
+expect_equal "SEOCART_CORE_REF=$core_parent" "$(grep '^SEOCART_CORE_REF=' "$extension_dir/seocart-core.env")" "bump-core: the refused move changed nothing"
+
+printf '\n== the extension kit: apply-ruleset.sh, which never runs here without --dry-run\n'
+expect_exit 2 "apply-ruleset: no argument" run_script apply-ruleset
+expect_exit 2 "apply-ruleset: a repository without an owner" run_script apply-ruleset seocart-gateway-for-example --dry-run
+expect_exit 2 "apply-ruleset: an unknown option" run_script apply-ruleset cirkuitnet/seocart-gateway-for-example --bogus
+expect_exit 0 "apply-ruleset: dry run" run_script apply-ruleset cirkuitnet/seocart-gateway-for-example --dry-run
+expect_output 'nothing is sent' "apply-ruleset: the dry run says it sends nothing"
+expect_output 'gh api --method POST repos/cirkuitnet/seocart-gateway-for-example/rulesets' "apply-ruleset: the dry run prints the request"
+expect_output '"context": "ci / gates"' "apply-ruleset: the dry run prints the body"
+
+printf '\n== the extension kit: provision-site.sh --with-extension, up to its first side effect\n'
+expect_exit 0 "check-extension: accepts the generated extension" php "$core_root/tools/extension.php" check-extension "$extension_dir"
+expect_output 'seocart-gateway-for-example' "check-extension: prints the extension's slug"
+expect_exit 1 "check-extension: refuses a directory without a plugin" php "$core_root/tools/extension.php" check-extension "$sandbox/state"
+expect_exit 1 "check-extension: refuses SEOCart itself" php "$core_root/tools/extension.php" check-extension "$core_root"
+expect_output 'is not a SEOCart extension' "check-extension: says why SEOCart is not one"
+expect_exit 2 "provision-site: --with-extension= without a path" run_script provision-site "$slug" --with-extension=
+expect_exit 2 "provision-site: --with-extension without =" run_script provision-site "$slug" --with-extension
+expect_exit 1 "provision-site: refuses a path that holds no extension" run_script provision-site "$slug" --with-extension="$sandbox/state"
+expect_output 'must hold exactly one PHP file' "provision-site: says why the path holds no extension"
+expect_absent "$(sc_site_dir "$slug")" "provision-site: the refusal created no instance"
+
 printf '\n%s checks, %s failed\n' "$checks" "$failures"
 [ "$failures" -eq 0 ]

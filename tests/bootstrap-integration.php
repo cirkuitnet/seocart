@@ -22,6 +22,7 @@ use SEOCart\Tests\Support\AutoloaderWatch;
 use SEOCart\Tests\Support\ErrorRecorder;
 use SEOCart\Tests\Support\PluginOwnership;
 use SEOCart\Tests\Support\TestDatabasePrefix;
+use SEOCart\Tools\Packaging\PluginPackage;
 
 $seocart_tests_plugin_dir  = dirname( __DIR__ );
 $seocart_tests_load_plugin = '0' !== getenv( 'SEOCART_TESTS_LOAD_PLUGIN' );
@@ -137,6 +138,19 @@ tests_add_filter(
 
 		if ( ! $seocart_tests_load_plugin ) {
 			return;
+		}
+
+		/*
+		 * A SEOCart extension's tests run on this bootstrap too (bin/ci/extension.sh), with
+		 * SEOCART_EXTENSION_PATH naming the extension's root; SEOCART_TESTS_LOAD_EXTENSION=0
+		 * leaves it out, for the idle probe's control run. Its main file is found the way
+		 * WordPress finds it, and loaded first, as WordPress loads it: an extension's folder,
+		 * "seocart-…/", sorts before "seocart/" in the active_plugins option.
+		 */
+		$extension = (string) getenv( 'SEOCART_EXTENSION_PATH' );
+
+		if ( '' !== $extension && '0' !== getenv( 'SEOCART_TESTS_LOAD_EXTENSION' ) ) {
+			require_once $extension . '/' . PluginPackage::at( $extension )->mainFile;
 		}
 
 		require_once $seocart_tests_plugin_dir . '/seocart.php';

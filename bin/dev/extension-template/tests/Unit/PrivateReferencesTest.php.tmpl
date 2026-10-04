@@ -1,0 +1,35 @@
+<?php
+/**
+ * Tests that no tracked file cites the maintainers' private design and planning material
+ *
+ * @package {{namespace}}
+ * @since   0.1.0
+ * @license GPL-3.0-or-later
+ */
+
+declare( strict_types=1 );
+
+namespace {{namespace}}\Tests\Unit;
+
+use PHPUnit\Framework\TestCase;
+use SEOCart\Tools\Docs\PrivateReferences;
+
+/**
+ * Keeps this public repository self-contained, with SEOCart's own check
+ * (tools/Docs/PrivateReferences.php in SEOCart) over this checkout.
+ *
+ * @since 0.1.0
+ */
+final class PrivateReferencesTest extends TestCase {
+
+	/**
+	 * Tests that no tracked text file cites private material.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_no_tracked_file_cites_private_material(): void {
+		$found = PrivateReferences::findIn( dirname( __DIR__, 2 ) );
+
+		$this->assertSame( array(), $found, PrivateReferences::explain( $found ) );
+	}
+}

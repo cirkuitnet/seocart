@@ -1,9 +1,10 @@
 <?php
 /**
- * Checks a built release zip and fails closed: php bin/check-zip.php <zip> [--budget-bytes=N] [--limit-bytes=N]
+ * Checks a built release zip and fails closed: php bin/check-zip.php <zip> [--plugin=<root>] [--budget-bytes=N] [--limit-bytes=N]
  *
  * Exits 0 when the zip may be published, 1 when it may not, 2 when the command line is
- * wrong. The rules and their reasons are in tools/Packaging/ZipChecker.php.
+ * wrong. The rules and their reasons are in tools/Packaging/ZipChecker.php. With
+ * `--plugin=<root>` the zip is the one built for the SEOCart extension at that root.
  *
  * The classes are required by path for the reason given in bin/build-zip.php.
  *

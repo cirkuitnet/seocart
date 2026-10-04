@@ -1,0 +1,17 @@
+# What a SEOCart extension's phpstan.neon.dist includes, from the core checkout beside it:
+#
+#     includes:
+#         - ../seocart/tools/phpstan/extension.neon
+#
+# The extension runs PHPStan from core's vendor/ (bin/ci/extension.sh), so the WordPress
+# extension and stubs and core's development autoloader come with it, and the extension
+# installs no development dependency of its own. Core's code is scanned for the symbols the
+# extension uses, never analysed. Paths are relative to this file.
+includes:
+	- shared.neon
+parameters:
+	scanDirectories:
+		- ../../src
+	# The constants core's main file defines, such as SEOCART_VERSION.
+	scanFiles:
+		- ../../seocart.php

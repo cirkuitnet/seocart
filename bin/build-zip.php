@@ -6,6 +6,9 @@
  * `npm run build` has written build/. Follow it with bin/check-zip.php; a zip that has
  * not passed that check must not be published.
  *
+ * `php bin/build-zip.php --plugin=<root>` builds a SEOCart extension's zip the same way,
+ * into <root>/dist/ (bin/ci/extension.sh zip runs both steps for an extension).
+ *
  * The classes are required by path instead of through Composer's autoloader, which does
  * not map tools/ after `composer install --no-dev` and does not exist at all in a tree
  * that was never installed.

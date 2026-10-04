@@ -3,7 +3,9 @@
 # The one fact this action owns: how a job of this repository gets PHP and vendor/. That is
 # the setup-php options, the Composer cache key, the `composer install` flags, and the PHP
 # version a job runs on when it names none (the version the plugin is developed on).
-# Every workflow job that needs PHP calls it after its checkout step.
+# Every workflow job that needs PHP calls it after its checkout step. A SEOCart extension's CI
+# (extension-ci.yml) calls it too, from the SEOCart checkout beside the extension, with
+# working-directory: seocart.
 
 name: Set up PHP and Composer
 description: Sets up PHP, restores the Composer download cache and installs the dependencies.
@@ -25,6 +27,10 @@ inputs:
         description: '"full" runs the Composer scripts (Strauss writes vendor-scoped/); "no-scripts" skips them; "none" installs nothing.'
         required: false
         default: full
+    working-directory:
+        description: 'The directory that holds composer.json, relative to the workspace. Left out: the workspace itself.'
+        required: false
+        default: '.'
 
 runs:
     using: composite
@@ -42,6 +48,7 @@ runs:
           if: ${{ inputs.install != 'none' }}
           id: composer-cache
           shell: bash
+          working-directory: ${{ inputs.working-directory }}
           run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
 
         - name: Cache Composer downloads
@@ -49,15 +56,17 @@ runs:
           uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
           with:
               path: ${{ steps.composer-cache.outputs.dir }}
-              key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+              key: composer-${{ runner.os }}-${{ hashFiles(format('{0}/composer.lock', inputs.working-directory)) }}
               restore-keys: composer-${{ runner.os }}-
 
         - name: Install Composer dependencies
           if: ${{ inputs.install == 'full' }}
           shell: bash
+          working-directory: ${{ inputs.working-directory }}
           run: composer install --no-interaction --no-progress --prefer-dist
 
         - name: Install Composer dependencies without running scripts
           if: ${{ inputs.install == 'no-scripts' }}
           shell: bash
+          working-directory: ${{ inputs.working-directory }}
           run: composer install --no-interaction --no-progress --prefer-dist --no-scripts

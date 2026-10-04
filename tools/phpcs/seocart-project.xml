@@ -1,0 +1,86 @@
+<?xml version="1.0"?>
+<ruleset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="SEOCart project rules" xsi:noNamespaceSchemaLocation="../../vendor/squizlabs/php_codesniffer/phpcs.xsd">
+	<description>The coding standard of SEOCart and of every SEOCart extension: WordPress Coding Standards, PHP compatibility and the SEOCart standard (tools/phpcs/SEOCart).</description>
+
+	<!--
+		One rule set for core and for every extension. Core's phpcs.xml.dist includes this file,
+		and so does the phpcs.xml.dist that bin/dev/new-extension.sh writes into an extension,
+		as ../seocart/tools/phpcs/seocart-project.xml from the core checkout beside it.
+
+		A ruleset that includes this file still has to set what differs per plugin, after the
+		include:
+		- the text domain, on WordPress.WP.I18n (text_domain);
+		- the prefixes, on WordPress.NamingConventions.PrefixAllGlobals (prefixes).
+		Neither has a default here, so a plugin cannot inherit another plugin's.
+
+		The SEOCart standard's DRY scope (src/, templates/ and core's two root files) is a list
+		of paths relative to the base path, so it covers an extension's src/ and templates/ the
+		same way. An extension's main file only declares the plugin and registers it, and is
+		outside that scope.
+	-->
+
+	<!-- The supported floors: the requirements table in README.md. An extension runs on the same ones. -->
+	<config name="minimum_wp_version" value="7.1"/>
+	<config name="testVersion" value="8.3-"/>
+
+	<rule ref="WordPress">
+		<!--
+			This is a namespaced PSR-4 code base: PascalCase classes, camelCase methods and
+			properties. That departs from core's naming idiom only. Every security, escaping,
+			i18n and formatting sniff stays active. Hook, option, capability and table names
+			remain snake_case, because WordPress interprets those strings itself.
+		-->
+		<exclude name="WordPress.NamingConventions.ValidFunctionName"/>
+		<exclude name="WordPress.NamingConventions.ValidVariableName"/>
+	</rule>
+
+	<!--
+		The WordPress file-name sniff checks every file that follows WordPress's own naming: the
+		plugin's main file, uninstall.php, templates and the command-line scripts in bin/. It is
+		not excluded in the rule above, because an exclusion there switches it off everywhere and
+		no later rule can switch it back on.
+
+		PSR-4 requires a class file to be named exactly after its class (OrderRepository.php for
+		`class OrderRepository`), which the sniff's class-{name}.php convention contradicts, so
+		the capitalised file names under src/, tests/ and tools/ are left out. PHP_CodeSniffer
+		matches these patterns against the whole path and ignoring case; (?-i) makes the capital
+		count, so a checkout kept under a directory named src, tests or tools still has its root
+		files checked. languages/ holds no PHP and needs no pattern.
+	-->
+	<rule ref="WordPress.Files.FileName">
+		<!-- The plugin's classes. -->
+		<exclude-pattern>(?-i)/src/(.+/)?[A-Z][^/]+\.php$</exclude-pattern>
+		<!-- The test classes and their support classes. -->
+		<exclude-pattern>(?-i)/tests/(.+/)?[A-Z][^/]+\.php$</exclude-pattern>
+		<!-- The WordPress test library's configuration, whose name the library sets. -->
+		<exclude-pattern>/tests/wp-tests-config\.[a-z]+\.php$</exclude-pattern>
+		<!-- The development tools' classes, sniffs and their fixtures. -->
+		<exclude-pattern>(?-i)/tools/(.+/)?[A-Z][^/]+\.php$</exclude-pattern>
+	</rule>
+
+	<!--
+		Command-line tools and tests never run inside a WordPress request: they write to
+		STDOUT, read local files and spawn processes on purpose. The sniffs below protect
+		the WordPress runtime and stay fully active for the plugin's root files and src/.
+	-->
+	<rule ref="WordPress.Security.EscapeOutput">
+		<exclude-pattern>/(bin|tools|tests)/*</exclude-pattern>
+	</rule>
+	<rule ref="WordPress.WP.AlternativeFunctions">
+		<exclude-pattern>/(bin|tools|tests)/*</exclude-pattern>
+	</rule>
+	<rule ref="WordPress.PHP.DiscouragedPHPFunctions">
+		<exclude-pattern>/(bin|tools|tests)/*</exclude-pattern>
+	</rule>
+	<rule ref="WordPress.PHP.DevelopmentFunctions">
+		<exclude-pattern>/(bin|tools|tests)/*</exclude-pattern>
+	</rule>
+
+	<rule ref="PHPCompatibilityWP"/>
+
+	<!--
+		The SEOCart standard: the DRY sniffs and the "no executable content" lints. Its scope,
+		allow-lists and severities are declared in that file, once; `composer cs:dry` runs it alone.
+	-->
+	<rule ref="./SEOCart/ruleset.xml"/>
+</ruleset>

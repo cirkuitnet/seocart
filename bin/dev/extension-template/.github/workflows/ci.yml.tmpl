@@ -1,0 +1,26 @@
+# Continuous integration: SEOCart's reusable extension workflow, at the commit seocart-core.env
+# pins (bin/dev/bump-core.sh moves both). The jobs, what each runs and their names, which the
+# repository's required checks follow, are in SEOCart's .github/workflows/extension-ci.yml.
+
+name: CI
+
+on:
+    pull_request:
+    push:
+        branches:
+            - main
+
+permissions:
+    contents: read
+
+# A newer push to a pull request supersedes the run in progress. Runs on main are never
+# cancelled: every commit on main keeps a complete result.
+concurrency:
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+    ci:
+        uses: cirkuitnet/seocart/.github/workflows/extension-ci.yml@{{core_ref}}
+        with:
+            extension-type: {{type}}

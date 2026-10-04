@@ -1,0 +1,295 @@
+# The CI of a SEOCart extension: a plugin of its own, in a repository of its own, which calls
+# this workflow in a few lines (bin/dev/new-extension.sh writes them):
+#
+#     jobs:
+#         ci:
+#             uses: cirkuitnet/seocart/.github/workflows/extension-ci.yml@<SEOCart commit>
+#             with:
+#                 extension-type: payments
+#
+# The commit after `@` must be the one the extension's seocart-core.env pins: the gates job
+# checks that with bin/ci/check-workflows.sh, so moving an extension to a newer SEOCart is one
+# change, which its bin/dev/bump-core.sh makes. Its nightly caller passes `core-ref: main`.
+#
+# Every job checks the extension out into ext/ and SEOCart into seocart/ beside it, sets PHP up
+# with SEOCart's own action and runs SEOCart's scripts against the extension, through
+# bin/ci/extension.sh, the script a developer runs too: the extension copies none of SEOCart's
+# gates, rules or tools, and installs no development dependency of its own.
+#
+# Job graph (arrows are `needs`):
+#
+#   gates -+-> unit-tests (PHP x)
+#          +-> integration-tests (WordPress x)
+#          +-> package -> plugin-check
+#
+# Every job is a required check of an extension's main branch, under the name its caller gives
+# it: "ci / gates", "ci / unit-tests (PHP 8.3)" and so on (tools/github/extension-ruleset.json,
+# applied with bin/dev/apply-ruleset.sh).
+#
+# integration-tests cannot call reusable-integration-tests.yml. Inside a workflow that another
+# repository calls, `./` names that other repository, and `cirkuitnet/seocart/...@<commit>`
+# cannot name the commit it is part of. GitHub's `$/` reference would, once actionlint accepts
+# it; until then integration-tests repeats that workflow's MySQL service and nothing else.
+
+name: Extension CI (reusable)
+
+on:
+    workflow_call:
+        inputs:
+            extension-type:
+                description: 'The kind of extension, for example "payments". It selects the conformance suite (tools/Extension/ExtensionType.php).'
+                required: true
+                type: string
+            core-ref:
+                description: 'The SEOCart commit to test against. Left out: the one seocart-core.env pins. The nightly caller passes "main".'
+                required: false
+                type: string
+                default: ''
+            php:
+                description: "The PHP versions of the unit-test matrix, as a JSON list: SEOCart's own by default."
+                required: false
+                type: string
+                default: '["8.3", "8.4", "8.5"]'
+            wp:
+                description: 'The WordPress release lines of the integration matrix, as a JSON list.'
+                required: false
+                type: string
+                default: '["7.1"]'
+
+permissions:
+    contents: read
+
+env:
+    # Throwaway values for the MySQL service container of integration-tests. The container
+    # exists for the length of one job and is reachable from nowhere else; these are not
+    # secrets and are used for nothing but CI. bin/ci/prepare-integration.sh reads them.
+    SEOCART_CI_DB_HOST: '127.0.0.1:3306'
+    SEOCART_CI_DB_USER: root
+    SEOCART_CI_DB_PASSWORD: ci-throwaway
+    SEOCART_CI_DB_NAME: seocart_tests
+
+jobs:
+    gates:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 15
+        env:
+            # The version and checksum SEOCart's workflow-lint job installs (ci.yml); raise both
+            # together. bin/ci/check-workflows.sh keeps the two copies equal.
+            ACTIONLINT_VERSION: '1.7.12'
+            ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        steps:
+            - &checkout-extension
+              name: Check out the extension
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  path: ext
+                  persist-credentials: false
+
+            # SEOCart is not checked out yet, so none of its scripts can read the pin: this reads
+            # the one line SEOCART_CORE_REF=<40 hex>, the format bin/ci/check-workflows.sh checks.
+            - &choose-core
+              name: Choose the SEOCart commit
+              id: core
+              run: |
+                  ref=${CORE_REF:-$(sed -n 's/^SEOCART_CORE_REF=\([0-9a-f]\{40\}\)$/\1/p' ext/seocart-core.env)}
+                  case $ref in
+                      main) ;;
+                      *[!0-9a-f]* | '') ref='' ;;
+                      *) [ "${#ref}" -eq 40 ] || ref='' ;;
+                  esac
+                  if [ -z "$ref" ]; then
+                      echo "::error::No SEOCart commit to test against: ext/seocart-core.env must hold the line SEOCART_CORE_REF=<40 hexadecimal digits>, and core-ref may only be a commit like it or main."
+                      exit 1
+                  fi
+                  echo "ref=$ref" >>"$GITHUB_OUTPUT"
+              env:
+                  CORE_REF: ${{ inputs.core-ref }}
+
+            - &checkout-core
+              name: Check out SEOCart beside the extension
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  repository: cirkuitnet/seocart
+                  ref: ${{ steps.core.outputs.ref }}
+                  path: seocart
+                  persist-credentials: false
+
+            # Without scripts: the gates read files and never load SEOCart's scoped libraries.
+            - name: Set up PHP and Composer
+              uses: ./seocart/.github/actions/setup-php-composer
+              with:
+                  working-directory: seocart
+                  install: no-scripts
+
+            - name: Install actionlint
+              run: |
+                  archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+                  curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" \
+                    "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
+                  echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+                  mkdir -p "$RUNNER_TEMP/bin"
+                  tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/bin" actionlint
+                  echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+            # actionlint, shellcheck, action pins, and every call of SEOCart's workflows at the
+            # commit seocart-core.env pins.
+            - name: Lint the workflows and check the pins agree
+              run: sh seocart/bin/ci/check-workflows.sh ext
+
+            - name: Check PHP syntax
+              run: sh seocart/bin/ci/extension.sh lint ext
+
+            - name: Check coding standards
+              run: sh seocart/bin/ci/extension.sh cs ext
+
+            - name: Run PHPStan
+              run: sh seocart/bin/ci/extension.sh stan ext
+
+            - name: Check for citations of private material
+              run: sh seocart/bin/ci/extension.sh references ext
+
+    unit-tests:
+        name: unit-tests (PHP ${{ matrix.php }})
+        needs: gates
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        strategy:
+            fail-fast: false
+            matrix:
+                php: ${{ fromJSON(inputs.php) }}
+        steps:
+            - *checkout-extension
+            - *choose-core
+            - *checkout-core
+
+            - name: Set up PHP and Composer
+              uses: ./seocart/.github/actions/setup-php-composer
+              with:
+                  php-version: ${{ matrix.php }}
+                  working-directory: seocart
+                  install: no-scripts
+
+            # The syntax check runs on every PHP version of the matrix, as SEOCart's does.
+            - name: Check PHP syntax
+              run: sh seocart/bin/ci/extension.sh lint ext
+
+            - name: Run the unit suite
+              run: sh seocart/bin/ci/extension.sh unit ext
+
+    integration-tests:
+        name: integration-tests (WordPress ${{ matrix.wp }})
+        needs: gates
+        runs-on: ubuntu-24.04
+        timeout-minutes: 25
+        strategy:
+            fail-fast: false
+            matrix:
+                wp: ${{ fromJSON(inputs.wp) }}
+        # The MySQL service of reusable-integration-tests.yml's integration job, repeated for the
+        # reason the header gives.
+        services:
+            mysql:
+                image: mysql:8.4
+                env:
+                    MYSQL_ROOT_PASSWORD: ${{ env.SEOCART_CI_DB_PASSWORD }}
+                    MYSQL_DATABASE: ${{ env.SEOCART_CI_DB_NAME }}
+                ports:
+                    - 3306:3306
+                # --host forces TCP: while the image initialises, MySQL listens on its socket
+                # only, so the container turns healthy when the real server accepts connections.
+                options: >-
+                    --health-cmd="mysqladmin ping --host=127.0.0.1 --silent"
+                    --health-interval=5s
+                    --health-timeout=5s
+                    --health-retries=24
+        steps:
+            - *checkout-extension
+            - *choose-core
+            - *checkout-core
+
+            - name: Set up PHP and Composer
+              uses: ./seocart/.github/actions/setup-php-composer
+              with:
+                  working-directory: seocart
+                  extensions: mysqli
+                  tools: wp-cli
+                  install: full
+
+            - name: Download WordPress and write SEOCart's test configuration
+              run: sh seocart/bin/ci/prepare-integration.sh "$WP_VERSION"
+              env:
+                  WP_VERSION: ${{ matrix.wp }}
+
+            # SEOCart's integration bootstrap loads the extension, then SEOCart, as WordPress does.
+            - name: Run the extension's integration tests
+              run: sh seocart/bin/ci/extension.sh integration ext
+
+            # At most one file, one hook and no query on a request that touches no commerce.
+            - name: Measure the extension's share of an idle request
+              run: sh seocart/bin/ci/extension.sh idle ext
+
+            # Runs the suite tools/Extension/ExtensionType.php names for the type; until SEOCart
+            # names one, the step says so in the log and passes.
+            - name: Run SEOCart's conformance suite for this type of extension
+              run: sh seocart/bin/ci/extension.sh conformance ext "$EXTENSION_TYPE"
+              env:
+                  EXTENSION_TYPE: ${{ inputs.extension-type }}
+
+    package:
+        needs: gates
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - *checkout-extension
+            - *choose-core
+            - *checkout-core
+
+            # The zip scripts require their classes by path, so nothing is installed.
+            - name: Set up PHP and Composer
+              uses: ./seocart/.github/actions/setup-php-composer
+              with:
+                  working-directory: seocart
+                  install: none
+
+            # Writes ext/dist/<slug>-<version>.zip and ext/dist/SHA256SUMS, then checks the zip:
+            # the size budget, no development files, nothing outside the extension's list.
+            - name: Build and check the zip
+              run: sh seocart/bin/ci/extension.sh zip ext
+
+            - name: Upload the zip and its checksum
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: extension-zip
+                  path: |
+                      ext/dist/*.zip
+                      ext/dist/SHA256SUMS
+                  if-no-files-found: error
+                  retention-days: 14
+
+    plugin-check:
+        needs: package
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+        steps:
+            # No checkout: the only plugin on this runner is the one unpacked from the zip.
+            - name: Download the zip
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+              with:
+                  name: extension-zip
+                  path: dist
+
+            # The zip holds one folder, named after the extension's slug (bin/check-zip.php).
+            - name: Unpack the zip
+              id: unpack
+              run: |
+                  unzip -q dist/*.zip -d plugin
+                  set -- plugin/*/
+                  echo "dir=${1%/}" >>"$GITHUB_OUTPUT"
+
+            # Findings of type ERROR fail the job, as for SEOCart (reusable-package.yml). The
+            # action gets no token: it would only use one to comment on the pull request.
+            - name: Run Plugin Check
+              uses: WordPress/plugin-check-action@10857da14b6c2246d15402b3e69f777edcf8c12e # v1.1.9
+              with:
+                  build-dir: ${{ steps.unpack.outputs.dir }}
+                  repo-token: ''

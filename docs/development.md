@@ -176,7 +176,9 @@ activated on a disposable site. The usage notes at the top of the script list th
 the job's own download verifies its checksum. See docs/testing.md for how to run
 `composer test:multilingual-conformance` by hand and where it runs in continuous integration.
 A teardown script in `bin/dev/` removes the site, its databases and its database users, and
-leaves nothing behind.
+leaves nothing behind. To try a SEOCart extension on a disposable site, `--with-extension=<path>`
+links its checkout in beside SEOCart and activates it;
+[writing-an-extension.md](writing-an-extension.md) explains extensions.
 
 Credentials for disposable sites are generated, never chosen and never committed. Do not
 copy them into a tracked file, an issue, a pull request or a log.

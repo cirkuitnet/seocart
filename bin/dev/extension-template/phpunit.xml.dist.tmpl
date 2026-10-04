@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<phpunit
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:noNamespaceSchemaLocation="../seocart/vendor/phpunit/phpunit/phpunit.xsd"
+	bootstrap="tests/bootstrap.php"
+	defaultTestSuite="unit"
+	colors="true"
+	beStrictAboutOutputDuringTests="true"
+	beStrictAboutTestsThatDoNotTestAnything="true"
+	failOnWarning="true"
+	failOnRisky="true"
+	convertDeprecationsToExceptions="true"
+	cacheResultFile=".phpunit.result.cache"
+>
+	<!--
+		PHPUnit comes from the SEOCart checkout beside this one (../seocart/vendor/bin/phpunit),
+		and so do the strictness settings above, which are SEOCart's own. `unit` never loads
+		WordPress and uses the bootstrap named above. `integration` loads WordPress, SEOCart and
+		this extension on SEOCart's integration bootstrap, which the command line selects:
+		`sh ../seocart/bin/ci/extension.sh integration .` does.
+	-->
+	<testsuites>
+		<testsuite name="unit">
+			<directory suffix="Test.php">tests/Unit</directory>
+		</testsuite>
+		<testsuite name="integration">
+			<directory suffix="Test.php">tests/Integration</directory>
+		</testsuite>
+	</testsuites>
+</phpunit>

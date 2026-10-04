@@ -17,8 +17,16 @@
 #   3. Shared setup and agreement. Workflows cannot call setup-php or install Composer
 #      directly, or cache Composer outside the composite action. Every third-party action
 #      in workflows and composite actions needs a full commit SHA and a version comment.
-#      Repeated pins, the PHP matrix development version, PHP_FLOOR and service images
-#      must agree; Node.js setup reads .nvmrc.
+#      Repeated pins, the PHP matrix development version, PHP_FLOOR, the actionlint version
+#      and checksum, and service images must agree; Node.js setup reads .nvmrc (SEOCart's,
+#      also as seocart/.nvmrc from an extension's CI).
+#
+# A SEOCart extension's checkout, which holds seocart-core.env, is checked the same way, as
+# its CI does (`sh seocart/bin/ci/check-workflows.sh ext`), with these differences: check 2
+# covers every *.sh under its bin/; check 3 has no setup action, PHP matrix or PHP_FLOOR of
+# its own to check, and instead requires every call of SEOCart's workflows
+# (cirkuitnet/seocart/.github/workflows/<file>@<commit>) to name the commit
+# SEOCART_CORE_REF in seocart-core.env pins, so the pin is stated once and moved once.
 #
 # Needs actionlint (https://github.com/rhysd/actionlint) and shellcheck on PATH. POSIX sh
 # and awk: runs on the Ubuntu runner and on a developer machine alike.
@@ -54,16 +62,40 @@ done
 
 [ "$#" -gt 0 ] || fail "$root/.github/workflows holds no workflow file. Nothing was checked."
 
+# An extension's checkout: the commit its seocart-core.env pins, read as data, never sourced.
+core_pin=
+if [ -f "$root/seocart-core.env" ]; then
+	core_pin=$(sed -n 's/^SEOCART_CORE_REF=\([0-9a-f]\{40\}\)$/\1/p' "$root/seocart-core.env")
+	[ -n "$core_pin" ] || fail "$root/seocart-core.env must hold the line SEOCART_CORE_REF=<40 hexadecimal digits>. Nothing was checked."
+fi
+
 status=0
 
 step "actionlint ($# workflow files)"
 (cd "$root" && actionlint) || status=1
 
-step 'shellcheck bin/ci/*.sh'
-shellcheck "$root"/bin/ci/*.sh || status=1
+if [ -z "$core_pin" ]; then
+	step 'shellcheck bin/ci/*.sh'
+	shellcheck "$root"/bin/ci/*.sh || status=1
+else
+	scripts=$(find "$root/bin" -type f -name '*.sh' 2>/dev/null | sort)
+	step "shellcheck bin/**/*.sh ($(printf '%s' "$scripts" | grep -c . || true) files)"
+	if [ -n "$scripts" ]; then
+		# One path per line, none with white space: the extension's own scripts.
+		# shellcheck disable=SC2086
+		shellcheck $scripts || status=1
+	fi
+fi
+
+# The composite actions join the workflows; an extension has none.
+for file in "$root"/.github/actions/*/action.yml "$root"/.github/actions/*/action.yaml; do
+	if [ -f "$file" ]; then
+		set -- "$@" "$file"
+	fi
+done
 
 step 'shared setup, action pins and remaining agreement'
-awk '
+awk -v core_pin="$core_pin" '
 	# Records the first statement of a fact and reports every later one that differs.
 	function note( key, value ) {
 		if ( ! ( key in first ) ) {
@@ -117,6 +149,16 @@ awk '
 		sha    = pin
 		sub( /[ \t].*$/, "", sha )
 
+		# An extension calls the reusable workflows of SEOCart at the commit seocart-core.env pins:
+		# one pin, which bin/dev/bump-core.sh moves together with these calls.
+		if ( core_pin != "" && action ~ /^cirkuitnet\/seocart\/\.github\/workflows\// ) {
+			if ( sha != core_pin ) {
+				printf "%s:%d: calls %s at \"%s\", but seocart-core.env pins %s; move both with bin/dev/bump-core.sh\n", FILENAME, FNR, action, pin, core_pin
+				bad = 1
+			}
+			next
+		}
+
 		if ( at == 0 || length( sha ) != 40 || sha ~ /[^0-9a-f]/ || pin !~ /^[0-9a-f]+ # [^ \t]+$/ ) {
 			printf "%s:%d: \"%s\" is not pinned to a full commit SHA followed by \" # <version>\"\n", FILENAME, FNR, reference
 			bad = 1
@@ -138,8 +180,11 @@ awk '
 		next
 	}
 
+	# The release of an extension builds SEOCart from the checkout beside it: seocart/.nvmrc.
 	line ~ /^node-version-file:/ {
-		note( "the Node.js version file", after_colon( line ) )
+		version_file = after_colon( line )
+		sub( /^seocart\//, "", version_file )
+		note( "the Node.js version file", version_file )
 		next
 	}
 
@@ -161,7 +206,7 @@ awk '
 		next
 	}
 
-	line ~ /^PHP_FLOOR:/ {
+	line ~ /^(PHP_FLOOR|ACTIONLINT_VERSION|ACTIONLINT_SHA256):/ {
 		key = line
 		sub( /:.*$/, "", key )
 		note( key, after_colon( line ) )
@@ -185,6 +230,11 @@ awk '
 	}
 
 	END {
+		# An extension has no setup action and no PHP matrix of its own: it uses those of SEOCart.
+		if ( core_pin != "" ) {
+			exit bad
+		}
+
 		if ( development_version == "" ) {
 			printf "the setup action states no development PHP version (php-version: ${{ inputs.php-version || \047<version>\047 }})\n"
 			bad = 1
@@ -198,7 +248,7 @@ awk '
 
 		exit bad
 	}
-' "$@" "$root"/.github/actions/*/action.y*ml || status=1
+' "$@" || status=1
 
 if [ "$status" -ne 0 ]; then
 	printf '\ncheck-workflows: FAIL\n' >&2

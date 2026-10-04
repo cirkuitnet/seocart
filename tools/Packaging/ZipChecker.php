@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tools\Packaging;
 
+use InvalidArgumentException;
 use ZipArchive;
 
 /**
@@ -21,6 +22,10 @@ use ZipArchive;
  * root fails the release until someone decides whether it ships, instead of shipping until
  * someone notices. Every locked runtime package and the generated autoloader must be in the
  * archive too.
+ *
+ * The same rules check a SEOCart extension's zip, with the extension's allow-list from
+ * PluginPackage. An extension bundles no library, so the checks of the scoped libraries and
+ * of Action Scheduler are SEOCart's alone.
  *
  * Source maps are rejected. `wp-scripts build` writes none unless it is asked to, so a
  * `.map` file means a development build (`wp-scripts start`) was packaged; it would also
@@ -131,15 +136,17 @@ final class ZipChecker {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string      $zip_path           Path of the zip.
-	 * @param int         $budget_bytes       The project's size budget.
-	 * @param int         $limit_bytes        The directory's hard size limit.
-	 * @param string|null $composer_lock_path Path of the repository's composer.lock. Defaults to
-	 *                                        the lock beside this tools directory.
+	 * @param string             $zip_path           Path of the zip.
+	 * @param int                $budget_bytes       The project's size budget.
+	 * @param int                $limit_bytes        The directory's hard size limit.
+	 * @param string|null        $composer_lock_path Path of the repository's composer.lock. Defaults to
+	 *                                               the lock beside this tools directory.
+	 * @param PluginPackage|null $package            The plugin the zip is for. Defaults to SEOCart.
 	 * @return list<string> One message per violation. An empty list means the zip may be published.
 	 */
-	public static function check( string $zip_path, int $budget_bytes = self::DEFAULT_BUDGET_BYTES, int $limit_bytes = self::DEFAULT_LIMIT_BYTES, ?string $composer_lock_path = null ): array {
+	public static function check( string $zip_path, int $budget_bytes = self::DEFAULT_BUDGET_BYTES, int $limit_bytes = self::DEFAULT_LIMIT_BYTES, ?string $composer_lock_path = null, ?PluginPackage $package = null ): array {
 		$composer_lock_path ??= dirname( __DIR__, 2 ) . '/composer.lock';
+		$package            ??= PluginPackage::core();
 
 		if ( ! is_file( $zip_path ) ) {
 			return array( "{$zip_path} does not exist." );
@@ -160,12 +167,12 @@ final class ZipChecker {
 
 		$violations = array_merge(
 			self::sizeViolations( (int) filesize( $zip_path ), $budget_bytes, $limit_bytes ),
-			self::layoutViolations( $names ),
+			self::layoutViolations( $package, $names ),
 			self::forbiddenPathViolations( $names ),
 			self::symbolicLinkViolations( $zip ),
-			self::runtimeDependencyViolations( $names, $composer_lock_path ),
-			self::actionSchedulerViolations( $zip, $names ),
-			self::versionViolations( $zip, basename( $zip_path ) )
+			$package->isCore ? self::runtimeDependencyViolations( $names, $composer_lock_path ) : array(),
+			$package->isCore ? self::actionSchedulerViolations( $zip, $names ) : array(),
+			self::versionViolations( $package, $zip, basename( $zip_path ) )
 		);
 
 		$zip->close();
@@ -176,24 +183,28 @@ final class ZipChecker {
 	/**
 	 * Runs the checker for bin/check-zip.php.
 	 *
+	 * Without `--plugin` the zip is SEOCart's. With `--plugin=<root>` it is the zip of the
+	 * plugin at that root, such as a SEOCart extension checked out beside SEOCart.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @param string[] $arguments          The command line, script name included.
-	 * @param string   $composer_lock_path Path of the repository's composer.lock.
+	 * @param string   $composer_lock_path Path of SEOCart's composer.lock.
 	 * @return int The process exit code: 0 when the zip passes, 1 when it does not, 2 for a usage error.
 	 */
 	public static function main( array $arguments, string $composer_lock_path ): int {
 		$usage = sprintf(
-			"Usage: php bin/check-zip.php <zip> [--budget-bytes=%d] [--limit-bytes=%d]\n",
+			"Usage: php bin/check-zip.php <zip> [--plugin=<root>] [--budget-bytes=%d] [--limit-bytes=%d]\n",
 			self::DEFAULT_BUDGET_BYTES,
 			self::DEFAULT_LIMIT_BYTES
 		);
 
-		$options = array(
+		$options     = array(
 			'budget-bytes' => self::DEFAULT_BUDGET_BYTES,
 			'limit-bytes'  => self::DEFAULT_LIMIT_BYTES,
 		);
-		$paths   = array();
+		$paths       = array();
+		$plugin_root = null;
 
 		foreach ( array_slice( $arguments, 1 ) as $argument ) {
 			if ( '--help' === $argument ) {
@@ -203,6 +214,11 @@ final class ZipChecker {
 
 			if ( ! str_starts_with( $argument, '--' ) ) {
 				$paths[] = $argument;
+				continue;
+			}
+
+			if ( 1 === preg_match( '/^--plugin=(.+)$/s', $argument, $matches ) ) {
+				$plugin_root = $matches[1];
 				continue;
 			}
 
@@ -224,7 +240,14 @@ final class ZipChecker {
 			return 2;
 		}
 
-		$violations = self::check( $paths[0], $options['budget-bytes'], $options['limit-bytes'], $composer_lock_path );
+		try {
+			$package = null === $plugin_root ? PluginPackage::core() : PluginPackage::at( $plugin_root );
+		} catch ( InvalidArgumentException $error ) {
+			fwrite( STDERR, 'check-zip: ' . $error->getMessage() . " Nothing was checked.\n" );
+			return 1;
+		}
+
+		$violations = self::check( $paths[0], $options['budget-bytes'], $options['limit-bytes'], $composer_lock_path, $package );
 
 		if ( array() === $violations ) {
 			fwrite(
@@ -276,11 +299,12 @@ final class ZipChecker {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string[] $names Entry names.
+	 * @param PluginPackage $package The plugin the zip is for.
+	 * @param string[]      $names   Entry names.
 	 * @return list<string> Violations.
 	 */
-	private static function layoutViolations( array $names ): array {
-		$folder  = PluginPackage::SLUG . '/';
+	private static function layoutViolations( PluginPackage $package, array $names ): array {
+		$folder  = $package->slug . '/';
 		$found   = array();
 		$outside = array();
 
@@ -312,13 +336,15 @@ final class ZipChecker {
 			);
 		}
 
-		foreach ( array_diff( array_keys( $found ), array_keys( PluginPackage::TOP_LEVEL ) ) as $unexpected ) {
+		$allow_list = $package->isCore ? 'PluginPackage::TOP_LEVEL and to the header of .distignore' : 'PluginPackage::EXTENSION_TOP_LEVEL in SEOCart, which is a reviewed change';
+
+		foreach ( array_diff( array_keys( $found ), array_keys( $package->topLevel ) ) as $unexpected ) {
 			$violations[] = "layout: unexpected top-level entry {$folder}{$unexpected}. Only these may ship: "
-				. implode( ', ', array_keys( PluginPackage::TOP_LEVEL ) )
-				. '. Exclude it in .distignore; if it has to ship, add it to PluginPackage::TOP_LEVEL and to the header of .distignore.';
+				. implode( ', ', array_keys( $package->topLevel ) )
+				. ". Exclude it in .distignore; if it has to ship, add it to {$allow_list}.";
 		}
 
-		foreach ( PluginPackage::TOP_LEVEL as $entry => $required ) {
+		foreach ( $package->topLevel as $entry => $required ) {
 			if ( $required && ! isset( $found[ $entry ] ) ) {
 				$violations[] = "layout: required entry {$folder}{$entry} is missing.";
 			}
@@ -554,18 +580,19 @@ final class ZipChecker {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param ZipArchive $zip       The open zip.
-	 * @param string     $file_name File name of the zip, without a directory.
+	 * @param PluginPackage $package   The plugin the zip is for.
+	 * @param ZipArchive    $zip       The open zip.
+	 * @param string        $file_name File name of the zip, without a directory.
 	 * @return list<string> Violations.
 	 */
-	private static function versionViolations( ZipArchive $zip, string $file_name ): array {
-		$claimed = PluginPackage::versionFromZipFileName( $file_name );
+	private static function versionViolations( PluginPackage $package, ZipArchive $zip, string $file_name ): array {
+		$claimed = $package->versionFromZipFileName( $file_name );
 
 		if ( null === $claimed ) {
-			return array( "version: the file name {$file_name} is not of the form " . PluginPackage::zipFileName( '<version>' ) . ', so it states no version to compare with the plugin header.' );
+			return array( "version: the file name {$file_name} is not of the form " . $package->zipFileName( '<version>' ) . ', so it states no version to compare with the plugin header.' );
 		}
 
-		$main_file = PluginPackage::SLUG . '/' . PluginPackage::MAIN_FILE;
+		$main_file = $package->slug . '/' . $package->mainFile;
 		$source    = $zip->getFromName( $main_file );
 
 		if ( false === $source ) {

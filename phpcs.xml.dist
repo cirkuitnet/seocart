@@ -20,52 +20,13 @@
 	<arg name="cache" value=".phpcs-cache"/>
 	<arg value="sp"/>
 
-	<!-- The supported floors: the requirements table in README.md. -->
-	<config name="minimum_wp_version" value="7.1"/>
-	<config name="testVersion" value="8.3-"/>
-
-	<rule ref="WordPress">
-		<!--
-			PSR-4 requires each file to be named exactly after the class it declares
-			(OrderRepository.php for `class OrderRepository`). The WordPress file-name sniff
-			assumes core's class-{name}.php convention and cannot be satisfied at the same time.
-		-->
-		<exclude name="WordPress.Files.FileName"/>
-
-		<!--
-			This is a namespaced PSR-4 code base: PascalCase classes, camelCase methods and
-			properties. That departs from core's naming idiom only. Every security, escaping,
-			i18n and formatting sniff stays active. Hook, option, capability and table names
-			remain snake_case, because WordPress interprets those strings itself.
-		-->
-		<exclude name="WordPress.NamingConventions.ValidFunctionName"/>
-		<exclude name="WordPress.NamingConventions.ValidVariableName"/>
-	</rule>
-
-	<!-- Re-enabled for the two files that are not PSR-4 classes and follow core convention. -->
-	<rule ref="WordPress.Files.FileName">
-		<include-pattern>/(seocart|uninstall)\.php$</include-pattern>
-	</rule>
-
 	<!--
-		Command-line tools and tests never run inside a WordPress request: they write to
-		STDOUT, read local files and spawn processes on purpose. The sniffs below protect
-		the WordPress runtime and stay fully active for seocart.php, uninstall.php and src/.
+		The rules themselves, shared with every SEOCart extension: the supported floors, the
+		WordPress Coding Standards with this code base's exclusions, PHP compatibility and the
+		SEOCart standard. What follows it is what belongs to this plugin alone: its text domain
+		and its prefixes.
 	-->
-	<rule ref="WordPress.Security.EscapeOutput">
-		<exclude-pattern>/(bin|tools|tests)/*</exclude-pattern>
-	</rule>
-	<rule ref="WordPress.WP.AlternativeFunctions">
-		<exclude-pattern>/(bin|tools|tests)/*</exclude-pattern>
-	</rule>
-	<rule ref="WordPress.PHP.DiscouragedPHPFunctions">
-		<exclude-pattern>/(bin|tools|tests)/*</exclude-pattern>
-	</rule>
-	<rule ref="WordPress.PHP.DevelopmentFunctions">
-		<exclude-pattern>/(bin|tools|tests)/*</exclude-pattern>
-	</rule>
-
-	<rule ref="PHPCompatibilityWP"/>
+	<rule ref="./tools/phpcs/seocart-project.xml"/>
 
 	<rule ref="WordPress.WP.I18n">
 		<properties>
@@ -83,10 +44,4 @@
 			</property>
 		</properties>
 	</rule>
-
-	<!--
-		The SEOCart standard: the DRY sniffs and the "no executable content" lints. Its scope,
-		allow-lists and severities are declared in that file, once; `composer cs:dry` runs it alone.
-	-->
-	<rule ref="./tools/phpcs/SEOCart/ruleset.xml"/>
 </ruleset>

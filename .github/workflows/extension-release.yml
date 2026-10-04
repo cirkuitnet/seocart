@@ -1,0 +1,298 @@
+# The release of a SEOCart extension: a pushed tag vX.Y.Z becomes a GitHub Release with the
+# zip, its checksum and an attestation of its build provenance. The extension calls it on a tag,
+# at the commit its seocart-core.env pins (bin/dev/new-extension.sh writes the caller):
+#
+#     on:
+#         push:
+#             tags:
+#                 - 'v[0-9]+.[0-9]+.[0-9]+'
+#     jobs:
+#         release:
+#             uses: cirkuitnet/seocart/.github/workflows/extension-release.yml@<SEOCart commit>
+#             permissions:
+#                 actions: read
+#                 attestations: write
+#                 contents: write
+#                 id-token: write
+#
+#   release-gates -> package ------+-> install-smoke -> publish
+#                 -> seocart-zip --+
+#
+# As in SEOCart's own release.yml: the tag must be on main with a successful CI run for its
+# commit, its version greater than every earlier release, equal to the main file's Version and
+# readme.txt's Stable tag, and described in CHANGELOG.md; the zip is built and checked by the
+# same script as in CI, then installed beside SEOCart's zip, built from the pinned commit, on a
+# fresh site. Only `publish` writes.
+#
+# This workflow does NOT deploy to WordPress.org: that step makes a plugin live and cannot be
+# undone, so it is a workflow of its own that only ever starts by hand, as SEOCart's is.
+
+name: Extension release (reusable)
+
+on:
+    workflow_call:
+
+permissions:
+    contents: read
+
+env:
+    # SEOCart's zip is built on the PHP floor, as reusable-package.yml builds it.
+    PHP_FLOOR: '8.3'
+    # Throwaway values for the MySQL service container of install-smoke, as in
+    # reusable-package.yml: not secrets, used for nothing but CI.
+    SEOCART_CI_DB_HOST: '127.0.0.1:3306'
+    SEOCART_CI_DB_USER: root
+    SEOCART_CI_DB_PASSWORD: ci-throwaway
+    SEOCART_CI_DB_NAME: seocart_smoke
+
+jobs:
+    release-gates:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        permissions:
+            actions: read
+            contents: read
+        steps:
+            # Full history: the ancestry check and the earlier tags need it.
+            - name: Check out the extension
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  path: ext
+                  fetch-depth: 0
+                  persist-credentials: false
+
+            # A release is built against the pinned commit only. SEOCart is not checked out yet,
+            # so this reads the one line SEOCART_CORE_REF=<40 hex>, the format
+            # bin/ci/check-workflows.sh checks.
+            - &choose-core
+              name: Choose the SEOCart commit
+              id: core
+              run: |
+                  ref=$(sed -n 's/^SEOCART_CORE_REF=\([0-9a-f]\{40\}\)$/\1/p' ext/seocart-core.env)
+                  if [ -z "$ref" ]; then
+                      echo "::error::ext/seocart-core.env must hold the line SEOCART_CORE_REF=<40 hexadecimal digits>."
+                      exit 1
+                  fi
+                  echo "ref=$ref" >>"$GITHUB_OUTPUT"
+
+            - &checkout-core
+              name: Check out SEOCart beside the extension
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  repository: cirkuitnet/seocart
+                  ref: ${{ steps.core.outputs.ref }}
+                  path: seocart
+                  persist-credentials: false
+
+            - name: Set up PHP and Composer
+              uses: ./seocart/.github/actions/setup-php-composer
+              with:
+                  working-directory: seocart
+                  install: no-scripts
+
+            - name: Require the tagged commit to be on main
+              working-directory: ext
+              run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+            # Branch protection is configured outside the repository, so the workflow checks the
+            # CI result for this exact commit itself.
+            - name: Require successful CI for the tagged commit
+              run: |
+                  successful_runs=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --status success --json databaseId --jq length)
+                  if [ "$successful_runs" -lt 1 ]; then
+                    echo "::error::No completed, successful CI workflow run exists for $GITHUB_SHA."
+                    exit 1
+                  fi
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  GH_REPO: ${{ github.repository }}
+
+            # WordPress.org guideline 15 requires every release to increase its version.
+            - name: Require the version to be greater than the previous release
+              run: sh seocart/bin/ci/require-version-increase.sh "$TAG" ext
+              env:
+                  TAG: ${{ github.ref_name }}
+
+            - name: Require the main file and readme.txt to state the tag's version
+              run: sh seocart/bin/ci/extension.sh version ext "$TAG"
+              env:
+                  TAG: ${{ github.ref_name }}
+
+            # `publish` prints the same section again as the release notes.
+            - name: Require a changelog section for this version
+              run: sh seocart/bin/ci/release-notes.sh "$TAG" ext/CHANGELOG.md
+              env:
+                  TAG: ${{ github.ref_name }}
+
+    package:
+        needs: release-gates
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - &checkout-extension
+              name: Check out the extension
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  path: ext
+                  persist-credentials: false
+            - *choose-core
+            - *checkout-core
+
+            - name: Set up PHP and Composer
+              uses: ./seocart/.github/actions/setup-php-composer
+              with:
+                  php-version: ${{ env.PHP_FLOOR }}
+                  working-directory: seocart
+                  install: none
+
+            - name: Build and check the zip
+              run: sh seocart/bin/ci/extension.sh zip ext
+
+            - name: Upload the zip and its checksum
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: extension-zip
+                  path: |
+                      ext/dist/*.zip
+                      ext/dist/SHA256SUMS
+                  if-no-files-found: error
+                  retention-days: 14
+
+    # SEOCart's zip at the pinned commit, built the way SEOCart builds its own (reusable-package.yml).
+    seocart-zip:
+        needs: release-gates
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+        steps:
+            - *checkout-extension
+            - *choose-core
+            - *checkout-core
+
+            - name: Set up PHP and Composer
+              uses: ./seocart/.github/actions/setup-php-composer
+              with:
+                  php-version: ${{ env.PHP_FLOOR }}
+                  working-directory: seocart
+                  install: full
+
+            - name: Set up Node from SEOCart's .nvmrc
+              uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with:
+                  node-version-file: seocart/.nvmrc
+                  cache: npm
+                  cache-dependency-path: seocart/package-lock.json
+
+            - name: Install npm dependencies
+              working-directory: seocart
+              run: npm ci
+
+            - name: Build the assets
+              working-directory: seocart
+              run: npm run build
+
+            - name: Build SEOCart's zip
+              run: php seocart/bin/build-zip.php
+
+            - name: Upload SEOCart's zip
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: seocart-zip
+                  path: seocart/dist/seocart-*.zip
+                  if-no-files-found: error
+                  retention-days: 14
+
+    install-smoke:
+        needs:
+            - package
+            - seocart-zip
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+        # The MySQL service of reusable-package.yml's install-smoke job, repeated: a workflow
+        # another repository calls cannot call that one at its own commit (extension-ci.yml's
+        # header says why). bin/ci/check-workflows.sh keeps the images equal.
+        services:
+            mysql:
+                image: mysql:8.4
+                env:
+                    MYSQL_ROOT_PASSWORD: ${{ env.SEOCART_CI_DB_PASSWORD }}
+                    MYSQL_DATABASE: ${{ env.SEOCART_CI_DB_NAME }}
+                ports:
+                    - 3306:3306
+                # --host forces TCP: while the image initialises, MySQL listens on its socket
+                # only, so the container turns healthy when the real server accepts connections.
+                options: >-
+                    --health-cmd="mysqladmin ping --host=127.0.0.1 --silent"
+                    --health-interval=5s
+                    --health-timeout=5s
+                    --health-retries=24
+        steps:
+            # The checkouts supply SEOCart's bin/ci/ only; both plugins come from their zips.
+            - *checkout-extension
+            - *choose-core
+            - *checkout-core
+
+            - name: Set up PHP and Composer
+              uses: ./seocart/.github/actions/setup-php-composer
+              with:
+                  working-directory: seocart
+                  extensions: mysqli
+                  tools: wp-cli
+                  install: none
+
+            - name: Download the zips
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+              with:
+                  path: ${{ runner.temp }}/zips
+
+            # On the WordPress floor both plugins declare, as SEOCart's required install-smoke cell.
+            - name: Install the extension's zip beside SEOCart's on a fresh site
+              run: |
+                  set -- "$RUNNER_TEMP"/zips/seocart-zip/seocart-*.zip "$RUNNER_TEMP"/zips/extension-zip/*.zip
+                  sh seocart/bin/ci/extension-install-smoke.sh "$1" "$2" 7.1
+
+    # The one job that writes: to releases, and, to attest the zip, an OIDC token and the
+    # repository's attestations.
+    publish:
+        needs: install-smoke
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        permissions:
+            contents: write
+            id-token: write
+            attestations: write
+        env:
+            TAG: ${{ github.ref_name }}
+        steps:
+            - *checkout-extension
+            - *choose-core
+            - *checkout-core
+
+            - name: Download the zip and its checksum
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+              with:
+                  name: extension-zip
+                  path: dist
+
+            # bin/build-zip.php wrote SHA256SUMS when it built the zip; this checks that the zip
+            # about to be published is still that zip.
+            - name: Verify the zip against SHA256SUMS
+              working-directory: dist
+              run: sha256sum --check --strict SHA256SUMS
+
+            - name: Attest the build provenance of the zip
+              uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+              with:
+                  subject-path: dist/*.zip
+
+            - name: Write the release notes
+              run: sh seocart/bin/ci/release-notes.sh "$TAG" ext/CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+
+            - name: Publish the GitHub Release
+              run: |
+                  gh release create "$TAG" dist/*.zip dist/SHA256SUMS \
+                    --verify-tag \
+                    --title "${GITHUB_REPOSITORY#*/} ${TAG#v}" \
+                    --notes-file "$RUNNER_TEMP/release-notes.md"
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  GH_REPO: ${{ github.repository }}

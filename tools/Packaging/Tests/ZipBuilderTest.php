@@ -117,9 +117,28 @@ final class ZipBuilderTest extends TestCase {
 	 * @return array{path: string, files: int, bytes: int, sha256: string} What was written.
 	 */
 	private function build( string $root, string $output, int $timestamp = self::TIMESTAMP ): array {
-		$builder = new ZipBuilder( $root, DistIgnore::fromString( self::PATTERNS ), $timestamp );
+		$builder = new ZipBuilder( $root, PluginPackage::core(), DistIgnore::fromString( self::PATTERNS ), $timestamp );
 
 		return $builder->build( $this->directory . '/' . $output );
+	}
+
+	/**
+	 * Writes an extension's plugin root: a main file named after its slug, its source, and
+	 * nothing it would have to build first.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return string Absolute path of the plugin root.
+	 */
+	private function extensionTree(): string {
+		$this->writeFile( 'extension/seocart-example.php', "<?php\n/**\n * Plugin Name: SEOCart Example\n * Version: 0.1.0\n */\n" );
+		$this->writeFile( 'extension/readme.txt', "=== SEOCart Example ===\n" );
+		$this->writeFile( 'extension/LICENSE', "GNU GENERAL PUBLIC LICENSE\n" );
+		$this->writeFile( 'extension/src/Gateway.php', "<?php\n" );
+		$this->writeFile( 'extension/tests/Unit/SkippedTest.php', "<?php\n" );
+		$this->writeFile( 'extension/.distignore', "/tests\n/dist\n/.*\n" );
+
+		return $this->directory . '/extension';
 	}
 
 	/**
@@ -460,7 +479,57 @@ final class ZipBuilderTest extends TestCase {
 	}
 
 	/**
-	 * Tests that bin/build-zip.php takes no arguments: one it does not know is a usage error, not something to ignore.
+	 * Tests that an extension's zip is named after its main file, unpacks to that one folder and
+	 * needs no built directory.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_builds_an_extension_into_its_own_folder(): void {
+		$root    = $this->extensionTree();
+		$builder = new ZipBuilder( $root, PluginPackage::at( $root ), DistIgnore::fromFile( $root . '/.distignore' ), self::TIMESTAMP );
+		$result  = $builder->build( $this->directory . '/out' );
+
+		$this->assertSame( $this->directory . '/out/seocart-example-0.1.0.zip', $result['path'] );
+		$this->assertSame(
+			array( 'seocart-example/LICENSE', 'seocart-example/readme.txt', 'seocart-example/seocart-example.php', 'seocart-example/src/Gateway.php' ),
+			$this->entryNames( $result['path'] )
+		);
+	}
+
+	/**
+	 * Tests that bin/build-zip.php builds the plugin --plugin names, into that plugin's dist/.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_command_line_builds_the_plugin_it_is_given(): void {
+		$root = $this->extensionTree();
+
+		putenv( 'SOURCE_DATE_EPOCH=' . self::TIMESTAMP );
+		$result = $this->runScript( 'build-zip.php', array( '--plugin=' . $root ) );
+
+		$this->assertSame( 0, $result['exit'], $result['stderr'] );
+		$this->assertStringContainsString( 'build-zip: wrote ' . $root . '/dist/seocart-example-0.1.0.zip', $result['stdout'] );
+		$this->assertFileExists( $root . '/dist/SHA256SUMS' );
+	}
+
+	/**
+	 * Tests that a plugin root without exactly one main file is refused, naming what it found.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_command_line_refuses_a_root_without_one_main_file(): void {
+		$root = $this->extensionTree();
+		$this->writeFile( 'extension/second.php', "<?php\n/*\n * Plugin Name: Second\n */\n" );
+
+		$result = $this->runScript( 'build-zip.php', array( '--plugin=' . $root ) );
+
+		$this->assertSame( 1, $result['exit'], $result['stdout'] );
+		$this->assertStringContainsString( 'must hold exactly one PHP file whose header names the plugin', $result['stderr'] );
+		$this->assertStringContainsString( 'second.php, seocart-example.php', $result['stderr'] );
+	}
+
+	/**
+	 * Tests that bin/build-zip.php takes no argument but --plugin: one it does not know is a usage error, not something to ignore.
 	 *
 	 * @since 0.1.0
 	 */

@@ -2,9 +2,11 @@
 #
 # Requires one release tag to be greater than every earlier release tag in its history.
 #
-# Usage: sh bin/ci/require-version-increase.sh <tag>
+# Usage: sh bin/ci/require-version-increase.sh <tag> [plugin root]
 #
-#   <tag>  The release tag, in the form vX.Y.Z.
+#   <tag>          The release tag, in the form vX.Y.Z.
+#   [plugin root]  The git checkout whose tags are compared. Defaults to the repository this
+#                  script is in; a SEOCart extension's release passes its own checkout.
 #
 # Git tag filters use glob syntax rather than regular expressions, so the release workflow
 # calls this script for the exact format check. Comparing only tags merged into the tagged
@@ -17,9 +19,12 @@ fail() {
 	exit 1
 }
 
-[ "$#" -eq 1 ] || fail 'usage: require-version-increase.sh <tag>'
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+	fail 'usage: require-version-increase.sh <tag> [plugin root]'
+fi
 
 tag=$1
+root=${2:-$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)}
 version=${tag#v}
 major=${version%%.*}
 remainder=${version#*.}
@@ -38,7 +43,7 @@ for tool in git php; do
 	command -v "$tool" >/dev/null 2>&1 || fail "$tool is required but was not found on PATH."
 done
 
-tags=$(git tag --merged "$tag^{commit}" --list 'v[0-9]*') || fail "could not read tags reachable from $tag."
+tags=$(git -C "$root" tag --merged "$tag^{commit}" --list 'v[0-9]*') || fail "could not read tags reachable from $tag in $root."
 
 # The PHP source is a literal: nothing in it is meant to expand in the shell.
 # shellcheck disable=SC2016

@@ -13,6 +13,7 @@ namespace SEOCart\Tools\Packaging\Tests;
 
 use PHPUnit\Framework\TestCase;
 use SEOCart\Tools\Packaging\DistIgnore;
+use SEOCart\Tools\Packaging\PluginPackage;
 use SEOCart\Tools\Packaging\ZipChecker;
 use ZipArchive;
 
@@ -602,5 +603,100 @@ final class ZipCheckerTest extends TestCase {
 			'option without a value'   => array( array( '--limit-bytes', '{zip}' ), 'unrecognized argument "--limit-bytes"' ),
 			'budget over the limit'    => array( array( '{zip}', '--budget-bytes=2', '--limit-bytes=1' ), 'the budget cannot be larger than the limit' ),
 		);
+	}
+
+	/**
+	 * Writes the root of an extension whose main file is seocart-example.php.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return string Absolute path of the plugin root.
+	 */
+	private function extensionRoot(): string {
+		$this->writeFile( 'extension/seocart-example.php', "<?php\n/**\n * Plugin Name: SEOCart Example\n * Version: 0.1.0\n */\n" );
+
+		return $this->directory . '/extension';
+	}
+
+	/**
+	 * Returns the entries of an extension's zip that may be published.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, string>
+	 */
+	private function goodExtensionEntries(): array {
+		return array(
+			'seocart-example/seocart-example.php' => "<?php\n/**\n * Plugin Name: SEOCart Example\n * Version: 0.1.0\n */\n",
+			'seocart-example/readme.txt'          => "=== SEOCart Example ===\n",
+			'seocart-example/LICENSE'             => "GNU GENERAL PUBLIC LICENSE\n",
+			'seocart-example/src/Gateway.php'     => "<?php\n",
+		);
+	}
+
+	/**
+	 * Tests that an extension's zip passes with the extension's allow-list, without scoped libraries or Action Scheduler.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_extension_zip_passes(): void {
+		$zip = $this->zip( $this->goodExtensionEntries(), 'seocart-example-0.1.0.zip' );
+
+		$this->assertSame( array(), ZipChecker::check( $zip, ZipChecker::DEFAULT_BUDGET_BYTES, ZipChecker::DEFAULT_LIMIT_BYTES, self::LOCK_FILE, PluginPackage::at( $this->extensionRoot() ) ) );
+	}
+
+	/**
+	 * Tests that an extension's zip holding tests, a scoped library or a second root file fails, and so does one without its source.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_extension_zip_fails_closed(): void {
+		$entries = $this->goodExtensionEntries();
+		unset( $entries['seocart-example/src/Gateway.php'] );
+		$entries['seocart-example/tests/Unit/PlantTest.php']   = "<?php\n";
+		$entries['seocart-example/vendor-scoped/autoload.php'] = "<?php\n";
+
+		$violations = ZipChecker::check(
+			$this->zip( $entries, 'seocart-example-0.1.0.zip' ),
+			ZipChecker::DEFAULT_BUDGET_BYTES,
+			ZipChecker::DEFAULT_LIMIT_BYTES,
+			self::LOCK_FILE,
+			PluginPackage::at( $this->extensionRoot() )
+		);
+
+		$this->assertViolations(
+			array(
+				'unexpected top-level entry seocart-example/tests/',
+				'unexpected top-level entry seocart-example/vendor-scoped/',
+				'required entry seocart-example/src/ is missing',
+				'forbidden path: seocart-example/tests (1 entries)',
+			),
+			$violations
+		);
+		$this->assertStringContainsString( 'PluginPackage::EXTENSION_TOP_LEVEL', $violations[0] );
+	}
+
+	/**
+	 * Tests that bin/check-zip.php checks an extension's zip against the plugin --plugin names.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_command_line_checks_the_plugin_it_is_given(): void {
+		$root = $this->extensionRoot();
+		$zip  = $this->zip( $this->goodExtensionEntries(), 'seocart-example-0.1.0.zip' );
+
+		$passed = $this->runScript( 'check-zip.php', array( '--plugin=' . $root, $zip ) );
+
+		$this->assertSame( 0, $passed['exit'], $passed['stderr'] );
+		$this->assertStringContainsString( 'check-zip: OK', $passed['stdout'] );
+
+		$as_core = $this->runScript( 'check-zip.php', array( $zip ) );
+
+		$this->assertSame( 1, $as_core['exit'], 'Without --plugin the zip is judged as SEOCart\'s, and an extension\'s zip is not SEOCart\'s.' );
+
+		$no_plugin = $this->runScript( 'check-zip.php', array( '--plugin=' . $this->directory . '/nowhere', $zip ) );
+
+		$this->assertSame( 1, $no_plugin['exit'] );
+		$this->assertStringContainsString( 'is not a directory. Nothing was checked.', $no_plugin['stderr'] );
 	}
 }

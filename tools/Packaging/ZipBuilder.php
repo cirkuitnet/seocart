@@ -16,7 +16,10 @@ use RuntimeException;
 use ZipArchive;
 
 /**
- * Builds `seocart-<version>.zip` from everything .distignore does not exclude.
+ * Builds `<slug>-<version>.zip` from everything .distignore does not exclude.
+ *
+ * The same builder serves SEOCart and every SEOCart extension: PluginPackage says which
+ * plugin it is, and each plugin root has its own .distignore.
  *
  * Written on PHP's ZipArchive so that there is one implementation for every platform;
  * the FreeBSD development server has no `zip` binary.
@@ -36,10 +39,11 @@ use ZipArchive;
 final class ZipBuilder {
 
 	/**
-	 * Directories that are built, not committed, and must exist before a zip is cut.
+	 * SEOCart's directories that are built, not committed, and must exist before a zip is cut.
 	 *
 	 * They are git-ignored and they ship; a zip without them would install and then fail
-	 * at runtime. Each maps to the way it is produced, which the refusal quotes.
+	 * at runtime. Each maps to the way it is produced, which the refusal quotes. An
+	 * extension has none.
 	 *
 	 * @since 0.1.0
 	 *
@@ -78,6 +82,15 @@ final class ZipBuilder {
 	private string $root;
 
 	/**
+	 * The plugin the zip is cut for.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var PluginPackage
+	 */
+	private PluginPackage $package;
+
+	/**
 	 * Decides which paths are left out.
 	 *
 	 * @since 0.1.0
@@ -100,14 +113,15 @@ final class ZipBuilder {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string     $root      Path of the plugin root.
-	 * @param DistIgnore $ignore    Decides which paths are left out.
-	 * @param int        $timestamp Modification time for every entry. Times before 1980 cannot
-	 *                              be stored in a zip and are raised to 1980-01-01.
+	 * @param string        $root      Path of the plugin root.
+	 * @param PluginPackage $package   The plugin the zip is cut for.
+	 * @param DistIgnore    $ignore    Decides which paths are left out.
+	 * @param int           $timestamp Modification time for every entry. Times before 1980 cannot
+	 *                                 be stored in a zip and are raised to 1980-01-01.
 	 *
 	 * @throws InvalidArgumentException When the root is not a directory.
 	 */
-	public function __construct( string $root, DistIgnore $ignore, int $timestamp ) {
+	public function __construct( string $root, PluginPackage $package, DistIgnore $ignore, int $timestamp ) {
 		$resolved = realpath( $root );
 
 		if ( false === $resolved || ! is_dir( $resolved ) ) {
@@ -115,6 +129,7 @@ final class ZipBuilder {
 		}
 
 		$this->root      = rtrim( str_replace( '\\', '/', $resolved ), '/' );
+		$this->package   = $package;
 		$this->ignore    = $ignore;
 		$this->timestamp = max( $timestamp, self::EARLIEST_TIMESTAMP );
 	}
@@ -201,20 +216,20 @@ final class ZipBuilder {
 	 * @throws RuntimeException When the tree is not ready to be released or the zip cannot be written.
 	 */
 	public function build( string $output_directory ): array {
-		$main_file = $this->root . '/' . PluginPackage::MAIN_FILE;
+		$main_file = $this->root . '/' . $this->package->mainFile;
 
 		if ( ! is_file( $main_file ) ) {
-			throw new RuntimeException( PluginPackage::MAIN_FILE . " is missing, so {$this->root} is not the plugin root." );
+			throw new RuntimeException( $this->package->mainFile . " is missing, so {$this->root} is not the plugin root." );
 		}
 
 		$version = PluginPackage::header( (string) file_get_contents( $main_file ), 'Version' );
 
 		if ( null === $version ) {
-			throw new RuntimeException( PluginPackage::MAIN_FILE . ' has no Version header, so the zip cannot be named.' );
+			throw new RuntimeException( $this->package->mainFile . ' has no Version header, so the zip cannot be named.' );
 		}
 
 		$output_directory = rtrim( $output_directory, '/' );
-		$path             = $output_directory . '/' . PluginPackage::zipFileName( $version );
+		$path             = $output_directory . '/' . $this->package->zipFileName( $version );
 		$checksums        = $output_directory . '/SHA256SUMS';
 
 		// Before anything can refuse the build: a refused or failed build must not leave an earlier zip for check-zip to pass.
@@ -224,7 +239,7 @@ final class ZipBuilder {
 			}
 		}
 
-		foreach ( self::BUILT_DIRECTORIES as $directory => $remedy ) {
+		foreach ( $this->package->isCore ? self::BUILT_DIRECTORIES : array() as $directory => $remedy ) {
 			if ( ! is_dir( $this->root . '/' . $directory ) ) {
 				throw new RuntimeException(
 					"{$directory}/ is missing. It is not committed and it ships, so a zip cut now would be broken. {$remedy}"
@@ -258,29 +273,42 @@ final class ZipBuilder {
 	/**
 	 * Runs the builder for bin/build-zip.php.
 	 *
+	 * Without an argument it builds SEOCart's zip. With `--plugin=<root>` it builds the zip of
+	 * the plugin at that root, such as a SEOCart extension checked out beside SEOCart, into
+	 * that root's dist/.
+	 *
 	 * @since 0.1.0
 	 *
-	 * @param string   $root      Path of the plugin root.
+	 * @param string   $root      Path of SEOCart's root.
 	 * @param string[] $arguments The command line, script name included.
 	 * @return int The process exit code.
 	 */
 	public static function main( string $root, array $arguments ): int {
-		$usage = "Usage: php bin/build-zip.php\n\n"
-			. 'Builds dist/' . PluginPackage::zipFileName( '<version>' ) . " and dist/SHA256SUMS from everything .distignore does not exclude.\n"
+		$usage = "Usage: php bin/build-zip.php [--plugin=<root>]\n\n"
+			. 'Builds dist/' . PluginPackage::core()->zipFileName( '<version>' ) . " and dist/SHA256SUMS from everything .distignore does not exclude.\n"
+			. "With --plugin, builds <root>/dist/<slug>-<version>.zip and <root>/dist/SHA256SUMS for the plugin at <root>.\n"
 			. "Entry timestamps come from SOURCE_DATE_EPOCH, or else from the HEAD commit.\n";
 
-		if ( array( '--help' ) === array_slice( $arguments, 1 ) ) {
+		$options = array_slice( $arguments, 1 );
+
+		if ( array( '--help' ) === $options ) {
 			fwrite( STDOUT, $usage );
 			return 0;
 		}
 
-		if ( count( $arguments ) > 1 ) {
-			fwrite( STDERR, 'build-zip: unrecognized argument "' . $arguments[1] . "\".\n\n" . $usage );
+		$plugin_root = null;
+
+		if ( 1 === count( $options ) && 1 === preg_match( '/^--plugin=(.+)$/s', $options[0], $matches ) ) {
+			$plugin_root = $matches[1];
+		} elseif ( array() !== $options ) {
+			fwrite( STDERR, 'build-zip: unrecognized argument "' . $options[0] . "\".\n\n" . $usage );
 			return 2;
 		}
 
 		try {
-			$builder = new self( $root, DistIgnore::fromFile( $root . '/.distignore' ), self::resolveTimestamp( $root ) );
+			$package = null === $plugin_root ? PluginPackage::core() : PluginPackage::at( $plugin_root );
+			$root    = $plugin_root ?? $root;
+			$builder = new self( $root, $package, DistIgnore::fromFile( $root . '/.distignore' ), self::resolveTimestamp( $root ) );
 			$result  = $builder->build( $root . '/dist' );
 		} catch ( InvalidArgumentException | RuntimeException $error ) {
 			fwrite( STDERR, 'build-zip: ' . $error->getMessage() . "\n" );
@@ -385,7 +413,7 @@ final class ZipBuilder {
 
 		try {
 			foreach ( $files as $relative ) {
-				$entry = PluginPackage::SLUG . '/' . $relative;
+				$entry = $this->package->slug . '/' . $relative;
 
 				if (
 					! $zip->addFile( $this->root . '/' . $relative, $entry )

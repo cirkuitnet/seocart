@@ -14,6 +14,7 @@ plugin's own help screens.
 | [migrations.md](migrations.md)                                               | How a migration is declared and ordered, what the migrator guarantees, and how to add a table or a column                                                                      |
 | [testing.md](testing.md)                                                     | The test layers, every gate command, the planted-violation rule and the determinism rules                                                                                      |
 | [releasing.md](releasing.md)                                                 | Versioning, how the release zip is built, the WordPress.org gates, and the manual deployment to the plugin directory                                                           |
+| [writing-an-extension.md](writing-an-extension.md)                           | A SEOCart extension's repository: generating it, pinning it to SEOCart, running its gates, moving it to a newer SEOCart and releasing it                                       |
 | [maintenance/rest-posts-controller.md](maintenance/rest-posts-controller.md) | What the product's REST controller overrides or reproduces of WordPress core, to check against each WordPress major                                                            |
 
 The contribution process is in [CONTRIBUTING.md](../CONTRIBUTING.md). The definition of done

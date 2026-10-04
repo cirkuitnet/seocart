@@ -13,6 +13,7 @@
 #                  +-> dry-gates         |                       -> plugin-check
 #                  +-> docs-drift        |                       -> install-smoke
 #                  +-> wporg-gates       |
+#                  +-> extension-kit     |
 #   js-lint-test ------------------------+ (package only)
 #   workflow-lint
 #   lint-php, static-analysis, unit-tests, integration-tests, package ----> smoke-suite (reports the
@@ -25,7 +26,8 @@
 # pass like any other job (it is not allow-failure), but it is not a required check either,
 # because it downloads Polylang from wordpress.org at test time; the merge script still refuses
 # any merge whose checks did not all pass. smoke-suite is not a required check either: it
-# reports what the jobs above did as the one list "all 17 smoke tests are green".
+# reports what the jobs above did as the one list "all 17 smoke tests are green". Nor is
+# extension-kit, which runs a generated extension's gates against this commit.
 #
 # The local setup action owns the development PHP version and Composer installation.
 # bin/ci/check-workflows.sh keeps these steps in the action and checks action pins.
@@ -274,17 +276,19 @@ jobs:
     workflow-lint:
         runs-on: ubuntu-24.04
         timeout-minutes: 10
-        env:
+        env: &actionlint-pin
             # actionlint publishes no action and is not an npm or Composer package, so
             # Dependabot cannot see this pin: raise the version and the checksum together, by
             # hand, from the checksums file of the release. shellcheck is part of the runner
-            # image.
+            # image. extension-ci.yml repeats the pin, and bin/ci/check-workflows.sh keeps the
+            # two equal.
             ACTIONLINT_VERSION: '1.7.12'
             ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         steps:
             - *checkout
 
-            - name: Install actionlint
+            - &install-actionlint
+              name: Install actionlint
               run: |
                   archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
                   curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" \
@@ -303,6 +307,45 @@ jobs:
             - unit-tests
             - js-lint-test
         uses: ./.github/workflows/reusable-package.yml
+
+    # The extension kit against this commit: bin/dev/new-extension.sh writes an extension beside
+    # the checkout, then its workflows are linted and its pins checked, and bin/ci/extension.sh
+    # runs every gate of it that needs no database (PHP syntax, coding standards, PHPStan, the
+    # unit suite, the private-reference check, the zip), as the extension's own CI would. A
+    # change to a template, to a shared rule or to a gate that would break every extension
+    # fails here, on the pull request that makes it. Not a required check.
+    extension-kit:
+        needs: lint-php
+        runs-on: ubuntu-24.04
+        timeout-minutes: 15
+        env: *actionlint-pin
+        steps:
+            # Checked out as seocart/, so that the generated extension finds it beside itself.
+            - name: Check out the repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  path: seocart
+                  persist-credentials: false
+
+            - name: Set up PHP and Composer
+              uses: ./seocart/.github/actions/setup-php-composer
+              with:
+                  working-directory: seocart
+                  install: no-scripts
+
+            - *install-actionlint
+
+            - name: Generate an extension
+              run: sh seocart/bin/dev/new-extension.sh seocart-gateway-for-example --type=payments --label=Example
+
+            - name: Lint the extension's workflows and check its pins
+              run: sh seocart/bin/ci/check-workflows.sh seocart-gateway-for-example
+
+            # The extension is staged, not committed, so the zip's timestamp comes from SOURCE_DATE_EPOCH.
+            - name: Run the extension's gates that need no database
+              run: sh seocart/bin/ci/extension.sh all seocart-gateway-for-example
+              env:
+                  SOURCE_DATE_EPOCH: '1767225600'
 
     # The baseline smoke tests as one list (bin/ci/smoke-suite.sh --report): its output is one
     # line per check, so "all 17 green" is a single answer. It does no work the jobs above did

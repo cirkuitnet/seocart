@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<ruleset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="{{name}}" xsi:noNamespaceSchemaLocation="../seocart/vendor/squizlabs/php_codesniffer/phpcs.xsd">
+	<description>SEOCart's coding standard, from the SEOCart checkout beside this one, for {{name}}.</description>
+
+	<file>.</file>
+
+	<exclude-pattern>/vendor/*</exclude-pattern>
+	<exclude-pattern>/node_modules/*</exclude-pattern>
+	<exclude-pattern>/build/*</exclude-pattern>
+	<exclude-pattern>/dist/*</exclude-pattern>
+
+	<arg name="extensions" value="php"/>
+	<arg name="basepath" value="."/>
+	<arg name="parallel" value="8"/>
+	<arg value="sp"/>
+
+	<!--
+		The rules SEOCart and every SEOCart extension share. What follows it is what belongs to this
+		plugin alone: its text domain and its prefixes.
+	-->
+	<rule ref="../seocart/tools/phpcs/seocart-project.xml"/>
+
+	<rule ref="WordPress.WP.I18n">
+		<properties>
+			<property name="text_domain" type="array">
+				<element value="{{slug}}"/>
+			</property>
+		</properties>
+	</rule>
+
+	<rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+		<properties>
+			<property name="prefixes" type="array">
+				<element value="{{prefix}}"/>
+				<element value="{{namespace}}"/>
+			</property>
+		</properties>
+	</rule>
+</ruleset>

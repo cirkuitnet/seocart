@@ -15,7 +15,7 @@ SC_DEV_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 usage() {
 	cat <<EOF
-usage: provision-site.sh <slug> [--checkout=<path>] [--with-woocommerce] [--with-polylang]
+usage: provision-site.sh <slug> [--checkout=<path>] [--with-woocommerce] [--with-polylang] [--with-extension=<path>]
 
 Creates a disposable WordPress install for one checkout:
 
@@ -38,6 +38,9 @@ HTTP 200. No password is ever printed.
   --with-woocommerce   install and activate WooCommerce on this instance only
   --with-polylang      install and activate Polylang (free) on this instance only and
                        create the languages en_US, en_GB and de_DE
+  --with-extension=<path>
+                       symlink the SEOCart extension checked out at <path> into this
+                       instance's plugins and activate it after SEOCart
 
 Refuses to run if the instance directory exists: tear the instance down first.
 
@@ -90,7 +93,7 @@ install_wp_content() {
 		fi
 	done
 	cp -R "$core_dir/wp-content/themes/$theme" "$site_dir/wp-content/themes/"
-	# The one symlink of this instance; it is never pointed anywhere else.
+	# SEOCart's symlink; it is never pointed anywhere else. An extension may add its own.
 	ln -s "$checkout" "$(sc_plugin_link "$slug")"
 }
 
@@ -253,6 +256,7 @@ slug=
 checkout_option=
 with_woocommerce=no
 with_polylang=no
+extension_option=
 
 for argument in "$@"; do
 	case $argument in
@@ -269,6 +273,10 @@ for argument in "$@"; do
 		--with-polylang)
 			with_polylang=yes
 			;;
+		--with-extension=*)
+			extension_option=${argument#*=}
+			[ -n "$extension_option" ] || sc_usage_error "--with-extension needs the path of an extension's checkout"
+			;;
 		-*)
 			sc_usage_error "unknown option: $argument"
 			;;
@@ -283,7 +291,16 @@ done
 [ -n "$slug" ] || sc_usage_error "missing <slug>"
 sc_validate_slug "$slug" || exit 2
 
-# Checks without side effects first: a refusal here leaves nothing behind.
+# Checks without side effects first: a refusal here leaves nothing behind. The extension comes
+# first of all, because only its own files decide whether it is one.
+extension=
+extension_slug=
+if [ -n "$extension_option" ]; then
+	sc_require_commands php
+	extension=$(sc_physical_dir "$extension_option" 2>/dev/null) || sc_die "--with-extension: $extension_option is not a directory"
+	# Its slug, from its main file; refused unless that file says "Requires Plugins: seocart".
+	extension_slug=$(php "$SC_DEV_DIR/../../tools/extension.php" check-extension "$extension") || exit 1
+fi
 sc_require_wp_cli
 sc_require_commands mysql php curl sed base64
 checkout=$(sc_resolve_checkout "$checkout_option")
@@ -321,6 +338,10 @@ umask 022
 mkdir -p "$site_dir"
 install_core_files
 install_wp_content
+if [ -n "$extension" ]; then
+	# The extension's own symlink, beside SEOCart's; teardown-site.sh removes both with the instance.
+	ln -s "$extension" "$site_dir/wp-content/plugins/$extension_slug"
+fi
 prepare_state_dir
 write_wp_config
 write_htaccess
@@ -336,6 +357,10 @@ sc_find_route "$instance_url/wp-login.php" || exit 1
 enable_pretty_permalinks
 
 instance_wp plugin activate seocart
+if [ -n "$extension" ]; then
+	sc_info "Activating the extension $extension_slug ..."
+	instance_wp plugin activate "$extension_slug"
+fi
 
 # -------------------------------------------------------------------------------------
 # HOOK POINT. `wp seocart migrate` exists; `wp seocart test-seed` does not yet.
@@ -362,3 +387,6 @@ sc_info "  core files:  copied"
 sc_info "  database:    $db_name"
 sc_info "  credentials: $env_file (WP_BASE_URL, WP_USERNAME, WP_PASSWORD)"
 sc_info "  debug log:   $debug_log"
+if [ -n "$extension" ]; then
+	sc_info "  extension:   $extension_slug, from $extension"
+fi

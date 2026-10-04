@@ -1,0 +1,13 @@
+# Normalize line endings: the repository is authored on Windows and on Unix alike.
+* text=auto eol=lf
+
+*.png   binary
+*.jpg   binary
+*.svg   text
+*.zip   binary
+
+# Development-only paths never leave through `git archive` / "Download ZIP". The release zip is
+# built by SEOCart's bin/build-zip.php from .distignore.
+/.github/  export-ignore
+/bin/      export-ignore
+/tests/    export-ignore

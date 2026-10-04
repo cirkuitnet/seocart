@@ -1,0 +1,36 @@
+# Paths excluded from the release zip. Read by SEOCart's bin/build-zip.php (with --plugin), in
+# the dialect SEOCart's tools/Packaging/DistIgnore.php implements: one pattern per line; `#`
+# starts a comment; a leading `/` anchors the pattern to the plugin root; a pattern without a
+# leading `/` matches a file or directory of that name at any depth; `*` matches within one
+# path segment. A matched directory is excluded with everything beneath it.
+#
+# The zip ships: {{slug}}.php, readme.txt, LICENSE, composer.json, CHANGELOG.md and src/, and
+# uninstall.php, templates/, languages/ and build/ when the extension has them. The packaging
+# check fails closed: a top-level entry outside that list fails the build.
+
+# Matched at any depth.
+.git
+.gitattributes
+.gitignore
+.gitkeep
+.DS_Store
+Thumbs.db
+
+# Root only. `/.*` covers every dotfile and dot-directory at the root.
+/.*
+/bin
+/dist
+/docs
+/node_modules
+/tests
+/vendor
+/composer.lock
+/package.json
+/package-lock.json
+/*.dist
+/*.neon
+/phpcs.xml
+/phpunit.xml
+/seocart-core.env
+/README.md
+/SECURITY.md

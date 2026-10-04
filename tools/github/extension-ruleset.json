@@ -1,0 +1,60 @@
+{
+	"name": "main",
+	"target": "branch",
+	"enforcement": "active",
+	"conditions": {
+		"ref_name": {
+			"exclude": [],
+			"include": [ "~DEFAULT_BRANCH" ]
+		}
+	},
+	"bypass_actors": [],
+	"rules": [
+		{
+			"type": "deletion"
+		},
+		{
+			"type": "non_fast_forward"
+		},
+		{
+			"type": "required_linear_history"
+		},
+		{
+			"type": "required_status_checks",
+			"parameters": {
+				"strict_required_status_checks_policy": true,
+				"do_not_enforce_on_create": false,
+				"required_status_checks": [
+					{
+						"context": "ci / gates",
+						"integration_id": 15368
+					},
+					{
+						"context": "ci / unit-tests (PHP 8.3)",
+						"integration_id": 15368
+					},
+					{
+						"context": "ci / unit-tests (PHP 8.4)",
+						"integration_id": 15368
+					},
+					{
+						"context": "ci / unit-tests (PHP 8.5)",
+						"integration_id": 15368
+					},
+					{
+						"context": "ci / integration-tests (WordPress 7.1)",
+						"integration_id": 15368
+					},
+					{
+						"context": "ci / package",
+						"integration_id": 15368
+					},
+					{
+						"context": "ci / plugin-check",
+						"integration_id": 15368
+					}
+				]
+			}
+		}
+	]
+}

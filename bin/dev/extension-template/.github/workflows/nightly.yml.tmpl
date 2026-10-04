@@ -1,0 +1,25 @@
+# Nightly: the same CI against SEOCart's main branch instead of the pinned commit, so that a
+# change in SEOCart that breaks this extension shows here before the next bump. A red run means
+# "look at this today". Nothing here is a required check.
+
+name: Nightly
+
+on:
+    schedule:
+        # 04:41 UTC. Off the hour, when scheduled runs are delayed the least.
+        - cron: '41 4 * * *'
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ${{ github.workflow }}
+    cancel-in-progress: true
+
+jobs:
+    seocart-main:
+        uses: cirkuitnet/seocart/.github/workflows/extension-ci.yml@{{core_ref}}
+        with:
+            extension-type: {{type}}
+            core-ref: main

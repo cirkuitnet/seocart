@@ -1,0 +1,39 @@
+<?php
+/**
+ * Tests that the extension loads beside SEOCart without a PHP error
+ *
+ * @package {{namespace}}
+ * @since   0.1.0
+ * @license GPL-3.0-or-later
+ */
+
+declare( strict_types=1 );
+
+namespace {{namespace}}\Tests\Integration;
+
+use SEOCart\Tests\Support\ErrorRecorder;
+use WP_UnitTestCase;
+
+/**
+ * Runs on SEOCart's integration bootstrap, which loads this extension and then SEOCart, as
+ * WordPress loads active plugins, and records every PHP error raised until WordPress has
+ * finished loading.
+ *
+ * @since 0.1.0
+ */
+final class LoadsBesideSEOCartTest extends WP_UnitTestCase {
+
+	/**
+	 * Tests that both plugins loaded and that no PHP error was raised while they did.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_extension_loads_beside_seocart_without_a_php_error(): void {
+		$this->assertContains( realpath( dirname( __DIR__, 2 ) . '/{{slug}}.php' ), get_included_files(), 'The integration bootstrap did not load this extension.' );
+		$this->assertContains( realpath( dirname( __DIR__, 3 ) . '/seocart/seocart.php' ), get_included_files(), 'SEOCart did not load beside the extension.' );
+
+		$records = ErrorRecorder::records();
+
+		$this->assertSame( array(), $records, "PHP errors were raised while the plugins loaded:\n" . ErrorRecorder::describe( $records ) );
+	}
+}
