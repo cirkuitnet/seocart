@@ -11,10 +11,10 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tools\Docs;
 
-use SEOCart\Platform\Http\OutboundEndpoints;
+use SEOCart\Contracts\OutboundHost;
 
 /**
- * Renders the outbound-endpoint registry as the disclosure WordPress.org requires.
+ * Renders the declared external services as the disclosure WordPress.org requires.
  *
  * Guideline 7 of the plugin directory requires a plugin to document every external
  * service it contacts: what the service is, what is sent, when, and where its terms
@@ -23,7 +23,9 @@ use SEOCart\Platform\Http\OutboundEndpoints;
  * the file. Where the section sits is a hand-made decision, so the heading must
  * already exist.
  *
- * Nothing is ever skipped: an incomplete registry entry is an error, not an omission.
+ * Nothing is ever skipped. Each entry is an OutboundHost, which refuses an incomplete field
+ * when it is constructed; an entry of another type, or a second entry with the same id, is an
+ * error here, not an omission.
  *
  * @since 0.1.0
  */
@@ -39,23 +41,24 @@ final class ExternalServicesSection implements Generator {
 	public const TITLE = 'External services';
 
 	/**
-	 * The registry entries to render.
+	 * The declarations to render.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var array<int|string, mixed>
 	 */
-	private array $endpoints;
+	private array $hosts;
 
 	/**
 	 * Constructor.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Takes OutboundHost declarations instead of arrays.
 	 *
-	 * @param array<int|string, mixed> $endpoints The registry entries: OutboundEndpoints::all().
+	 * @param array<int|string, mixed> $hosts The declarations: OutboundEndpoints::all().
 	 */
-	public function __construct( array $endpoints ) {
-		$this->endpoints = $endpoints;
+	public function __construct( array $hosts ) {
+		$this->hosts = $hosts;
 	}
 
 	/**
@@ -134,23 +137,23 @@ final class ExternalServicesSection implements Generator {
 	 * @return string The section body.
 	 */
 	public function render(): string {
-		if ( array() === $this->endpoints ) {
+		if ( array() === $this->hosts ) {
 			return 'SEOCart does not connect to any external service: it sends no data from your site to any other server.';
 		}
 
 		$blocks = array( 'SEOCart connects to the external services listed below, each only for the purpose stated and only under the condition stated. It contacts no other server.' );
 
-		foreach ( $this->validated() as $endpoint ) {
-			$blocks[] = "= {$endpoint['service']} =";
-			$blocks[] = $endpoint['purpose'];
+		foreach ( $this->validated() as $host ) {
+			$blocks[] = "= {$host->service} =";
+			$blocks[] = $host->purpose;
 			$blocks[] = implode(
 				"\n",
 				array(
-					"* Endpoint: `{$endpoint['endpoint']}`",
-					"* Data sent: {$endpoint['data_sent']}",
-					"* When: {$endpoint['sent_when']}",
-					"* Terms of use: {$endpoint['terms_url']}",
-					"* Privacy policy: {$endpoint['privacy_url']}",
+					"* Endpoint: `{$host->endpoint}`",
+					"* Data sent: {$host->dataSent}",
+					"* When: {$host->sentWhen}",
+					"* Terms of use: {$host->termsUrl}",
+					"* Privacy policy: {$host->privacyUrl}",
 				)
 			);
 		}
@@ -159,47 +162,30 @@ final class ExternalServicesSection implements Generator {
 	}
 
 	/**
-	 * Returns the registry entries after checking each one against the declared shape.
+	 * Returns the declarations after checking that each one is an OutboundHost with an id of its own.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 OutboundHost checks each field; this checks the type and the ids.
 	 *
-	 * @throws \RuntimeException When an entry is invalid.
+	 * @throws \RuntimeException When an entry is not an OutboundHost, or its id was seen before.
 	 *
-	 * @return list<array<string, string>> The entries, in registry order.
+	 * @return list<OutboundHost> The declarations, in registry order.
 	 */
 	private function validated(): array {
 		$valid = array();
 		$ids   = array();
 
-		foreach ( $this->endpoints as $position => $endpoint ) {
-			$name = is_array( $endpoint ) && is_string( $endpoint['id'] ?? null ) ? "\"{$endpoint['id']}\"" : "at position {$position}";
-
-			if ( ! is_array( $endpoint ) || array() !== array_diff( OutboundEndpoints::FIELDS, array_keys( $endpoint ) ) || array() !== array_diff( array_keys( $endpoint ), OutboundEndpoints::FIELDS ) ) {
-				throw new \RuntimeException( "Outbound endpoint {$name} must have exactly these keys: " . implode( ', ', OutboundEndpoints::FIELDS ) . '.' );
+		foreach ( $this->hosts as $position => $host ) {
+			if ( ! $host instanceof OutboundHost ) {
+				throw new \RuntimeException( "Outbound endpoint at position {$position} must be an " . OutboundHost::class . '.' );
 			}
 
-			foreach ( $endpoint as $field => $value ) {
-				if ( ! is_string( $value ) || '' === trim( $value ) || 1 === preg_match( '/[\r\n]/', $value ) ) {
-					throw new \RuntimeException( "Outbound endpoint {$name}: \"{$field}\" must be a non-empty, single-line string." );
-				}
+			if ( isset( $ids[ $host->id ] ) ) {
+				throw new \RuntimeException( "Outbound endpoint \"{$host->id}\" is declared twice." );
 			}
 
-			if ( 1 !== preg_match( '/^[a-z0-9]+(-[a-z0-9]+)*$/', $endpoint['id'] ) ) {
-				throw new \RuntimeException( "Outbound endpoint {$name}: the id must be kebab-case." );
-			}
-
-			if ( isset( $ids[ $endpoint['id'] ] ) ) {
-				throw new \RuntimeException( "Outbound endpoint {$name} is declared twice." );
-			}
-
-			foreach ( array( 'terms_url', 'privacy_url' ) as $field ) {
-				if ( ! str_starts_with( $endpoint[ $field ], 'https://' ) ) {
-					throw new \RuntimeException( "Outbound endpoint {$name}: \"{$field}\" must be an https:// link." );
-				}
-			}
-
-			$ids[ $endpoint['id'] ] = true;
-			$valid[]                = $endpoint;
+			$ids[ $host->id ] = true;
+			$valid[]          = $host;
 		}
 
 		return $valid;
