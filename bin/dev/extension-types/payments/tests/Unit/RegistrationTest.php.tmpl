@@ -1,0 +1,95 @@
+<?php
+/**
+ * Tests that the main file registers the gateway on the action SEOCart fires
+ *
+ * @package {{namespace}}
+ * @since   0.1.0
+ * @license GPL-3.0-or-later
+ */
+
+declare( strict_types=1 );
+
+namespace {{namespace}}\Tests\Unit;
+
+use {{namespace}}\Gateway;
+use PHPUnit\Framework\TestCase;
+use SEOCart\Contracts\ExtensionContext;
+use SEOCart\Contracts\Payment\AvailabilityContext;
+use SEOCart\Contracts\Payment\GatewayDescriptor;
+use SEOCart\Contracts\Payment\GatewayRegistry;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\Operations;
+use SEOCart\Support\Currency;
+use SEOCart\Support\Money;
+
+/**
+ * The main file loads before SEOCart, so it names the registration action as a string, not as
+ * the constant SEOCart declares it in; these tests hold the string equal to the constant, and
+ * check what the registration builds. A wrong string registers the gateway on an action that is
+ * never fired, so SEOCart never sees it, and no error says so.
+ *
+ * @since 0.1.0
+ */
+final class RegistrationTest extends TestCase {
+
+	/**
+	 * Returns the main file's source.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string The source.
+	 */
+	private static function mainFile(): string {
+		return (string) file_get_contents( dirname( __DIR__, 2 ) . '/{{slug}}.php' );
+	}
+
+	/**
+	 * Tests that the main file makes one registration, naming its action by a string.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_main_file_hooks_one_action_by_its_string(): void {
+		preg_match_all( '/^[ \t]*add_action\(\s*(.)/m', self::mainFile(), $calls );
+
+		$this->assertSame( array( "'" ), $calls[1], 'The main file registers once, with the name as a quoted string: SEOCart is not loaded when it runs.' );
+	}
+
+	/**
+	 * Tests that the string is the action SEOCart fires.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_string_is_the_action_seocart_declares(): void {
+		preg_match_all( "/^[ \t]*add_action\(\s*'([^']*)'/m", self::mainFile(), $actions );
+
+		$this->assertSame( array( GatewayRegistry::ACTION ), $actions[1], 'The main file hooks an action SEOCart does not fire.' );
+	}
+
+	/**
+	 * Tests that the gateway describes itself as the gateway id says, and declares nothing it can do yet.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_gateway_declares_its_id_and_no_capability(): void {
+		$descriptor = ( new Gateway( $this->createStub( ExtensionContext::class ) ) )->describe();
+
+		$this->assertSame( Gateway::ID, $descriptor->id );
+		$this->assertSame( GatewayDescriptor::TYPE_PAYMENTS, $descriptor->type );
+		$this->assertSame( array( Mode::Test ), $descriptor->modes );
+		$this->assertSame( array(), $descriptor->settings );
+		$this->assertSame( array(), $descriptor->hosts );
+		$this->assertSame( array(), $descriptor->matrix->rows, 'The matrix declares nothing until the adapter is built.' );
+
+		foreach ( array( 'USD', 'GBP', 'EUR' ) as $code ) {
+			foreach ( array( null, 'US', 'GB' ) as $country ) {
+				foreach ( Operations::ALL as $operation ) {
+					$this->assertFalse( $descriptor->matrix->allows( $operation, Currency::of( $code ), $country ), "{$operation} in {$code} for {$country} must stay undeclared until it is built." );
+				}
+			}
+
+			$payment = new AvailabilityContext( Currency::of( $code ), Money::of( 1000, Currency::of( $code ) ), 'US', 'storefront', Mode::Test, array() );
+
+			$this->assertFalse( $descriptor->matrix->available( $payment ), "The gateway must not be offered in {$code}." );
+		}
+	}
+}

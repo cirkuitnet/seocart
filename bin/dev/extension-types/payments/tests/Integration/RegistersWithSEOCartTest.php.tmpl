@@ -1,0 +1,52 @@
+<?php
+/**
+ * Tests that SEOCart accepts the gateway when it asks for its gateways
+ *
+ * @package {{namespace}}
+ * @since   0.1.0
+ * @license GPL-3.0-or-later
+ */
+
+declare( strict_types=1 );
+
+namespace {{namespace}}\Tests\Integration;
+
+use {{namespace}}\Gateway;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Payment\Application\Gateways;
+use SEOCart\Platform\Kernel\Kernel;
+use SEOCart\Support\Currency;
+use SEOCart\Support\Money;
+use WP_UnitTestCase;
+
+/**
+ * Runs on SEOCart's integration bootstrap, with this extension loaded and then SEOCart, as
+ * WordPress loads active plugins. SEOCart's own registry fires the registration action the first
+ * time it is asked for a gateway, so asking for this one proves the main file's hook is the one
+ * SEOCart fires, and that SEOCart accepts the gateway it builds: a gateway it refuses is logged
+ * and left out.
+ *
+ * @since 0.1.0
+ */
+final class RegistersWithSEOCartTest extends WP_UnitTestCase {
+
+	/**
+	 * Tests that the gateway is registered, written against a contract version SEOCart supports, and not offered.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_seocart_registers_the_gateway_and_does_not_offer_it(): void {
+		$registry = Kernel::container()->get( Gateways::class );
+		$gateway  = $registry->get( Gateway::ID, Mode::Test );
+		$declared = $gateway->describe();
+
+		$this->assertInstanceOf( Gateway::class, $gateway );
+		$this->assertSame( Gateway::ID, $declared->id );
+		$this->assertSame( '{{label}}', $declared->label() );
+		$this->assertTrue( $registry->supportsContract( $declared->contract ), "SEOCart does not support the contract {$declared->contract} this gateway is written against." );
+
+		foreach ( array( 'USD', 'GBP', 'EUR' ) as $code ) {
+			$this->assertNull( $registry->availableMode( Gateway::ID, Money::of( 1000, Currency::of( $code ) ), 'US', 'storefront' ), "SEOCart must not offer the gateway in {$code}." );
+		}
+	}
+}

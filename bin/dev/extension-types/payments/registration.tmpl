@@ -1,5 +1,12 @@
 /*
- * The registration with SEOCart. SEOCart at the commit this extension is built against declares
- * no action for payment gateways yet, so this plugin registers nothing. Once it does, the
- * gateway is registered here, with one add_action() on that action, named by its string.
+ * The registration with SEOCart: one hook, named by its string. SEOCart fires this action, with
+ * its gateway registry, the first time something needs a payment gateway, and never on a request
+ * that needs none. The name is written out because this file runs before SEOCart is loaded;
+ * tests/Unit/RegistrationTest.php holds it equal to the constant SEOCart declares it in.
  */
+add_action(
+	'{{registration_action}}',
+	static function ( \SEOCart\Contracts\Payment\GatewayRegistry $registry ): void {
+		$registry->register( new \{{namespace}}\Gateway( $registry->context( \{{namespace}}\Gateway::ID ) ) );
+	}
+);

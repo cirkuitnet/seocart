@@ -24,8 +24,11 @@ use SEOCart\Support\Money;
 /**
  * A matrix allows an operation only in a cell that declares it: the row of the currency and the account's own country, or else the currency's `*` row; and its rows are well formed.
  *
- * Planted violation, shown red and removed: in MatrixRow::covers(), let a `*` row cover every
- * currency: the matrix then allows a currency it has no row for.
+ * Planted violations, each shown red and removed:
+ * - in MatrixRow::covers(), let a `*` row cover every currency: the matrix then allows a currency
+ *   it has no row for;
+ * - in CapabilityMatrix::__construct(), refuse a matrix without rows again: the matrix that
+ *   declares nothing cannot be built.
  *
  * @since 0.2.0
  */
@@ -108,18 +111,35 @@ final class CapabilityMatrixTest extends TestCase {
 	}
 
 	/**
-	 * Tests that a matrix has at least one row, and no cell twice.
+	 * Tests that a matrix without rows declares nothing: no operation in any currency for any country, no currency, and no payment available.
 	 *
 	 * @since 0.2.0
 	 */
-	public function test_a_matrix_has_rows_and_each_cell_once(): void {
-		try {
-			new CapabilityMatrix( array() );
-			$this->fail( 'A matrix without rows was accepted.' );
-		} catch ( \InvalidArgumentException $refused ) {
-			$this->assertStringContainsString( 'at least one row', $refused->getMessage() );
-		}
+	public function test_a_matrix_without_rows_declares_nothing(): void {
+		$matrix = new CapabilityMatrix( array() );
 
+		$this->assertSame( array(), $matrix->rows );
+		$this->assertSame( array(), $matrix->currencies() );
+
+		foreach ( array( 'USD', 'GBP', 'EUR', 'JPY' ) as $code ) {
+			foreach ( array( null, 'US', 'GB' ) as $country ) {
+				foreach ( Operations::ALL as $operation ) {
+					$this->assertFalse( $matrix->allows( $operation, Currency::of( $code ), $country ), "{$operation} in {$code} for {$country}" );
+				}
+			}
+
+			$payment = new AvailabilityContext( Currency::of( $code ), Money::of( 1000, Currency::of( $code ) ), 'US', 'storefront', Mode::Test, array( GatewayDescriptor::ACCOUNT_COUNTRY => 'US' ) );
+
+			$this->assertFalse( $matrix->available( $payment ), $code );
+		}
+	}
+
+	/**
+	 * Tests that a matrix has no cell twice, and no item that is not a row.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_matrix_has_each_cell_once(): void {
 		$this->expectException( \InvalidArgumentException::class );
 
 		new CapabilityMatrix( array( new MatrixRow( Currency::of( 'USD' ), 'US', Operations::REQUIRED ), new MatrixRow( Currency::of( 'USD' ), 'US', Operations::REQUIRED ) ) );

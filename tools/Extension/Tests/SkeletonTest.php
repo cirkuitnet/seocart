@@ -14,6 +14,10 @@ namespace SEOCart\Tools\Extension\Tests;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use SEOCart\Contracts\Payment\GatewayDescriptor;
+use SEOCart\Contracts\Payment\GatewayRegistry;
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Tools\Extension\ExtensionType;
 use SEOCart\Tools\Extension\Skeleton;
 use SEOCart\Tools\Packaging\PluginPackage;
@@ -59,9 +63,33 @@ final class SkeletonTest extends TestCase {
 		'seocart-gateway-for-example.php',
 		'src/Gateway.php',
 		'tests/Integration/LoadsBesideSEOCartTest.php',
+		'tests/Integration/RegistersWithSEOCartTest.php',
 		'tests/Unit/PrivateReferencesTest.php',
+		'tests/Unit/RegistrationTest.php',
 		'tests/bootstrap.php',
 	);
+
+	/**
+	 * A script that stands in for WordPress and runs a main file in a process without SEOCart.
+	 *
+	 * It defines the one function the main file calls at file scope, add_action(), and prints
+	 * the names of the actions hooked, as JSON.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const RUNNER = <<<'PHP'
+		<?php
+		define( 'ABSPATH', __DIR__ . '/' );
+		$hooks = array();
+		function add_action( $hook ) {
+			global $hooks;
+			$hooks[] = $hook;
+		}
+		require __DIR__ . '/seocart-gateway-for-example.php';
+		echo json_encode( $hooks );
+		PHP;
 
 	/**
 	 * Returns this checkout's root, the SEOCart the skeleton is generated from.
@@ -121,6 +149,7 @@ final class SkeletonTest extends TestCase {
 		$this->assertSame( PluginPackage::header( $core_main, 'Requires at least' ), $values['requires_wp'] );
 
 		$this->assertSame( 'SEOCart\\GatewayForStripe', ( new Skeleton( self::core(), 'seocart-gateway-for-stripe', ExtensionType::Payments, 'Stripe' ) )->values()['namespace'] );
+		$this->assertSame( 'example', $values['gateway_id'] );
 		$this->assertSame( 'SEOCart\\AuthorizeNet', ( new Skeleton( self::core(), 'seocart-gateway-for-authorize-net', ExtensionType::Payments, 'Authorize.Net', 'AuthorizeNet' ) )->values()['namespace'] );
 	}
 
@@ -168,19 +197,126 @@ final class SkeletonTest extends TestCase {
 	}
 
 	/**
-	 * Tests that while SEOCart declares no registration action for the type, the main file registers nothing.
+	 * Tests that the main file hooks the action SEOCart declares, named by a string written from the constant.
 	 *
 	 * @since 0.2.0
 	 */
-	public function test_registers_nothing_while_seocart_declares_no_action(): void {
+	public function test_the_main_file_hooks_the_action_seocart_declares(): void {
 		$skeleton = self::skeleton();
+		$main     = $skeleton->files()['seocart-gateway-for-example.php'];
 
-		$this->assertSame( '' !== ExtensionType::Payments->registrationAction(), $skeleton->registers() );
+		$this->assertSame( GatewayRegistry::ACTION, ExtensionType::Payments->registrationAction() );
+		$this->assertSame( GatewayRegistry::ACTION, $skeleton->values()['registration_action'] );
+		$this->assertSame( 1, preg_match_all( "/^add_action\(\n\t'" . preg_quote( GatewayRegistry::ACTION, '/' ) . "',\n/m", $main ), 'The main file hooks the action once, by its string.' );
+		$this->assertStringNotContainsString( 'GatewayRegistry::ACTION', $main, 'The main file loads before SEOCart: it cannot name its constant.' );
+	}
 
-		if ( ! $skeleton->registers() ) {
-			// A call, at the start of a line; the placeholder's comment may name the function.
-			$this->assertDoesNotMatchRegularExpression( '/^\s*add_action\(/m', $skeleton->files()['seocart-gateway-for-example.php'] );
-		}
+	/**
+	 * Tests the main file in a process where SEOCart does not exist: it hooks the one action and uses nothing of SEOCart.
+	 *
+	 * WordPress loads the extension before SEOCart, so a class, function or constant of SEOCart at
+	 * file scope is a fatal error on every request. Only a process without SEOCart can tell.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_main_file_runs_where_seocart_is_not_loaded(): void {
+		$this->writeFile( 'main/seocart-gateway-for-example.php', self::skeleton()->files()['seocart-gateway-for-example.php'] );
+		$this->writeFile( 'main/run.php', self::RUNNER );
+
+		$process = proc_open(
+			array( PHP_BINARY, '-n', $this->directory . '/main/run.php' ),
+			array(
+				1 => array( 'pipe', 'w' ),
+				2 => array( 'pipe', 'w' ),
+			),
+			$pipes
+		);
+
+		$this->assertIsResource( $process );
+
+		$output = (string) stream_get_contents( $pipes[1] );
+		$errors = (string) stream_get_contents( $pipes[2] );
+		fclose( $pipes[1] );
+		fclose( $pipes[2] );
+
+		$this->assertSame( 0, proc_close( $process ), $errors . $output );
+		$this->assertSame( (string) json_encode( array( GatewayRegistry::ACTION ) ), $output );
+	}
+
+	/**
+	 * Tests the gateway the skeleton writes: its id, its contract version as a literal, and no operation it implements.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_gateway_states_its_id_and_the_contract_version_it_is_written_against(): void {
+		$gateway = self::skeleton()->files()['src/Gateway.php'];
+
+		$this->assertStringContainsString( "public const ID = 'example';", $gateway );
+		$this->assertStringContainsString( "\t\t\t'" . PaymentGateway::CONTRACT_VERSION . "',\n", $gateway );
+		$this->assertStringContainsString( 'final class Gateway implements PaymentGateway', $gateway );
+		$this->assertStringNotContainsString( 'CONTRACT_VERSION', (string) preg_replace( '#/\*\*.*?\*/#s', '', $gateway ), 'The version is a literal, written when the extension is generated.' );
+		$this->assertSame( ExtensionType::Payments->contractVersion(), PaymentGateway::CONTRACT_VERSION );
+	}
+
+	/**
+	 * Tests the id the gateway registers with, which the label gives and an option overrides.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_gateway_id_comes_from_the_label_or_the_option(): void {
+		$this->assertSame( 'stripe', Skeleton::gatewayIdOf( 'Stripe' ) );
+		$this->assertSame( 'authorize_net', Skeleton::gatewayIdOf( 'Authorize.Net' ) );
+		$this->assertSame( 'pay_later', Skeleton::gatewayIdOf( ' Pay - Later ' ) );
+
+		$this->assertSame( 'authorize_net', ( new Skeleton( self::core(), 'seocart-gateway-for-authorize-net', ExtensionType::Payments, 'Authorize.Net' ) )->values()['gateway_id'] );
+
+		$asked = new Skeleton( self::core(), 'seocart-gateway-for-2checkout', ExtensionType::Payments, '2Checkout', null, 'checkout_two' );
+
+		$this->assertSame( 'checkout_two', $asked->values()['gateway_id'] );
+		$this->assertStringContainsString( "public const ID = 'checkout_two';", $asked->files()['src/Gateway.php'] );
+	}
+
+	/**
+	 * Tests that an id the contract refuses is refused before anything is written.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider invalidGatewayIds
+	 *
+	 * @param string      $label   The label.
+	 * @param string|null $id      The id asked for.
+	 * @param string      $message A fragment of the refusal.
+	 */
+	public function test_refuses_a_gateway_id_the_contract_refuses( string $label, ?string $id, string $message ): void {
+		$this->expectException( InvalidArgumentException::class );
+		$this->expectExceptionMessage( $message );
+
+		new Skeleton( self::core(), Skeleton::slugOf( ExtensionType::Payments->pluginName( $label ) ), ExtensionType::Payments, $label, null, $id );
+	}
+
+	/**
+	 * Provides gateway ids the contract refuses: the label's own, and one asked for.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string, string|null, string}>
+	 */
+	public function invalidGatewayIds(): array {
+		$too_long = str_repeat( 'a', GatewayDescriptor::ID_MAX_LENGTH + 1 );
+
+		return array(
+			'label that starts with a digit'      => array( '2Checkout', null, 'The label "2Checkout" gives the gateway id "2checkout", which is not one' ),
+			'label longer than an id may be'      => array( 'Some Very Long Payment Provider Name', null, 'at most ' . GatewayDescriptor::ID_MAX_LENGTH . ' characters' ),
+			'id in capitals'                      => array( 'Example', 'Example', '"Example" is not a gateway id' ),
+			'id with a hyphen'                    => array( 'Example', 'my-gateway', '"my-gateway" is not a gateway id' ),
+			'id with a double underscore'         => array( 'Example', 'my__gateway', '"my__gateway" is not a gateway id' ),
+			'id that starts with a digit'         => array( 'Example', '2example', '"2example" is not a gateway id' ),
+			'id of 33 characters'                 => array( 'Example', $too_long, "\"{$too_long}\" is not a gateway id" ),
+			'empty id'                            => array( 'Example', '', '"" is not a gateway id' ),
+			'id with a trailing newline'          => array( 'Example', "example\n", 'is not a gateway id' ),
+			'label that gives the stand-in\'s id' => array( 'Stub', null, 'The label "Stub" gives the gateway id "' . StubGateway::ID . '", which is the stand-in gateway\'s id' ),
+			'the stand-in\'s id asked for'        => array( 'Example', StubGateway::ID, 'The gateway id "' . StubGateway::ID . '", which is the stand-in gateway\'s id' ),
+		);
 	}
 
 	/**

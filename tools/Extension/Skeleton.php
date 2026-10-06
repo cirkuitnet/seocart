@@ -15,6 +15,8 @@ use InvalidArgumentException;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use RuntimeException;
+use SEOCart\Contracts\Payment\GatewayDescriptor;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Tools\Packaging\PluginPackage;
 use SplFileInfo;
 
@@ -149,10 +151,13 @@ final class Skeleton {
 	 * @param string        $label   The service it integrates, for example `Stripe`.
 	 * @param string|null   $segment Optional. The namespace segment after `SEOCart\`. Default: the
 	 *                               slug after `seocart-`, in StudlyCase.
+	 * @param string|null   $gatewayId Optional. The id the gateway registers with, as
+	 *                               GatewayDescriptor::ID_PATTERN has it. Default: the label, as
+	 *                               gatewayIdOf() makes it.
 	 *
 	 * @throws InvalidArgumentException When a value is not of its form.
 	 */
-	public function __construct( string $core, string $slug, ExtensionType $type, string $label, ?string $segment = null ) {
+	public function __construct( string $core, string $slug, ExtensionType $type, string $label, ?string $segment = null, ?string $gatewayId = null ) {
 		if ( 1 !== preg_match( self::SLUG_PATTERN, $slug ) ) {
 			throw new InvalidArgumentException( "\"{$slug}\" is not an extension slug: `seocart-` followed by lower-case words joined by hyphens, for example seocart-gateway-for-stripe." );
 		}
@@ -175,6 +180,22 @@ final class Skeleton {
 			throw new InvalidArgumentException( "\"{$segment}\" is not a namespace segment: a capital letter, then letters and digits, for example AuthorizeNet." );
 		}
 
+		$gateway_id = $gatewayId ?? self::gatewayIdOf( $label );
+
+		if ( strlen( $gateway_id ) > GatewayDescriptor::ID_MAX_LENGTH || 1 !== preg_match( GatewayDescriptor::ID_PATTERN, $gateway_id ) ) {
+			throw new InvalidArgumentException(
+				( null === $gatewayId ? "The label \"{$label}\" gives the gateway id \"{$gateway_id}\", which is not one" : "\"{$gateway_id}\" is not a gateway id" )
+				. ': lower-case letters and digits in words joined by underscores, starting with a letter, at most ' . GatewayDescriptor::ID_MAX_LENGTH . ' characters, for example authorize_net. Name it with --gateway-id=<id>.'
+			);
+		}
+
+		if ( StubGateway::ID === $gateway_id ) {
+			throw new InvalidArgumentException(
+				( null === $gatewayId ? "The label \"{$label}\" gives the gateway id \"{$gateway_id}\"" : "The gateway id \"{$gateway_id}\"" )
+				. ', which is the stand-in gateway\'s id: SEOCart registers that gateway itself, and a second one of the id would be refused. Name another with --gateway-id=<id>.'
+			);
+		}
+
 		$this->core = rtrim( $core, '/' );
 		$this->type = $type;
 
@@ -182,23 +203,20 @@ final class Skeleton {
 		$core_readme = (string) file_get_contents( $this->core . '/readme.txt' );
 
 		$this->values = array(
-			'slug'         => $slug,
-			'name'         => $name,
-			'label'        => $label,
-			'type'         => $type->value,
-			'namespace'    => 'SEOCart\\' . $segment,
-			'prefix'       => str_replace( '-', '_', $slug ),
-			'core_ref'     => self::coreCommit( $this->core ),
-			'requires_wp'  => self::required( PluginPackage::header( $core_main, 'Requires at least' ), 'Requires at least', PluginPackage::MAIN_FILE ),
-			'requires_php' => self::required( PluginPackage::header( $core_main, 'Requires PHP' ), 'Requires PHP', PluginPackage::MAIN_FILE ),
-			'tested_wp'    => self::required( PluginPackage::header( $core_readme, 'Tested up to' ), 'Tested up to', 'readme.txt' ),
+			'slug'                => $slug,
+			'name'                => $name,
+			'label'               => $label,
+			'type'                => $type->value,
+			'namespace'           => 'SEOCart\\' . $segment,
+			'prefix'              => str_replace( '-', '_', $slug ),
+			'gateway_id'          => $gateway_id,
+			'core_ref'            => self::coreCommit( $this->core ),
+			'requires_wp'         => self::required( PluginPackage::header( $core_main, 'Requires at least' ), 'Requires at least', PluginPackage::MAIN_FILE ),
+			'requires_php'        => self::required( PluginPackage::header( $core_main, 'Requires PHP' ), 'Requires PHP', PluginPackage::MAIN_FILE ),
+			'tested_wp'           => self::required( PluginPackage::header( $core_readme, 'Tested up to' ), 'Tested up to', 'readme.txt' ),
+			'registration_action' => $type->registrationAction(),
+			'contract_version'    => $type->contractVersion(),
 		);
-
-		$action = $type->registrationAction();
-
-		if ( '' !== $action ) {
-			$this->values['registration_action'] = $action;
-		}
 	}
 
 	/**
@@ -226,6 +244,23 @@ final class Skeleton {
 	}
 
 	/**
+	 * Returns the id a gateway gets from the name of the service it integrates.
+	 *
+	 * The label in lower case, every run of characters that are not letters or digits made one
+	 * underscore, and none at either end: `Stripe` gives `stripe` and `Authorize.Net` gives
+	 * `authorize_net`. The result is not checked: a label that starts with a digit gives an id the
+	 * contract refuses, and the constructor says so.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $label The service, for example `Authorize.Net`.
+	 * @return string The id, for example `authorize_net`.
+	 */
+	public static function gatewayIdOf( string $label ): string {
+		return trim( (string) preg_replace( '/[^a-z0-9]+/', '_', strtolower( $label ) ), '_' );
+	}
+
+	/**
 	 * Returns the values the placeholders are replaced with.
 	 *
 	 * @since 0.2.0
@@ -234,17 +269,6 @@ final class Skeleton {
 	 */
 	public function values(): array {
 		return $this->values;
-	}
-
-	/**
-	 * Tells whether SEOCart at this commit declares the action this type registers on.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @return bool False while the main file registers nothing.
-	 */
-	public function registers(): bool {
-		return isset( $this->values['registration_action'] );
 	}
 
 	/**

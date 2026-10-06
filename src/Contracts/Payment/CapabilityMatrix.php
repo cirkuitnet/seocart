@@ -25,6 +25,11 @@ defined( 'ABSPATH' ) || exit;
  * not declare; a gateway is offered at checkout only where its cell declares `authorize`; and the
  * documentation of the gateway's capabilities is generated from the same rows. Pure data.
  *
+ * A matrix may have no rows: it then declares nothing. The gateway registers, is never
+ * available, and every operation of it is refused before any call, which is what a gateway
+ * plugin whose adapter is not written yet is. Allowing it refuses no gateway that was valid
+ * before, so the contract version does not change.
+ *
  * @since 0.2.0
  *
  * @api
@@ -36,17 +41,13 @@ final readonly class CapabilityMatrix {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @throws \InvalidArgumentException When there is no row, an item is not a row, or two rows are the same cell.
+	 * @throws \InvalidArgumentException When an item is not a row, or two rows are the same cell.
 	 *
-	 * @param array $rows The rows.
+	 * @param array $rows The rows; none declares nothing.
 	 *
 	 * @phpstan-param list<MatrixRow> $rows
 	 */
 	public function __construct( public array $rows ) {
-		if ( array() === $rows ) {
-			throw new \InvalidArgumentException( 'A capability matrix has at least one row.' );
-		}
-
 		$cells = array();
 
 		foreach ( $rows as $row ) {

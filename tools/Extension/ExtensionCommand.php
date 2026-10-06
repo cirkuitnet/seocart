@@ -21,7 +21,7 @@ use SEOCart\Tools\Packaging\PluginPackage;
  * The commands, which bin/dev/new-extension.sh, bin/ci/extension.sh and
  * bin/dev/provision-site.sh run:
  *
- *     php tools/extension.php new <SEOCart directory> <slug> --type=<type> --label=<label> [--namespace=<segment>] [--dir=<path>]
+ *     php tools/extension.php new <SEOCart directory> <slug> --type=<type> --label=<label> [--namespace=<segment>] [--gateway-id=<id>] [--dir=<path>]
  *     php tools/extension.php conformance-script <type>
  *     php tools/extension.php check-version <extension root> <tag>
  *     php tools/extension.php check-extension <extension root>
@@ -75,7 +75,7 @@ final class ExtensionCommand {
 	 * @since 0.2.0
 	 *
 	 * @param string   $core      SEOCart's root.
-	 * @param string[] $arguments `<SEOCart directory> <slug> --type=<type> --label=<label> [--namespace=<segment>] [--dir=<path>]`.
+	 * @param string[] $arguments `<SEOCart directory> <slug> --type=<type> --label=<label> [--namespace=<segment>] [--gateway-id=<id>] [--dir=<path>]`.
 	 *                            The first is SEOCart's root as the caller reaches it, through any
 	 *                            link, so that the extension is written beside that name.
 	 * @return int The exit code.
@@ -92,7 +92,7 @@ final class ExtensionCommand {
 		}
 
 		foreach ( $arguments as $argument ) {
-			if ( 1 === preg_match( '/^--(type|label|namespace|dir)=(.+)$/s', $argument, $matches ) ) {
+			if ( 1 === preg_match( '/^--(type|label|namespace|gateway-id|dir)=(.+)$/s', $argument, $matches ) ) {
 				$options[ $matches[1] ] = $matches[2];
 			} elseif ( ! str_starts_with( $argument, '-' ) ) {
 				$slugs[] = $argument;
@@ -102,7 +102,7 @@ final class ExtensionCommand {
 		}
 
 		if ( 1 !== count( $slugs ) || ! isset( $options['type'], $options['label'] ) ) {
-			throw new InvalidArgumentException( 'usage: new-extension.sh <slug> --type=<type> --label=<label> [--namespace=<segment>] [--dir=<path>]' );
+			throw new InvalidArgumentException( 'usage: new-extension.sh <slug> --type=<type> --label=<label> [--namespace=<segment>] [--gateway-id=<id>] [--dir=<path>]' );
 		}
 
 		$type = ExtensionType::tryFrom( $options['type'] );
@@ -111,7 +111,7 @@ final class ExtensionCommand {
 			throw new InvalidArgumentException( "new-extension: \"{$options['type']}\" is not an extension type. Known: " . self::knownTypes() . '.' );
 		}
 
-		$skeleton = new Skeleton( $core, $slugs[0], $type, $options['label'], $options['namespace'] ?? null );
+		$skeleton = new Skeleton( $core, $slugs[0], $type, $options['label'], $options['namespace'] ?? null, $options['gateway-id'] ?? null );
 		$target   = $options['dir'] ?? dirname( rtrim( $beside, '/' ) ) . '/' . $slugs[0];
 		$files    = $skeleton->write( $target );
 		$values   = $skeleton->values();
@@ -119,13 +119,10 @@ final class ExtensionCommand {
 		fwrite( STDOUT, "new-extension: wrote {$target} (" . count( $files ) . " files, staged in a new git repository, nothing committed):\n" );
 		fwrite( STDOUT, '  ' . implode( "\n  ", $files ) . "\n" );
 		fwrite( STDOUT, "new-extension: pinned to SEOCart {$values['core_ref']} (seocart-core.env and .github/workflows).\n" );
+		fwrite( STDOUT, "new-extension: {$values['slug']}.php hooks {$values['registration_action']} to register the gateway \"{$values['gateway_id']}\", written against contract {$values['contract_version']}; src/Gateway.php declares no capability yet.\n" );
 
 		if ( $skeleton->coreHasChanges() ) {
 			fwrite( STDOUT, "new-extension: note: {$core} has uncommitted changes. The files were written from them, but the pin is the commit, which does not hold them.\n" );
-		}
-
-		if ( ! $skeleton->registers() ) {
-			fwrite( STDOUT, "new-extension: note: SEOCart at this commit declares no registration action for {$type->value} extensions yet, so {$values['slug']}.php registers nothing and src/ holds a placeholder. Generate again, or write the registration by hand, once SEOCart declares it.\n" );
 		}
 
 		if ( ! self::isCoreBeside( $core, $target ) ) {

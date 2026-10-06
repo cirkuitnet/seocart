@@ -11,13 +11,20 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tools\Extension;
 
+use SEOCart\Contracts\Payment\GatewayRegistry;
+use SEOCart\Contracts\Payment\PaymentGateway;
+
 /**
  * The one list of extension types, with what each type means to the kit.
  *
  * A type decides what bin/dev/new-extension.sh writes (bin/dev/extension-types/<type>/), how
- * the extension's plugin is named, which SEOCart action it registers on, and which of
- * SEOCart's conformance suites its CI runs (bin/ci/extension.sh conformance). The value is
- * what an extension's CI passes as `extension-type`.
+ * the extension's plugin is named, which SEOCart action it registers on, which version of
+ * SEOCart's contract it is written against, and which of SEOCart's conformance suites its CI
+ * runs (bin/ci/extension.sh conformance). The value is what an extension's CI passes as
+ * `extension-type`.
+ *
+ * Loading SEOCart's contract classes needs ABSPATH, which SEOCart's own files check for;
+ * tools/extension.php defines a placeholder, as WordPress is not loaded.
  *
  * @since 0.2.0
  */
@@ -43,17 +50,34 @@ enum ExtensionType: string {
 	/**
 	 * Returns the SEOCart action an extension of this type registers itself on.
 	 *
-	 * Empty while SEOCart at this commit declares none: the generator then writes no
-	 * registration and says so.
+	 * Read from the constant that declares it, so the generated main file, which names the
+	 * action as a string because it loads before SEOCart, writes what SEOCart fires.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @return string The action's name, or an empty string.
+	 * @return string The action's name.
 	 */
 	public function registrationAction(): string {
 		// phpcs:ignore PHPCompatibility.Variables.ForbiddenThisUseContexts.OutsideObjectContext -- an enum's method has its case as $this; the sniff predates enums.
 		return match ( $this ) {
-			self::Payments => '',
+			self::Payments => GatewayRegistry::ACTION,
+		};
+	}
+
+	/**
+	 * Returns the version of SEOCart's contract that an extension of this type is generated against.
+	 *
+	 * The generated extension states it as a literal, which its own tests hold acceptable to the
+	 * SEOCart they run against.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return string The version, `major.minor.patch`.
+	 */
+	public function contractVersion(): string {
+		// phpcs:ignore PHPCompatibility.Variables.ForbiddenThisUseContexts.OutsideObjectContext -- an enum's method has its case as $this; the sniff predates enums.
+		return match ( $this ) {
+			self::Payments => PaymentGateway::CONTRACT_VERSION,
 		};
 	}
 

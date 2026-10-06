@@ -22,6 +22,7 @@ use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Contracts\Payment\Operations;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Application\GatewaySettingsDeclaration;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Infrastructure\PaymentTables;
@@ -32,6 +33,7 @@ use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Support\Money;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
@@ -51,7 +53,9 @@ use SEOCart\Tests\Support\Payment\GatewayKernel;
  * - in UpdateCheckoutSession::paymentMethod(), drop the registry's check: an unknown method is
  *   then saved;
  * - in PaymentService::authorize(), drop the require() before the call: the gateway is asked to
- *   authorize a payment its matrix no longer declares.
+ *   authorize a payment its matrix no longer declares;
+ * - in CapabilityMatrix::__construct(), refuse a matrix without rows again: the gateway that
+ *   declares nothing is not registered, and the test finds no descriptor for it.
  *
  * @since 0.2.0
  */
@@ -145,6 +149,36 @@ final class PaymentMethodCheckTest extends PlacementTestCase {
 
 		$this->assertSame( array( 'approved', 'authorized' ), array( $placed['outcome'], $placed['payment_status'] ) );
 		$this->assertSame( array( 'picky', 'test' ), $this->intentOf( (string) $placed['order_uuid'] ) );
+	}
+
+	/**
+	 * Tests that a gateway that declares nothing is registered, is never available in any currency, and is refused at placement before anything is written.
+	 *
+	 * The session write checks only that the method is a gateway the store has, configured for its
+	 * mode, which does not depend on the payment: it saves the method, and placement, which knows
+	 * the order's currency and total, refuses it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_gateway_that_declares_nothing_is_registered_and_never_offered(): void {
+		$this->plugins['nothing'] = new DeclaredGateway( DeclaredGateway::descriptor( 'nothing', array( Mode::Test ), array(), new CapabilityMatrix( array() ) ) );
+
+		$cart = $this->startCart( array( $this->sellable() => 1 ) );
+
+		$this->writeCheckout( $cart->version, 'nothing' );
+
+		$this->freshPlacement();
+
+		$gateways = $this->kernel->get( Gateways::class );
+
+		$this->assertSame( array(), $gateways->descriptor( 'nothing' )->matrix->rows, 'The gateway is registered, declaring nothing.' );
+		$this->assertSame( Mode::Test, $gateways->configuredMode( 'nothing' ) );
+
+		foreach ( array( 'USD', 'GBP', 'EUR' ) as $code ) {
+			$this->assertNull( $gateways->availableMode( 'nothing', Money::of( 1000, Currency::of( $code ) ), 'US', 'storefront' ), "Available in {$code}." );
+		}
+
+		$this->assertRefusedBeforeWriting( 'a gateway that declares nothing' );
 	}
 
 	/**

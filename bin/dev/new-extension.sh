@@ -13,7 +13,7 @@ core=$(CDPATH='' cd -- "$SC_DEV_DIR/../.." && pwd)
 
 usage() {
 	cat <<EOF
-usage: new-extension.sh <slug> --type=<type> --label=<label> [--namespace=<segment>] [--dir=<path>]
+usage: new-extension.sh <slug> --type=<type> --label=<label> [--namespace=<segment>] [--gateway-id=<id>] [--dir=<path>]
 
 Writes the repository of a new SEOCart extension from the templates in
 bin/dev/extension-template/ and bin/dev/extension-types/<type>/, makes it a git
@@ -29,6 +29,9 @@ repository and stages every file; nothing is committed.
                          spaces, dots and hyphens
   --namespace=<segment>  the PHP namespace after SEOCart\\ (default: the slug after
                          seocart-, in StudlyCase, for example GatewayForStripe)
+  --gateway-id=<id>      the id the gateway registers with: lower-case snake_case,
+                         starting with a letter, at most 32 characters (default: the
+                         label in snake_case, for example stripe or authorize_net)
   --dir=<path>           where to write it (default: ../<slug> beside this SEOCart
                          checkout, which is where the extension's gates look for SEOCart)
 

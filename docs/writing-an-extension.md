@@ -37,8 +37,13 @@ the gates that load WordPress.
 it runs from. The type and a label name the plugin: a `payments` extension labelled `Stripe` is
 **SEOCart Gateway for Stripe**. WordPress.org makes a plugin's slug from its name when the plugin
 is submitted, so the slug must be exactly the one WordPress makes of that name,
-`seocart-gateway-for-stripe`; any other is refused. The extension is pinned to the commit the
-SEOCart checkout is at.
+`seocart-gateway-for-stripe`; any other is refused. A payments extension also has a gateway id,
+which a payment intent and the ledger record: the label in lower-case snake_case (`Stripe` is `stripe`,
+`Authorize.Net` is `authorize_net`), or the one `--gateway-id=<id>` names. SEOCart's contract
+refuses an id that does not start with a letter, holds anything but lower-case letters, digits and
+single underscores, or is longer than 32 characters, and the generator refuses it first, as it
+refuses `stub`, the id of the stand-in gateway SEOCart registers itself. The
+extension is pinned to the commit the SEOCart checkout is at.
 
 The walkthrough generates a payments extension labelled `Example`. It ran on the development
 server, in a directory where `seocart` is the SEOCart checkout; that directory is written as
@@ -47,7 +52,7 @@ checkout, `~/dev/seocart`:
 
 ```text
 $ sh bin/dev/new-extension.sh seocart-gateway-for-example --type=payments --label=Example
-new-extension: wrote ~/dev/seocart-gateway-for-example (22 files, staged in a new git repository, nothing committed):
+new-extension: wrote ~/dev/seocart-gateway-for-example (24 files, staged in a new git repository, nothing committed):
   .distignore
   .editorconfig
   .gitattributes
@@ -68,18 +73,31 @@ new-extension: wrote ~/dev/seocart-gateway-for-example (22 files, staged in a ne
   seocart-gateway-for-example.php
   src/Gateway.php
   tests/Integration/LoadsBesideSEOCartTest.php
+  tests/Integration/RegistersWithSEOCartTest.php
   tests/Unit/PrivateReferencesTest.php
+  tests/Unit/RegistrationTest.php
   tests/bootstrap.php
-new-extension: pinned to SEOCart ab210646e1759327d543440500a77ae76ce3db44 (seocart-core.env and .github/workflows).
-new-extension: note: SEOCart at this commit declares no registration action for payments extensions yet, so seocart-gateway-for-example.php registers nothing and src/ holds a placeholder. Generate again, or write the registration by hand, once SEOCart declares it.
+new-extension: pinned to SEOCart ce5102bcda8763073232f16f53400acff3610143 (seocart-core.env and .github/workflows).
+new-extension: seocart-gateway-for-example.php hooks seocart_register_payment_gateways to register the gateway "example", written against contract 0.2.0; src/Gateway.php declares no capability yet.
 new-extension: next: commit the files, then run the gates: sh ../seocart/bin/ci/extension.sh all . (from ~/dev/seocart-gateway-for-example).
 ```
 
-A slug that is not the name's is refused before anything is written:
+A slug that is not the name's is refused before anything is written, and so is an id the
+contract would refuse:
 
 ```text
 $ sh bin/dev/new-extension.sh seocart-example --type=payments --label=Example
 "seocart-example" is not the slug of the plugin's name, "SEOCart Gateway for Example": WordPress.org makes the slug from the name when the plugin is submitted, which gives "seocart-gateway-for-example". Use that slug, or the label whose name gives yours.
+```
+
+```text
+$ sh bin/dev/new-extension.sh seocart-gateway-for-2checkout --type=payments --label=2Checkout
+The label "2Checkout" gives the gateway id "2checkout", which is not one: lower-case letters and digits in words joined by underscores, starting with a letter, at most 32 characters, for example authorize_net. Name it with --gateway-id=<id>.
+```
+
+```text
+$ sh bin/dev/new-extension.sh seocart-gateway-for-stub --type=payments --label=Stub
+The label "Stub" gives the gateway id "stub", which is the stand-in gateway's id: SEOCart registers that gateway itself, and a second one of the id would be refused. Name another with --gateway-id=<id>.
 ```
 
 The files, staged in a new git repository and not yet committed:
@@ -106,19 +124,23 @@ A  seocart-core.env
 A  seocart-gateway-for-example.php
 A  src/Gateway.php
 A  tests/Integration/LoadsBesideSEOCartTest.php
+A  tests/Integration/RegistersWithSEOCartTest.php
 A  tests/Unit/PrivateReferencesTest.php
+A  tests/Unit/RegistrationTest.php
 A  tests/bootstrap.php
 ```
 
 | File                                                           | What it is                                                                                                                                                       |
 | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `seocart-gateway-for-example.php`                              | The main file: the plugin header, an autoloader for its namespace (`SEOCart\GatewayForExample`, from `src/`) and its registration with SEOCart, and nothing else |
-| `src/`                                                         | The extension's code                                                                                                                                             |
+| `src/Gateway.php`                                              | The gateway: a skeleton of the adapter that SEOCart accepts and never calls (below)                                                                              |
 | `seocart-core.env`                                             | The pin                                                                                                                                                          |
 | `phpcs.xml.dist`, `phpstan.neon.dist`                          | SEOCart's shared rules, included from `../seocart/tools/`, with the extension's own text domain, prefixes and paths                                              |
 | `phpunit.xml.dist`, `tests/bootstrap.php`                      | The `unit` and `integration` suites, on SEOCart's bootstraps                                                                                                     |
 | `tests/Unit/PrivateReferencesTest.php`                         | SEOCart's private-reference check, over this repository                                                                                                          |
+| `tests/Unit/RegistrationTest.php`                              | The main file's action string is the one SEOCart declares, and the gateway declares nothing it can do yet                                                        |
 | `tests/Integration/LoadsBesideSEOCartTest.php`                 | The extension loads beside SEOCart without a PHP error                                                                                                           |
+| `tests/Integration/RegistersWithSEOCartTest.php`               | SEOCart's own registry accepts the gateway, written against a contract version it supports, and does not offer it                                                |
 | `.github/workflows/`                                           | `ci.yml`, `nightly.yml` and `release.yml`: a few lines each, calling SEOCart's workflows at the pin                                                              |
 | `bin/dev/bump-core.sh`                                         | Moves the pin (below)                                                                                                                                            |
 | `readme.txt`, `CHANGELOG.md`, `SECURITY.md`                    | The WordPress.org readme, the changelog and the security policy                                                                                                  |
@@ -130,10 +152,56 @@ and `seocart-gateway-for-example/` sorts before `seocart/`. Nothing in it may us
 function or constant at file scope. An idle request may cost an extension this one file and one
 hook registration, and no query.
 
-SEOCart at the commit this walkthrough is pinned to does not yet declare the action a payment
-gateway registers on, so the generated main file registers nothing and `src/Gateway.php` holds a
-placeholder; the generator says so. The registration is one `add_action()` that names the action
-by its string, never by a SEOCart constant, because the main file runs before SEOCart is loaded.
+### The registration
+
+The main file ends with the extension's one registration: a single `add_action()` that names
+SEOCart's action by its string, never by a SEOCart constant, because the main file runs before
+SEOCart is loaded. SEOCart fires the action, with its gateway registry, the first time something
+needs a payment gateway, and never on a request that needs none. The callback asks the registry
+for the gateway's context and registers the gateway with it; the registry refuses a gateway it
+cannot use, with a line in SEOCart's log and never an error.
+
+```text
+$ tail -n 12 seocart-gateway-for-example.php
+/*
+ * The registration with SEOCart: one hook, named by its string. SEOCart fires this action, with
+ * its gateway registry, the first time something needs a payment gateway, and never on a request
+ * that needs none. The name is written out because this file runs before SEOCart is loaded;
+ * tests/Unit/RegistrationTest.php holds it equal to the constant SEOCart declares it in.
+ */
+add_action(
+	'seocart_register_payment_gateways',
+	static function ( \SEOCart\Contracts\Payment\GatewayRegistry $registry ): void {
+		$registry->register( new \SEOCart\GatewayForExample\Gateway( $registry->context( \SEOCart\GatewayForExample\Gateway::ID ) ) );
+	}
+);
+```
+
+The generator writes the string from `GatewayRegistry::ACTION` when it generates the extension,
+and `tests/Unit/RegistrationTest.php` holds the two equal: a wrong string would register the
+gateway on an action SEOCart never fires. The generated integration test asks SEOCart's registry
+for the gateway and fails too (`payment.gateway_unavailable`); only a live site would stay
+silent. The core repository's own tests also run the main file in a process where SEOCart does not exist, and fail when it uses a
+SEOCart class, function or constant at file scope.
+
+### The gateway skeleton
+
+`src/Gateway.php` is the starting point of the adapter: a final class that implements
+`SEOCart\Contracts\Payment\PaymentGateway`, built with the `ExtensionContext` SEOCart gives it
+(its logger, clock, HTTP client and settings). Its `describe()` returns the gateway's
+declaration: the id, the label (a closure around a translation call, run only when a screen shows
+it), the type `payments`, **the contract version it was written against** (a literal, written
+from `PaymentGateway::CONTRACT_VERSION` when the extension is generated, which SEOCart compares
+with its own when the gateway registers and refuses the gateway on an incompatible one), one mode
+(`test`), no settings, no hosts, and a capability matrix with no rows, which declares nothing.
+SEOCart therefore registers the gateway, never takes a payment through it (placement refuses it,
+before anything is written) and refuses every operation of it, as unsupported, before a call;
+each operation in the skeleton is a short placeholder that writes a line in SEOCart's log and
+throws a `LogicException`, and never reaches a provider.
+
+To build the adapter, declare what the provider can do in `describe()` (its settings, its hosts,
+its capability matrix and its idempotency profile), then replace the placeholders. A gateway with
+settings, or with a second mode, gets a settings document in SEOCart.
 
 ## Run the gates
 
@@ -152,22 +220,22 @@ $ sh ../seocart/bin/ci/extension.sh all .
 
 extension: php ~/dev/seocart/vendor/bin/parallel-lint --exclude ~/dev/seocart-gateway-for-example/.git --exclude ~/dev/seocart-gateway-for-example/dist --exclude ~/dev/seocart-gateway-for-example/vendor --exclude ~/dev/seocart-gateway-for-example/node_modules ~/dev/seocart-gateway-for-example
 PHP 8.4.23 | 10 parallel jobs
-.....                                                        5/5 (100%)
+.......                                                      7/7 (100%)
 
 
-Checked 5 files in 0 seconds
+Checked 7 files in 0 seconds
 No syntax error found
 
 extension: php ~/dev/seocart/vendor/bin/phpcs
-..... 5 / 5 (100%)
+....... 7 / 7 (100%)
 
 
-Time: 679ms; Memory: 18MB
+Time: 617ms; Memory: 20MB
 
 
 extension: php ~/dev/seocart/vendor/bin/phpstan analyse --memory-limit=1536M
 Note: Using configuration file ~/dev/seocart-gateway-for-example/phpstan.neon.dist.
- 5/5 [▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓] 100%
+  7/7 [▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓] 100%
 
 
  [OK] No errors
@@ -176,28 +244,28 @@ Note: Using configuration file ~/dev/seocart-gateway-for-example/phpstan.neon.di
 extension: php ~/dev/seocart/vendor/bin/phpunit --testsuite unit --fail-on-empty-test-suite
 PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
 
-.                                                                   1 / 1 (100%)
+....                                                                4 / 4 (100%)
 
-Time: 00:00.017, Memory: 6.00 MB
+Time: 00:00.054, Memory: 8.00 MB
 
-OK (1 test, 1 assertion)
+OK (4 tests, 120 assertions)
 
 extension: php ~/dev/seocart/vendor/bin/phpunit --testsuite unit --filter PrivateReferencesTest --fail-on-empty-test-suite
 PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
 
 .                                                                   1 / 1 (100%)
 
-Time: 00:00.013, Memory: 6.00 MB
+Time: 00:00.016, Memory: 6.00 MB
 
 OK (1 test, 1 assertion)
 
 extension: php ~/dev/seocart/bin/build-zip.php --plugin=~/dev/seocart-gateway-for-example
 build-zip: wrote ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip
-           6 files, 15709 bytes (0.01 MiB)
-           sha256 39f6eb3e360e42dd811ca9a63bdfb02eaaa94a1052bc35573990f98d349f7b77
+           6 files, 17582 bytes (0.02 MiB)
+           sha256 a94e5bc87a53475c3bab2145cb4a576d314f748dbe8e54fcc5a130e2ccd9a4a8
 
 extension: php ~/dev/seocart/bin/check-zip.php --plugin=~/dev/seocart-gateway-for-example ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip
-check-zip: OK ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip, 15709 bytes (budget 5242880, limit 10485760)
+check-zip: OK ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip, 17582 bytes (budget 5242880, limit 10485760)
 
 extension: every gate that needs no database passed for ~/dev/seocart-gateway-for-example.
 ```
@@ -229,11 +297,11 @@ Not running ms-files tests. To execute these, use --group ms-files.
 Not running external-http tests. To execute these, use --group external-http.
 PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
 
-.                                                                   1 / 1 (100%)
+..                                                                  2 / 2 (100%)
 
-Time: 00:00.017, Memory: 52.50 MB
+Time: 00:00.090, Memory: 56.50 MB
 
-OK (1 test, 3 assertions)
+OK (2 tests, 10 assertions)
 ```
 
 ```text
@@ -249,14 +317,14 @@ PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
 
 .                                                                   1 / 1 (100%)
 
-Time: 00:02.224, Memory: 78.50 MB
+Time: 00:02.537, Memory: 80.50 MB
 
 OK (1 test, 8 assertions)
 ```
 
 ```text
 $ sh ../seocart/bin/ci/extension.sh conformance . payments
-extension: SEOCart at ab210646e1759327d543440500a77ae76ce3db44 has no conformance suite for payments extensions yet, so there is nothing to run. This step runs it once SEOCart names one (tools/Extension/ExtensionType.php).
+extension: SEOCart at ce5102bcda8763073232f16f53400acff3610143 has no conformance suite for payments extensions yet, so there is nothing to run. This step runs it once SEOCart names one (tools/Extension/ExtensionType.php).
 ```
 
 When the SEOCart checkout is not at the pinned commit, each gate says so first and runs anyway;
@@ -384,9 +452,9 @@ It changes `seocart-core.env` and every call of SEOCart's workflows together, an
 commit the SEOCart checkout does not have:
 
 ```text
-$ sh bin/dev/bump-core.sh d02e9038af3e8ed8f9aa34a7108c14a2388c4cd2
-bump-core: ~/dev/seocart-gateway-for-example now pins SEOCart d02e9038af3e8ed8f9aa34a7108c14a2388c4cd2 (was ab210646e1759327d543440500a77ae76ce3db44): seocart-core.env and 3 workflow call(s).
-bump-core: next: git -C ~/dev/seocart checkout d02e9038af3e8ed8f9aa34a7108c14a2388c4cd2, run the gates (sh ~/dev/seocart/bin/ci/extension.sh all ~/dev/seocart-gateway-for-example), then commit.
+$ sh bin/dev/bump-core.sh 29eb9cb41167e7f14d0503b57cf69c746e3287d7
+bump-core: ~/dev/seocart-gateway-for-example now pins SEOCart 29eb9cb41167e7f14d0503b57cf69c746e3287d7 (was ce5102bcda8763073232f16f53400acff3610143): seocart-core.env and 3 workflow call(s).
+bump-core: next: git -C ~/dev/seocart checkout 29eb9cb41167e7f14d0503b57cf69c746e3287d7, run the gates (sh ~/dev/seocart/bin/ci/extension.sh all ~/dev/seocart-gateway-for-example), then commit.
 ```
 
 ```text
@@ -428,11 +496,11 @@ $ sh ../seocart/bin/ci/extension.sh zip .
 
 extension: php ~/dev/seocart/bin/build-zip.php --plugin=~/dev/seocart-gateway-for-example
 build-zip: wrote ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip
-           6 files, 15709 bytes (0.01 MiB)
-           sha256 39f6eb3e360e42dd811ca9a63bdfb02eaaa94a1052bc35573990f98d349f7b77
+           6 files, 17582 bytes (0.02 MiB)
+           sha256 a94e5bc87a53475c3bab2145cb4a576d314f748dbe8e54fcc5a130e2ccd9a4a8
 
 extension: php ~/dev/seocart/bin/check-zip.php --plugin=~/dev/seocart-gateway-for-example ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip
-check-zip: OK ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip, 15709 bytes (budget 5242880, limit 10485760)
+check-zip: OK ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip, 17582 bytes (budget 5242880, limit 10485760)
 ```
 
 Pushing the tag starts `release.yml`, which calls SEOCart's `extension-release.yml` at the pin.

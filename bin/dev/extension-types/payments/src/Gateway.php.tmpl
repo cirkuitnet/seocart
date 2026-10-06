@@ -11,15 +11,241 @@ declare( strict_types=1 );
 
 namespace {{namespace}};
 
+// Before the imports: Plugin Check looks for this guard only in the first 50 lines of a namespaced file.
 defined( 'ABSPATH' ) || exit;
+
+use SEOCart\Contracts\ExtensionContext;
+use SEOCart\Contracts\Payment\AvailabilityContext;
+use SEOCart\Contracts\Payment\CapabilityMatrix;
+use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\GatewayDescriptor;
+use SEOCart\Contracts\Payment\GatewayRefund;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\IdempotencyProfile;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Contracts\Payment\PaymentQuery;
+use SEOCart\Contracts\Payment\PaymentRequest;
+use SEOCart\Contracts\Payment\VoidRequest;
+use SEOCart\Contracts\Payment\WebhookEnvelope;
+use SEOCart\Contracts\Payment\WebhookReading;
+
+// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- These exceptions report a programming error to the developer; they are never HTML.
 
 /**
  * The {{label}} payment gateway.
  *
- * SEOCart at the commit this extension is built against does not yet publish the payment
- * gateway contract, so there is nothing to implement here yet.
+ * This is the starting point of the adapter: it registers with SEOCart and is accepted, and it
+ * declares that it can do nothing yet, so SEOCart never offers it at checkout and never calls
+ * an operation of it. To build the adapter, declare what {{label}} can do in describe() (the
+ * capability matrix, the settings, the hosts and the idempotency profile) and replace the
+ * operations below, each of which answers with a result and never touches SEOCart's tables.
+ * The adapter is built with the context SEOCart gives it: its logger, clock, HTTP client and
+ * settings.
  *
  * @since 0.1.0
  */
-final class Gateway {
+final class Gateway implements PaymentGateway {
+
+	/**
+	 * The gateway's id, which an intent and the ledger record, and which the registration names.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var string
+	 */
+	public const ID = '{{gateway_id}}';
+
+	/**
+	 * The services SEOCart gives this gateway.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var ExtensionContext
+	 */
+	private ExtensionContext $context;
+
+	/**
+	 * Builds the gateway with its context.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param ExtensionContext $context What SEOCart gives this gateway: `SEOCart\Contracts\Payment\GatewayRegistry::context()`.
+	 */
+	public function __construct( ExtensionContext $context ) {
+		$this->context = $context;
+	}
+
+	/**
+	 * Returns the gateway's one declaration.
+	 *
+	 * Written against the contract version in the descriptor, which SEOCart compares with its
+	 * own when the gateway registers. It declares no setting, no host and no capability: a
+	 * capability matrix with no rows, which SEOCart takes to mean that the gateway can do
+	 * nothing yet.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return GatewayDescriptor The descriptor, built without I/O.
+	 */
+	public function describe(): GatewayDescriptor {
+		return new GatewayDescriptor(
+			self::ID,
+			static fn(): string => __( '{{label}}', '{{slug}}' ),
+			GatewayDescriptor::TYPE_PAYMENTS,
+			'{{contract_version}}',
+			array( Mode::Test ),
+			array(),
+			new CapabilityMatrix( array() ),
+			new IdempotencyProfile( null, false, 0 ),
+			array()
+		);
+	}
+
+	/**
+	 * Tells whether the gateway can take a new payment.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param AvailabilityContext $context The payment.
+	 * @return bool Always false: the capability matrix declares nothing yet.
+	 */
+	public function isAvailable( AvailabilityContext $context ): bool {
+		unset( $context );
+
+		return false;
+	}
+
+	/**
+	 * Asks {{label}} to authorize an intent's amount.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always: SEOCart refuses the operation first, as the matrix does not declare it.
+	 *
+	 * @param PaymentRequest $request The intent and the customer's payment token.
+	 * @return GatewayResult Never returned.
+	 */
+	public function authorize( PaymentRequest $request ): GatewayResult {
+		unset( $request );
+
+		return $this->notBuilt( 'authorize' );
+	}
+
+	/**
+	 * Asks {{label}} to capture an authorized intent.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always: SEOCart refuses the operation first, as the matrix does not declare it.
+	 *
+	 * @param CaptureRequest $request The intent and the amount.
+	 * @return GatewayResult Never returned.
+	 */
+	public function capture( CaptureRequest $request ): GatewayResult {
+		unset( $request );
+
+		return $this->notBuilt( 'capture' );
+	}
+
+	/**
+	 * Asks {{label}} to cancel an authorization without taking its amount.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always: SEOCart refuses the operation first, as the matrix does not declare it.
+	 *
+	 * @param VoidRequest $request The intent and why it is voided.
+	 * @return GatewayResult Never returned.
+	 */
+	public function void( VoidRequest $request ): GatewayResult {
+		unset( $request );
+
+		return $this->notBuilt( 'void' );
+	}
+
+	/**
+	 * Asks {{label}} to give back part or all of what an intent captured.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always: SEOCart refuses the operation first, as the matrix does not declare it.
+	 *
+	 * @param GatewayRefund $request The intent, the amount and the refund's idempotency key.
+	 * @return GatewayResult Never returned.
+	 */
+	public function refund( GatewayRefund $request ): GatewayResult {
+		unset( $request );
+
+		return $this->notBuilt( 'refund' );
+	}
+
+	/**
+	 * Asks {{label}} what became of a refund it was asked for before.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always: SEOCart refuses the operation first, as the matrix does not declare it.
+	 *
+	 * @param GatewayRefund $request The refund, as it was asked.
+	 * @return GatewayResult|null Never returned.
+	 */
+	public function queryRefund( GatewayRefund $request ): ?GatewayResult {
+		unset( $request );
+
+		return $this->notBuilt( 'queryRefund' );
+	}
+
+	/**
+	 * Asks {{label}} where an intent stands now.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always: SEOCart refuses the operation first, as the matrix does not declare it.
+	 *
+	 * @param PaymentQuery $query The intent.
+	 * @return GatewayResult|null Never returned.
+	 */
+	public function query( PaymentQuery $query ): ?GatewayResult {
+		unset( $query );
+
+		return $this->notBuilt( 'query' );
+	}
+
+	/**
+	 * Reads a delivery {{label}} sent to SEOCart's webhook.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always: the gateway declares no webhooks, so SEOCart sends it none.
+	 *
+	 * @param WebhookEnvelope $envelope The delivery.
+	 * @return WebhookReading Never returned.
+	 */
+	public function readWebhook( WebhookEnvelope $envelope ): WebhookReading {
+		unset( $envelope );
+
+		return $this->notBuilt( 'readWebhook' );
+	}
+
+	/**
+	 * Refuses an operation the adapter has not built yet, and says so in SEOCart's log.
+	 *
+	 * SEOCart does not call an operation the capability matrix does not declare, so a call
+	 * here means something went around that check.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param string $operation The operation's method.
+	 * @return never
+	 */
+	private function notBuilt( string $operation ): never {
+		$message = sprintf( 'The {{label}} adapter has not built %s() yet, and its capability matrix declares nothing, so SEOCart does not call it.', $operation );
+
+		$this->context->logger()->error( 'adapter.not_built', $message );
+
+		throw new \LogicException( $message );
+	}
 }
