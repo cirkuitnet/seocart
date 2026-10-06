@@ -165,11 +165,16 @@ final class CliReference implements Generator {
 	 * @since 0.1.0
 	 *
 	 * @param array<string, mixed> $argument The entry.
-	 * @return string For example `<item_id>`, `--delta=<delta>` or `[--note=<note>]`.
+	 * @return string For example `<item_id>`, `--delta=<delta>`, `[--note=<note>]`, `--lines=<json>` or `[--shipping]`.
 	 */
 	private static function usage( array $argument ): string {
 		$name  = (string) $argument['name'];
-		$usage = 'positional' === $argument['type'] ? '<' . $name . '>' : '--' . $name . '=<' . $name . '>';
+		$value = (string) ( $argument['value']['name'] ?? $name );
+		$usage = match ( $argument['type'] ) {
+			'positional' => '<' . $name . '>',
+			'flag'       => '--' . $name,
+			default      => '--' . $name . '=<' . $value . '>',
+		};
 
 		return empty( $argument['optional'] ) ? $usage : '[' . $usage . ']';
 	}

@@ -308,14 +308,19 @@ final class OperationSurfaces {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string               $method The HTTP method.
-	 * @param string               $route  The route below the namespace, such as `/fixture-stock/<id>/adjustments`.
-	 * @param array<string, mixed> $body   Optional. The JSON body. Default none.
-	 * @param array<string, mixed> $query  Optional. The query parameters. Default none.
+	 * @param string                $method The HTTP method.
+	 * @param string                $route  The route below the namespace, such as `/fixture-stock/<id>/adjustments`.
+	 * @param array<string, mixed>  $body    Optional. The JSON body. Default none.
+	 * @param array<string, mixed>  $query   Optional. The query parameters. Default none.
+	 * @param array<string, string> $headers Optional. The request headers, such as an Idempotency-Key. Default none.
 	 * @return WP_REST_Response The response; an error is a response too.
 	 */
-	public function rest( string $method, string $route, array $body = array(), array $query = array() ): WP_REST_Response {
+	public function rest( string $method, string $route, array $body = array(), array $query = array(), array $headers = array() ): WP_REST_Response {
 		$request = new WP_REST_Request( $method, '/' . RestBinding::NAMESPACE . $route );
+
+		foreach ( $headers as $name => $value ) {
+			$request->set_header( $name, $value );
+		}
 
 		if ( array() !== $body ) {
 			$request->set_header( 'Content-Type', 'application/json' );

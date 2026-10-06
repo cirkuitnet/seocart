@@ -102,6 +102,15 @@ final class LoggedTransactions implements TransactionManager {
 	}
 
 	/**
+	 * Refuses as the wrapped manager does.
+	 *
+	 * @since 0.2.0
+	 */
+	public function refuseWhileClosed(): void {
+		$this->inner->refuseWhileClosed();
+	}
+
+	/**
 	 * Registers a callback for after the commit.
 	 *
 	 * @since 0.1.0

@@ -29,3 +29,36 @@ Changes the units on hand of one variant by a signed amount, records the change 
 - `held` (always): The units held by checkouts, expired holds included until they are reclaimed. An integer.
 - `available` (always): The units that may still be promised: on hand, less allocated, less held. Negative when fewer units were counted than are promised or held. An integer.
 - `ledger_entry_id` (always): The id of the stock ledger entry that records the change. An integer.
+
+## `seocart/refund-order`
+
+Gives back units of an order's lines, and what is left of its shipping when asked, through the gateway its payment was taken by, at the order's own rate, and answers the refund; the Idempotency-Key header is required, and a retry with the same key and the same request is answered with the same refund, never a second one.
+
+- Operation: `payment.refund_order`
+- Capability: `seocart_refund_orders`
+- Error codes: `authorization.denied` (403), `order.not_found` (404), `payment.refund_key_missing` (400), `payment.refund_key_reused` (422), `payment.refund_request_invalid` (422), `payment.refund_note_rejected` (422), `payment.refund_not_refundable` (409), `payment.gateway_unavailable` (503), `payment.operation_unsupported` (409), `payment.unreconciled` (409), `payment.refund_unresolved` (409), `payment.refund_line_not_found` (404), `payment.refund_line_exhausted` (409), `payment.refund_exceeds_captured` (409), `payment.refund_nothing_left` (409), `payment.refund_cap_exceeded` (403), `payment.refund_retry` (409), `payment.refund_declined` (402), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `true`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+- `order_uuid` (required): The public identifier of the order to refund. A uuid.
+- `lines`: The units of each line to give back, each line at most once; may be empty only when the shipping is asked for. A list of 0 to 200 objects, each with `line_uuid`, `quantity`, `restock`.
+- `shipping`: Whether to give back what is left of the order's shipping; when absent, it is not given back. True or false.
+- `reason_code` (required): Why the order is refunded. One of `customer_return`, `damaged`, `not_as_described`, `late_delivery`, `duplicate_order`, `fraud`, `goodwill`, `other`.
+- `note`: What the person who refunds writes about the refund; kept with it, and refused when it holds a card number. Text of at most 500 characters. Personal data.
+- `idempotency_key`: The request's idempotency key, sent in the Idempotency-Key header and nowhere else, of at most 64 bytes: a new key, such as a UUID, for each new request, and the same key when that request is retried. Text of at most 64 characters.
+
+### Output
+
+- `refund_uuid` (always): The refund's public identifier, which the gateway received as its idempotency key. A uuid.
+- `order_uuid` (always): The order refunded. A uuid.
+- `total_minor` (always): What the refund gave back, tax included, in minor units of the order's currency. An integer.
+- `tax_minor` (always): The tax the refund gave back, in minor units of the order's currency. An integer.
+- `shipping_minor` (always): The shipping the refund gave back, before tax, in minor units of the order's currency. An integer.
+- `currency` (always): The order's currency, ISO 4217. Text of at most 3 characters.
+- `base_total_minor` (always): The total in minor units of the base currency, at the order's own rate. An integer.
+- `base_currency` (always): The store's base currency when the order was placed, ISO 4217. Text of at most 3 characters.
+- `reason_code` (always): Why the order was refunded. Text.
+- `note`: What the person who refunds writes about the refund; kept with it, and refused when it holds a card number. Text of at most 500 characters. Personal data: returned only to a user who holds the capability `seocart_view_customer_pii`.
+- `lines` (always): The units of each line the refund was asked for, in the order of the lines' identifiers. A list of objects, each with `line_uuid`, `quantity`, `restock`.

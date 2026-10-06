@@ -16,6 +16,10 @@ use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\PaymentRequest;
 use SEOCart\Contracts\Payment\WebhookReading;
+use SEOCart\Payment\Application\RefundCaps;
+use SEOCart\Payment\Domain\Refund\RefundLineRequest;
+use SEOCart\Payment\Domain\Refund\RefundRequest;
+use SEOCart\Payment\Domain\Refund\RequestKey;
 use SEOCart\Tests\Unit\Support\PhpSource;
 
 /**
@@ -151,6 +155,29 @@ final class GatewayDtoTest extends TestCase {
 		$this->assertContains( GatewayDescriptor::class, $classes );
 		$this->assertContains( WebhookReading::class, $classes );
 		$this->assertSame( array(), $unknown, 'A contract class takes only tokens, references and declarations; card data never reaches the plugin.' );
+	}
+
+	/**
+	 * Tests that the types a refund is asked with take no card field either: the request and its lines, the key, and the caps.
+	 *
+	 * Planted violation, shown red and removed: add `public ?string $cardNumber = null` to
+	 * RefundRequest's constructor: the scan names it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_no_refund_request_type_takes_a_card_field(): void {
+		$fields = array();
+
+		foreach ( array( RefundRequest::class, RefundLineRequest::class, RequestKey::class, RefundCaps::class ) as $class ) {
+			$constructor = ( new \ReflectionClass( $class ) )->getConstructor();
+
+			foreach ( null === $constructor ? array() : $constructor->getParameters() as $parameter ) {
+				$fields[] = $class . '::$' . $parameter->getName();
+			}
+		}
+
+		$this->assertContains( RefundRequest::class . '::$note', $fields, 'The scan must read the request\'s parameters, or it proves nothing.' );
+		$this->assertSame( array(), array_values( array_filter( $fields, static fn( string $field ): bool => self::readsAsCardField( substr( $field, (int) strpos( $field, '$' ) + 1 ) ) ) ), 'A refund is asked with references, units and amounts; never card data.' );
 	}
 
 	/**

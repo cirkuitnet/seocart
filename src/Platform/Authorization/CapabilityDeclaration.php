@@ -29,8 +29,9 @@ defined( 'ABSPATH' ) || exit;
  * is in the plugin's namespace and is neither a primitive nor a meta capability is unknown, and
  * unknown means denied.
  *
- * No code ever asks whether a user has one of these roles. A role exists only to make a set of
- * capabilities assignable, and a merchant may edit or replace it.
+ * No code authorizes by asking whether a user has one of these roles. A role exists only to make
+ * a set of capabilities assignable, and a merchant may edit or replace it. The refund caps read a
+ * user's roles as data, after the capability check, to find which caps' settings apply.
  *
  * Declarations are data: building this object does no I/O, calls no WordPress function and
  * translates nothing. Role display names are source strings, stored untranslated the way core

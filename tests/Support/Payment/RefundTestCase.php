@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Payment;
 
+use SEOCart\Application\Operations\IdempotencyKey;
 use SEOCart\Contracts\Payment\CaptureRequest;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Order\Domain\InsertedOrder;
@@ -18,12 +19,16 @@ use SEOCart\Order\Domain\NewOrder;
 use SEOCart\Order\Infrastructure\MysqlOrderRepository;
 use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Payment\Application\Gateways;
+use SEOCart\Payment\Application\RefundCapPolicy;
+use SEOCart\Payment\Application\RefundCapSettings;
 use SEOCart\Payment\Application\RefundService;
 use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Payment\Domain\Refund\Refund;
 use SEOCart\Payment\Domain\Refund\RefundLineRequest;
 use SEOCart\Payment\Domain\Refund\RefundRepository;
 use SEOCart\Payment\Domain\Refund\RefundRequest;
+use SEOCart\Payment\Domain\Refund\RequestKey;
 use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
@@ -38,6 +43,8 @@ use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\ModuleStatements;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\EventPublisher;
+use SEOCart\Platform\Settings\Settings;
+use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Support\IdGenerator;
 use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
@@ -64,6 +71,15 @@ abstract class RefundTestCase extends PaymentTestCase {
 	 * @var string
 	 */
 	protected const REASON = 'customer_return';
+
+	/**
+	 * The statements a refund sends: the plugin's tables and the transaction control, the capability check's reads of the user aside.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	protected const STATEMENTS = '/seocart_|^(START TRANSACTION|COMMIT|ROLLBACK|SAVEPOINT|RELEASE SAVEPOINT)/';
 
 	/**
 	 * How long a refund probe may take to end, in milliseconds.
@@ -93,6 +109,15 @@ abstract class RefundTestCase extends PaymentTestCase {
 	private ?Actor $agent = null;
 
 	/**
+	 * Whether the test set the refund caps, which tear_down() then removes.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var bool
+	 */
+	private bool $capped = false;
+
+	/**
 	 * Creates the service.
 	 *
 	 * @since 0.1.0
@@ -101,7 +126,54 @@ abstract class RefundTestCase extends PaymentTestCase {
 		parent::set_up();
 
 		$this->agent   = null;
+		$this->capped  = false;
 		$this->refunds = $this->refundsOver( $this->db, $this->ids, $this->gateway );
+	}
+
+	/**
+	 * Removes the refund caps the test set, so the next test reads the defaults.
+	 *
+	 * @since 0.2.0
+	 */
+	public function tear_down(): void {
+		if ( $this->capped ) {
+			foreach ( RefundCapSettings::settings() as $setting ) {
+				delete_option( $setting->optionName() );
+			}
+		}
+
+		parent::tear_down();
+	}
+
+	/**
+	 * Sets the order agents' refund caps, committed, as the settings operation writes them: amounts of the base currency in major units, or '' for no cap.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $perOrder The cap of one order.
+	 * @param string $perDay   The cap of any 24 hours.
+	 */
+	protected function capOrderAgents( string $perOrder, string $perDay ): void {
+		$this->capped = true;
+
+		$this->settingsOver( $this->db )->writeScalars(
+			array(
+				RefundCapSettings::ORDER_AGENT_PER_ORDER => $perOrder,
+				RefundCapSettings::ORDER_AGENT_PER_DAY   => $perDay,
+			)
+		);
+	}
+
+	/**
+	 * Builds the settings store over a connection, over every setting the plugin declares.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Database $db The connection.
+	 * @return SettingsStore The store.
+	 */
+	protected function settingsOver( Database $db ): SettingsStore {
+		return new SettingsStore( Settings::registry(), $db );
 	}
 
 	/**
@@ -114,11 +186,12 @@ abstract class RefundTestCase extends PaymentTestCase {
 	 * @param PaymentGateway          $gateway The gateway it calls.
 	 * @param EventPublisher|null     $events  Optional. What publishes the refund's event. Default the outbox's publisher over the connection.
 	 * @param RefundRepository|null   $refunds Optional. The refund statements. Default MysqlRefundRepository over the connection.
-	 * @param TransactionManager|null $tx      Optional. The refund's own unit of work. Default the connection.
+	 * @param TransactionManager|null $tx       Optional. The refund's own unit of work. Default the connection.
+	 * @param Gateways|null           $gateways Optional. The registry the gateways are found in, such as a kernel's. Default one holding `$gateway` alone.
 	 * @return RefundService The service.
 	 */
-	protected function refundsOver( Database $db, IdGenerator $ids, PaymentGateway $gateway, ?EventPublisher $events = null, ?RefundRepository $refunds = null, ?TransactionManager $tx = null ): RefundService {
-		$gateways = TestGateways::of( $gateway );
+	protected function refundsOver( Database $db, IdGenerator $ids, PaymentGateway $gateway, ?EventPublisher $events = null, ?RefundRepository $refunds = null, ?TransactionManager $tx = null, ?Gateways $gateways = null ): RefundService {
+		$gateways ??= TestGateways::of( $gateway );
 
 		return new RefundService(
 			$refunds ?? new MysqlRefundRepository( $db ),
@@ -128,7 +201,9 @@ abstract class RefundTestCase extends PaymentTestCase {
 			$tx ?? $db,
 			$events ?? $this->publisherOver( $db ),
 			new Authorizer( new CapabilityDeclaration() ),
-			FrozenClock::at( self::NOW )
+			FrozenClock::at( self::NOW ),
+			new RefundCapPolicy( $this->settingsOver( $db ) ),
+			$this->ordersOver( $db, $ids )
 		);
 	}
 
@@ -181,23 +256,56 @@ abstract class RefundTestCase extends PaymentTestCase {
 	}
 
 	/**
+	 * Refunds units of some lines as the order agent, with an idempotency key: the key's hash, scoped to the agent, and the request's fingerprint.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string             $orderUuid The order.
+	 * @param array<string, int> $units     The units of each line, by line uuid.
+	 * @param string             $key       The key the caller sends.
+	 * @param string|null        $note      Optional. The note. Default null, none.
+	 * @param RefundService|null $service   Optional. The service to ask. Default `$this->refunds`.
+	 * @return Refund The refund.
+	 */
+	protected function refundWithKey( string $orderUuid, array $units, string $key, ?string $note = null, ?RefundService $service = null ): Refund {
+		$request = self::request( $orderUuid, $units, false, $note );
+
+		return ( $service ?? $this->refunds )->refund( $request, $this->agent(), $this->requestKey( $request, $key ) );
+	}
+
+	/**
+	 * Builds the key a request is sent with: the key's hash, scoped to the order agent, and the request's fingerprint.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param RefundRequest $request The request.
+	 * @param string        $key     The key the caller sends.
+	 * @return RequestKey The key.
+	 */
+	protected function requestKey( RefundRequest $request, string $key ): RequestKey {
+		return new RequestKey( IdempotencyKey::hash( 'refund-test|' . $this->agent()->userId(), $key ), IdempotencyKey::fingerprint( $request->canonical() ) );
+	}
+
+	/**
 	 * Builds a refund request.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The note.
 	 *
 	 * @param string             $orderUuid The order.
 	 * @param array<string, int> $units     The units of each line, by line uuid.
 	 * @param bool               $shipping  Whether to give back what is left of the shipping.
+	 * @param string|null        $note      Optional. The note. Default null, none.
 	 * @return RefundRequest The request.
 	 */
-	protected static function request( string $orderUuid, array $units, bool $shipping ): RefundRequest {
+	protected static function request( string $orderUuid, array $units, bool $shipping, ?string $note = null ): RefundRequest {
 		$lines = array();
 
 		foreach ( $units as $lineUuid => $quantity ) {
 			$lines[] = new RefundLineRequest( (string) $lineUuid, $quantity );
 		}
 
-		return new RefundRequest( $orderUuid, $lines, $shipping, self::REASON );
+		return new RefundRequest( $orderUuid, $lines, $shipping, self::REASON, $note );
 	}
 
 	/**
@@ -295,16 +403,20 @@ abstract class RefundTestCase extends PaymentTestCase {
 	 * @param string|null        $crashLog  Optional. The file the gateway's refund is logged to before
 	 *                                      the process kills itself, once the gateway gave the money
 	 *                                      back; null for a refund that runs to its end. Default null.
+	 * @param Actor|null         $actor     Optional. Who refunds. Default the order agent.
+	 * @param string|null        $key       Optional. The idempotency key, with which the refund is asked
+	 *                                      through the refund operation's service; null for none. Default null.
 	 * @return RunningProbe The running refund; its report, unless it was killed, says how it ended.
 	 */
-	protected function startRefundProbe( string $orderUuid, array $units, ?string $crashLog = null ): RunningProbe {
+	protected function startRefundProbe( string $orderUuid, array $units, ?string $crashLog = null, ?Actor $actor = null, ?string $key = null ): RunningProbe {
 		$request = array(
-			'order_uuid' => $orderUuid,
-			'units'      => $units,
-			'shipping'   => false,
-			'user_id'    => $this->agent()->userId(),
-			'call_log'   => (string) $crashLog,
-			'crash'      => null !== $crashLog,
+			'order_uuid'      => $orderUuid,
+			'units'           => $units,
+			'shipping'        => false,
+			'user_id'         => ( $actor ?? $this->agent() )->userId(),
+			'call_log'        => (string) $crashLog,
+			'crash'           => null !== $crashLog,
+			'idempotency_key' => (string) $key,
 		);
 
 		return ChildProcessProbe::start( __DIR__ . '/refund-probe.php', array( base64_encode( (string) wp_json_encode( $request ) ) ) );

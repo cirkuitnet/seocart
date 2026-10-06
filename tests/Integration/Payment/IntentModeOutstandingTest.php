@@ -18,14 +18,10 @@ use SEOCart\Payment\Infrastructure\Migrations\AddIntentMode;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Exception\QueryFailed;
-use SEOCart\Platform\Database\Migration;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\Database\TransactionManager;
-use SEOCart\Platform\DataRegistry\OwnedData;
-use SEOCart\Platform\Kernel\BootOption;
-use SEOCart\Platform\Kernel\BootRecord;
 use SEOCart\Platform\Kernel\Container;
 use SEOCart\Platform\Kernel\GatedTransactionManager;
 use SEOCart\Platform\Kernel\GateState;
@@ -91,27 +87,6 @@ final class IntentModeOutstandingTest extends PlacementTestCase {
 		$this->expectException( QueryFailed::class );
 
 		$kernel->get( ReconcileStalePlacements::class )->handle( array() );
-	}
-
-	/**
-	 * Records in the boot record a schema head just before a migration, so the migration, and any after it, is outstanding.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param string $migrationId The migration.
-	 */
-	private function recordHeadBefore( string $migrationId ): void {
-		$ids      = array_map( static fn( Migration $migration ): string => $migration->id(), OwnedData::registry()->migrations() );
-		$position = array_search( $migrationId, $ids, true );
-
-		$this->assertIsInt( $position );
-		$this->assertGreaterThan( 0, $position );
-
-		$this->plantBootRecord();
-
-		$previous = $ids[ $position - 1 ];
-
-		( new BootOption( $this->db, $this->reporter() ) )->mutate( static fn( BootRecord $record ): BootRecord => $record->withSchemaHead( $previous ) );
 	}
 
 	/**

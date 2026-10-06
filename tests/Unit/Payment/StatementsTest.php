@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Unit\Payment;
 
 use PHPUnit\Framework\TestCase;
 use SEOCart\Payment\Infrastructure\PaymentTables;
+use SEOCart\Payment\Infrastructure\RefundClaimTables;
 use SEOCart\Payment\Infrastructure\RefundTables;
 use SEOCart\Platform\Database\Schema\MutationPattern;
 use SEOCart\Platform\DataRegistry\OwnedData;
@@ -23,8 +24,10 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  *
  * - No statement names a table outside the payment module, as a token or as a bare name: the
  *   order is reached through the order module's service, never by SQL.
- * - The ledger and the refunds are appended to only: no statement updates or deletes a row of
- *   `payment_transactions`, `refunds`, `refund_lines` or `refund_components`.
+ * - The ledger, the refunds and what each refund claim asked are appended to only: no statement
+ *   updates or deletes a row of a payment table declared append-only, which are
+ *   `payment_transactions`, `refunds`, `refund_lines`, `refund_components` and
+ *   `refund_claim_lines`.
  * - An intent's state changes only through the statements the intent state machine compiles: each
  *   assigns `status` with `status IN ({list})` in its WHERE clause.
  * - An intent's authorized, captured and refunded amounts are each written by the one statement
@@ -35,6 +38,8 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * Planted violations, each shown red and removed:
  * - add `public const PURGE = 'DELETE FROM {payment_transactions} WHERE id = %d';` to
  *   MysqlPaymentRepository: the append-only scan fails;
+ * - add `public const RELINE = 'UPDATE {refund_claim_lines} SET quantity = %d WHERE id = %d';` to
+ *   MysqlRefundRepository: the append-only scan fails;
  * - add `public const FORCE = "UPDATE {payment_intents} SET status = 'captured' WHERE id = %d";`:
  *   the state scan fails;
  * - join `{orders}` in MysqlPaymentRepository::ORDER_SUMS: the table scan fails.
@@ -111,15 +116,15 @@ final class StatementsTest extends TestCase {
 	 * @since 0.1.0
 	 */
 	public function test_no_statement_changes_a_ledger_or_refund_row(): void {
-		$appendOnly = array( PaymentTables::TRANSACTIONS );
+		$appendOnly = array();
 
-		$this->assertSame( MutationPattern::AppendOnly, PaymentTables::transactions()->mutationPattern() );
-
-		foreach ( RefundTables::all() as $table ) {
-			$this->assertSame( MutationPattern::AppendOnly, $table->mutationPattern() );
-
-			$appendOnly[] = $table->name();
+		foreach ( OwnedData::registry()->tables() as $table ) {
+			if ( 'Payment' === $table->module() && MutationPattern::AppendOnly === $table->mutationPattern() ) {
+				$appendOnly[] = $table->name();
+			}
 		}
+
+		$this->assertEqualsCanonicalizing( array_merge( array( PaymentTables::TRANSACTIONS, RefundClaimTables::CLAIM_LINES ), RefundTables::names() ), $appendOnly, 'The ledger, the refunds and what each claim asked are declared append-only.' );
 
 		$changes = array();
 

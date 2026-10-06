@@ -48,15 +48,18 @@ use WP_UnitTestCase;
 final class SettingsSurfacesTest extends WP_UnitTestCase {
 
 	/**
-	 * The tax settings as a site that never saved them reads them.
+	 * The settings after the base currency, the tax rules and the refund caps, as a site that never saved them reads them.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The refund caps.
 	 *
 	 * @var array<string, string>
 	 */
-	private const TAX_DEFAULTS = array(
-		'cross_zone_policy' => 'fixed_net',
-		'tax_rounding_mode' => 'per_line',
+	private const OTHER_DEFAULTS = array(
+		'cross_zone_policy'     => 'fixed_net',
+		'tax_rounding_mode'     => 'per_line',
+		'order_agent_per_order' => '250.00',
+		'order_agent_per_day'   => '1000.00',
 	);
 
 	/**
@@ -128,7 +131,7 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 	public function test_a_read_is_the_same_everywhere(): void {
 		wp_set_current_user( self::user( array( 'seocart_manage_settings' ) ) );
 
-		$expected = array( 'base_currency' => 'USD' ) + self::TAX_DEFAULTS;
+		$expected = array( 'base_currency' => 'USD' ) + self::OTHER_DEFAULTS;
 		$response = $this->surfaces->rest( 'GET', '/settings' );
 
 		$this->assertSame( 200, $response->get_status() );
@@ -159,19 +162,19 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 		$response = $this->surfaces->rest( 'PATCH', '/settings', array( 'base_currency' => 'EUR' ) );
 
 		$this->assertSame( 200, $response->get_status() );
-		$this->assertSame( array( 'base_currency' => 'EUR' ) + self::TAX_DEFAULTS, $response->get_data() );
+		$this->assertSame( array( 'base_currency' => 'EUR' ) + self::OTHER_DEFAULTS, $response->get_data() );
 		$this->assertSame( 'EUR', $this->storedBaseCurrency() );
 
 		$command = $this->surfaces->cli( 'seocart settings update', array(), array( 'base_currency' => 'GBP' ) );
 
 		$this->assertNull( $command['failure'] );
-		$this->assertSame( array( 'base_currency' => 'GBP' ) + self::TAX_DEFAULTS, $command['printed']['item'] ?? null );
+		$this->assertSame( array( 'base_currency' => 'GBP' ) + self::OTHER_DEFAULTS, $command['printed']['item'] ?? null );
 		$this->assertSame( 'GBP', $this->storedBaseCurrency() );
 
-		$this->assertSame( array( 'base_currency' => 'JPY' ) + self::TAX_DEFAULTS, $this->service->update( array( 'base_currency' => 'JPY' ), self::actor() ) );
+		$this->assertSame( array( 'base_currency' => 'JPY' ) + self::OTHER_DEFAULTS, $this->service->update( array( 'base_currency' => 'JPY' ), self::actor() ) );
 		$this->assertSame( 'JPY', $this->storedBaseCurrency() );
 
-		$this->assertSame( array( 'base_currency' => 'JPY' ) + self::TAX_DEFAULTS, $this->surfaces->rest( 'GET', '/settings' )->get_data(), 'A read does not see the last change.' );
+		$this->assertSame( array( 'base_currency' => 'JPY' ) + self::OTHER_DEFAULTS, $this->surfaces->rest( 'GET', '/settings' )->get_data(), 'A read does not see the last change.' );
 	}
 
 	/**
@@ -191,8 +194,8 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 		$response = $this->surfaces->rest( 'PATCH', '/settings', array( 'unrelated' => 'x' ) );
 
 		$this->assertSame( 200, $response->get_status() );
-		$this->assertSame( array( 'base_currency' => 'EUR' ) + self::TAX_DEFAULTS, $response->get_data() );
-		$this->assertSame( array( 'base_currency' => 'EUR' ) + self::TAX_DEFAULTS, $this->surfaces->cli( 'seocart settings update', array(), array() )['printed']['item'] ?? null );
+		$this->assertSame( array( 'base_currency' => 'EUR' ) + self::OTHER_DEFAULTS, $response->get_data() );
+		$this->assertSame( array( 'base_currency' => 'EUR' ) + self::OTHER_DEFAULTS, $this->surfaces->cli( 'seocart settings update', array(), array() )['printed']['item'] ?? null );
 		$this->assertSame( 'EUR', $this->storedBaseCurrency() );
 	}
 
@@ -249,9 +252,11 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 		$this->assertSame( 'per_subtotal', self::stored( 'seocart_international_tax_rounding_mode' ) );
 
 		$expected = array(
-			'base_currency'     => 'USD',
-			'cross_zone_policy' => 'fixed_net',
-			'tax_rounding_mode' => 'per_subtotal',
+			'base_currency'         => 'USD',
+			'cross_zone_policy'     => 'fixed_net',
+			'tax_rounding_mode'     => 'per_subtotal',
+			'order_agent_per_order' => '250.00',
+			'order_agent_per_day'   => '1000.00',
 		);
 
 		$this->assertSame( $expected, $this->service->update( array( 'cross_zone_policy' => 'fixed_net' ), self::actor() ) );
@@ -332,7 +337,7 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 
 		$this->assertSame( array( 'GET', 'PATCH' ), $data['methods'] ?? null );
 		$this->assertSame( 'Settings', $data['schema']['title'] ?? null );
-		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode' ), array_keys( $data['schema']['properties'] ?? array() ) );
+		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode', 'order_agent_per_order', 'order_agent_per_day' ), array_keys( $data['schema']['properties'] ?? array() ) );
 		$this->assertSame( array( 'fixed_net', 'fixed_gross' ), $data['schema']['properties']['cross_zone_policy']['enum'] ?? null );
 		$this->assertSame( array( 'per_line', 'per_subtotal' ), $data['schema']['properties']['tax_rounding_mode']['enum'] ?? null );
 	}

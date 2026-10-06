@@ -25,18 +25,20 @@ wp seocart settings get [--format=<format>]
 Changes the store settings the request names, checking every value before saving any, and returns every store setting.
 
 ```sh
-wp seocart settings update [--base_currency=<base_currency>] [--cross_zone_policy=<cross_zone_policy>] [--tax_rounding_mode=<tax_rounding_mode>] [--format=<format>]
+wp seocart settings update [--base_currency=<base_currency>] [--cross_zone_policy=<cross_zone_policy>] [--tax_rounding_mode=<tax_rounding_mode>] [--order_agent_per_order=<order_agent_per_order>] [--order_agent_per_day=<order_agent_per_day>] [--format=<format>]
 ```
 
 - Operation: `settings.update_settings`
 - Capability: `seocart_manage_settings`
-- Error codes: `settings.stored_value_invalid` (500), `currency.unknown` (400), `store.unavailable` (503)
+- Error codes: `settings.stored_value_invalid` (500), `currency.unknown` (400), `payment.refund_cap_invalid` (422), `store.unavailable` (503)
 
 ### Arguments
 
 - `[--base_currency=<base_currency>]`: ISO 4217 code of the currency the store keeps its accounts in, in upper case. Text.
 - `[--cross_zone_policy=<cross_zone_policy>]`: What stays fixed when a price entered including tax is sold where the tax rate differs from the store's own: fixed_net keeps the price before tax, fixed_gross keeps the price paid. One of `fixed_net`, `fixed_gross`.
 - `[--tax_rounding_mode=<tax_rounding_mode>]`: Where tax is rounded: per_line rounds each line's tax, per_subtotal rounds the tax of the lines of one tax class once and shares it out to them. One of `per_line`, `per_subtotal`.
+- `[--order_agent_per_order=<order_agent_per_order>]`: The most an order agent may give back of one order, all of its refunds together, as an amount of the base currency in major units, such as 250.00; empty for no cap. Text of at most 22 characters.
+- `[--order_agent_per_day=<order_agent_per_day>]`: The most an order agent may ask the payment gateway to give back in any 24 hours, of any orders, as an amount of the base currency in major units, such as 1000.00; empty for no cap. Text of at most 22 characters.
 - `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
 
 ## `wp seocart stock adjust`
@@ -57,4 +59,26 @@ wp seocart stock adjust <variant_id> --delta=<delta> --reason=<reason> [--expect
 - `--delta=<delta>`: The change of the units on hand: positive for units that arrived, negative for units that left; never 0. An integer from -1000000 to 1000000.
 - `--reason=<reason>`: Why the units on hand changed. One of `received`, `recount`, `damaged`, `returned`, `correction`.
 - `[--expected_on_hand=<expected_on_hand>]`: The units on hand the client last read. When given, the change applies only while the variant still has exactly that many, so a repeated request cannot apply it twice. An integer of at least 0.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart order refund`
+
+Gives back units of an order's lines, and what is left of its shipping when asked, through the gateway its payment was taken by, at the order's own rate, and answers the refund; the Idempotency-Key header is required, and a retry with the same key and the same request is answered with the same refund, never a second one.
+
+```sh
+wp seocart order refund <order_uuid> [--lines=<json>] [--shipping] --reason_code=<reason_code> [--note=<note>] --idempotency_key=<idempotency_key> [--format=<format>]
+```
+
+- Operation: `payment.refund_order`
+- Capability: `seocart_refund_orders`
+- Error codes: `authorization.denied` (403), `order.not_found` (404), `payment.refund_key_missing` (400), `payment.refund_key_reused` (422), `payment.refund_request_invalid` (422), `payment.refund_note_rejected` (422), `payment.refund_not_refundable` (409), `payment.gateway_unavailable` (503), `payment.operation_unsupported` (409), `payment.unreconciled` (409), `payment.refund_unresolved` (409), `payment.refund_line_not_found` (404), `payment.refund_line_exhausted` (409), `payment.refund_exceeds_captured` (409), `payment.refund_nothing_left` (409), `payment.refund_cap_exceeded` (403), `payment.refund_retry` (409), `payment.refund_declined` (402), `store.unavailable` (503)
+
+### Arguments
+
+- `<order_uuid>`: The public identifier of the order to refund. A uuid.
+- `[--lines=<json>]`: The units of each line to give back, each line at most once; may be empty only when the shipping is asked for. A list of 0 to 200 objects, each with `line_uuid`, `quantity`, `restock`.
+- `[--shipping]`: Whether to give back what is left of the order's shipping; when absent, it is not given back. True or false.
+- `--reason_code=<reason_code>`: Why the order is refunded. One of `customer_return`, `damaged`, `not_as_described`, `late_delivery`, `duplicate_order`, `fraud`, `goodwill`, `other`.
+- `[--note=<note>]`: What the person who refunds writes about the refund; kept with it, and refused when it holds a card number. Text of at most 500 characters. Personal data.
+- `--idempotency_key=<idempotency_key>`: The request's idempotency key, sent in the Idempotency-Key header and nowhere else, of at most 64 bytes: a new key, such as a UUID, for each new request, and the same key when that request is retried. Text of at most 64 characters.
 - `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.

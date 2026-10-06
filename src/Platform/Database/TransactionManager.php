@@ -60,6 +60,20 @@ interface TransactionManager {
 	public function depth(): int;
 
 	/**
+	 * Refuses, while the store takes no write, a unit of work whose first statements are reads sent before it opens a transaction.
+	 *
+	 * A unit of work is refused at its outermost level, by transaction(), while the schema gate is
+	 * closed. A service that reads before its first transaction asks here first, so a column a migration
+	 * has still to add is answered with the gate's refusal, never with the database's error about a
+	 * column it does not know. Sends nothing.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \SEOCart\Support\Error\CodedException `store.unavailable` while a schema gate is closed; a manager without a gate refuses nothing.
+	 */
+	public function refuseWhileClosed(): void;
+
+	/**
 	 * Registers work to run once the outermost level has committed.
 	 *
 	 * Callbacks registered in a level that rolls back never run. Outside any transaction the

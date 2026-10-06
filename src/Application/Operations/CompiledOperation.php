@@ -159,7 +159,7 @@ final class CompiledOperation {
 			return array();
 		}
 
-		$this->cliSynopsis ??= JsonSchemaCompiler::cliSynopsis( $this->definition->input(), $cli->positional() );
+		$this->cliSynopsis ??= JsonSchemaCompiler::cliSynopsis( $this->definition->input(), $cli->positional(), array_keys( array_filter( $this->definition->rest()?->headers() ?? array(), static fn( RequestHeader $header ): bool => $header->required ) ) );
 
 		return $this->cliSynopsis;
 	}

@@ -50,11 +50,11 @@ defined( 'ABSPATH' ) || exit;
  * `order_events`, and publishes the events from the statements' own results, so a rolled-back
  * attempt publishes nothing.
  *
- * Placing an order, recording a payment and parking an order a payment did not match run only
- * inside the caller's transaction: an order committed without its holds, its intents and its
- * outbox rows, or a projection moved or an order parked without its ledger row, is the
- * inconsistency the caller's unit of work exists to prevent. A transition runs in the caller's
- * transaction or its own.
+ * Placing an order, recording a payment, parking an order a payment did not match and recording
+ * a refund in its events run only inside the caller's transaction: an order committed without its
+ * holds, its intents and its outbox rows, a projection moved or an order parked without its
+ * ledger row, or a refund's event without its refund, is the inconsistency the caller's unit of
+ * work exists to prevent. A transition runs in the caller's transaction or its own.
  *
  * Nothing here adds money up: every total is copied from the document the calculation produced,
  * and a payment's amounts are added by the database, in the one statement that also checks them.
@@ -463,6 +463,35 @@ final class Orders {
 		}
 
 		return $this->transitionLocked( $locked, self::PARKED, $this->registry->allowedFrom( self::PARKED ), $reason, $actor );
+	}
+
+	/**
+	 * Records in the order's events something done to its payment that changes no status, such as a refund, naming it by its uuid.
+	 *
+	 * One `order_events` row of the payment machine whose from and to are the payment status the
+	 * order has: written whether or not the payment status changed, which a status change records
+	 * in a row of its own. Inside the caller's transaction, which has locked the order for the
+	 * payment, so the status copied is the one the transaction leaves. The row names the actor and
+	 * the request's correlation id. A reason that is not a lowercase snake_case word is an
+	 * \InvalidArgumentException before any statement.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction, before any statement; or when the order is gone, which the caller's lock rules out.
+	 *
+	 * @param int    $orderId   The order's internal id, locked by the caller's transaction.
+	 * @param string $reason    What happened, a lowercase snake_case word such as `refund_recorded`.
+	 * @param string $reference The uuid of what it records, such as the refund's.
+	 * @param Actor  $actor     On whose authority.
+	 * @return int The event row's id.
+	 */
+	public function appendAudit( int $orderId, string $reason, string $reference, Actor $actor ): int {
+		$this->requireCallersTransaction( __FUNCTION__ );
+		self::checkReason( $reason );
+
+		list( $actorType, $actorId ) = self::actorOf( $actor );
+
+		return $this->orders->appendAudit( $orderId, $reason, $reference, $actorType, $actorId, $this->correlation->current() );
 	}
 
 	/**

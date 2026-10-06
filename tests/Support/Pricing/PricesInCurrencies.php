@@ -12,11 +12,13 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Support\Pricing;
 
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\Migration;
 use SEOCart\Platform\Database\LockMode;
 use SEOCart\Platform\Database\LockService;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
+use SEOCart\Platform\DataRegistry\OwnedData;
 use SEOCart\Platform\Kernel\BootOption;
 use SEOCart\Platform\Kernel\BootRecord;
 use SEOCart\Pricing\Application\ManualRate;
@@ -136,6 +138,27 @@ trait PricesInCurrencies {
 		$record              = KernelTestCase::installedRecord( KernelTestCase::codeHead() );
 
 		( new BootOption( $this->db, $this->reporter() ) )->mutate( static fn(): BootRecord => null === $rateVersion ? $record : $record->withRateVersion( $rateVersion ) );
+	}
+
+	/**
+	 * Writes the installation record with a schema head just before a migration, so that migration, and any after it, is outstanding.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $migrationId The migration.
+	 */
+	protected function recordHeadBefore( string $migrationId ): void {
+		$ids      = array_map( static fn( Migration $migration ): string => $migration->id(), OwnedData::registry()->migrations() );
+		$position = array_search( $migrationId, $ids, true );
+
+		$this->assertIsInt( $position );
+		$this->assertGreaterThan( 0, $position );
+
+		$this->plantBootRecord();
+
+		$previous = $ids[ $position - 1 ];
+
+		( new BootOption( $this->db, $this->reporter() ) )->mutate( static fn( BootRecord $record ): BootRecord => $record->withSchemaHead( $previous ) );
 	}
 
 	/**

@@ -390,6 +390,57 @@ final class JsonSchemaCompilerTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a Boolean is a flag, never required, and that a field a required header carries on REST is a required option.
+	 *
+	 * The flag matters: WP-CLI drops a bare `--shipping` given to an option that takes a value,
+	 * with only a warning, so a Boolean written as `--shipping=<shipping>` would be false when the
+	 * person typed the flag.
+	 *
+	 * Planted violations, each shown red and removed: in JsonSchemaCompiler::cliOption(), write a
+	 * Boolean as an `assoc` option: the entry is not a flag; in JsonSchemaCompiler::cliArgument(),
+	 * ignore the required header: the key's option is optional.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_boolean_is_a_flag_and_a_required_header_a_required_option(): void {
+		$fields = array(
+			new FieldSpec( name: 'shipping', type: FieldType::Boolean, description: 'Whether to give back the shipping.', label: static fn(): string => 'Shipping', example: true ),
+			new FieldSpec( name: 'idempotency_key', type: FieldType::String, description: 'The key.', label: static fn(): string => 'Key', example: 'attempt-1', max_length: 64 ),
+		);
+
+		$this->assertSame(
+			array(
+				array(
+					'type'        => 'flag',
+					'name'        => 'shipping',
+					'description' => 'Whether to give back the shipping.',
+					'optional'    => true,
+				),
+				array(
+					'type'        => 'assoc',
+					'name'        => 'idempotency_key',
+					'description' => 'The key.',
+					'optional'    => false,
+				),
+			),
+			array_slice( JsonSchemaCompiler::cliSynopsis( $fields, array(), array( 'idempotency_key' ) ), 0, 2 )
+		);
+		$this->assertTrue( JsonSchemaCompiler::cliSynopsis( $fields, array() )[1]['optional'], 'Without its header the key is an ordinary optional field.' );
+	}
+
+	/**
+	 * Tests that a required Boolean is refused: a flag is never required.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_synopsis_refuses_a_required_boolean(): void {
+		$this->expectException( SchemaException::class );
+		$this->expectExceptionMessage( 'a command takes a Boolean as a flag, which is never required' );
+
+		JsonSchemaCompiler::cliSynopsis( array( new FieldSpec( name: 'restock', type: FieldType::Boolean, description: 'Restock.', label: static fn(): string => 'Restock', example: true, required: true ) ), array() );
+	}
+
+	/**
 	 * Tests that the synopsis refuses a field that would shadow the format option.
 	 *
 	 * @since 0.1.0

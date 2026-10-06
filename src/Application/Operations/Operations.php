@@ -16,6 +16,7 @@ use SEOCart\Cart\Interfaces\StoreApi\StoreOperations;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Inventory\Application\InventoryOperations;
 use SEOCart\Order\Interfaces\StoreApi\OrderStoreOperations;
+use SEOCart\Payment\Application\PaymentOperations;
 use SEOCart\Platform\Settings\SettingsOperations;
 
 defined( 'ABSPATH' ) || exit;
@@ -58,6 +59,7 @@ final class Operations {
 		$registry->add( CartOperations::APPLY_CODE, array( CartOperations::class, 'applyCode' ) );
 		$registry->add( CartOperations::REMOVE_CODE, array( CartOperations::class, 'removeCode' ) );
 		$registry->add( CheckoutOperations::CHANGE_CURRENCY, array( CheckoutOperations::class, 'changeCurrency' ) );
+		$registry->add( PaymentOperations::REFUND_ORDER, array( PaymentOperations::class, 'refundOrder' ) );
 
 		return $registry;
 	}

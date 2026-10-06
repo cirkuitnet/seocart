@@ -105,6 +105,7 @@ use SEOCart\Payment\Application\GatewaySwitches;
 use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Application\RefundCapPolicy;
 use SEOCart\Payment\Application\RefundService;
 use SEOCart\Payment\Domain\Event\PaymentAuthorized;
 use SEOCart\Payment\Domain\Event\PaymentCaptured;
@@ -1488,6 +1489,7 @@ final class Modules {
 		$container->bind( PaymentLedgerCheck::class, static fn( Container $c ): PaymentLedgerCheck => new PaymentLedgerCheck( $c->get( MysqlPaymentRepository::class ), $c->get( OrderRepository::class ) ) );
 		$container->bind( GatewaysCheck::class, static fn( Container $c ): GatewaysCheck => new GatewaysCheck( $c->get( GatewayStatuses::class ), $c->get( Gateways::class ) ) );
 		$container->bind( RefundRepository::class, static fn( Container $c ): RefundRepository => new MysqlRefundRepository( $c->get( Database::class ) ) );
+		$container->bind( RefundCapPolicy::class, static fn( Container $c ): RefundCapPolicy => new RefundCapPolicy( $c->get( SettingsStore::class ) ) );
 		$container->bind(
 			RefundService::class,
 			static fn( Container $c ): RefundService => new RefundService(
@@ -1498,7 +1500,9 @@ final class Modules {
 				$c->get( TransactionManager::class ),
 				$c->get( EventPublisher::class ),
 				$c->get( Authorizer::class ),
-				$c->get( Clock::class )
+				$c->get( Clock::class ),
+				$c->get( RefundCapPolicy::class ),
+				$c->get( Orders::class )
 			)
 		);
 	}

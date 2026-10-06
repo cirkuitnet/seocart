@@ -1120,7 +1120,7 @@
                         "name": "Idempotency-Key",
                         "in": "header",
                         "required": true,
-                        "description": "The attempt's idempotency key, sent in the Idempotency-Key header and nowhere else: a new key, such as a UUID, for each attempt, and the same key when it is retried.",
+                        "description": "The request's idempotency key, sent in the Idempotency-Key header and nowhere else, of at most 64 bytes: a new key, such as a UUID, for each new request, and the same key when that request is retried.",
                         "schema": {
                             "type": "string",
                             "maxLength": 64,
@@ -1289,6 +1289,218 @@
                     },
                     "503": {
                         "description": "`checkout.gateway_unavailable`: The payment provider could not be reached. Your order is waiting for its answer: check its status in a few minutes before you try again.\n\n`pricing.quote_unavailable`: an internal failure, answered with a generic message and empty details. The site's error log has what went wrong, under the correlation id.\n\n`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/orders/{order_uuid}/refunds": {
+            "post": {
+                "operationId": "payment.refund_order",
+                "summary": "Gives back units of an order's lines, and what is left of its shipping when asked, through the gateway its payment was taken by, at the order's own rate, and answers the refund; the Idempotency-Key header is required, and a retry with the same key and the same request is answered with the same refund, never a second one.",
+                "description": "Requires the capability `seocart_refund_orders`.",
+                "parameters": [
+                    {
+                        "name": "order_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The public identifier of the order to refund.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "required": true,
+                        "description": "The request's idempotency key, sent in the Idempotency-Key header and nowhere else, of at most 64 bytes: a new key, such as a UUID, for each new request, and the same key when that request is retried.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "examples": [
+                                "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "lines": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "line_uuid": {
+                                                    "type": "string",
+                                                    "format": "uuid",
+                                                    "description": "The public identifier of the order line."
+                                                },
+                                                "quantity": {
+                                                    "type": "integer",
+                                                    "minimum": 1,
+                                                    "description": "How many of the line's units to give back."
+                                                },
+                                                "restock": {
+                                                    "type": "boolean",
+                                                    "description": "Whether the units go back into stock: recorded with the refund, not yet acted on; when absent, they do not."
+                                                }
+                                            },
+                                            "required": [
+                                                "line_uuid",
+                                                "quantity"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        "maxItems": 200,
+                                        "description": "The units of each line to give back, each line at most once; may be empty only when the shipping is asked for.",
+                                        "examples": [
+                                            [
+                                                {
+                                                    "line_uuid": "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6d",
+                                                    "quantity": 1,
+                                                    "restock": false
+                                                }
+                                            ]
+                                        ]
+                                    },
+                                    "shipping": {
+                                        "type": "boolean",
+                                        "description": "Whether to give back what is left of the order's shipping; when absent, it is not given back.",
+                                        "examples": [
+                                            true
+                                        ]
+                                    },
+                                    "reason_code": {
+                                        "type": "string",
+                                        "enum": [
+                                            "customer_return",
+                                            "damaged",
+                                            "not_as_described",
+                                            "late_delivery",
+                                            "duplicate_order",
+                                            "fraud",
+                                            "goodwill",
+                                            "other"
+                                        ],
+                                        "description": "Why the order is refunded.",
+                                        "examples": [
+                                            "customer_return"
+                                        ]
+                                    },
+                                    "note": {
+                                        "type": "string",
+                                        "maxLength": 500,
+                                        "description": "What the person who refunds writes about the refund; kept with it, and refused when it holds a card number.",
+                                        "examples": [
+                                            "The box arrived crushed."
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "reason_code"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the Refund resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Refund"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`payment.refund_key_missing`: A refund needs an idempotency key of 1 to {max_bytes} bytes: a new key, such as a UUID, for each new refund, and the same key to retry it.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_refund_orders`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "402": {
+                        "description": "`payment.refund_declined`: The payment gateway declined the refund; no money was given back.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_refund_orders`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.\n\n`payment.refund_cap_exceeded`: A refund of {requested_minor} would exceed your {cap_kind} refund cap of {limit_minor}, of which {used_minor} is used (amounts in minor units of {currency}). Ask a user with a higher cap to make it.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`order.not_found`: The order was not found.\n\n`payment.refund_line_not_found`: The order has no line {line_uuid}.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`payment.refund_not_refundable`: The order {order_uuid} has no captured payment to refund.\n\n`payment.operation_unsupported`: The payment gateway {gateway_id} does not support {operation} for this payment; nothing was sent to it.\n\n`payment.unreconciled`: The payment has a result that could not be recorded against its order; a person must reconcile it before anything else is done with the payment.\n\n`payment.refund_unresolved`: The payment gateway was asked for the refund {refund_uuid} before and cannot say whether it gave the money back. Nothing in the plugin settles such a refund yet, and until a person does, this payment takes no other refund.\n\n`payment.refund_line_exhausted`: Only {returnable} units of line {line_uuid} are left to refund.\n\n`payment.refund_exceeds_captured`: A refund of {requested} would exceed what is left of {captured} captured, of which {refunded} is already refunded.\n\n`payment.refund_nothing_left`: Nothing of what the refund asks for is left to give back.\n\n`payment.refund_retry`: Another request is refunding the same units of this payment, or another refund of it was recorded or declined while this one was being worked out, so the payment gateway was not asked for it; ask for the refund again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "`payment.refund_key_reused`: This idempotency key was sent before with another refund request. Send a new key with a new request, and the same key only to retry the same request.\n\n`payment.refund_request_invalid`: The refund request is not one a refund can be made from ({problem}): it asks for units of a line, the shipping, or both, and names each line once.\n\n`payment.refund_note_rejected`: The refund's note holds what reads as a card number, which the store never keeps; write the note without it.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`payment.gateway_unavailable`: The payment gateway {gateway_id} cannot be used now ({reason}); nothing was sent to it.\n\n`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -1515,6 +1727,22 @@
                                         "examples": [
                                             "per_subtotal"
                                         ]
+                                    },
+                                    "order_agent_per_order": {
+                                        "type": "string",
+                                        "maxLength": 22,
+                                        "description": "The most an order agent may give back of one order, all of its refunds together, as an amount of the base currency in major units, such as 250.00; empty for no cap.",
+                                        "examples": [
+                                            "250.00"
+                                        ]
+                                    },
+                                    "order_agent_per_day": {
+                                        "type": "string",
+                                        "maxLength": 22,
+                                        "description": "The most an order agent may ask the payment gateway to give back in any 24 hours, of any orders, as an amount of the base currency in major units, such as 1000.00; empty for no cap.",
+                                        "examples": [
+                                            "1000.00"
+                                        ]
                                     }
                                 }
                             }
@@ -1554,6 +1782,16 @@
                     },
                     "403": {
                         "description": "The user does not hold the capability `seocart_manage_settings`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "`payment.refund_cap_invalid`: A refund cap is an amount of the base currency, such as 250.00, with at most six decimals, or empty for no cap.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3648,6 +3886,135 @@
                     "payment_status"
                 ]
             },
+            "Refund": {
+                "type": "object",
+                "properties": {
+                    "refund_uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The refund's public identifier, which the gateway received as its idempotency key.",
+                        "examples": [
+                            "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6c"
+                        ]
+                    },
+                    "order_uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The order refunded.",
+                        "examples": [
+                            "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b"
+                        ]
+                    },
+                    "total_minor": {
+                        "type": "integer",
+                        "description": "What the refund gave back, tax included, in minor units of the order's currency.",
+                        "examples": [
+                            2468
+                        ]
+                    },
+                    "tax_minor": {
+                        "type": "integer",
+                        "description": "The tax the refund gave back, in minor units of the order's currency.",
+                        "examples": [
+                            411
+                        ]
+                    },
+                    "shipping_minor": {
+                        "type": "integer",
+                        "description": "The shipping the refund gave back, before tax, in minor units of the order's currency.",
+                        "examples": [
+                            499
+                        ]
+                    },
+                    "currency": {
+                        "type": "string",
+                        "maxLength": 3,
+                        "description": "The order's currency, ISO 4217.",
+                        "examples": [
+                            "EUR"
+                        ]
+                    },
+                    "base_total_minor": {
+                        "type": "integer",
+                        "description": "The total in minor units of the base currency, at the order's own rate.",
+                        "examples": [
+                            2705
+                        ]
+                    },
+                    "base_currency": {
+                        "type": "string",
+                        "maxLength": 3,
+                        "description": "The store's base currency when the order was placed, ISO 4217.",
+                        "examples": [
+                            "USD"
+                        ]
+                    },
+                    "reason_code": {
+                        "type": "string",
+                        "description": "Why the order was refunded.",
+                        "examples": [
+                            "customer_return"
+                        ]
+                    },
+                    "note": {
+                        "type": "string",
+                        "maxLength": 500,
+                        "description": "What the person who refunds writes about the refund; kept with it, and refused when it holds a card number.",
+                        "examples": [
+                            "The box arrived crushed."
+                        ]
+                    },
+                    "lines": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "line_uuid": {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "description": "The public identifier of the order line."
+                                },
+                                "quantity": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "How many of the line's units to give back."
+                                },
+                                "restock": {
+                                    "type": "boolean",
+                                    "description": "Whether the units go back into stock: recorded with the refund, not yet acted on; when absent, they do not."
+                                }
+                            },
+                            "required": [
+                                "line_uuid",
+                                "quantity"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "description": "The units of each line the refund was asked for, in the order of the lines' identifiers.",
+                        "examples": [
+                            [
+                                {
+                                    "line_uuid": "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6d",
+                                    "quantity": 1,
+                                    "restock": false
+                                }
+                            ]
+                        ]
+                    }
+                },
+                "required": [
+                    "refund_uuid",
+                    "order_uuid",
+                    "total_minor",
+                    "tax_minor",
+                    "shipping_minor",
+                    "currency",
+                    "base_total_minor",
+                    "base_currency",
+                    "reason_code",
+                    "lines"
+                ]
+            },
             "Settings": {
                 "type": "object",
                 "properties": {
@@ -3679,12 +4046,30 @@
                         "examples": [
                             "per_subtotal"
                         ]
+                    },
+                    "order_agent_per_order": {
+                        "type": "string",
+                        "maxLength": 22,
+                        "description": "The most an order agent may give back of one order, all of its refunds together, as an amount of the base currency in major units, such as 250.00; empty for no cap.",
+                        "examples": [
+                            "250.00"
+                        ]
+                    },
+                    "order_agent_per_day": {
+                        "type": "string",
+                        "maxLength": 22,
+                        "description": "The most an order agent may ask the payment gateway to give back in any 24 hours, of any orders, as an amount of the base currency in major units, such as 1000.00; empty for no cap.",
+                        "examples": [
+                            "1000.00"
+                        ]
                     }
                 },
                 "required": [
                     "base_currency",
                     "cross_zone_policy",
-                    "tax_rounding_mode"
+                    "tax_rounding_mode",
+                    "order_agent_per_order",
+                    "order_agent_per_day"
                 ]
             },
             "StockLevel": {

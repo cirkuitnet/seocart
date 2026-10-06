@@ -124,7 +124,7 @@ final class RefundClaimConcurrencyTest extends RefundTestCase {
 	/**
 	 * Tests that a claim of another refund, racing A's for the intent's lock, waits for A's claim to commit and is then refused on it, having written nothing.
 	 *
-	 * A refunds a gift, B a mug. A's claim takes the intent's lock; inside A's claim's transaction,
+	 * A refunds a gift, B, another order agent, a mug. A's claim takes the intent's lock; inside A's claim's transaction,
 	 * the barrier starts B's refund in a process of its own and returns once the server shows B's
 	 * locking read waiting for the lock. B's reads came before A's claim, so the early check let B
 	 * through to its own claim. A's claim then commits, and A's gateway call waits for B to end:
@@ -139,13 +139,15 @@ final class RefundClaimConcurrencyTest extends RefundTestCase {
 		$claims                 = new BarrierRefundRepository( new MysqlRefundRepository( $this->db ) );
 		$a                      = $this->refundsOver( $this->db, $this->ids, $this->gateway, null, $claims );
 		$lock                   = $this->rawRefund( MysqlRefundRepository::LOCK_FOR_CLAIM, (int) $this->intentRow( $intent->uuid )['id'] );
+		$other                  = $this->userWithRole();
 		$this->probeB           = null;
 
-		// The barrier: A holds the intent's lock inside its claim's transaction; B, in a process of its own, waits for it.
+		// The barrier: A holds the intent's lock inside its claim's transaction; B, another order agent, in a process of
+		// its own, waits for it. Another agent, whose own lock row for the cap of a day nothing holds.
 		$claims->afterLock(
-			function () use ( $order, $mug, $lock ): void {
+			function () use ( $order, $mug, $lock, $other ): void {
 				if ( null === $this->probeB ) {
-					$this->probeB = $this->startRefundProbe( $order->uuid, array( $mug => 1 ) );
+					$this->probeB = $this->startRefundProbe( $order->uuid, array( $mug => 1 ), null, $other );
 
 					$this->awaitProbeWaiting( $this->probeB, $lock, 'statistics' );
 				}

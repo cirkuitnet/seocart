@@ -14,6 +14,7 @@ namespace SEOCart\Payment\Application;
 // Before the imports: Plugin Check looks for this guard only in the first 50 lines of a namespaced file.
 defined( 'ABSPATH' ) || exit;
 
+use SEOCart\Application\Operations\IdempotencyKey;
 use SEOCart\Contracts\Payment\GatewayRefund;
 use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\GatewayUnavailable;
@@ -21,6 +22,7 @@ use SEOCart\Contracts\Payment\Operations;
 use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Order\Application\OrderError;
+use SEOCart\Order\Application\Orders;
 use SEOCart\Order\Domain\OrderRepository;
 use SEOCart\Order\Domain\RefundableLine;
 use SEOCart\Order\Domain\RefundableOrder;
@@ -38,6 +40,7 @@ use SEOCart\Payment\Domain\Refund\RefundLineRequest;
 use SEOCart\Payment\Domain\Refund\RefundPlan;
 use SEOCart\Payment\Domain\Refund\RefundRepository;
 use SEOCart\Payment\Domain\Refund\RefundRequest;
+use SEOCart\Payment\Domain\Refund\RequestKey;
 use SEOCart\Payment\Domain\Refund\Share;
 use SEOCart\Payment\Domain\Refund\ShippingPortion;
 use SEOCart\Platform\Authorization\Actor;
@@ -47,6 +50,7 @@ use SEOCart\Platform\Database\Exception\TransactionRetryable;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\EventPublisher;
+use SEOCart\Platform\Logging\CardNumbers;
 use SEOCart\Support\Clock;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Money;
@@ -59,33 +63,54 @@ use SEOCart\Support\TaxedMoney;
  *
  * Owns one fact: the order a refund happens in.
  *
- * 1. The capability `seocart_refund_orders`, before anything else.
- * 2. Outside any transaction, plain reads: the order with the lines asked for, its shipping and
+ * 1. The capability `seocart_refund_orders`, before anything else; then the note: one that holds
+ *    what reads as a card number is refused `payment.refund_note_rejected`, whoever asks, so it is
+ *    never kept; then the schema gate, so a migration the refund's statements need, still
+ *    outstanding, refuses the refund `store.unavailable` before its first read.
+ * 2. With an idempotency key, the claim it names, by one read: none, and the refund goes on; a
+ *    claim made with the key for another request refuses it `payment.refund_key_reused`; an ended
+ *    claim answers it, as the same refund asked again does below, without a read of the order; a
+ *    claim still open goes on, and is found again by the refund's identity.
+ * 3. Outside any transaction, plain reads: the order with the lines asked for, its shipping and
  *    their tax components at its current totals version; its captured intent, with whether the
  *    ledger holds a result of it applied to nothing, which refuses the refund until a person has
  *    reconciled that money, and its oldest refund still claimed, which refuses any other refund
  *    of it (below); and what earlier refunds returned. RefundAllocation allocates the shares from
  *    those stored figures, and every cap is checked against the same reads: the units each line
  *    has left, what is left of each component and of the shipping, and what the intent captured
- *    and has not refunded, in both currencies. A refusal here happens before the gateway is asked,
- *    and leaves nothing behind.
- * 3. The refund's claim, in a short transaction of its own under the intent's lock, committed
- *    before the gateway is asked. The lock reads, as they now stand, whether the intent has money
+ *    and has not refunded, in both currencies. So is the cap of one order that RefundCapPolicy
+ *    holds the user to: what the intent refunded and this refund's base share together. A refusal
+ *    here happens before the gateway is asked, and leaves nothing behind.
+ * 4. The refund's claim, in a short transaction of its own under the intent's lock, committed
+ *    before the gateway is asked. For a user capped by the day, the user's lock row is taken
+ *    first, before any read, so the sum below counts every claim of theirs committed while this one
+ *    waited for it. The intent's lock reads, as they now stand, whether the intent has money
  *    a person must reconcile, which refuses the refund `payment.unreconciled` as the reads would
  *    have; what the refund's uuid is named by; and the intent's oldest claim still open. A claim of
  *    this refund already open is not made again: the gateway is asked what became of it (below).
  *    A claim of another refund open
  *    refuses this one `payment.refund_unresolved`, naming that claim. What the refund's uuid is
  *    named by having moved since the reads refuses it `payment.refund_retry`: another refund was
- *    recorded or declined meanwhile, and asking again works the refund out anew. Otherwise the
- *    claim is inserted: the refund's uuid, the intent, the amount, who asks and when. A refusal
- *    here writes nothing and asks nothing of the gateway.
- * 4. The gateway's refund, at transaction depth 0: it may go over the network. Its idempotency key
+ *    recorded or declined meanwhile, and asking again works the refund out anew. The gateway's
+ *    capability matrix is asked again, as its account may have moved to another country. The user's
+ *    caps are checked again: of one order, from what the intent refunded in the base currency as it
+ *    now stands, and of a day, from what the user asked of the gateway in the last 24 hours; past
+ *    either, the refund is refused `payment.refund_cap_exceeded`, whole. Otherwise
+ *    the claim is inserted, with the lines asked: the refund's uuid, the intent, the amount and its
+ *    base share, the shipping, the reason and the note, the key's hash and the request's
+ *    fingerprint, who asks and when. A refusal here writes nothing and asks nothing of the gateway.
+ *    A request with a key that 3 or 4 refuses, whatever the refusal, reads its key once more:
+ *    another request with the same key may have claimed the refund, and recorded it, since this
+ *    one first looked, and so taken the units, a cap or the figures this one was worked out from;
+ *    its claim, once ended, is the answer, and otherwise the refusal stands.
+ * 5. The gateway's refund, at transaction depth 0: it may go over the network. Its idempotency key
  *    is the refund's uuid, derived from the refund itself (below).
- * 5. One transaction, which locks the intent and then the order: the gateway's answer applied to
+ * 6. One transaction, which locks the intent and then the order: the gateway's answer applied to
  *    the ledger with the refund's base share (applyGatewayResult()), then the document, its lines
  *    and its components, each insert carrying its cap, the lines' refunded quantities by one
- *    conditional update, the claim ended `recorded`, then RefundRecorded, all in one savepoint.
+ *    conditional update, the claim ended `recorded`, the order's event of the refund
+ *    (`refund_recorded`, naming it by its uuid, the actor and the request), then RefundRecorded,
+ *    all in one savepoint.
  *    If anything there refuses or fails after the gateway gave the money back (a cap, or any other
  *    error), the savepoint takes it all back, the money is recorded for a person
  *    (recordUnapplied()), the claim ends `unreconciled`, and the caller is answered
@@ -109,7 +134,11 @@ use SEOCart\Support\TaxedMoney;
  * transaction, or by two people at once) is always the same refund, and finds its claim. A refund
  * whose claim exists is never asked of the gateway again. It is answered from its claim: its
  * document when it was recorded, `payment.refund_declined` when it was declined,
- * `payment.unreconciled` when what the gateway answered was left for a person. While the claim is
+ * `payment.unreconciled` when what the gateway answered was left for a person. To a request with an
+ * idempotency key, a claim is answered only when that key made it: a claim of the same refund that
+ * another key made, or no key, refuses the request `payment.refund_retry`, as another request is
+ * refunding the same units and the answer is that request's. Asked again once that claim has
+ * ended, the request is worked out anew, as a new refund. While the claim is
  * still `claimed`, the gateway is asked what became of the refund (queryRefund()): a refund it made,
  * or declined, is recorded as a first answer would be. A claim the gateway cannot account for waits
  * for a person: when it cannot say, or says it made no such refund, nothing is written, the claim
@@ -121,10 +150,10 @@ use SEOCart\Support\TaxedMoney;
  *
  * What the claim does not cover:
  *
- * - a refund recorded whose answer the caller lost: the intent's refunded amount moved, so the same
- *   request asked again is a new refund, with a new claim, which the caps allow while the units are
- *   left. Telling a retry from a second refund of the same units needs a key the caller sends with
- *   the request; that is the refund operation's, which does not exist yet;
+ * - a refund recorded whose answer the caller lost, asked again without a key: the intent's refunded
+ *   amount moved, so the same request is a new refund, with a new claim, which the caps allow while
+ *   the units are left. Only the key the caller sends tells a retry from a second refund of the same
+ *   units, and the refund operation always sends one;
  * - nobody asking again: a claim the gateway's answer never ended stays `claimed`, and doctor's
  *   payments check reports it once it is older than PaymentService::STALE_SECONDS; nothing asks the
  *   gateway about it until the same refund is asked for again, and until then the intent takes no
@@ -141,13 +170,22 @@ use SEOCart\Support\TaxedMoney;
 final class RefundService {
 
 	/**
-	 * The capability a refund needs.
+	 * The capability a refund needs, the refund operation's.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const CAPABILITY = 'seocart_refund_orders';
+	public const CAPABILITY = PaymentOperations::REFUND_CAPABILITY;
+
+	/**
+	 * The reason of the order event that records a refund.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const AUDIT_REASON = 'refund_recorded';
 
 	/**
 	 * The refund statements.
@@ -222,29 +260,87 @@ final class RefundService {
 	private Clock $clock;
 
 	/**
+	 * Says which refund caps a user is held to.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var RefundCapPolicy
+	 */
+	private RefundCapPolicy $caps;
+
+	/**
+	 * The order module's service, which records each refund among the order's events.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var Orders
+	 */
+	private Orders $orderEvents;
+
+	/**
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 Takes the gateway registry in place of the one gateway.
+	 * @since 0.2.0 Takes the gateway registry in place of the one gateway, the policy of the refund caps, and the order module's service.
 	 *
-	 * @param RefundRepository   $refunds    The refund statements.
-	 * @param OrderRepository    $orders     The order statements.
-	 * @param PaymentService     $payments   The money path.
-	 * @param Gateways           $gateways   The gateways.
-	 * @param TransactionManager $tx         The unit of work.
-	 * @param EventPublisher     $events     Publishes the events.
-	 * @param Authorizer         $authorizer Checks capabilities.
-	 * @param Clock              $clock      Says when an event happened.
+	 * @param RefundRepository   $refunds     The refund statements.
+	 * @param OrderRepository    $orders      The order statements.
+	 * @param PaymentService     $payments    The money path.
+	 * @param Gateways           $gateways    The gateways.
+	 * @param TransactionManager $tx          The unit of work.
+	 * @param EventPublisher     $events      Publishes the events.
+	 * @param Authorizer         $authorizer  Checks capabilities.
+	 * @param Clock              $clock       Says when an event happened.
+	 * @param RefundCapPolicy    $caps        Says which refund caps a user is held to.
+	 * @param Orders             $orderEvents The order module's service, which records each refund among the order's events.
 	 */
-	public function __construct( RefundRepository $refunds, OrderRepository $orders, PaymentService $payments, Gateways $gateways, TransactionManager $tx, EventPublisher $events, Authorizer $authorizer, Clock $clock ) {
-		$this->refunds    = $refunds;
-		$this->orders     = $orders;
-		$this->payments   = $payments;
-		$this->gateways   = $gateways;
-		$this->tx         = $tx;
-		$this->events     = $events;
-		$this->authorizer = $authorizer;
-		$this->clock      = $clock;
+	public function __construct( RefundRepository $refunds, OrderRepository $orders, PaymentService $payments, Gateways $gateways, TransactionManager $tx, EventPublisher $events, Authorizer $authorizer, Clock $clock, RefundCapPolicy $caps, Orders $orderEvents ) {
+		$this->refunds     = $refunds;
+		$this->orders      = $orders;
+		$this->payments    = $payments;
+		$this->gateways    = $gateways;
+		$this->tx          = $tx;
+		$this->events      = $events;
+		$this->authorizer  = $authorizer;
+		$this->clock       = $clock;
+		$this->caps        = $caps;
+		$this->orderEvents = $orderEvents;
+	}
+
+	/**
+	 * Refunds an order as the refund operation asks, and answers with the refund.
+	 *
+	 * Sends no statement of its own before refund(). The idempotency key is required, 1 to
+	 * IdempotencyKey::MAX_LENGTH bytes long; a request that asks for nothing, or names a line twice,
+	 * is refused; refund() refuses a note that holds what reads as a card number. The key is hashed
+	 * with the user who asks, the same user on every surface, so no two users share a key; the
+	 * request's fingerprint is its canonical form's.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `authorization.denied`; `payment.refund_key_missing`, also for a key longer than
+	 *                        IdempotencyKey::MAX_LENGTH bytes; `payment.refund_request_invalid`, naming the
+	 *                        problem; `payment.refund_note_rejected`; what refund() raises.
+	 *
+	 * @param array<string, mixed> $input The prepared input: order_uuid, lines, shipping, reason_code, note and idempotency_key.
+	 * @param Actor                $actor Who refunds.
+	 * @return array<string, mixed> The refund, keyed by wire name.
+	 */
+	public function refundOrder( array $input, Actor $actor ): array {
+		$this->authorizer->authorize( $actor, self::CAPABILITY );
+
+		$key = (string) ( $input[ IdempotencyKey::FIELD ] ?? '' );
+
+		// The header reaches here unchecked by the field's schema, which counts characters: a key the
+		// hash does not take, empty or longer than its bytes allow, is refused before anything else.
+		if ( ! IdempotencyKey::accepts( $key ) ) {
+			CodedException::raise( PaymentError::RefundKeyMissing, array( 'max_bytes' => IdempotencyKey::MAX_LENGTH ) );
+		}
+
+		$request = self::requestOf( $input );
+		$keyHash = IdempotencyKey::hash( PaymentOperations::REFUND_ORDER . '|' . $actor->userId(), $key );
+
+		return self::answer( $this->refund( $request, $actor, new RequestKey( $keyHash, IdempotencyKey::fingerprint( $request->canonical() ) ) ), $request );
 	}
 
 	/**
@@ -252,10 +348,15 @@ final class RefundService {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \LogicException      Inside a transaction, before any statement: the gateway is called.
+	 * @throws \LogicException      Inside a transaction, before any statement: the gateway is called. Or when the claim
+	 *                              the key names is open but is not the claim the same request names, naming both: a
+	 *                              claim was changed outside this service.
 	 * @throws GatewayUnavailable   When the gateway has no answer; nothing was recorded, and the claim is left `claimed`.
 	 * @throws TransactionRetryable When every attempt to record the answer lost a deadlock; nothing was recorded, and the claim is left `claimed`.
-	 * @throws CodedException       `authorization.denied`, before any read; `order.not_found`;
+	 * @throws CodedException       `authorization.denied`, before any read; `payment.refund_note_rejected` when the
+	 *                              note holds what reads as a card number, before any read; `store.unavailable` while
+	 *                              the schema gate is closed, before any read; `payment.refund_key_reused` when the key
+	 *                              was sent before with another request, from the key's read alone; `order.not_found`;
 	 *                              `payment.refund_not_refundable` when the order has no captured intent;
 	 *                              `payment.gateway_unavailable` when the intent's gateway is not registered
 	 *                              or its credentials for the intent's mode cannot be used;
@@ -271,7 +372,12 @@ final class RefundService {
 	 *                              `payment.refund_retry` when another refund was recorded or declined
 	 *                              after this one was worked out, and `payment.refund_unresolved` when
 	 *                              another refund was claimed meanwhile, both under the intent's lock,
-	 *                              before the gateway is asked; `payment.refund_declined` when the
+	 *                              before the gateway is asked; `payment.refund_retry`, to a request
+	 *                              with a key, when the same refund was claimed by another request with
+	 *                              another key or none, before the gateway is asked;
+	 *                              `payment.refund_cap_exceeded` when the
+	 *                              refund is past one of the user's refund caps, before the claim or
+	 *                              under its locks; `payment.refund_declined` when the
 	 *                              gateway declined, now or when the refund was asked for before;
 	 *                              `payment.unreconciled` when the gateway gave the money back but the
 	 *                              refund could not be recorded, which is then left for a person, with
@@ -280,22 +386,111 @@ final class RefundService {
 	 *                              uuid, when the refund was asked for before and the gateway cannot
 	 *                              account for it.
 	 *
-	 * @param RefundRequest $request What to refund.
-	 * @param Actor         $actor   Who refunds it.
-	 * @return Refund The refund; for the same refund asked again, recorded since or found made by the gateway, its document.
+	 * @param RefundRequest   $request What to refund.
+	 * @param Actor           $actor   Who refunds it.
+	 * @param RequestKey|null $key     Optional. The idempotency key the caller sent, as the refund operation hashes it; null for
+	 *                                 a refund asked without one. Default null.
+	 * @return Refund The refund; for the same refund asked again, recorded since or found made by the gateway, its document; for
+	 *                a request refused before the gateway was asked whose key another request ended a claim with meanwhile,
+	 *                that claim's document.
 	 */
-	public function refund( RefundRequest $request, Actor $actor ): Refund {
+	public function refund( RefundRequest $request, Actor $actor, ?RequestKey $key = null ): Refund {
 		$this->authorizer->authorize( $actor, self::CAPABILITY );
 		$this->requireNoTransaction();
 
-		$plan    = $this->plan( $request );
-		$gateway = $this->gateways->get( $plan->intent->gatewayId, $plan->intent->mode );
+		// A note is kept for as long as the order is: one that holds a card number is refused before
+		// anything is read, so no caller can have it kept.
+		if ( null !== $request->note && CardNumbers::contains( $request->note ) ) {
+			CodedException::raise( PaymentError::RefundNoteRejected );
+		}
 
-		if ( ! $this->claim( $plan, $actor ) ) {
-			return $this->askedBefore( $plan, $gateway, $actor );
+		// Before the first read: a column the refund reads may belong to a migration still outstanding.
+		$this->tx->refuseWhileClosed();
+
+		$keyed = null === $key ? null : $this->claimNamedBy( $key );
+
+		if ( null !== $keyed && ClaimState::Claimed !== $keyed->state ) {
+			return $this->answerFrom( $keyed->uuid, $keyed );
+		}
+
+		try {
+			$plan    = $this->plan( $request, $keyed?->uuid );
+			$gateway = $this->gateways->get( $plan->intent->gatewayId, $plan->intent->mode );
+			$caps    = $this->caps->for( $actor, $plan->order->baseCurrency );
+
+			// The cap of one order, from the plain reads, refuses before the claim's transaction; it, and the
+			// cap of a day, are decided under the locks.
+			$caps->requirePerOrder( $plan->intent->baseRefunded, $plan->total->base->gross() );
+
+			$claimed = $this->claim( $plan, $request, $actor, $key, $caps );
+		} catch ( CodedException $refused ) {
+			return $this->answerRefusedByKey( $refused, $key );
+		}
+
+		if ( ! $claimed ) {
+			return $this->askedBefore( $plan, $gateway, $actor, $key );
 		}
 
 		return $this->record( $plan, $this->askGateway( $plan, $gateway ), $actor );
+	}
+
+	/**
+	 * Builds the request the refund operation's input asks for, refusing one a refund cannot be made from.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `payment.refund_request_invalid`, naming the problem.
+	 *
+	 * @param array<string, mixed> $input The prepared input.
+	 * @return RefundRequest The request.
+	 */
+	private static function requestOf( array $input ): RefundRequest {
+		$lines = array_map(
+			static fn( array $line ): RefundLineRequest => new RefundLineRequest( (string) $line['line_uuid'], (int) $line['quantity'], (bool) ( $line['restock'] ?? false ) ),
+			array_values( (array) ( $input['lines'] ?? array() ) )
+		);
+
+		$shipping = (bool) ( $input['shipping'] ?? false );
+		$problem  = RefundRequest::problem( array_map( static fn( RefundLineRequest $line ): string => $line->lineUuid, $lines ), $shipping );
+
+		if ( null !== $problem ) {
+			CodedException::raise( PaymentError::RefundRequestInvalid, array( 'problem' => $problem ) );
+		}
+
+		$note = isset( $input['note'] ) ? (string) $input['note'] : null;
+
+		return new RefundRequest( (string) $input['order_uuid'], $lines, $shipping, (string) $input['reason_code'], $note );
+	}
+
+	/**
+	 * Answers the refund operation: the refund's money, and what was asked, in the canonical order of its lines.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Refund        $refund  The refund's document.
+	 * @param RefundRequest $request What was asked, which a retry's key proved the same as the first's.
+	 * @return array<string, mixed> The refund, keyed by wire name.
+	 */
+	private static function answer( Refund $refund, RefundRequest $request ): array {
+		$answer = array(
+			'refund_uuid'      => $refund->uuid,
+			'order_uuid'       => $request->orderUuid,
+			'total_minor'      => $refund->total->minorUnits(),
+			'tax_minor'        => $refund->tax->minorUnits(),
+			'shipping_minor'   => $refund->shipping->minorUnits(),
+			'currency'         => $refund->total->currency()->code(),
+			'base_total_minor' => $refund->baseTotal->minorUnits(),
+			'base_currency'    => $refund->baseTotal->currency()->code(),
+			'reason_code'      => $refund->reasonCode,
+		);
+
+		if ( null !== $request->note ) {
+			$answer['note'] = $request->note;
+		}
+
+		$answer['lines'] = $request->canonical()['lines'];
+
+		return $answer;
 	}
 
 	/**
@@ -306,23 +501,37 @@ final class RefundService {
 	 * a person must reconcile refuses the refund, as it does before the claim: it may have landed
 	 * since the plan read the intent. A claim of this refund already open is left as it is. A claim
 	 * of another refund open, or those figures having moved since the plan read them, refuses the
-	 * refund. A refusal writes nothing. Otherwise the claim is inserted. So at most one claim of an
-	 * intent is open, and what refund uuids are named by cannot move while it is.
+	 * refund. So does the gateway's capability matrix, asked again: the account of the intent's mode
+	 * may have moved since the plan to a country whose row does not declare the refund. A refusal
+	 * writes nothing. Otherwise the claim is inserted, with what was asked and the caller's key. So
+	 * at most one claim of an intent is open, and what refund uuids are named by cannot move while it
+	 * is.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The request, the key, and the matrix asked again.
 	 *
 	 * @throws CodedException `payment.unreconciled`; `payment.refund_unresolved`, naming the other
-	 *                        refund's open claim; `payment.refund_retry`.
+	 *                        refund's open claim; `payment.refund_retry`; `payment.operation_unsupported`.
 	 *
-	 * @param RefundPlan $plan  The refund.
-	 * @param Actor      $actor Who asks for it.
-	 * @return bool True when this request claimed the refund; false when its claim exists already.
+	 * @param RefundPlan      $plan    The refund.
+	 * @param RefundRequest   $request What was asked.
+	 * @param Actor           $actor   Who asks for it.
+	 * @param RequestKey|null $key     The caller's key, or null.
+	 * @param RefundCaps      $caps    The caps the user is held to.
+	 * @return bool True when this request claimed the refund; false when its claim, or a claim with its key, exists already.
 	 */
-	private function claim( RefundPlan $plan, Actor $actor ): bool {
+	private function claim( RefundPlan $plan, RefundRequest $request, Actor $actor, ?RequestKey $key, RefundCaps $caps ): bool {
 		list( $actorType, $actorId ) = self::actorOf( $actor );
 
 		return $this->tx->transaction(
-			function () use ( $plan, $actorType, $actorId ): bool {
+			function () use ( $plan, $request, $actor, $actorType, $actorId, $key, $caps ): bool {
+				// The user's lock row first, before the transaction's first read, which fixes what every
+				// later read sees: the sum of what the user asked then counts every claim of theirs that
+				// committed while this one waited for the row.
+				if ( null !== $caps->perDay ) {
+					$this->refunds->lockActor( $actor->userId() );
+				}
+
 				$intent = $this->refunds->lockForClaim( $plan->intent->id );
 
 				if ( $intent['has_unapplied_result'] ) {
@@ -341,10 +550,105 @@ final class RefundService {
 					CodedException::raise( PaymentError::RefundRetry );
 				}
 
-				return $this->refunds->claim( $plan, $actorType, $actorId );
+				$this->requireDeclared( $plan );
+				$this->requireCaps( $plan, $caps, $intent['base_refunded_minor'], $actor );
+
+				return $this->refunds->claim( $plan, $request, $actorType, $actorId, $key );
 			},
 			RetryPolicy::deadlocks()
 		);
+	}
+
+	/**
+	 * Refuses, under the claim's locks, a refund past the user's caps: of one order, from what the intent refunded as it now stands, and of a day, from what the user asked in the last 24 hours.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `payment.refund_cap_exceeded`.
+	 *
+	 * @param RefundPlan $plan         The refund.
+	 * @param RefundCaps $caps         The caps the user is held to.
+	 * @param int        $baseRefunded What the intent refunded, in minor units of the base currency, read under its lock.
+	 * @param Actor      $actor        Who asks for it.
+	 */
+	private function requireCaps( RefundPlan $plan, RefundCaps $caps, int $baseRefunded, Actor $actor ): void {
+		$share = $plan->total->base->gross();
+		$base  = $plan->order->baseCurrency;
+
+		$caps->requirePerOrder( Money::of( $baseRefunded, $base ), $share );
+
+		if ( null !== $caps->perDay ) {
+			$caps->requirePerDay( $this->refunds->askedToday( $actor->userId(), $base ), $share );
+		}
+	}
+
+	/**
+	 * Reads the claim an idempotency key names, and refuses the key when it was sent before with another request.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `payment.refund_key_reused` when the claim's request is not this one.
+	 *
+	 * @param RequestKey $key The caller's key.
+	 * @return RefundClaim|null The claim, made for this same request; null when the key names none.
+	 */
+	private function claimNamedBy( RequestKey $key ): ?RefundClaim {
+		$claim = $this->refunds->findClaimByKey( $key->keyHash );
+
+		if ( null !== $claim && ! hash_equals( (string) $claim->requestFingerprint, $key->fingerprint ) ) {
+			CodedException::raise( PaymentError::RefundKeyReused );
+		}
+
+		return $claim;
+	}
+
+	/**
+	 * Answers a refund refused before the gateway was asked from the claim its key names, when that claim has ended; otherwise raises the refusal as it came.
+	 *
+	 * Another request with the same key may have claimed the refund after this one looked its key
+	 * up, and recorded it. Whatever then refused this request, as it was worked out or claimed (the
+	 * line's last unit taken, a cap used, what the refund's uuid is named by moved, or that
+	 * request's claim still open), the key names the refund the caller asked for, so its claim, once
+	 * ended, answers this request as it would at the first lookup. The key is read once more, and
+	 * only here, on a refusal: a request without a key, or whose key names no claim or one still
+	 * open, is refused as it was.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException The refusal; `payment.refund_key_reused`; what answerFrom() raises.
+	 *
+	 * @param CodedException  $refused The refusal.
+	 * @param RequestKey|null $key     The caller's key, or null.
+	 * @return Refund The refund's document.
+	 */
+	private function answerRefusedByKey( CodedException $refused, ?RequestKey $key ): Refund {
+		$claim = null === $key ? null : $this->claimNamedBy( $key );
+
+		if ( null === $claim || ClaimState::Claimed === $claim->state ) {
+			throw $refused;
+		}
+
+		return $this->answerFrom( $claim->uuid, $claim );
+	}
+
+	/**
+	 * Refuses, as a programming error, an open claim found by the request's key that is not the claim the same request names by its identity.
+	 *
+	 * While a claim is open, nothing a refund's uuid is named by moves, and the key's fingerprint
+	 * proves the request is the same: the two are one claim. Two claims mean a row was changed
+	 * outside this service, and a person must look.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Naming both.
+	 *
+	 * @param string $byKey      The uuid of the claim the key names.
+	 * @param string $byIdentity The uuid of the refund the request names.
+	 */
+	private static function requireOneClaim( string $byKey, string $byIdentity ): void {
+		if ( $byKey !== $byIdentity ) {
+			throw new \LogicException( sprintf( 'The refund claim %1$s, found open by the request\'s idempotency key, is not the refund %2$s the same request names: a claim was changed outside the refund service.', $byKey, $byIdentity ) );
+		}
 	}
 
 	/**
@@ -360,14 +664,16 @@ final class RefundService {
 	 * capability matrix: a partial refund, for less than was captured, or a whole one.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 Checks the gateway's capability matrix.
+	 * @since 0.2.0 Checks the gateway's capability matrix, and the claim the request's key found open.
 	 *
-	 * @throws CodedException The refusals refund() lists before the gateway is asked.
+	 * @throws \LogicException When the claim the request's key found open is still the intent's open claim, but not this refund's.
+	 * @throws CodedException  The refusals refund() lists before the gateway is asked.
 	 *
-	 * @param RefundRequest $request What to refund.
+	 * @param RefundRequest $request    What to refund.
+	 * @param string|null   $keyedClaim The uuid of the open claim the request's key named; null for none.
 	 * @return RefundPlan The refund, worked out.
 	 */
-	private function plan( RefundRequest $request ): RefundPlan {
+	private function plan( RefundRequest $request, ?string $keyedClaim ): RefundPlan {
 		$order  = $this->orders->findRefundable( $request->orderUuid, $request->lineUuids(), $request->shipping ) ?? CodedException::raise( OrderError::NotFound );
 		$intent = $this->refunds->refundableIntent( $order->id ) ?? CodedException::raise( PaymentError::RefundNotRefundable, array( 'order_uuid' => $order->uuid ) );
 
@@ -384,6 +690,12 @@ final class RefundService {
 		$units        = array_combine( array_map( static fn( LinePortion $portion ): string => $portion->line->lineUuid, $portions ), array_map( static fn( LinePortion $portion ): int => $portion->quantity, $portions ) );
 		$uuid         = RefundIdentity::uuid( $order->uuid, $units, $request->shipping, $intent->refunded, $intent->declinedRefunds );
 
+		// The claim the key named is still open: nothing a refund's uuid is named by has moved since
+		// it was made, and the key's fingerprint proves this is the same request, so it is this refund's.
+		if ( null !== $keyedClaim && $keyedClaim === $intent->openClaim ) {
+			self::requireOneClaim( $keyedClaim, $uuid );
+		}
+
 		// Another refund of the intent is claimed and its answer is not recorded: what it did is not
 		// known, and once recorded it would move what refund uuids are named by. This one waits for it.
 		if ( null !== $intent->openClaim && $intent->openClaim !== $uuid ) {
@@ -393,13 +705,27 @@ final class RefundService {
 		$plan = new RefundPlan( $uuid, $order, $intent, $portions, $shipping, RefundAllocation::total( $portions, $shipping, $order->currency, $order->baseCurrency ), $request->reasonCode );
 
 		$this->checkCaps( $plan, $components );
-
-		// Less than was captured is a partial refund to the provider, whether or not a refund came before it.
-		$operation = $plan->total->amount->gross()->compare( $intent->captured ) < 0 ? Operations::PARTIAL_REFUND : Operations::REFUND;
-
-		$this->payments->require( $intent->gatewayId, $operation, $intent->mode, $order->currency );
+		$this->requireDeclared( $plan );
 
 		return $plan;
+	}
+
+	/**
+	 * Refuses a refund the intent's gateway does not declare in its capability matrix: a partial refund, for less than was captured, or a whole one.
+	 *
+	 * Reads no statement: the matrix is the gateway's declaration, and its account's country a setting.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `payment.operation_unsupported`; `payment.gateway_unavailable` when the gateway is not registered.
+	 *
+	 * @param RefundPlan $plan The refund.
+	 */
+	private function requireDeclared( RefundPlan $plan ): void {
+		// Less than was captured is a partial refund to the provider, whether or not a refund came before it.
+		$operation = $plan->total->amount->gross()->compare( $plan->intent->captured ) < 0 ? Operations::PARTIAL_REFUND : Operations::REFUND;
+
+		$this->payments->require( $plan->intent->gatewayId, $operation, $plan->intent->mode, $plan->order->currency );
 	}
 
 	/**
@@ -514,6 +840,11 @@ final class RefundService {
 	/**
 	 * Answers a refund whose claim an earlier request made, without asking the gateway for it again.
 	 *
+	 * With a key, the claim is the one the key names, read again now: another request with the key
+	 * may have claimed the refund, under another identity, and recorded it since this one looked.
+	 * When the key names none, the claim this request met is another request's, made with another
+	 * key or none, for the same units: its refund is answered only to that request, and this one is
+	 * refused `payment.refund_retry`. Without a key, the claim is the refund's own, by its uuid.
 	 * The claim says how the refund ended: its document when it was recorded, a decline, or what
 	 * was left for a person. A refund still claimed may be on its way, or may have been made by the
 	 * gateway while its answer was lost: the gateway is asked what became of it, at transaction
@@ -522,24 +853,37 @@ final class RefundService {
 	 * written, and the claim waits for a person.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The claim the request's key names, and only it.
 	 *
+	 * @throws \LogicException    When the claim the key names is open but is not this refund's.
 	 * @throws GatewayUnavailable When the gateway has no answer; the claim stays as it was.
-	 * @throws CodedException     `payment.refund_declined`; `payment.unreconciled`;
-	 *                            `payment.refund_unresolved` with the refund's uuid.
+	 * @throws CodedException     `payment.refund_retry` when the request's key names no claim; `payment.refund_declined`;
+	 *                            `payment.unreconciled`; `payment.refund_unresolved` with the refund's uuid;
+	 *                            `payment.refund_key_reused`.
 	 *
-	 * @param RefundPlan     $plan    The refund, which an earlier request claimed.
-	 * @param PaymentGateway $gateway The intent's gateway.
-	 * @param Actor          $actor   Who refunds.
+	 * @param RefundPlan      $plan    The refund, which an earlier request claimed.
+	 * @param PaymentGateway  $gateway The intent's gateway.
+	 * @param Actor           $actor   Who refunds.
+	 * @param RequestKey|null $key     The caller's key, or null.
 	 * @return Refund The refund's document.
 	 */
-	private function askedBefore( RefundPlan $plan, PaymentGateway $gateway, Actor $actor ): Refund {
-		$claim = $this->refunds->findClaim( $plan->uuid );
+	private function askedBefore( RefundPlan $plan, PaymentGateway $gateway, Actor $actor, ?RequestKey $key ): Refund {
+		$claim = null === $key ? $this->refunds->findClaim( $plan->uuid ) : $this->claimNamedBy( $key );
+
+		// A claim's refund is answered only to the key that made it. This request met a claim of the
+		// same units that its key did not make: another request is refunding them, and once that
+		// claim has ended, this request asked again is worked out anew, as a refund of its own.
+		if ( null !== $key && null === $claim ) {
+			CodedException::raise( PaymentError::RefundRetry );
+		}
 
 		if ( null !== $claim && ClaimState::Claimed === $claim->state ) {
+			self::requireOneClaim( $claim->uuid, $plan->uuid );
+
 			return $this->askWhatBecameOf( $plan, $gateway, $actor );
 		}
 
-		return $this->answerFrom( $plan, $claim );
+		return $this->answerFrom( $claim->uuid ?? $plan->uuid, $claim );
 	}
 
 	/**
@@ -550,13 +894,13 @@ final class RefundService {
 	 * @throws CodedException `payment.refund_declined`; `payment.unreconciled` when what the gateway
 	 *                        answered was left for a person, or there is no claim where one was found.
 	 *
-	 * @param RefundPlan       $plan  The refund.
+	 * @param string           $uuid  The refund's uuid.
 	 * @param RefundClaim|null $claim Its claim, ended.
 	 * @return Refund The refund's document.
 	 */
-	private function answerFrom( RefundPlan $plan, ?RefundClaim $claim ): Refund {
+	private function answerFrom( string $uuid, ?RefundClaim $claim ): Refund {
 		return match ( $claim?->state ) {
-			ClaimState::Recorded => $this->recordedDocument( $plan, $claim->transactionId ) ?? CodedException::raise( PaymentError::Unreconciled ),
+			ClaimState::Recorded => $this->recordedDocument( $uuid, $claim->transactionId ) ?? CodedException::raise( PaymentError::Unreconciled ),
 			ClaimState::Declined => CodedException::raise( PaymentError::RefundDeclined ),
 			// What the gateway answered was left for a person; or no claim, where one was found: a person must look.
 			default              => CodedException::raise( PaymentError::Unreconciled ),
@@ -628,7 +972,7 @@ final class RefundService {
 		}
 
 		if ( Outcome::Approved !== $result->outcome ) {
-			return $this->answerFrom( $plan, $this->refunds->findClaim( $plan->uuid ) );
+			return $this->answerFrom( $plan->uuid, $this->refunds->findClaim( $plan->uuid ) );
 		}
 
 		// Raised only now, once the transaction has committed the money kept for a person.
@@ -769,7 +1113,7 @@ final class RefundService {
 	 * @return Refund|null The document; null when the answer was not a duplicate, or its row has no document of this refund.
 	 */
 	private function documentOf( RefundPlan $plan, Application $application ): ?Refund {
-		return ApplicationKind::Duplicate === $application->kind ? $this->recordedDocument( $plan, $application->transactionId ) : null;
+		return ApplicationKind::Duplicate === $application->kind ? $this->recordedDocument( $plan->uuid, $application->transactionId ) : null;
 	}
 
 	/**
@@ -777,14 +1121,14 @@ final class RefundService {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param RefundPlan $plan          The refund.
-	 * @param int|null   $transactionId The ledger row, or null for none.
+	 * @param string   $uuid          The refund's uuid.
+	 * @param int|null $transactionId The ledger row, or null for none.
 	 * @return Refund|null The document; null when the row has no document of this refund.
 	 */
-	private function recordedDocument( RefundPlan $plan, ?int $transactionId ): ?Refund {
+	private function recordedDocument( string $uuid, ?int $transactionId ): ?Refund {
 		$document = null === $transactionId ? null : $this->refunds->findByTransaction( $transactionId );
 
-		return null !== $document && $document->uuid === $plan->uuid ? $document : null;
+		return null !== $document && $document->uuid === $uuid ? $document : null;
 	}
 
 	/**
@@ -819,6 +1163,10 @@ final class RefundService {
 		if ( ! $this->refunds->settleClaim( $plan->uuid, ClaimState::Recorded, $transactionId ) ) {
 			CodedException::raise( PaymentError::Unreconciled );
 		}
+
+		// Every refund is one of the order's events, whether or not its payment status moved, which
+		// records itself in an event of its own; the refund's reason, note and lines are reached by its uuid.
+		$this->orderEvents->appendAudit( $plan->order->id, self::AUDIT_REASON, $plan->uuid, $actor );
 
 		$refund = self::document( $plan, $refundId, $transactionId );
 

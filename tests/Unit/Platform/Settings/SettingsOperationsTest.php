@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Platform\Settings;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Platform\Settings\SettingsError;
 use SEOCart\Platform\Settings\SettingsOperations;
 use SEOCart\Platform\Settings\SettingsService;
@@ -85,7 +86,7 @@ final class SettingsOperationsTest extends TestCase {
 		$this->assertSame( array( SettingsError::StoredValueInvalid ), $get->errors() );
 		$this->assertSame( array( SettingsService::class, 'get' ), $get->service() );
 		$this->assertSame( 'Settings', $get->output()->name() );
-		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode' ), self::names( $get->output()->fields() ) );
+		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode', 'order_agent_per_order', 'order_agent_per_day' ), self::names( $get->output()->fields() ) );
 	}
 
 	/**
@@ -104,11 +105,11 @@ final class SettingsOperationsTest extends TestCase {
 		$this->assertSame( 'seocart_manage_settings', $update->capability() );
 		$this->assertTrue( $update->annotations()->isDestructive(), 'A change overwrites the setting it replaces.' );
 		$this->assertTrue( $update->annotations()->toArray()['idempotent'] );
-		$this->assertSame( array( SettingsError::StoredValueInvalid, SupportError::UnknownCurrency ), $update->errors() );
+		$this->assertSame( array( SettingsError::StoredValueInvalid, SupportError::UnknownCurrency, PaymentError::RefundCapInvalid ), $update->errors() );
 		$this->assertSame( array( SettingsService::class, 'update' ), $update->service() );
-		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode' ), self::names( $update->input() ) );
+		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode', 'order_agent_per_order', 'order_agent_per_day' ), self::names( $update->input() ) );
 		$this->assertSame( 'Settings', $update->output()->name(), 'A change answers with the same resource as a read.' );
-		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode' ), self::names( $update->output()->fields() ) );
+		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode', 'order_agent_per_order', 'order_agent_per_day' ), self::names( $update->output()->fields() ) );
 	}
 
 	/**

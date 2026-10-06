@@ -21,7 +21,7 @@ use SEOCart\Support\Schema\SchemaException;
 
 /**
  * A composite field is written in each dialect as an object schema of its fields, or an array of
- * them, with its bounds and no other keys; a command refuses it; its example is made from its
+ * them, with its bounds and no other keys; a command takes it as JSON; its example is made from its
  * fields'; its privacy is its most private field's; and serialization applies each nested
  * field's class and drops a nested key it does not declare.
  *
@@ -110,15 +110,53 @@ final class CompositeFieldsTest extends TestCase {
 	}
 
 	/**
-	 * Tests that a command refuses a composite field.
+	 * Tests that a command takes a composite field as an option whose value is its JSON, required when the field is.
 	 *
-	 * @since 0.1.0
+	 * Planted violation: in JsonSchemaCompiler::cliOption(), leave out the `value` of a composite
+	 * field: the option is written `--lines=<lines>`, and its value is not said to be JSON.
+	 *
+	 * @since 0.2.0
 	 */
-	public function test_a_command_refuses_a_composite_field(): void {
-		$this->expectException( SchemaException::class );
-		$this->expectExceptionMessage( 'which a command cannot take as an argument' );
+	public function test_a_command_takes_a_composite_field_as_json(): void {
+		$synopsis = JsonSchemaCompiler::cliSynopsis( self::fields(), array() );
 
-		JsonSchemaCompiler::cliSynopsis( self::fields(), array() );
+		$this->assertSame(
+			array(
+				array(
+					'type'        => 'assoc',
+					'name'        => 'lines',
+					'description' => 'The lines.',
+					'optional'    => false,
+					'value'       => array(
+						'optional' => false,
+						'name'     => 'json',
+					),
+				),
+				array(
+					'type'        => 'assoc',
+					'name'        => 'address',
+					'description' => 'Where the basket goes.',
+					'optional'    => true,
+					'value'       => array(
+						'optional' => false,
+						'name'     => 'json',
+					),
+				),
+			),
+			array_slice( $synopsis, 0, 2 )
+		);
+	}
+
+	/**
+	 * Tests that a composite field cannot be a positional argument.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_composite_field_is_never_positional(): void {
+		$this->expectException( SchemaException::class );
+		$this->expectExceptionMessage( 'a positional argument takes one plain value' );
+
+		JsonSchemaCompiler::cliSynopsis( self::fields(), array( 'lines' ) );
 	}
 
 	/**

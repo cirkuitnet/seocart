@@ -286,6 +286,18 @@ final class Database implements TransactionManager {
 	}
 
 	/**
+	 * Refuses nothing: the connection has no schema gate.
+	 *
+	 * The gate is GatedTransactionManager's, which application services receive; the migrator, the
+	 * logger and the outbox keep this connection, which is what lets a site in degraded mode repair
+	 * itself.
+	 *
+	 * @since 0.2.0
+	 */
+	public function refuseWhileClosed(): void {
+	}
+
+	/**
 	 * Registers work to run once the outermost level has committed, or at once outside a transaction.
 	 *
 	 * @since 0.1.0

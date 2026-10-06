@@ -11,9 +11,12 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
+use SEOCart\Contracts\Payment\CapabilityMatrix;
 use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Contracts\Payment\GatewayRegistry;
+use SEOCart\Contracts\Payment\MatrixRow;
 use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\Operations;
 use SEOCart\Order\Application\Orders;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Application\Gateways;
@@ -30,10 +33,12 @@ use SEOCart\Platform\Logging\LogsTable;
 use SEOCart\Platform\Secrets\SecretKeys;
 use SEOCart\Platform\Secrets\SecretVault;
 use SEOCart\Platform\Settings\Setting;
+use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
 use SEOCart\Support\Schema\Privacy;
+use SEOCart\Tests\Support\Doubles\BarrierTransactions;
 use SEOCart\Tests\Support\Doubles\DeclaredGateway;
 use SEOCart\Tests\Support\Order\NewOrders;
 use SEOCart\Tests\Support\Payment\GatewayKernel;
@@ -51,6 +56,8 @@ use SEOCart\Tests\Support\Payment\RefundTestCase;
  *   credential is then used, and the gateway called;
  * - in RefundService::refund(), open the credentials after the refund is claimed: the refused
  *   refund leaves a claim behind;
+ * - in RefundService::claim(), drop the matrix's check under the intent's lock: a refund whose
+ *   cell the matrix stopped declaring after its plan is claimed and asked of the gateway;
  * - in Gateways::get(), drop the check of the intent's mode: the refusal names the credentials
  *   instead of the mode;
  * - in Gateways::register(), drop the check of the names held: `acme_test` is registered, and the
@@ -229,6 +236,65 @@ final class GatewayResolutionTest extends RefundTestCase {
 		}
 
 		$this->assertSame( array(), $this->second->calls, 'Nothing was asked of the gateway.' );
+		$this->assertSame( 0, (int) $this->db->fetchValue( 'SELECT COUNT(*) FROM %i', $this->table( RefundClaimTables::CLAIMS ) ), 'No refund was claimed.' );
+	}
+
+	/**
+	 * Tests that a refund whose cell the matrix stops declaring after the refund's plan, because the gateway's account moved to another country, is refused under the intent's lock before it is claimed: no claim row, nothing asked.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_refund_the_matrix_stops_declaring_before_its_claim_claims_nothing(): void {
+		$descriptor = DeclaredGateway::descriptor( 'shifting', array( Mode::Live ), null, new CapabilityMatrix( array( new MatrixRow( Currency::of( 'USD' ), 'US', array_values( array_diff( Operations::ALL, array( Operations::MULTI_CAPTURE, Operations::OFF_SESSION, Operations::WEBHOOKS ) ) ) ) ) ) );
+		$shifting   = null;
+		$country    = GatewayKernel::name( 'shifting', Mode::Live, GatewayDescriptor::ACCOUNT_COUNTRY );
+
+		add_action(
+			GatewayRegistry::ACTION,
+			static function ( GatewayRegistry $registry ) use ( $descriptor, &$shifting ): void {
+				$shifting = new DeclaredGateway( $descriptor, $registry->context( 'shifting' ) );
+
+				$registry->register( $shifting );
+			}
+		);
+
+		GatewayKernel::writeDocument(
+			$this->kernel,
+			$descriptor,
+			array(
+				GatewayKernel::name( 'shifting', Mode::Live, 'secret_key' ) => 'sk_live_planted',
+				$country => 'US',
+			)
+		);
+
+		$intent = $this->authorized( 'shifting', Mode::Live );
+
+		$this->payments()->capture( $intent->uuid, $this->userWithRole() );
+		$this->assertInstanceOf( DeclaredGateway::class, $shifting );
+
+		$shifting->calls = array();
+		$order           = (string) $this->db->fetchValue( 'SELECT uuid FROM %i WHERE id = %d', $this->table( OrderTables::ORDERS ), $intent->orderId );
+		$lines           = $this->lineUuids( $intent->orderId );
+		$tx              = new BarrierTransactions( $this->db );
+		$refunds         = $this->refundsOver( $this->db, $this->ids, $this->gateway, tx: $tx, gateways: $this->gateways() );
+
+		// The account moves to another country once the plan found the cell declared, before the claim's transaction.
+		$tx->beforeTransaction(
+			function () use ( $tx, $descriptor, $country ): void {
+				$tx->beforeTransaction( static function (): void {} );
+
+				GatewayKernel::writeDocument( $this->kernel, $descriptor, array( $country => 'GB' ) );
+			}
+		);
+
+		try {
+			$this->refund( $order, array( $lines[0] => 1 ), false, $refunds );
+			$this->fail( 'A refund the matrix no longer declares was claimed and asked of the gateway.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( array( PaymentError::OperationUnsupported, 'shifting', Operations::PARTIAL_REFUND ), array( $refused->errorCode(), $refused->context()['gateway_id'] ?? null, $refused->context()['operation'] ?? null ) );
+		}
+
+		$this->assertSame( array(), $shifting->calls, 'Nothing was asked of the gateway.' );
 		$this->assertSame( 0, (int) $this->db->fetchValue( 'SELECT COUNT(*) FROM %i', $this->table( RefundClaimTables::CLAIMS ) ), 'No refund was claimed.' );
 	}
 

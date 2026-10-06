@@ -23,8 +23,9 @@ use SEOCart\Support\Error\CodedException;
  *
  * Owns one fact: how a test plays a closed schema gate without storing a boot record, which the
  * whole test process would read. At the outermost level it raises `store.unavailable` with the
- * gate state as its reason, the refusal GatedTransactionManager raises, and sends nothing; a
- * nested level, and everything else, goes to the manager it wraps.
+ * gate state as its reason, the refusal GatedTransactionManager raises, and sends nothing, as
+ * refuseWhileClosed() does at any level; a nested level, and everything else, goes to the manager
+ * it wraps.
  *
  * @since 0.1.0
  */
@@ -92,6 +93,17 @@ final class ClosedGateTransactions implements TransactionManager {
 	 */
 	public function depth(): int {
 		return $this->inner->depth();
+	}
+
+	/**
+	 * Refuses, as GatedTransactionManager does while its gate is closed.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `store.unavailable`, naming the gate's state.
+	 */
+	public function refuseWhileClosed(): void {
+		CodedException::raise( KernelError::StoreUnavailable, array( 'reason' => $this->state->value ) );
 	}
 
 	/**

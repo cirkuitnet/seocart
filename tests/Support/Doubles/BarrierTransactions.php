@@ -100,6 +100,15 @@ final class BarrierTransactions implements TransactionManager {
 	}
 
 	/**
+	 * Refuses as the wrapped manager does.
+	 *
+	 * @since 0.2.0
+	 */
+	public function refuseWhileClosed(): void {
+		$this->inner->refuseWhileClosed();
+	}
+
+	/**
 	 * Registers a callback after the commit, on the wrapped unit of work.
 	 *
 	 * @since 0.1.0

@@ -337,6 +337,18 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The payment amounts of order {order_id} could not be recorded.
 - Values: `order_id`
 
+## `payment.refund_cap_exceeded`
+
+- HTTP status: 403
+- Message: A refund of {requested_minor} would exceed your {cap_kind} refund cap of {limit_minor}, of which {used_minor} is used (amounts in minor units of {currency}). Ask a user with a higher cap to make it.
+- Values: `cap_kind`, `limit_minor`, `used_minor`, `requested_minor`, `currency`
+
+## `payment.refund_cap_invalid`
+
+- HTTP status: 422
+- Message: A refund cap is an amount of the base currency, such as 250.00, with at most six decimals, or empty for no cap.
+- Values: none
+
 ## `payment.refund_declined`
 
 - HTTP status: 402
@@ -348,6 +360,18 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 409
 - Message: A refund of {requested} would exceed what is left of {captured} captured, of which {refunded} is already refunded.
 - Values: `captured`, `refunded`, `requested`
+
+## `payment.refund_key_missing`
+
+- HTTP status: 400
+- Message: A refund needs an idempotency key of 1 to {max_bytes} bytes: a new key, such as a UUID, for each new refund, and the same key to retry it.
+- Values: `max_bytes`
+
+## `payment.refund_key_reused`
+
+- HTTP status: 422
+- Message: This idempotency key was sent before with another refund request. Send a new key with a new request, and the same key only to retry the same request.
+- Values: none
 
 ## `payment.refund_line_exhausted`
 
@@ -367,16 +391,28 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The order {order_uuid} has no captured payment to refund.
 - Values: `order_uuid`
 
+## `payment.refund_note_rejected`
+
+- HTTP status: 422
+- Message: The refund's note holds what reads as a card number, which the store never keeps; write the note without it.
+- Values: none
+
 ## `payment.refund_nothing_left`
 
 - HTTP status: 409
 - Message: Nothing of what the refund asks for is left to give back.
 - Values: none
 
+## `payment.refund_request_invalid`
+
+- HTTP status: 422
+- Message: The refund request is not one a refund can be made from ({problem}): it asks for units of a line, the shipping, or both, and names each line once.
+- Values: `problem`
+
 ## `payment.refund_retry`
 
 - HTTP status: 409
-- Message: Another refund of this payment was recorded or declined while this one was being worked out, so the payment gateway was not asked for it; ask for the refund again.
+- Message: Another request is refunding the same units of this payment, or another refund of it was recorded or declined while this one was being worked out, so the payment gateway was not asked for it; ask for the refund again.
 - Values: none
 
 ## `payment.refund_unresolved`

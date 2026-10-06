@@ -15,7 +15,9 @@ use SEOCart\Order\Domain\AmountBasis;
 use SEOCart\Order\Domain\RefundableLine;
 use SEOCart\Order\Domain\StoredTaxComponent;
 use SEOCart\Support\Currency;
+use SEOCart\Support\Decimal;
 use SEOCart\Support\Money;
+use SEOCart\Support\RoundingMode;
 use SEOCart\Support\TaxedMoney;
 
 defined( 'ABSPATH' ) || exit;
@@ -43,6 +45,8 @@ defined( 'ABSPATH' ) || exit;
  *   refunds returned of it, a free-shipping discount netting it, and its tax the sum of what
  *   remains of its components'.
  * - The total. The lines' and the shipping's figures added up.
+ * - A refund cap. A user's cap, configured in major units, is read at the base currency's own
+ *   exponent, and a refund fits it as a share fits a stored figure (fits()).
  *
  * This is the one class of the refund that adds money up: it adds stored figures, and shares of
  * them, to state a refund document; the calculation alone produces an order's totals. The
@@ -51,6 +55,19 @@ defined( 'ABSPATH' ) || exit;
  * @since 0.1.0
  */
 final class RefundAllocation {
+
+	/**
+	 * Returns a refund cap configured in major units, such as 250.00, as an amount of a currency at its own exponent, rounded half up: 250 yen in JPY, 250.00 euros in EUR.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Decimal  $majorUnits The cap, in major units.
+	 * @param Currency $currency   The currency it is an amount of.
+	 * @return Money The cap.
+	 */
+	public static function cap( Decimal $majorUnits, Currency $currency ): Money {
+		return Money::ofDecimal( $majorUnits, $currency, RoundingMode::HalfUp );
+	}
 
 	/**
 	 * Allocates what some units of a line return: the line's share and each of its tax components'.

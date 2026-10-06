@@ -190,6 +190,19 @@ final class MysqlOrderRepository implements OrderRepository {
 	public const APPEND_EVENT = "INSERT INTO {order_events} SET order_id = %d, machine = %s, from_status = %s, to_status = %s, reason = %s, actor_type = %s, actor_id = NULLIF( %d, 0 ), correlation_id = NULLIF( %s, '' ), created_at = UTC_TIMESTAMP(6)";
 
 	/**
+	 * An event of the order's payment that changes no status, with what it records by its uuid: from and to are the payment status the order row has, by the primary key.
+	 *
+	 * The order is locked by the caller's transaction, so the status copied is current. 0 stands for
+	 * no actor, and an empty string for no correlation id.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const APPEND_AUDIT = 'INSERT INTO {order_events} ( order_id, machine, from_status, to_status, reason, reference, actor_type, actor_id, correlation_id, created_at ) '
+		. "SELECT id, %s, payment_status, payment_status, %s, %s, %s, NULLIF( %d, 0 ), NULLIF( %s, '' ), UTC_TIMESTAMP(6) FROM {orders} WHERE id = %d";
+
+	/**
 	 * The order's lock: a locking read of what a transition, an acceptance and a payment decide from.
 	 *
 	 * @since 0.1.0
@@ -846,6 +859,31 @@ final class MysqlOrderRepository implements OrderRepository {
 		$this->statements->requireTransaction( __METHOD__ );
 
 		$this->statements->execute( self::APPEND_EVENT, $orderId, $machine->value, $from, $to, $reason, $actorType, $actorId ?? 0, $correlationId );
+
+		return $this->statements->lastInsertId();
+	}
+
+	/**
+	 * Appends an event of the order's payment that changes no status, naming what it records.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction, or when no order has the id.
+	 *
+	 * @param int      $orderId       The order.
+	 * @param string   $reason        What happened.
+	 * @param string   $reference     The uuid of what it records.
+	 * @param string   $actorType     `user` or `system`.
+	 * @param int|null $actorId       The user on whose authority, or null.
+	 * @param string   $correlationId The request's correlation id.
+	 * @return int The event row's id.
+	 */
+	public function appendAudit( int $orderId, string $reason, string $reference, string $actorType, ?int $actorId, string $correlationId ): int {
+		$this->statements->requireTransaction( __METHOD__ );
+
+		if ( 1 !== $this->statements->execute( self::APPEND_AUDIT, Machine::Payment->value, $reason, $reference, $actorType, $actorId ?? 0, $correlationId, $orderId ) ) {
+			throw new \LogicException( sprintf( 'Order %d has no row to record an event of: the caller\'s lock rules that out.', $orderId ) );
+		}
 
 		return $this->statements->lastInsertId();
 	}

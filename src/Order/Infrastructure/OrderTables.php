@@ -601,9 +601,10 @@ final class OrderTables {
 	}
 
 	/**
-	 * Declares `order_events`: every change of an order's status and payment status, appended and never changed.
+	 * Declares `order_events`: every change of an order's status and payment status, and every refund recorded against it, appended and never changed.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The reference, and the refund_recorded event that carries it.
 	 *
 	 * @return TableDefinition The declaration.
 	 */
@@ -611,7 +612,7 @@ final class OrderTables {
 		return new TableDefinition(
 			self::EVENTS,
 			self::MODULE,
-			'Records every change of an order\'s status and of its payment status, from what to what, why and on whose authority, in the transaction that made it.',
+			'Records every change of an order\'s status and of its payment status, from what to what, why and on whose authority, in the transaction that made it; and every refund recorded against the order, by its uuid, whether or not the payment status changed.',
 			MutationPattern::AppendOnly,
 			array(
 				self::id( 'Surrogate key.' ),
@@ -620,6 +621,7 @@ final class OrderTables {
 				new ColumnSpec( 'from_status', 'varchar(32)', Classification::Public, 'The status before the change; empty for the order\'s first event.', collation: 'ascii_bin' ),
 				new ColumnSpec( 'to_status', 'varchar(32)', Classification::Public, 'The status after the change.', collation: 'ascii_bin' ),
 				new ColumnSpec( 'reason', 'varchar(64)', Classification::Public, 'Why it changed, for example placed or payment_approved.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'reference', 'char(36)', Classification::Public, 'The uuid of what the event records, such as the refund of a refund_recorded event; NULL for a change of status.', nullable: true, collation: 'ascii_bin' ),
 				self::actorType( 'user for a person acting in person, system for a process acting on a user\'s authority.' ),
 				self::actorId( 'The WordPress user on whose authority the status changed; NULL for a visitor.' ),
 				self::correlationId( 'The correlation id of the request that changed the status, shared with its events.' ),

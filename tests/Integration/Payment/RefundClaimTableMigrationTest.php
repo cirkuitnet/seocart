@@ -69,12 +69,16 @@ final class RefundClaimTableMigrationTest extends DatabaseTestCase {
 		$this->assertSame(
 			array(
 				array(
+					'INDEX_NAME'       => 'key_hash',
+					'columns_in_order' => 'key_hash',
+				),
+				array(
 					'INDEX_NAME'       => 'uuid',
 					'columns_in_order' => 'uuid',
 				),
 			),
 			$unique,
-			'The key a claim relies on exists in the database.'
+			'The keys a claim and a retry rely on exist in the database.'
 		);
 
 		$again = $this->captureQueries( fn() => $this->migrator( $chain )->migrate( new MigrationRunOptions( 0 ) ) );

@@ -14,10 +14,11 @@
  *
  * The request is base64 of a JSON object: `order_uuid`; `units`, the units of each line by the
  * line's uuid; `shipping`; `user_id`, the user who refunds; `call_log`, the file each refund is
- * logged to; and optionally `crash`, false for a refund that is not killed, with the plain stub
- * gateway, as the refund race test runs a second refund while its own holds a lock. A probe that
- * was not killed reports how the refund ended: `refund_uuid`, the refusal (`refused`, `context`),
- * or any other failure.
+ * logged to; optionally `crash`, false for a refund that is not killed, with the plain stub
+ * gateway, as the refund race test runs a second refund while its own holds a lock; and optionally
+ * `idempotency_key`, with which the refund is asked through the refund operation's service, as a
+ * client's request is. A probe that was not killed reports how the refund ended: `refund_uuid`,
+ * the refusal (`refused`, `context`), or any other failure.
  *
  * @package SEOCart
  * @since   0.1.0
@@ -86,11 +87,36 @@ foreach ( (array) ( $seocart_probe_request['units'] ?? array() ) as $seocart_pro
 }
 
 try {
-	$seocart_probe_refund  = $seocart_probe_kernel->get( RefundService::class )->refund(
-		new RefundRequest( (string) ( $seocart_probe_request['order_uuid'] ?? '' ), $seocart_probe_lines, (bool) ( $seocart_probe_request['shipping'] ?? false ), 'customer_return' ),
-		Actor::user( (int) ( $seocart_probe_request['user_id'] ?? 0 ) )
-	);
-	$seocart_probe_outcome = array( 'refund_uuid' => $seocart_probe_refund->uuid );
+	$seocart_probe_service = $seocart_probe_kernel->get( RefundService::class );
+	$seocart_probe_actor   = Actor::user( (int) ( $seocart_probe_request['user_id'] ?? 0 ) );
+	$seocart_probe_request = $seocart_probe_request + array( 'idempotency_key' => '' );
+
+	if ( '' !== $seocart_probe_request['idempotency_key'] ) {
+		$seocart_probe_outcome = array(
+			'refund_uuid' => $seocart_probe_service->refundOrder(
+				array(
+					'order_uuid'      => (string) $seocart_probe_request['order_uuid'],
+					'lines'           => array_map(
+						static fn( RefundLineRequest $line ): array => array(
+							'line_uuid' => $line->lineUuid,
+							'quantity'  => $line->quantity,
+						),
+						$seocart_probe_lines
+					),
+					'shipping'        => (bool) ( $seocart_probe_request['shipping'] ?? false ),
+					'reason_code'     => 'customer_return',
+					'idempotency_key' => (string) $seocart_probe_request['idempotency_key'],
+				),
+				$seocart_probe_actor
+			)['refund_uuid'],
+		);
+	} else {
+		$seocart_probe_refund  = $seocart_probe_service->refund(
+			new RefundRequest( (string) ( $seocart_probe_request['order_uuid'] ?? '' ), $seocart_probe_lines, (bool) ( $seocart_probe_request['shipping'] ?? false ), 'customer_return' ),
+			$seocart_probe_actor
+		);
+		$seocart_probe_outcome = array( 'refund_uuid' => $seocart_probe_refund->uuid );
+	}
 } catch ( CodedException $seocart_probe_refusal ) {
 	$seocart_probe_outcome = array(
 		'refused' => $seocart_probe_refusal->errorCode()->value,

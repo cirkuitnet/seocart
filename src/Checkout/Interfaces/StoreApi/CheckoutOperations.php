@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Checkout\Interfaces\StoreApi;
 
 use SEOCart\Application\Operations\Annotations;
+use SEOCart\Application\Operations\IdempotencyKey;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\RequestHeader;
 use SEOCart\Application\Operations\RestBinding;
@@ -107,13 +108,13 @@ final class CheckoutOperations {
 	public const CHANGE_CURRENCY = 'checkout.change_currency';
 
 	/**
-	 * The header a placement's idempotency key is sent in.
+	 * The header a placement's idempotency key is sent in: the idempotency key's own.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const IDEMPOTENCY_HEADER = 'Idempotency-Key';
+	public const IDEMPOTENCY_HEADER = IdempotencyKey::HEADER;
 
 	/**
 	 * How long a client should wait before it sends again a placement whose key another request is placing with, in seconds.
@@ -274,14 +275,7 @@ final class CheckoutOperations {
 						),
 					)
 				),
-				new FieldSpec(
-					name: 'idempotency_key',
-					type: FieldType::String,
-					description: 'The attempt\'s idempotency key, sent in the Idempotency-Key header and nowhere else: a new key, such as a UUID, for each attempt, and the same key when it is retried.',
-					label: static fn(): string => __( 'Idempotency key', 'seocart' ),
-					example: '0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b',
-					max_length: IdempotencyClaim::MAX_KEY_LENGTH
-				),
+				IdempotencyKey::field(),
 			),
 			output: new ResourceSchema(
 				'Placement',
@@ -376,7 +370,7 @@ final class CheckoutOperations {
 				self::ROUTE,
 				WriteMethod::Post,
 				store: true,
-				headers: array( 'idempotency_key' => new RequestHeader( self::IDEMPOTENCY_HEADER, true ) ),
+				headers: array( IdempotencyKey::FIELD => new RequestHeader( self::IDEMPOTENCY_HEADER, true ) ),
 				retry_after: array( CheckoutError::PlacementInProgress->value => self::RETRY_AFTER_SECONDS )
 			),
 			public_write: StoreRequestPolicy::write( self::PLACE_BUCKET, self::PLACE_LIMIT, self::PLACE_WINDOW, true )

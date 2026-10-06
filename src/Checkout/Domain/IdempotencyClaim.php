@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Checkout\Domain;
 
+use SEOCart\Application\Operations\IdempotencyKey;
+
 defined( 'ABSPATH' ) || exit;
 
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- These exceptions report a caller's programming error to the developer; they are never HTML.
@@ -37,13 +39,13 @@ final readonly class IdempotencyClaim {
 	public const PLACE_ORDER_SCOPE = 'checkout.place_order';
 
 	/**
-	 * The longest key a client may send, in characters: a UUID fits, and so does any token of its own up to this length.
+	 * The longest key a client may send, in bytes: the idempotency key's own limit.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var int
 	 */
-	public const MAX_KEY_LENGTH = 64;
+	public const MAX_KEY_LENGTH = IdempotencyKey::MAX_LENGTH;
 
 	/**
 	 * Holds the answer. Use owned() or replay().
@@ -106,10 +108,6 @@ final readonly class IdempotencyClaim {
 			throw new \InvalidArgumentException( 'A cart token hash is a SHA-256 in lower-case hexadecimal: 64 characters.' );
 		}
 
-		if ( '' === $key || strlen( $key ) > self::MAX_KEY_LENGTH ) {
-			throw new \InvalidArgumentException( sprintf( 'An idempotency key is 1 to %d characters long.', self::MAX_KEY_LENGTH ) );
-		}
-
-		return hash( 'sha256', $cartTokenHash . '|' . $key );
+		return IdempotencyKey::hash( $cartTokenHash, $key );
 	}
 }

@@ -21,12 +21,14 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: which statements a refund sends. The reads are plain and batched, one per kind
  * of row whatever the number of lines, and decide nothing for good. Every write runs only inside
- * the caller's transaction: the claim inside a short one of its own, under the intent's lock,
- * committed before the gateway is asked; every other write inside the one that records the answer,
- * each carrying its condition in its WHERE clause: the document is written only while what it was
- * worked out from still holds, and a claim ends only while it is still claimed.
+ * the caller's transaction: the claim inside a short one of its own, under the intent's lock and,
+ * for a user whose refunds are capped by the day, the user's lock row, committed before the
+ * gateway is asked; every other write inside the one that records the answer, each carrying its
+ * condition in its WHERE clause: the document is written only while what it was worked out from
+ * still holds, and a claim ends only while it is still claimed.
  *
  * @since 0.1.0
+ * @since 0.2.0 The claim keeps its request and the caller's idempotency key; the user's lock row and what the user asked in the last 24 hours.
  */
 interface RefundRepository {
 
@@ -51,25 +53,69 @@ interface RefundRepository {
 	 * @throws \LogicException Outside a transaction, or when the intent does not exist.
 	 *
 	 * @param int $intentId The intent.
-	 * @return array{has_unapplied_result: bool, refunded_minor: int, declined_refunds: int, open_claim: string|null} Whether the ledger holds a result of it applied to nothing; what it refunded, in minor units; how many of its refunds were declined; its oldest refund claim still claimed.
+	 * @return array{has_unapplied_result: bool, refunded_minor: int, base_refunded_minor: int, declined_refunds: int, open_claim: string|null} Whether the ledger holds a result of it applied to nothing; what it refunded, in minor units, and the same in the base currency; how many of its refunds were declined; its oldest refund claim still claimed.
 	 */
 	public function lockForClaim( int $intentId ): array;
 
 	/**
-	 * Claims a refund before the gateway is asked for it: one insert, inside the caller's transaction, which holds the intent's lock and commits before the gateway is asked.
+	 * Locks a user's row for the refunds capped by the day, inside the caller's transaction: inserted the first time, found every later time, and held until the transaction ends.
 	 *
-	 * The claim's unique uuid refuses a second claim of the same refund.
+	 * Two capped refunds of one user, of any orders, are claimed one after the other: the second
+	 * waits here until the first's claim has committed.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
 	 * @throws \LogicException Outside a transaction.
 	 *
-	 * @param RefundPlan $plan      The refund.
-	 * @param string     $actorType `user` or `system`.
-	 * @param int|null   $actorId   The user who asks for it, or null.
-	 * @return bool True when this request claimed the refund; false when it was claimed before.
+	 * @param int $userId The user.
 	 */
-	public function claim( RefundPlan $plan, string $actorType, ?int $actorId ): bool;
+	public function lockActor( int $userId ): void;
+
+	/**
+	 * Adds up what a user asked of the gateway in the last 24 hours, by the database clock, in the base currency: the base share of every claim of theirs but a declined one.
+	 *
+	 * Read inside the caller's transaction, after the user's lock row: every claim of the user's
+	 * that committed before the lock was taken is counted.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param int      $userId The user.
+	 * @param Currency $base   The base currency.
+	 * @return Money The sum, in the base currency; zero when the user asked nothing.
+	 */
+	public function askedToday( int $userId, Currency $base ): Money;
+
+	/**
+	 * Claims a refund before the gateway is asked for it, with what was asked: the claim, then its lines, inside the caller's transaction, which holds the intent's lock and commits before the gateway is asked.
+	 *
+	 * The claim's unique uuid refuses a second claim of the same refund, and its unique key hash a
+	 * second claim with the same idempotency key.
+	 *
+	 * @since 0.1.0
+	 * @since 0.2.0 The request and the caller's key.
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param RefundPlan      $plan      The refund.
+	 * @param RefundRequest   $request   What was asked: the lines, the shipping, the reason and the note.
+	 * @param string          $actorType `user` or `system`.
+	 * @param int|null        $actorId   The user who asks for it, or null.
+	 * @param RequestKey|null $key       The caller's key; null for a refund asked without one.
+	 * @return bool True when this request claimed the refund; false when the refund, or the key, was claimed before.
+	 */
+	public function claim( RefundPlan $plan, RefundRequest $request, string $actorType, ?int $actorId, ?RequestKey $key ): bool;
+
+	/**
+	 * Reads the claim a caller's idempotency key names, without a lock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $keyHash The key's hash, scoped to the user who sent it.
+	 * @return RefundClaim|null The claim, with the fingerprint of the request it was made for; null when the key names none.
+	 */
+	public function findClaimByKey( string $keyHash ): ?RefundClaim;
 
 	/**
 	 * Reads a refund's claim, without a lock.

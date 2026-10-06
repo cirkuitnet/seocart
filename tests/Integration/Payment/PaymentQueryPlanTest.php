@@ -17,11 +17,13 @@ use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Application\RefundCapPolicy;
 use SEOCart\Payment\Application\RefundService;
 use SEOCart\Payment\Domain\Application;
 use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Payment\Domain\Refund\RefundLineRequest;
 use SEOCart\Payment\Domain\Refund\RefundRequest;
+use SEOCart\Payment\Domain\Refund\RequestKey;
 use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
@@ -31,7 +33,11 @@ use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Settings\Settings;
+use SEOCart\Platform\Settings\SettingsStore;
+use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Support\Money;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
 use SEOCart\Tests\Support\Doubles\ReplayingGateway;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
@@ -49,8 +55,9 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  * Every SELECT the payment module's source writes is sent, explained and judged by the query-plan rule.
  *
  * The payment module's reads run over a PlanRecorder: the locked reads of an approval and a
- * duplicate's read of the first row, a capture's plain reads, a refund's reads and its duplicate's
- * read of the first document, the read of a refund's claim, reconciliation's stale intents, and
+ * duplicate's read of the first row, a capture's plain reads, a refund's reads, its key's claim and
+ * its duplicate's read of the first document, the read of a refund's claim, what a user asked in
+ * the last 24 hours under the user's lock row, reconciliation's stale intents, and
  * every line of doctor's payment check, the refund claims never settled among them. Each plugin
  * SELECT is explained, printed and judged as the
  * order module's are; the reference dataset has no payments, so the tables stay under the size at
@@ -62,7 +69,8 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  * Planted violations, each shown red and removed: leave reconciliation's stale intents out of
  * exercise(): the run names MysqlPaymentRepository's STALE_INTENTS as a read it did not send; leave
  * the read of a refund's claim out: it names MysqlRefundRepository's FIND_CLAIM; leave the open intents out:
- * it names MysqlPaymentRepository's OPEN_INTENTS.
+ * it names MysqlPaymentRepository's OPEN_INTENTS; leave what a user asked in the last 24 hours out: it names
+ * MysqlRefundRepository's ASKED_TODAY.
  *
  * @group performance
  *
@@ -161,11 +169,26 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 			$db,
 			$this->publisherOver( $db ),
 			new Authorizer( new CapabilityDeclaration() ),
-			FrozenClock::at( self::NOW )
+			FrozenClock::at( self::NOW ),
+			new RefundCapPolicy( new SettingsStore( Settings::registry(), $db ) ),
+			$orders
 		);
 		$line    = (string) $this->db->fetchValue( 'SELECT line_uuid FROM %i WHERE order_id = %d ORDER BY sort_order LIMIT 1', $this->table( OrderTables::LINES ), $inserted->id );
 
-		$first = $refunds->refund( new RefundRequest( $inserted->uuid, array( new RefundLineRequest( $line, 1 ) ), true, 'customer_return' ), $this->userWithRole() );
+		// The first refund is asked with an idempotency key, which it looks up first, by the key's unique hash.
+		$agent = $this->userWithRole();
+		$first = $refunds->refund( new RefundRequest( $inserted->uuid, array( new RefundLineRequest( $line, 1 ) ), true, 'customer_return' ), $agent, new RequestKey( hash( 'sha256', 'a key' ), hash( 'sha256', 'a request' ) ) );
+
+		// What a user whose refunds are capped by the day asked in the last 24 hours, under the user's lock row.
+		$db->transaction(
+			static function () use ( $db, $agent ): Money {
+				$statements = new MysqlRefundRepository( $db );
+
+				$statements->lockActor( $agent->userId() );
+
+				return $statements->askedToday( $agent->userId(), Currency::of( self::BASE ) );
+			}
+		);
 
 		// The read of a refund's claim that a request for a refund already claimed sends, by the claim's unique uuid.
 		( new MysqlRefundRepository( $db ) )->findClaim( $first->uuid );

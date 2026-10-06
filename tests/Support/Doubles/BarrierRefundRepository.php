@@ -1,6 +1,6 @@
 <?php
 /**
- * BarrierRefundRepository: the refund statements, with a barrier just before a refund is claimed
+ * BarrierRefundRepository: the refund statements, with barriers where a test runs another refund
  *
  * @package SEOCart
  * @since   0.1.0
@@ -17,17 +17,21 @@ use SEOCart\Payment\Domain\Refund\RefundableIntent;
 use SEOCart\Payment\Domain\Refund\RefundClaim;
 use SEOCart\Payment\Domain\Refund\RefundPlan;
 use SEOCart\Payment\Domain\Refund\RefundRepository;
+use SEOCart\Payment\Domain\Refund\RefundRequest;
+use SEOCart\Payment\Domain\Refund\RequestKey;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Money;
 
 /**
- * Wraps the refund statements and runs what a test gives it just after a refund's claim took its intent's lock, inside the claim's transaction.
+ * Wraps the refund statements and runs what a test gives it just after a refund's claim took its intent's lock, or added up what its user asked, inside the claim's transaction; or once just after a refund looked its idempotency key up.
  *
- * Owns one fact, for the test of two refunds of one order claimed at once: the moment one claim
- * holds the intent's lock and another must wait for it. Every statement is the wrapped
+ * Owns one fact, for the tests of two refunds at once: the moment one claim holds the intent's
+ * lock, or its user's lock row, and another must wait for it; and the moment a request has found
+ * no claim by its key and has not yet worked its refund out. Every statement is the wrapped
  * repository's.
  *
  * @since 0.1.0
+ * @since 0.2.0 The barrier after the key's lookup.
  */
 final class BarrierRefundRepository implements RefundRepository {
 
@@ -48,6 +52,24 @@ final class BarrierRefundRepository implements RefundRepository {
 	 * @var (\Closure(): void)|null
 	 */
 	private ?\Closure $afterLock = null;
+
+	/**
+	 * What runs once, just after the next lookup of a key; null for nothing.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var (\Closure(): void)|null
+	 */
+	private ?\Closure $afterKeyLookup = null;
+
+	/**
+	 * What runs just after each sum of what a user asked, inside the claim's transaction; null for nothing.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var (\Closure(): void)|null
+	 */
+	private ?\Closure $afterAskedToday = null;
 
 	/**
 	 * Wraps the statements.
@@ -74,12 +96,46 @@ final class BarrierRefundRepository implements RefundRepository {
 	}
 
 	/**
+	 * Gives the next lookup of a key something to run just after it, once, outside any transaction.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param \Closure $run What runs, such as another request with the same key, whole.
+	 *
+	 * @phpstan-param \Closure(): void $run
+	 */
+	public function onceAfterKeyLookup( \Closure $run ): void {
+		$this->afterKeyLookup = $run;
+	}
+
+	/**
+	 * Looks a key up through the wrapped statements, then runs the barrier once.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $keyHash The key's hash.
+	 * @return RefundClaim|null What the wrapped statements read, before the barrier ran.
+	 */
+	public function findClaimByKey( string $keyHash ): ?RefundClaim {
+		$claim = $this->inner->findClaimByKey( $keyHash );
+		$run   = $this->afterKeyLookup;
+
+		if ( null !== $run ) {
+			$this->afterKeyLookup = null;
+
+			$run();
+		}
+
+		return $claim;
+	}
+
+	/**
 	 * Locks the intent through the wrapped statements, then runs the barrier.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param int $intentId The intent.
-	 * @return array{has_unapplied_result: bool, refunded_minor: int, declined_refunds: int, open_claim: string|null} What the wrapped statements read.
+	 * @return array{has_unapplied_result: bool, refunded_minor: int, base_refunded_minor: int, declined_refunds: int, open_claim: string|null} What the wrapped statements read.
 	 */
 	public function lockForClaim( int $intentId ): array {
 		$locked = $this->inner->lockForClaim( $intentId );
@@ -108,13 +164,58 @@ final class BarrierRefundRepository implements RefundRepository {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param RefundPlan $plan      The refund.
-	 * @param string     $actorType `user` or `system`.
-	 * @param int|null   $actorId   The user who asks for it, or null.
+	 * @param RefundPlan      $plan      The refund.
+	 * @param RefundRequest   $request   What was asked.
+	 * @param string          $actorType `user` or `system`.
+	 * @param int|null        $actorId   The user who asks for it, or null.
+	 * @param RequestKey|null $key       The caller's key, or null.
 	 * @return bool Whether this request claimed the refund.
 	 */
-	public function claim( RefundPlan $plan, string $actorType, ?int $actorId ): bool {
-		return $this->inner->claim( $plan, $actorType, $actorId );
+	public function claim( RefundPlan $plan, RefundRequest $request, string $actorType, ?int $actorId, ?RequestKey $key ): bool {
+		return $this->inner->claim( $plan, $request, $actorType, $actorId, $key );
+	}
+
+	/**
+	 * Locks a user's row through the wrapped statements.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $userId The user.
+	 */
+	public function lockActor( int $userId ): void {
+		$this->inner->lockActor( $userId );
+	}
+
+	/**
+	 * Adds up what a user asked through the wrapped statements.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int      $userId The user.
+	 * @param Currency $base   The base currency.
+	 * @return Money What the wrapped statements read.
+	 */
+	public function askedToday( int $userId, Currency $base ): Money {
+		$asked = $this->inner->askedToday( $userId, $base );
+
+		if ( null !== $this->afterAskedToday ) {
+			( $this->afterAskedToday )();
+		}
+
+		return $asked;
+	}
+
+	/**
+	 * Gives every later sum of what a user asked something to run just after it, inside the claim's transaction, before the claim.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param \Closure $run What runs, such as another refund of the same user in a process of its own.
+	 *
+	 * @phpstan-param \Closure(): void $run
+	 */
+	public function afterAskedToday( \Closure $run ): void {
+		$this->afterAskedToday = $run;
 	}
 
 	/**

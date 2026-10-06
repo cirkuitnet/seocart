@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Integration\Payment;
 
 use SEOCart\Order\Domain\NewOrder;
 use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Infrastructure\RefundClaimTables;
 use SEOCart\Tests\Support\Payment\RefundOrders;
 use SEOCart\Tests\Support\Payment\RefundTestCase;
 
@@ -29,11 +30,15 @@ use SEOCart\Tests\Support\Payment\RefundTestCase;
  * the same refund is asked for again in the test's process: the gateway is asked what became of
  * it, never for it again, and the refund is recorded once, as the stub made it.
  *
+ * A refund asked through the refund operation's service, with an idempotency key, is killed the
+ * same way: its claim keeps the key, and the retry with the key finds it by the key, asks the
+ * gateway what became of the refund, and records it once.
+ *
  * Planted violations, each shown red and removed:
  *
  * - in RefundService::refund(), make the claim inside the transaction that records the answer
  *   (call RefundService::claim() at the start of recordAnswer() instead): the killed refund leaves
- *   no claim;
+ *   no claim, and the keyed retry is a second refund at the gateway;
  * - in RefundService::askedBefore(), ask the gateway for the refund again, `$this->gateway->refund()`,
  *   instead of asking what became of it: the gateway is asked for the refund a second time.
  *
@@ -115,6 +120,57 @@ final class RefundRecoveryTest extends RefundTestCase {
 			self::pick( $this->claimRows( $order->id )[0], 'state', 'transaction_id', 'settled' )
 		);
 		$this->assertSame( array(), $this->ledgerCheck()->run()->findings, 'The settled claim is reported no more.' );
+	}
+
+	/**
+	 * Tests that a refund asked with a key and killed after the gateway's approval leaves its claim with the key, and that the retry with the key records it once, asking the gateway what became of it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_keyed_refund_killed_after_the_gateway_approved_is_recorded_once_by_its_key(): void {
+		list( $order ) = $this->placePaid( self::order() );
+		list( $tee )   = $this->lineUuids( $order->id );
+		$log           = (string) tempnam( sys_get_temp_dir(), 'seocart-refund-calls-' );
+
+		try {
+			$probe = $this->startRefundProbe( $order->uuid, array( $tee => 1 ), $log, null, 'attempt-1' );
+
+			$this->awaitProbeEnd( $probe );
+			$this->assertSame( '', $probe->reportSoFar(), "The refund answered: it was not killed.\n" . $probe->output() );
+
+			$made = array_values( array_filter( explode( "\n", (string) file_get_contents( $log ) ) ) );
+		} finally {
+			unlink( $log );
+		}
+
+		$this->assertCount( 1, $made, 'The gateway gave the money back once, in the killed process.' );
+
+		list( $key ) = explode( ' ', $made[0] );
+		$claim       = $this->claimRows( $order->id );
+
+		$this->assertSame( array( array( $key, 'claimed' ) ), array_map( static fn( array $row ): array => array( $row['uuid'], $row['state'] ), $claim ), 'The claim is what is left.' );
+		$this->assertNotNull( $this->db->fetchValue( 'SELECT key_hash FROM %i WHERE uuid = %s', $this->table( RefundClaimTables::CLAIMS ), $key ), 'The claim keeps the key.' );
+
+		// The client retries with the same key, as after a lost answer.
+		$answer = $this->refunds->refundOrder(
+			array(
+				'order_uuid'      => $order->uuid,
+				'lines'           => array(
+					array(
+						'line_uuid' => $tee,
+						'quantity'  => 1,
+					),
+				),
+				'reason_code'     => self::REASON,
+				'idempotency_key' => 'attempt-1',
+			),
+			$this->agent()
+		);
+
+		$this->assertSame( $key, $answer['refund_uuid'] );
+		$this->assertSame( array( 0, 1 ), array( $this->refundCalls(), $this->refundQueries() ), 'The gateway was asked what became of the refund, never for it again.' );
+		$this->assertCount( 1, $this->refundRows( $order->id ), 'One document.' );
+		$this->assertSame( 'recorded', (string) $this->claimRows( $order->id )[0]['state'] );
 	}
 
 	/**

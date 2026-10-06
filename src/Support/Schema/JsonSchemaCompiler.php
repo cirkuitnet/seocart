@@ -35,7 +35,10 @@ defined( 'ABSPATH' ) || exit;
  *   example as `examples`.
  * - cliSynopsis(), WP-CLI: a list of positional and `--name=<value>` arguments, `optional` per
  *   argument, a text default, the allowed values as `options`, and the `--format` option every
- *   command prints its result with.
+ *   command prints its result with. A Boolean is a flag, `--name`, true when given; a composite
+ *   field is an option whose value is its JSON, `--name=<json>`, which the command decodes before
+ *   the operation's one compiled schema validates it; and a field a header carries on REST is
+ *   required when its header is, as the API document says.
  * - restObjectProperty(), one object-valued property of a WordPress core-shaped REST resource,
  *   such as a post type's: `context` on the property and on each of its properties, `readonly`
  *   on the ones a client cannot write, `additionalProperties: false`, and no `required` at all,
@@ -48,7 +51,8 @@ defined( 'ABSPATH' ) || exit;
  * schema of its fields, an ObjectList as an array whose `items` is one, with `minItems` and
  * `maxItems`. Inside it, `required` is a list on the object, as in draft 4 and 2020-12, which
  * WordPress also validates, and `additionalProperties` is false, so a key the declaration does
- * not list is refused on input. A command cannot take a composite field.
+ * not list is refused on input. A command takes a composite field as JSON, never as a positional
+ * argument.
  *
  * Nothing here calls WordPress. The texts are the machine descriptions, in English.
  *
@@ -229,31 +233,33 @@ final class JsonSchemaCompiler {
 	/**
 	 * Compiles fields into a WP-CLI command synopsis.
 	 *
-	 * The positional fields come first, in the order given; every other field becomes an
-	 * `--name=<value>` option; the `--format` option comes last.
+	 * The positional fields come first, in the order given; every other field becomes an option:
+	 * a Boolean a `--name` flag, a composite field `--name=<json>`, any other `--name=<value>`; the
+	 * `--format` option comes last. A field a required header carries on REST is a required
+	 * option: on REST the header's absence is refused by the service, so the field itself is
+	 * optional, but a command has no header and asks for it as an option.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Booleans are flags, composite fields are JSON options, and the required headers were added.
 	 *
-	 * @throws SchemaException When a positional name is not one of the fields, a field is named
-	 *                         like the format option, or a field is composite.
+	 * @throws SchemaException When a positional name is not one of the fields or not a plain value, a
+	 *                         field is named like the format option, or a Boolean is required.
 	 *
-	 * @param FieldSpec[] $fields     The operation's input fields.
-	 * @param string[]    $positional The names of the fields given as positional arguments.
+	 * @param FieldSpec[] $fields           The operation's input fields.
+	 * @param string[]    $positional       The names of the fields given as positional arguments.
+	 * @param string[]    $required_headers Optional. The names of the fields a required header carries on REST. Default none.
 	 * @return list<array<string, mixed>> The synopsis, in the array form WP_CLI::add_command() takes.
 	 *
 	 * @phpstan-param list<FieldSpec> $fields
 	 * @phpstan-param list<string>    $positional
+	 * @phpstan-param list<string>    $required_headers
 	 */
-	public static function cliSynopsis( array $fields, array $positional ): array {
+	public static function cliSynopsis( array $fields, array $positional, array $required_headers = array() ): array {
 		$by_name = array();
 
 		foreach ( $fields as $field ) {
 			if ( self::CLI_FORMAT_OPTION === $field->name() ) {
 				SchemaException::raise( 'The field %1$s has the name of the option every command prints its result with; rename it.', $field->name() );
-			}
-
-			if ( $field->type()->isComposite() ) {
-				SchemaException::raise( 'The field %1$s is an object or a list of objects, which a command cannot take as an argument.', $field->name() );
 			}
 
 			$by_name[ $field->name() ] = $field;
@@ -266,12 +272,16 @@ final class JsonSchemaCompiler {
 				SchemaException::raise( 'The positional argument %1$s is not one of the fields.', $name );
 			}
 
+			if ( $by_name[ $name ]->type()->isComposite() || FieldType::Boolean === $by_name[ $name ]->type() ) {
+				SchemaException::raise( 'The positional argument %1$s is an object, a list or a Boolean; a positional argument takes one plain value.', $name );
+			}
+
 			$synopsis[] = self::cliArgument( 'positional', $by_name[ $name ] );
 		}
 
 		foreach ( $fields as $field ) {
 			if ( ! in_array( $field->name(), $positional, true ) ) {
-				$synopsis[] = self::cliArgument( 'assoc', $field );
+				$synopsis[] = self::cliOption( $field, in_array( $field->name(), $required_headers, true ) );
 			}
 		}
 
@@ -426,20 +436,62 @@ final class JsonSchemaCompiler {
 	}
 
 	/**
+	 * Writes one field as a WP-CLI option: a flag for a Boolean, an option whose value is JSON for a composite field, a plain option otherwise.
+	 *
+	 * A flag is true when given and false when not, so it is never required, and the field's own
+	 * default stands when it is left out.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws SchemaException When the field is a required Boolean.
+	 *
+	 * @param FieldSpec $field           The field.
+	 * @param bool      $required_header Whether a required header carries the field on REST.
+	 * @return array<string, mixed> The synopsis entry.
+	 */
+	private static function cliOption( FieldSpec $field, bool $required_header ): array {
+		if ( FieldType::Boolean === $field->type() ) {
+			if ( $field->isRequired() || $required_header ) {
+				SchemaException::raise( 'The field %1$s is a required Boolean; a command takes a Boolean as a flag, which is never required.', $field->name() );
+			}
+
+			return array(
+				'type'        => 'flag',
+				'name'        => $field->name(),
+				'description' => $field->description(),
+				'optional'    => true,
+			);
+		}
+
+		$option = self::cliArgument( 'assoc', $field, $required_header );
+
+		if ( $field->type()->isComposite() ) {
+			$option['value'] = array(
+				'optional' => false,
+				'name'     => 'json',
+			);
+		}
+
+		return $option;
+	}
+
+	/**
 	 * Writes one field as a WP-CLI argument.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The required header was added.
 	 *
-	 * @param string    $kind  'positional' or 'assoc'.
-	 * @param FieldSpec $field The field.
+	 * @param string    $kind            'positional' or 'assoc'.
+	 * @param FieldSpec $field           The field.
+	 * @param bool      $required_header Optional. Whether a required header carries the field on REST. Default false.
 	 * @return array<string, mixed> The synopsis entry.
 	 */
-	private static function cliArgument( string $kind, FieldSpec $field ): array {
+	private static function cliArgument( string $kind, FieldSpec $field, bool $required_header = false ): array {
 		$argument = array(
 			'type'        => $kind,
 			'name'        => $field->name(),
 			'description' => $field->description(),
-			'optional'    => ! $field->isRequired(),
+			'optional'    => ! $field->isRequired() && ! $required_header,
 		);
 
 		if ( null !== $field->defaultValue() ) {

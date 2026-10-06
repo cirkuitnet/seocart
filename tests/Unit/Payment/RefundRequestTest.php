@@ -14,9 +14,10 @@ namespace SEOCart\Tests\Unit\Payment;
 use PHPUnit\Framework\TestCase;
 use SEOCart\Payment\Domain\Refund\RefundLineRequest;
 use SEOCart\Payment\Domain\Refund\RefundRequest;
+use SEOCart\Payment\Domain\Refund\RequestKey;
 
 /**
- * A refund asks for units of lines, the shipping, or both, never an amount, with a reason a refund document can hold.
+ * A refund asks for units of lines, the shipping, or both, never an amount, with a reason a refund document can hold; its canonical form is the same whatever order its lines are named in; and the key it is sent with is kept as two SHA-256 hashes.
  *
  * @since 0.1.0
  */
@@ -42,6 +43,63 @@ final class RefundRequestTest extends TestCase {
 		$this->assertSame( array( 'line-b', 'line-a' ), $request->lineUuids() );
 		$this->assertSame( array( true, false ), array( $request->lines[0]->restock, $request->lines[1]->restock ) );
 		$this->assertSame( array(), ( new RefundRequest( self::ORDER, array(), true, 'shipping_late' ) )->lineUuids(), 'The shipping alone may be asked for.' );
+	}
+
+	/**
+	 * Tests that the canonical form names the lines in the order of their identifiers, whatever order they were asked in, with the shipping, the reason and the note; and that an empty note is no note.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_canonical_form_sorts_the_lines_and_keeps_the_rest(): void {
+		$asked     = new RefundRequest( self::ORDER, array( new RefundLineRequest( 'line-b', 2, true ), new RefundLineRequest( 'line-a', 1 ) ), true, 'damaged', 'Crushed.' );
+		$reordered = new RefundRequest( self::ORDER, array( new RefundLineRequest( 'line-a', 1 ), new RefundLineRequest( 'line-b', 2, true ) ), true, 'damaged', 'Crushed.' );
+
+		$this->assertSame(
+			array(
+				'order_uuid'  => self::ORDER,
+				'lines'       => array(
+					array(
+						'line_uuid' => 'line-a',
+						'quantity'  => 1,
+						'restock'   => false,
+					),
+					array(
+						'line_uuid' => 'line-b',
+						'quantity'  => 2,
+						'restock'   => true,
+					),
+				),
+				'shipping'    => true,
+				'reason_code' => 'damaged',
+				'note'        => 'Crushed.',
+			),
+			$asked->canonical()
+		);
+		$this->assertSame( $asked->canonical(), $reordered->canonical(), 'The order the lines are named in does not change the request.' );
+		$this->assertNull( ( new RefundRequest( self::ORDER, array(), true, 'damaged', '' ) )->note, 'An empty note is no note.' );
+	}
+
+	/**
+	 * Tests that a key is kept as two SHA-256 hashes in lower-case hexadecimal, and that anything else is refused.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_key_is_kept_as_two_sha256_hashes(): void {
+		$hash = hash( 'sha256', 'key' );
+		$key  = new RequestKey( $hash, hash( 'sha256', 'request' ) );
+
+		$this->assertSame( array( $hash, hash( 'sha256', 'request' ) ), array( $key->keyHash, $key->fingerprint ) );
+
+		foreach ( array( 'not a hash', strtoupper( $hash ), $hash . '0' ) as $wrong ) {
+			foreach ( array( array( $wrong, $hash ), array( $hash, $wrong ) ) as $pair ) {
+				try {
+					new RequestKey( ...$pair );
+					$this->fail( 'A key was kept as ' . $wrong . '.' );
+				} catch ( \InvalidArgumentException $refused ) {
+					$this->assertStringContainsString( 'SHA-256', $refused->getMessage() );
+				}
+			}
+		}
 	}
 
 	/**

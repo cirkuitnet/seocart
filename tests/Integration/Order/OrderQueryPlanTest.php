@@ -43,8 +43,12 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  *
  * It runs only when SEOCART_QUERY_PLANS is 1, as `composer test:query-plans` sets it.
  *
- * Planted violation, shown red and removed: leave out the access check's read in exercise(): the
- * run names MysqlOrderRepository's FIND_FOR_ACCESS as a read it did not send.
+ * The event a refund appends is an INSERT of a SELECT: its SELECT, cut from the statement's own text,
+ * is sent on its own, so its plan is judged as every read's is.
+ *
+ * Planted violations, each shown red and removed: leave out the access check's read in exercise():
+ * the run names MysqlOrderRepository's FIND_FOR_ACCESS as a read it did not send; leave out the read
+ * inside a refund's event: the run names APPEND_AUDIT's SELECT.
  *
  * @group performance
  *
@@ -226,6 +230,13 @@ final class OrderQueryPlanTest extends OrderTestCase {
 
 		// A refund's reads of the order: the order with its current totals version, a line, the shipping added up, and their components. The line's uuid is the test's read.
 		$repository->findRefundable( $inserted->uuid, array( (string) $this->db->fetchValue( 'SELECT line_uuid FROM %i WHERE order_id = %d ORDER BY sort_order LIMIT 1', $this->table( OrderTables::LINES ), $inserted->id ) ), true );
+
+		// The read inside the event a refund appends, the order's payment status by its primary key: the SELECT of
+		// MysqlOrderRepository::APPEND_AUDIT, cut from the statement and sent alone, as the INSERT reads it.
+		$audit                    = MysqlOrderRepository::APPEND_AUDIT;
+		list( $read, $arguments ) = OrderStatements::expand( substr( $audit, (int) strpos( $audit, 'SELECT ' ) ), array( 'payment', 'refund_recorded', '0199a0b1-c2d3-7e4f-8a5b-6c7d8e9f0a1b', 'user', 1, '', $inserted->id ), fn( string $name ): string => $this->table( $name ) );
+
+		$db->fetchRow( $read, ...$arguments );
 
 		// The order's conversion context, read back; its id is looked up unrecorded, being the test's read, not the module's.
 		$contexts->find( (int) $this->db->fetchValue( 'SELECT conversion_context_id FROM %i WHERE id = %d', $this->table( OrderTables::ORDERS ), $inserted->id ) );

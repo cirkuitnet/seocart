@@ -20,8 +20,11 @@ use SEOCart\Payment\Domain\Refund\LinePortion;
 use SEOCart\Payment\Domain\Refund\Refund;
 use SEOCart\Payment\Domain\Refund\RefundableIntent;
 use SEOCart\Payment\Domain\Refund\RefundClaim;
+use SEOCart\Payment\Domain\Refund\RefundLineRequest;
 use SEOCart\Payment\Domain\Refund\RefundPlan;
 use SEOCart\Payment\Domain\Refund\RefundRepository;
+use SEOCart\Payment\Domain\Refund\RefundRequest;
+use SEOCart\Payment\Domain\Refund\RequestKey;
 use SEOCart\Payment\Domain\Refund\Share;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Exception\DuplicateKey;
@@ -58,10 +61,14 @@ defined( 'ABSPATH' ) || exit;
  *
  * The claim is a plain insert, sent in a short transaction of its own under the intent's lock, so
  * that it commits before the gateway is asked; the unique key on its uuid refuses a second claim of
- * the same refund. It ends by one conditional update, inside the transaction that records the
- * gateway's answer, whose WHERE clause carries the state it leaves.
+ * the same refund, and the one on its key hash a second claim with the same idempotency key. What
+ * it asked of each line follows it, in one statement. It ends by one conditional update, inside the
+ * transaction that records the gateway's answer, whose WHERE clause carries the state it leaves.
+ * A user whose refunds are capped by the day has one lock row, which the claim's transaction takes
+ * before anything else, then adds up what the user asked in the last 24 hours.
  *
  * @since 0.1.0
+ * @since 0.2.0 The claim's request and key, its lines, and the user's lock row.
  */
 final class MysqlRefundRepository implements RefundRepository {
 
@@ -105,7 +112,7 @@ final class MysqlRefundRepository implements RefundRepository {
 		. 'FROM {payment_intents} intent WHERE intent.order_id = %d AND intent.status IN ({list}) ORDER BY intent.id LIMIT 1';
 
 	/**
-	 * An intent locked for a refund's claim, by the primary key: what it refunded, whether the ledger holds a result of it applied to nothing, how many of its refunds were declined, and its oldest refund claim still claimed, all read as they now stand.
+	 * An intent locked for a refund's claim, by the primary key: what it refunded, in both currencies, whether the ledger holds a result of it applied to nothing, how many of its refunds were declined, and its oldest refund claim still claimed, all read as they now stand.
 	 *
 	 * A locking read: it waits for any transaction that holds the intent, such as another refund's
 	 * claim or the recording of a refund, and holds the intent until the claim's transaction ends.
@@ -114,19 +121,62 @@ final class MysqlRefundRepository implements RefundRepository {
 	 *
 	 * @var string
 	 */
-	public const LOCK_FOR_CLAIM = 'SELECT intent.refunded_minor, ' . self::UNAPPLIED_RESULT . ', ' . self::DECLINED_REFUNDS . ', ' . self::OPEN_CLAIM . ' FROM {payment_intents} intent WHERE intent.id = %d FOR UPDATE';
+	public const LOCK_FOR_CLAIM = 'SELECT intent.refunded_minor, intent.base_refunded_minor, ' . self::UNAPPLIED_RESULT . ', ' . self::DECLINED_REFUNDS . ', ' . self::OPEN_CLAIM . ' FROM {payment_intents} intent WHERE intent.id = %d FOR UPDATE';
 
 	/**
-	 * A refund's claim, made before the gateway is asked: what is asked, of which intent, by whom, and when, by the database clock.
+	 * A refund's claim, made before the gateway is asked: what is asked, of which intent, its base share, the shipping, the reason and the note, the caller's key and the request's fingerprint, by whom, and when, by the database clock.
 	 *
-	 * A plain insert, refused by the `uuid` unique key when the refund was claimed before. 0 stands
-	 * for no actor.
+	 * A plain insert, refused by the `uuid` unique key when the refund was claimed before, and by the
+	 * `key_hash` one when a claim was made with the key before. 0 stands for no actor; an empty
+	 * note, key or fingerprint for none.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The base share, the request and the key.
 	 *
 	 * @var string
 	 */
-	public const CLAIM = "INSERT INTO {refund_claims} ( uuid, intent_id, order_id, state, amount_minor, currency, actor_type, actor_id, created_at ) VALUES ( %s, %d, %d, 'claimed', %d, %s, %s, NULLIF( %d, 0 ), UTC_TIMESTAMP(6) )";
+	public const CLAIM = 'INSERT INTO {refund_claims} ( uuid, intent_id, order_id, state, amount_minor, currency, base_amount_minor, base_currency, shipping, reason_code, note, key_hash, request_fingerprint, actor_type, actor_id, created_at ) '
+		. "VALUES ( %s, %d, %d, 'claimed', %d, %s, %d, %s, %d, %s, NULLIF( %s, '' ), NULLIF( %s, '' ), NULLIF( %s, '' ), %s, NULLIF( %d, 0 ), UTC_TIMESTAMP(6) )";
+
+	/**
+	 * What a claim asked of each line, from one derived row repeated once per line.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const INSERT_CLAIM_LINES = 'INSERT INTO {refund_claim_lines} ( claim_id, line_uuid, quantity, restock ) SELECT portion.claim_id, portion.line_uuid, portion.quantity, portion.restock '
+		. 'FROM ( SELECT %d AS claim_id, %s AS line_uuid, %d AS quantity, %d AS restock ) AS portion';
+
+	/**
+	 * The claim an idempotency key names, by the `key_hash` unique key: where it stands, the ledger row that ended it, and the fingerprint of the request it was made for.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FIND_CLAIM_BY_KEY = 'SELECT uuid, state, transaction_id, request_fingerprint FROM {refund_claims} WHERE key_hash = %s';
+
+	/**
+	 * A user's lock row for the refunds capped by the day, by the `user_id` unique key: inserted the first time, and otherwise found.
+	 *
+	 * Either way InnoDB holds an exclusive lock on the row until the transaction ends, so a second
+	 * capped refund of the user waits here.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCK_ACTOR = 'INSERT INTO {refund_actor_locks} ( user_id, created_at ) VALUES ( %d, UTC_TIMESTAMP(6) ) ON DUPLICATE KEY UPDATE id = id';
+
+	/**
+	 * What a user asked of the gateway in the last 24 hours, by the database clock, in the base currency, on the `actor_created` key: every claim but a declined one.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ASKED_TODAY = "SELECT COALESCE( SUM( base_amount_minor ), 0 ) AS asked FROM {refund_claims} WHERE actor_id = %d AND base_currency = %s AND state <> 'declined' AND created_at > UTC_TIMESTAMP(6) - INTERVAL 1 DAY";
 
 	/**
 	 * A refund's claim, by the `uuid` key: where it stands, and the ledger row that ended it.
@@ -328,7 +378,7 @@ final class MysqlRefundRepository implements RefundRepository {
 	 * @throws \LogicException Outside a transaction, or when the intent does not exist.
 	 *
 	 * @param int $intentId The intent.
-	 * @return array{has_unapplied_result: bool, refunded_minor: int, declined_refunds: int, open_claim: string|null} Whether the ledger holds a result of it applied to nothing; what it refunded, in minor units; how many of its refunds were declined; its oldest refund claim still claimed.
+	 * @return array{has_unapplied_result: bool, refunded_minor: int, base_refunded_minor: int, declined_refunds: int, open_claim: string|null} Whether the ledger holds a result of it applied to nothing; what it refunded, in minor units, and the same in the base currency; how many of its refunds were declined; its oldest refund claim still claimed.
 	 */
 	public function lockForClaim( int $intentId ): array {
 		$this->statements->requireTransaction( __METHOD__ );
@@ -342,33 +392,88 @@ final class MysqlRefundRepository implements RefundRepository {
 		return array(
 			'has_unapplied_result' => 1 === (int) $row['has_unapplied_result'],
 			'refunded_minor'       => (int) $row['refunded_minor'],
+			'base_refunded_minor'  => (int) $row['base_refunded_minor'],
 			'declined_refunds'     => (int) $row['declined_refunds'],
 			'open_claim'           => null === $row['open_claim'] ? null : (string) $row['open_claim'],
 		);
 	}
 
 	/**
-	 * Claims a refund before the gateway is asked for it: one insert, inside the claim's own transaction, under the intent's lock.
+	 * Locks a user's row for the refunds capped by the day, inside the caller's transaction.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
 	 * @throws \LogicException Outside a transaction.
 	 *
-	 * @param RefundPlan $plan      The refund.
-	 * @param string     $actorType `user` or `system`.
-	 * @param int|null   $actorId   The user who asks for it, or null.
-	 * @return bool True when this request claimed the refund; false when the `uuid` key refused it, claimed before.
+	 * @param int $userId The user.
 	 */
-	public function claim( RefundPlan $plan, string $actorType, ?int $actorId ): bool {
+	public function lockActor( int $userId ): void {
+		$this->statements->requireTransaction( __METHOD__ );
+
+		$this->statements->execute( self::LOCK_ACTOR, $userId );
+	}
+
+	/**
+	 * Adds up what a user asked of the gateway in the last 24 hours, in the base currency, inside the caller's transaction.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param int      $userId The user.
+	 * @param Currency $base   The base currency.
+	 * @return Money The sum.
+	 */
+	public function askedToday( int $userId, Currency $base ): Money {
+		$this->statements->requireTransaction( __METHOD__ );
+
+		return Money::of( (int) ( $this->statements->rows( self::ASKED_TODAY, $userId, $base->code() )[0]['asked'] ?? 0 ), $base );
+	}
+
+	/**
+	 * Claims a refund before the gateway is asked for it, with what was asked: the claim, then its lines, inside the claim's own transaction, under the intent's lock.
+	 *
+	 * @since 0.1.0
+	 * @since 0.2.0 The request and the caller's key.
+	 *
+	 * @throws \LogicException Outside a transaction; or when a line was not written, which the unique key and the values rule out.
+	 *
+	 * @param RefundPlan      $plan      The refund.
+	 * @param RefundRequest   $request   What was asked.
+	 * @param string          $actorType `user` or `system`.
+	 * @param int|null        $actorId   The user who asks for it, or null.
+	 * @param RequestKey|null $key       The caller's key, or null.
+	 * @return bool True when this request claimed the refund; false when the `uuid` or the `key_hash` key refused it, claimed before.
+	 */
+	public function claim( RefundPlan $plan, RefundRequest $request, string $actorType, ?int $actorId, ?RequestKey $key ): bool {
 		$this->statements->requireTransaction( __METHOD__ );
 
 		$amount = $plan->total->amount->gross();
+		$base   = $plan->total->base->gross();
 
 		try {
-			$this->statements->execute( self::CLAIM, $plan->uuid, $plan->intent->id, $plan->order->id, $amount->minorUnits(), $amount->currency()->code(), $actorType, $actorId ?? 0 );
+			$this->statements->execute(
+				self::CLAIM,
+				$plan->uuid,
+				$plan->intent->id,
+				$plan->order->id,
+				$amount->minorUnits(),
+				$amount->currency()->code(),
+				$base->minorUnits(),
+				$base->currency()->code(),
+				$request->shipping ? 1 : 0,
+				$plan->reasonCode,
+				(string) $request->note,
+				$key->keyHash ?? '',
+				$key->fingerprint ?? '',
+				$actorType,
+				$actorId ?? 0
+			);
 		} catch ( DuplicateKey $claimed ) {
 			return false;
 		}
+
+		$this->insertClaimLines( $this->statements->lastInsertId(), $request );
 
 		return true;
 	}
@@ -384,15 +489,21 @@ final class MysqlRefundRepository implements RefundRepository {
 	public function findClaim( string $uuid ): ?RefundClaim {
 		$row = $this->statements->rows( self::FIND_CLAIM, $uuid )[0] ?? null;
 
-		if ( null === $row ) {
-			return null;
-		}
+		return null === $row ? null : self::claimOf( $row );
+	}
 
-		return new RefundClaim(
-			(string) $row['uuid'],
-			ClaimState::from( (string) $row['state'] ),
-			null === $row['transaction_id'] ? null : (int) $row['transaction_id']
-		);
+	/**
+	 * Reads the claim a caller's idempotency key names, without a lock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $keyHash The key's hash.
+	 * @return RefundClaim|null The claim, with its request's fingerprint; null when the key names none.
+	 */
+	public function findClaimByKey( string $keyHash ): ?RefundClaim {
+		$row = $this->statements->rows( self::FIND_CLAIM_BY_KEY, $keyHash )[0] ?? null;
+
+		return null === $row ? null : self::claimOf( $row );
 	}
 
 	/**
@@ -618,6 +729,47 @@ final class MysqlRefundRepository implements RefundRepository {
 			$money( 'base_tax_minor', 'base_currency' ),
 			$money( 'base_shipping_minor', 'base_currency' ),
 			(string) $row['reason_code']
+		);
+	}
+
+	/**
+	 * Inserts what a claim asked of each line, in one statement; sends nothing when it asked for the shipping alone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When a line was not written.
+	 *
+	 * @param int           $claimId The claim.
+	 * @param RefundRequest $request What was asked.
+	 */
+	private function insertClaimLines( int $claimId, RefundRequest $request ): void {
+		if ( array() === $request->lines ) {
+			return;
+		}
+
+		$rows = array_map( static fn( RefundLineRequest $line ): array => array( $claimId, $line->lineUuid, $line->quantity, $line->restock ? 1 : 0 ), $request->lines );
+
+		if ( count( $rows ) !== $this->executeForRows( self::INSERT_CLAIM_LINES, $rows ) ) {
+			throw new \LogicException( 'A line of a refund claim was not written.' );
+		}
+	}
+
+	/**
+	 * Builds a claim from its row.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, mixed> $row The row: the uuid, the state, the ledger row, and the request's fingerprint when it was read.
+	 * @return RefundClaim The claim.
+	 */
+	private static function claimOf( array $row ): RefundClaim {
+		$fingerprint = $row['request_fingerprint'] ?? null;
+
+		return new RefundClaim(
+			(string) $row['uuid'],
+			ClaimState::from( (string) $row['state'] ),
+			null === $row['transaction_id'] ? null : (int) $row['transaction_id'],
+			null === $fingerprint ? null : (string) $fingerprint
 		);
 	}
 

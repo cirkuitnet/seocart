@@ -48,6 +48,9 @@ use WP_Error;
  * - In KernelError::definitions(), remove `any_write: true`: the invoker calls the refusal an
  *   undeclared code on every surface, and test_the_refusal_reaches_every_surface_as_the_same_503 fails
  *   on the unexpected notice.
+ * - In GatedTransactionManager::refuseWhileClosed(), return at once: a caller that reads before its
+ *   first unit of work is let through the closed gate, and
+ *   test_a_caller_that_reads_first_is_refused_while_the_gate_is_closed fails.
  * - In BootRecord::fromJson(), accept a record without a lock mode: the gate builds the lock service,
  *   which probes the host and writes the record, and
  *   test_a_record_without_a_lock_mode_is_refused_before_any_query counts the queries and the write.
@@ -238,6 +241,41 @@ final class SchemaGateTest extends KernelTestCase {
 		);
 
 		$this->assertSame( '1', (string) $this->db->fetchValue( 'SELECT COUNT(*) FROM %i WHERE id = 2', $this->rowsTable() ) );
+	}
+
+	/**
+	 * Tests that a caller whose first statements are reads is refused by the same gate before them, at
+	 * no query, and let through once the gate is open; the raw connection, which has no gate, refuses
+	 * nothing.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_caller_that_reads_first_is_refused_while_the_gate_is_closed(): void {
+		$this->plantRecord( self::installedRecord( PlatformBootstrapMigration::ID )->withLockMode( LockMode::GetLock ) );
+
+		$manager = $this->container( $this->chain( false ) )->get( TransactionManager::class );
+		$refused = null;
+		$log     = $this->captureQueries(
+			static function () use ( $manager, &$refused ): void {
+				try {
+					$manager->refuseWhileClosed();
+				} catch ( CodedException $error ) {
+					$refused = $error;
+				}
+			}
+		);
+
+		$this->assertInstanceOf( CodedException::class, $refused, 'A caller that reads first was let through the closed gate.' );
+		$this->assertSame( array( KernelError::StoreUnavailable, array( 'reason' => GateState::CodeNewer->value ) ), array( $refused->errorCode(), $refused->context() ) );
+		$this->assertQueryCount( 0, $log, 'The refusal before a read' );
+
+		$this->db->refuseWhileClosed();
+
+		$this->plantRecord( self::installedRecord( self::codeHead() )->withLockMode( LockMode::GetLock ) );
+
+		$open = $this->container()->get( TransactionManager::class );
+
+		$this->assertQueryCount( 0, $this->captureQueries( static fn() => $open->refuseWhileClosed() ), 'The open gate, asked before a read' );
 	}
 
 	/**

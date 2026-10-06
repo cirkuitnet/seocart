@@ -150,6 +150,26 @@ interface OrderRepository {
 	public function appendEvent( int $orderId, Machine $machine, string $from, string $to, string $reason, string $actorType, ?int $actorId, string $correlationId ): int;
 
 	/**
+	 * Appends an event of the order's payment that changes no status, naming what it records by its uuid: its from and to are the payment status the order has.
+	 *
+	 * Inside the caller's transaction, which has locked the order, so the status it copies is the
+	 * order's as the transaction leaves it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction, or when no order has the id, which the caller's lock rules out.
+	 *
+	 * @param int      $orderId       The order.
+	 * @param string   $reason        What happened, a lowercase snake_case word such as `refund_recorded`.
+	 * @param string   $reference     The uuid of what it records, such as the refund's.
+	 * @param string   $actorType     `user` or `system`.
+	 * @param int|null $actorId       The user on whose authority, or null.
+	 * @param string   $correlationId The request's correlation id.
+	 * @return int The event row's id.
+	 */
+	public function appendAudit( int $orderId, string $reason, string $reference, string $actorType, ?int $actorId, string $correlationId ): int;
+
+	/**
 	 * Reads the order with a locking read: the transaction's lock of the order, and the values it decides from.
 	 *
 	 * @since 0.1.0

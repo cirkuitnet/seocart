@@ -151,12 +151,14 @@ final class PlaceOrderTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Tests the refusals made before anything is written: no key, an empty cart, an incomplete checkout, a stale version, totals that changed, and a line that cannot be sold.
+	 * Tests the refusals made before anything is written: no key, a key longer than 64 bytes, an empty cart, an incomplete checkout, a stale version, totals that changed, and a line that cannot be sold.
 	 *
 	 * Each leaves the store as it was: no order, no key, no hold, and the cart open at its version.
 	 *
-	 * Planted violation: in PlaceOrder::priced(), compare only the grand total, not the currency:
-	 * a placement for the same number in another currency then goes through.
+	 * Planted violations, each shown red and removed: in PlaceOrder::priced(), compare only the grand
+	 * total, not the currency: a placement for the same number in another currency then goes through;
+	 * in PlaceOrder::place(), drop the check of the key's bytes: a key longer than 64 bytes reaches
+	 * the hash, which throws.
 	 *
 	 * @since 0.1.0
 	 */
@@ -167,6 +169,8 @@ final class PlaceOrderTest extends PlacementTestCase {
 
 		$cases = array(
 			'no key'              => array( CheckoutError::IdempotencyKeyMissing, array( 'idempotency_key' => '' ) ),
+			'a 65-byte key'       => array( CheckoutError::IdempotencyKeyMissing, array( 'idempotency_key' => str_repeat( 'k', 65 ) ) ),
+			'a 128-byte key'      => array( CheckoutError::IdempotencyKeyMissing, array( 'idempotency_key' => str_repeat( "\u{00e9}", 64 ) ) ),
 			'a stale version'     => array( CartError::VersionStale, array( 'cart_version' => $cart->version - 1 ) ),
 			'another grand total' => array( CheckoutError::TotalsChanged, array( 'grand_total_minor' => $input['grand_total_minor'] + 1 ) ),
 			'another currency'    => array( CheckoutError::TotalsChanged, array( 'currency' => 'EUR' ) ),

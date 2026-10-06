@@ -30,7 +30,8 @@ defined( 'ABSPATH' ) || exit;
  * the message with a non-zero exit status on the command line.
  *
  * Only the outermost level asks the gate; a nested level belongs to a unit of work that was
- * already let through. Reads open no transaction and are never refused. The migrator, the
+ * already let through. Reads open no transaction, and are refused only where a service asks
+ * refuseWhileClosed() before them, as one whose first statements are reads does. The migrator, the
  * logger and the outbox keep the raw Database, which is what lets a site in degraded mode
  * repair itself.
  *
@@ -85,11 +86,27 @@ final class GatedTransactionManager implements TransactionManager {
 	 * @return mixed What the callable returned, unchanged.
 	 */
 	public function transaction( callable $work, ?RetryPolicy $retry = null, Isolation $isolation = Isolation::Default ): mixed {
-		if ( 0 === $this->db->depth() && $this->gate->writesBlocked() ) {
-			CodedException::raise( KernelError::StoreUnavailable, array( 'reason' => $this->gate->state()->value ) );
+		if ( 0 === $this->db->depth() ) {
+			$this->refuseWhileClosed();
 		}
 
 		return $this->db->transaction( $work, $retry, $isolation );
+	}
+
+	/**
+	 * Refuses while the schema gate is closed, before anything is read or written.
+	 *
+	 * Asked by transaction() at the outermost level, and by a service whose first statements are
+	 * reads, before them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException KernelError::StoreUnavailable, naming the gate's state, while the gate is closed; nothing is sent.
+	 */
+	public function refuseWhileClosed(): void {
+		if ( $this->gate->writesBlocked() ) {
+			CodedException::raise( KernelError::StoreUnavailable, array( 'reason' => $this->gate->state()->value ) );
+		}
 	}
 
 	/**

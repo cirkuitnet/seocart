@@ -28,7 +28,10 @@ defined( 'ABSPATH' ) || exit;
  * `payment.unreconciled`; one asked for before, whose fate the gateway cannot account for, is
  * refused `payment.refund_unresolved` and not asked for again, and so is every other refund of
  * the same payment until a person settles it; and one worked out from figures another refund
- * moved before it was claimed is refused `payment.refund_retry`, to be asked for again. A
+ * moved before it was claimed is refused `payment.refund_retry`, to be asked for again. An
+ * idempotency key sent before with another refund request is refused
+ * `payment.refund_key_reused`, before anything of the order is read; and a refund past one of the
+ * user's refund caps is refused `payment.refund_cap_exceeded`, whole, before the gateway is asked. A
  * caller's programming error, such as a gateway call inside a transaction, is a \LogicException,
  * never a row here.
  *
@@ -124,7 +127,7 @@ enum PaymentError: string implements ErrorCode {
 	case RefundUnresolved = 'payment.refund_unresolved';
 
 	/**
-	 * Another refund of the payment was recorded or declined after this one was worked out, so this one was not asked for; asking again works it out anew.
+	 * Another refund of the payment was recorded or declined after this one was worked out, or another request is refunding the same units, so this one was not asked for; asking again works it out anew.
 	 *
 	 * @since 0.1.0
 	 */
@@ -143,6 +146,48 @@ enum PaymentError: string implements ErrorCode {
 	 * @since 0.2.0
 	 */
 	case OperationUnsupported = 'payment.operation_unsupported';
+
+	/**
+	 * The idempotency key was sent before with another refund request: a key names one request for good.
+	 *
+	 * @since 0.2.0
+	 */
+	case RefundKeyReused = 'payment.refund_key_reused';
+
+	/**
+	 * A refund asked through the refund operation needs the Idempotency-Key header, or the command's --idempotency_key, of 1 to IdempotencyKey::MAX_LENGTH bytes: the key is missing, or longer.
+	 *
+	 * @since 0.2.0
+	 */
+	case RefundKeyMissing = 'payment.refund_key_missing';
+
+	/**
+	 * A refund asks for nothing, or names a line twice.
+	 *
+	 * @since 0.2.0
+	 */
+	case RefundRequestInvalid = 'payment.refund_request_invalid';
+
+	/**
+	 * A refund's note holds what reads as a card number, which is never kept.
+	 *
+	 * @since 0.2.0
+	 */
+	case RefundNoteRejected = 'payment.refund_note_rejected';
+
+	/**
+	 * The refund would take what the user may give back past one of their refund caps: of one order, or in any 24 hours. Nothing was asked of the gateway, and nothing was written.
+	 *
+	 * @since 0.2.0
+	 */
+	case RefundCapExceeded = 'payment.refund_cap_exceeded';
+
+	/**
+	 * A refund cap is an amount of the base currency in major units, such as 250.00, or empty for no cap.
+	 *
+	 * @since 0.2.0
+	 */
+	case RefundCapInvalid = 'payment.refund_cap_invalid';
 
 	/**
 	 * Returns the catalog's rows.
@@ -244,7 +289,7 @@ enum PaymentError: string implements ErrorCode {
 			new ErrorDefinition(
 				self::RefundRetry,
 				409,
-				static fn(): string => __( 'Another refund of this payment was recorded or declined while this one was being worked out, so the payment gateway was not asked for it; ask for the refund again.', 'seocart' )
+				static fn(): string => __( 'Another request is refunding the same units of this payment, or another refund of it was recorded or declined while this one was being worked out, so the payment gateway was not asked for it; ask for the refund again.', 'seocart' )
 			),
 			new ErrorDefinition(
 				self::GatewayUnavailable,
@@ -261,6 +306,45 @@ enum PaymentError: string implements ErrorCode {
 					/* translators: %1$s: The payment gateway's id, for example stripe. %2$s: The operation, for example partial_refund. */
 					__( 'The payment gateway %1$s does not support %2$s for this payment; nothing was sent to it.', 'seocart' ),
 				array( 'gateway_id', 'operation' )
+			),
+			new ErrorDefinition(
+				self::RefundKeyReused,
+				422,
+				static fn(): string => __( 'This idempotency key was sent before with another refund request. Send a new key with a new request, and the same key only to retry the same request.', 'seocart' )
+			),
+			new ErrorDefinition(
+				self::RefundKeyMissing,
+				400,
+				static fn(): string =>
+					/* translators: %1$s: The longest key, in bytes, for example 64. */
+					__( 'A refund needs an idempotency key of 1 to %1$s bytes: a new key, such as a UUID, for each new refund, and the same key to retry it.', 'seocart' ),
+				array( 'max_bytes' )
+			),
+			new ErrorDefinition(
+				self::RefundRequestInvalid,
+				422,
+				static fn(): string =>
+					/* translators: %1$s: What is wrong with the request: nothing_asked or line_repeated. */
+					__( 'The refund request is not one a refund can be made from (%1$s): it asks for units of a line, the shipping, or both, and names each line once.', 'seocart' ),
+				array( 'problem' )
+			),
+			new ErrorDefinition(
+				self::RefundNoteRejected,
+				422,
+				static fn(): string => __( 'The refund\'s note holds what reads as a card number, which the store never keeps; write the note without it.', 'seocart' )
+			),
+			new ErrorDefinition(
+				self::RefundCapExceeded,
+				403,
+				static fn(): string =>
+					/* translators: %1$s: Which cap, per_order or per_day. %2$s: The cap. %3$s: What was used of it. %4$s: The refund asked for. %5$s: The base currency of the four amounts, which are in its minor units. */
+					__( 'A refund of %4$s would exceed your %1$s refund cap of %2$s, of which %3$s is used (amounts in minor units of %5$s). Ask a user with a higher cap to make it.', 'seocart' ),
+				array( 'cap_kind', 'limit_minor', 'used_minor', 'requested_minor', 'currency' )
+			),
+			new ErrorDefinition(
+				self::RefundCapInvalid,
+				422,
+				static fn(): string => __( 'A refund cap is an amount of the base currency, such as 250.00, with at most six decimals, or empty for no cap.', 'seocart' )
 			),
 		);
 	}

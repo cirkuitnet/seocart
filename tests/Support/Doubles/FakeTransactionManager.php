@@ -168,6 +168,14 @@ final class FakeTransactionManager implements TransactionManager {
 	}
 
 	/**
+	 * Refuses nothing: the fake has no schema gate.
+	 *
+	 * @since 0.2.0
+	 */
+	public function refuseWhileClosed(): void {
+	}
+
+	/**
 	 * Registers after-commit work, or runs it at once outside a transaction.
 	 *
 	 * @since 0.1.0

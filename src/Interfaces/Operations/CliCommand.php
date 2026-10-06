@@ -13,6 +13,7 @@ namespace SEOCart\Interfaces\Operations;
 
 use SEOCart\Application\Operations\CompiledOperation;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Logging\CardNumbers;
 use SEOCart\Platform\Rest\ErrorShape;
 use SEOCart\Support\Schema\JsonSchemaCompiler;
 use WP_Error;
@@ -35,7 +36,14 @@ defined( 'ABSPATH' ) || exit;
  * command's validation, whose message is the Ability's.
  *
  * Arguments arrive as text. Validation accepts a whole number written as text for an integer
- * field, as the REST API does, and preparation turns it into an integer.
+ * field, as the REST API does, and preparation turns it into an integer. A Boolean arrives as a
+ * flag, true when given. An object or a list of objects arrives as its JSON, which is decoded here
+ * and then validated by the same schema as on the other surfaces; text that is not JSON is
+ * refused as an invalid parameter.
+ *
+ * A failure line passes through the card-number detector before it is printed, so a card number
+ * a caller typed into an argument, and that a validation message repeats, never reaches the
+ * terminal or a log that keeps its output.
  *
  * The command acts as the user WP-CLI runs as, `--user`: the service receives
  * `Actor::system( 'cli', <that user> )` and authorizes it. Without `--user` WP-CLI runs as no one,
@@ -143,9 +151,29 @@ final class CliCommand {
 		}
 
 		foreach ( $definition->input() as $field ) {
-			if ( ! in_array( $field->name(), $positional, true ) && array_key_exists( $field->name(), $assoc_args ) ) {
-				$values[ $field->name() ] = $assoc_args[ $field->name() ];
+			if ( in_array( $field->name(), $positional, true ) || ! array_key_exists( $field->name(), $assoc_args ) ) {
+				continue;
 			}
+
+			$value = $assoc_args[ $field->name() ];
+
+			if ( $field->type()->isComposite() ) {
+				$value = json_decode( (string) $value, true );
+
+				if ( JSON_ERROR_NONE !== json_last_error() ) {
+					( $this->fail )(
+						'rest_invalid_param: ' . sprintf(
+							/* translators: %s: The name of an option, such as lines. */
+							__( '--%s is not valid JSON.', 'seocart' ),
+							$field->name()
+						)
+					);
+
+					return;
+				}
+			}
+
+			$values[ $field->name() ] = $value;
 		}
 
 		$valid = rest_validate_value_from_schema( $values, $this->operation->inputSchema(), 'input' );
@@ -210,7 +238,7 @@ final class CliCommand {
 	 * @return string `<code>: <message>`, and the correlation id when the error carries one.
 	 */
 	private static function describe( WP_Error $error ): string {
-		$line           = $error->get_error_code() . ': ' . $error->get_error_message();
+		$line           = CardNumbers::scrub( $error->get_error_code() . ': ' . $error->get_error_message() );
 		$correlation_id = ErrorShape::correlationId( $error );
 
 		if ( null === $correlation_id ) {

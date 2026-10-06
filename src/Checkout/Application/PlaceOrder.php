@@ -14,6 +14,7 @@ namespace SEOCart\Checkout\Application;
 // Before the imports: Plugin Check looks for this guard only in the first 50 lines of a namespaced file.
 defined( 'ABSPATH' ) || exit;
 
+use SEOCart\Application\Operations\IdempotencyKey;
 use SEOCart\Cart\Application\CartError;
 use SEOCart\Cart\Application\CartService;
 use SEOCart\Cart\Application\CartTokens;
@@ -196,7 +197,8 @@ final class PlaceOrder {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws CodedException `checkout.idempotency_key_missing`; a replay's refusals,
+	 * @throws CodedException `checkout.idempotency_key_missing`, also for a key longer than
+	 *                        IdempotencyKey::MAX_LENGTH bytes; a replay's refusals,
 	 *                        `checkout.idempotency_key_reused` and `checkout.placement_in_progress`;
 	 *                        `cart.not_found`; `store_api.rate_limited` after too many declines of the cart;
 	 *                        `cart.not_open` (naming the order being placed) and
@@ -223,7 +225,14 @@ final class PlaceOrder {
 			CodedException::raise( CheckoutError::IdempotencyKeyMissing );
 		}
 
-		$token       = $this->tokens->presented() ?? CodedException::raise( CartError::NotFound );
+		$token = $this->tokens->presented() ?? CodedException::raise( CartError::NotFound );
+
+		// The header reaches here unchecked by the field's schema, which counts characters: a key the
+		// hash does not take, longer than its bytes allow, is refused as a missing one is.
+		if ( ! IdempotencyKey::accepts( $key ) ) {
+			CodedException::raise( CheckoutError::IdempotencyKeyMissing );
+		}
+
 		$keyHash     = IdempotencyClaim::keyHash( $token->hash(), $key );
 		$fingerprint = self::fingerprint( $input );
 		$replay      = $this->keys->replay( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint );
@@ -617,15 +626,12 @@ final class PlaceOrder {
 
 		ksort( $paymentData );
 
-		return hash(
-			'sha256',
-			(string) wp_json_encode(
-				array(
-					'cart_version'      => (int) $input['cart_version'],
-					'grand_total_minor' => (int) $input['grand_total_minor'],
-					'currency'          => strtoupper( (string) $input['currency'] ),
-					'payment_data'      => $paymentData,
-				)
+		return IdempotencyKey::fingerprint(
+			array(
+				'cart_version'      => (int) $input['cart_version'],
+				'grand_total_minor' => (int) $input['grand_total_minor'],
+				'currency'          => strtoupper( (string) $input['currency'] ),
+				'payment_data'      => $paymentData,
 			)
 		);
 	}

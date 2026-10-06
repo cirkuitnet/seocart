@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Platform\Settings;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Payment\Application\RefundCapSettings;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Authorization\OptionGrantLedger;
 use SEOCart\Platform\Database\Schema\Classification;
@@ -58,11 +59,13 @@ final class SettingsRegistryTest extends TestCase {
 				'seocart_international_tax_rounding_mode' => array( InternationalSettings::TAX_ROUNDING_MODE ),
 				'seocart_capability_grants'               => $roles,
 				'seocart_data_keys'                       => array( SecretKeys::ACTIVE, SecretKeys::RETIRING, SecretKeys::CANARY ),
+				'seocart_refund_caps_order_agent_per_order' => array( RefundCapSettings::ORDER_AGENT_PER_ORDER ),
+				'seocart_refund_caps_order_agent_per_day' => array( RefundCapSettings::ORDER_AGENT_PER_DAY ),
 			),
 			$options
 		);
 
-		$this->assertSame( array( InternationalSettings::BASE_CURRENCY, InternationalSettings::CROSS_ZONE_POLICY, InternationalSettings::TAX_ROUNDING_MODE ), array_map( static fn( Setting $setting ): string => $setting->name(), $registry->exposed() ) );
+		$this->assertSame( array( InternationalSettings::BASE_CURRENCY, InternationalSettings::CROSS_ZONE_POLICY, InternationalSettings::TAX_ROUNDING_MODE, RefundCapSettings::ORDER_AGENT_PER_ORDER, RefundCapSettings::ORDER_AGENT_PER_DAY ), array_map( static fn( Setting $setting ): string => $setting->name(), $registry->exposed() ) );
 		$this->assertSame( 'USD', $registry->setting( InternationalSettings::BASE_CURRENCY )->field()->defaultValue() );
 		$this->assertSame( array( SupportError::UnknownCurrency ), $registry->setting( InternationalSettings::BASE_CURRENCY )->errors() );
 
@@ -161,6 +164,8 @@ final class SettingsRegistryTest extends TestCase {
 				'seocart_international_tax_rounding_mode' => array( 'Settings', 'Where tax is rounded: per_line rounds each line\'s tax, per_subtotal rounds the tax of the lines of one tax class once and shares it out to them.', false, Classification::Public ),
 				'seocart_capability_grants'               => array( 'Settings', OptionGrantLedger::PURPOSE, false, Classification::Public ),
 				'seocart_data_keys'                       => array( 'Settings', SecretKeys::PURPOSE, false, Classification::Secret ),
+				'seocart_refund_caps_order_agent_per_order' => array( 'Settings', RefundCapSettings::settings()[0]->field()->description(), false, Classification::Public ),
+				'seocart_refund_caps_order_agent_per_day' => array( 'Settings', RefundCapSettings::settings()[1]->field()->description(), false, Classification::Public ),
 			),
 			self::described( Settings::registry()->optionDefinitions() )
 		);
