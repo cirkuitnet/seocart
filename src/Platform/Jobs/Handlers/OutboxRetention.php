@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Platform\Jobs\Handlers;
 
 use SEOCart\Platform\Events\Outbox;
+use SEOCart\Platform\Jobs\BoundedSweep;
 use SEOCart\Platform\Jobs\JobHandler;
 
 defined( 'ABSPATH' ) || exit;
@@ -21,10 +22,11 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: the bounds of the outbox's retention sweep. Outbox::prune() deletes the
  * dispatched and failed rows past their retention periods, each statement bounded by BATCH
- * rows on its own index; a pending row is never deleted. The sweep
- * repeats until a batch deletes nothing or BUDGET_SECONDS is spent, and a backlog it cannot
- * finish is the next day's. Because this job prunes, the plugin's own drains (the catch-up job
- * and `wp seocart jobs run`) do not.
+ * rows on its own index; a pending row is never deleted. BoundedSweep repeats it until a batch
+ * comes back short or BUDGET_SECONDS is spent, and a backlog it cannot finish is the next day's.
+ * A batch is both statements, so it may delete up to twice BATCH; one that deletes fewer than
+ * BATCH left both statements short, so neither state has a row past retention left. Because
+ * this job prunes, the plugin's own drains (the catch-up job and `wp seocart jobs run`) do not.
  *
  * @since 0.1.0
  */
@@ -49,15 +51,6 @@ final class OutboxRetention implements JobHandler {
 	public const BUDGET_SECONDS = 20;
 
 	/**
-	 * Nanoseconds in a second.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var int
-	 */
-	private const NANOSECONDS = 1000000000;
-
-	/**
 	 * The outbox rows.
 	 *
 	 * @since 0.1.0
@@ -67,22 +60,13 @@ final class OutboxRetention implements JobHandler {
 	private Outbox $outbox;
 
 	/**
-	 * How many rows of each state one statement deletes at most.
+	 * The loop that repeats the prune, in batches and within the budget.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var int
+	 * @var BoundedSweep
 	 */
-	private int $batch;
-
-	/**
-	 * Returns a monotonic time in nanoseconds.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var callable(): int
-	 */
-	private $clock;
+	private BoundedSweep $batches;
 
 	/**
 	 * Creates the handler.
@@ -93,11 +77,12 @@ final class OutboxRetention implements JobHandler {
 	 * @param int           $batch  Optional. Rows of each state one statement deletes at most. Default BATCH.
 	 * @param callable|null $clock  Optional. Returns a monotonic time in nanoseconds (int). Default
 	 *                              null, which uses hrtime().
+	 *
+	 * @phpstan-param (callable(): int)|null $clock
 	 */
 	public function __construct( Outbox $outbox, int $batch = self::BATCH, ?callable $clock = null ) {
-		$this->outbox = $outbox;
-		$this->batch  = max( 1, $batch );
-		$this->clock  = $clock ?? static fn(): int => (int) hrtime( true );
+		$this->outbox  = $outbox;
+		$this->batches = new BoundedSweep( $batch, self::BUDGET_SECONDS, $clock );
 	}
 
 	/**
@@ -134,7 +119,7 @@ final class OutboxRetention implements JobHandler {
 	}
 
 	/**
-	 * Deletes batches of rows past retention until none is left or the budget is spent.
+	 * Deletes batches of rows past retention until a batch comes back short or the budget is spent.
 	 *
 	 * @since 0.1.0
 	 *
@@ -142,11 +127,7 @@ final class OutboxRetention implements JobHandler {
 	 * @return int|null Null: the next run follows on its schedule.
 	 */
 	public function handle( array $payload ): ?int {
-		$deadline = ( $this->clock )() + self::BUDGET_SECONDS * self::NANOSECONDS;
-
-		do {
-			$deleted = $this->outbox->prune( $this->batch );
-		} while ( $deleted > 0 && ( $this->clock )() < $deadline );
+		$this->batches->run( $this->outbox->prune( ... ) );
 
 		return null;
 	}

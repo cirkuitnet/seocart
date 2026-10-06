@@ -31,8 +31,12 @@ defined( 'ABSPATH' ) || exit;
  * control, and warns of such a store; it exits 0. A database failure exits 1 with its code and
  * message.
  *
- * On a site where WP-Cron does not fire reliably, a system cron runs it every minute:
+ * On a site where WP-Cron does not fire reliably, a system cron runs WP-Cron's due events and
+ * this command, every minute. It needs both lines: `run` runs SEOCart's own due jobs and nothing
+ * else, so a WP-Cron event that is due, Action Scheduler's queue runner among them, is still due
+ * after it.
  *
+ *     * * * * * wp --path=/path/to/wordpress cron event run --due-now --quiet
  *     * * * * * wp --path=/path/to/wordpress seocart jobs run --quiet
  *
  * It is a maintenance command, not an application operation: it has no REST or Ability twin,

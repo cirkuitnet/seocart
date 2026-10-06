@@ -1119,6 +1119,9 @@ final class PaymentService {
 	/**
 	 * Returns the state an approval leaves its intent in, as its update decides it.
 	 *
+	 * Whether a refund leaves the intent refunded or partly refunded depends on its amounts, so the
+	 * projection decides it.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @param GatewayResult $result The approval.
@@ -1129,7 +1132,7 @@ final class PaymentService {
 		return match ( $result->operation ) {
 			Operation::Authorize => IntentStatus::Authorized,
 			Operation::Capture   => IntentStatus::Captured,
-			Operation::Refund    => $intent->refunded->add( $result->amount )->compare( $intent->captured ) >= 0 ? IntentStatus::Refunded : IntentStatus::PartiallyRefunded,
+			Operation::Refund    => Projection::intentAfterRefund( $intent, $result->amount ),
 			Operation::Void      => IntentStatus::Voided,
 		};
 	}

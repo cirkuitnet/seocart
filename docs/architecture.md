@@ -64,8 +64,8 @@ Two rules follow from that shape, and the code keeps to them:
 - **Interfaces never do money arithmetic.** An adapter formats amounts and never computes them.
   The `SEOCart.DRY.MoneyArithmeticInInterfaces` sniff in
   `tools/phpcs/SEOCart/Sniffs/DRY/MoneyArithmeticInInterfacesSniff.php` catches the direct
-  spellings, and `tests/Unit/Order/NoMoneyArithmeticTest.php` applies the same rule to the order
-  and checkout modules.
+  spellings, and `tests/Unit/Order/NoMoneyArithmeticTest.php` applies the same rule to the order,
+  checkout and payment modules.
 
 Not every module has every layer. Tax is only a domain. Inventory has no `Interfaces` directory
 because its one operation is declared in its `Application` layer and served by the shared

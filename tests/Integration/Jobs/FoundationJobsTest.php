@@ -149,6 +149,30 @@ final class FoundationJobsTest extends JobsTestCase {
 	}
 
 	/**
+	 * Tests that the retention job's run ends with the first batch that comes back short.
+	 *
+	 * Three dispatched rows are past retention, and a batch is two of each state: the first batch
+	 * deletes two, which is full, so a second runs; it deletes one, which is short, and ends the
+	 * run with nothing past retention left. Each batch is two statements, one per state.
+	 *
+	 * Planted violations: in BoundedSweep::run(), go on only while a batch deleted more than the
+	 * batch size (`>` for `>=`): the run ends after the first batch and a row past retention stays.
+	 * Go on while a batch deleted anything: a third, empty batch is sent.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_the_retention_job_stops_at_the_first_short_batch(): void {
+		$this->publish( 1, 2, 3, 4, 5 );
+		$this->age( "state = 'dispatched', dispatched_at = UTC_TIMESTAMP(6) - INTERVAL 8 DAY", 1, 2, 3 );
+		$this->age( "state = 'dispatched', dispatched_at = UTC_TIMESTAMP(6) - INTERVAL 1 DAY", 4 );
+
+		$log = $this->captureQueries( fn() => ( new OutboxRetention( $this->outbox, 2 ) )->handle( array() ) );
+
+		$this->assertSame( array( 4, 5 ), $this->outboxIds(), 'Every row past retention is gone; the recent dispatched row and the pending one stay.' );
+		$this->assertCount( 4, $log->ofType( 'DELETE' ), 'A full batch, then a short one, which ends the run.' );
+	}
+
+	/**
 	 * Tests that the migration job works a slice at a time, continuing itself until the migrations are applied.
 	 *
 	 * Planted violation: in MigrationAttempt::handle(), return null for `incomplete`; the job stops

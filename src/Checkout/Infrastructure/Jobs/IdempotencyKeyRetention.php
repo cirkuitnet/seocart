@@ -13,6 +13,7 @@ namespace SEOCart\Checkout\Infrastructure\Jobs;
 
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Platform\Database\Exception\DatabaseException;
+use SEOCart\Platform\Jobs\BoundedSweep;
 use SEOCart\Platform\Jobs\JobHandler;
 
 defined( 'ABSPATH' ) || exit;
@@ -51,15 +52,6 @@ final class IdempotencyKeyRetention implements JobHandler {
 	public const BUDGET_SECONDS = 20;
 
 	/**
-	 * Nanoseconds in a second.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var int
-	 */
-	private const NANOSECONDS = 1000000000;
-
-	/**
 	 * The key statements.
 	 *
 	 * @since 0.1.0
@@ -69,22 +61,13 @@ final class IdempotencyKeyRetention implements JobHandler {
 	private MysqlIdempotencyKeys $keys;
 
 	/**
-	 * How many keys one statement deletes at most.
+	 * The loop that repeats the delete, in batches and within the budget.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var int
+	 * @var BoundedSweep
 	 */
-	private int $batch;
-
-	/**
-	 * Returns a monotonic time in nanoseconds.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var \Closure(): int
-	 */
-	private \Closure $clock;
+	private BoundedSweep $batches;
 
 	/**
 	 * Creates the handler. Sends nothing.
@@ -99,9 +82,8 @@ final class IdempotencyKeyRetention implements JobHandler {
 	 * @phpstan-param (callable(): int)|null $clock
 	 */
 	public function __construct( MysqlIdempotencyKeys $keys, int $batch = self::BATCH, ?callable $clock = null ) {
-		$this->keys  = $keys;
-		$this->batch = max( 1, $batch );
-		$this->clock = null === $clock ? static fn(): int => (int) hrtime( true ) : \Closure::fromCallable( $clock );
+		$this->keys    = $keys;
+		$this->batches = new BoundedSweep( $batch, self::BUDGET_SECONDS, $clock );
 	}
 
 	/**
@@ -148,11 +130,7 @@ final class IdempotencyKeyRetention implements JobHandler {
 	 * @return int|null Null: the next run follows on its schedule.
 	 */
 	public function handle( array $payload ): ?int {
-		$deadline = ( $this->clock )() + self::BUDGET_SECONDS * self::NANOSECONDS;
-
-		do {
-			$deleted = $this->keys->deleteExpired( $this->batch );
-		} while ( $deleted >= $this->batch && ( $this->clock )() < $deadline );
+		$this->batches->run( $this->keys->deleteExpired( ... ) );
 
 		return null;
 	}

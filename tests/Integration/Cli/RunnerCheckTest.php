@@ -146,7 +146,7 @@ final class RunnerCheckTest extends DatabaseTestCase {
 		$result = $this->check();
 
 		$this->assertFalse( $result->passed );
-		$this->assertSame( array( 'No runner has ever started one of SEOCart\'s jobs. Check that WP-Cron runs, or run `wp seocart jobs run` from the system cron.' ), $result->findings );
+		$this->assertSame( array( 'No runner has ever started one of SEOCart\'s jobs. Check that WP-Cron runs, or run both `wp cron event run --due-now` and `wp seocart jobs run` from the system cron.' ), $result->findings );
 	}
 
 	/**

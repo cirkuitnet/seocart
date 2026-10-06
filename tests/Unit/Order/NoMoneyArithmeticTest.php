@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests that the order and checkout modules add no money up: they copy what the calculation produced
+ * Tests that the order, checkout and payment modules add no money up: they copy what the calculation produced
  *
  * @package SEOCart
  * @since   0.1.0
@@ -16,15 +16,20 @@ use SEOCart\Tests\Unit\Support\MoneyArithmeticScan;
 use SEOCart\Tests\Unit\Support\PhpSource;
 
 /**
- * Only the calculation produces totals, so nothing under src/Order or src/Checkout computes an amount.
+ * Only the calculation produces totals, so nothing under src/Order, src/Checkout or src/Payment computes an amount, but the few files ALLOWED names.
  *
  * The rule adapters keep (the money-arithmetic sniff that runs on every `Interfaces` directory),
- * applied to the order module, and to the checkout that builds an order, by a scan of their
- * tokens (MoneyArithmeticScan): no call of a method that computes an amount, and no arithmetic
- * operator in a statement that reads an amount's raw number. The two lists of names are the
- * sniff's own, read from its source, so the money API is listed in one place. The payment
- * projection is added up by the database, in the one statement that also checks it; that is
- * SQL, and the scan reads PHP.
+ * applied to the order module, the checkout that builds an order and the payment module that
+ * settles it, by a scan of their tokens (MoneyArithmeticScan): no call of a method that computes
+ * an amount, and no arithmetic operator in a statement that reads an amount's raw number. The two
+ * lists of names are the sniff's own, read from its source, so the money API is listed in one
+ * place. A new file of these modules is scanned as it lands.
+ *
+ * ALLOWED names the files that may compute: the payment domain's classes whose job is to decide
+ * something from stored amounts, and the stand-in gateway, which makes up wrong amounts on purpose.
+ * Each is shown to compute, so the list cannot outlive its reasons. The database adds up what it
+ * stores, in the statements that also check it: the order's payment projection, an intent's
+ * captured and refunded amounts, and a refund's caps. That is SQL, and the scan reads PHP.
  *
  * Planted violations, each shown red and removed:
  * - in Orders::insert(), publish `$order->totals->grandTotal->add( $order->totals->feeTotal )->minorUnits()`:
@@ -32,14 +37,33 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * - in MysqlOrderRepository::insertLines(), write `$line->quantity * $line->unitPrice->minorUnits()`
  *   as the line subtotal: an operator beside an amount's raw number;
  * - in PlaceOrder::priced(), compare `$grand->minorUnits() - (int) $input['grand_total_minor']`
- *   with 0: an operator beside an amount's raw number in the checkout.
+ *   with 0: an operator beside an amount's raw number in the checkout;
+ * - in PaymentService::stateAfter(), decide a refund's state from
+ *   `$intent->refunded->add( $result->amount )`: an arithmetic call in the payment's application layer;
+ * - in RefundPlan::components(), keep a component only when
+ *   `$portion->share->amount->gross()->minorUnits() - $portion->share->amount->tax()->minorUnits()`
+ *   is not 0: an operator beside an amount's raw number in the refund's domain.
  *
  * @since 0.1.0
  */
 final class NoMoneyArithmeticTest extends TestCase {
 
 	/**
-	 * Provides the modules that copy what the calculation produced: the order, and the checkout that builds it.
+	 * The files allowed to compute an amount, each with why.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @var array<string, string>
+	 */
+	private const ALLOWED = array(
+		'src/Payment/Domain/AmountCheck.php'             => 'It adds a tender to what the order has tendered, to decide whether an approval stays within the grand total.',
+		'src/Payment/Domain/Projection.php'              => 'It adds a payment to the locked order\'s amounts, and a refund to the intent\'s, to decide which state the database\'s update will record.',
+		'src/Payment/Domain/Refund/RefundAllocation.php' => 'It allocates each share from the stored figures less what earlier refunds returned, and adds stored figures and their shares up to state the refund document.',
+		'src/Payment/Infrastructure/Gateway/StubGateway.php' => 'It is a stand-in gateway that answers with an amount one minor unit off on purpose, so that the tests can show such an approval parked for a person.',
+	);
+
+	/**
+	 * Provides the modules that copy what the calculation produced: the order, the checkout that builds it, and the payment that settles it.
 	 *
 	 * @since 0.1.0
 	 *
@@ -49,11 +73,12 @@ final class NoMoneyArithmeticTest extends TestCase {
 		return array(
 			'order'    => array( 'src/Order' ),
 			'checkout' => array( 'src/Checkout' ),
+			'payment'  => array( 'src/Payment' ),
 		);
 	}
 
 	/**
-	 * Tests that no file of a module that copies the calculation's totals computes an amount.
+	 * Tests that no file of a module that copies the calculation's totals computes an amount, the allowed files aside.
 	 *
 	 * @since 0.1.0
 	 *
@@ -69,12 +94,34 @@ final class NoMoneyArithmeticTest extends TestCase {
 		$this->assertNotSame( array(), PhpSource::files( $directory ), 'The scan read no file of ' . $directory . ', so it would prove nothing.' );
 
 		foreach ( PhpSource::files( $directory ) as $file => $source ) {
+			if ( isset( self::ALLOWED[ $file ] ) ) {
+				continue;
+			}
+
 			foreach ( MoneyArithmeticScan::violations( $source ) as $violation ) {
 				$found[] = "{$file}:{$violation}";
 			}
 		}
 
 		$this->assertSame( array(), $found, 'Only the calculation produces totals; ' . $directory . ' copies them.' );
+	}
+
+	/**
+	 * Tests that each allowed file does compute an amount, so allowing it is needed and the scan sees it.
+	 *
+	 * @since 0.1.0
+	 */
+	public function test_each_allowed_file_is_where_an_amount_is_computed(): void {
+		$sources = array();
+
+		foreach ( self::copyingModules() as list( $directory ) ) {
+			$sources += PhpSource::files( $directory );
+		}
+
+		foreach ( array_keys( self::ALLOWED ) as $file ) {
+			$this->assertArrayHasKey( $file, $sources, "{$file} is allowed, but the scan does not read it." );
+			$this->assertNotSame( array(), MoneyArithmeticScan::violations( $sources[ $file ] ), "{$file} computes no amount any more, so it need not be allowed." );
+		}
 	}
 
 	/**

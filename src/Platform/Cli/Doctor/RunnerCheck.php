@@ -184,7 +184,7 @@ final class RunnerCheck implements Check {
 			return array();
 		}
 
-		$remedy = 'Check that WP-Cron runs, or run `wp seocart jobs run` from the system cron.';
+		$remedy = 'Check that WP-Cron runs, or run both `wp cron event run --due-now` and `wp seocart jobs run` from the system cron.';
 
 		if ( null === $report->secondsSinceCheckIn ) {
 			return array( 'No runner has ever started one of SEOCart\'s jobs. ' . $remedy );

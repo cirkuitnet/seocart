@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Logging;
 
+use SEOCart\Platform\Jobs\BoundedSweep;
 use SEOCart\Platform\Jobs\JobEnvelope;
 use SEOCart\Platform\Jobs\JobHandler;
 
@@ -21,8 +22,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: when and how much of the log's retention sweep runs. LogRetention deletes one
  * batch of the oldest lines past the retention catalog's period for `logs`; this job repeats
- * it until a batch comes back short or BUDGET_SECONDS is spent, and a backlog it cannot finish
- * is the next run's.
+ * it, through BoundedSweep, until a batch comes back short or BUDGET_SECONDS is spent, and a
+ * backlog it cannot finish is the next run's.
  *
  * Its schedule follows the same catalog entry: it runs once per retention period, but at least
  * once a day, so a line outlives its period by at most a day. With the catalog's 30 days that
@@ -60,15 +61,6 @@ final class LogRetentionJob implements JobHandler {
 	public const LONGEST_INTERVAL_SECONDS = 86400;
 
 	/**
-	 * Nanoseconds in a second.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var int
-	 */
-	private const NANOSECONDS = 1000000000;
-
-	/**
 	 * The sweep.
 	 *
 	 * @since 0.1.0
@@ -78,22 +70,13 @@ final class LogRetentionJob implements JobHandler {
 	private LogRetention $retention;
 
 	/**
-	 * How many lines one statement deletes at most.
+	 * The loop that repeats the sweep, in batches and within the budget.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var int
+	 * @var BoundedSweep
 	 */
-	private int $batch;
-
-	/**
-	 * Returns a monotonic time in nanoseconds.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var \Closure(): int
-	 */
-	private \Closure $clock;
+	private BoundedSweep $batches;
 
 	/**
 	 * Creates the handler. Sends nothing.
@@ -109,8 +92,7 @@ final class LogRetentionJob implements JobHandler {
 	 */
 	public function __construct( LogRetention $retention, int $batch = self::BATCH, ?callable $clock = null ) {
 		$this->retention = $retention;
-		$this->batch     = max( 1, $batch );
-		$this->clock     = null === $clock ? static fn(): int => (int) hrtime( true ) : \Closure::fromCallable( $clock );
+		$this->batches   = new BoundedSweep( $batch, self::BUDGET_SECONDS, $clock );
 	}
 
 	/**
@@ -155,11 +137,7 @@ final class LogRetentionJob implements JobHandler {
 	 * @return int|null Null: the next run follows on its schedule.
 	 */
 	public function handle( array $payload ): ?int {
-		$deadline = ( $this->clock )() + self::BUDGET_SECONDS * self::NANOSECONDS;
-
-		do {
-			$deleted = $this->retention->sweep( $this->batch );
-		} while ( $deleted >= $this->batch && ( $this->clock )() < $deadline );
+		$this->batches->run( $this->retention->sweep( ... ) );
 
 		return null;
 	}

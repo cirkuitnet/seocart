@@ -33,14 +33,14 @@ workflow runs `sh bin/ci/require-version-increase.sh vX.Y.Z`, which accepts only
 form `vX.Y.Z` and fails unless it is greater than every earlier release tag in its history.
 
 A raised version also decides when a migration runs. A site records the version that last
-installed it (`plugin_version` in the boot record). When a request finds that version older
-than `SEOCART_VERSION`, `Lifecycle::installSite()` runs and applies the pending migrations
-there and then, within a time budget. A deploy that changes code without raising the version
-skips that step. The kernel then migrates inline only when a pending migration cannot let the
-store trade; a migration that returns true from `canOperateHalfApplied()` waits for the queued
-migration job. In that window the new code can meet a table that does not exist yet, for
-example a refund before `refund_claims` exists. A release that carries a migration always
-carries a new version.
+installed it (`plugin_version` in the boot record). When an admin, command-line, cron or REST
+request finds that version older than `SEOCART_VERSION`, `Lifecycle::installSite()` runs and
+applies the pending migrations there and then, within a time budget. A deploy that changes code
+without raising the version skips that step. The kernel then migrates inline only when a
+pending migration cannot let the store trade; a migration that returns true from
+`canOperateHalfApplied()` waits for the queued migration job. In that window the new code can
+meet a table that does not exist yet, for example a refund before `refund_claims` exists. A
+release that carries a migration always carries a new version.
 
 ## Prepare the release
 

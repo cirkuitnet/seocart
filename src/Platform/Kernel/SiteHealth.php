@@ -277,7 +277,7 @@ final class SiteHealth {
 				$findings[] = array(
 					'status' => self::RECOMMENDED,
 					'label'  => __( 'SEOCart\'s background jobs are not running', 'seocart' ),
-					'detail' => __( 'No runner has started one of SEOCart\'s background jobs in the last hour. WP-Cron runs them when the site has visitors; where it does not run reliably, have the server\'s cron run wp seocart jobs run every minute.', 'seocart' ),
+					'detail' => __( 'No runner has started one of SEOCart\'s background jobs in the last hour. WP-Cron runs them when the site has visitors; where it does not run reliably, have the server\'s cron run wp cron event run --due-now and wp seocart jobs run every minute. The second runs only SEOCart\'s own jobs.', 'seocart' ),
 				);
 			}
 

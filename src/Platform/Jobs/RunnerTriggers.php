@@ -24,10 +24,11 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: what the plugin's own triggers do; WP-Cron, the third, is Action Scheduler's.
  *
- * - command() backs `wp seocart jobs run`, which a system cron runs every minute on a site
- *   where WP-Cron does not fire reliably. It drains the outbox, without the drain's
- *   opportunistic prune (the retention job prunes), schedules any recurring job that has lost
- *   its next run, then runs the plugin's due jobs, within one time budget.
+ * - command() backs `wp seocart jobs run`, which a system cron runs every minute, beside
+ *   `wp cron event run --due-now`, on a site where WP-Cron does not fire reliably. It drains
+ *   the outbox, without the drain's opportunistic prune (the retention job prunes), schedules
+ *   any recurring job that has lost its next run, then runs the plugin's due jobs, within one
+ *   time budget.
  * - tick() is the opportunistic trigger on admin requests, for sites where no runner fires at
  *   all. It costs one query when nothing is due and every recurring job has its next run. When
  *   there is work it takes the `jobs_tick` lock without waiting, so concurrent admin requests

@@ -13,6 +13,7 @@ namespace SEOCart\Platform\RateLimiter;
 
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Exception\DatabaseException;
+use SEOCart\Platform\Jobs\BoundedSweep;
 use SEOCart\Platform\Jobs\JobHandler;
 
 defined( 'ABSPATH' ) || exit;
@@ -22,10 +23,11 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: when counter rows leave the table. Every hour it deletes, in batches of BATCH
  * rows in `expires_at` order on its index, the rows whose window has ended by the database clock,
- * until a batch comes back short or BUDGET_SECONDS is spent; a backlog is the next run's. No
- * decision depends on it: an ended window is never counted again, because the next window has a
- * row of its own. It only keeps the table small, which it must do often, since a busy store
- * writes a row per client and window. A recurring job is never retried: the next run is the retry.
+ * through BoundedSweep: until a batch comes back short or BUDGET_SECONDS is spent; a backlog is
+ * the next run's. No decision depends on it: an ended window is never counted again, because the
+ * next window has a row of its own. It only keeps the table small, which it must do often, since
+ * a busy store writes a row per client and window. A recurring job is never retried: the next run
+ * is the retry.
  *
  * @since 0.1.0
  */
@@ -59,15 +61,6 @@ final class SweepRateCounters implements JobHandler {
 	public const DELETE_ENDED = 'DELETE FROM %i WHERE expires_at < UTC_TIMESTAMP() ORDER BY expires_at LIMIT %d';
 
 	/**
-	 * Nanoseconds in a second.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var int
-	 */
-	private const NANOSECONDS = 1000000000;
-
-	/**
 	 * The connection.
 	 *
 	 * @since 0.1.0
@@ -77,22 +70,13 @@ final class SweepRateCounters implements JobHandler {
 	private Database $db;
 
 	/**
-	 * How many rows one statement deletes at most.
+	 * The loop that repeats the statement, in batches and within the budget.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var int
+	 * @var BoundedSweep
 	 */
-	private int $batch;
-
-	/**
-	 * Returns a monotonic time in nanoseconds.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var \Closure(): int
-	 */
-	private \Closure $clock;
+	private BoundedSweep $batches;
 
 	/**
 	 * Creates the handler. Sends nothing.
@@ -107,9 +91,8 @@ final class SweepRateCounters implements JobHandler {
 	 * @phpstan-param (callable(): int)|null $clock
 	 */
 	public function __construct( Database $db, int $batch = self::BATCH, ?callable $clock = null ) {
-		$this->db    = $db;
-		$this->batch = max( 1, $batch );
-		$this->clock = null === $clock ? static fn(): int => (int) hrtime( true ) : \Closure::fromCallable( $clock );
+		$this->db      = $db;
+		$this->batches = new BoundedSweep( $batch, self::BUDGET_SECONDS, $clock );
 	}
 
 	/**
@@ -156,12 +139,9 @@ final class SweepRateCounters implements JobHandler {
 	 * @return int|null Null: the next run follows on its schedule.
 	 */
 	public function handle( array $payload ): ?int {
-		$deadline = ( $this->clock )() + self::BUDGET_SECONDS * self::NANOSECONDS;
-		$table    = $this->db->table( RateCountersTable::NAME );
+		$table = $this->db->table( RateCountersTable::NAME );
 
-		do {
-			$deleted = $this->db->execute( self::DELETE_ENDED, $table, $this->batch );
-		} while ( $deleted >= $this->batch && ( $this->clock )() < $deadline );
+		$this->batches->run( fn( int $limit ): int => $this->db->execute( self::DELETE_ENDED, $table, $limit ) );
 
 		return null;
 	}

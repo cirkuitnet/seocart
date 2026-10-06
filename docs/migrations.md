@@ -90,22 +90,34 @@ migrator the kernel builds runs the registry's migrations and no others.
     Nothing to migrate: the schema is up to date.
     ```
 
-    To see a failed migration run again, mark one failed and ask the doctor:
+    To see a failed migration run again, mark the newest one failed and ask the doctor. The ids,
+    counts and timings in the output below are what the site this page was written on printed. A
+    site gains tables and migrations with every release, so yours will print larger numbers and
+    a different id:
 
     ```text
-    $ wp db query "UPDATE $(wp db prefix)seocart_migrations SET state = 'failed', error_code = 'demo' WHERE migration_id = '20261001_0003_order_status_index'"
+    $ wp db query "UPDATE $(wp db prefix)seocart_migrations SET state = 'failed', error_code = 'demo' ORDER BY migration_id DESC LIMIT 1"
+    Success: Query succeeded. Rows affected: 1
     $ wp seocart doctor | head -4
-    [ok]   schema: All 38 registered tables match their declarations, and no undeclared plugin table exists.
+    [ok]   schema: All 39 registered tables match their declarations, and no undeclared plugin table exists.
     [FAIL] migrations: The schema is not where the code expects it.
-             - Migration 20261001_0003_order_status_index failed. Run `wp seocart migrate` to see why and to try again.
-             - Not applied: 20261001_0003_order_status_index. Run `wp seocart migrate`.
+             - Migration 20261003_0001_payment_intent_mode failed. Run `wp seocart migrate` to see why and to try again.
+             - Not applied: 20261003_0001_payment_intent_mode. Run `wp seocart migrate`.
     $ wp seocart migrate
-    Applied 20261001_0003_order_status_index in 20 ms.
+    Applied 20261003_0001_payment_intent_mode in 25 ms.
     The schema is up to date.
     $ wp seocart doctor | head -3
-    [ok]   schema: All 38 registered tables match their declarations, and no undeclared plugin table exists.
-    [ok]   migrations: All 15 migrations are applied, and none changed since.
+    [ok]   schema: All 39 registered tables match their declarations, and no undeclared plugin table exists.
+    [ok]   migrations: All 17 migrations are applied, and none changed since.
     [ok]   locks: No lock holds a lease that lapsed.
+    ```
+
+    The example marks the newest migration. Mark an older one failed instead and the doctor reports
+    it out of order in place of the "Not applied" line, because a migration that sorts before the
+    newest applied one is out of order (the first rule above):
+
+    ```text
+    - Migration 20261001_0003_order_status_index is out of order: it is not applied, but 20261003_0001_payment_intent_mode, which sorts after it, is. Apply it with `wp seocart migrate`. Commerce writes are not refused for it.
     ```
 
 - **One runner at a time.** The migrator takes the lock named `schema`, waiting a bounded time
@@ -131,26 +143,17 @@ migrator the kernel builds runs the registry's migrations and no others.
 - **Every applied migration leaves a record**: its kind, state, timing, the plugin version that ran
   it, the checksum of its class file and, for a schema migration, the verified summary of each table.
 
-Look at the record on your own site:
+Look at the record on your own site. The first five ids stay the first five, because ids are only
+ever appended, so this shows the first five of what is one row per migration, in id order:
 
 ```text
-$ wp db query "SELECT migration_id, kind, can_operate_half_applied AS half, state, plugin_version FROM $(wp db prefix)seocart_migrations ORDER BY migration_id"
+$ wp db query "SELECT migration_id, kind, can_operate_half_applied AS half, state, plugin_version FROM $(wp db prefix)seocart_migrations ORDER BY migration_id LIMIT 5"
 migration_id	kind	half	state	plugin_version
 20260922_0001_platform_bootstrap	schema	0	applied	0.1.0
 20260923_0001_events_outbox	schema	0	applied	0.1.0
 20260923_0002_logging_logs	schema	1	applied	0.1.0
 20260924_0001_inventory_stock	schema	0	applied	0.1.0
 20260924_0001_secrets_keys	schema	0	applied	0.1.0
-20260925_0001_catalog_tables	schema	0	applied	0.1.0
-20260925_0002_rate_limiter_counters	schema	1	applied	0.1.0
-20260926_0001_order_skeleton	schema	0	applied	0.1.0
-20260926_0002_cart_tables	schema	0	applied	0.1.0
-20260926_0002_payment_intents	schema	0	applied	0.1.0
-20260926_0003_promotion_tables	schema	0	applied	0.1.0
-20260930_0001_checkout_tables	schema	0	applied	0.1.0
-20261001_0001_pricing_rates	schema	1	applied	0.1.0
-20261001_0002_payment_refunds	schema	1	applied	0.1.0
-20261001_0003_order_status_index	schema	1	applied	0.1.0
 ```
 
 ### The boot record and the code version
@@ -163,7 +166,16 @@ are held on this host:
 
 ```text
 $ wp eval '$r = json_decode( get_option( "seocart_boot" ), true ); echo wp_json_encode( array_intersect_key( $r, array_flip( array( "v", "plugin_version", "schema_head", "lock_mode" ) ) ) ), "\n";'
-{"v":1,"plugin_version":"0.1.0","schema_head":"20261001_0003_order_status_index","lock_mode":"get_lock"}
+{"v":1,"plugin_version":"0.1.0","schema_head":"20261003_0001_payment_intent_mode","lock_mode":"get_lock"}
+```
+
+The head is the newest migration the site has applied. The same site's table says so too (what
+your site prints is its own newest id, which moves with every release):
+
+```text
+$ wp db query "SELECT MAX(migration_id) AS newest FROM $(wp db prefix)seocart_migrations WHERE state = 'applied'"
+newest
+20261003_0001_payment_intent_mode
 ```
 
 Because the head is cached there, every request can compare it with the code's at **no database
