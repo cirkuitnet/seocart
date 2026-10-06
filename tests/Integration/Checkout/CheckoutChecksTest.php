@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests doctor's check of the checkout: the binary log, and stranded idempotency keys
+ * Tests doctor's check of the checkout: the binary log, stranded idempotency keys, and placements waiting for their payment
  *
  * @package SEOCart
  * @since   0.1.0
@@ -15,6 +15,8 @@ use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\Doctor\CheckoutChecks;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
+use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 
@@ -108,6 +110,29 @@ final class CheckoutChecksTest extends PlacementTestCase {
 		$this->assertCount( 1, $result->findings );
 		$this->assertStringStartsWith( 'Critical: the binary log records statements', $result->findings[0] );
 		$this->assertSame( array(), $check->repair()->changes, 'There is nothing to repair: the format is the host\'s setting.' );
+	}
+
+	/**
+	 * Tests a placement that has waited for its payment more than a day: a warning while its gateway is still deciding, critical with the reason once its gateway cannot be asked about it.
+	 *
+	 * Planted violation: in CheckoutChecks::run(), give the warning whatever the gateway's state: the
+	 * placement of a gateway gone then reads as one the gateway is still deciding.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_placement_waiting_a_day_says_why_its_gateway_cannot_be_asked(): void {
+		$this->readyCart( array( $this->sellable() => 1 ) );
+
+		$order   = (string) $this->placement->place( $this->placeInput( 'waiting', StubGateway::PENDING ), self::guest() )['order_uuid'];
+		$intents = $this->table( PaymentTables::INTENTS );
+
+		$this->db->execute( 'UPDATE %i SET updated_at = UTC_TIMESTAMP(6) - INTERVAL 25 HOUR', $intents );
+
+		$this->assertSame( array( sprintf( 'Warning: order %s has waited for its payment for more than 24 hours: the gateway is still deciding. Look the payment up with the gateway; the order is settled once the gateway answers.', $order ) ), $this->kernel->get( CheckoutChecks::class )->run()->findings );
+
+		$this->db->execute( "UPDATE %i SET gateway_id = 'gone'", $intents );
+
+		$this->assertSame( array( sprintf( 'Critical: order %s has waited for its payment for more than 24 hours, and its gateway gone cannot be asked about it (not_registered): nothing settles it until a person acts. The gateways check says what to do.', $order ) ), $this->kernel->get( CheckoutChecks::class )->run()->findings );
 	}
 
 	/**

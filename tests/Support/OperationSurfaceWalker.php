@@ -19,6 +19,7 @@ use SEOCart\Application\Operations\CompiledOperation;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Interfaces\Operations\RestAdapter;
+use SEOCart\Payment\Infrastructure\Cli\GatewayCommand;
 use SEOCart\Platform\Authorization\PermissionCallback;
 use SEOCart\Platform\Cli\DoctorCommand;
 use SEOCart\Platform\Database\Cli\MigrateCommand;
@@ -106,6 +107,10 @@ final class OperationSurfaceWalker {
 		'seocart jobs'      => array(
 			'class'  => JobsCommand::class,
 			'reason' => 'Runs the due background jobs for a system cron and reports on them: a maintenance tool for operators, with no REST route or ability twin.',
+		),
+		'seocart gateway'   => array(
+			'class'  => GatewayCommand::class,
+			'reason' => 'Shows the payment gateways\' state, switches a gateway off or on, sets its mode and saves its credentials from a file: an operator\'s control of the gateways from the server, with no REST route or ability twin; credentials never travel in a request\'s arguments.',
 		),
 	);
 

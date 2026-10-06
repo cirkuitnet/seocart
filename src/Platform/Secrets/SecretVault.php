@@ -235,6 +235,33 @@ final class SecretVault implements SecretSealer {
 	}
 
 	/**
+	 * Tells whether a stored text is a sealed value naming a data key the site holds, without opening it.
+	 *
+	 * The census's judgement of one value, for a status that must decrypt nothing: the text has the
+	 * sealed shape, and the key its header names is the active or the retiring one. A value altered
+	 * after its header still names its key and is held by this answer; only opening it would tell.
+	 * A data keys document that cannot be read holds no key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $stored The stored text.
+	 * @return bool True when the site holds the key it names.
+	 */
+	public function isHeld( string $stored ): bool {
+		$key_id = Envelope::keyId( $stored );
+
+		if ( null === $key_id ) {
+			return false;
+		}
+
+		try {
+			return isset( $this->keys->wrapped()[ $key_id ] );
+		} catch ( CodedException ) {
+			return false;
+		}
+	}
+
+	/**
 	 * Returns every record: each secret setting but the data keys document's.
 	 *
 	 * @since 0.1.0

@@ -29,7 +29,10 @@ defined( 'ABSPATH' ) || exit;
  * a time in a cursor's order, asks the gateway about each, outside any transaction, and settles
  * each answer through SettlePlacement, the path every answer takes. An intent the gateway still
  * has no answer for, or cannot be asked about now, is left as it is for the next run: a placement
- * is never released only because time has passed here. It is released when the gateway answers,
+ * is never released only because time has passed here, nor because its gateway is gone, switched
+ * to another mode or kept from live calls by Safe Mode. An intent that could not be asked about is
+ * reported deferred, with its gateway, the error's code and its reason (`cause`), such as
+ * `not_registered` or `safe_mode`. It is released when the gateway answers,
  * and an intent the provider expired is answered so, as a decline: the query carries the intent's
  * expiry, which stands for a provider that reports none. STALE_SECONDS must exceed the longest an
  * authorization call may take, so no intent is asked about while its own call is still on its way.
@@ -215,7 +218,9 @@ final class ReconcileStalePlacements implements JobHandler {
 						self::DEFERRED,
 						array(
 							'intent_uuid' => $intent->uuid,
+							'gateway_id'  => $intent->gatewayId,
 							'reason'      => $deferred instanceof CodedException ? (string) $deferred->errorCode()->value : 'gateway_unavailable',
+							'cause'       => $deferred instanceof CodedException ? ( $deferred->context()['reason'] ?? null ) : null,
 						)
 					);
 				}

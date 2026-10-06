@@ -16,6 +16,7 @@ defined( 'ABSPATH' ) || exit;
 
 use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\WebhookProvisioning;
 use SEOCart\Platform\Database\Schema\Classification;
 use SEOCart\Platform\DataRegistry\OptionDefinition;
 use SEOCart\Platform\Settings\Setting;
@@ -35,7 +36,12 @@ use SEOCart\Support\Schema\SchemaException;
  * - `{id}_mode`, the mode new payments are created in, for a gateway with more than one mode: a
  *   gateway with one mode has nothing to choose, and no such setting;
  * - each declared setting once per declared mode, as `{id}_{mode}_{name}`, since one registry
- *   holds every gateway's settings and their names must not meet.
+ *   holds every gateway's settings and their names must not meet;
+ * - for a gateway that sets up its own webhook endpoints, `{id}_{mode}_webhook_endpoint` per
+ *   mode: the id of the endpoint whose signing secret the mode's `webhook_secret` holds, kept
+ *   beside it when the endpoint is set up, so the secret is known to be that endpoint's. No
+ *   gateway may declare a setting of that name (GatewayDescriptor::WEBHOOK_ENDPOINT), so the
+ *   value stored under it is always the plugin's.
  *
  * A gateway with one mode and no settings, such as the stand-in, has no document at all. The data
  * registry declares the documents as one option family (optionFamily()), since which gateways
@@ -55,25 +61,57 @@ final class GatewaySettingsDeclaration {
 	public const GROUP_PREFIX = 'gateway_';
 
 	/**
-	 * Returns every setting a gateway is kept as: its mode, when it has more than one, and each declared setting for each mode.
+	 * Returns every setting a gateway is kept as: its mode, when it has more than one, each declared setting for each mode, and the webhook endpoint's id for each mode of a gateway that sets its endpoints up.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @throws SchemaException When a declared setting cannot be a setting: required, nullable, an
 	 *                         object, a credential that is not text or has a default, or personal data.
 	 *
-	 * @param GatewayDescriptor $descriptor The gateway's descriptor.
+	 * @param GatewayDescriptor $descriptor         The gateway's descriptor.
+	 * @param bool              $provisionsWebhooks Optional. Whether the gateway sets up its own webhook endpoints (ProvisionsWebhooks). Default false.
 	 * @return list<Setting> The settings; none for a gateway with one mode and no settings.
 	 */
-	public static function of( GatewayDescriptor $descriptor ): array {
+	public static function of( GatewayDescriptor $descriptor, bool $provisionsWebhooks = false ): array {
 		$mode     = self::modeSetting( $descriptor );
 		$settings = null === $mode ? array() : array( $mode );
 
 		foreach ( $descriptor->modes as $declared ) {
 			array_push( $settings, ...self::forMode( $descriptor, $declared ) );
+
+			if ( $provisionsWebhooks ) {
+				$settings[] = self::webhookEndpointSetting( $descriptor, $declared );
+			}
 		}
 
 		return $settings;
+	}
+
+	/**
+	 * Returns the setting that keeps, for a mode, the id of the webhook endpoint the gateway set up, whose signing secret is kept beside it.
+	 *
+	 * Not a credential: a provider's endpoint id gives no access. It is cleared when a signing
+	 * secret is entered by hand, which is no endpoint's this site set up.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayDescriptor $descriptor The gateway's descriptor.
+	 * @param Mode              $mode       The mode.
+	 * @return Setting The setting, `{id}_{mode}_webhook_endpoint`.
+	 */
+	public static function webhookEndpointSetting( GatewayDescriptor $descriptor, Mode $mode ): Setting {
+		return Setting::inDocument(
+			self::group( $descriptor->id ),
+			new FieldSpec(
+				name: self::storedName( $descriptor->id, $mode, GatewayDescriptor::WEBHOOK_ENDPOINT ),
+				type: FieldType::String,
+				description: 'The id of the webhook endpoint the provider set up for this site and mode, whose signing secret is kept beside it.',
+				label: static fn(): string => __( 'Webhook endpoint', 'seocart' ),
+				example: 'we_123',
+				max_length: WebhookProvisioning::ENDPOINT_ID_MAX_LENGTH
+			),
+			false
+		);
 	}
 
 	/**

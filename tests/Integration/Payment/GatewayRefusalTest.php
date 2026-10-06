@@ -11,9 +11,12 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
+use SEOCart\Contracts\Payment\CapabilityMatrix;
 use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\MatrixRow;
 use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Operations;
 use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
@@ -22,6 +25,7 @@ use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Payment\Infrastructure\RefundClaimTables;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Doubles\DeclaredGateway;
 use SEOCart\Tests\Support\Order\NewOrders;
@@ -34,7 +38,9 @@ use SEOCart\Tests\Support\Payment\RefundTestCase;
  * - in Gateways, take a gateway that is not registered for the first one that is: the stand-in
  *   is then asked to capture and refund the gone gateway's payments;
  * - in Gateways::get(), drop the check of the intent's mode: the test-mode gateway is asked to
- *   authorize a live payment.
+ *   authorize a live payment;
+ * - in Gateways::accountCountry(), drop the check of the mode: with a matrix of country rows, the
+ *   live intent is refused `payment.operation_unsupported` instead of for its mode.
  *
  * @since 0.2.0
  */
@@ -95,6 +101,44 @@ final class GatewayRefusalTest extends RefundTestCase {
 		$this->db->transaction( static fn() => $payments->applyGatewayResult( new GatewayResult( 'test_only', Operation::Authorize, Outcome::Approved, $intent->uuid, $intent->amount, 'test-only-ch-' . $intent->uuid ), Actor::user( 0 ) ) );
 
 		$this->assertRefused( 'live_mode_not_declared', 'test_only', fn() => $payments->capture( $intent->uuid, $this->userWithRole() ) );
+
+		$this->db->transaction( static fn() => $payments->applyGatewayResult( new GatewayResult( 'test_only', Operation::Capture, Outcome::Approved, $intent->uuid, $intent->amount, 'test-only-cap-' . $intent->uuid ), Actor::user( 0 ) ) );
+
+		$lines = $this->lineUuids( $order->id );
+
+		$this->assertRefused( 'live_mode_not_declared', 'test_only', fn() => $this->refund( $order->uuid, array( $lines[0] => 1 ), false, $refunds ) );
+
+		$this->assertSame( array(), $testOnly->calls, 'The gateway was never asked.' );
+		$this->assertSame( 0, $this->claims(), 'No refund was claimed.' );
+	}
+
+	/**
+	 * Tests that the mode refusal comes before the capability matrix: with a matrix of country rows, which an account of no country selects none of, a live intent of a gateway that dropped its live mode is refused for the mode on every call, never as an unsupported operation.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_mode_refusal_comes_before_a_matrix_of_country_rows(): void {
+		$matrix   = new CapabilityMatrix( array( new MatrixRow( Currency::of( 'USD' ), 'US', Operations::REQUIRED ) ) );
+		$testOnly = new DeclaredGateway( DeclaredGateway::descriptor( 'test_only', array( Mode::Test ), array(), $matrix ) );
+		$payments = $this->paymentsOver( $this->db, $this->ids, $testOnly );
+		$refunds  = $this->refundsOver( $this->db, $this->ids, $testOnly );
+		$document = NewOrders::forTwoLines( 'USD', 'USD' );
+
+		// An intent created live, as the gateway declared before it dropped its live mode.
+		list( $order, $intent ) = $this->db->transaction(
+			function () use ( $payments, $document ): array {
+				$order = $this->orders->insert( $document, Actor::user( 0 ) );
+
+				return array( $order, $payments->createIntent( $order->id, 'test_only', Mode::Live, $document->totals->grandTotal, $document->totals->baseGrandTotal, $order->conversionContextId ) );
+			}
+		);
+
+		$this->assertRefused( 'live_mode_not_declared', 'test_only', static fn() => $payments->authorize( $intent->uuid, array( PaymentService::PAYMENT_TOKEN => 'stub:approve' ), $order->uuid, $order->orderNumber ) );
+
+		$this->db->transaction( static fn() => $payments->applyGatewayResult( new GatewayResult( 'test_only', Operation::Authorize, Outcome::Approved, $intent->uuid, $intent->amount, 'test-only-ch-' . $intent->uuid ), Actor::user( 0 ) ) );
+
+		$this->assertRefused( 'live_mode_not_declared', 'test_only', fn() => $payments->capture( $intent->uuid, $this->userWithRole() ) );
+		$this->assertRefused( 'live_mode_not_declared', 'test_only', static fn() => $payments->queryGateway( new IntentRef( $intent->uuid, $intent->orderId, 'test_only', Mode::Live, IntentStatus::Authorized, null, $intent->amount, 3600 ) ) );
 
 		$this->db->transaction( static fn() => $payments->applyGatewayResult( new GatewayResult( 'test_only', Operation::Capture, Outcome::Approved, $intent->uuid, $intent->amount, 'test-only-cap-' . $intent->uuid ), Actor::user( 0 ) ) );
 

@@ -17,6 +17,7 @@ use SEOCart\Cart\Domain\CartLine;
 use SEOCart\Cart\Domain\CartToken;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Checkout\Application\PlaceOrder;
+use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
@@ -530,6 +531,50 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 			'currency'          => $grand->currency()->code(),
 			'payment_data'      => array( 'payment_token' => $token ),
 		);
+	}
+
+	/**
+	 * Writes the request's cart's checkout through the production wiring, with a payment method.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int    $version The cart's version.
+	 * @param string $method  The payment method.
+	 */
+	protected function writeCheckout( int $version, string $method ): void {
+		$address = array(
+			'country'  => 'US',
+			'line1'    => '1 Main Street',
+			'city'     => 'Austin',
+			'postcode' => '78701',
+		);
+
+		$this->kernel->get( UpdateCheckoutSession::class )->update(
+			array(
+				'cart_version'       => $version,
+				'billing_address'    => $address + array(
+					'first_name' => 'Ada',
+					'last_name'  => 'Lovelace',
+					'email'      => 'ada@example.com',
+				),
+				'shipping_address'   => $address,
+				'payment_method_key' => $method,
+			),
+			self::guest()
+		);
+	}
+
+	/**
+	 * Builds the placement of a new request, whose gateway registry registers the gateways as they are now.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return PlaceOrder The placement.
+	 */
+	protected function freshPlacement(): PlaceOrder {
+		$this->kernel = $this->kernelOver( $this->db, $this->tokens );
+
+		return $this->kernel->get( PlaceOrder::class );
 	}
 
 	/**

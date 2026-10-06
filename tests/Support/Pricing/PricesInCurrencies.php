@@ -120,12 +120,18 @@ trait PricesInCurrencies {
 	/**
 	 * Writes the installation record of a site installed at the code's schema head, through the real writer.
 	 *
+	 * A test may plant it more than once; the record found before the first plant is the one put back.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Keeps the record found before the first plant.
 	 *
 	 * @param int|null $rateVersion Optional. The rate version it records already. Default null, none.
 	 */
 	protected function plantBootRecord( ?int $rateVersion = null ): void {
-		$this->recordBefore  = $this->storedBootRecord();
+		if ( ! $this->recordPlanted ) {
+			$this->recordBefore = $this->storedBootRecord();
+		}
+
 		$this->recordPlanted = true;
 		$record              = KernelTestCase::installedRecord( KernelTestCase::codeHead() );
 

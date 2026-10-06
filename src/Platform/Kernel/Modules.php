@@ -98,7 +98,10 @@ use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\SequenceOrderNumberGenerator;
 use SEOCart\Order\Infrastructure\WordPressAccessKeys;
 use SEOCart\Order\Interfaces\StoreApi\OrderStatusRead;
+use SEOCart\Payment\Application\GatewayConfiguration;
 use SEOCart\Payment\Application\GatewayContext;
+use SEOCart\Payment\Application\GatewayStatuses;
+use SEOCart\Payment\Application\GatewaySwitches;
 use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
@@ -111,6 +114,8 @@ use SEOCart\Payment\Domain\Event\PaymentStatusChanged;
 use SEOCart\Payment\Domain\Event\RefundRecorded;
 use SEOCart\Payment\Domain\PaymentRepository;
 use SEOCart\Payment\Domain\Refund\RefundRepository;
+use SEOCart\Payment\Infrastructure\Cli\GatewayCommand;
+use SEOCart\Payment\Infrastructure\Doctor\GatewaysCheck;
 use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
@@ -125,6 +130,7 @@ use SEOCart\Platform\Authorization\OptionGrantLedger;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Authorization\RoleNames;
 use SEOCart\Platform\Cli\Doctor\Doctor;
+use SEOCart\Platform\Cli\Doctor\SecretsCheck;
 use SEOCart\Platform\Cli\DoctorCommand;
 use SEOCart\Platform\Database\Cli\MigrateCommand;
 use SEOCart\Platform\Database\Database;
@@ -361,6 +367,7 @@ final class Modules {
 		'seocart jobs'      => JobsCommand::class,
 		'seocart doctor'    => DoctorCommand::class,
 		'seocart secrets'   => SecretsCommand::class,
+		'seocart gateway'   => GatewayCommand::class,
 	);
 
 	/**
@@ -548,8 +555,10 @@ final class Modules {
 				$c->get( CheckoutChecks::class ),
 				$c->get( StockProjectionCheck::class ),
 				$c->get( PaymentLedgerCheck::class ),
+				$c->get( GatewaysCheck::class ),
 				$c->get( RateVersionCheck::class ),
 				$c->get( PromotionUsageCheck::class ),
+				$c->get( SecretsCheck::class ),
 				...$c->get( CatalogChecks::class )->checks()
 			)
 		);
@@ -716,6 +725,7 @@ final class Modules {
 		$container->bind( SecretSealer::class, static fn( Container $c ): SecretSealer => $c->get( SecretVault::class ) );
 		$container->bind( SecretsCanary::class, static fn( Container $c ): SecretsCanary => new SecretsCanary( $c->get( SecretKeys::class ) ) );
 		$container->bind( SecretsStatus::class, static fn( Container $c ): SecretsStatus => new SecretsStatus( $c->get( SecretKeys::class ), $c->get( SecretVault::class ), $c->get( SecretsCanary::class ) ) );
+		$container->bind( SecretsCheck::class, static fn( Container $c ): SecretsCheck => new SecretsCheck( $c->get( SecretsStatus::class ) ) );
 		$container->bind( SecretsCommand::class, static fn( Container $c ): SecretsCommand => new SecretsCommand( $c->get( SecretKeys::class ), $c->get( SecretVault::class ), $c->get( SecretsStatus::class ), self::commandOutput() ) );
 	}
 
@@ -1246,7 +1256,7 @@ final class Modules {
 		);
 		$container->bind( ReconcileStalePlacements::class, static fn( Container $c ): ReconcileStalePlacements => new ReconcileStalePlacements( $c->get( PaymentService::class ), $c->get( Orders::class ), $c->get( SettlePlacement::class ), $c->get( Reporter::class ) ) );
 		$container->bind( IdempotencyKeyRetention::class, static fn( Container $c ): IdempotencyKeyRetention => new IdempotencyKeyRetention( $c->get( MysqlIdempotencyKeys::class ) ) );
-		$container->bind( CheckoutChecks::class, static fn( Container $c ): CheckoutChecks => new CheckoutChecks( $c->get( MysqlIdempotencyKeys::class ), $c->get( Database::class ), $c->get( PaymentRepository::class ), $c->get( OrderRepository::class ) ) );
+		$container->bind( CheckoutChecks::class, static fn( Container $c ): CheckoutChecks => new CheckoutChecks( $c->get( MysqlIdempotencyKeys::class ), $c->get( Database::class ), $c->get( PaymentRepository::class ), $c->get( OrderRepository::class ), $c->get( Gateways::class ) ) );
 	}
 
 	/**
@@ -1414,6 +1424,17 @@ final class Modules {
 		$container->bind( PaymentRepository::class, static fn( Container $c ): PaymentRepository => $c->get( MysqlPaymentRepository::class ) );
 		$container->bind( PaymentGateway::class, static fn(): PaymentGateway => new StubGateway() );
 		$container->bind(
+			GatewaySwitches::class,
+			static fn( Container $c ): GatewaySwitches => new GatewaySwitches(
+				static fn( string $name ): bool => $c->get( BootOption::class )->read()->isKilled( $name ),
+				// One conditional write of the boot record; a site without one, or with a newer version's, keeps it as it is.
+				static fn( string $name, bool $off ): bool => $c->get( BootOption::class )->mutate(
+					static fn( BootRecord $record ): BootRecord => $record->isAbsent() ? $record : $record->withKillSwitch( $name, $off )
+				)->isKilled( $name ) === $off,
+				self::paused( $c )
+			)
+		);
+		$container->bind(
 			Gateways::class,
 			static fn( Container $c ): Gateways => new Gateways(
 				Gateways::stubAllowed( wp_get_environment_type(), defined( 'SEOCART_STUB_GATEWAY' ) ? constant( 'SEOCART_STUB_GATEWAY' ) : null ) ? $c->get( PaymentGateway::class ) : null,
@@ -1430,9 +1451,25 @@ final class Modules {
 				$c->get( Reporter::class ),
 				static function ( FieldSpec ...$fields ) use ( $c ): void {
 					$c->get( Redactor::class )->declareFields( ...$fields );
-				}
+				},
+				$c->get( GatewaySwitches::class )
 			)
 		);
+		$container->bind( GatewayStatuses::class, static fn( Container $c ): GatewayStatuses => new GatewayStatuses( $c->get( Gateways::class ), $c->get( PaymentRepository::class ) ) );
+		$container->bind(
+			GatewayConfiguration::class,
+			static fn( Container $c ): GatewayConfiguration => new GatewayConfiguration(
+				$c->get( Gateways::class ),
+				$c->get( SettingsStore::class ),
+				$c->get( SecretVault::class ),
+				$c->get( TransactionManager::class ),
+				$c->get( Authorizer::class ),
+				// The installation's uuid, with the mode the owner tag of the site's webhook endpoints.
+				static fn(): ?string => $c->get( BootOption::class )->read()->installUuid(),
+				$c->get( Reporter::class )
+			)
+		);
+		$container->bind( GatewayCommand::class, static fn( Container $c ): GatewayCommand => new GatewayCommand( $c->get( GatewayStatuses::class ), $c->get( GatewaySwitches::class ), $c->get( GatewayConfiguration::class ), self::commandOutput(), self::commandDisplay() ) );
 		$container->bind(
 			PaymentService::class,
 			static fn( Container $c ): PaymentService => new PaymentService(
@@ -1449,6 +1486,7 @@ final class Modules {
 			)
 		);
 		$container->bind( PaymentLedgerCheck::class, static fn( Container $c ): PaymentLedgerCheck => new PaymentLedgerCheck( $c->get( MysqlPaymentRepository::class ), $c->get( OrderRepository::class ) ) );
+		$container->bind( GatewaysCheck::class, static fn( Container $c ): GatewaysCheck => new GatewaysCheck( $c->get( GatewayStatuses::class ), $c->get( Gateways::class ) ) );
 		$container->bind( RefundRepository::class, static fn( Container $c ): RefundRepository => new MysqlRefundRepository( $c->get( Database::class ) ) );
 		$container->bind(
 			RefundService::class,
@@ -1515,7 +1553,9 @@ final class Modules {
 				$c->get( SchemaGate::class ),
 				static fn(): Notices => $c->get( Notices::class ),
 				static fn(): SecretsStatus => $c->get( SecretsStatus::class ),
-				static fn(): JobQueue => $c->get( JobQueue::class )
+				static fn(): JobQueue => $c->get( JobQueue::class ),
+				// The registry is built, and the gateways asked to register, only when Site Health runs the test.
+				static fn(): array => $c->get( GatewaysCheck::class )->siteHealthTest()
 			)
 		);
 		$container->bind( SafeModeCommand::class, static fn( Container $c ): SafeModeCommand => new SafeModeCommand( $c->get( SafeMode::class ), self::commandOutput() ) );

@@ -18,7 +18,7 @@ use SEOCart\Platform\Secrets\SecretsStatus;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Adds SEOCart's three direct tests to Site Health: the database schema, the stored secrets and the background jobs.
+ * Adds SEOCart's four direct tests to Site Health: the database schema, the stored secrets, the background jobs and the payment gateways.
  *
  * Owns one fact: which Site Health tests the plugin has, and how the schema and the jobs are
  * judged there. Each test says what its module already knows, in the module's words:
@@ -30,7 +30,10 @@ defined( 'ABSPATH' ) || exit;
  * - the jobs test reads the jobs report `wp seocart jobs status` prints: critical when the queue
  *   library in control is missing or older than the plugin supports; recommended when no runner
  *   has started one of the plugin's jobs for an hour, when jobs failed for good, and when another
- *   plugin keeps the library's actions where the report cannot count them.
+ *   plugin keeps the library's actions where the report cannot count them;
+ * - the gateways test is the payment module's doctor check of the gateways that hold open
+ *   payments (GatewaysCheck::siteHealthTest()), the same findings in Site Health's words: the
+ *   kernel hands its callback over without naming the module's classes.
  *
  * Every test id starts with `seocart_`, so the tests are told apart from other plugins'. Nothing
  * is built until Site Health runs the tests: the filter adds callbacks, and each resolves what it
@@ -57,6 +60,15 @@ final class SiteHealth {
 	 * @var string
 	 */
 	public const JOBS_TEST = 'seocart_jobs';
+
+	/**
+	 * The id of the payment gateways' test.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const GATEWAYS_TEST = 'seocart_gateways';
 
 	/**
 	 * A good result.
@@ -122,6 +134,15 @@ final class SiteHealth {
 	private \Closure $jobs;
 
 	/**
+	 * Runs the payment gateways' test.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var \Closure(): array{label: string, status: string, badge: array{label: string, color: string}, description: string, actions: string, test: string}
+	 */
+	private \Closure $gateways;
+
+	/**
 	 * Creates the tests. Builds nothing.
 	 *
 	 * @since 0.1.0
@@ -129,17 +150,20 @@ final class SiteHealth {
 	 * @param SchemaGate $gate    The schema gate.
 	 * @param callable   $notices Returns the notices.
 	 * @param callable   $secrets Returns the secrets status.
-	 * @param callable   $jobs    Returns the job queue.
+	 * @param callable   $jobs     Returns the job queue.
+	 * @param callable   $gateways Runs the payment gateways' test, and returns its result.
 	 *
 	 * @phpstan-param callable(): Notices       $notices
 	 * @phpstan-param callable(): SecretsStatus $secrets
 	 * @phpstan-param callable(): JobQueue      $jobs
+	 * @phpstan-param callable(): array{label: string, status: string, badge: array{label: string, color: string}, description: string, actions: string, test: string} $gateways
 	 */
-	public function __construct( SchemaGate $gate, callable $notices, callable $secrets, callable $jobs ) {
-		$this->gate    = $gate;
-		$this->notices = \Closure::fromCallable( $notices );
-		$this->secrets = \Closure::fromCallable( $secrets );
-		$this->jobs    = \Closure::fromCallable( $jobs );
+	public function __construct( SchemaGate $gate, callable $notices, callable $secrets, callable $jobs, callable $gateways ) {
+		$this->gate     = $gate;
+		$this->notices  = \Closure::fromCallable( $notices );
+		$this->secrets  = \Closure::fromCallable( $secrets );
+		$this->jobs     = \Closure::fromCallable( $jobs );
+		$this->gateways = \Closure::fromCallable( $gateways );
 	}
 
 	/**
@@ -168,6 +192,10 @@ final class SiteHealth {
 		$direct[ self::JOBS_TEST ]     = array(
 			'label' => __( 'SEOCart background jobs', 'seocart' ),
 			'test'  => array( $this, 'jobsTest' ),
+		);
+		$direct[ self::GATEWAYS_TEST ] = array(
+			'label' => __( 'SEOCart payment gateways', 'seocart' ),
+			'test'  => array( $this, 'gatewaysTest' ),
 		);
 
 		$tests['direct'] = $direct;
@@ -242,6 +270,17 @@ final class SiteHealth {
 		}
 
 		return self::result( self::JOBS_TEST, $findings[0]['status'], $findings[0]['label'], $description );
+	}
+
+	/**
+	 * Runs the payment gateways' test.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array{label: string, status: string, badge: array{label: string, color: string}, description: string, actions: string, test: string} The result.
+	 */
+	public function gatewaysTest(): array {
+		return ( $this->gateways )();
 	}
 
 	/**

@@ -26,7 +26,7 @@ use SEOCart\Support\Schema\FieldType;
 use SEOCart\Support\Schema\Privacy;
 
 /**
- * A descriptor refuses an id a settings group and an intent cannot hold, modes that are none or repeat, settings named `mode` or after card data, a contract version that is not one, and a host declared twice; an idempotency profile counts seconds from 0.
+ * A descriptor refuses an id a settings group and an intent cannot hold, modes that are none or repeat, settings named `mode` or `webhook_endpoint` (the plugin's own) or after card data, a contract version that is not one, and a host declared twice; an idempotency profile counts seconds from 0.
  *
  * Planted violation, shown red and removed: in GatewayDescriptor's CARD_NAME, drop `card`: a
  * setting named `card_number` is then accepted.
@@ -133,6 +133,25 @@ final class GatewayDescriptorTest extends TestCase {
 			'an account country as a secret' => array( array( Mode::Test ), array( self::field( GatewayDescriptor::ACCOUNT_COUNTRY, Privacy::Secret ) ), $version ),
 			'a version that is not one'      => array( array( Mode::Test ), array(), '0.2' ),
 		);
+	}
+
+	/**
+	 * Tests that a gateway declares no setting under a name the plugin keeps itself, and is told which names those are: `manual`, which sets up no webhook endpoint, declaring `webhook_endpoint` beside its keys would have that setting cleared by a signing secret entered by hand.
+	 *
+	 * Planted violation, shown red and removed: in GatewayDescriptor::checkSettings(), drop
+	 * `webhook_endpoint` from the names the plugin keeps: the declaration is then accepted.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_setting_under_a_name_the_plugin_keeps_is_refused(): void {
+		foreach ( array( GatewayDescriptor::RESERVED_SETTING, GatewayDescriptor::WEBHOOK_ENDPOINT ) as $name ) {
+			try {
+				self::descriptor( 'manual', array( Mode::Test ), array( self::field( 'secret_key', Privacy::Secret ), self::field( GatewayDescriptor::WEBHOOK_SECRET, Privacy::Secret ), self::field( $name ) ) );
+				$this->fail( "A setting named {$name} was accepted." );
+			} catch ( \InvalidArgumentException $refusal ) {
+				$this->assertSame( "A gateway declares each setting once, and none named mode or webhook_endpoint, which the plugin keeps itself: {$name}.", $refusal->getMessage() );
+			}
+		}
 	}
 
 	/**

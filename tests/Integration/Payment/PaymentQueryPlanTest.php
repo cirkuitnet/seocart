@@ -61,7 +61,8 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  *
  * Planted violations, each shown red and removed: leave reconciliation's stale intents out of
  * exercise(): the run names MysqlPaymentRepository's STALE_INTENTS as a read it did not send; leave
- * the read of a refund's claim out: it names MysqlRefundRepository's FIND_CLAIM.
+ * the read of a refund's claim out: it names MysqlRefundRepository's FIND_CLAIM; leave the open intents out:
+ * it names MysqlPaymentRepository's OPEN_INTENTS.
  *
  * @group performance
  *
@@ -178,6 +179,9 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 
 		// Reconciliation's stale intents.
 		$payments->staleIntents( 600, 50 );
+
+		// The open intents of every gateway, counted once for the gateways' status and doctor's gateways check.
+		( new MysqlPaymentRepository( $db, $ids ) )->openIntents();
 
 		// Every line of doctor's payment check, which reads the order tables through the order repository, and the refund
 		// claims never settled.

@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Kernel;
 
+use SEOCart\Payment\Infrastructure\Doctor\GatewaysCheck;
 use SEOCart\Platform\Jobs\Job;
 use SEOCart\Platform\Jobs\JobQueue;
 use SEOCart\Platform\Jobs\JobsReport;
@@ -57,11 +58,12 @@ final class SiteHealthTest extends KernelTestCase {
 	}
 
 	/**
-	 * Tests that the filter the kernel adds on an admin request lists SEOCart's three direct tests, and that each runs.
+	 * Tests that the filter the kernel adds on an admin request lists SEOCart's four direct tests, and that each runs.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The payment gateways' test.
 	 */
-	public function test_the_kernel_adds_its_three_tests_to_site_health(): void {
+	public function test_the_kernel_adds_its_four_tests_to_site_health(): void {
 		$this->container()->get( Lifecycle::class )->activate();
 
 		wp_set_current_user( 1 );
@@ -74,9 +76,9 @@ final class SiteHealthTest extends KernelTestCase {
 		);
 		$tests = apply_filters( 'site_status_tests', $empty ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- WordPress's own filter, applied as the Site Health screen applies it.
 
-		$ours = array( SiteHealth::SCHEMA_TEST, SecretsStatus::TEST, SiteHealth::JOBS_TEST );
+		$ours = array( SiteHealth::SCHEMA_TEST, SecretsStatus::TEST, SiteHealth::JOBS_TEST, SiteHealth::GATEWAYS_TEST );
 
-		$this->assertSame( $ours, array_values( array_intersect( array_keys( $tests['direct'] ), $ours ) ), 'Site Health does not list SEOCart\'s three tests.' );
+		$this->assertSame( $ours, array_values( array_intersect( array_keys( $tests['direct'] ), $ours ) ), 'Site Health does not list SEOCart\'s four tests.' );
 
 		foreach ( $ours as $id ) {
 			$result = call_user_func( $tests['direct'][ $id ]['test'] );
@@ -152,7 +154,8 @@ final class SiteHealthTest extends KernelTestCase {
 			$container->get( SchemaGate::class ),
 			static fn(): Notices => $container->get( Notices::class ),
 			static fn(): SecretsStatus => $container->get( SecretsStatus::class ),
-			static fn(): JobQueue => self::queueReporting( $report )
+			static fn(): JobQueue => self::queueReporting( $report ),
+			static fn(): array => $container->get( GatewaysCheck::class )->siteHealthTest()
 		);
 
 		$result = $health->jobsTest();

@@ -109,7 +109,7 @@ enum CheckoutError: string implements ErrorCode {
 	case GatewayUnavailable = 'checkout.gateway_unavailable';
 
 	/**
-	 * The payment method chosen cannot take this order's payment now: its gateway is gone, or does not take the order's currency or total. Nothing was written.
+	 * The payment method chosen cannot take this order's payment now: its gateway is gone or switched off, or does not take the order's currency or total. Nothing was written. The error's details carry `reason: disabled` when an operator switched the gateway off.
 	 *
 	 * @since 0.2.0
 	 */
@@ -207,7 +207,8 @@ enum CheckoutError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: The payment method chosen, for example stripe. */
 					__( 'The payment method %1$s cannot take this order\'s payment now, so the order was not placed. Choose another way to pay, then place the order again.', 'seocart' ),
-				array( 'payment_method_key' )
+				array( 'payment_method_key' ),
+				details: array( 'reason' )
 			),
 			new ErrorDefinition(
 				self::CurrencyNotEnabled,

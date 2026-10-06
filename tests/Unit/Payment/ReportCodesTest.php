@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Payment;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Payment\Application\GatewayConfiguration;
 use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
@@ -21,7 +22,7 @@ use SEOCart\Support\Error\ErrorDefinition;
 use SEOCart\Support\Error\ErrorTable;
 
 /**
- * A refused registration, an incompatible gateway and an ignored "not found" are lines in the log for a person to read; none is an answer a client receives, so none may share a code with the error table, where a reader would look for it first.
+ * A refused registration, an incompatible gateway, an ignored "not found" and a webhook endpoint a provider did not set up are lines in the log for a person to read; none is an answer a client receives, so none may share a code with the error table, where a reader would look for it first.
  *
  * Planted violation, shown red and removed: make PaymentService::NOT_FOUND_IGNORED
  * `payment.gateway_unavailable`: it is then an error code too.
@@ -40,7 +41,7 @@ final class ReportCodesTest extends TestCase {
 
 		$this->assertContains( PaymentError::GatewayUnavailable->value, $errors, 'The error table was not read, so the comparison would prove nothing.' );
 
-		foreach ( array( Gateways::REJECTED, Gateways::INCOMPATIBLE, PaymentService::NOT_FOUND_IGNORED ) as $code ) {
+		foreach ( array( Gateways::REJECTED, Gateways::INCOMPATIBLE, PaymentService::NOT_FOUND_IGNORED, GatewayConfiguration::PROVISIONING_FAILED ) as $code ) {
 			$this->assertTrue( Logger::isValidCode( $code ), $code );
 			$this->assertNotContains( $code, $errors, $code . ' is a code of the error table.' );
 		}

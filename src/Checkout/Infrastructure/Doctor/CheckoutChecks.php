@@ -13,6 +13,7 @@ namespace SEOCart\Checkout\Infrastructure\Doctor;
 
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Order\Domain\OrderRepository;
+use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\PaymentRepository;
 use SEOCart\Platform\Cli\Doctor\CheckResult;
@@ -40,9 +41,12 @@ defined( 'ABSPATH' ) || exit;
  *
  * A placement whose payment intent still waits for the gateway's result after PENDING_SECONDS is
  * reported by its order's uuid. The reconciliation job settles a placement as soon as the gateway
- * answers, a "no record of it" and an expiry included, so one still waiting is one the gateway
- * keeps deciding with no expiry: a person looks it up there. Nothing here settles it, and repair
- * leaves it alone.
+ * answers, a "no record of it" and an expiry included, so one still waiting is a warning: one the
+ * gateway keeps deciding with no expiry, which a person looks up there, or a live one while Safe
+ * Mode is on, which its gateway is asked about once Safe Mode ends. One whose gateway cannot be
+ * asked at all (Gateways::unavailableFor(), which opens no credential: not registered, without the
+ * payment's mode, or its credentials missing or unreadable) is critical, with the reason: nothing
+ * settles it until a person acts. Nothing here settles it, and repair leaves it alone.
  *
  * It prints key ids, scopes and ages, and order uuids, never a hash or an answer.
  *
@@ -123,6 +127,15 @@ final class CheckoutChecks implements Repairable {
 	private OrderRepository $orders;
 
 	/**
+	 * The payment gateways, which say why a gateway cannot be asked about a placement's payment.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var Gateways
+	 */
+	private Gateways $gateways;
+
+	/**
 	 * The keys the last run() found, for repair() to act on.
 	 *
 	 * @since 0.1.0
@@ -140,12 +153,14 @@ final class CheckoutChecks implements Repairable {
 	 * @param Database             $db       The connection, whose server's binary log is checked.
 	 * @param PaymentRepository    $payments The payment intents.
 	 * @param OrderRepository      $orders   The orders.
+	 * @param Gateways             $gateways The payment gateways.
 	 */
-	public function __construct( MysqlIdempotencyKeys $keys, Database $db, PaymentRepository $payments, OrderRepository $orders ) {
+	public function __construct( MysqlIdempotencyKeys $keys, Database $db, PaymentRepository $payments, OrderRepository $orders, Gateways $gateways ) {
 		$this->keys     = $keys;
 		$this->db       = $db;
 		$this->payments = $payments;
 		$this->orders   = $orders;
+		$this->gateways = $gateways;
 	}
 
 	/**
@@ -184,12 +199,8 @@ final class CheckoutChecks implements Repairable {
 			$findings[] = 'Critical: the binary log records statements (binlog_format = STATEMENT), and in that format the server refuses every write of an order placement and of a stock change, which run at READ COMMITTED (error 1665). Ask the host to set binlog_format to ROW or MIXED.';
 		}
 
-		foreach ( $waiting as $orderUuid ) {
-			$findings[] = sprintf(
-				'Warning: order %1$s has waited for its payment for more than %2$d hours: the gateway is still deciding. Look the payment up with the gateway; the order is settled once the gateway answers.',
-				$orderUuid,
-				intdiv( self::PENDING_SECONDS, 3600 )
-			);
+		foreach ( $waiting as $placement ) {
+			$findings[] = self::waitingFinding( $placement );
 		}
 
 		foreach ( $stranded as $key ) {
@@ -215,24 +226,56 @@ final class CheckoutChecks implements Repairable {
 	}
 
 	/**
-	 * Lists the placements whose payment has waited for the gateway's result for more than PENDING_SECONDS, by their orders' uuids.
+	 * Says that a placement has waited for its payment for more than PENDING_SECONDS, and why.
+	 *
+	 * A warning while its gateway is still deciding, and while Safe Mode keeps SEOCart from asking
+	 * the gateway about a live payment, which ends when Safe Mode does (the gateways check calls that
+	 * a warning too); critical when the gateway cannot be asked for another reason, since nothing
+	 * settles the order until a person acts.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array{order: string, gateway: string, reason: string|null} $placement The order's uuid, its gateway, and why that cannot be asked, if it cannot.
+	 * @return string The finding, `Warning:` or `Critical:` first.
+	 */
+	private static function waitingFinding( array $placement ): string {
+		$hours = intdiv( self::PENDING_SECONDS, 3600 );
+
+		if ( null === $placement['reason'] ) {
+			return sprintf( 'Warning: order %1$s has waited for its payment for more than %2$d hours: the gateway is still deciding. Look the payment up with the gateway; the order is settled once the gateway answers.', $placement['order'], $hours );
+		}
+
+		if ( 'safe_mode' === $placement['reason'] ) {
+			return sprintf( 'Warning: order %1$s has waited for its live payment for more than %2$d hours, and Safe Mode is on: SEOCart makes no live call, so its gateway %3$s is asked about it once Safe Mode ends.', $placement['order'], $hours, $placement['gateway'] );
+		}
+
+		return sprintf( 'Critical: order %1$s has waited for its payment for more than %2$d hours, and its gateway %3$s cannot be asked about it (%4$s): nothing settles it until a person acts. The gateways check says what to do.', $placement['order'], $hours, $placement['gateway'], $placement['reason'] );
+	}
+
+	/**
+	 * Lists the placements whose payment has waited for the gateway's result for more than PENDING_SECONDS, each with why its gateway cannot be asked, if it cannot.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Each with its gateway, and the reason it cannot be asked.
 	 *
-	 * @return list<string> The orders' uuids; at most LIMIT.
+	 * @return list<array{order: string, gateway: string, reason: string|null}> The orders' uuids, their gateways and the reasons; at most LIMIT.
 	 */
 	private function waitingPlacements(): array {
-		$uuids = array();
+		$placements = array();
 
 		foreach ( $this->payments->stale( IntentStatus::awaitingResult(), self::PENDING_SECONDS, '', self::LIMIT ) as $intent ) {
 			$order = $this->orders->statusOf( $intent->orderId );
 
 			if ( null !== $order ) {
-				$uuids[] = $order['uuid'];
+				$placements[] = array(
+					'order'   => (string) $order['uuid'],
+					'gateway' => $intent->gatewayId,
+					'reason'  => $this->gateways->unavailableFor( $intent->gatewayId, $intent->mode ),
+				);
 			}
 		}
 
-		return $uuids;
+		return $placements;
 	}
 
 	/**

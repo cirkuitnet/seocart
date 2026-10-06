@@ -100,4 +100,18 @@ enum IntentStatus: string {
 	public static function awaitingResult(): array {
 		return array( self::Created, self::RequiresAction, self::Processing );
 	}
+
+	/**
+	 * Returns the states of an intent whose money is still moving: waiting for its authorization's answer, or authorized and not yet captured or voided.
+	 *
+	 * An intent in one of them still needs its gateway: a gateway gone while intents are open
+	 * strands them until it returns.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<self> created, requires_action, processing and authorized.
+	 */
+	public static function open(): array {
+		return array( ...self::awaitingResult(), self::Authorized );
+	}
 }

@@ -207,14 +207,15 @@ final class SecretsStatus {
 	}
 
 	/**
-	 * Lists what is wrong, the most severe first.
+	 * Lists what is wrong, the most severe first: what Site Health's test and doctor's secrets check both say.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Public, so doctor reports the same findings in the same words.
 	 *
 	 * @param SecretsReport $report The report.
 	 * @return list<array{status: string, label: string, detail: string}> The findings; none when all is well.
 	 */
-	private static function findings( SecretsReport $report ): array {
+	public static function findings( SecretsReport $report ): array {
 		$critical = array();
 		$failure  = $report->canary->failure;
 

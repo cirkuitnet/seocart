@@ -160,4 +160,16 @@ interface PaymentRepository {
 	 * @phpstan-param list<IntentStatus> $states
 	 */
 	public function stale( array $states, int $olderThanSeconds, string $afterUuid, int $limit ): array;
+
+	/**
+	 * Counts the open intents (IntentStatus::open()) per gateway and mode, with one statement for every gateway.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<array{gateway_id: string, mode: Mode, open: int, waiting: int, waited_seconds: int|null}> One row
+	 *         per gateway and mode with open intents: how many are open, how many of them still wait for the
+	 *         authorization's answer, and how long the one that has waited longest has gone unchanged, by the
+	 *         database's clock; null when none waits.
+	 */
+	public function openIntents(): array;
 }

@@ -51,6 +51,7 @@ use SEOCart\Tests\Support\Checkout\PlacementKernel;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 use SEOCart\Tests\Support\CreatesUsers;
 use SEOCart\Tests\Support\Doubles\WebhookFirstGateway;
+use SEOCart\Tests\Support\GrantsCapabilities;
 use SEOCart\Tests\Support\SecondConnection;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- The tests plant rows and read them back directly.
@@ -65,6 +66,7 @@ use SEOCart\Tests\Support\SecondConnection;
 final class PlaceOrderTest extends PlacementTestCase {
 
 	use CreatesUsers;
+	use GrantsCapabilities;
 
 	/**
 	 * The stock releases delivered after commit, in order.
@@ -687,22 +689,7 @@ final class PlaceOrderTest extends PlacementTestCase {
 	 * @return Actor The actor.
 	 */
 	private function capturer(): Actor {
-		$user = $this->createUser( 'subscriber' );
-
-		add_filter(
-			'user_has_cap',
-			static function ( $caps, $cap, $args ) use ( $user ) {
-				if ( (int) ( $args[1] ?? 0 ) === $user ) {
-					$caps[ PaymentService::CAPTURE_CAPABILITY ] = true;
-				}
-
-				return $caps;
-			},
-			10,
-			3
-		);
-
-		return Actor::user( $user );
+		return $this->userGranted( PaymentService::CAPTURE_CAPABILITY );
 	}
 
 	/**

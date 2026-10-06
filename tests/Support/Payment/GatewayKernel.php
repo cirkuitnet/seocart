@@ -13,6 +13,9 @@ namespace SEOCart\Tests\Support\Payment;
 
 use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Order\Application\Orders;
+use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Payment\Application\GatewaySettingsDeclaration;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
@@ -29,6 +32,7 @@ use SEOCart\Platform\Secrets\SecretVault;
 use SEOCart\Platform\Settings\Setting;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Tests\Support\KernelContainer;
+use SEOCart\Tests\Support\Order\NewOrders;
 use SEOCart\Tests\Support\SecretsHarness;
 
 /**
@@ -48,14 +52,16 @@ final class GatewayKernel {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param Database       $db     The connection.
-	 * @param callable       $report Receives the reports of the kernel's own services.
-	 * @param EventPublisher $events The publisher.
+	 * @param Database       $db        The connection.
+	 * @param callable       $report    Receives the reports of the kernel's own services.
+	 * @param EventPublisher $events    The publisher.
+	 * @param array          $overrides Optional. Further replacements, which win. Default none.
 	 * @return Container The container.
 	 *
 	 * @phpstan-param callable(string, array<string, mixed>): void $report
+	 * @phpstan-param array<string, callable(Container): object>   $overrides
 	 */
-	public static function over( Database $db, callable $report, EventPublisher $events ): Container {
+	public static function over( Database $db, callable $report, EventPublisher $events, array $overrides = array() ): Container {
 		$operations = new SchemaOperations( $db, new DdlGenerator(), new SchemaVerifier( $db ) );
 
 		( new CreateLogsMigration() )->up( $operations );
@@ -65,7 +71,7 @@ final class GatewayKernel {
 		$container = KernelContainer::build(
 			$db,
 			$report,
-			array(
+			$overrides + array(
 				TransactionManager::class => static fn(): TransactionManager => $db,
 				EventPublisher::class     => static fn(): EventPublisher => $events,
 				EncryptionKey::class      => static fn(): EncryptionKey => $key,
@@ -75,6 +81,35 @@ final class GatewayKernel {
 		$container->get( SecretKeys::class )->initialize();
 
 		return $container;
+	}
+
+	/**
+	 * Builds the wiring of another request on the same site: the same connection and data keys, and nothing created again.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Container      $kernel    The container over() built.
+	 * @param Database       $db        The connection.
+	 * @param callable       $report    Receives the reports of the kernel's own services.
+	 * @param EventPublisher $events    The publisher.
+	 * @param array          $overrides Optional. Further replacements, which win. Default none.
+	 * @return Container The container.
+	 *
+	 * @phpstan-param callable(string, array<string, mixed>): void $report
+	 * @phpstan-param array<string, callable(Container): object>   $overrides
+	 */
+	public static function request( Container $kernel, Database $db, callable $report, EventPublisher $events, array $overrides = array() ): Container {
+		$key = $kernel->get( EncryptionKey::class );
+
+		return KernelContainer::build(
+			$db,
+			$report,
+			$overrides + array(
+				TransactionManager::class => static fn(): TransactionManager => $db,
+				EventPublisher::class     => static fn(): EventPublisher => $events,
+				EncryptionKey::class      => static fn(): EncryptionKey => $key,
+			)
+		);
 	}
 
 	/**
@@ -122,6 +157,75 @@ final class GatewayKernel {
 	 */
 	public static function name( string $gatewayId, Mode $mode, string $name ): string {
 		return GatewaySettingsDeclaration::storedName( $gatewayId, $mode, $name );
+	}
+
+	/**
+	 * Places an order in USD and creates its intent through a gateway, in a mode: an open payment, waiting for its authorization's answer.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Container $kernel    The container, whose order and payment tables exist.
+	 * @param string    $gatewayId The gateway.
+	 * @param Mode      $mode      The intent's mode.
+	 * @return string The intent's uuid.
+	 */
+	public static function openIntent( Container $kernel, string $gatewayId, Mode $mode ): string {
+		$document = NewOrders::forTwoLines( 'USD', 'USD' );
+		$orders   = $kernel->get( Orders::class );
+		$payments = $kernel->get( PaymentService::class );
+
+		return (string) $kernel->get( TransactionManager::class )->transaction(
+			static function () use ( $orders, $payments, $document, $gatewayId, $mode ): string {
+				$order = $orders->insert( $document, Actor::user( 0 ) );
+
+				return $payments->createIntent( $order->id, $gatewayId, $mode, $document->totals->grandTotal, $document->totals->baseGrandTotal, $order->conversionContextId )->uuid;
+			}
+		);
+	}
+
+	/**
+	 * Changes a gateway's stored setting where its document is stored, past every check, as damage or another writer would.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string   $gatewayId The gateway's id.
+	 * @param Mode     $mode      The mode.
+	 * @param string   $name      The setting's declared name.
+	 * @param \Closure $change    Returns the text to store in place of the stored text it is given (string); null removes the value.
+	 */
+	public static function alterStored( string $gatewayId, Mode $mode, string $name, \Closure $change ): void {
+		global $wpdb;
+
+		$option = Setting::OPTION_PREFIX . GatewaySettingsDeclaration::group( $gatewayId );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- The row as stored, past every cache.
+		$document = json_decode( (string) $wpdb->get_var( $wpdb->prepare( 'SELECT option_value FROM %i WHERE option_name = %s', $wpdb->options, $option ) ), true );
+		$stored   = self::name( $gatewayId, $mode, $name );
+		$value    = $change( (string) ( $document['values'][ $stored ] ?? '' ) );
+
+		if ( null === $value ) {
+			unset( $document['values'][ $stored ] );
+		} else {
+			$document['values'][ $stored ] = $value;
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- The test damages a stored document on purpose.
+		$wpdb->update( $wpdb->options, array( 'option_value' => wp_json_encode( $document ) ), array( 'option_name' => $option ) );
+		wp_cache_flush();
+	}
+
+	/**
+	 * Returns a gateway's settings document as the database stores it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $gatewayId The gateway's id.
+	 * @return array{version?: int, values?: array<string, int|string>} The document; empty when it was never written.
+	 */
+	public static function storedDocument( string $gatewayId ): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- The test reads the row as stored, past every cache.
+		return (array) json_decode( (string) $wpdb->get_var( $wpdb->prepare( 'SELECT option_value FROM %i WHERE option_name = %s', $wpdb->options, Setting::OPTION_PREFIX . GatewaySettingsDeclaration::group( $gatewayId ) ) ), true );
 	}
 
 	/**

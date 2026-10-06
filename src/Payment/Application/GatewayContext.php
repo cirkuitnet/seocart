@@ -29,8 +29,8 @@ use SEOCart\Support\Clock;
 /**
  * One gateway's context: the plugin's logger and clock, an HTTP client for the gateway's own hosts, and the gateway's settings, each mode read when asked.
  *
- * Owns one fact: what a gateway reaches of the plugin, and the mode new payments through it are
- * created in. The settings are the gateway's own document, as its descriptor declared them, read
+ * Owns one fact: what a gateway reaches of the plugin, and the mode it is set to take new
+ * payments in. The settings are the gateway's own document, as its descriptor declared them, read
  * through the settings store and opened through the secrets vault at call time. The HTTP client
  * is built the first time it is asked for, with the hosts the gateway's descriptor declares and
  * no other. The descriptor is the registry's, read once the gateway is registered.
@@ -165,15 +165,16 @@ final class GatewayContext implements ExtensionContext {
 	}
 
 	/**
-	 * Returns the mode new payments through the gateway are created in: its only mode, or the mode its settings name.
+	 * Returns the mode the gateway is set to take new payments in: its only mode, or the mode its settings name.
 	 *
-	 * A gateway with one mode reads nothing.
+	 * The registry decides the mode new payments are created in from it, which is test while Safe
+	 * Mode is on (Gateways::effectiveMode()). A gateway with one mode reads nothing.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @return Mode The mode.
 	 */
-	public function effectiveMode(): Mode {
+	public function mode(): Mode {
 		$descriptor = $this->descriptor();
 		$setting    = GatewaySettingsDeclaration::modeSetting( $descriptor );
 

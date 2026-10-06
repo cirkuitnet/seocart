@@ -37,7 +37,8 @@ defined( 'ABSPATH' ) || exit;
  *   it: no field holds the address, or a fragment of it, as text;
  * - `safe_mode`: null, or the reason an operator or the installation recorded, and since when;
  * - `adopted_at`: when the merchant last confirmed that a changed address is the same store;
- * - `kill`: reserved for per-subsystem switches, capped at 64 entries; nothing writes it yet;
+ * - `kill`: the kill switches, each a subsystem id set to true, capped at 64 entries: a payment
+ *   gateway switched off by an operator is `gateway.{id}`;
  * - `canary`: null, or since when the secrets canary has failed. It is kept apart from
  *   `safe_mode`, so that a canary failure and its end never change the reason recorded there;
  * - `rate_version`: null, or the current version of the exchange rates, recorded once its rates
@@ -859,6 +860,56 @@ final class BootRecord {
 
 		$copy              = $this->present();
 		$copy->rateVersion = $version;
+
+		return $copy;
+	}
+
+	/**
+	 * Tells whether a kill switch is on.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $id The switch's subsystem id, such as `gateway.stripe`.
+	 * @return bool True when the record holds the switch.
+	 */
+	public function isKilled( string $id ): bool {
+		return isset( $this->killSwitches[ $id ] );
+	}
+
+	/**
+	 * Returns a copy with a kill switch turned on, or removed. The other switches keep their order.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \InvalidArgumentException When the id is not a lower-case subsystem id of at most 64
+	 *                                   characters, or turning it on would hold more than
+	 *                                   MAX_KILL_SWITCHES switches.
+	 *
+	 * @param string $id The switch's subsystem id, such as `gateway.stripe`.
+	 * @param bool   $on True to turn it on; false to remove it.
+	 * @return self The copy.
+	 */
+	public function withKillSwitch( string $id, bool $on ): self {
+		if ( 1 !== preg_match( self::KILL_ID_PATTERN, $id ) ) {
+			throw new \InvalidArgumentException( 'A kill switch is a lower-case subsystem id of at most 64 characters.' );
+		}
+
+		$switches = $this->killSwitches;
+
+		if ( $on ) {
+			$switches[ $id ] = true;
+		} else {
+			unset( $switches[ $id ] );
+		}
+
+		$problem = self::killSwitchProblem( $switches );
+
+		if ( null !== $problem ) {
+			throw new \InvalidArgumentException( $problem );
+		}
+
+		$copy               = $this->present();
+		$copy->killSwitches = $switches;
 
 		return $copy;
 	}

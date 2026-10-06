@@ -27,11 +27,15 @@ use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Order\Infrastructure\MysqlOrderRepository;
 use SEOCart\Order\Infrastructure\OrderStatements;
+use SEOCart\Payment\Application\GatewayStatuses;
+use SEOCart\Payment\Infrastructure\Doctor\GatewaysCheck;
 use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Cli\Doctor\Doctor;
+use SEOCart\Platform\Cli\Doctor\SecretsCheck;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\LockMode;
 use SEOCart\Platform\Database\LockService;
@@ -45,6 +49,13 @@ use SEOCart\Platform\Jobs\JobHandlers;
 use SEOCart\Platform\Kernel\BootOption;
 use SEOCart\Platform\Localization\SiteLocale;
 use SEOCart\Platform\Logging\CorrelationId;
+use SEOCart\Platform\Secrets\EncryptionKey;
+use SEOCart\Platform\Secrets\SecretKeys;
+use SEOCart\Platform\Secrets\SecretsCanary;
+use SEOCart\Platform\Secrets\SecretsStatus;
+use SEOCart\Platform\Secrets\SecretVault;
+use SEOCart\Platform\Settings\Settings;
+use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Pricing\Infrastructure\Doctor\RateVersionCheck;
 use SEOCart\Pricing\Infrastructure\MysqlExchangeRates;
 use SEOCart\Promotion\Infrastructure\Doctor\PromotionUsageCheck;
@@ -53,6 +64,7 @@ use SEOCart\Support\Currency;
 use SEOCart\Support\SystemClock;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
+use SEOCart\Tests\Support\Payment\TestGateways;
 
 /**
  * Checks a seeded store: doctor must pass, and the sellability query must sell every seeded variant.
@@ -107,7 +119,9 @@ final class SeedVerifier {
 		$problems = array();
 
 		foreach ( self::doctor( $db, $report, $baseCurrency )->run() as $result ) {
-			if ( ! $result->passed ) {
+			// The secrets check judges the site's own set-up, its SEOCART_ENCRYPTION_KEY and the data keys
+			// activation creates, which a seed writes neither of: its verdict says nothing of the seed.
+			if ( ! $result->passed && SecretsCheck::NAME !== $result->check ) {
 				$problems[] = sprintf( 'doctor %s: %s %s', $result->check, $result->summary, implode( ' ', $result->findings ) );
 			}
 		}
@@ -153,6 +167,8 @@ final class SeedVerifier {
 		$delete     = new DeleteProduct( $products, $stock, $db, $events, new SystemClock() );
 		$bindings   = new TranslationBindings( $products, $db, $events, new SystemClock(), $delete, new Authorizer( new CapabilityDeclaration() ) );
 		$groups     = new TranslationGroups( $products, $locales, $bindings, $reconciler, $report );
+		$gateways   = TestGateways::of( new StubGateway() );
+		$payments   = new MysqlPaymentRepository( $db, new SequentialIdGenerator( 970000 ) );
 
 		return new Doctor(
 			$db,
@@ -160,9 +176,10 @@ final class SeedVerifier {
 			self::migrator( $db, $report ),
 			new Outbox( $db ),
 			new ActionSchedulerQueue( $db, new LockService( $db, LockMode::Table ), new JobHandlers( JobHandlers::PRODUCTION, 'strval' ), new CorrelationId( new SequentialIdGenerator() ), $report ),
-			new CheckoutChecks( new MysqlIdempotencyKeys( $db ), $db, new MysqlPaymentRepository( $db, new SequentialIdGenerator( 970000 ) ), new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 960000 ) ) ),
+			new CheckoutChecks( new MysqlIdempotencyKeys( $db ), $db, $payments, new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 960000 ) ), $gateways ),
 			new StockProjectionCheck( new MysqlStockRepository( $db ) ),
 			new PaymentLedgerCheck( new MysqlPaymentRepository( $db, new SequentialIdGenerator( 980000 ) ), new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 990000 ) ) ),
+			new GatewaysCheck( new GatewayStatuses( $gateways, $payments ), $gateways ),
 			new RateVersionCheck(
 				new MysqlExchangeRates( $db, $db, array( new LockService( $db, LockMode::GetLock ), 'withLock' ), static fn(): Currency => Currency::of( $baseCurrency ), static function (): void {} ),
 				static fn(): ?int => ( new BootOption( $db, $report ) )->read()->rateVersion(),
@@ -171,8 +188,25 @@ final class SeedVerifier {
 				}
 			),
 			new PromotionUsageCheck( new MysqlPromotionRepository( $db ) ),
+			new SecretsCheck( self::secretsStatus( $db ) ),
 			...( new CatalogChecks( $products, $stock, $groups, $settler, new SystemClock(), $db, static fn(): Currency => Currency::of( $baseCurrency ), array( new LockService( $db, LockMode::GetLock ), 'withLock' ) ) )->checks()
 		);
+	}
+
+	/**
+	 * Builds the status of the stored secrets over a Database of the caller's, as the kernel builds it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Database $db The connection.
+	 * @return SecretsStatus The status.
+	 */
+	private static function secretsStatus( Database $db ): SecretsStatus {
+		$registry = Settings::registry();
+		$store    = new SettingsStore( $registry, $db );
+		$keys     = new SecretKeys( $registry, $store, $db, EncryptionKey::fromEnvironment() );
+
+		return new SecretsStatus( $keys, new SecretVault( $registry, $store, $keys ), new SecretsCanary( $keys ) );
 	}
 
 	/**

@@ -19,6 +19,7 @@ use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Contracts\Payment\GatewaySettings;
 use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Platform\Secrets\SecretVault;
+use SEOCart\Platform\Settings\SettingsError;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Schema\FieldSpec;
@@ -125,6 +126,53 @@ final class GatewayModeSettings implements GatewaySettings {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Judges the mode's settings from the stored document alone, opening no credential: configured, missing or unreadable.
+	 *
+	 * A setting without a default that was never saved is missing. A credential's stored text must
+	 * be a sealed value naming a data key the site holds (SecretVault::isHeld()), or it is
+	 * unreadable, and so is the mode when the store cannot read the document. A credential altered
+	 * after its header still reads as configured: only opening it would tell, and the registry opens
+	 * every credential of a mode before any call (Gateways::get()), so the gateway is refused then.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException When the store fails for another reason than a stored value it cannot hold.
+	 *
+	 * @return CredentialState Unreadable when any setting is; otherwise missing when any is;
+	 *                         otherwise configured, as it is for a gateway with no settings.
+	 *                         Missing for a mode the gateway does not declare.
+	 */
+	public function credentials(): CredentialState {
+		if ( ! $this->declaresMode() ) {
+			return CredentialState::Missing;
+		}
+
+		try {
+			$values = $this->read();
+		} catch ( CodedException $unread ) {
+			if ( SettingsError::StoredValueInvalid !== $unread->errorCode() ) {
+				throw $unread;
+			}
+
+			return CredentialState::Unreadable;
+		}
+
+		$state = CredentialState::Configured;
+
+		foreach ( $values as $name => $value ) {
+			$field = $this->field( $name );
+
+			if ( null === $value ) {
+				$state = null === $field->defaultValue() ? CredentialState::Missing : $state;
+			} elseif ( Privacy::Secret === $field->privacy() && ! $this->vault->isHeld( (string) $value ) ) {
+				return CredentialState::Unreadable;
+			}
+		}
+
+		return $state;
 	}
 
 	/**

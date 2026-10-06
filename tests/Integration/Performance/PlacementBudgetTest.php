@@ -143,7 +143,18 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	private const PRESENTMENT_EXTRA = 2;
 
 	/**
-	 * Restores the boot record a presentment-currency test planted.
+	 * Plants the installation record every store that takes orders has, autoloaded: the placement reads it, for the payment gateways' switches, at no cost.
+	 *
+	 * @since 0.2.0
+	 */
+	public function set_up(): void {
+		parent::set_up();
+
+		$this->plantBootRecord();
+	}
+
+	/**
+	 * Restores the boot record the test planted.
 	 *
 	 * @since 0.1.0
 	 */

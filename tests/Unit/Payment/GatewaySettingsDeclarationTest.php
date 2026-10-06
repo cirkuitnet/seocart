@@ -31,6 +31,7 @@ use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
 use SEOCart\Support\Schema\Privacy;
 use SEOCart\Support\Schema\SchemaException;
+use SEOCart\Tests\Support\Payment\TestGateways;
 
 /**
  * A gateway's settings are one document, `seocart_gateway_{id}`, never exposed, holding its mode when it has more than one and each declared setting once per mode; the stand-in, with one mode and no settings, has none. The stand-in is registered off production, or where the site says so; contract versions agree by major and minor before 1.0.
@@ -73,6 +74,19 @@ final class GatewaySettingsDeclarationTest extends TestCase {
 		$this->assertSame( array( 'example_test_secret_key', 'example_test_account_country' ), array_map( static fn( Setting $setting ): string => $setting->name(), GatewaySettingsDeclaration::of( self::descriptor( array( Mode::Test ) ) ) ) );
 		$this->assertNull( GatewaySettingsDeclaration::modeSetting( self::descriptor( array( Mode::Live ) ) ) );
 		$this->assertSame( array(), GatewaySettingsDeclaration::of( ( new StubGateway() )->describe() ), 'The stand-in has nothing to keep.' );
+	}
+
+	/**
+	 * Tests that a gateway that sets up its own webhook endpoints is also kept with each mode's endpoint id, beside the mode's settings: text, no credential, no default.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_gateway_that_sets_up_its_endpoints_keeps_each_modes_endpoint_id(): void {
+		$settings = GatewaySettingsDeclaration::of( self::descriptor( array( Mode::Test, Mode::Live ) ), true );
+
+		$this->assertSame( array( 'example_mode', 'example_test_secret_key', 'example_test_account_country', 'example_test_webhook_endpoint', 'example_live_secret_key', 'example_live_account_country', 'example_live_webhook_endpoint' ), array_map( static fn( Setting $setting ): string => $setting->name(), $settings ) );
+		$this->assertSame( array( 'gateway_example', false, null ), array( $settings[3]->group(), $settings[3]->isSecret(), $settings[3]->field()->defaultValue() ) );
+		$this->assertSame( 'example_live_webhook_endpoint', GatewaySettingsDeclaration::webhookEndpointSetting( self::descriptor( array( Mode::Live ) ), Mode::Live )->name() );
 	}
 
 	/**
@@ -134,7 +148,8 @@ final class GatewaySettingsDeclarationTest extends TestCase {
 			static function (): void {
 			},
 			static function (): void {
-			}
+			},
+			TestGateways::switches()
 		);
 
 		$this->assertSame( '0.2.0', PaymentGateway::CONTRACT_VERSION );

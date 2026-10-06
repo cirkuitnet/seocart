@@ -204,6 +204,19 @@ final class MysqlPaymentRepository implements PaymentRepository {
 		. 'FROM {payment_intents} WHERE status IN ({list}) AND updated_at < UTC_TIMESTAMP(6) - INTERVAL %d SECOND AND uuid > %s ORDER BY uuid LIMIT %d';
 
 	/**
+	 * The open intents, counted per gateway and mode: how many, how many still wait for their authorization's answer, and how long the longest-waiting has gone unchanged, by the database clock.
+	 *
+	 * The states filter reads the status index; the grouping is over the open intents only.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const OPEN_INTENTS = "SELECT gateway_id, mode, COUNT(*) AS open, SUM( status <> 'authorized' ) AS waiting, "
+		. "MAX( IF( status <> 'authorized', TIMESTAMPDIFF( SECOND, updated_at, UTC_TIMESTAMP(6) ), NULL ) ) AS waited_seconds "
+		. 'FROM {payment_intents} WHERE status IN ({list}) GROUP BY gateway_id, mode ORDER BY gateway_id, mode';
+
+	/**
 	 * A page of intents by the primary key, after the last id of the page before, each with what its applied, approved ledger rows add up to by operation, in both currencies.
 	 *
 	 * @since 0.1.0
@@ -582,6 +595,26 @@ final class MysqlPaymentRepository implements PaymentRepository {
 				'1' === (string) $row['expired']
 			),
 			$this->statements->rows( self::STALE_INTENTS, IntentTransitions::values( $states ), $olderThanSeconds, $afterUuid, $limit )
+		);
+	}
+
+	/**
+	 * Counts the open intents per gateway and mode, with one statement for every gateway.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<array{gateway_id: string, mode: Mode, open: int, waiting: int, waited_seconds: int|null}> The counts.
+	 */
+	public function openIntents(): array {
+		return array_map(
+			static fn( array $row ): array => array(
+				'gateway_id'     => (string) $row['gateway_id'],
+				'mode'           => Mode::from( (string) $row['mode'] ),
+				'open'           => (int) $row['open'],
+				'waiting'        => (int) $row['waiting'],
+				'waited_seconds' => null === $row['waited_seconds'] ? null : (int) $row['waited_seconds'],
+			),
+			$this->statements->rows( self::OPEN_INTENTS, IntentTransitions::values( IntentStatus::open() ) )
 		);
 	}
 

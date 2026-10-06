@@ -23,6 +23,7 @@ use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\Doubles\DeclaredGateway;
 use SEOCart\Tests\Support\Doubles\UndescribableGateway;
+use SEOCart\Tests\Support\Payment\TestGateways;
 
 /**
  * The registry registers the stand-in first, then fires the registration action once, the first time it is asked for a gateway; a gateway plugin registers through the action; a duplicate id, a contract the plugin does not support, a malformed descriptor, a host declared twice, a registration after the action ran and a listener that throws are each refused with a log line and never stop the others.
@@ -111,7 +112,7 @@ final class GatewayRegistrationTest extends DatabaseTestCase {
 			array_map( static fn( array $report ): array => array( $report['code'], $report['context']['reason'] ?? null ), $this->reports )
 		);
 		$this->assertSame( array( '9.0.0', '0.2.0' ), array( $this->reports[1]['context']['written_against'], $this->reports[1]['context']['contract'] ) );
-		$this->assertStringContainsString( 'each host once', (string) $this->reports[3]['context']['detail'], 'A gateway whose hosts are not each declared once is refused.' );
+		$this->assertSame( 'Its descriptor could not be built: describe(), or the settings it declares, threw InvalidArgumentException.', $this->reports[3]['context']['detail'], 'A gateway whose hosts are not each declared once is refused, and what it threw is named by its class.' );
 
 		foreach ( array( 'future', 'latecomer', 'doubled' ) as $refused ) {
 			try {
@@ -157,7 +158,8 @@ final class GatewayRegistrationTest extends DatabaseTestCase {
 			},
 			$this->reporter(),
 			static function (): void {
-			}
+			},
+			TestGateways::switches()
 		);
 	}
 }

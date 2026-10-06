@@ -98,6 +98,15 @@ final class GatewayDtoTest extends TestCase {
 		'eventType',
 		'occurredAt',
 		'result',
+		// Webhook endpoints a gateway sets up: where, which events, the owner tag, and what was done.
+		'url',
+		'installUuid',
+		'events',
+		'secretHeld',
+		'endpointId',
+		'signingSecret',
+		'removed',
+		'elsewhere',
 		// Exceptions.
 		'message',
 		'code',

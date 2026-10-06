@@ -61,12 +61,8 @@ final class BootRecordTest extends TestCase {
 	 * @since 0.1.0
 	 */
 	public function test_a_record_round_trips_and_begins_with_its_revision(): void {
-		$record = self::full()->withRev( 7 );
-		$data   = json_decode( $record->toJson(), true );
-
-		// Kill switches keep no fluent setter; a stored record's 'kill' key is read and written back as is.
-		$data['kill'] = array( 'gateway.stripe' => true );
-		$json         = (string) wp_json_encode( $data );
+		$record = self::full()->withKillSwitch( 'gateway.stripe', true )->withRev( 7 );
+		$json   = $record->toJson();
 
 		$this->assertStringStartsWith( '{"v":1,"rev":7,"plugin_version":', $json );
 
@@ -88,9 +84,67 @@ final class BootRecordTest extends TestCase {
 		$this->assertTrue( $read->canaryFailed() );
 		$this->assertSame( '2026-09-23T12:00:00Z', $read->canaryFailedSince() );
 		$this->assertSame( 4, $read->rateVersion() );
+		$this->assertTrue( $read->isKilled( 'gateway.stripe' ) );
 		$this->assertSame( $json, $read->toJson() );
 		$this->assertFalse( BootRecord::fromJson( $read->withCanaryFailure( null )->toJson() )->canaryFailed(), 'The canary\'s end was not recorded.' );
 		$this->assertSame( SafeModeStatus::Copy, $read->withCanaryFailure( null )->safeModeReason(), 'The canary\'s end changed the recorded reason.' );
+	}
+
+	/**
+	 * Tests that a kill switch is turned on and read, and removed with the order of the others kept, and that an id that is none, or one beyond the cap, is refused.
+	 *
+	 * Planted violation, shown red and removed: in BootRecord::withKillSwitch(), leave the key in
+	 * place when the switch is turned off: the cleared switch still reads as on.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_kill_switch_is_set_read_and_removed_keeping_the_others_order(): void {
+		$record = self::full()->withKillSwitch( 'gateway.stripe', true )->withKillSwitch( 'gateway.paypal', true )->withKillSwitch( 'jobs', true );
+
+		$this->assertTrue( $record->isKilled( 'gateway.paypal' ) );
+		$this->assertFalse( $record->isKilled( 'gateway.square' ) );
+
+		$cleared = $record->withKillSwitch( 'gateway.paypal', false );
+		$read    = BootRecord::fromJson( $cleared->withRev( 3 )->toJson() );
+
+		$this->assertFalse( $read->isKilled( 'gateway.paypal' ), 'A switch turned off is removed.' );
+		$this->assertSame(
+			array(
+				'gateway.stripe' => true,
+				'jobs'           => true,
+			),
+			(array) json_decode( $read->toJson(), true )['kill'],
+			'The other switches keep their order.'
+		);
+		$this->assertTrue( $record->isKilled( 'gateway.paypal' ), 'The copy changed, not the record it came from.' );
+		$this->assertTrue( $read->withKillSwitch( 'gateway.paypal', false )->sameAs( $read ), 'Removing a switch that is off changes nothing.' );
+		$this->assertTrue( $read->withKillSwitch( 'gateway.stripe', true )->sameAs( $read ), 'Turning on a switch that is on changes nothing.' );
+
+		$longest = 'gateway.' . str_repeat( 'a', 32 );
+
+		$this->assertTrue( BootRecord::absent()->withKillSwitch( $longest, true )->isKilled( $longest ), 'The longest gateway id makes a switch.' );
+
+		foreach ( array( 'Gateway.Stripe', 'gateway stripe', '', 'k' . str_repeat( 'x', 64 ) ) as $id ) {
+			try {
+				$record->withKillSwitch( $id, true );
+				$this->fail( sprintf( 'The kill switch "%s" was accepted.', $id ) );
+			} catch ( \InvalidArgumentException $refused ) {
+				$this->assertStringContainsString( 'subsystem id', $refused->getMessage() );
+			}
+		}
+
+		$full = BootRecord::absent();
+
+		for ( $i = 0; $i < BootRecord::MAX_KILL_SWITCHES; ++$i ) {
+			$full = $full->withKillSwitch( 'k' . $i, true );
+		}
+
+		$this->assertTrue( $full->withKillSwitch( 'k0', false )->withKillSwitch( 'one_more', true )->isKilled( 'one_more' ), 'A switch can take the place of one removed.' );
+
+		$this->expectException( \InvalidArgumentException::class );
+		$this->expectExceptionMessage( 'at most' );
+
+		$full->withKillSwitch( 'one_more', true );
 	}
 
 	/**
@@ -247,8 +301,8 @@ final class BootRecordTest extends TestCase {
 			$kill[ 'k' . str_pad( (string) $i, 63, '0', STR_PAD_LEFT ) ] = true;
 		}
 
-		// Kill switches keep no fluent setter; the largest record is built by decoding, adding the
-		// kill switches to the budget's byte count, and reading the record back.
+		// The largest record is built by decoding, adding the kill switches to the budget's byte
+		// count, and reading the record back, so the cap on reading is what is tested.
 		$data         = json_decode( $largest->toJson(), true );
 		$data['kill'] = $kill;
 		$json         = (string) wp_json_encode( $data );

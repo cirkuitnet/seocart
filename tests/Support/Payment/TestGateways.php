@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Support\Payment;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Payment\Application\GatewayContext;
 use SEOCart\Payment\Application\Gateways;
+use SEOCart\Payment\Application\GatewaySwitches;
 
 /**
  * Builds the registry the payment services find their gateways in, holding one gateway with no settings.
@@ -45,7 +46,26 @@ final class TestGateways {
 				throw new \LogicException( sprintf( 'The test registry reported %1$s: %2$s', $code, (string) wp_json_encode( $context ) ) );
 			},
 			static function (): void {
-			}
+			},
+			self::switches()
+		);
+	}
+
+	/**
+	 * Returns switches that are never turned: every gateway enabled, and Safe Mode off.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param bool $safeMode Optional. Whether Safe Mode is on. Default false.
+	 * @return GatewaySwitches The switches.
+	 */
+	public static function switches( bool $safeMode = false ): GatewaySwitches {
+		return new GatewaySwitches(
+			static fn(): bool => false,
+			static function (): bool {
+				throw new \LogicException( 'A test registry has no boot record to switch a gateway off in.' );
+			},
+			static fn(): bool => $safeMode
 		);
 	}
 }

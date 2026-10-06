@@ -473,7 +473,8 @@ final class PlaceOrder {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @throws CodedException `checkout.payment_method_unavailable`, naming the method.
+	 * @throws CodedException `checkout.payment_method_unavailable`, naming the method, with the
+	 *                        detail `reason: disabled` when an operator switched its gateway off.
 	 *
 	 * @param CheckoutSession $session     The checkout, with the payment method and the billing address.
 	 * @param Calculation     $calculation The totals the order is placed with.
@@ -489,7 +490,7 @@ final class PlaceOrder {
 		$method = (string) $session->details->paymentMethodKey;
 
 		return $this->gateways->availableMode( $method, $grand, $session->details->billingAddress?->country(), OrderDocument::CHANNEL->value )
-			?? CodedException::raise( CheckoutError::PaymentMethodUnavailable, array( 'payment_method_key' => $method ) );
+			?? CodedException::raise( CheckoutError::PaymentMethodUnavailable, array( 'payment_method_key' => $method ), $this->gateways->isEnabled( $method ) ? array() : array( 'reason' => 'disabled' ) );
 	}
 
 	/**

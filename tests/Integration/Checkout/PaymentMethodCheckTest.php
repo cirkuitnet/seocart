@@ -11,8 +11,6 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Checkout;
 
-use SEOCart\Checkout\Application\PlaceOrder;
-use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Contracts\Payment\CapabilityMatrix;
 use SEOCart\Contracts\Payment\GatewayDescriptor;
@@ -276,50 +274,6 @@ final class PaymentMethodCheckTest extends PlacementTestCase {
 		foreach ( array( OrderTables::ORDERS, PaymentTables::INTENTS, InventoryTables::HOLDS ) as $table ) {
 			$this->assertSame( 0, (int) $this->db->fetchValue( 'SELECT COUNT(*) FROM %i', $this->table( $table ) ), "{$table} after {$what}" );
 		}
-	}
-
-	/**
-	 * Writes the request's cart's checkout through the production wiring, with a payment method.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param int    $version The cart's version.
-	 * @param string $method  The payment method.
-	 */
-	private function writeCheckout( int $version, string $method ): void {
-		$address = array(
-			'country'  => 'US',
-			'line1'    => '1 Main Street',
-			'city'     => 'Austin',
-			'postcode' => '78701',
-		);
-
-		$this->kernel->get( UpdateCheckoutSession::class )->update(
-			array(
-				'cart_version'       => $version,
-				'billing_address'    => $address + array(
-					'first_name' => 'Ada',
-					'last_name'  => 'Lovelace',
-					'email'      => 'ada@example.com',
-				),
-				'shipping_address'   => $address,
-				'payment_method_key' => $method,
-			),
-			self::guest()
-		);
-	}
-
-	/**
-	 * Builds the placement of a new request, whose registry registers the test's gateways as they are now.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @return PlaceOrder The placement.
-	 */
-	private function freshPlacement(): PlaceOrder {
-		$this->kernel = $this->kernelOver( $this->db, $this->tokens );
-
-		return $this->kernel->get( PlaceOrder::class );
 	}
 
 	/**

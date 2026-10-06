@@ -203,6 +203,7 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 409
 - Message: The payment method {payment_method_key} cannot take this order's payment now, so the order was not placed. Choose another way to pay, then place the order again.
 - Values: `payment_method_key`
+- Details: `reason`, beside the values
 
 ## `checkout.placement_in_progress`
 

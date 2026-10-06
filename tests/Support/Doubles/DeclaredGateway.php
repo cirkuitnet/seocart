@@ -58,6 +58,15 @@ final class DeclaredGateway implements PaymentGateway {
 	public array $calls = array();
 
 	/**
+	 * Every credential opened before a call, in order, as the gateway read it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<string>
+	 */
+	public array $opened = array();
+
+	/**
 	 * What every status query answers; null to answer as the stub does.
 	 *
 	 * @since 0.2.0
@@ -313,7 +322,7 @@ final class DeclaredGateway implements PaymentGateway {
 	private function called( string $method, Mode $mode ): void {
 		if ( null !== $this->context ) {
 			foreach ( $this->descriptor->secrets() as $field ) {
-				$this->context->settings( $mode )->secret( $field->name() );
+				$this->opened[] = $this->context->settings( $mode )->secret( $field->name() );
 			}
 		}
 

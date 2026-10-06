@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Kernel;
 
+use SEOCart\Payment\Application\GatewaySwitches;
 use SEOCart\Platform\Database\LockMode;
 use SEOCart\Platform\Kernel\BootOption;
 use SEOCart\Platform\Kernel\BootRecord;
@@ -257,6 +258,48 @@ final class BootOptionTest extends KernelTestCase {
 	}
 
 	/**
+	 * Tests two operators switching off two gateways at once: the write whose record was read before the other's committed applies its switch to the record the other wrote, and both switches stay.
+	 *
+	 * The second operator's write runs on a connection of its own, between this request's read of
+	 * the record and its write.
+	 *
+	 * Planted violation: in Modules::paymentRegister(), derive the record a switch writes from the
+	 * one read before BootOption::mutate(): the other operator's switch is then lost.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_two_gateways_switched_off_at_once_both_stay_off(): void {
+		global $wpdb;
+
+		$this->plantRecord( self::installedRecord() );
+
+		$switches = $this->container()->get( GatewaySwitches::class );
+		$rival    = $this->secondConnection();
+
+		// This request reads the record; the other operator's write commits before this one writes.
+		$this->assertTrue( $switches->isEnabled( 'alpha' ) );
+
+		$theirs = BootRecord::fromJson( $this->storedRecord() );
+
+		$rival->query(
+			sprintf(
+				"UPDATE `%s` SET option_value = '%s' WHERE option_name = '%s'",
+				$wpdb->options,
+				esc_sql( $theirs->withKillSwitch( 'gateway.beta', true )->withRev( $theirs->rev() + 1 )->toJson() ),
+				BootOption::NAME
+			)
+		);
+
+		$this->assertTrue( $switches->disable( 'alpha' ) );
+
+		$stored = BootRecord::fromJson( $this->storedRecord() );
+
+		$this->assertTrue( $stored->isKilled( 'gateway.beta' ), 'The other operator\'s switch was lost.' );
+		$this->assertTrue( $stored->isKilled( 'gateway.alpha' ) );
+		$this->assertSame( $theirs->rev() + 2, $stored->rev() );
+	}
+
+	/**
 	 * Tests that a change that changes nothing writes nothing.
 	 *
 	 * @since 0.1.0
@@ -283,8 +326,8 @@ final class BootOptionTest extends KernelTestCase {
 	public function test_the_record_cannot_outgrow_its_budget(): void {
 		global $wpdb;
 
-		// Kill switches keep no fluent setter; a record that carries them is built by decoding a
-		// stored record's text, setting its 'kill' key, and reading it back.
+		// A record that carries the most kill switches is built by decoding a stored record's text,
+		// setting its 'kill' key, and reading it back, so the cap on reading is what is tested.
 		$largest = self::largestKillMap( BootRecord::MAX_KILL_SWITCHES );
 		$base    = self::installedRecord( str_repeat( 'h', 191 ) )
 			->withHomeUrl( 'https://example.org/' . str_repeat( 'p', BootRecord::MAX_URL_BYTES - 20 ) )
