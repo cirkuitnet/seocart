@@ -516,7 +516,8 @@ final class SafeModeTest extends KernelTestCase {
 		$html = (string) ob_get_clean();
 
 		$this->assertStringContainsString( 'cannot open its stored credentials', $html );
-		$this->assertStringContainsString( esc_html( 'SEOCart\'s stored data keys are damaged or missing' ), $html, 'The notice does not name the likely cause.' );
+		// wp_admin_notice() runs the message through KSES, which may write an escaped apostrophe back out as a bare one.
+		$this->assertStringContainsString( 'SEOCart\'s stored data keys are damaged or missing', html_entity_decode( $html, ENT_QUOTES | ENT_HTML5 ), 'The notice does not name the likely cause.' );
 	}
 
 	/**
