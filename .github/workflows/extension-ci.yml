@@ -336,17 +336,45 @@ jobs:
                   set -- plugin/*/
                   echo "dir=${1%/}" >>"$GITHUB_OUTPUT"
 
-            # Plugin Check's action installs the plugins the Requires Plugins header names from
-            # WordPress.org before it activates the extension. SEOCart comes from its zip at the
-            # pinned commit instead (the one on WordPress.org, if any, is another version): wp-env
-            # reads .wp-env.override.json beside the .wp-env.json the action writes, and a plugin
-            # listed there is on the site and active when the action's own install finds SEOCart
-            # already installed and carries on.
+            # Plugin Check's action runs `wp plugin install --activate <slug>` for every plugin the
+            # Requires Plugins header names before it activates the extension, and WP-CLI looks a
+            # slug up on WordPress.org first, where SEOCart is not (and where, once it is, the
+            # version is not the pinned commit). So SEOCart comes from its zip: wp-env reads
+            # .wp-env.override.json beside the .wp-env.json the action writes, puts a plugin listed
+            # there on the site and activates it; and a must-use plugin answers the WordPress.org
+            # lookup for "seocart" with the installed copy, which WP-CLI then reports as already
+            # installed, counting no error, and activates.
             - name: Put SEOCart on the Plugin Check site
               run: |
                   unzip -q "$RUNNER_TEMP"/zips/seocart-zip/seocart-*.zip -d "$RUNNER_TEMP/seocart"
                   test -f "$RUNNER_TEMP/seocart/seocart/seocart.php"
-                  printf '{ "plugins": [ "%s" ] }\n' "$RUNNER_TEMP/seocart/seocart" >.wp-env.override.json
+                  mkdir -p "$RUNNER_TEMP/mu-plugins"
+                  cat >"$RUNNER_TEMP/mu-plugins/seocart-is-installed.php" <<'PHP'
+                  <?php
+                  /**
+                   * Plugin Name: SEOCart is installed
+                   * Description: Answers the WordPress.org plugin-information lookup for "seocart" with the copy installed from SEOCart's zip. Written by SEOCart's extension CI, for Plugin Check only.
+                   */
+                  add_filter(
+                      'plugins_api',
+                      static function ( $result, $action, $args ) {
+                          if ( 'plugin_information' !== $action || 'seocart' !== ( $args->slug ?? null ) ) {
+                              return $result;
+                          }
+                          require_once ABSPATH . 'wp-admin/includes/plugin.php';
+                          $plugin = get_plugin_data( WP_PLUGIN_DIR . '/seocart/seocart.php', false, false );
+                          return (object) array(
+                              'name'          => $plugin['Name'],
+                              'slug'          => 'seocart',
+                              'version'       => $plugin['Version'],
+                              'download_link' => '',
+                          );
+                      },
+                      10,
+                      3
+                  );
+                  PHP
+                  printf '{ "plugins": [ "%s" ], "mappings": { "wp-content/mu-plugins": "%s" } }\n' "$RUNNER_TEMP/seocart/seocart" "$RUNNER_TEMP/mu-plugins" >.wp-env.override.json
 
             # Findings of type ERROR fail the job, as for SEOCart (reusable-package.yml). The
             # action gets no token: it would only use one to comment on the pull request.

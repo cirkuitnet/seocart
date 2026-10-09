@@ -352,9 +352,11 @@ extension's required checks, under the names GitHub gives a called workflow's jo
 (WordPress's Plugin Check on the extension's zip). Plugin Check runs on a site where SEOCart is
 installed from that zip and active: WordPress activates a plugin only when every plugin its
 `Requires Plugins` header names is active, and the version on WordPress.org, once there is one,
-is not the pinned commit. `nightly.yml` runs the same workflow every night against SEOCart's
-`main` branch instead of the pin, so a change in SEOCart that breaks the extension shows there
-before the next bump.
+is not the pinned commit. The action installs the plugins that header names from WordPress.org
+itself, so a must-use plugin on that site answers its lookup for `seocart` with the installed
+copy, which WP-CLI reports as already installed and activates. `nightly.yml` runs the same
+workflow every night against SEOCart's `main` branch instead of the pin, so a change in SEOCart
+that breaks the extension shows there before the next bump.
 
 The `gates` job lints the extension's workflows the way SEOCart lints its own. It needs
 `actionlint` and `shellcheck`; with both on `PATH`, the same check runs locally (this run was on
