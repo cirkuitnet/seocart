@@ -20,7 +20,8 @@
 #
 #   gates -+-> unit-tests (PHP x)
 #          +-> integration-tests (WordPress x)
-#          +-> package -> plugin-check
+#          +-> package -----+-> plugin-check
+#          +-> seocart-zip -+
 #
 # Every job is a required check of an extension's main branch, under the name its caller gives
 # it: "ci / gates", "ci / unit-tests (PHP 8.3)" and so on (tools/github/extension-ruleset.json,
@@ -60,6 +61,8 @@ permissions:
     contents: read
 
 env:
+    # SEOCart's zip is built on the PHP floor, as reusable-package.yml builds it.
+    PHP_FLOOR: '8.3'
     # Throwaway values for the MySQL service container of integration-tests. The container
     # exists for the length of one job and is reachable from nowhere else; these are not
     # secrets and are used for nothing but CI. bin/ci/prepare-integration.sh reads them.
@@ -266,25 +269,84 @@ jobs:
                   if-no-files-found: error
                   retention-days: 14
 
-    plugin-check:
-        needs: package
+    # SEOCart's zip at the pinned commit, built the way SEOCart builds its own
+    # (reusable-package.yml) and extension-release.yml builds it. plugin-check needs it: WordPress
+    # activates a plugin only when every plugin its Requires Plugins header names is active, so
+    # the extension can only be checked on a site where SEOCart is installed and active.
+    seocart-zip:
+        needs: gates
         runs-on: ubuntu-24.04
         timeout-minutes: 20
         steps:
-            # No checkout: the only plugin on this runner is the one unpacked from the zip.
-            - name: Download the zip
+            - *checkout-extension
+            - *choose-core
+            - *checkout-core
+
+            - name: Set up PHP and Composer
+              uses: ./seocart/.github/actions/setup-php-composer
+              with:
+                  php-version: ${{ env.PHP_FLOOR }}
+                  working-directory: seocart
+                  install: full
+
+            - name: Set up Node from SEOCart's .nvmrc
+              uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with:
+                  node-version-file: seocart/.nvmrc
+                  cache: npm
+                  cache-dependency-path: seocart/package-lock.json
+
+            - name: Install npm dependencies
+              working-directory: seocart
+              run: npm ci
+
+            - name: Build the assets
+              working-directory: seocart
+              run: npm run build
+
+            - name: Build SEOCart's zip
+              run: php seocart/bin/build-zip.php
+
+            - name: Upload SEOCart's zip
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: seocart-zip
+                  path: seocart/dist/seocart-*.zip
+                  if-no-files-found: error
+                  retention-days: 14
+
+    plugin-check:
+        needs:
+            - package
+            - seocart-zip
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+        steps:
+            # No checkout: the only plugins on this runner are the two unpacked from their zips.
+            - name: Download the zips
               uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
               with:
-                  name: extension-zip
-                  path: dist
+                  path: ${{ runner.temp }}/zips
 
             # The zip holds one folder, named after the extension's slug (bin/check-zip.php).
-            - name: Unpack the zip
+            - name: Unpack the extension's zip
               id: unpack
               run: |
-                  unzip -q dist/*.zip -d plugin
+                  unzip -q "$RUNNER_TEMP"/zips/extension-zip/*.zip -d plugin
                   set -- plugin/*/
                   echo "dir=${1%/}" >>"$GITHUB_OUTPUT"
+
+            # Plugin Check's action installs the plugins the Requires Plugins header names from
+            # WordPress.org before it activates the extension. SEOCart comes from its zip at the
+            # pinned commit instead (the one on WordPress.org, if any, is another version): wp-env
+            # reads .wp-env.override.json beside the .wp-env.json the action writes, and a plugin
+            # listed there is on the site and active when the action's own install finds SEOCart
+            # already installed and carries on.
+            - name: Put SEOCart on the Plugin Check site
+              run: |
+                  unzip -q "$RUNNER_TEMP"/zips/seocart-zip/seocart-*.zip -d "$RUNNER_TEMP/seocart"
+                  test -f "$RUNNER_TEMP/seocart/seocart/seocart.php"
+                  printf '{ "plugins": [ "%s" ] }\n' "$RUNNER_TEMP/seocart/seocart" >.wp-env.override.json
 
             # Findings of type ERROR fail the job, as for SEOCart (reusable-package.yml). The
             # action gets no token: it would only use one to comment on the pull request.

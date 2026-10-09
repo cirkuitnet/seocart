@@ -347,10 +347,14 @@ the pinned commit, and runs the gates above through `bin/ci/extension.sh`. Its j
 extension's required checks, under the names GitHub gives a called workflow's jobs:
 `ci / gates` (the workflow lint and pin check, `lint`, `cs`, `stan`, `references`),
 `ci / unit-tests (PHP 8.3)`, `(PHP 8.4)` and `(PHP 8.5)`, `ci / integration-tests (WordPress 7.1)`
-(`integration`, `idle` and `conformance` against MySQL), `ci / package` (`zip`) and
-`ci / plugin-check` (WordPress's Plugin Check on the zip). `nightly.yml` runs the same workflow
-every night against SEOCart's `main` branch instead of the pin, so a change in SEOCart that breaks
-the extension shows there before the next bump.
+(`integration`, `idle` and `conformance` against MySQL), `ci / package` (`zip`), `ci / seocart-zip`
+(SEOCart's own zip at the pinned commit, built the way SEOCart builds it) and `ci / plugin-check`
+(WordPress's Plugin Check on the extension's zip). Plugin Check runs on a site where SEOCart is
+installed from that zip and active: WordPress activates a plugin only when every plugin its
+`Requires Plugins` header names is active, and the version on WordPress.org, once there is one,
+is not the pinned commit. `nightly.yml` runs the same workflow every night against SEOCart's
+`main` branch instead of the pin, so a change in SEOCart that breaks the extension shows there
+before the next bump.
 
 The `gates` job lints the extension's workflows the way SEOCart lints its own. It needs
 `actionlint` and `shellcheck`; with both on `PATH`, the same check runs locally (this run was on
@@ -432,6 +436,10 @@ apply-ruleset: the body:
 					},
 					{
 						"context": "ci / package",
+						"integration_id": 15368
+					},
+					{
+						"context": "ci / seocart-zip",
 						"integration_id": 15368
 					},
 					{
