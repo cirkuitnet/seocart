@@ -24,7 +24,10 @@ use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Order\Infrastructure\SequenceOrderNumberGenerator;
 use SEOCart\Order\Infrastructure\WordPressAccessKeys;
+use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Authorization\Authorizer;
+use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
@@ -154,7 +157,7 @@ abstract class OrderTestCase extends DatabaseTestCase {
 	}
 
 	/**
-	 * Builds the order service over a connection, as the kernel builds it.
+	 * Builds the order service over a connection, as the kernel builds it, with the payment repository on the same connection answering when an order's newest unreconciled money was recorded.
 	 *
 	 * @since 0.1.0
 	 *
@@ -175,7 +178,9 @@ abstract class OrderTestCase extends DatabaseTestCase {
 			$this->publisherOver( $db ),
 			$ids,
 			FrozenClock::at( self::NOW ),
-			$this->correlation
+			$this->correlation,
+			new Authorizer( new CapabilityDeclaration() ),
+			new MysqlPaymentRepository( $db, $ids )
 		);
 	}
 

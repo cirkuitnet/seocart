@@ -57,8 +57,9 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  * The payment module's reads run over a PlanRecorder: the locked reads of an approval and a
  * duplicate's read of the first row, a capture's plain reads, a refund's reads, its key's claim and
  * its duplicate's read of the first document, the read of a refund's claim, what a user asked in
- * the last 24 hours under the user's lock row, reconciliation's stale intents, and
- * every line of doctor's payment check, the refund claims never settled among them. Each plugin
+ * the last 24 hours under the user's lock row, reconciliation's stale intents, a claim read back
+ * with what it asked, and every line of doctor's payment check, the refund claims never settled
+ * and the flagged orders' results applied to nothing among them. Each plugin
  * SELECT is explained, printed and judged as the
  * order module's are; the reference dataset has no payments, so the tables stay under the size at
  * which the rule gates and the run records the plans. And every SELECT the module's source writes
@@ -190,8 +191,13 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 			}
 		);
 
-		// The read of a refund's claim that a request for a refund already claimed sends, by the claim's unique uuid.
+		// The read of a refund's claim that a request for a refund already claimed sends, by the claim's unique uuid; and the
+		// claim read back with what it asked, which a settlement works the refund out again from.
 		( new MysqlRefundRepository( $db ) )->findClaim( $first->uuid );
+		( new MysqlRefundRepository( $db ) )->claimRequest( $first->uuid );
+
+		// The read of the ledger's key a settlement sends for the provider's refund a person names, the ledger's own read of it.
+		( new MysqlRefundRepository( $db ) )->holdsResult( $approval );
 
 		try {
 			$refunds->refund( new RefundRequest( $inserted->uuid, array( new RefundLineRequest( $line, 1 ) ), false, 'customer_return' ), $this->userWithRole() );
@@ -207,7 +213,12 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 		( new MysqlPaymentRepository( $db, $ids ) )->openIntents();
 
 		// Every line of doctor's payment check, which reads the order tables through the order repository, and the refund
-		// claims never settled.
+		// claims never settled; and the results applied to nothing of the orders still flagged, which the check reads only
+		// when an order is, here sent for the order refunded.
 		( new PaymentLedgerCheck( new MysqlPaymentRepository( $db, $ids ), new MysqlOrderRepository( new OrderStatements( $db ), $ids ) ) )->run();
+		( new MysqlPaymentRepository( $db, $ids ) )->unappliedResults( array( $inserted->id ), PaymentLedgerCheck::LIMIT );
+
+		// When the newest result of the order applied to nothing landed, which a clearance of its flag is dated after.
+		( new MysqlPaymentRepository( $db, $ids ) )->newestAt( $inserted->id );
 	}
 }

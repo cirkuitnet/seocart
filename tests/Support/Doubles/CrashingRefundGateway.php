@@ -134,14 +134,19 @@ final class CrashingRefundGateway implements PaymentGateway {
 	}
 
 	/**
-	 * Asks the wrapped gateway what became of a refund.
+	 * Asks the wrapped gateway what became of a refund, and logs that it was asked, as `query` and the refund's uuid.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Logs the question.
 	 *
 	 * @param GatewayRefund $request The refund, as it was asked.
 	 * @return GatewayResult|null Its answer.
 	 */
 	public function queryRefund( GatewayRefund $request ): ?GatewayResult {
-		return $this->inner->queryRefund( $request );
+		$answer = $this->inner->queryRefund( $request );
+
+		file_put_contents( $this->log, 'query ' . $request->refundUuid . "\n", FILE_APPEND );
+
+		return $answer;
 	}
 }

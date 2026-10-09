@@ -38,8 +38,8 @@ defined( 'ABSPATH' ) || exit;
  * order flagged for it, are warnings: money a person must reconcile. So is a refund claim still
  * claimed longer after it was made than any call to the gateway takes (PaymentService::STALE_SECONDS):
  * the gateway may have given that money back with nothing recorded, nothing asks it until the same
- * refund is asked for again, and a claim the gateway cannot account for waits for a person: nothing
- * in the plugin settles such a claim yet, and until a person does, the payment takes no other
+ * refund is asked for again, and a claim the gateway cannot account for waits for a person with
+ * `seocart_override_money_state` to settle it, and until one does, the payment takes no other
  * refund. And so is a claim
  * left for a person that names no ledger row: the gateway answered it with another refund's
  * result, so what it did with this one is not known.
@@ -166,6 +166,7 @@ final class PaymentLedgerCheck implements Check {
 	public function run(): CheckResult {
 		list( $intentDrift, $overRefunded ) = $this->intentLines();
 		list( $orderDrift, $noIntent )      = $this->orderLines();
+		$flagged                            = $this->orders->unreconciled( self::LIMIT );
 
 		$findings = array_merge(
 			$intentDrift,
@@ -175,8 +176,8 @@ final class PaymentLedgerCheck implements Check {
 			$this->totalsDrift(),
 			$this->refundDrift(),
 			$this->refundedQuantityDrift(),
-			$this->unappliedResults(),
-			$this->unreconciledOrders(),
+			$this->unappliedResults( $flagged ),
+			$this->unreconciledOrders( $flagged ),
 			$this->unsettledRefundClaims(),
 			$this->unrecordedRefundClaims()
 		);
@@ -345,30 +346,37 @@ final class PaymentLedgerCheck implements Check {
 	}
 
 	/**
-	 * Lists the ledger rows the projection refused: results that did not match their orders.
+	 * Lists the ledger rows the projection refused, of the orders still flagged for a person: results that did not match their orders.
+	 *
+	 * The ledger keeps every such row for good; once a person has cleared an order's unreconciled
+	 * money, its rows are the record, and are reported no more.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Only of the orders still flagged.
 	 *
+	 * @param list<array{id: int, uuid: string}> $flagged The orders flagged as holding money a person must reconcile.
 	 * @return list<string> One warning line per row.
 	 */
-	private function unappliedResults(): array {
+	private function unappliedResults( array $flagged ): array {
 		return array_map(
 			static fn( array $row ): string => sprintf( 'Warning: the %1$s result %2$s of payment %3$s did not match its order and moved no money; a person must reconcile it.', CheckResult::identifier( $row['operation'] ), CheckResult::identifier( $row['uuid'] ), CheckResult::identifier( $row['intent_uuid'] ) ),
-			$this->payments->unappliedResults( self::LIMIT )
+			$this->payments->unappliedResults( array_column( $flagged, 'id' ), self::LIMIT )
 		);
 	}
 
 	/**
-	 * Lists the orders flagged as holding money a person must reconcile.
+	 * Lists the orders flagged as holding money a person must reconcile, until a person clears them.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The flagged orders are read once, for this line and the unapplied results.
 	 *
+	 * @param list<array{id: int, uuid: string}> $flagged The orders flagged as holding money a person must reconcile.
 	 * @return list<string> One warning line per order.
 	 */
-	private function unreconciledOrders(): array {
+	private function unreconciledOrders( array $flagged ): array {
 		return array_map(
 			static fn( array $order ): string => sprintf( 'Warning: order %1$s holds money a person must reconcile.', CheckResult::identifier( $order['uuid'] ) ),
-			$this->orders->unreconciled( self::LIMIT )
+			$flagged
 		);
 	}
 
@@ -382,7 +390,7 @@ final class PaymentLedgerCheck implements Check {
 	private function unsettledRefundClaims(): array {
 		return array_map(
 			static fn( array $claim ): string => sprintf(
-				'Warning: refund %1$s of payment %2$s, %3$d %4$s, was asked of the gateway %5$d seconds ago and its answer was never recorded; the gateway may have given the money back. Asking for the same refund again asks the gateway what became of it; a refund the gateway cannot account for waits for a person. Nothing in the plugin settles such a claim yet, and until a person does, the payment takes no other refund.',
+				'Warning: refund %1$s of payment %2$s, %3$d %4$s, was asked of the gateway %5$d seconds ago and its answer was never recorded; the gateway may have given the money back. Asking for the same refund again asks the gateway what became of it; a refund the gateway cannot account for waits for a person, who settles its claim, and until then the payment takes no other refund.',
 				CheckResult::identifier( $claim['uuid'] ),
 				CheckResult::identifier( $claim['intent_uuid'] ),
 				$claim['amount'],

@@ -18,6 +18,7 @@ use SEOCart\Application\Operations\IdempotencyKey;
 use SEOCart\Contracts\Payment\GatewayRefund;
 use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\GatewayUnavailable;
+use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Contracts\Payment\Operations;
 use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Contracts\Payment\PaymentGateway;
@@ -30,6 +31,7 @@ use SEOCart\Order\Domain\StoredTaxComponent;
 use SEOCart\Payment\Domain\Application;
 use SEOCart\Payment\Domain\ApplicationKind;
 use SEOCart\Payment\Domain\Event\RefundRecorded;
+use SEOCart\Payment\Domain\Refund\ClaimRequest;
 use SEOCart\Payment\Domain\Refund\ClaimState;
 use SEOCart\Payment\Domain\Refund\LinePortion;
 use SEOCart\Payment\Domain\Refund\Refund;
@@ -159,7 +161,8 @@ use SEOCart\Support\TaxedMoney;
  *   gateway about it until the same refund is asked for again, and until then the intent takes no
  *   other refund;
  * - a claim the gateway cannot account for: it stays `claimed`, and every refund of the intent is
- *   refused until a person settles it; no operation settles a claim yet;
+ *   refused until a person settles it, through settleClaim(), with a statement the gateway is
+ *   asked to confirm once more first;
  * - a refund refused `payment.refund_retry`: its caller must ask for it again.
  *
  * Nothing here reads a rate, a tax rate, a price or the calculation: the order's conversion
@@ -186,6 +189,33 @@ final class RefundService {
 	 * @var string
 	 */
 	public const AUDIT_REASON = 'refund_recorded';
+
+	/**
+	 * The capability that settles a refund claim: overriding what the plugin knows of the money, with a person's say-so.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const SETTLE_CAPABILITY = PaymentOperations::SETTLE_CAPABILITY;
+
+	/**
+	 * The reason of the order event that records a person's settlement of a refund claim.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const SETTLED_REASON = 'refund_claim_settled';
+
+	/**
+	 * Why an order is flagged when a refund is recorded on a person's statement: the money is on their word.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const SETTLED_BY_STATEMENT = 'refund_settled_by_statement';
 
 	/**
 	 * The refund statements.
@@ -435,6 +465,135 @@ final class RefundService {
 	}
 
 	/**
+	 * Settles a refund claim as the settle operation asks, and answers with how it ended.
+	 *
+	 * Sends no statement of its own before settleClaim().
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `authorization.denied`; what settleClaim() raises.
+	 *
+	 * @param array<string, mixed> $input The prepared input: refund_uuid, statement, note, and provider_refund_id and amount_minor when given.
+	 * @param Actor                $actor Who settles it.
+	 * @return array<string, mixed> The settlement, keyed by wire name.
+	 */
+	public function settleRefundClaim( array $input, Actor $actor ): array {
+		$this->authorizer->authorize( $actor, self::SETTLE_CAPABILITY );
+
+		$statement = new ClaimStatement(
+			ClaimStatement::REFUNDED === (string) $input['statement'],
+			(string) $input['note'],
+			isset( $input['provider_refund_id'] ) ? (string) $input['provider_refund_id'] : null,
+			isset( $input['amount_minor'] ) ? (int) $input['amount_minor'] : null
+		);
+
+		return $this->settleClaim( (string) $input['refund_uuid'], $statement, $actor )->toArray();
+	}
+
+	/**
+	 * Settles a refund claim the gateway could not account for, on a person's say-so, and answers with how it ended.
+	 *
+	 * Nothing automatic settles a claim: only a person allowed to override what the plugin knows of
+	 * the money, through this method, which the settle operation calls.
+	 *
+	 * 1. The capability `seocart_override_money_state`, before anything else; then the statement:
+	 *    one whose note holds what reads as a card number is refused `payment.refund_note_rejected`,
+	 *    and one that cannot settle a claim `payment.refund_statement_incomplete`; then the schema
+	 *    gate, before the first read.
+	 * 2. The claim, with what it asked: none is `payment.refund_claim_not_found`; one that has ended
+	 *    is `payment.refund_claim_ended`, with how it ended.
+	 * 3. The refund worked out again from what the claim asked, as a refund is worked out: the claim
+	 *    must still be the intent's open claim, and the refund the one it claimed. Neither money a
+	 *    person has not reconciled nor the gateway's capability matrix holds it back. A statement
+	 *    that the refund was made, naming a provider's refund the ledger holds already, is refused
+	 *    `payment.refund_statement_incomplete` (`already_recorded`) by one read of the ledger's key:
+	 *    that refund is another's, and recorded for this claim it would meet the key and end the
+	 *    claim unreconciled with no row to show for it, which nothing could then settle.
+	 * 4. The gateway asked once more what became of the refund, at transaction depth 0, through the
+	 *    intent's own gateway, when it is registered, usable in the intent's mode and declares the
+	 *    query. What it says is kept with the claim: `approved`, `declined`, `not_found`,
+	 *    `cannot_say`, or `unavailable`, with why when the plugin knows.
+	 * 5. A refund the gateway made, or declined, is what is recorded, whatever the person stated:
+	 *    the gateway decides. Only when it cannot say does the statement decide: a refund stated made
+	 *    is recorded as the gateway's approval would be, of the provider's refund and the amount the
+	 *    person names; a refund stated not made is no answer at all.
+	 * 6. One transaction, which takes the intent's lock first, as every refund does. Under it the
+	 *    claim must still be open: a late answer of the first request, a retry, a provider's
+	 *    delivery or another settlement may have ended it since it was read, each under the same
+	 *    lock, and the person is then answered `payment.refund_claim_ended`, with how it ended, with
+	 *    nothing written. An answer is recorded as any refund's answer is: an approval of the claimed
+	 *    amount records the refund; a decline ends the claim declined, with its ledger row; another
+	 *    amount, or another refund's provider object, is left for a person, the order flagged and
+	 *    parked. A refund stated not made ends the claim declined with no ledger row: a person's
+	 *    statement is not a gateway's decline. Then the settlement is noted on the claim, once, and
+	 *    the order's event records it (`refund_claim_settled`, naming the refund). A refund recorded
+	 *    on a person's statement flags the order, without parking it: the money is on their word
+	 *    until a person clears the flag.
+	 * 7. The answer, once the transaction has committed: how the claim ended, what decided it, what
+	 *    the gateway said, and whether the order holds unreconciled money, read then. Money left for a
+	 *    person is an answer here, not an error: reconciling it is what the person is doing.
+	 *
+	 * A claim that ends declined, by the gateway or by the statement, frees its intent, and the same
+	 * refund asked for again is a new refund. A settle retried after its process died before the
+	 * transaction settles the claim then, as nothing was written; after it, the retry is told how
+	 * the claim ended.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException      Inside a transaction, before any statement: the gateway is asked. Or when the refund
+	 *                              worked out again is not the claim's own, or the settlement could not be noted: a claim
+	 *                              was changed outside this service.
+	 * @throws TransactionRetryable When every attempt lost a deadlock; nothing was written, and the claim is left `claimed`.
+	 * @throws CodedException       `authorization.denied`; `payment.refund_note_rejected`; `payment.refund_statement_incomplete`,
+	 *                              naming the problem; `store.unavailable` while the schema gate is closed;
+	 *                              `payment.refund_claim_not_found`; `payment.refund_claim_ended`, with how it ended;
+	 *                              `payment.refund_statement_incomplete` (`already_recorded`) for a provider's refund
+	 *                              the ledger holds, before the gateway is asked.
+	 *
+	 * @param string         $uuid      The refund's uuid, which names its claim.
+	 * @param ClaimStatement $statement What the person states, and why.
+	 * @param Actor          $actor     Who settles it.
+	 * @return SettledClaim How the claim ended.
+	 */
+	public function settleClaim( string $uuid, ClaimStatement $statement, Actor $actor ): SettledClaim {
+		$this->authorizer->authorize( $actor, self::SETTLE_CAPABILITY );
+		$this->requireNoTransaction();
+		self::requireSettling( $statement );
+
+		// Before the first read: the columns a settlement writes may belong to a migration still outstanding.
+		$this->tx->refuseWhileClosed();
+
+		$claim = $this->refunds->claimRequest( $uuid ) ?? CodedException::raise( PaymentError::RefundClaimNotFound, array( 'refund_uuid' => $uuid ) );
+
+		if ( ClaimState::Claimed !== $claim->state ) {
+			CodedException::raise( PaymentError::RefundClaimEnded, array( 'state' => $claim->state->value ) );
+		}
+
+		$plan   = $this->planOfClaim( $claim, true );
+		$stated = self::statedResult( $plan, $statement );
+
+		// The provider's refund the person names is another refund's when the ledger holds it already.
+		if ( null !== $stated && $this->refunds->holdsResult( $stated ) ) {
+			self::refuseStatement( ClaimStatement::ALREADY_RECORDED );
+		}
+
+		list( $reading, $answer ) = $this->askOnceMore( $plan );
+		$decidedBy                = null !== $answer && SettledClaim::decides( $reading ) ? SettledClaim::BY_GATEWAY : SettledClaim::BY_STATEMENT;
+		$result                   = SettledClaim::BY_GATEWAY === $decidedBy ? $answer : $stated;
+
+		try {
+			$state = $this->tx->transaction( fn(): ClaimState => $this->settleLocked( $plan, $result, $statement, $reading, $decidedBy, $actor ), RetryPolicy::deadlocks() );
+		} catch ( ClaimEndedElsewhere $ended ) {
+			$this->claimEnded( $uuid );
+		}
+
+		$order   = $this->orders->reconciliation( $plan->order->uuid );
+		$flagged = null !== $order && $order['has_unreconciled_money'];
+
+		return new SettledClaim( $uuid, $plan->order->uuid, $state, $decidedBy, $reading, $flagged );
+	}
+
+	/**
 	 * Builds the request the refund operation's input asks for, refusing one a refund cannot be made from.
 	 *
 	 * @since 0.2.0
@@ -532,7 +691,7 @@ final class RefundService {
 					$this->refunds->lockActor( $actor->userId() );
 				}
 
-				$intent = $this->refunds->lockForClaim( $plan->intent->id );
+				$intent = $this->refunds->lockForClaim( $plan->intent->id, $plan->order->moneyReconciledAt );
 
 				if ( $intent['has_unapplied_result'] ) {
 					CodedException::raise( PaymentError::Unreconciled );
@@ -663,21 +822,30 @@ final class RefundService {
 	 * claimed, for the same reason. Last, the intent's gateway must declare the refund in its
 	 * capability matrix: a partial refund, for less than was captured, or a whole one.
 	 *
-	 * @since 0.1.0
-	 * @since 0.2.0 Checks the gateway's capability matrix, and the claim the request's key found open.
+	 * A refund worked out again to settle its claim is the claim's own: the claim must still be the
+	 * intent's open claim, else it ended since it was read, and the refund must be the one it
+	 * claimed. Neither money a person has not reconciled nor the gateway's matrix holds it back: the
+	 * person settling it is reconciling exactly such money, and the gateway was asked for it long
+	 * since, and may be gone, as when its plugin was removed.
 	 *
-	 * @throws \LogicException When the claim the request's key found open is still the intent's open claim, but not this refund's.
-	 * @throws CodedException  The refusals refund() lists before the gateway is asked.
+	 * @since 0.1.0
+	 * @since 0.2.0 Checks the gateway's capability matrix, and the claim the request's key found open; works out a claim to settle.
+	 *
+	 * @throws \LogicException When the claim the request's key found open is still the intent's open claim, but not this
+	 *                         refund's; or when a claim to settle, still open, is not the refund worked out from it.
+	 * @throws CodedException  The refusals refund() lists before the gateway is asked; for a claim to settle,
+	 *                         `payment.refund_claim_ended` when it is no longer the intent's open claim.
 	 *
 	 * @param RefundRequest $request    What to refund.
 	 * @param string|null   $keyedClaim The uuid of the open claim the request's key named; null for none.
+	 * @param string|null   $settling   Optional. The uuid of the claim this refund is worked out again from, to settle it. Default null.
 	 * @return RefundPlan The refund, worked out.
 	 */
-	private function plan( RefundRequest $request, ?string $keyedClaim ): RefundPlan {
+	private function plan( RefundRequest $request, ?string $keyedClaim, ?string $settling = null ): RefundPlan {
 		$order  = $this->orders->findRefundable( $request->orderUuid, $request->lineUuids(), $request->shipping ) ?? CodedException::raise( OrderError::NotFound );
-		$intent = $this->refunds->refundableIntent( $order->id ) ?? CodedException::raise( PaymentError::RefundNotRefundable, array( 'order_uuid' => $order->uuid ) );
+		$intent = $this->refunds->refundableIntent( $order->id, $order->moneyReconciledAt ) ?? CodedException::raise( PaymentError::RefundNotRefundable, array( 'order_uuid' => $order->uuid ) );
 
-		if ( $intent->hasUnappliedResult ) {
+		if ( $intent->hasUnappliedResult && null === $settling ) {
 			CodedException::raise( PaymentError::Unreconciled );
 		}
 
@@ -696,6 +864,11 @@ final class RefundService {
 			self::requireOneClaim( $keyedClaim, $uuid );
 		}
 
+		if ( null !== $settling ) {
+			$this->requireStillOpen( $settling, $intent->openClaim );
+			self::requireClaimedRefund( $settling, $uuid );
+		}
+
 		// Another refund of the intent is claimed and its answer is not recorded: what it did is not
 		// known, and once recorded it would move what refund uuids are named by. This one waits for it.
 		if ( null !== $intent->openClaim && $intent->openClaim !== $uuid ) {
@@ -705,9 +878,293 @@ final class RefundService {
 		$plan = new RefundPlan( $uuid, $order, $intent, $portions, $shipping, RefundAllocation::total( $portions, $shipping, $order->currency, $order->baseCurrency ), $request->reasonCode );
 
 		$this->checkCaps( $plan, $components );
-		$this->requireDeclared( $plan );
+
+		if ( null === $settling ) {
+			$this->requireDeclared( $plan );
+		}
 
 		return $plan;
+	}
+
+	/**
+	 * Works a claimed refund out again from what its claim asked, as plan() works out a refund asked for: the order, the units of each line, the shipping and the reason.
+	 *
+	 * One read more than the claim's: the order's uuid, which the refund is asked by. The note is
+	 * not asked again: nothing a refund's uuid or money is worked out from depends on it. What
+	 * plan() throws or raises passes through.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When the claim's order is gone, which nothing deletes.
+	 *
+	 * @param ClaimRequest $claim    The claim, with what it asked.
+	 * @param bool         $settling Optional. Whether a person is settling the claim, which plan() then requires to be the
+	 *                               intent's open claim and the refund worked out. Default false.
+	 * @return RefundPlan The refund, worked out again.
+	 */
+	private function planOfClaim( ClaimRequest $claim, bool $settling = false ): RefundPlan {
+		$order = $this->orders->statusOf( $claim->orderId ) ?? throw new \LogicException( sprintf( 'Order %1$d, which refund %2$s was claimed of, is gone.', $claim->orderId, $claim->uuid ) );
+
+		return $this->plan( new RefundRequest( $order['uuid'], $claim->lines, $claim->shipping, $claim->reasonCode ), null, $settling ? $claim->uuid : null );
+	}
+
+	/**
+	 * Refuses to settle a claim that is no longer its intent's open claim: it ended since it was read, and is answered as it ended.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `payment.refund_claim_ended`, with how it ended, read now.
+	 *
+	 * @param string      $uuid      The claim being settled.
+	 * @param string|null $openClaim The intent's open claim, as read.
+	 */
+	private function requireStillOpen( string $uuid, ?string $openClaim ): void {
+		if ( $uuid !== $openClaim ) {
+			$this->claimEnded( $uuid );
+		}
+	}
+
+	/**
+	 * Refuses, as a programming error, a refund worked out again from its open claim that is not the refund the claim names.
+	 *
+	 * While a claim is open, nothing a refund's uuid is named by moves, so what the claim asked
+	 * works out to the claim's own uuid. Another means a row was changed outside this service.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Naming both.
+	 *
+	 * @param string $claimed   The claim's uuid.
+	 * @param string $workedOut The uuid of the refund worked out from what it asked.
+	 */
+	private static function requireClaimedRefund( string $claimed, string $workedOut ): void {
+		if ( $claimed !== $workedOut ) {
+			throw new \LogicException( sprintf( 'The refund claim %1$s, worked out again from what it asked, is the refund %2$s: what a refund\'s uuid is named by moved while the claim was open, which nothing in the refund service does.', $claimed, $workedOut ) );
+		}
+	}
+
+	/**
+	 * Answers a request to settle a claim that has ended: with how it ended, read now.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `payment.refund_claim_ended`, with the claim's state; `payment.refund_claim_not_found` for no claim.
+	 *
+	 * @param string $uuid The claim.
+	 * @return never
+	 */
+	private function claimEnded( string $uuid ): never {
+		$claim = $this->refunds->findClaim( $uuid ) ?? CodedException::raise( PaymentError::RefundClaimNotFound, array( 'refund_uuid' => $uuid ) );
+
+		CodedException::raise( PaymentError::RefundClaimEnded, array( 'state' => $claim->state->value ) );
+	}
+
+	/**
+	 * Refuses a statement that cannot settle a claim, before anything is read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `payment.refund_note_rejected` when the note holds what reads as a card number;
+	 *                        `payment.refund_statement_incomplete`, naming the problem.
+	 *
+	 * @param ClaimStatement $statement What the person states.
+	 */
+	private static function requireSettling( ClaimStatement $statement ): void {
+		// The note is kept with the claim for as long as the order is: one that holds a card number is never kept.
+		if ( CardNumbers::contains( $statement->note ) ) {
+			CodedException::raise( PaymentError::RefundNoteRejected );
+		}
+
+		$problem = $statement->problem();
+
+		if ( null !== $problem ) {
+			self::refuseStatement( $problem );
+		}
+	}
+
+	/**
+	 * Refuses a statement that cannot settle a claim, naming why.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `payment.refund_statement_incomplete`, with the problem and the longest note a statement keeps.
+	 *
+	 * @param string $problem What keeps the statement from settling a claim: one of ClaimStatement's problems.
+	 * @return never
+	 */
+	private static function refuseStatement( string $problem ): never {
+		CodedException::raise(
+			PaymentError::RefundStatementIncomplete,
+			array(
+				'problem'    => $problem,
+				'max_length' => PaymentOperations::NOTE_MAX_LENGTH,
+			)
+		);
+	}
+
+	/**
+	 * Asks the intent's gateway once more what became of a claimed refund, at transaction depth 0, and says what it said.
+	 *
+	 * A gateway that cannot be asked is a reading too: one whose plugin was removed, that no longer
+	 * declares the intent's mode, whose credentials cannot be used, that Safe Mode keeps from live
+	 * calls, or that does not declare the query, is `unavailable` with the reason; one that does not
+	 * answer is `unavailable`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Inside a transaction.
+	 * @throws CodedException  Any refusal but the gateway's being unavailable or not declaring the query.
+	 *
+	 * @param RefundPlan $plan The refund, still claimed.
+	 * @return array{0: string, 1: GatewayResult|null} What the gateway said, and its answer when it gave one.
+	 */
+	private function askOnceMore( RefundPlan $plan ): array {
+		$this->requireNoTransaction();
+
+		try {
+			$gateway = $this->gateways->get( $plan->intent->gatewayId, $plan->intent->mode );
+
+			$this->payments->require( $plan->intent->gatewayId, Operations::QUERY_REFUND, $plan->intent->mode, $plan->order->currency );
+
+			$answer = $gateway->queryRefund( self::gatewayRefund( $plan ) );
+		} catch ( GatewayUnavailable $unanswered ) {
+			return array( SettledClaim::UNAVAILABLE, null );
+		} catch ( CodedException $refused ) {
+			return array( self::unavailableBecause( $refused ), null );
+		}
+
+		return array( self::readingOf( $answer ), $answer );
+	}
+
+	/**
+	 * Says why a gateway that refused to be asked is unavailable, from its refusal.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException The refusal itself, when it is anything else.
+	 *
+	 * @param CodedException $refused The refusal.
+	 * @return string `unavailable:` and the reason, such as `unavailable:not_registered`, or `unavailable:query_refund_unsupported`.
+	 */
+	private static function unavailableBecause( CodedException $refused ): string {
+		return match ( $refused->errorCode() ) {
+			PaymentError::GatewayUnavailable   => SettledClaim::UNAVAILABLE . ':' . (string) ( $refused->context()['reason'] ?? '' ),
+			PaymentError::OperationUnsupported => SettledClaim::UNAVAILABLE . ':' . Operations::QUERY_REFUND . '_unsupported',
+			default                            => throw $refused,
+		};
+	}
+
+	/**
+	 * Says what a gateway's answer about a refund was: a refund it made or declined, one it says it never made, or none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayResult|null $answer The answer; null when the gateway cannot say.
+	 * @return string SettledClaim::APPROVED, DECLINED, NOT_FOUND or CANNOT_SAY; an answer that has not decided cannot say.
+	 */
+	private static function readingOf( ?GatewayResult $answer ): string {
+		return match ( $answer?->outcome ) {
+			Outcome::Approved => SettledClaim::APPROVED,
+			Outcome::Declined => PaymentGateway::NOT_FOUND === $answer->errorCode ? SettledClaim::NOT_FOUND : SettledClaim::DECLINED,
+			default           => SettledClaim::CANNOT_SAY,
+		};
+	}
+
+	/**
+	 * Builds the answer a person's statement stands for: the gateway's approval of the provider's refund and the amount they name, when they state it was made; no answer when they state it was not.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param RefundPlan     $plan      The refund.
+	 * @param ClaimStatement $statement What the person states.
+	 * @return GatewayResult|null The approval, as the intent's gateway would have answered it; null for a refund stated not made.
+	 */
+	private static function statedResult( RefundPlan $plan, ClaimStatement $statement ): ?GatewayResult {
+		if ( ! $statement->refunded ) {
+			return null;
+		}
+
+		return new GatewayResult( $plan->intent->gatewayId, Operation::Refund, Outcome::Approved, $plan->intent->uuid, Money::of( (int) $statement->amountMinor, $plan->order->currency ), $statement->providerRefundId, $plan->intent->providerIntentId );
+	}
+
+	/**
+	 * Settles a claim in the transaction the caller opened: under the intent's lock, the answer recorded or the claim declined, the settlement noted, the order's event written, and the order flagged for a refund recorded on a person's word.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws ClaimEndedElsewhere When the claim is no longer the intent's open claim under its lock: it ended since it was read.
+	 * @throws \LogicException     When the settlement could not be noted, which the lock rules out.
+	 *
+	 * @param RefundPlan         $plan      The refund, worked out again from its claim.
+	 * @param GatewayResult|null $result    The answer that decides: the gateway's, or the one the statement stands for; null for a refund stated not made.
+	 * @param ClaimStatement     $statement What the person states.
+	 * @param string             $reading   What the gateway said when it was asked once more.
+	 * @param string             $decidedBy SettledClaim::BY_GATEWAY or BY_STATEMENT.
+	 * @param Actor              $actor     Who settles it.
+	 * @return ClaimState How the claim ended.
+	 */
+	private function settleLocked( RefundPlan $plan, ?GatewayResult $result, ClaimStatement $statement, string $reading, string $decidedBy, Actor $actor ): ClaimState {
+		$intent = $this->refunds->lockForClaim( $plan->intent->id, $plan->order->moneyReconciledAt );
+
+		// Whatever ended the claim since it was read ended it under this lock, and won.
+		if ( $plan->uuid !== $intent['open_claim'] ) {
+			throw new ClaimEndedElsewhere( 'The refund\'s claim ended before a person settled it.' );
+		}
+
+		$state = null === $result ? $this->declineAsStated( $plan ) : $this->recordSettlement( $plan, $result, $actor );
+
+		list( , $settledBy ) = self::actorOf( $actor );
+
+		if ( ! $this->refunds->noteSettlement( $plan->uuid, $statement->word(), $reading, $settledBy, $statement->note ) ) {
+			throw new \LogicException( sprintf( 'The settlement of refund %s could not be noted under its intent\'s lock: a claim was changed outside the refund service.', $plan->uuid ) );
+		}
+
+		$this->orderEvents->appendAudit( $plan->order->id, self::SETTLED_REASON, $plan->uuid, $actor );
+
+		// No gateway says this money moved: it is on the person's word until a person clears the flag.
+		if ( SettledClaim::BY_STATEMENT === $decidedBy && ClaimState::Recorded === $state ) {
+			$this->orderEvents->flagUnreconciled( $plan->order->id, self::SETTLED_BY_STATEMENT, $plan->uuid, $actor );
+		}
+
+		return $state;
+	}
+
+	/**
+	 * Ends a claim declined on a person's statement that the refund was never made: no ledger row, as no gateway declined it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws ClaimEndedElsewhere When the claim had ended already.
+	 *
+	 * @param RefundPlan $plan The refund.
+	 * @return ClaimState Declined.
+	 */
+	private function declineAsStated( RefundPlan $plan ): ClaimState {
+		if ( ! $this->refunds->settleClaim( $plan->uuid, ClaimState::Declined, null ) ) {
+			throw new ClaimEndedElsewhere( 'The refund\'s claim ended before a person settled it.' );
+		}
+
+		return ClaimState::Declined;
+	}
+
+	/**
+	 * Records the answer that settles a claim as any refund's answer is recorded, and reads how the claim ended.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When the claim is gone, which nothing deletes.
+	 *
+	 * @param RefundPlan    $plan   The refund.
+	 * @param GatewayResult $result The answer.
+	 * @param Actor         $actor  Who settles it.
+	 * @return ClaimState How the claim ended: recorded, declined, or unreconciled when the money was left for a person.
+	 */
+	private function recordSettlement( RefundPlan $plan, GatewayResult $result, Actor $actor ): ClaimState {
+		$this->recordAnswer( $plan, $result, $actor );
+
+		$claim = $this->refunds->findClaim( $plan->uuid ) ?? throw new \LogicException( sprintf( 'The claim of refund %s is gone.', $plan->uuid ) );
+
+		return $claim->state;
 	}
 
 	/**

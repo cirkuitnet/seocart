@@ -22,6 +22,7 @@ use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\Migrations\CreateCheckoutTables;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
+use SEOCart\Order\Infrastructure\Migrations\AddMoneyReconciliation;
 use SEOCart\Order\Infrastructure\Migrations\AddOrderEventReference;
 use SEOCart\Order\Infrastructure\Migrations\AddOrderStatusIndex;
 use SEOCart\Order\Infrastructure\Migrations\CreateOrderTables;
@@ -29,6 +30,7 @@ use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Application\GatewaySettingsDeclaration;
 use SEOCart\Payment\Infrastructure\Migrations\AddIntentMode;
 use SEOCart\Payment\Infrastructure\Migrations\AddRefundClaimRequest;
+use SEOCart\Payment\Infrastructure\Migrations\AddRefundClaimSettlement;
 use SEOCart\Payment\Infrastructure\Migrations\CreatePaymentTables;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundClaimTable;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundTables;
@@ -96,14 +98,14 @@ final class OwnedData {
 			new Contribution( jobGroups: array( JobQueue::GROUP => 'Jobs' ) ),
 			new Contribution( tables: InventoryTables::all(), migrations: array( new CreateStockTablesMigration() ) ),
 			new Contribution( tables: array( RateCountersTable::definition() ), migrations: array( new CreateRateCountersMigration() ) ),
-			new Contribution( tables: OrderTables::all(), migrations: array( new CreateOrderTables(), new AddOrderStatusIndex(), new AddOrderEventReference() ) ),
+			new Contribution( tables: OrderTables::all(), migrations: array( new CreateOrderTables(), new AddOrderStatusIndex(), new AddOrderEventReference(), new AddMoneyReconciliation() ) ),
 			new Contribution( tables: CartTables::all(), migrations: array( new CreateCartTables() ) ),
 			new Contribution( tables: PaymentTables::all(), migrations: array( new CreatePaymentTables(), new AddIntentMode() ) ),
 			new Contribution( tables: CheckoutTables::all(), migrations: array( new CreateCheckoutTables() ) ),
 			new Contribution( tables: PricingTables::all(), migrations: array( new CreateRateTables() ) ),
 			new Contribution( tables: PromotionTables::all(), migrations: array( new CreatePromotionTables() ) ),
 			new Contribution( tables: RefundTables::all(), migrations: array( new CreateRefundTables() ) ),
-			new Contribution( tables: RefundClaimTables::all(), migrations: array( new CreateRefundClaimTable(), new AddRefundClaimRequest() ) ),
+			new Contribution( tables: RefundClaimTables::all(), migrations: array( new CreateRefundClaimTable(), new AddRefundClaimRequest(), new AddRefundClaimSettlement() ) ),
 		);
 	}
 }

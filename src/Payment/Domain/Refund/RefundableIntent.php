@@ -44,8 +44,8 @@ final readonly class RefundableIntent {
 	 * @param Money       $refunded           Refunded so far.
 	 * @param Money       $baseCaptured       Captured so far in the base currency.
 	 * @param Money       $baseRefunded       Refunded so far in the base currency.
-	 * @param bool        $hasUnappliedResult Whether the ledger holds a result of the intent applied to nothing: money a person must reconcile before anything else is done with the payment.
-	 * @param int         $declinedRefunds    Optional. How many refunds of the intent the ledger holds declined. Default 0.
+	 * @param bool        $hasUnappliedResult Whether the ledger holds a result of the intent applied to nothing since a person last cleared its order's unreconciled money: money a person must reconcile before anything else is done with the payment.
+	 * @param int         $declinedRefunds    Optional. How many refunds of the intent were declined: by the gateway, or by a person's statement that it never made them. Default 0.
 	 * @param string|null $openClaim          Optional. The uuid of the intent's oldest refund still claimed: asked of the
 	 *                                        gateway, its answer not recorded yet. Default null, when there is none.
 	 */

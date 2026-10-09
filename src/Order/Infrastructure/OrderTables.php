@@ -202,6 +202,7 @@ final class OrderTables {
 	 * Declares `orders`: the financial root, with its status, its totals and the payment projection.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 When a person last cleared the order's unreconciled money, and why.
 	 *
 	 * @return TableDefinition The declaration.
 	 */
@@ -263,6 +264,8 @@ final class OrderTables {
 					new ColumnSpec( 'access_key_hash', 'varchar(255)', Classification::Secret, 'The hash of the order\'s access key, with which a guest reads the order; the key itself is never stored.', nullable: true, collation: 'ascii_bin' ),
 					new ColumnSpec( 'access_key_expires_at', 'datetime', Classification::Public, 'When the access key stops working, UTC, from the database clock; NULL when the order has no key.', nullable: true ),
 					new ColumnSpec( 'has_unreconciled_money', 'tinyint(1)', Classification::Public, '1 when a payment result could not be reconciled with the order, so a person must look at it.', defaultValue: '0' ),
+					new ColumnSpec( 'money_reconciled_at', 'datetime(6)', Classification::Public, 'When a person last cleared has_unreconciled_money, UTC, from the database clock; NULL until then. A payment result the ledger applied to nothing before it no longer holds the order\'s refunds back.', nullable: true ),
+					new ColumnSpec( 'money_reconciliation_note', 'text', Classification::Pii, 'What the person who last cleared has_unreconciled_money wrote about why; NULL until then.', nullable: true, erasure: ColumnSpec::ERASE_DESTROY ),
 					new ColumnSpec( 'payment_due_date', 'date', Classification::Public, 'When payment on terms is due; NULL for an order paid at checkout.', nullable: true ),
 					new ColumnSpec( 'payment_schedule_id', 'bigint unsigned', Classification::Public, 'The payment schedule the order is paid on; NULL for an order paid at once.', nullable: true ),
 					new ColumnSpec( 'hold_group', 'char(36)', Classification::Public, 'The stock hold placement took for the order, which settling the payment converts or releases; NULL when nothing was held. Read only with the order\'s own row.', nullable: true, collation: 'ascii_bin' ),

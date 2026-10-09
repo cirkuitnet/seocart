@@ -29,9 +29,11 @@ use SEOCart\Order\Domain\PaymentDelta;
 use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Order\Domain\Transition;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\EventPublisher;
+use SEOCart\Platform\Logging\CardNumbers;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Support\Clock;
 use SEOCart\Support\Error\CodedException;
@@ -59,7 +61,11 @@ defined( 'ABSPATH' ) || exit;
  * Nothing here adds money up: every total is copied from the document the calculation produced,
  * and a payment's amounts are added by the database, in the one statement that also checks them.
  *
+ * An order flagged as holding money a person must reconcile stays flagged until a person who may
+ * override what the plugin knows of the money clears it, saying why, in a transaction of its own.
+ *
  * @since 0.1.0
+ * @since 0.2.0 Flags an order without parking it, and clears the flag on a person's word.
  */
 final class Orders {
 
@@ -125,6 +131,15 @@ final class Orders {
 	 * @var string
 	 */
 	private const REASON_PATTERN = '/^[a-z][a-z0-9_]{0,63}\z/';
+
+	/**
+	 * The reason of the order event that records a person's clearance of the order's unreconciled money.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const MONEY_RECONCILED = 'money_reconciled';
 
 	/**
 	 * The statements.
@@ -217,32 +232,55 @@ final class Orders {
 	private CorrelationId $correlation;
 
 	/**
+	 * Checks capabilities.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var Authorizer
+	 */
+	private Authorizer $authorizer;
+
+	/**
+	 * Says when the newest money of an order a person must reconcile was recorded, which a clearance is dated after.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var UnreconciledMoney
+	 */
+	private UnreconciledMoney $unreconciled;
+
+	/**
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Takes the capability check, and when an order's newest unreconciled money was recorded.
 	 *
-	 * @param OrderRepository      $orders      The statements.
-	 * @param OrderNumberGenerator $numbers     Allocates order numbers.
-	 * @param AccessKeys           $keys        Makes and hashes access keys.
-	 * @param ConversionContexts   $contexts    Freezes the rates orders are placed at.
-	 * @param OrderStatusRegistry  $registry    The order state machine.
-	 * @param TransactionManager   $tx          The unit of work.
-	 * @param EventPublisher       $events      Publishes the events.
-	 * @param IdGenerator          $ids         Mints order uuids.
-	 * @param Clock                $clock       Says when an event happened.
-	 * @param CorrelationId        $correlation The request's correlation id.
+	 * @param OrderRepository      $orders       The statements.
+	 * @param OrderNumberGenerator $numbers      Allocates order numbers.
+	 * @param AccessKeys           $keys         Makes and hashes access keys.
+	 * @param ConversionContexts   $contexts     Freezes the rates orders are placed at.
+	 * @param OrderStatusRegistry  $registry     The order state machine.
+	 * @param TransactionManager   $tx           The unit of work.
+	 * @param EventPublisher       $events       Publishes the events.
+	 * @param IdGenerator          $ids          Mints order uuids.
+	 * @param Clock                $clock        Says when an event happened.
+	 * @param CorrelationId        $correlation  The request's correlation id.
+	 * @param Authorizer           $authorizer   Checks capabilities.
+	 * @param UnreconciledMoney    $unreconciled Says when an order's newest money a person must reconcile was recorded.
 	 */
-	public function __construct( OrderRepository $orders, OrderNumberGenerator $numbers, AccessKeys $keys, ConversionContexts $contexts, OrderStatusRegistry $registry, TransactionManager $tx, EventPublisher $events, IdGenerator $ids, Clock $clock, CorrelationId $correlation ) {
-		$this->orders      = $orders;
-		$this->numbers     = $numbers;
-		$this->keys        = $keys;
-		$this->contexts    = $contexts;
-		$this->registry    = $registry;
-		$this->tx          = $tx;
-		$this->events      = $events;
-		$this->ids         = $ids;
-		$this->clock       = $clock;
-		$this->correlation = $correlation;
+	public function __construct( OrderRepository $orders, OrderNumberGenerator $numbers, AccessKeys $keys, ConversionContexts $contexts, OrderStatusRegistry $registry, TransactionManager $tx, EventPublisher $events, IdGenerator $ids, Clock $clock, CorrelationId $correlation, Authorizer $authorizer, UnreconciledMoney $unreconciled ) {
+		$this->orders       = $orders;
+		$this->numbers      = $numbers;
+		$this->keys         = $keys;
+		$this->contexts     = $contexts;
+		$this->registry     = $registry;
+		$this->tx           = $tx;
+		$this->events       = $events;
+		$this->ids          = $ids;
+		$this->clock        = $clock;
+		$this->correlation  = $correlation;
+		$this->authorizer   = $authorizer;
+		$this->unreconciled = $unreconciled;
 	}
 
 	/**
@@ -495,6 +533,84 @@ final class Orders {
 	}
 
 	/**
+	 * Flags an order as holding money a person must reconcile, without parking it, and records why among its events, inside the caller's transaction.
+	 *
+	 * For money recorded on a person's word, which no gateway confirmed: the order is fine, and
+	 * keeps its status, but a person must answer for the money until they clear the flag. Two
+	 * statements: the flag, and an event of the order's payment that names what it records by its
+	 * uuid, as appendAudit() writes it. A reason that is not a lowercase snake_case word is an
+	 * \InvalidArgumentException before any statement.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction, before any statement; or when the flag finds no order, which the caller's lock rules out.
+	 *
+	 * @param int    $orderId   The order's internal id, locked by the caller's transaction.
+	 * @param string $reason    Why, a lowercase snake_case word such as `refund_settled_by_statement`.
+	 * @param string $reference The uuid of what it records, such as the refund's.
+	 * @param Actor  $actor     On whose authority.
+	 */
+	public function flagUnreconciled( int $orderId, string $reason, string $reference, Actor $actor ): void {
+		$this->requireCallersTransaction( __FUNCTION__ );
+		self::checkReason( $reason );
+
+		if ( ! $this->orders->markUnreconciled( $orderId ) ) {
+			throw new \LogicException( sprintf( 'Order %d could not be flagged: it is locked by this transaction, so it cannot be gone.', $orderId ) );
+		}
+
+		$this->appendAudit( $orderId, $reason, $reference, $actor );
+	}
+
+	/**
+	 * Clears an order's flag of money a person must reconcile, as the clearance operation asks, and answers with when.
+	 *
+	 * 1. The capability `seocart_override_money_state`, before anything else; then the note: one
+	 *    that says nothing, is longer than OrderOperations::NOTE_MAX_LENGTH characters, or holds
+	 *    what reads as a card number, is refused `order.reconciliation_note_rejected`, whoever
+	 *    calls: the operation's schema holds its callers to the length, and this holds any other.
+	 * 2. One transaction, which the schema gate refuses before its first statement while a
+	 *    migration the store needs is outstanding: the order locked by its uuid; when the newest
+	 *    money of its payments a person must reconcile was recorded, read under that lock; the
+	 *    flag lowered by one conditional update, which keeps the note and when, by the database
+	 *    clock, after the order's row last changed and after that money; the order read back by
+	 *    its uuid; and an event of the order's payment (`money_reconciled`, naming the order), with
+	 *    who and the request's correlation id. No order is `order.not_found`; one not flagged,
+	 *    because it never was or a person cleared it first, is `order.not_unreconciled`, and
+	 *    nothing is written.
+	 *
+	 * The ledger keeps every result it applied to nothing: a clearance frees the order's refunds of
+	 * those written before it, and one written after it holds them back again, flagging the order.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `authorization.denied`; `order.reconciliation_note_rejected`; `store.unavailable`
+	 *                        while the schema gate is closed; `order.not_found`; `order.not_unreconciled`.
+	 *
+	 * @param array<string, mixed> $input The prepared input: order_uuid and note.
+	 * @param Actor                $actor Who clears it.
+	 * @return array<string, mixed> The order's uuid, its flag, and when it was cleared, keyed by wire name.
+	 */
+	public function clearUnreconciledMoney( array $input, Actor $actor ): array {
+		$this->authorizer->authorize( $actor, OrderOperations::MONEY_OVERRIDE_CAPABILITY );
+
+		$orderUuid = (string) $input['order_uuid'];
+		$note      = (string) $input['note'];
+
+		// The note is kept with the order for as long as it is: one that holds a card number is never kept.
+		if ( '' === trim( $note ) || mb_strlen( $note ) > OrderOperations::NOTE_MAX_LENGTH || CardNumbers::contains( $note ) ) {
+			CodedException::raise( OrderError::ReconciliationNoteRejected, array( 'max_length' => OrderOperations::NOTE_MAX_LENGTH ) );
+		}
+
+		$reconciledAt = $this->tx->transaction( fn(): string => $this->clear( $orderUuid, $note, $actor ), RetryPolicy::deadlocks() );
+
+		return array(
+			'order_uuid'             => $orderUuid,
+			'has_unreconciled_money' => false,
+			'money_reconciled_at'    => str_replace( ' ', 'T', $reconciledAt ) . 'Z',
+		);
+	}
+
+	/**
 	 * Reads an order for showing it, by its public identifier.
 	 *
 	 * @since 0.1.0
@@ -616,6 +732,45 @@ final class Orders {
 		}
 
 		return $order;
+	}
+
+	/**
+	 * Lowers an order's flag in the transaction the caller opened, under the order's lock, reads it back, and records the clearance among its events.
+	 *
+	 * An order that is not there is refused `order.not_found`, and one not flagged
+	 * `order.not_unreconciled`, each from the lock's read, with nothing written.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When the flag, raised under the lock, could not be lowered, or the order reads back with no clearance.
+	 *
+	 * @param string $orderUuid The order's public identifier.
+	 * @param string $note      Why the person says the money is reconciled.
+	 * @param Actor  $actor     Who clears it.
+	 * @return string When the flag was cleared, UTC to the microsecond, as the database clock wrote it.
+	 */
+	private function clear( string $orderUuid, string $note, Actor $actor ): string {
+		$locked = $this->orders->lockReconciliation( $orderUuid ) ?? CodedException::raise( OrderError::NotFound );
+
+		if ( ! $locked['has_unreconciled_money'] ) {
+			CodedException::raise( OrderError::NotUnreconciled );
+		}
+
+		// Every writer of such money holds the order's lock while it writes the money and raises the
+		// flag: under this one, the newest read is the newest there will be until this commits.
+		if ( ! $this->orders->clearUnreconciled( $orderUuid, $note, $this->unreconciled->newestAt( $locked['id'] ) ) ) {
+			throw new \LogicException( sprintf( 'The flag of order %s, raised under its lock, could not be lowered.', $orderUuid ) );
+		}
+
+		$order = $this->orders->reconciliation( $orderUuid );
+
+		if ( null === $order || null === $order['money_reconciled_at'] ) {
+			throw new \LogicException( sprintf( 'Order %s, cleared under its lock, reads back with no clearance.', $orderUuid ) );
+		}
+
+		$this->appendAudit( $order['id'], self::MONEY_RECONCILED, $orderUuid, $actor );
+
+		return $order['money_reconciled_at'];
 	}
 
 	/**

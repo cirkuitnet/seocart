@@ -27,13 +27,15 @@ defined( 'ABSPATH' ) || exit;
  * the gateway made that a cap then refused is recorded for a person and answered
  * `payment.unreconciled`; one asked for before, whose fate the gateway cannot account for, is
  * refused `payment.refund_unresolved` and not asked for again, and so is every other refund of
- * the same payment until a person settles it; and one worked out from figures another refund
+ * the same payment until a person settles its claim; and one worked out from figures another refund
  * moved before it was claimed is refused `payment.refund_retry`, to be asked for again. An
  * idempotency key sent before with another refund request is refused
  * `payment.refund_key_reused`, before anything of the order is read; and a refund past one of the
  * user's refund caps is refused `payment.refund_cap_exceeded`, whole, before the gateway is asked. A
- * caller's programming error, such as a gateway call inside a transaction, is a \LogicException,
- * never a row here.
+ * claim a person settles must exist (`payment.refund_claim_not_found`) and still be open
+ * (`payment.refund_claim_ended`), and the person's statement must be one it can be settled with
+ * (`payment.refund_statement_incomplete`). A caller's programming error, such as a gateway call
+ * inside a transaction, is a \LogicException, never a row here.
  *
  * @since 0.1.0
  */
@@ -117,7 +119,7 @@ enum PaymentError: string implements ErrorCode {
 	case RefundDeclined = 'payment.refund_declined';
 
 	/**
-	 * The gateway was asked for a refund of the payment before and cannot say whether it made it; nothing in the plugin settles such a refund yet, and until a person does, the payment takes no other refund.
+	 * The gateway was asked for a refund of the payment before and cannot say whether it made it; until a person settles that refund's claim, the payment takes no other refund.
 	 *
 	 * The refund named is the one asked for before: this request's own, asked again, or another of
 	 * the same payment, which this one waits for.
@@ -188,6 +190,27 @@ enum PaymentError: string implements ErrorCode {
 	 * @since 0.2.0
 	 */
 	case RefundCapInvalid = 'payment.refund_cap_invalid';
+
+	/**
+	 * No refund claim has the uuid a person asked to settle.
+	 *
+	 * @since 0.2.0
+	 */
+	case RefundClaimNotFound = 'payment.refund_claim_not_found';
+
+	/**
+	 * The refund claim a person asked to settle has ended already: recorded, declined or left for a person, by the gateway's answer or by another settlement.
+	 *
+	 * @since 0.2.0
+	 */
+	case RefundClaimEnded = 'payment.refund_claim_ended';
+
+	/**
+	 * A person's statement about a refund cannot settle its claim: every statement says why; one that the refund was made also names the provider's refund and the amount, one that it was not names neither; and the provider's refund never holds a card number.
+	 *
+	 * @since 0.2.0
+	 */
+	case RefundStatementIncomplete = 'payment.refund_statement_incomplete';
 
 	/**
 	 * Returns the catalog's rows.
@@ -283,7 +306,7 @@ enum PaymentError: string implements ErrorCode {
 				409,
 				static fn(): string =>
 					/* translators: %1$s: The refund's identifier. */
-					__( 'The payment gateway was asked for the refund %1$s before and cannot say whether it gave the money back. Nothing in the plugin settles such a refund yet, and until a person does, this payment takes no other refund.', 'seocart' ),
+					__( 'The payment gateway was asked for the refund %1$s before and cannot say whether it gave the money back. Until a person settles that refund\'s claim, this payment takes no other refund.', 'seocart' ),
 				array( 'refund_uuid' )
 			),
 			new ErrorDefinition(
@@ -345,6 +368,30 @@ enum PaymentError: string implements ErrorCode {
 				self::RefundCapInvalid,
 				422,
 				static fn(): string => __( 'A refund cap is an amount of the base currency, such as 250.00, with at most six decimals, or empty for no cap.', 'seocart' )
+			),
+			new ErrorDefinition(
+				self::RefundClaimNotFound,
+				404,
+				static fn(): string =>
+					/* translators: %1$s: The refund's identifier. */
+					__( 'No refund %1$s was asked of the payment gateway, so there is no claim of it to settle.', 'seocart' ),
+				array( 'refund_uuid' )
+			),
+			new ErrorDefinition(
+				self::RefundClaimEnded,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: How the claim ended: recorded, declined or unreconciled. */
+					__( 'The refund\'s claim has ended already (%1$s), so it cannot be settled again; nothing was changed.', 'seocart' ),
+				array( 'state' )
+			),
+			new ErrorDefinition(
+				self::RefundStatementIncomplete,
+				422,
+				static fn(): string =>
+					/* translators: %1$s: What is wrong with the statement: incomplete, contradictory, card_number, note_too_long or already_recorded. %2$s: The longest note, in characters, for example 500. */
+					__( 'The statement cannot settle the refund\'s claim (%1$s): every statement says why, in at most %2$s characters; one that the refund was made also names the payment provider\'s refund, in printable ASCII with no space, and the amount given back, and one that it was not names neither; the provider\'s refund never holds a card number, and is never one already recorded.', 'seocart' ),
+				array( 'problem', 'max_length' )
 			),
 		);
 	}

@@ -60,7 +60,8 @@ defined( 'ABSPATH' ) || exit;
  * A status changes only through TRANSITION, whose WHERE clause lists the statuses the registry
  * allows the target to be entered from; the payment projection changes only through
  * RECORD_PAYMENT. No other statement writes either. MARK_UNRECONCILED raises the flag that brings
- * a person to an order a payment did not match; nothing here lowers it. A line's refunded
+ * a person to an order a payment did not match; only CLEAR_UNRECONCILED lowers it, when a person
+ * says the money is reconciled. A line's refunded
  * quantity moves only through ADD_REFUNDED_QUANTITIES, which a refund sends for all its lines
  * at once.
  *
@@ -259,6 +260,67 @@ final class MysqlOrderRepository implements OrderRepository {
 	public const MARK_UNRECONCILED = 'UPDATE {orders} SET has_unreconciled_money = 1, updated_at = GREATEST( UTC_TIMESTAMP(6), updated_at + INTERVAL 1 MICROSECOND ) WHERE id = %d';
 
 	/**
+	 * The order's lock, by the `uuid` key, taken before a clearance reads the money it clears: the order's id, and whether it is flagged.
+	 *
+	 * Every writer of money a person must reconcile holds the order's lock while it writes the
+	 * ledger row and raises the flag, so under this lock no more such money lands for the order
+	 * until the clearance commits.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCK_RECONCILIATION = 'SELECT id, has_unreconciled_money FROM {orders} WHERE uuid = %s FOR UPDATE';
+
+	/**
+	 * When a clearance is dated, by the database clock: after the order's row last changed and after the newest money it clears, each by a microsecond at least.
+	 *
+	 * Its one value is the newest money's time, read under the order's lock. The row's own time
+	 * would not do alone: a database clock that stepped back between a ledger row and the flag
+	 * raised for it leaves `updated_at` earlier than the row, which would then still hold the
+	 * payment's refunds back once the flag is down, with nothing flagged for a person to clear.
+	 * The clock is read after the order's lock was taken, so it is no older than the money either.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const CLEARANCE = 'GREATEST( UTC_TIMESTAMP(6), updated_at + INTERVAL 1 MICROSECOND, CAST( %s AS DATETIME(6) ) + INTERVAL 1 MICROSECOND )';
+
+	/**
+	 * The newest money's time for an order whose payments have none: older than any row's, so the clearance is dated by the row and the clock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const NO_MONEY = '1970-01-01 00:00:00.000000';
+
+	/**
+	 * Lowers the flag of an order holding money a person must reconcile, by the `uuid` key, only while it is raised: when, by the database clock, and why.
+	 *
+	 * The clearance and the row's new `updated_at` are each written by CLEARANCE itself, never one
+	 * read from the other: MySQL assigns from left to right and MariaDB, with
+	 * SIMULTANEOUS_ASSIGNMENT, from the row as it was, and both read the same `updated_at` here,
+	 * the one before this statement, so the two values are the same.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CLEAR_UNRECONCILED = 'UPDATE {orders} SET has_unreconciled_money = 0, money_reconciled_at = ' . self::CLEARANCE . ', '
+		. 'money_reconciliation_note = %s, updated_at = ' . self::CLEARANCE . ' WHERE uuid = %s AND has_unreconciled_money = 1';
+
+	/**
+	 * Whether an order holds money a person must reconcile, and when a person last cleared it, by the `uuid` key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const RECONCILIATION = 'SELECT id, has_unreconciled_money, money_reconciled_at FROM {orders} WHERE uuid = %s';
+
+	/**
 	 * A page of orders' payment amounts, with each order's grand total and age by the database clock, by the primary key, after the last id of the page before.
 	 *
 	 * @since 0.1.0
@@ -352,13 +414,14 @@ final class MysqlOrderRepository implements OrderRepository {
 	public const FIND_FOR_ACCESS = 'SELECT uuid, customer_id, access_key_hash, COALESCE( access_key_expires_at <= UTC_TIMESTAMP(), 1 ) AS key_expired FROM {orders} WHERE uuid = %s';
 
 	/**
-	 * The order a refund is worked out for, by uuid, with the version of its current totals: what its tax components are read at.
+	 * The order a refund is worked out for, by uuid, with the version of its current totals, what its tax components are read at, and when a person last cleared its unreconciled money.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 When a person last cleared the order's unreconciled money.
 	 *
 	 * @var string
 	 */
-	public const FIND_REFUNDABLE_ORDER = 'SELECT o.id, o.uuid, o.currency, o.base_currency, o.conversion_context_id, t.version AS totals_version '
+	public const FIND_REFUNDABLE_ORDER = 'SELECT o.id, o.uuid, o.currency, o.base_currency, o.conversion_context_id, o.money_reconciled_at, t.version AS totals_version '
 		. 'FROM {orders} o JOIN {order_totals} t ON t.id = o.current_totals_id WHERE o.uuid = %s';
 
 	/**
@@ -1016,6 +1079,66 @@ final class MysqlOrderRepository implements OrderRepository {
 	}
 
 	/**
+	 * Locks an order's row by its public identifier, inside the caller's transaction, and reads whether it holds money a person must reconcile.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param string $orderUuid The order's public identifier.
+	 * @return array{id: int, has_unreconciled_money: bool}|null The order's id and its flag; null when there is no such order.
+	 */
+	public function lockReconciliation( string $orderUuid ): ?array {
+		$this->statements->requireTransaction( __METHOD__ );
+
+		$row = self::isUuid( $orderUuid ) ? ( $this->statements->rows( self::LOCK_RECONCILIATION, $orderUuid )[0] ?? null ) : null;
+
+		return null === $row ? null : array(
+			'id'                     => (int) $row['id'],
+			'has_unreconciled_money' => 1 === (int) $row['has_unreconciled_money'],
+		);
+	}
+
+	/**
+	 * Lowers the flag of an order holding money a person must reconcile, inside the caller's transaction, only while it is raised, keeping when and why.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param string      $orderUuid   The order's public identifier.
+	 * @param string      $note        Why the person says the money is reconciled.
+	 * @param string|null $newestMoney When the newest of the order's payment results that moved no money was recorded; null when it has none.
+	 * @return bool True when the flag was lowered here; false when the order is not flagged, or there is none.
+	 */
+	public function clearUnreconciled( string $orderUuid, string $note, ?string $newestMoney ): bool {
+		$this->statements->requireTransaction( __METHOD__ );
+
+		$after = $newestMoney ?? self::NO_MONEY;
+
+		return self::isUuid( $orderUuid ) && 1 === $this->statements->execute( self::CLEAR_UNRECONCILED, $after, $note, $after, $orderUuid );
+	}
+
+	/**
+	 * Reads whether an order holds money a person must reconcile, and when a person last cleared it, by its public identifier.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $orderUuid The order's public identifier.
+	 * @return array{id: int, has_unreconciled_money: bool, money_reconciled_at: string|null}|null The order's id, its flag, and the
+	 *         clearance, UTC to the microsecond, as the database clock wrote it, or null for never; null when there is no such order.
+	 */
+	public function reconciliation( string $orderUuid ): ?array {
+		$row = self::isUuid( $orderUuid ) ? ( $this->statements->rows( self::RECONCILIATION, $orderUuid )[0] ?? null ) : null;
+
+		return null === $row ? null : array(
+			'id'                     => (int) $row['id'],
+			'has_unreconciled_money' => 1 === (int) $row['has_unreconciled_money'],
+			'money_reconciled_at'    => null === $row['money_reconciled_at'] ? null : (string) $row['money_reconciled_at'],
+		);
+	}
+
+	/**
 	 * Reads a page of orders' payment amounts, in id order.
 	 *
 	 * @since 0.1.0
@@ -1204,7 +1327,8 @@ final class MysqlOrderRepository implements OrderRepository {
 			$lines,
 			$shipped ? self::taxed( $shipping, '', $currency ) : null,
 			$shipped ? self::taxed( $shipping, 'base_', $base ) : null,
-			array() === $lineIds && ! $shipped ? array() : $this->refundableComponents( $orderId, $version, $lineIds, $scope, $currency, $base )
+			array() === $lineIds && ! $shipped ? array() : $this->refundableComponents( $orderId, $version, $lineIds, $scope, $currency, $base ),
+			null === $row['money_reconciled_at'] ? null : (string) $row['money_reconciled_at']
 		);
 	}
 

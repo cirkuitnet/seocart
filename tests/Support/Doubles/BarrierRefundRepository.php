@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Doubles;
 
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Payment\Domain\Refund\ClaimRequest;
 use SEOCart\Payment\Domain\Refund\ClaimState;
 use SEOCart\Payment\Domain\Refund\Refund;
 use SEOCart\Payment\Domain\Refund\RefundableIntent;
@@ -134,11 +136,12 @@ final class BarrierRefundRepository implements RefundRepository {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int $intentId The intent.
+	 * @param int         $intentId     The intent.
+	 * @param string|null $reconciledAt The order's clearance, or null.
 	 * @return array{has_unapplied_result: bool, refunded_minor: int, base_refunded_minor: int, declined_refunds: int, open_claim: string|null} What the wrapped statements read.
 	 */
-	public function lockForClaim( int $intentId ): array {
-		$locked = $this->inner->lockForClaim( $intentId );
+	public function lockForClaim( int $intentId, ?string $reconciledAt ): array {
+		$locked = $this->inner->lockForClaim( $intentId, $reconciledAt );
 
 		if ( null !== $this->afterLock ) {
 			( $this->afterLock )();
@@ -152,11 +155,12 @@ final class BarrierRefundRepository implements RefundRepository {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int $orderId The order.
+	 * @param int         $orderId      The order.
+	 * @param string|null $reconciledAt The order's clearance, or null.
 	 * @return RefundableIntent|null The intent.
 	 */
-	public function refundableIntent( int $orderId ): ?RefundableIntent {
-		return $this->inner->refundableIntent( $orderId );
+	public function refundableIntent( int $orderId, ?string $reconciledAt ): ?RefundableIntent {
+		return $this->inner->refundableIntent( $orderId, $reconciledAt );
 	}
 
 	/**
@@ -228,6 +232,46 @@ final class BarrierRefundRepository implements RefundRepository {
 	 */
 	public function findClaim( string $uuid ): ?RefundClaim {
 		return $this->inner->findClaim( $uuid );
+	}
+
+	/**
+	 * Reads a claim with what it asked through the wrapped statements.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $uuid The refund's uuid.
+	 * @return ClaimRequest|null The claim.
+	 */
+	public function claimRequest( string $uuid ): ?ClaimRequest {
+		return $this->inner->claimRequest( $uuid );
+	}
+
+	/**
+	 * Tells whether the ledger holds a result through the wrapped statements.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayResult $result The result.
+	 * @return bool Whether a row holds it.
+	 */
+	public function holdsResult( GatewayResult $result ): bool {
+		return $this->inner->holdsResult( $result );
+	}
+
+	/**
+	 * Notes a person's settlement through the wrapped statements.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string   $uuid           The refund's uuid.
+	 * @param string   $statement      What the person stated.
+	 * @param string   $gatewayReading What the gateway said.
+	 * @param int|null $settledBy      The user, or null.
+	 * @param string   $note           Why.
+	 * @return bool Whether it was noted here.
+	 */
+	public function noteSettlement( string $uuid, string $statement, string $gatewayReading, ?int $settledBy, string $note ): bool {
+		return $this->inner->noteSettlement( $uuid, $statement, $gatewayReading, $settledBy, $note );
 	}
 
 	/**

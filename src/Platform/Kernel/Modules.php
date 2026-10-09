@@ -84,6 +84,7 @@ use SEOCart\Order\Application\NoCustomers;
 use SEOCart\Order\Application\OrderAccessPolicy;
 use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Application\Orders;
+use SEOCart\Order\Application\UnreconciledMoney;
 use SEOCart\Order\Domain\AccessKeys;
 use SEOCart\Order\Domain\ConversionContexts;
 use SEOCart\Order\Domain\Event\OrderCreated;
@@ -1398,7 +1399,9 @@ final class Modules {
 				$c->get( EventPublisher::class ),
 				$c->get( IdGenerator::class ),
 				$c->get( Clock::class ),
-				$c->get( CorrelationId::class )
+				$c->get( CorrelationId::class ),
+				$c->get( Authorizer::class ),
+				$c->get( UnreconciledMoney::class )
 			)
 		);
 		$container->bind( ActorCustomers::class, static fn(): ActorCustomers => new NoCustomers() );
@@ -1407,7 +1410,7 @@ final class Modules {
 	}
 
 	/**
-	 * The payment module: the payment repository and service, the gateway registry, the payment check of doctor, and the refund service.
+	 * The payment module: the payment repository and service, the gateway registry, the payment check of doctor, the refund service, and the ledger's answer to the order service of when an order's newest unreconciled money was recorded.
 	 *
 	 * It adds no hook: an intent is created and a gateway result applied by the services that call
 	 * them, inside their own transactions, and the check runs through doctor. The registry fires
@@ -1416,13 +1419,14 @@ final class Modules {
 	 * registers first where the site allows it; the tests replace it with their doubles.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The gateway registry.
+	 * @since 0.2.0 The gateway registry; the order service's read of the ledger.
 	 *
 	 * @param Container $container The container.
 	 */
 	private static function paymentRegister( Container $container ): void {
 		$container->bind( MysqlPaymentRepository::class, static fn( Container $c ): MysqlPaymentRepository => new MysqlPaymentRepository( $c->get( Database::class ), $c->get( IdGenerator::class ) ) );
 		$container->bind( PaymentRepository::class, static fn( Container $c ): PaymentRepository => $c->get( MysqlPaymentRepository::class ) );
+		$container->bind( UnreconciledMoney::class, static fn( Container $c ): UnreconciledMoney => $c->get( MysqlPaymentRepository::class ) );
 		$container->bind( PaymentGateway::class, static fn(): PaymentGateway => new StubGateway() );
 		$container->bind(
 			GatewaySwitches::class,

@@ -20,6 +20,17 @@
  * client's request is. A probe that was not killed reports how the refund ended: `refund_uuid`,
  * the refusal (`refused`, `context`), or any other failure.
  *
+ * With `action` `settle`, it settles the claim of `refund_uuid` instead, as `user_id`, with the
+ * person's `statement` (`refunded` or `not_refunded`), `note`, and `provider_refund_id` and
+ * `amount_minor` when given, through the plain stub gateway, and reports `settled` (how the claim
+ * ended) and `decided_by`. With `action` `reconcile`, it clears the unreconciled money of
+ * `order_uuid` as `user_id`, with `note`, and reports `reconciled_at`. With `action` `land`, it
+ * records a refund of `intent_uuid` the provider made that no claim asked for, `amount_minor` of
+ * `currency` as the provider's object `object`, as money a person must reconcile, and reports
+ * `kept`. With `die_before`, a
+ * statement's first words such as `START TRANSACTION`, the process kills itself with SIGKILL just
+ * before it would send the first such statement of the action: a crash at that point.
+ *
  * @package SEOCart
  * @since   0.1.0
  * @license GPL-3.0-or-later
@@ -27,7 +38,13 @@
 
 declare( strict_types=1 );
 
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Order\Application\Orders;
+use SEOCart\Payment\Application\ClaimStatement;
+use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Application\RefundService;
 use SEOCart\Payment\Domain\Refund\RefundLineRequest;
 use SEOCart\Payment\Domain\Refund\RefundRequest;
@@ -43,7 +60,9 @@ use SEOCart\Platform\Events\Publisher;
 use SEOCart\Platform\Kernel\Container;
 use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Platform\Logging\CorrelationId;
+use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Support\Money;
 use SEOCart\Tests\Support\Doubles\CrashingRefundGateway;
 use SEOCart\Tests\Support\KernelContainer;
 
@@ -89,9 +108,68 @@ foreach ( (array) ( $seocart_probe_request['units'] ?? array() ) as $seocart_pro
 try {
 	$seocart_probe_service = $seocart_probe_kernel->get( RefundService::class );
 	$seocart_probe_actor   = Actor::user( (int) ( $seocart_probe_request['user_id'] ?? 0 ) );
-	$seocart_probe_request = $seocart_probe_request + array( 'idempotency_key' => '' );
+	$seocart_probe_request = $seocart_probe_request + array(
+		'idempotency_key' => '',
+		'action'          => 'refund',
+		'die_before'      => '',
+	);
 
-	if ( '' !== $seocart_probe_request['idempotency_key'] ) {
+	if ( '' !== $seocart_probe_request['die_before'] ) {
+		$seocart_probe_prefix = (string) $seocart_probe_request['die_before'];
+
+		add_filter(
+			'query',
+			static function ( string $query ) use ( $seocart_probe_prefix ): string {
+				if ( str_starts_with( $query, $seocart_probe_prefix ) ) {
+					// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.system_calls_exec -- No posix extension on every host: the shell kills the process.
+					exec( 'kill -9 ' . getmypid() );
+				}
+
+				return $query;
+			}
+		);
+	}
+
+	if ( 'settle' === $seocart_probe_request['action'] ) {
+		$seocart_probe_settled = $seocart_probe_service->settleClaim(
+			(string) $seocart_probe_request['refund_uuid'],
+			new ClaimStatement(
+				ClaimStatement::REFUNDED === $seocart_probe_request['statement'],
+				(string) $seocart_probe_request['note'],
+				isset( $seocart_probe_request['provider_refund_id'] ) ? (string) $seocart_probe_request['provider_refund_id'] : null,
+				isset( $seocart_probe_request['amount_minor'] ) ? (int) $seocart_probe_request['amount_minor'] : null
+			),
+			$seocart_probe_actor
+		);
+		$seocart_probe_outcome = array(
+			'settled'    => $seocart_probe_settled->state->value,
+			'decided_by' => $seocart_probe_settled->decidedBy,
+		);
+	} elseif ( 'land' === $seocart_probe_request['action'] ) {
+		$seocart_probe_payments = $seocart_probe_kernel->get( PaymentService::class );
+		$seocart_probe_landed   = new GatewayResult(
+			StubGateway::ID,
+			Operation::Refund,
+			Outcome::Approved,
+			(string) $seocart_probe_request['intent_uuid'],
+			Money::of( (int) $seocart_probe_request['amount_minor'], Currency::of( (string) $seocart_probe_request['currency'] ) ),
+			(string) $seocart_probe_request['object']
+		);
+
+		$seocart_probe_db->transaction( static fn() => $seocart_probe_payments->recordUnapplied( $seocart_probe_landed, Actor::system( 'payment', 3 ) ) );
+
+		$seocart_probe_outcome = array( 'kept' => true );
+	} elseif ( 'reconcile' === $seocart_probe_request['action'] ) {
+		$seocart_probe_outcome = array(
+			'reconciled_at' => $seocart_probe_kernel->get( Orders::class )->clearUnreconciledMoney(
+				array(
+					'order_uuid' => (string) $seocart_probe_request['order_uuid'],
+					'note'       => (string) $seocart_probe_request['note'],
+				),
+				$seocart_probe_actor
+			)['money_reconciled_at'],
+		);
+	} elseif ( '' !== $seocart_probe_request['idempotency_key'] ) {
 		$seocart_probe_outcome = array(
 			'refund_uuid' => $seocart_probe_service->refundOrder(
 				array(

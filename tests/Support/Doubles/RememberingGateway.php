@@ -70,6 +70,15 @@ final class RememberingGateway implements PaymentGateway {
 	public bool $knows = true;
 
 	/**
+	 * Whether a question about a refund reaches it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var bool
+	 */
+	public bool $answersQueries = true;
+
+	/**
 	 * Whether a decline it answers names no provider object, as a real gateway's may.
 	 *
 	 * @since 0.1.0
@@ -86,6 +95,15 @@ final class RememberingGateway implements PaymentGateway {
 	 * @var array<string, list<GatewayResult>>
 	 */
 	public array $made = array();
+
+	/**
+	 * How many times it was asked what became of a refund.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public int $queries = 0;
 
 	/**
 	 * The gateway that answers.
@@ -194,11 +212,20 @@ final class RememberingGateway implements PaymentGateway {
 	 * Says what became of a refund: the first one it made under the key, or that it made none.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 A question that does not reach it; every question counted.
+	 *
+	 * @throws GatewayUnavailable When the question does not reach it.
 	 *
 	 * @param GatewayRefund $request The refund, as it was asked.
 	 * @return GatewayResult|null The refund it made; a declined refund `not_found` when it made none; null when it cannot say.
 	 */
 	public function queryRefund( GatewayRefund $request ): ?GatewayResult {
+		++$this->queries;
+
+		if ( ! $this->answersQueries ) {
+			throw new GatewayUnavailable( 'The question never reached the gateway.' );
+		}
+
 		if ( ! $this->knows ) {
 			return null;
 		}

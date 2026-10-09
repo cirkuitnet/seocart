@@ -148,7 +148,7 @@ final class RefundRoleCapConcurrencyTest extends RefundTestCase {
 		$other                  = $this->userWithRole();
 		$claims                 = new BarrierRefundRepository( new MysqlRefundRepository( $this->db ) );
 		$a                      = $this->refundsOver( $this->db, $this->ids, $this->gateway, null, $claims );
-		$lock                   = $this->rawRefund( MysqlRefundRepository::LOCK_FOR_CLAIM, (int) $this->intentRow( $intent->uuid )['id'] );
+		$lock                   = $this->rawRefund( MysqlRefundRepository::LOCK_FOR_CLAIM, MysqlRefundRepository::NEVER_RECONCILED, (int) $this->intentRow( $intent->uuid )['id'] );
 		$this->probeB           = null;
 
 		// The barrier: A holds the intent's lock inside its claim's transaction; B, the other agent, waits for it.

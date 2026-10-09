@@ -225,6 +225,48 @@ interface OrderRepository {
 	public function markUnreconciled( int $orderId ): bool;
 
 	/**
+	 * Locks an order's row by its public identifier, inside the caller's transaction, and reads whether it holds money a person must reconcile.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param string $orderUuid The order's public identifier.
+	 * @return array{id: int, has_unreconciled_money: bool}|null The order's id and its flag; null when there is no such order.
+	 */
+	public function lockReconciliation( string $orderUuid ): ?array;
+
+	/**
+	 * Lowers the flag of an order holding money a person must reconcile, inside the caller's transaction, only while it is raised, keeping when, by the database clock, and why.
+	 *
+	 * The clearance is dated after the order's row last changed and after the newest money it
+	 * clears, so a payment result the ledger applied to nothing before the clearance no longer
+	 * holds the order's refunds back; one written after it does.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param string      $orderUuid   The order's public identifier.
+	 * @param string      $note        Why the person says the money is reconciled.
+	 * @param string|null $newestMoney When the newest of the order's payment results that moved no money was recorded, by the
+	 *                                 database clock, read under the order's lock; null when it has none.
+	 * @return bool True when the flag was lowered here; false when the order is not flagged, or there is none.
+	 */
+	public function clearUnreconciled( string $orderUuid, string $note, ?string $newestMoney ): bool;
+
+	/**
+	 * Reads whether an order holds money a person must reconcile, and when a person last cleared it, by its public identifier.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $orderUuid The order's public identifier.
+	 * @return array{id: int, has_unreconciled_money: bool, money_reconciled_at: string|null}|null The order's id, its flag, and the
+	 *         clearance, UTC to the microsecond, as the database clock wrote it, or null for never; null when there is no such order.
+	 */
+	public function reconciliation( string $orderUuid ): ?array;
+
+	/**
 	 * Reads a page of orders' payment amounts, in id order, for comparing them with the payments they were derived from.
 	 *
 	 * @since 0.1.0

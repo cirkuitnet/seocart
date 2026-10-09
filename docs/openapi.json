@@ -1300,6 +1300,133 @@
                 }
             }
         },
+        "/orders/{order_uuid}/money-reconciliation": {
+            "post": {
+                "operationId": "order.clear_unreconciled_money",
+                "summary": "Lowers the flag of an order holding money a person must reconcile, with the note saying why, once a person has reconciled that money; a payment result the plugin could not apply that is older than the clearance then no longer holds the order's refunds back. An order not flagged is refused, so a retry is safe.",
+                "description": "Requires the capability `seocart_override_money_state`.",
+                "parameters": [
+                    {
+                        "name": "order_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The public identifier of the order whose unreconciled money is cleared.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "note": {
+                                        "type": "string",
+                                        "maxLength": 500,
+                                        "description": "Why the person says the order's money is reconciled; kept with the order, and refused when it holds a card number.",
+                                        "examples": [
+                                            "The second capture was refunded in the gateway's dashboard."
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "note"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the MoneyReconciliation resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MoneyReconciliation"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_override_money_state`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_override_money_state`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`order.not_found`: The order was not found.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`order.not_unreconciled`: The order holds no unreconciled money: it was never flagged, or a person cleared the flag already. Nothing was changed.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "`order.reconciliation_note_rejected`: The note must say why the order's money is reconciled, in at most {max_length} characters, and must not hold what reads as a card number, which the store never keeps.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/orders/{order_uuid}/refunds": {
             "post": {
                 "operationId": "payment.refund_order",
@@ -1480,7 +1607,7 @@
                         }
                     },
                     "409": {
-                        "description": "`payment.refund_not_refundable`: The order {order_uuid} has no captured payment to refund.\n\n`payment.operation_unsupported`: The payment gateway {gateway_id} does not support {operation} for this payment; nothing was sent to it.\n\n`payment.unreconciled`: The payment has a result that could not be recorded against its order; a person must reconcile it before anything else is done with the payment.\n\n`payment.refund_unresolved`: The payment gateway was asked for the refund {refund_uuid} before and cannot say whether it gave the money back. Nothing in the plugin settles such a refund yet, and until a person does, this payment takes no other refund.\n\n`payment.refund_line_exhausted`: Only {returnable} units of line {line_uuid} are left to refund.\n\n`payment.refund_exceeds_captured`: A refund of {requested} would exceed what is left of {captured} captured, of which {refunded} is already refunded.\n\n`payment.refund_nothing_left`: Nothing of what the refund asks for is left to give back.\n\n`payment.refund_retry`: Another request is refunding the same units of this payment, or another refund of it was recorded or declined while this one was being worked out, so the payment gateway was not asked for it; ask for the refund again.",
+                        "description": "`payment.refund_not_refundable`: The order {order_uuid} has no captured payment to refund.\n\n`payment.operation_unsupported`: The payment gateway {gateway_id} does not support {operation} for this payment; nothing was sent to it.\n\n`payment.unreconciled`: The payment has a result that could not be recorded against its order; a person must reconcile it before anything else is done with the payment.\n\n`payment.refund_unresolved`: The payment gateway was asked for the refund {refund_uuid} before and cannot say whether it gave the money back. Until a person settles that refund's claim, this payment takes no other refund.\n\n`payment.refund_line_exhausted`: Only {returnable} units of line {line_uuid} are left to refund.\n\n`payment.refund_exceeds_captured`: A refund of {requested} would exceed what is left of {captured} captured, of which {refunded} is already refunded.\n\n`payment.refund_nothing_left`: Nothing of what the refund asks for is left to give back.\n\n`payment.refund_retry`: Another request is refunding the same units of this payment, or another refund of it was recorded or declined while this one was being worked out, so the payment gateway was not asked for it; ask for the refund again.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -1579,6 +1706,161 @@
                     },
                     "404": {
                         "description": "`order.not_found`: The order was not found.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/refund-claims/{refund_uuid}/settlement": {
+            "post": {
+                "operationId": "payment.settle_refund_claim",
+                "summary": "Ends the claim of a refund the payment gateway could not account for, on a person's say-so: the gateway is asked once more, and a refund it made or declined is recorded as it says; only when it cannot say does the statement decide, a refund stated made being recorded with the provider's refund and the amount it names and the order flagged for a person, and one stated not made ending declined with nothing recorded. A claim that has ended is refused, so a retry is safe.",
+                "description": "Requires the capability `seocart_override_money_state`.",
+                "parameters": [
+                    {
+                        "name": "refund_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The public identifier of the refund whose claim is settled.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6c"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "statement": {
+                                        "type": "string",
+                                        "enum": [
+                                            "refunded",
+                                            "not_refunded"
+                                        ],
+                                        "description": "What the person states: refunded, when the payment provider gave the money back, or not_refunded, when it did not. The gateway's own answer, when it has one, decides instead.",
+                                        "examples": [
+                                            "refunded"
+                                        ]
+                                    },
+                                    "provider_refund_id": {
+                                        "type": "string",
+                                        "maxLength": 191,
+                                        "description": "The payment provider's refund, as its dashboard names it: required with refunded, refused with not_refunded.",
+                                        "examples": [
+                                            "re_3Q2ExampleRefund"
+                                        ]
+                                    },
+                                    "amount_minor": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "description": "What the provider gave back, in minor units of the order's currency: required with refunded, refused with not_refunded.",
+                                        "examples": [
+                                            2468
+                                        ]
+                                    },
+                                    "note": {
+                                        "type": "string",
+                                        "maxLength": 500,
+                                        "description": "Why the person states it; kept with the claim, and refused when it holds a card number.",
+                                        "examples": [
+                                            "The provider's dashboard shows the refund, made the day the request timed out."
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "statement",
+                                    "note"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the RefundClaimSettlement resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RefundClaimSettlement"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_override_money_state`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_override_money_state`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`payment.refund_claim_not_found`: No refund {refund_uuid} was asked of the payment gateway, so there is no claim of it to settle.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`payment.refund_claim_ended`: The refund's claim has ended already ({state}), so it cannot be settled again; nothing was changed.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "`payment.refund_note_rejected`: The refund's note holds what reads as a card number, which the store never keeps; write the note without it.\n\n`payment.refund_statement_incomplete`: The statement cannot settle the refund's claim ({problem}): every statement says why, in at most {max_length} characters; one that the refund was made also names the payment provider's refund, in printable ASCII with no space, and the amount given back, and one that it was not names neither; the provider's refund never holds a card number, and is never one already recorded.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3788,6 +4070,38 @@
                     "data"
                 ]
             },
+            "MoneyReconciliation": {
+                "type": "object",
+                "properties": {
+                    "order_uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The order whose unreconciled money was cleared.",
+                        "examples": [
+                            "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b"
+                        ]
+                    },
+                    "has_unreconciled_money": {
+                        "type": "boolean",
+                        "description": "Whether the order holds money a person must reconcile: false once cleared.",
+                        "examples": [
+                            false
+                        ]
+                    },
+                    "money_reconciled_at": {
+                        "type": "string",
+                        "description": "When the flag was cleared, UTC, in ISO 8601 to the microsecond, by the database clock.",
+                        "examples": [
+                            "2026-10-09T14:03:27.512345Z"
+                        ]
+                    }
+                },
+                "required": [
+                    "order_uuid",
+                    "has_unreconciled_money",
+                    "money_reconciled_at"
+                ]
+            },
             "Placement": {
                 "type": "object",
                 "properties": {
@@ -4013,6 +4327,63 @@
                     "base_currency",
                     "reason_code",
                     "lines"
+                ]
+            },
+            "RefundClaimSettlement": {
+                "type": "object",
+                "properties": {
+                    "refund_uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The refund whose claim was settled.",
+                        "examples": [
+                            "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6c"
+                        ]
+                    },
+                    "order_uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The order refunded.",
+                        "examples": [
+                            "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b"
+                        ]
+                    },
+                    "state": {
+                        "type": "string",
+                        "description": "How the claim ended: recorded, the refund recorded; declined, no money given back, so the same refund asked again is a new one; or unreconciled, money left for a person to reconcile.",
+                        "examples": [
+                            "recorded"
+                        ]
+                    },
+                    "decided_by": {
+                        "type": "string",
+                        "description": "What decided how the claim ended: gateway, when the payment gateway made or declined the refund, or statement, when it could not say and the person's statement decided.",
+                        "examples": [
+                            "statement"
+                        ]
+                    },
+                    "gateway_reading": {
+                        "type": "string",
+                        "description": "What the payment gateway said when it was asked once more: approved, declined, not_found, cannot_say, or unavailable, with why after a colon when known, such as unavailable:not_registered.",
+                        "examples": [
+                            "not_found"
+                        ]
+                    },
+                    "has_unreconciled_money": {
+                        "type": "boolean",
+                        "description": "Whether the order holds money a person must reconcile now: true after a refund recorded on a person's statement, until a person clears it.",
+                        "examples": [
+                            true
+                        ]
+                    }
+                },
+                "required": [
+                    "refund_uuid",
+                    "order_uuid",
+                    "state",
+                    "decided_by",
+                    "gateway_reading",
+                    "has_unreconciled_money"
                 ]
             },
             "Settings": {

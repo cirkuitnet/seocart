@@ -13,12 +13,16 @@ namespace SEOCart\Tests\Support\Payment;
 
 use SEOCart\Application\Operations\IdempotencyKey;
 use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\GatewayUnavailable;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Order\Domain\InsertedOrder;
 use SEOCart\Order\Domain\NewOrder;
 use SEOCart\Order\Infrastructure\MysqlOrderRepository;
 use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Payment\Application\ClaimStatement;
 use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Application\RefundCapPolicy;
 use SEOCart\Payment\Application\RefundCapSettings;
@@ -48,6 +52,7 @@ use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Support\IdGenerator;
 use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
+use SEOCart\Tests\Support\Doubles\RememberingGateway;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\RunningProbe;
 
@@ -118,6 +123,24 @@ abstract class RefundTestCase extends PaymentTestCase {
 	private bool $capped = false;
 
 	/**
+	 * The user who may override what the plugin knows of the money, created once per test.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var Actor|null
+	 */
+	private ?Actor $manager = null;
+
+	/**
+	 * How many results the test kept unapplied, so each is recorded with ids of its own.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private int $keptUnapplied = 0;
+
+	/**
 	 * Creates the service.
 	 *
 	 * @since 0.1.0
@@ -125,9 +148,11 @@ abstract class RefundTestCase extends PaymentTestCase {
 	public function set_up(): void {
 		parent::set_up();
 
-		$this->agent   = null;
-		$this->capped  = false;
-		$this->refunds = $this->refundsOver( $this->db, $this->ids, $this->gateway );
+		$this->agent         = null;
+		$this->manager       = null;
+		$this->keptUnapplied = 0;
+		$this->capped        = false;
+		$this->refunds       = $this->refundsOver( $this->db, $this->ids, $this->gateway );
 	}
 
 	/**
@@ -420,6 +445,138 @@ abstract class RefundTestCase extends PaymentTestCase {
 		);
 
 		return ChildProcessProbe::start( __DIR__ . '/refund-probe.php', array( base64_encode( (string) wp_json_encode( $request ) ) ) );
+	}
+
+	/**
+	 * Starts, in a process of its own, the settlement of a refund's claim, through the kernel's wiring and the plain stub gateway.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string         $refundUuid The refund whose claim is settled.
+	 * @param ClaimStatement $statement  What the person states.
+	 * @param Actor          $actor      Who settles it.
+	 * @param string         $dieBefore  Optional. The first words of the statement the process kills itself just before; '' for none. Default ''.
+	 * @param string         $callLog    Optional. The file each question to the gateway is logged to; '' for none. Default ''.
+	 * @return RunningProbe The running settlement; its report, unless it was killed, says how it ended.
+	 */
+	protected function startSettleProbe( string $refundUuid, ClaimStatement $statement, Actor $actor, string $dieBefore = '', string $callLog = '' ): RunningProbe {
+		$request = array(
+			'action'             => 'settle',
+			'refund_uuid'        => $refundUuid,
+			'statement'          => $statement->word(),
+			'note'               => $statement->note,
+			'provider_refund_id' => $statement->providerRefundId,
+			'amount_minor'       => $statement->amountMinor,
+			'user_id'            => $actor->userId(),
+			'call_log'           => $callLog,
+			'crash'              => '' !== $callLog,
+			'die_before'         => $dieBefore,
+		);
+
+		return ChildProcessProbe::start( __DIR__ . '/refund-probe.php', array( base64_encode( (string) wp_json_encode( $request ) ) ) );
+	}
+
+	/**
+	 * Starts, in a process of its own, the clearance of an order's unreconciled money, through the kernel's wiring.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $orderUuid The order.
+	 * @param string $note      Why.
+	 * @param Actor  $actor     Who clears it.
+	 * @return RunningProbe The running clearance; its report says when it cleared the flag, or its refusal.
+	 */
+	protected function startReconcileProbe( string $orderUuid, string $note, Actor $actor ): RunningProbe {
+		$request = array(
+			'action'     => 'reconcile',
+			'order_uuid' => $orderUuid,
+			'note'       => $note,
+			'user_id'    => $actor->userId(),
+			'crash'      => false,
+		);
+
+		return ChildProcessProbe::start( __DIR__ . '/refund-probe.php', array( base64_encode( (string) wp_json_encode( $request ) ) ) );
+	}
+
+	/**
+	 * Starts, in a process of its own, the recording of a refund the provider made that no claim asked for, as money a person must reconcile.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param IntentRef $intent         The intent it is of.
+	 * @param int       $minor          What it gave back, in minor units.
+	 * @param string    $currency       The currency.
+	 * @param string    $providerObject The provider's refund object.
+	 * @return RunningProbe The running recording; its report says `kept` once it committed.
+	 */
+	protected function startLandingProbe( IntentRef $intent, int $minor, string $currency, string $providerObject ): RunningProbe {
+		$request = array(
+			'action'       => 'land',
+			'intent_uuid'  => $intent->uuid,
+			'amount_minor' => $minor,
+			'currency'     => $currency,
+			'object'       => $providerObject,
+			'crash'        => false,
+		);
+
+		return ChildProcessProbe::start( __DIR__ . '/refund-probe.php', array( base64_encode( (string) wp_json_encode( $request ) ) ) );
+	}
+
+	/**
+	 * Asks for a refund of one unit of a line while the gateway cannot be reached, which leaves its claim open, and returns the claim's uuid.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string             $orderUuid The order.
+	 * @param string             $lineUuid  The line.
+	 * @param RememberingGateway $provider  The gateway the service asks, made unreachable for the refund.
+	 * @param RefundService      $service   The refund service.
+	 * @return string The open claim's uuid.
+	 */
+	protected function openClaim( string $orderUuid, string $lineUuid, RememberingGateway $provider, RefundService $service ): string {
+		$provider->reachable = false;
+
+		try {
+			$this->refund( $orderUuid, array( $lineUuid => 1 ), false, $service );
+			$this->fail( 'The refund reached the gateway.' );
+		} catch ( GatewayUnavailable $unreached ) {
+			unset( $unreached );
+		} finally {
+			$provider->reachable = true;
+		}
+
+		return (string) $this->db->fetchValue( "SELECT uuid FROM %i WHERE state = 'claimed' ORDER BY id DESC LIMIT 1", $this->table( RefundClaimTables::CLAIMS ) );
+	}
+
+	/**
+	 * Returns a user who may override what the plugin knows of the money: a store manager, created once per test.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return Actor The user.
+	 */
+	protected function manager(): Actor {
+		$this->manager ??= $this->userWithRole( 'seocart_manager' );
+
+		return $this->manager;
+	}
+
+	/**
+	 * Records a refund the provider made that no claim of the plugin's asked for, as money a person must reconcile: its ledger row applied to nothing, and the order flagged and parked.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param IntentRef     $intent         The intent it is of.
+	 * @param int           $minor          What it gave back, in minor units.
+	 * @param string        $currency       The currency.
+	 * @param string        $providerObject The provider's refund object.
+	 * @param Database|null $db             Optional. The connection it is recorded on. Default the test's.
+	 */
+	protected function keepUnappliedRefund( IntentRef $intent, int $minor, string $currency, string $providerObject, ?Database $db = null ): void {
+		$db     ??= $this->db;
+		$payments = $this->paymentsOver( $db, new SequentialIdGenerator( 700000 + 1000 * ++$this->keptUnapplied ), new StubGateway() );
+
+		$db->transaction( static fn() => $payments->recordUnapplied( self::stubResult( $intent, Operation::Refund, Outcome::Approved, $minor, $currency, $providerObject ), self::system() ) );
 	}
 
 	/**

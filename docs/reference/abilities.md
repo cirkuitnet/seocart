@@ -62,3 +62,51 @@ Gives back units of an order's lines, and what is left of its shipping when aske
 - `reason_code` (always): Why the order was refunded. Text.
 - `note`: What the person who refunds writes about the refund; kept with it, and refused when it holds a card number. Text of at most 500 characters. Personal data: returned only to a user who holds the capability `seocart_view_customer_pii`.
 - `lines` (always): The units of each line the refund was asked for, in the order of the lines' identifiers. A list of objects, each with `line_uuid`, `quantity`, `restock`.
+
+## `seocart/settle-refund-claim`
+
+Ends the claim of a refund the payment gateway could not account for, on a person's say-so: the gateway is asked once more, and a refund it made or declined is recorded as it says; only when it cannot say does the statement decide, a refund stated made being recorded with the provider's refund and the amount it names and the order flagged for a person, and one stated not made ending declined with nothing recorded. A claim that has ended is refused, so a retry is safe.
+
+- Operation: `payment.settle_refund_claim`
+- Capability: `seocart_override_money_state`
+- Error codes: `authorization.denied` (403), `payment.refund_note_rejected` (422), `payment.refund_statement_incomplete` (422), `payment.refund_claim_not_found` (404), `payment.refund_claim_ended` (409), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `true`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+- `refund_uuid` (required): The public identifier of the refund whose claim is settled. A uuid.
+- `statement` (required): What the person states: refunded, when the payment provider gave the money back, or not_refunded, when it did not. The gateway's own answer, when it has one, decides instead. One of `refunded`, `not_refunded`.
+- `provider_refund_id`: The payment provider's refund, as its dashboard names it: required with refunded, refused with not_refunded. Text of at most 191 characters.
+- `amount_minor`: What the provider gave back, in minor units of the order's currency: required with refunded, refused with not_refunded. An integer of at least 1.
+- `note` (required): Why the person states it; kept with the claim, and refused when it holds a card number. Text of at most 500 characters. Personal data.
+
+### Output
+
+- `refund_uuid` (always): The refund whose claim was settled. A uuid.
+- `order_uuid` (always): The order refunded. A uuid.
+- `state` (always): How the claim ended: recorded, the refund recorded; declined, no money given back, so the same refund asked again is a new one; or unreconciled, money left for a person to reconcile. Text.
+- `decided_by` (always): What decided how the claim ended: gateway, when the payment gateway made or declined the refund, or statement, when it could not say and the person's statement decided. Text.
+- `gateway_reading` (always): What the payment gateway said when it was asked once more: approved, declined, not_found, cannot_say, or unavailable, with why after a colon when known, such as unavailable:not_registered. Text.
+- `has_unreconciled_money` (always): Whether the order holds money a person must reconcile now: true after a refund recorded on a person's statement, until a person clears it. True or false.
+
+## `seocart/clear-unreconciled-money`
+
+Lowers the flag of an order holding money a person must reconcile, with the note saying why, once a person has reconciled that money; a payment result the plugin could not apply that is older than the clearance then no longer holds the order's refunds back. An order not flagged is refused, so a retry is safe.
+
+- Operation: `order.clear_unreconciled_money`
+- Capability: `seocart_override_money_state`
+- Error codes: `authorization.denied` (403), `order.reconciliation_note_rejected` (422), `order.not_found` (404), `order.not_unreconciled` (409), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `true`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+- `order_uuid` (required): The public identifier of the order whose unreconciled money is cleared. A uuid.
+- `note` (required): Why the person says the order's money is reconciled; kept with the order, and refused when it holds a card number. Text of at most 500 characters. Personal data.
+
+### Output
+
+- `order_uuid` (always): The order whose unreconciled money was cleared. A uuid.
+- `has_unreconciled_money` (always): Whether the order holds money a person must reconcile: false once cleared. True or false.
+- `money_reconciled_at` (always): When the flag was cleared, UTC, in ISO 8601 to the microsecond, by the database clock. Text.

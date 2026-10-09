@@ -300,6 +300,18 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The order was not found.
 - Values: none
 
+## `order.not_unreconciled`
+
+- HTTP status: 409
+- Message: The order holds no unreconciled money: it was never flagged, or a person cleared the flag already. Nothing was changed.
+- Values: none
+
+## `order.reconciliation_note_rejected`
+
+- HTTP status: 422
+- Message: The note must say why the order's money is reconciled, in at most {max_length} characters, and must not hold what reads as a card number, which the store never keeps.
+- Values: `max_length`
+
 ## `order.transition_illegal`
 
 - HTTP status: 409
@@ -348,6 +360,18 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 422
 - Message: A refund cap is an amount of the base currency, such as 250.00, with at most six decimals, or empty for no cap.
 - Values: none
+
+## `payment.refund_claim_ended`
+
+- HTTP status: 409
+- Message: The refund's claim has ended already ({state}), so it cannot be settled again; nothing was changed.
+- Values: `state`
+
+## `payment.refund_claim_not_found`
+
+- HTTP status: 404
+- Message: No refund {refund_uuid} was asked of the payment gateway, so there is no claim of it to settle.
+- Values: `refund_uuid`
 
 ## `payment.refund_declined`
 
@@ -415,10 +439,16 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: Another request is refunding the same units of this payment, or another refund of it was recorded or declined while this one was being worked out, so the payment gateway was not asked for it; ask for the refund again.
 - Values: none
 
+## `payment.refund_statement_incomplete`
+
+- HTTP status: 422
+- Message: The statement cannot settle the refund's claim ({problem}): every statement says why, in at most {max_length} characters; one that the refund was made also names the payment provider's refund, in printable ASCII with no space, and the amount given back, and one that it was not names neither; the provider's refund never holds a card number, and is never one already recorded.
+- Values: `problem`, `max_length`
+
 ## `payment.refund_unresolved`
 
 - HTTP status: 409
-- Message: The payment gateway was asked for the refund {refund_uuid} before and cannot say whether it gave the money back. Nothing in the plugin settles such a refund yet, and until a person does, this payment takes no other refund.
+- Message: The payment gateway was asked for the refund {refund_uuid} before and cannot say whether it gave the money back. Until a person settles that refund's claim, this payment takes no other refund.
 - Values: `refund_uuid`
 
 ## `payment.unexpected_result`

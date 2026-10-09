@@ -11,9 +11,11 @@ declare( strict_types=1 );
 
 namespace SEOCart\Payment\Infrastructure;
 
+use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\IntentTransitions;
+use SEOCart\Payment\Domain\Refund\ClaimRequest;
 use SEOCart\Payment\Domain\Refund\ClaimState;
 use SEOCart\Payment\Domain\Refund\ComponentPortion;
 use SEOCart\Payment\Domain\Refund\LinePortion;
@@ -63,32 +65,45 @@ defined( 'ABSPATH' ) || exit;
  * that it commits before the gateway is asked; the unique key on its uuid refuses a second claim of
  * the same refund, and the one on its key hash a second claim with the same idempotency key. What
  * it asked of each line follows it, in one statement. It ends by one conditional update, inside the
- * transaction that records the gateway's answer, whose WHERE clause carries the state it leaves.
+ * transaction that records the gateway's answer, whose WHERE clause carries the state it leaves;
+ * how a person settled it is noted by one more, only once it has ended, and only once.
  * A user whose refunds are capped by the day has one lock row, which the claim's transaction takes
  * before anything else, then adds up what the user asked in the last 24 hours.
  *
  * @since 0.1.0
- * @since 0.2.0 The claim's request and key, its lines, and the user's lock row.
+ * @since 0.2.0 The claim's request and key, its lines, and the user's lock row; the claim read back with what it asked, and how a person settled it.
  */
 final class MysqlRefundRepository implements RefundRepository {
 
 	/**
-	 * Whether the ledger holds a result of the intent `intent` applied to nothing, on the `intent_created` key: money a person must reconcile first.
+	 * Whether the ledger holds a result of the intent `intent` applied to nothing since a person last cleared its order's unreconciled money, on the `intent_created` key: money a person must reconcile first.
+	 *
+	 * The ledger keeps such a result for good. Once a person has cleared the order's unreconciled
+	 * money, only a result written after that clearance holds the intent's refunds back. The `%s`
+	 * is the clearance the order was read with, or NEVER_RECONCILED for an order never cleared. A
+	 * clearance is dated after every result it cleared, never at the same microsecond, so a result
+	 * dated the same as the clearance was written after it, and counts.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Only a result written since the order's money was last cleared.
 	 *
 	 * @var string
 	 */
-	private const UNAPPLIED_RESULT = 'EXISTS ( SELECT 1 FROM {payment_transactions} unapplied WHERE unapplied.intent_id = intent.id AND unapplied.applied = 0 ) AS has_unapplied_result';
+	private const UNAPPLIED_RESULT = 'EXISTS ( SELECT 1 FROM {payment_transactions} unapplied WHERE unapplied.intent_id = intent.id AND unapplied.applied = 0 AND unapplied.created_at >= %s ) AS has_unapplied_result';
 
 	/**
-	 * How many refunds of the intent `intent` the ledger holds declined, on the `intent_created` key: one of what a refund's uuid is named by.
+	 * How many refunds of the intent `intent` were declined, on the claims' `intent_state` key: one of what a refund's uuid is named by.
+	 *
+	 * A claim ends `declined` for each refund the gateway declined, with its ledger row, and for
+	 * each refund a person stated was never made, with none; either way the same refund asked for
+	 * again is a new one, under a new uuid.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Counted from the claims, not from the ledger's declined rows.
 	 *
 	 * @var string
 	 */
-	private const DECLINED_REFUNDS = "( SELECT COUNT(*) FROM {payment_transactions} declined WHERE declined.intent_id = intent.id AND declined.operation = 'refund' AND declined.result = 'declined' ) AS declined_refunds";
+	private const DECLINED_REFUNDS = "( SELECT COUNT(*) FROM {refund_claims} declined WHERE declined.intent_id = intent.id AND declined.state = 'declined' ) AS declined_refunds";
 
 	/**
 	 * The uuid of the oldest refund claim of the intent `intent` still claimed, on the claims' `intent_state` key.
@@ -100,9 +115,10 @@ final class MysqlRefundRepository implements RefundRepository {
 	private const OPEN_CLAIM = "( SELECT open_claim.uuid FROM {refund_claims} open_claim WHERE open_claim.intent_id = intent.id AND open_claim.state = 'claimed' ORDER BY open_claim.id LIMIT 1 ) AS open_claim";
 
 	/**
-	 * An order's first intent in a state a refund applies to; whether the ledger holds a result of it applied to nothing; how many of its refunds were declined; and its oldest refund claim still claimed.
+	 * An order's first intent in a state a refund applies to; whether the ledger holds a result of it applied to nothing since the order's money was last cleared; how many of its refunds were declined; and its oldest refund claim still claimed.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Takes the order's clearance first.
 	 *
 	 * @var string
 	 */
@@ -112,12 +128,13 @@ final class MysqlRefundRepository implements RefundRepository {
 		. 'FROM {payment_intents} intent WHERE intent.order_id = %d AND intent.status IN ({list}) ORDER BY intent.id LIMIT 1';
 
 	/**
-	 * An intent locked for a refund's claim, by the primary key: what it refunded, in both currencies, whether the ledger holds a result of it applied to nothing, how many of its refunds were declined, and its oldest refund claim still claimed, all read as they now stand.
+	 * An intent locked for a refund's claim, by the primary key: what it refunded, in both currencies, whether the ledger holds a result of it applied to nothing since its order's money was last cleared, how many of its refunds were declined, and its oldest refund claim still claimed, all read as they now stand.
 	 *
 	 * A locking read: it waits for any transaction that holds the intent, such as another refund's
 	 * claim or the recording of a refund, and holds the intent until the claim's transaction ends.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Takes the order's clearance first.
 	 *
 	 * @var string
 	 */
@@ -186,6 +203,31 @@ final class MysqlRefundRepository implements RefundRepository {
 	 * @var string
 	 */
 	public const FIND_CLAIM = 'SELECT uuid, state, transaction_id FROM {refund_claims} WHERE uuid = %s';
+
+	/**
+	 * A refund's claim with what it asked, by the `uuid` key: the intent's uuid, by its primary key, and one row for each line it asked for, on the lines' `claim_line` key, in the order of the lines' identifiers.
+	 *
+	 * A claim of the shipping alone is one row, whose line columns are NULL. The note is not read:
+	 * nothing the refund is worked out from depends on it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CLAIM_REQUEST = 'SELECT claim.uuid, claim.state, claim.transaction_id, claim.order_id, claim.shipping, claim.reason_code, claim.base_amount_minor, claim.base_currency, intent.uuid AS intent_uuid, '
+		. 'line.line_uuid, line.quantity, line.restock FROM {refund_claims} claim JOIN {payment_intents} intent ON intent.id = claim.intent_id '
+		. 'LEFT JOIN {refund_claim_lines} line ON line.claim_id = claim.id WHERE claim.uuid = %s ORDER BY line.line_uuid';
+
+	/**
+	 * How a person settled a refund's claim, by the `uuid` key: what they stated, what the gateway said of the refund then, who they are and why; only once the claim has ended, and only once.
+	 *
+	 * 0 stands for no user.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const NOTE_SETTLEMENT = "UPDATE {refund_claims} SET statement = %s, gateway_reading = %s, settled_by = NULLIF( %d, 0 ), settlement_note = %s WHERE uuid = %s AND state <> 'claimed' AND statement IS NULL";
 
 	/**
 	 * Ends a refund's claim with the ledger row that ended it, or none (0), by the `uuid` key: only while it is still claimed.
@@ -289,6 +331,15 @@ final class MysqlRefundRepository implements RefundRepository {
 		. 'base_total_minor, base_tax_minor, base_shipping_minor, reason_code FROM {refunds} WHERE transaction_id = %d';
 
 	/**
+	 * The clearance of an order whose unreconciled money no person ever cleared: before any ledger row.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const NEVER_RECONCILED = '1970-01-01 00:00:00.000000';
+
+	/**
 	 * The module's name, in the messages of a statement that names another module's table.
 	 *
 	 * @since 0.1.0
@@ -337,15 +388,17 @@ final class MysqlRefundRepository implements RefundRepository {
 	}
 
 	/**
-	 * Reads an order's captured intent, whether the ledger holds a result of it applied to nothing, and how many of its refunds were declined, without a lock.
+	 * Reads an order's captured intent, whether the ledger holds a result of it applied to nothing since the order's money was last cleared, and how many of its refunds were declined, without a lock.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The order's clearance.
 	 *
-	 * @param int $orderId The order.
+	 * @param int         $orderId      The order.
+	 * @param string|null $reconciledAt When a person last cleared the order's unreconciled money, as the order was read; null for never.
 	 * @return RefundableIntent|null The first captured or partly refunded intent, or null when there is none.
 	 */
-	public function refundableIntent( int $orderId ): ?RefundableIntent {
-		$row = $this->statements->rows( self::REFUNDABLE_INTENT, $orderId, IntentTransitions::values( IntentTransitions::allowedFrom( IntentStatus::PartiallyRefunded ) ) )[0] ?? null;
+	public function refundableIntent( int $orderId, ?string $reconciledAt ): ?RefundableIntent {
+		$row = $this->statements->rows( self::REFUNDABLE_INTENT, $reconciledAt ?? self::NEVER_RECONCILED, $orderId, IntentTransitions::values( IntentTransitions::allowedFrom( IntentStatus::PartiallyRefunded ) ) )[0] ?? null;
 
 		if ( null === $row ) {
 			return null;
@@ -374,16 +427,18 @@ final class MysqlRefundRepository implements RefundRepository {
 	 * Locks an intent for a refund's claim, inside the caller's transaction, and reads, as they now stand, whether it has money a person must reconcile, what refund uuids are named by, and its open claim.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The order's clearance.
 	 *
 	 * @throws \LogicException Outside a transaction, or when the intent does not exist.
 	 *
-	 * @param int $intentId The intent.
-	 * @return array{has_unapplied_result: bool, refunded_minor: int, base_refunded_minor: int, declined_refunds: int, open_claim: string|null} Whether the ledger holds a result of it applied to nothing; what it refunded, in minor units, and the same in the base currency; how many of its refunds were declined; its oldest refund claim still claimed.
+	 * @param int         $intentId     The intent.
+	 * @param string|null $reconciledAt When a person last cleared the order's unreconciled money, as the refund's plain reads found it; null for never.
+	 * @return array{has_unapplied_result: bool, refunded_minor: int, base_refunded_minor: int, declined_refunds: int, open_claim: string|null} Whether the ledger holds a result of it applied to nothing since that clearance; what it refunded, in minor units, and the same in the base currency; how many of its refunds were declined; its oldest refund claim still claimed.
 	 */
-	public function lockForClaim( int $intentId ): array {
+	public function lockForClaim( int $intentId, ?string $reconciledAt ): array {
 		$this->statements->requireTransaction( __METHOD__ );
 
-		$row = $this->statements->rows( self::LOCK_FOR_CLAIM, $intentId )[0] ?? null;
+		$row = $this->statements->rows( self::LOCK_FOR_CLAIM, $reconciledAt ?? self::NEVER_RECONCILED, $intentId )[0] ?? null;
 
 		if ( null === $row ) {
 			throw new \LogicException( sprintf( 'Intent %d, which the refund was worked out from, does not exist.', $intentId ) );
@@ -490,6 +545,75 @@ final class MysqlRefundRepository implements RefundRepository {
 		$row = $this->statements->rows( self::FIND_CLAIM, $uuid )[0] ?? null;
 
 		return null === $row ? null : self::claimOf( $row );
+	}
+
+	/**
+	 * Tells whether the ledger holds a result under the key it would be recorded by, without a lock: the ledger's own read of that key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayResult $result The result, naming its provider object.
+	 * @return bool True when a row holds the provider object's result of the operation; false when none does, or the result names no object.
+	 */
+	public function holdsResult( GatewayResult $result ): bool {
+		return null !== $result->providerObjectId && array() !== $this->statements->rows( MysqlPaymentRepository::FIND_TRANSACTION, $result->provider, $result->providerObjectId, $result->operation->value );
+	}
+
+	/**
+	 * Reads a refund's claim with what it asked, without a lock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $uuid The refund's uuid.
+	 * @return ClaimRequest|null The claim, with its lines in the order of their identifiers; null when the refund was never claimed.
+	 */
+	public function claimRequest( string $uuid ): ?ClaimRequest {
+		$rows = $this->statements->rows( self::CLAIM_REQUEST, $uuid );
+
+		if ( array() === $rows ) {
+			return null;
+		}
+
+		$claim = $rows[0];
+		$lines = array();
+
+		foreach ( $rows as $row ) {
+			if ( null !== $row['line_uuid'] ) {
+				$lines[] = new RefundLineRequest( (string) $row['line_uuid'], (int) $row['quantity'], 1 === (int) $row['restock'] );
+			}
+		}
+
+		return new ClaimRequest(
+			(string) $claim['uuid'],
+			ClaimState::from( (string) $claim['state'] ),
+			null === $claim['transaction_id'] ? null : (int) $claim['transaction_id'],
+			(string) $claim['intent_uuid'],
+			(int) $claim['order_id'],
+			1 === (int) $claim['shipping'],
+			(string) $claim['reason_code'],
+			Money::of( (int) $claim['base_amount_minor'], Currency::of( (string) $claim['base_currency'] ) ),
+			$lines
+		);
+	}
+
+	/**
+	 * Notes how a person settled a refund's claim, inside the caller's transaction, once the claim has ended and only the first time.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param string   $uuid           The refund's uuid.
+	 * @param string   $statement      What the person stated: refunded or not_refunded.
+	 * @param string   $gatewayReading What the gateway said of the refund when it was asked once more.
+	 * @param int|null $settledBy      The user who settled it, or null.
+	 * @param string   $note           Why, as the person wrote it.
+	 * @return bool True when it was noted here; false when the claim is still claimed, or a person settled it before.
+	 */
+	public function noteSettlement( string $uuid, string $statement, string $gatewayReading, ?int $settledBy, string $note ): bool {
+		$this->statements->requireTransaction( __METHOD__ );
+
+		return 1 === $this->statements->execute( self::NOTE_SETTLEMENT, $statement, $gatewayReading, $settledBy ?? 0, $note, $uuid );
 	}
 
 	/**

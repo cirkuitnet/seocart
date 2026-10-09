@@ -82,3 +82,42 @@ wp seocart order refund <order_uuid> [--lines=<json>] [--shipping] --reason_code
 - `[--note=<note>]`: What the person who refunds writes about the refund; kept with it, and refused when it holds a card number. Text of at most 500 characters. Personal data.
 - `--idempotency_key=<idempotency_key>`: The request's idempotency key, sent in the Idempotency-Key header and nowhere else, of at most 64 bytes: a new key, such as a UUID, for each new request, and the same key when that request is retried. Text of at most 64 characters.
 - `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart refund settle`
+
+Ends the claim of a refund the payment gateway could not account for, on a person's say-so: the gateway is asked once more, and a refund it made or declined is recorded as it says; only when it cannot say does the statement decide, a refund stated made being recorded with the provider's refund and the amount it names and the order flagged for a person, and one stated not made ending declined with nothing recorded. A claim that has ended is refused, so a retry is safe.
+
+```sh
+wp seocart refund settle <refund_uuid> --statement=<statement> [--provider_refund_id=<provider_refund_id>] [--amount_minor=<amount_minor>] --note=<note> [--format=<format>]
+```
+
+- Operation: `payment.settle_refund_claim`
+- Capability: `seocart_override_money_state`
+- Error codes: `authorization.denied` (403), `payment.refund_note_rejected` (422), `payment.refund_statement_incomplete` (422), `payment.refund_claim_not_found` (404), `payment.refund_claim_ended` (409), `store.unavailable` (503)
+
+### Arguments
+
+- `<refund_uuid>`: The public identifier of the refund whose claim is settled. A uuid.
+- `--statement=<statement>`: What the person states: refunded, when the payment provider gave the money back, or not_refunded, when it did not. The gateway's own answer, when it has one, decides instead. One of `refunded`, `not_refunded`.
+- `[--provider_refund_id=<provider_refund_id>]`: The payment provider's refund, as its dashboard names it: required with refunded, refused with not_refunded. Text of at most 191 characters.
+- `[--amount_minor=<amount_minor>]`: What the provider gave back, in minor units of the order's currency: required with refunded, refused with not_refunded. An integer of at least 1.
+- `--note=<note>`: Why the person states it; kept with the claim, and refused when it holds a card number. Text of at most 500 characters. Personal data.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart order reconcile`
+
+Lowers the flag of an order holding money a person must reconcile, with the note saying why, once a person has reconciled that money; a payment result the plugin could not apply that is older than the clearance then no longer holds the order's refunds back. An order not flagged is refused, so a retry is safe.
+
+```sh
+wp seocart order reconcile <order_uuid> --note=<note> [--format=<format>]
+```
+
+- Operation: `order.clear_unreconciled_money`
+- Capability: `seocart_override_money_state`
+- Error codes: `authorization.denied` (403), `order.reconciliation_note_rejected` (422), `order.not_found` (404), `order.not_unreconciled` (409), `store.unavailable` (503)
+
+### Arguments
+
+- `<order_uuid>`: The public identifier of the order whose unreconciled money is cleared. A uuid.
+- `--note=<note>`: Why the person says the order's money is reconciled; kept with the order, and refused when it holds a card number. Text of at most 500 characters. Personal data.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.

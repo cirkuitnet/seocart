@@ -94,7 +94,7 @@ final class RefundClaimTables {
 	 * Declares `refund_claims`.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The request, its base share, its key and its fingerprint.
+	 * @since 0.2.0 The request, its base share, its key and its fingerprint; and how a person settled the claim.
 	 *
 	 * @return TableDefinition The declaration.
 	 */
@@ -102,7 +102,7 @@ final class RefundClaimTables {
 		return new TableDefinition(
 			self::CLAIMS,
 			'Payment',
-			'Records each refund the gateway was asked for, before it was asked: the refund\'s uuid, the intent, the amount asked and its share in the base currency, the shipping, the reason and the note, who asked and when, and the idempotency key the caller sent; and then how it ended, recorded, declined or left for a person, with the ledger row that ended it.',
+			'Records each refund the gateway was asked for, before it was asked: the refund\'s uuid, the intent, the amount asked and its share in the base currency, the shipping, the reason and the note, who asked and when, and the idempotency key the caller sent; and then how it ended, recorded, declined or left for a person, with the ledger row that ended it; and, for a claim a person settled, what they stated, what the gateway said then, who settled it and why.',
 			MutationPattern::MutableTransactional,
 			array(
 				new ColumnSpec( 'id', 'bigint unsigned', Classification::Public, 'Surrogate key, internal only.', autoIncrement: true ),
@@ -132,6 +132,18 @@ final class RefundClaimTables {
 				new ColumnSpec( 'transaction_id', 'bigint unsigned', Classification::Public, 'The ledger row the claim\'s own answer wrote, which ended it: the refund applied, the decline, or the money kept for a person; NULL while claimed, and for a claim the gateway answered with another refund\'s result.', nullable: true ),
 				new ColumnSpec( 'created_at', 'datetime(6)', Classification::Public, 'When the gateway was about to be asked, UTC, from the database clock.' ),
 				new ColumnSpec( 'settled_at', 'datetime(6)', Classification::Public, 'When the claim ended, UTC, from the database clock; NULL while claimed.', nullable: true ),
+				new ColumnSpec( 'statement', 'varchar(16)', Classification::Public, 'What the person who settled the claim stated: refunded or not_refunded; NULL for a claim no person settled.', nullable: true, collation: 'ascii_bin' ),
+				new ColumnSpec( 'gateway_reading', 'varchar(64)', Classification::Public, 'What the gateway said of the refund when a person settled the claim: approved, declined, not_found, cannot_say, or unavailable with why; NULL for a claim no person settled.', nullable: true, collation: 'ascii_bin' ),
+				new ColumnSpec(
+					'settled_by',
+					'bigint unsigned',
+					Classification::Pii,
+					'The WordPress user who settled the claim; NULL for a claim no person settled.',
+					nullable: true,
+					erasure: ColumnSpec::ERASE_RETAIN,
+					retainedBecause: 'A claim keeps who settled it for as long as the order is kept; the user id identifies no one once the user is erased.'
+				),
+				new ColumnSpec( 'settlement_note', 'text', Classification::Pii, 'What the person who settled the claim wrote about why; NULL for a claim no person settled. Refused when it holds a card number.', nullable: true, erasure: ColumnSpec::ERASE_DESTROY ),
 			),
 			array( 'id' ),
 			array(

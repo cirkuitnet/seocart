@@ -222,6 +222,11 @@ final class OrderQueryPlanTest extends OrderTestCase {
 		// Reconciliation's read of the orders with nothing due still pending payment.
 		$orders->pendingNothingDue( 600, 0, 50 );
 
+		// The order's flag and clearance by its uuid, which a clearance reads back and a settlement answers with; and the
+		// order's lock by its uuid, which a clearance takes before it reads the money it clears.
+		$repository->reconciliation( $inserted->uuid );
+		$db->transaction( static fn(): ?array => $repository->lockReconciliation( $inserted->uuid ) );
+
 		// The reads of doctor's payment check: the payment amounts and the lines' refunded quantities, a page at a time, the flagged orders and the totals drift.
 		$repository->paymentAmounts( 0, 500 );
 		$repository->refundedQuantities( 0, 500 );

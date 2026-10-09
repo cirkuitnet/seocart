@@ -14,6 +14,7 @@ namespace SEOCart\Payment\Infrastructure;
 use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Order\Application\UnreconciledMoney;
 use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\IntentTransitions;
@@ -48,11 +49,13 @@ defined( 'ABSPATH' ) || exit;
  * the operation, and a duplicate is reported, never raised.
  *
  * The reads for `doctor` live here too, because they are payment SQL; they are not part of the
- * port the service sees.
+ * port the service sees. So does the order service's one read of the ledger, when an order's
+ * newest money a person must reconcile was recorded (UnreconciledMoney): the order module names
+ * no payment table.
  *
  * @since 0.1.0
  */
-final class MysqlPaymentRepository implements PaymentRepository {
+final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMoney {
 
 	/**
 	 * An intent, in its first state.
@@ -92,6 +95,15 @@ final class MysqlPaymentRepository implements PaymentRepository {
 	 * @var string
 	 */
 	public const UNAPPLIED_OF_INTENT = 'SELECT id FROM {payment_transactions} WHERE intent_id = %d AND applied = 0 LIMIT 1';
+
+	/**
+	 * When the newest ledger row of an order that the projection refused was recorded, on the `order_created` key: what a clearance of the order's unreconciled money is dated after.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const NEWEST_UNAPPLIED = 'SELECT MAX( created_at ) AS newest FROM {payment_transactions} WHERE order_id = %d AND applied = 0';
 
 	/**
 	 * A ledger row: the claim that applies a result once. 0 and '' stand for no settlement, no object, no error, no actor and no correlation id.
@@ -230,13 +242,17 @@ final class MysqlPaymentRepository implements PaymentRepository {
 		. "FROM {payment_intents} i LEFT JOIN {payment_transactions} t ON t.intent_id = i.id AND t.result = 'approved' AND t.applied = 1 WHERE i.id > %d GROUP BY i.id ORDER BY i.id LIMIT %d";
 
 	/**
-	 * Ledger rows the projection refused, with their intents: money a person must reconcile.
+	 * Ledger rows of some orders the projection refused, with their intents, on the `order_created` key: money a person must reconcile.
+	 *
+	 * The ledger keeps such a row for good; the orders are those still flagged for a person, so a
+	 * row whose order a person cleared is no longer listed.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Of some orders only.
 	 *
 	 * @var string
 	 */
-	public const UNAPPLIED_RESULTS = 'SELECT t.uuid, t.operation, i.uuid AS intent_uuid FROM {payment_transactions} t JOIN {payment_intents} i ON i.id = t.intent_id WHERE t.applied = 0 ORDER BY t.id LIMIT %d';
+	public const UNAPPLIED_RESULTS = 'SELECT t.uuid, t.operation, i.uuid AS intent_uuid FROM {payment_transactions} t JOIN {payment_intents} i ON i.id = t.intent_id WHERE t.order_id IN ({list}) AND t.applied = 0 ORDER BY t.id LIMIT %d';
 
 	/**
 	 * Refund claims still claimed longer after they were made than any call to the gateway takes, oldest first, with their intents, on the `state_created` key.
@@ -424,6 +440,20 @@ final class MysqlPaymentRepository implements PaymentRepository {
 	 */
 	public function hasUnappliedResult( int $intentId ): bool {
 		return array() !== $this->statements->rows( self::UNAPPLIED_OF_INTENT, $intentId );
+	}
+
+	/**
+	 * Reads when the newest result of an order's payments that moved no money was recorded, without a lock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId The order's internal id.
+	 * @return string|null The time, UTC to the microsecond, as the database clock wrote it; null when the order's payments have no such result.
+	 */
+	public function newestAt( int $orderId ): ?string {
+		$newest = $this->statements->rows( self::NEWEST_UNAPPLIED, $orderId )[0]['newest'] ?? null;
+
+		return null === $newest ? null : (string) $newest;
 	}
 
 	/**
@@ -652,21 +682,29 @@ final class MysqlPaymentRepository implements PaymentRepository {
 	}
 
 	/**
-	 * Lists the ledger rows the projection refused.
+	 * Lists the ledger rows of some orders the projection refused; reads nothing for no order.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Of some orders only.
 	 *
-	 * @param int $limit The most rows to list.
+	 * @param int[] $orderIds The orders, such as those flagged for a person.
+	 * @param int   $limit    The most rows to list.
 	 * @return list<array{uuid: string, operation: string, intent_uuid: string}> The rows, oldest first.
+	 *
+	 * @phpstan-param list<int> $orderIds
 	 */
-	public function unappliedResults( int $limit ): array {
+	public function unappliedResults( array $orderIds, int $limit ): array {
+		if ( array() === $orderIds ) {
+			return array();
+		}
+
 		return array_map(
 			static fn( array $row ): array => array(
 				'uuid'        => (string) $row['uuid'],
 				'operation'   => (string) $row['operation'],
 				'intent_uuid' => (string) $row['intent_uuid'],
 			),
-			$this->statements->rows( self::UNAPPLIED_RESULTS, $limit )
+			$this->statements->rows( self::UNAPPLIED_RESULTS, $orderIds, $limit )
 		);
 	}
 
