@@ -84,6 +84,7 @@ and hooks has no such test.
 | Its error catalog                              | `Modules::ERROR_CATALOGS`                                                                                              | `tests/Unit/Platform/Kernel/KernelListsTest.php`                                                                                                                                            |
 | Its domain events                              | `Modules::EVENT_CLASSES`                                                                                               | `tests/Unit/Platform/Kernel/KernelListsTest.php`                                                                                                                                            |
 | A maintenance command (one with no REST twin)  | `Modules::MAINTENANCE_COMMANDS`, and the list with each command's reason in `tests/Support/OperationSurfaceWalker.php` | `tests/Integration/Operations/OperationSurfacesTest.php`                                                                                                                                    |
+| A signed route (one with no operation)         | A `register()` line in the kernel's `rest_api_init` callback; the route in `OperationSurfaceWalker::SIGNED_ROUTES`     | `tests/Integration/Operations/OperationSurfacesTest.php`, `tests/Integration/Authorization/RoutePermissionWalkTest.php`                                                                     |
 | Its operations                                 | One `$registry->add()` line in `Operations::registry()`                                                                | `tests/Integration/Operations/OperationSurfacesTest.php`, `tests/Integration/Authorization/RoutePermissionWalkTest.php`                                                                     |
 | Its doctor checks                              | `Doctor::checks()` and the lists `Modules` builds                                                                      | `tests/Integration/Cli/DoctorListsTest.php`                                                                                                                                                 |
 
@@ -156,6 +157,17 @@ The operations that shoppers use, the Store API under `seocart/store/v1`, are de
 way, with no capability: they are public reads and public writes, and a public write declares
 the rate limit it is counted against and whether it needs a cart that already exists. They exist
 on the REST surface only.
+
+One route is no operation's: the webhook route,
+`POST seocart/v1/webhooks/{gateway_id}/{mode}`, where a payment provider delivers its events, one
+address per gateway and mode. Its input is a raw body and the provider's headers, and its only
+answer is `{ received: true }`, so it has no Ability and no command
+(`src/Checkout/Interfaces/Rest/WebhookRoute.php`). It is guarded by the fourth kind of
+permission callback, a signed request (`PermissionCallback::signed()`), whose policy checks only
+that the request arrived as a write and that its body is present and at most 1 MB; the receiver
+has the gateway verify the signature before anything of the body is read. The kernel registers it
+on the same `rest_api_init` callback, and `OperationSurfaceWalker::SIGNED_ROUTES` lists it with
+that reason.
 
 ## Units of work
 

@@ -13,6 +13,7 @@ namespace SEOCart\Cart\Interfaces\StoreApi;
 
 use SEOCart\Cart\Application\CartTokens;
 use SEOCart\Cart\Domain\CartToken;
+use SEOCart\Platform\Rest\HttpMethod;
 use SEOCart\Support\Clock;
 use WP_HTTP_Response;
 use WP_REST_Request;

@@ -22,9 +22,11 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: what a caller of the money path learns from it. Checkout branches on the kind
  * and settles stock, promotion usage and the cart in the same transaction; it finds the order's
- * stock hold by the hold group, read with the order's lock.
+ * stock hold by the hold group, read with the order's lock. A mismatch says why it was kept, so a
+ * webhook's receipt can name it without reading the order.
  *
  * @since 0.1.0
+ * @since 0.2.0 Why a mismatch was kept.
  */
 final readonly class Application {
 
@@ -32,6 +34,7 @@ final readonly class Application {
 	 * Records the outcome.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The reason.
 	 *
 	 * @param ApplicationKind  $kind          What happened.
 	 * @param string           $intentUuid    The intent the result was about.
@@ -44,6 +47,9 @@ final readonly class Application {
 	 * @param PaymentStatus    $paymentFrom   The order's payment status before.
 	 * @param PaymentStatus    $paymentTo     The order's payment status after.
 	 * @param OrderStatus|null $orderStatusTo The order's status after, when the result changed it; otherwise null.
+	 * @param string|null      $reason        Optional. Why a mismatch was kept for a person: the word its order was parked
+	 *                                        and flagged with, such as `amount_mismatch` or `late_approval`; null for
+	 *                                        any other kind. Default null.
 	 */
 	public function __construct(
 		public ApplicationKind $kind,
@@ -56,7 +62,8 @@ final readonly class Application {
 		public IntentStatus $intentTo,
 		public PaymentStatus $paymentFrom,
 		public PaymentStatus $paymentTo,
-		public ?OrderStatus $orderStatusTo
+		public ?OrderStatus $orderStatusTo,
+		public ?string $reason = null
 	) {
 	}
 }

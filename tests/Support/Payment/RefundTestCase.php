@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Support\Payment;
 
 use SEOCart\Application\Operations\IdempotencyKey;
 use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\GatewayUnavailable;
 use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Contracts\Payment\Outcome;
@@ -49,7 +50,9 @@ use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\EventPublisher;
 use SEOCart\Platform\Settings\Settings;
 use SEOCart\Platform\Settings\SettingsStore;
+use SEOCart\Support\Currency;
 use SEOCart\Support\IdGenerator;
+use SEOCart\Support\Money;
 use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
 use SEOCart\Tests\Support\Doubles\RememberingGateway;
@@ -510,16 +513,87 @@ abstract class RefundTestCase extends PaymentTestCase {
 	 * @return RunningProbe The running recording; its report says `kept` once it committed.
 	 */
 	protected function startLandingProbe( IntentRef $intent, int $minor, string $currency, string $providerObject ): RunningProbe {
+		return $this->startResultProbe( 'land', $intent, $minor, $currency, $providerObject );
+	}
+
+	/**
+	 * Starts, in a process of its own, the recording of the provider's own word of a refund, as a webhook delivery records it (RefundService::recordProviderRefund()).
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param IntentRef   $intent         The intent it is of.
+	 * @param string|null $refundUuid     The refund uuid the provider echoes, or null for none.
+	 * @param int         $minor          What it gave back, in minor units.
+	 * @param string      $currency       The currency.
+	 * @param string      $providerObject The provider's refund object.
+	 * @param Outcome     $outcome        Optional. The provider's outcome: an approval or a decline. Default approved.
+	 * @return RunningProbe The running delivery; its report says what it came to (`delivered`) and its ledger row.
+	 */
+	protected function startDeliveryProbe( IntentRef $intent, ?string $refundUuid, int $minor, string $currency, string $providerObject, Outcome $outcome = Outcome::Approved ): RunningProbe {
+		return $this->startResultProbe(
+			'deliver',
+			$intent,
+			$minor,
+			$currency,
+			$providerObject,
+			array(
+				'refund_uuid' => $refundUuid,
+				'outcome'     => $outcome->value,
+			)
+		);
+	}
+
+	/**
+	 * Starts, in a process of its own, an action of the refund probe on a refund result of the provider's.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string               $action         `land` or `deliver`.
+	 * @param IntentRef            $intent         The intent it is of.
+	 * @param int                  $minor          What it gave back, in minor units.
+	 * @param string               $currency       The currency.
+	 * @param string               $providerObject The provider's refund object.
+	 * @param array<string, mixed> $more           Optional. What else the action reads. Default nothing.
+	 * @return RunningProbe The running probe.
+	 */
+	private function startResultProbe( string $action, IntentRef $intent, int $minor, string $currency, string $providerObject, array $more = array() ): RunningProbe {
 		$request = array(
-			'action'       => 'land',
+			'action'       => $action,
 			'intent_uuid'  => $intent->uuid,
 			'amount_minor' => $minor,
 			'currency'     => $currency,
 			'object'       => $providerObject,
 			'crash'        => false,
-		);
+		) + $more;
 
 		return ChildProcessProbe::start( __DIR__ . '/refund-probe.php', array( base64_encode( (string) wp_json_encode( $request ) ) ) );
+	}
+
+	/**
+	 * Builds the provider's result of a claimed refund, for the claim's amount less `$less`, named as the stand-in names a refund made under the claim's uuid unless another object is given.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param IntentRef   $intent         The claim's intent.
+	 * @param string      $uuid           The claim's uuid.
+	 * @param Outcome     $outcome        The outcome: an approval, a decline, or one that moves no money.
+	 * @param int         $less           Optional. How much less than claimed it gave back. Default 0.
+	 * @param string|null $providerObject Optional. The provider's refund object. Default the stand-in's name of the claim's refund.
+	 * @return GatewayResult The result.
+	 */
+	protected function claimedResult( IntentRef $intent, string $uuid, Outcome $outcome, int $less = 0, ?string $providerObject = null ): GatewayResult {
+		$claim = (array) $this->db->fetchRow( 'SELECT amount_minor, currency FROM %i WHERE uuid = %s', $this->table( RefundClaimTables::CLAIMS ), $uuid );
+
+		return new GatewayResult(
+			StubGateway::ID,
+			Operation::Refund,
+			$outcome,
+			$intent->uuid,
+			Money::of( (int) $claim['amount_minor'] - $less, Currency::of( (string) $claim['currency'] ) ),
+			$providerObject ?? 'stub-re-' . $uuid,
+			(string) $this->intentRow( $intent->uuid )['provider_intent_id'],
+			Outcome::Declined === $outcome ? StubGateway::REFUND_DECLINED : null
+		);
 	}
 
 	/**

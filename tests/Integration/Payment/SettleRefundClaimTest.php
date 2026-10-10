@@ -11,7 +11,6 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
-use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Payment\Application\ClaimStatement;
@@ -25,7 +24,6 @@ use SEOCart\Payment\Infrastructure\RefundClaimTables;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\AuthorizationError;
 use SEOCart\Support\Error\CodedException;
-use SEOCart\Support\Money;
 use SEOCart\Tests\Support\Doubles\RememberingGateway;
 use SEOCart\Tests\Support\Payment\RefundOrders;
 use SEOCart\Tests\Support\Payment\RefundTestCase;
@@ -491,18 +489,7 @@ final class SettleRefundClaimTest extends RefundTestCase {
 	 * @param int                               $less    Optional. How much less than claimed it gave back. Default 0.
 	 */
 	private function gatewayMade( \SEOCart\Payment\Domain\IntentRef $intent, string $uuid, Outcome $outcome, int $less = 0 ): void {
-		$claim = $this->claimOf( $uuid );
-
-		$this->provider->made[ $uuid ][] = new GatewayResult(
-			StubGateway::ID,
-			Operation::Refund,
-			$outcome,
-			$intent->uuid,
-			Money::of( (int) $claim['amount_minor'] - $less, \SEOCart\Support\Currency::of( (string) $claim['currency'] ) ),
-			'stub-re-' . $uuid,
-			(string) $this->intentRow( $intent->uuid )['provider_intent_id'],
-			Outcome::Declined === $outcome ? StubGateway::REFUND_DECLINED : null
-		);
+		$this->provider->made[ $uuid ][] = $this->claimedResult( $intent, $uuid, $outcome, $less );
 	}
 
 	/**

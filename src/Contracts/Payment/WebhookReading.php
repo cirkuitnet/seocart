@@ -22,9 +22,10 @@ defined( 'ABSPATH' ) || exit;
  * plugin keeps nothing else of the delivery. An ignored or a result reading carries the
  * provider's event id, by which the plugin applies a delivery once however often it arrives, and
  * its type. A result carries the payment's GatewayResult and, for a refund the plugin asked for,
- * the refund's uuid as the provider echoed it back. The time the provider says the event
- * happened is information only: the window a delivery must arrive in is checked by the gateway,
- * on the delivery's signed timestamp, before it reads anything.
+ * the refund's uuid as the provider echoed it back. An ignored reading may name the payment it is
+ * about, as a dispute does, so the plugin can say which order it concerns. The time the provider
+ * says the event happened is information only: the window a delivery must arrive in is checked by
+ * the gateway, on the delivery's signed timestamp, before it reads anything.
  *
  * @since 0.2.0
  *
@@ -60,13 +61,23 @@ final readonly class WebhookReading {
 	public const MALFORMED = 'malformed';
 
 	/**
+	 * Why a genuine delivery is ignored: it reports a dispute, which the plugin records and reports but never acts on.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DISPUTE = 'dispute';
+
+	/**
 	 * Records the reading. Use rejected(), ignored() or result().
 	 *
 	 * @since 0.2.0
 	 *
 	 * @throws \InvalidArgumentException When the fields do not fit the kind: a rejected reading without a reason or with
-	 *                                   an event, another without an event id or type, a result without its result, or
-	 *                                   a refund uuid on anything but a refund's result.
+	 *                                   an event, another without an event id or type, a result without its result,
+	 *                                   a refund uuid on anything but a refund's result, or the payment it is about
+	 *                                   named on anything but an ignored reading.
 	 *
 	 * @param WebhookReadingKind      $kind       What the delivery is.
 	 * @param string|null             $eventId    The provider's id of the event; null only for a rejected delivery.
@@ -75,6 +86,10 @@ final readonly class WebhookReading {
 	 * @param GatewayResult|null      $result     The payment's result, for a result reading.
 	 * @param string|null             $reason     Why a delivery was rejected or ignored.
 	 * @param string|null             $refundUuid The uuid of the refund the plugin asked for, as the provider echoed it; null otherwise.
+	 * @param string|null             $intentUuid Optional. For an ignored reading, the plugin's intent it is about, when the
+	 *                                            provider echoed it. Default null.
+	 * @param string|null             $providerIntentId Optional. For an ignored reading, the provider's own reference to
+	 *                                                  the intent it is about. Default null.
 	 */
 	public function __construct(
 		public WebhookReadingKind $kind,
@@ -83,7 +98,9 @@ final readonly class WebhookReading {
 		public ?\DateTimeImmutable $occurredAt,
 		public ?GatewayResult $result,
 		public ?string $reason,
-		public ?string $refundUuid
+		public ?string $refundUuid,
+		public ?string $intentUuid = null,
+		public ?string $providerIntentId = null
 	) {
 		$rejected = WebhookReadingKind::Rejected === $kind;
 
@@ -101,6 +118,10 @@ final readonly class WebhookReading {
 
 		if ( null !== $refundUuid && Operation::Refund !== $result?->operation ) {
 			throw new \InvalidArgumentException( 'Only a refund\'s result carries a refund uuid.' );
+		}
+
+		if ( ( null !== $intentUuid || null !== $providerIntentId ) && WebhookReadingKind::Ignored !== $kind ) {
+			throw new \InvalidArgumentException( 'Only an ignored reading names its payment apart: a result names it in its result, and a rejected one names nothing.' );
 		}
 	}
 
@@ -123,12 +144,16 @@ final readonly class WebhookReading {
 	 *
 	 * @param string                  $eventId    The provider's id of the event.
 	 * @param string                  $eventType  The provider's type of the event.
-	 * @param string                  $reason     Why it is not acted on, such as `dispute`.
-	 * @param \DateTimeImmutable|null $occurredAt Optional. When the provider says it happened. Default null.
+	 * @param string                  $reason           Why it is not acted on, such as DISPUTE.
+	 * @param \DateTimeImmutable|null $occurredAt       Optional. When the provider says it happened. Default null.
+	 * @param string|null             $intentUuid       Optional. The plugin's intent it is about, when the provider echoed
+	 *                                                  it. Default null.
+	 * @param string|null             $providerIntentId Optional. The provider's own reference to the intent it is about.
+	 *                                                  Default null.
 	 * @return self The reading.
 	 */
-	public static function ignored( string $eventId, string $eventType, string $reason, ?\DateTimeImmutable $occurredAt = null ): self {
-		return new self( WebhookReadingKind::Ignored, $eventId, $eventType, $occurredAt, null, $reason, null );
+	public static function ignored( string $eventId, string $eventType, string $reason, ?\DateTimeImmutable $occurredAt = null, ?string $intentUuid = null, ?string $providerIntentId = null ): self {
+		return new self( WebhookReadingKind::Ignored, $eventId, $eventType, $occurredAt, null, $reason, null, $intentUuid, $providerIntentId );
 	}
 
 	/**

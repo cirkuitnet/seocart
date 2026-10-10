@@ -213,6 +213,51 @@ final class PaymentService {
 	public const VOIDED_AFTER_APPROVAL = 'voided_after_approval';
 
 	/**
+	 * The reason an accepted order is parked with when the provider reports its payment voided and nobody asked the store for it, as when someone cancelled it in the provider's dashboard.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const VOIDED_EXTERNALLY = 'voided_externally';
+
+	/**
+	 * The reason an order is parked with when its authorization was approved after the placement had ended without it: the provider holds money the store gave up waiting for.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LATE_APPROVAL = 'late_approval';
+
+	/**
+	 * The reason an order is parked with when the provider gave money back that no refund of the store's asked for, as a refund made in the provider's dashboard.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const EXTERNAL_REFUND = 'external_refund';
+
+	/**
+	 * Why money is kept for a person: the provider reports a refund its gateway's capability matrix no longer declares, so the store cannot record it as the refund its claim asked for.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const OPERATION_UNSUPPORTED = 'operation_unsupported';
+
+	/**
+	 * Why money is kept for a person: the provider declines a refund the ledger holds as made, so money the store counts as given back was not.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const REFUND_REVERSED = 'refund_reversed';
+
+	/**
 	 * The machine code of the decline of an authorization the store refused to send, so its provider never saw it.
 	 *
 	 * @since 0.2.0
@@ -500,36 +545,45 @@ final class PaymentService {
 	}
 
 	/**
-	 * Records an approval the caller could not go on to record, as money a person must reconcile: its ledger row kept with `applied = 0`, and the order parked.
+	 * Records an approval the caller could not go on to record, or a refund's reversal, as money a person must reconcile: its ledger row kept with `applied = 0`, and the order parked.
 	 *
 	 * For a refund the gateway made whose document a cap then refused, because another refund
 	 * landed after this one was checked: the money moved at the gateway, so it is never left
-	 * unrecorded. Inside the caller's transaction, after the savepoint that tried to apply it rolled
-	 * back: the intent and the order are locked, the row is appended, which claims the result, and
-	 * the order is flagged and put `on_hold` where its status allows, as for a mismatch. Nothing
-	 * else moves. A result already recorded is a duplicate, which changes nothing. A result whose
-	 * intent does not exist raises `payment.intent_not_found`.
+	 * unrecorded; for a refund the provider reports that no claim of the store's asked for
+	 * (EXTERNAL_REFUND); and for the provider's decline of a refund the ledger holds as made
+	 * (REFUND_REVERSED), the one outcome of its kind that is no approval: the money the store
+	 * counts as given back was not, which only a person can put right. Inside the caller's
+	 * transaction, after the savepoint that tried to apply it
+	 * rolled back: the intent and then the order are locked, the row is appended, which claims the
+	 * result, and only then is the order flagged and put `on_hold` where its status allows, as for a
+	 * mismatch, so a person's clearance of the order, which takes its lock first, is dated after
+	 * every such row it clears. Nothing else moves. A result already recorded is a duplicate, which
+	 * changes nothing. A result whose intent does not exist raises `payment.intent_not_found`.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The reason.
 	 *
-	 * @throws \LogicException Outside a transaction, or for a result that is not an approval; before any statement.
+	 * @throws \LogicException Outside a transaction, or for a result that is neither an approval nor a refund's reversal; before any statement.
 	 *
-	 * @param GatewayResult $result The approval.
+	 * @param GatewayResult $result The approval, or the decline of a refund kept under REFUND_REVERSED.
 	 * @param Actor         $actor  On whose authority.
+	 * @param string        $reason Optional. Why the order is parked. Default PAYMENT_UNRECORDED.
 	 * @return Application What was done: a mismatch, or a duplicate.
 	 */
-	public function recordUnapplied( GatewayResult $result, Actor $actor ): Application {
+	public function recordUnapplied( GatewayResult $result, Actor $actor, string $reason = self::PAYMENT_UNRECORDED ): Application {
 		$this->requireCallersTransaction( __FUNCTION__ );
 
-		if ( Outcome::Approved !== $result->outcome ) {
-			throw new \LogicException( 'Only an approval moved money a person must reconcile.' );
+		$reversal = self::REFUND_REVERSED === $reason && Operation::Refund === $result->operation && Outcome::Declined === $result->outcome;
+
+		if ( Outcome::Approved !== $result->outcome && ! $reversal ) {
+			throw new \LogicException( 'Only an approval, or the decline of a refund the ledger holds as made, leaves money a person must reconcile.' );
 		}
 
 		return $this->tx->transaction(
-			function () use ( $result, $actor ): Application {
+			function () use ( $result, $actor, $reason ): Application {
 				$intent = $this->lock( $result->intentUuid );
 
-				return $this->keepUnapplied( $result, $intent, $this->orders->lockForPayment( $intent->orderId ), self::PAYMENT_UNRECORDED, $actor );
+				return $this->keepUnapplied( $result, $intent, $this->orders->lockForPayment( $intent->orderId ), $reason, $actor );
 			}
 		);
 	}
@@ -807,6 +861,40 @@ final class PaymentService {
 	}
 
 	/**
+	 * Applies a capture or a void the provider delivered on its own, such as by a webhook: in a transaction of its own, run again whole on a deadlock.
+	 *
+	 * For an intent whose order no placement is settling: the same path the capture and void
+	 * operations apply their answer by, once the gateway answered. Whatever arrives first, the
+	 * operation's answer or the delivery, is applied, and the other meets the ledger's key and is a
+	 * duplicate; a result about a state the intent has left is stale, and one it cannot take is kept
+	 * for a person, as for any caller. A void nobody asked the store for is applied with
+	 * VoidReason::VoidedExternally, which parks an accepted order for a person.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException            Inside a transaction, before any statement.
+	 * @throws \InvalidArgumentException For a result that is not a capture or a void, before any statement: an
+	 *                                    authorization is settled with its placement, and a refund with its claim.
+	 *                                    What applying the result refuses is raised as applyGatewayResult() raises it.
+	 *
+	 * @param GatewayResult   $result     The provider's result: a capture or a void.
+	 * @param Actor           $actor      On whose authority: the store, for a webhook.
+	 * @param VoidReason|null $voidReason Optional. Why the void was asked for; required for an approved void. Default null.
+	 * @return Application What was done.
+	 */
+	public function applyDelivered( GatewayResult $result, Actor $actor, ?VoidReason $voidReason = null ): Application {
+		if ( 0 !== $this->tx->depth() ) {
+			throw new \LogicException( 'PaymentService::applyDelivered() applies the result in a transaction of its own: never inside another, whose locks it would join.' );
+		}
+
+		if ( ! in_array( $result->operation, array( Operation::Capture, Operation::Void ), true ) ) {
+			throw new \InvalidArgumentException( 'A delivered result applied on its own is a capture or a void: an authorization is settled with its placement, and a refund with its claim.' );
+		}
+
+		return $this->applyInOwnTransaction( $result, $actor, $voidReason );
+	}
+
+	/**
 	 * Captures a payment as the capture operation asks, and answers with what the gateway captured.
 	 *
 	 * Takes no idempotency key: the intent's state and the key the provider is sent, derived from
@@ -1021,6 +1109,31 @@ final class PaymentService {
 	}
 
 	/**
+	 * Finds an intent by its gateway's own reference to it, for a provider's result that names no intent of the store's: one plain read, on the gateway's unique key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $gatewayId        The gateway.
+	 * @param string $providerIntentId The gateway's reference to the intent, as the intent recorded it.
+	 * @return IntentRef|null The intent, with its gateway, mode, age and wait; or null when no intent of the gateway has the reference.
+	 */
+	public function intentByProvider( string $gatewayId, string $providerIntentId ): ?IntentRef {
+		return $this->payments->findByProvider( $gatewayId, $providerIntentId );
+	}
+
+	/**
+	 * Finds the ledger row that holds a result: the same provider object and operation, in the same outcome. One plain read, on the ledger's key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayResult $result The result, naming its provider object.
+	 * @return int|null The row; null when the ledger holds no such result, or the result names no object.
+	 */
+	public function ledgerRowOf( GatewayResult $result ): ?int {
+		return $this->payments->findResult( $result );
+	}
+
+	/**
 	 * Asks the gateway where an intent stands, outside any transaction, and returns its answer unapplied.
 	 *
 	 * The query carries the intent's expiry as it was read, so a gateway can answer an intent
@@ -1154,7 +1267,7 @@ final class PaymentService {
 		if ( $approved && ! IntentTransitions::isAllowed( $intent->status, self::stateAfter( $result, $intent ) ) ) {
 			$ended = Operation::Authorize === $result->operation && IntentTransitions::isFinal( $intent->status );
 
-			return $this->keepUnapplied( $result, $intent, $order, $ended ? self::PAYMENT_UNRECORDED : self::UNEXPECTED_RESULT, $actor );
+			return $this->keepUnapplied( $result, $intent, $order, $ended ? self::LATE_APPROVAL : self::UNEXPECTED_RESULT, $actor );
 		}
 
 		if ( $approved && ! AmountCheck::accepts( $result, $intent, $order ) ) {
@@ -1239,7 +1352,7 @@ final class PaymentService {
 
 		$parked = $this->orders->park( $order, $reason, $actor );
 
-		return $this->application( ApplicationKind::Mismatch, $result, $intent, $order, $transactionId, $intent->status, $order->paymentStatus, $parked?->to );
+		return $this->application( ApplicationKind::Mismatch, $result, $intent, $order, $transactionId, $intent->status, $order->paymentStatus, $parked?->to, $reason );
 	}
 
 	/**
@@ -1294,9 +1407,10 @@ final class PaymentService {
 	 * Settles a void the intent's update applied: no money moves, the order's payment status derives voided, and the order follows.
 	 *
 	 * An order still pending payment is cancelled, for the void's reason. An order already
-	 * accepted is left to the person who asked for the void; one voided without a person asking,
-	 * as when the shopper's time to act ran out while their approval was landing, is flagged and
-	 * parked for a person, with what it holds kept.
+	 * accepted is left to the person who asked the store for the void; one voided without a person
+	 * asking the store, as when the shopper's time to act ran out while their approval was landing,
+	 * or when the provider reports a void made in its dashboard, is flagged and parked for a
+	 * person, with what it holds kept (parkReasonOf()).
 	 *
 	 * @since 0.2.0
 	 *
@@ -1316,11 +1430,28 @@ final class PaymentService {
 
 		if ( OrderStatus::PendingPayment === $order->status ) {
 			$orderTo = $this->orders->transition( $order->id, OrderStatus::Cancelled, $reason->value, $actor )->to;
-		} elseif ( ! $reason->askedByAPerson() ) {
-			$orderTo = $this->orders->park( $order, self::VOIDED_AFTER_APPROVAL, $actor )?->to;
+		} elseif ( null !== self::parkReasonOf( $reason ) ) {
+			$orderTo = $this->orders->park( $order, self::parkReasonOf( $reason ), $actor )?->to;
 		}
 
 		return $this->application( ApplicationKind::Applied, $result, $intent, $order, $transactionId, IntentStatus::Voided, $paymentTo, $orderTo );
+	}
+
+	/**
+	 * Returns the reason an accepted order is parked with when its payment is voided for a reason nobody gave the store.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param VoidReason $reason Why the void was asked for.
+	 * @return string|null VOIDED_AFTER_APPROVAL for the end of a shopper's time to act, VOIDED_EXTERNALLY for a void the
+	 *                     provider reports on its own; null for a reason a person gave the store, who decides the order.
+	 */
+	private static function parkReasonOf( VoidReason $reason ): ?string {
+		return match ( $reason ) {
+			VoidReason::ActionWindowEnded => self::VOIDED_AFTER_APPROVAL,
+			VoidReason::VoidedExternally  => self::VOIDED_EXTERNALLY,
+			default                       => null,
+		};
 	}
 
 	/**
@@ -1492,10 +1623,11 @@ final class PaymentService {
 	 * @param IntentStatus     $intentTo      The intent's state after.
 	 * @param PaymentStatus    $paymentTo     The order's payment status after.
 	 * @param OrderStatus|null $orderStatusTo The order's status after, when it changed.
+	 * @param string|null      $reason        Optional. Why a mismatch was kept for a person. Default null.
 	 * @return Application The Application.
 	 */
-	private function application( ApplicationKind $kind, GatewayResult $result, PaymentIntent $intent, LockedOrder $order, ?int $transactionId, IntentStatus $intentTo, PaymentStatus $paymentTo, ?OrderStatus $orderStatusTo ): Application {
-		return new Application( $kind, $intent->uuid, $result->operation, $transactionId, $order->id, $order->holdGroup, $intent->status, $intentTo, $order->paymentStatus, $paymentTo, $orderStatusTo );
+	private function application( ApplicationKind $kind, GatewayResult $result, PaymentIntent $intent, LockedOrder $order, ?int $transactionId, IntentStatus $intentTo, PaymentStatus $paymentTo, ?OrderStatus $orderStatusTo, ?string $reason = null ): Application {
+		return new Application( $kind, $intent->uuid, $result->operation, $transactionId, $order->id, $order->holdGroup, $intent->status, $intentTo, $order->paymentStatus, $paymentTo, $orderStatusTo, $reason );
 	}
 
 	/**

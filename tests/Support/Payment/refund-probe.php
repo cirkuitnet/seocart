@@ -27,7 +27,10 @@
  * `order_uuid` as `user_id`, with `note`, and reports `reconciled_at`. With `action` `land`, it
  * records a refund of `intent_uuid` the provider made that no claim asked for, `amount_minor` of
  * `currency` as the provider's object `object`, as money a person must reconcile, and reports
- * `kept`. With `die_before`, a
+ * `kept`. With `action` `deliver`, it records the same refund as the provider's own word of it,
+ * `outcome` (`approved` or `declined`), echoing `refund_uuid` when given, as a webhook delivery
+ * does (RefundService::recordProviderRefund()), and reports `delivered` (what it came to) and
+ * `transaction_id`. With `die_before`, a
  * statement's first words such as `START TRANSACTION`, the process kills itself with SIGKILL just
  * before it would send the first such statement of the action: a crash at that point.
  *
@@ -145,20 +148,32 @@ try {
 			'settled'    => $seocart_probe_settled->state->value,
 			'decided_by' => $seocart_probe_settled->decidedBy,
 		);
-	} elseif ( 'land' === $seocart_probe_request['action'] ) {
-		$seocart_probe_payments = $seocart_probe_kernel->get( PaymentService::class );
+	} elseif ( in_array( $seocart_probe_request['action'], array( 'land', 'deliver' ), true ) ) {
+		$seocart_probe_declined = 'declined' === ( $seocart_probe_request['outcome'] ?? 'approved' );
 		$seocart_probe_landed   = new GatewayResult(
 			StubGateway::ID,
 			Operation::Refund,
-			Outcome::Approved,
+			$seocart_probe_declined ? Outcome::Declined : Outcome::Approved,
 			(string) $seocart_probe_request['intent_uuid'],
 			Money::of( (int) $seocart_probe_request['amount_minor'], Currency::of( (string) $seocart_probe_request['currency'] ) ),
-			(string) $seocart_probe_request['object']
+			(string) $seocart_probe_request['object'],
+			null,
+			$seocart_probe_declined ? StubGateway::REFUND_DECLINED : null
 		);
 
-		$seocart_probe_db->transaction( static fn() => $seocart_probe_payments->recordUnapplied( $seocart_probe_landed, Actor::system( 'payment', 3 ) ) );
+		if ( 'deliver' === $seocart_probe_request['action'] ) {
+			$seocart_probe_delivered = $seocart_probe_service->recordProviderRefund( isset( $seocart_probe_request['refund_uuid'] ) ? (string) $seocart_probe_request['refund_uuid'] : null, $seocart_probe_landed, Actor::system( 'webhook', 0 ) );
+			$seocart_probe_outcome   = array(
+				'delivered'      => $seocart_probe_delivered->kind->value,
+				'transaction_id' => $seocart_probe_delivered->transactionId,
+			);
+		} else {
+			$seocart_probe_payments = $seocart_probe_kernel->get( PaymentService::class );
 
-		$seocart_probe_outcome = array( 'kept' => true );
+			$seocart_probe_db->transaction( static fn() => $seocart_probe_payments->recordUnapplied( $seocart_probe_landed, Actor::system( 'payment', 3 ) ) );
+
+			$seocart_probe_outcome = array( 'kept' => true );
+		}
 	} elseif ( 'reconcile' === $seocart_probe_request['action'] ) {
 		$seocart_probe_outcome = array(
 			'reconciled_at' => $seocart_probe_kernel->get( Orders::class )->clearUnreconciledMoney(

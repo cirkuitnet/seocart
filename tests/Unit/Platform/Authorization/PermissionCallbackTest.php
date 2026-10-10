@@ -173,4 +173,43 @@ final class PermissionCallbackTest extends TestCase {
 		$this->assertSame( array( $policy ), $write->policies() );
 		$this->assertSame( array( $policy, $policy ), $write->withPolicy( $policy )->policies(), 'A further policy narrows it, after its own.' );
 	}
+
+	/**
+	 * Tests that a signed request's guard is a kind of its own: no capability, neither public read nor public write, and built with the policy that checks the request's shape.
+	 *
+	 * Planted violation: in PermissionCallback::isPublicRead(), answer
+	 * `null === $this->capability && ! $this->isPublicWrite()`, as before the kind was added: the
+	 * signed request's guard then passes for the public-read marker.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_signed_request_is_a_kind_of_its_own_built_with_its_policy(): void {
+		$policy = new class() implements RequestPolicy {
+
+			/**
+			 * Lets every request through.
+			 *
+			 * @since 0.2.0
+			 *
+			 * @param WP_REST_Request $request    The request.
+			 * @param string|null     $capability The capability already confirmed, or null.
+			 * @return bool True.
+			 */
+			public function allows( WP_REST_Request $request, ?string $capability ): bool {
+				return true;
+			}
+		};
+
+		$signed = PermissionCallback::signed( $policy );
+
+		$this->assertTrue( $signed->isSigned() );
+		$this->assertFalse( $signed->isPublicRead(), 'A signed request checks no capability, and must not pass for the public-read marker.' );
+		$this->assertFalse( $signed->isPublicWrite(), 'A signed request is not decided by the Store API\'s policy.' );
+		$this->assertNull( $signed->capability() );
+		$this->assertSame( array( $policy ), $signed->policies() );
+
+		foreach ( array( PermissionCallback::publicRead(), PermissionCallback::publicWrite( $policy ), PermissionCallback::requiring( 'seocart_view_orders' ) ) as $other ) {
+			$this->assertFalse( $other->isSigned(), 'Only signed() builds a signed request\'s guard.' );
+		}
+	}
 }

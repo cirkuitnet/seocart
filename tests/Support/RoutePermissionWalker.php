@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Support;
 
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
+use SEOCart\Checkout\Interfaces\Rest\WebhookRequestPolicy;
 use SEOCart\Platform\Authorization\PermissionCallback;
 use WP_REST_Server;
 
@@ -31,6 +32,8 @@ use WP_REST_Server;
  * write is recognised the same way, by its type and its kind: it is refused on GET and HEAD, and
  * on any endpoint whose policies do not include the Store API's request policy, the one that
  * decides for it — so a public write guarded by a policy that allows everything, or by none, fails.
+ * A signed request's guard is held to the same two rules with the webhook route's policy, which
+ * checks the shape of a provider's delivery before the handler verifies its signature.
  *
  * The one route that is skipped is the namespace index core registers for every namespace,
  * `/<namespace>`, served by WP_REST_Server::get_namespace_index(): it is core's, and core gives
@@ -101,6 +104,24 @@ final class RoutePermissionWalker {
 	 * @var string
 	 */
 	public const RULE_PUBLIC_WRITE_WITHOUT_POLICY = 'public-write-without-the-store-api-policy';
+
+	/**
+	 * Rule: a signed request's guard is served by GET or HEAD.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const RULE_SIGNED_ON_READ = 'signed-request-on-get-or-head';
+
+	/**
+	 * Rule: a signed request's guard is not guarded by the webhook route's request policy.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const RULE_SIGNED_WITHOUT_VERIFIER = 'signed-request-without-the-webhook-policy';
 
 	/**
 	 * Rule: a route has no schema.
@@ -425,6 +446,8 @@ final class RoutePermissionWalker {
 				);
 			} elseif ( $callback->isPublicWrite() ) {
 				$violations = array_merge( $violations, self::checkPublicWrite( $route, (string) $method, $callback ) );
+			} elseif ( $callback->isSigned() ) {
+				$violations = array_merge( $violations, self::checkSigned( $route, (string) $method, $callback ) );
 			}
 		}
 
@@ -461,6 +484,42 @@ final class RoutePermissionWalker {
 				self::RULE_PUBLIC_WRITE_WITHOUT_POLICY,
 				"is a public write that the Store API's request policy does not guard, so nothing requires its header, its nonce under a login cookie, its cart token or its rate limit",
 				"declare the operation with StoreRequestPolicy::write(), so the REST adapter guards it with the Store API's policy."
+			);
+		}
+
+		return $violations;
+	}
+
+	/**
+	 * Checks one method of an endpoint guarded as a signed request.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string             $route    The route.
+	 * @param string             $method   The HTTP method.
+	 * @param PermissionCallback $callback The signed request's guard.
+	 * @return list<array{route: string, method: string, rule: string, message: string}> A violation for a read method, and one for a missing webhook policy.
+	 */
+	private static function checkSigned( string $route, string $method, PermissionCallback $callback ): array {
+		$violations = array();
+
+		if ( in_array( strtoupper( $method ), self::PUBLIC_READ_METHODS, true ) ) {
+			$violations[] = self::violation(
+				$route,
+				$method,
+				self::RULE_SIGNED_ON_READ,
+				'is a signed request served by a read method, which a prefetch, a crawler or a cache would send',
+				'serve the delivery with POST, as a provider sends it.'
+			);
+		}
+
+		if ( array() === array_filter( $callback->policies(), static fn( $policy ): bool => $policy instanceof WebhookRequestPolicy ) ) {
+			$violations[] = self::violation(
+				$route,
+				$method,
+				self::RULE_SIGNED_WITHOUT_VERIFIER,
+				"is a signed request that the webhook route's request policy does not guard, so nothing requires a write or bounds the body before the handler reads it",
+				'guard it with PermissionCallback::signed( new WebhookRequestPolicy( … ) ).'
 			);
 		}
 

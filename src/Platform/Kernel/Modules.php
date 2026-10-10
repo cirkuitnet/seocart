@@ -51,6 +51,7 @@ use SEOCart\Checkout\Application\ChangeCartCurrency;
 use SEOCart\Checkout\Application\CheckoutSessions;
 use SEOCart\Checkout\Application\IdempotencyKeys;
 use SEOCart\Checkout\Application\PlaceOrder;
+use SEOCart\Checkout\Application\ReceiveWebhook;
 use SEOCart\Checkout\Application\ResumePayment;
 use SEOCart\Checkout\Application\SettlePlacement;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
@@ -61,6 +62,7 @@ use SEOCart\Checkout\Infrastructure\Jobs\IdempotencyKeyRetention;
 use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
 use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
+use SEOCart\Checkout\Interfaces\Rest\WebhookRoute;
 use SEOCart\Contracts\HttpClient;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Interfaces\Operations\AbilitiesAdapter;
@@ -118,12 +120,15 @@ use SEOCart\Payment\Domain\Event\PaymentVoided;
 use SEOCart\Payment\Domain\Event\RefundRecorded;
 use SEOCart\Payment\Domain\PaymentRepository;
 use SEOCart\Payment\Domain\Refund\RefundRepository;
+use SEOCart\Payment\Domain\Webhook\WebhookReceipts;
 use SEOCart\Payment\Infrastructure\Cli\GatewayCommand;
 use SEOCart\Payment\Infrastructure\Doctor\GatewaysCheck;
 use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
+use SEOCart\Payment\Infrastructure\Jobs\WebhookReceiptRetention;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Payment\Infrastructure\MysqlRefundRepository;
+use SEOCart\Payment\Infrastructure\MysqlWebhookReceipts;
 use SEOCart\Platform\Authorization\AuthorizationError;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
@@ -1263,6 +1268,24 @@ final class Modules {
 		$container->bind( ReconcileStalePlacements::class, static fn( Container $c ): ReconcileStalePlacements => new ReconcileStalePlacements( $c->get( PaymentService::class ), $c->get( Orders::class ), $c->get( SettlePlacement::class ), $c->get( Reporter::class ) ) );
 		$container->bind( IdempotencyKeyRetention::class, static fn( Container $c ): IdempotencyKeyRetention => new IdempotencyKeyRetention( $c->get( MysqlIdempotencyKeys::class ) ) );
 		$container->bind( CheckoutChecks::class, static fn( Container $c ): CheckoutChecks => new CheckoutChecks( $c->get( MysqlIdempotencyKeys::class ), $c->get( Database::class ), $c->get( PaymentRepository::class ), $c->get( OrderRepository::class ), $c->get( Gateways::class ) ) );
+		$container->bind(
+			ReceiveWebhook::class,
+			static fn( Container $c ): ReceiveWebhook => new ReceiveWebhook(
+				$c->get( Gateways::class ),
+				$c->get( WebhookReceipts::class ),
+				$c->get( SettlePlacement::class ),
+				$c->get( PaymentService::class ),
+				$c->get( RefundService::class ),
+				$c->get( Orders::class ),
+				$c->get( TransactionManager::class ),
+				$c->get( RateLimiter::class ),
+				$c->get( ClientIdentities::class ),
+				$c->get( Logger::class ),
+				$c->get( Reporter::class ),
+				$c->get( CorrelationId::class )
+			)
+		);
+		$container->bind( WebhookRoute::class, static fn( Container $c ): WebhookRoute => new WebhookRoute( static fn(): ReceiveWebhook => $c->get( ReceiveWebhook::class ), $c->get( ErrorTranslator::class ), $c->get( Clock::class ), $c->get( Reporter::class ) ) );
 	}
 
 	/**
@@ -1494,7 +1517,7 @@ final class Modules {
 				$c->get( Reporter::class )
 			)
 		);
-		$container->bind( PaymentLedgerCheck::class, static fn( Container $c ): PaymentLedgerCheck => new PaymentLedgerCheck( $c->get( MysqlPaymentRepository::class ), $c->get( OrderRepository::class ) ) );
+		$container->bind( PaymentLedgerCheck::class, static fn( Container $c ): PaymentLedgerCheck => new PaymentLedgerCheck( $c->get( MysqlPaymentRepository::class ), $c->get( OrderRepository::class ), receipts: $c->get( MysqlWebhookReceipts::class ) ) );
 		$container->bind( GatewaysCheck::class, static fn( Container $c ): GatewaysCheck => new GatewaysCheck( $c->get( GatewayStatuses::class ), $c->get( Gateways::class ) ) );
 		$container->bind( RefundRepository::class, static fn( Container $c ): RefundRepository => new MysqlRefundRepository( $c->get( Database::class ) ) );
 		$container->bind( RefundCapPolicy::class, static fn( Container $c ): RefundCapPolicy => new RefundCapPolicy( $c->get( SettingsStore::class ) ) );
@@ -1513,6 +1536,9 @@ final class Modules {
 				$c->get( Orders::class )
 			)
 		);
+		$container->bind( MysqlWebhookReceipts::class, static fn( Container $c ): MysqlWebhookReceipts => new MysqlWebhookReceipts( $c->get( Database::class ) ) );
+		$container->bind( WebhookReceipts::class, static fn( Container $c ): WebhookReceipts => $c->get( MysqlWebhookReceipts::class ) );
+		$container->bind( WebhookReceiptRetention::class, static fn( Container $c ): WebhookReceiptRetention => new WebhookReceiptRetention( $c->get( MysqlWebhookReceipts::class ) ) );
 	}
 
 	/**
@@ -1604,6 +1630,7 @@ final class Modules {
 			static function () use ( $container ): void {
 				self::catalogRestInit( $container );
 				$container->get( RestAdapter::class )->register();
+				$container->get( WebhookRoute::class )->register();
 
 				if ( wp_is_serving_rest_request() ) {
 					$container->get( Lifecycle::class )->reconcile();
