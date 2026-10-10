@@ -223,7 +223,7 @@ final class PlacementRecoveryTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Tests that a placement whose payment waits past its intent's expiry, pending or for the shopper, ends once reconciled: the gateway answers the expiry, which releases everything the order held; one not yet past its expiry is left to the gateway's own answer.
+	 * Tests that a placement whose payment waits past its intent's expiry, pending or for the shopper, ends once reconciled, releasing everything the order held: the gateway answers the pending one's expiry, a decline, and voids the one whose shopper never acted, which cancels its order; one not yet past its expiry is left to the gateway's own answer.
 	 *
 	 * Each waits eleven minutes unchanged by the database clock, so reconciliation asks about all
 	 * of them; two have their wait run out a minute ago.
@@ -274,13 +274,15 @@ final class PlacementRecoveryTest extends PlacementTestCase {
 		foreach ( $expired as $paymentToken => $placement ) {
 			$order = $this->committedOrder( $b, (string) $placement['answer']['order_uuid'] );
 
+			$voided = StubGateway::REQUIRES_ACTION === $paymentToken;
+
 			$this->assertNotNull( $order );
-			$this->assertSame( array( 'failed', 'failed' ), array( $order['status'], $order['payment_status'] ), $paymentToken );
-			$this->assertSame( StubGateway::EXPIRED, $b->fetchValue( sprintf( 'SELECT error_code FROM `%s` WHERE order_id = %d', $this->table( PaymentTables::TRANSACTIONS ), $order['id'] ) ), $paymentToken );
+			$this->assertSame( $voided ? array( 'cancelled', 'voided' ) : array( 'failed', 'failed' ), array( $order['status'], $order['payment_status'] ), $paymentToken );
+			$this->assertSame( $voided ? 'void' : 'authorize ' . StubGateway::EXPIRED, $b->fetchValue( sprintf( "SELECT TRIM( CONCAT( operation, ' ', COALESCE( error_code, '' ) ) ) FROM `%s` WHERE order_id = %d", $this->table( PaymentTables::TRANSACTIONS ), $order['id'] ) ), $paymentToken );
 			$this->assertSame( array( 5, 0, 0 ), $this->committedStock( $b, $placement['variant'] ), 'The hold is given back: ' . $paymentToken );
 			$this->assertSame( array( 'released', '0' ), array( $b->fetchValue( sprintf( 'SELECT state FROM `%s` WHERE order_id = %d', $this->table( PromotionTables::USAGE ), $order['id'] ) ), $b->fetchValue( sprintf( 'SELECT used FROM `%s` WHERE id = %d', $this->table( PromotionTables::PROMOTIONS ), $placement['promotion'] ) ) ), 'The promotion\'s use is given back: ' . $paymentToken );
 			$this->assertSame( 'open', $this->committedCart( $b, $placement['cart']->id )['status'] ?? null, $paymentToken );
-			$this->assertSame( 'declined', json_decode( (string) $b->fetchValue( sprintf( 'SELECT response_json FROM `%s` WHERE order_id = %d', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ), $order['id'] ) ), true )['outcome'] ?? null, $paymentToken );
+			$this->assertSame( $voided ? 'voided' : 'declined', json_decode( (string) $b->fetchValue( sprintf( 'SELECT response_json FROM `%s` WHERE order_id = %d', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ), $order['id'] ) ), true )['outcome'] ?? null, $paymentToken );
 		}
 
 		$this->assertSettled( $b, $deciding, 'pending_payment', array( 5, 0, 1 ), 'placing' );

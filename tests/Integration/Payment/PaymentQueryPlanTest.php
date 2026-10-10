@@ -57,11 +57,10 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  * The payment module's reads run over a PlanRecorder: the locked reads of an approval and a
  * duplicate's read of the first row, a capture's plain reads, a refund's reads, its key's claim and
  * its duplicate's read of the first document, the read of a refund's claim, what a user asked in
- * the last 24 hours under the user's lock row, reconciliation's stale intents, a claim read back
- * with what it asked, and every line of doctor's payment check, the refund claims never settled
- * and the flagged orders' results applied to nothing among them. Each plugin
- * SELECT is explained, printed and judged as the
- * order module's are; the reference dataset has no payments, so the tables stay under the size at
+ * the last 24 hours under the user's lock row, reconciliation's stale intents, a resume's read of
+ * one intent, a claim read back with what it asked, and every line of doctor's payment check, the
+ * refund claims never settled and the flagged orders' results applied to nothing among them. Each
+ * plugin SELECT is explained, printed and judged as the order module's are; the reference dataset has no payments, so the tables stay under the size at
  * which the rule gates and the run records the plans. And every SELECT the module's source writes
  * must have been sent (ReadInventory), so no read goes unexplained.
  *
@@ -71,7 +70,8 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  * exercise(): the run names MysqlPaymentRepository's STALE_INTENTS as a read it did not send; leave
  * the read of a refund's claim out: it names MysqlRefundRepository's FIND_CLAIM; leave the open intents out:
  * it names MysqlPaymentRepository's OPEN_INTENTS; leave what a user asked in the last 24 hours out: it names
- * MysqlRefundRepository's ASKED_TODAY.
+ * MysqlRefundRepository's ASKED_TODAY; leave the resume's read of one intent out: it names
+ * MysqlPaymentRepository's FIND_INTENT_REF.
  *
  * @group performance
  *
@@ -155,6 +155,9 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 
 		$db->transaction( static fn(): Application => $payments->applyGatewayResult( $approval, Actor::system( 'payment', 3 ) ) );
 		$db->transaction( static fn(): Application => $payments->applyGatewayResult( $approval, Actor::system( 'payment', 3 ) ) );
+
+		// A shopper's resume reads the intent as reconciliation sees it, by its uuid.
+		$payments->intentRef( $intent->uuid );
 
 		// A capture's plain reads of the intent and of its unreconciled rows.
 		$payments->capture( $intent->uuid, $this->userWithRole() );

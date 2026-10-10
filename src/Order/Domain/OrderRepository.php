@@ -355,12 +355,14 @@ interface OrderRepository {
 	public function stockLines( int $orderId ): array;
 
 	/**
-	 * Reads an order's public identifier and status by its internal id, without a lock.
+	 * Reads an order's public identifier, status and payment status, and when a person last cleared its unreconciled money, by its internal id, without a lock.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Reads the payment status and the clearance too.
 	 *
 	 * @param int $orderId The order's internal id, never a value from a request.
-	 * @return array{uuid: string, status: OrderStatus}|null The two, or null when there is no such order.
+	 * @return array{uuid: string, status: OrderStatus, payment_status: PaymentStatus, money_reconciled_at: string|null}|null
+	 *         The four, the clearance UTC to the microsecond or null for never; null when there is no such order.
 	 */
 	public function statusOf( int $orderId ): ?array;
 

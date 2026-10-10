@@ -121,3 +121,39 @@ wp seocart order reconcile <order_uuid> --note=<note> [--format=<format>]
 - `<order_uuid>`: The public identifier of the order whose unreconciled money is cleared. A uuid.
 - `--note=<note>`: Why the person says the order's money is reconciled; kept with the order, and refused when it holds a card number. Text of at most 500 characters. Personal data.
 - `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart payment capture`
+
+Captures an authorized payment through its gateway, everything authorized or, where the gateway declares partial captures, the amount given, the gateway releasing the rest; a payment is captured once, so a capture asked again after it was made is refused with payment.not_capturable and what was captured, and one whose answer was lost is asked again with the same request, which the gateway carries out once.
+
+```sh
+wp seocart payment capture <intent_uuid> [--amount_minor=<amount_minor>] [--format=<format>]
+```
+
+- Operation: `payment.capture_payment`
+- Capability: `seocart_capture_payments`
+- Error codes: `authorization.denied` (403), `payment.intent_not_found` (404), `payment.not_capturable` (409), `payment.unreconciled` (409), `payment.capture_exceeds_authorized` (409), `payment.operation_unsupported` (409), `payment.gateway_unavailable` (503), `payment.gateway_no_answer` (502), `payment.operation_declined` (402), `store.unavailable` (503)
+
+### Arguments
+
+- `<intent_uuid>`: The public identifier of the payment, as its order's payment record names it. A uuid.
+- `[--amount_minor=<amount_minor>]`: What to capture, in minor units of the payment's currency: at most what was authorized, and less only where the payment's gateway declares partial captures; when absent, everything authorized. An integer of at least 1.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart payment void`
+
+Voids an authorized payment through its gateway, releasing what it authorized before anything is captured, for a declared reason; an order still waiting for its payment is cancelled, and an order accepted is left to the person who voids it; a captured payment is never voided, but refunded, and a void asked again after it was made is refused with payment.not_voidable.
+
+```sh
+wp seocart payment void <intent_uuid> --reason=<reason> [--format=<format>]
+```
+
+- Operation: `payment.void_payment`
+- Capability: `seocart_void_payments`
+- Error codes: `authorization.denied` (403), `payment.intent_not_found` (404), `payment.not_voidable` (409), `payment.unreconciled` (409), `payment.operation_unsupported` (409), `payment.gateway_unavailable` (503), `payment.gateway_no_answer` (502), `payment.operation_declined` (402), `store.unavailable` (503)
+
+### Arguments
+
+- `<intent_uuid>`: The public identifier of the payment, as its order's payment record names it. A uuid.
+- `--reason=<reason>`: Why the payment is voided. One of `customer_request`, `duplicate_order`, `fraud`, `out_of_stock`, `other`.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.

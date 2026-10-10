@@ -18,6 +18,7 @@ use SEOCart\Payment\Application\ClaimStatement;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\RefundService;
 use SEOCart\Payment\Application\SettledClaim;
+use SEOCart\Payment\Domain\ApplicationKind;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Payment\Infrastructure\RefundClaimTables;
@@ -51,7 +52,10 @@ use SEOCart\Tests\Support\Payment\RefundTestCase;
  * - in RefundService::plan(), refuse money a person has not reconciled when a claim is settled too:
  *   a claim of a payment that holds such money can no longer be settled;
  * - in RefundService::settleClaim(), skip the read of the ledger's key: a statement naming another
- *   refund's provider refund ends the claim unreconciled, with no row and no flag, for good.
+ *   refund's provider refund ends the claim unreconciled, with no row and no flag, for good;
+ * - in MysqlRefundRepository::holdsResult(), read the ledger's key with the outcome
+ *   (MysqlPaymentRepository::FIND_TRANSACTION): a statement naming a refund the ledger holds
+ *   declined goes on.
  *
  * @since 0.2.0
  */
@@ -415,6 +419,39 @@ final class SettleRefundClaimTest extends RefundTestCase {
 		$this->assertCount( 1, $this->refundLedgerRows( $order->id ), 'Nothing reached the ledger.' );
 		$this->assertSame( '0', (string) $this->orderRow( $order->id )['has_unreconciled_money'], 'The order is not flagged.' );
 		$this->assertSame( 'declined', $this->settle( $uuid, self::notRefunded() )->state->value, 'The claim is still a person\'s to settle.' );
+	}
+
+	/**
+	 * Tests that the ledger's knowledge of a provider's refund is read whatever that row's outcome: a statement naming a refund the ledger holds as declined is refused as one naming a refund it holds as made.
+	 *
+	 * The ledger's key tells outcomes apart, so a decline and an approval of the same provider
+	 * object are two rows; the statement's read must not: a provider's refund the ledger knows in any
+	 * outcome is another refund's.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_statement_naming_a_refund_the_ledger_holds_declined_is_refused_too(): void {
+		list( $order, $intent ) = $this->placePaid( self::order() );
+		list( $tee )            = $this->lineUuids( $order->id );
+
+		$declined = $this->deliver( self::stubResult( $intent, Operation::Refund, Outcome::Declined, 1000, (string) $this->intentRow( $intent->uuid )['currency'], 're-declined-' . $intent->uuid ) );
+
+		$this->assertSame( ApplicationKind::Declined, $declined->kind );
+
+		$uuid    = $this->openClaim( $order->uuid, $tee, $this->provider, $this->service );
+		$claimed = (int) $this->claimOf( $uuid )['amount_minor'];
+
+		$this->provider->knows = false;
+
+		try {
+			$this->settle( $uuid, self::refundedAs( 're-declined-' . $intent->uuid, $claimed ) );
+			$this->fail( 'The settlement went on.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( array( PaymentError::RefundStatementIncomplete->value, ClaimStatement::ALREADY_RECORDED ), array( $refused->errorCode()->value, $refused->context()['problem'] ?? null ) );
+		}
+
+		$this->assertSame( 0, $this->provider->queries, 'The gateway was not asked.' );
+		$this->assertSame( 'claimed', $this->settlementOf( $uuid )['state'], 'The claim is left as it was.' );
 	}
 
 	/**

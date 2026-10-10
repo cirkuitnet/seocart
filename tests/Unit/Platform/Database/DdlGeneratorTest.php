@@ -27,7 +27,9 @@ use SEOCart\Platform\Database\Schema\TableDefinition;
  * this test, never a silent change to every table. MigratorTest proves the other
  * half: that dbDelta, parsing this output for an existing table, sends no ALTER.
  *
- * Planted violation: in DdlGenerator::createTable(), write `PRIMARY KEY (` with one space.
+ * Planted violations, each shown red and removed: in DdlGenerator::createTable(), write
+ * `PRIMARY KEY (` with one space; in DdlGenerator::replaceUniqueKey(), write the key's columns as
+ * a separate ADD after the DROP, in two statements: the table goes without the key between them.
  *
  * @since 0.1.0
  */
@@ -109,6 +111,34 @@ final class DdlGeneratorTest extends TestCase {
 
 		foreach ( array( 'COMMENT', 'IF NOT EXISTS', 'FOREIGN KEY', 'REFERENCES', "\n\n" ) as $forbidden ) {
 			$this->assertStringNotContainsString( $forbidden, $statement );
+		}
+	}
+
+	/**
+	 * Tests the one statement that replaces a unique key: the key dropped and added again under its name, with its declared columns, in the same ALTER TABLE.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_unique_key_is_replaced_in_one_statement(): void {
+		$this->assertSame(
+			'ALTER TABLE `wp_seocart_widgets` DROP INDEX `uuid`, ADD UNIQUE KEY `uuid` (`uuid`)',
+			( new DdlGenerator() )->replaceUniqueKey( self::widgets(), 'wp_seocart_widgets', 'uuid' )
+		);
+	}
+
+	/**
+	 * Tests that only a declared unique key is replaced: a plain key's name, and a name the table does not declare, are refused before any statement is written.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_name_that_is_no_declared_unique_key_is_refused(): void {
+		foreach ( array( 'name_created', 'no_such_key', 'uuid`, DROP INDEX `name_created' ) as $name ) {
+			try {
+				( new DdlGenerator() )->replaceUniqueKey( self::widgets(), 'wp_seocart_widgets', $name );
+				$this->fail( $name . ' was replaced.' );
+			} catch ( \InvalidArgumentException $refused ) {
+				$this->assertStringContainsString( 'declares no unique key named', $refused->getMessage(), $name );
+			}
 		}
 	}
 

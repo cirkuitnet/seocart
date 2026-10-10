@@ -37,6 +37,7 @@ use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
+use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\Outbox;
 use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Support\Currency;
@@ -228,17 +229,19 @@ abstract class PaymentTestCase extends OrderTestCase {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param Database    $db       The connection.
-	 * @param IdGenerator $ids      The ids it mints.
-	 * @param Gateways    $gateways The gateways it finds each intent's in.
+	 * @param Database                $db       The connection.
+	 * @param IdGenerator             $ids      The ids it mints.
+	 * @param Gateways                $gateways The gateways it finds each intent's in.
+	 * @param TransactionManager|null $tx       Optional. Its unit of work, such as one whose schema gate is closed. Default
+	 *                                          the connection.
 	 * @return PaymentService The service.
 	 */
-	protected function paymentsWith( Database $db, IdGenerator $ids, Gateways $gateways ): PaymentService {
+	protected function paymentsWith( Database $db, IdGenerator $ids, Gateways $gateways, ?TransactionManager $tx = null ): PaymentService {
 		return new PaymentService(
 			new MysqlPaymentRepository( $db, $ids ),
 			$gateways,
 			$this->ordersOver( $db, $ids ),
-			$db,
+			$tx ?? $db,
 			$this->publisherOver( $db ),
 			new Authorizer( new CapabilityDeclaration() ),
 			$ids,

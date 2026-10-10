@@ -1,6 +1,6 @@
 <?php
 /**
- * DdlGenerator: writes the CREATE TABLE statement for a table declaration, in the form dbDelta parses
+ * DdlGenerator: writes the CREATE TABLE statement for a table declaration, in the form dbDelta parses, and the ALTER that gives an existing unique key its declared columns
  *
  * @package SEOCart
  * @since   0.1.0
@@ -13,8 +13,10 @@ namespace SEOCart\Platform\Database\Schema;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- A declaration error is a message for the developer who wrote the migration; it is never HTML.
+
 /**
- * Turns a TableDefinition into a CREATE TABLE statement.
+ * Turns a TableDefinition into a CREATE TABLE statement, and into the ALTER TABLE that replaces one of its unique keys, which dbDelta never changes.
  *
  * Owns one fact: the formatting rules dbDelta's regular-expression parser needs, applied by
  * code instead of by hand. Lowercase types, backticked identifiers, one column or key per line
@@ -64,6 +66,30 @@ final class DdlGenerator {
 		}
 
 		return 'CREATE TABLE `' . $tableName . "` (\n\t" . implode( ",\n\t", $lines ) . "\n) ENGINE=InnoDB" . ( '' === $charsetCollate ? '' : ' ' . $charsetCollate );
+	}
+
+	/**
+	 * Writes the statement that gives an existing table's unique key the columns its declaration names now: one ALTER TABLE that drops the key and adds it again under the same name.
+	 *
+	 * One statement, which the server applies whole, so the table is never without the key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \InvalidArgumentException When the declaration declares no unique key by that name.
+	 *
+	 * @param TableDefinition $definition The table's declaration.
+	 * @param string          $tableName  The full table name, prefix included, as Database::table() returns it.
+	 * @param string          $name       The unique key's name.
+	 * @return string The statement, without a trailing semicolon.
+	 */
+	public function replaceUniqueKey( TableDefinition $definition, string $tableName, string $name ): string {
+		$key = $definition->index( $name );
+
+		if ( null === $key || ! $key->isUnique() ) {
+			throw new \InvalidArgumentException( sprintf( 'Table %1$s declares no unique key named %2$s.', $definition->name(), $name ) );
+		}
+
+		return 'ALTER TABLE `' . $tableName . '` DROP INDEX `' . $key->name() . '`, ADD UNIQUE KEY `' . $key->name() . '` (' . self::columnList( $key->columns() ) . ')';
 	}
 
 	/**

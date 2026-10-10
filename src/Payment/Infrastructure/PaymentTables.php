@@ -54,6 +54,15 @@ final class PaymentTables {
 	public const TRANSACTIONS = 'payment_transactions';
 
 	/**
+	 * The name of the ledger's claim key, which records each outcome a provider reports for its object of an operation once: the name it has had since the ledger was created, before the outcome joined it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LEDGER_KEY = 'provider_object_operation';
+
+	/**
 	 * The module every table belongs to.
 	 *
 	 * @since 0.1.0
@@ -194,12 +203,12 @@ final class PaymentTables {
 				new ColumnSpec( 'result', 'varchar(16)', Classification::Public, 'What the gateway answered: approved or declined.', collation: 'ascii_bin' ),
 				new ColumnSpec( 'applied', 'tinyint(1)', Classification::Public, '1 when the row moved the intent\'s and the order\'s amounts; 0 when its amount or currency did not match them, so it moved nothing and a person must reconcile it.', defaultValue: '1' ),
 				new ColumnSpec( 'error_code', 'varchar(64)', Classification::Public, 'The gateway\'s machine code for a decline, for example card_declined; NULL otherwise.', nullable: true, collation: 'ascii_bin' ),
-				new ColumnSpec( 'actor_type', 'varchar(16)', Classification::Public, 'user for a person acting in person, system for a process acting on a user\'s authority.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'actor_type', 'varchar(16)', Classification::Public, 'user for a person acting in person, system for a process: one acting on a user\'s authority, or the store itself acting on no user\'s, such as the reconciliation run, with actor_id NULL.', collation: 'ascii_bin' ),
 				new ColumnSpec(
 					'actor_id',
 					'bigint unsigned',
 					Classification::Pii,
-					'The WordPress user on whose authority the result was applied; NULL for a visitor.',
+					'The WordPress user on whose authority the result was applied; NULL for a visitor, and for the store acting on no user\'s authority.',
 					nullable: true,
 					erasure: ColumnSpec::ERASE_RETAIN,
 					retainedBecause: 'The ledger keeps who applied each money fact for as long as the order is kept; the user id identifies no one once the user is erased.'
@@ -211,7 +220,7 @@ final class PaymentTables {
 			array( 'id' ),
 			array(
 				IndexSpec::unique( 'uuid', array( 'uuid' ), 'One row per public identifier.' ),
-				IndexSpec::unique( 'provider_object_operation', array( 'provider', 'provider_object_id', 'operation' ), 'A gateway result is applied at most once: a second delivery of the same outcome meets this key.' ),
+				IndexSpec::unique( self::LEDGER_KEY, array( 'provider', 'provider_object_id', 'operation', 'result' ), 'A gateway result is applied at most once: a second delivery of the same outcome of the same provider object and operation meets this key. Another outcome of the same object is a result of its own, as when a shopper retries a declined card on the same payment intent and it is approved.' ),
 			),
 			array(
 				IndexSpec::key( 'intent_created', array( 'intent_id', 'created_at' ), 'An intent\'s rows, which doctor sums against its amounts, and its unreconciled rows before a capture or a refund.' ),

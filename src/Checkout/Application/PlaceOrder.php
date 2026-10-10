@@ -32,6 +32,7 @@ use SEOCart\Checkout\Domain\PlacementOutcome;
 use SEOCart\Checkout\Domain\SettledPlacement;
 use SEOCart\Contracts\Payment\GatewayUnavailable;
 use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\NextAction;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Order\Application\ActorCustomers;
@@ -87,9 +88,11 @@ use SEOCart\Support\Error\CodedException;
  * answer says the order is `pending` until the second unit writes what it came to. When the
  * gateway cannot be reached the order waits as placed, and the reconciliation job asks the gateway
  * later; a decline releases everything the order held, opens the cart again, and is refused
- * with the order's uuid. A cart is locked after DECLINES declines within an hour, which is how card
- * testing is slowed down; the cap is the cart's, so other shoppers behind the same address are
- * never locked out by one, and it is counted only for a cart the request's token was found to name.
+ * with the order's uuid; so does a gateway that, once the order is placed, can no longer be used or
+ * no longer declares the payment, before anything is sent to it. A cart is locked after DECLINES
+ * declines within an hour, which is how card testing is slowed down; the cap is the cart's, so
+ * other shoppers behind the same address are never locked out by one, and it is counted only for a
+ * cart the request's token was found to name.
  *
  * @since 0.1.0
  * @since 0.2.0 Checks the payment method can take the payment, and records the payment's mode.
@@ -207,16 +210,17 @@ final class PlaceOrder {
 	 *                        `checkout.totals_changed` and `checkout.payment_method_unavailable`,
 	 *                        before anything is written; `stock.insufficient` and
 	 *                        `promotion.limit_reached`, which roll the placement back;
-	 *                        `checkout.gateway_unavailable` and `checkout.payment_declined`, naming
-	 *                        the order; the codes the calculation raises.
+	 *                        `checkout.gateway_unavailable`, `checkout.payment_method_unavailable`
+	 *                        once the order is written and released, and `checkout.payment_declined`,
+	 *                        naming the order; the codes the calculation raises.
 	 *
 	 * @param array<string, mixed> $input The prepared input: idempotency_key (from the request's
 	 *                                    header), cart_version, grand_total_minor, currency and
 	 *                                    payment_data.
 	 * @param Actor                $actor Who places the order.
 	 * @return array<string, mixed> The placement, by wire name: the order's uuid, number and access
-	 *                              key, the cart's version, the outcome, and the order's status and
-	 *                              payment status.
+	 *                              key, the cart's version, the outcome, the order's status and
+	 *                              payment status, and what the shopper must do while they must act.
 	 */
 	public function place( array $input, Actor $actor ): array {
 		$key = (string) ( $input['idempotency_key'] ?? '' );
@@ -259,7 +263,7 @@ final class PlaceOrder {
 			return $this->answerRefusedClaim( $refused, $keyHash, $fingerprint, $token, $key );
 		}
 
-		return $this->paid( $placed, (array) ( $input['payment_data'] ?? array() ), $token, $actor );
+		return $this->paid( $placed, (array) ( $input['payment_data'] ?? array() ), $token, $key, $actor );
 	}
 
 	/**
@@ -323,6 +327,7 @@ final class PlaceOrder {
 			'outcome'        => PlacementOutcome::Pending->value,
 			'status'         => OrderStatus::PendingPayment->value,
 			'payment_status' => PaymentStatus::Unpaid->value,
+			'next_action'    => null,
 		);
 
 		$this->keys->complete( $claim->id, $order->id, KeptAnswer::seal( $record, $token, $key ) );
@@ -338,21 +343,27 @@ final class PlaceOrder {
 	 * Has the gateway authorize the placed order's payment, outside any transaction, settles the result, and answers.
 	 *
 	 * An order with nothing due has no intent: the gateway is not asked, and the second unit
-	 * settles it as paid.
+	 * settles it as paid. The gateway is given the address it sends a shopper it asks to act back
+	 * to (ReturnUrls), which carries the payment's identifier alone; what it asks of the shopper is
+	 * answered, and kept sealed with the answer for a retry while the shopper must act.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Gives the gateway the return address, and answers what the shopper must do.
 	 *
-	 * @throws CodedException `checkout.gateway_unavailable` when the gateway gives no answer, or can
-	 *                        no longer be used for the payment, and `checkout.payment_declined`
+	 * @throws CodedException `checkout.gateway_unavailable` when the gateway gives no answer, the
+	 *                        order waiting as placed; `checkout.payment_method_unavailable` when the
+	 *                        gateway can no longer be used for the payment, or no longer declares it,
+	 *                        and nothing was sent, the order released; and `checkout.payment_declined`
 	 *                        when it declines; each names the order.
 	 *
 	 * @param array{record: array<string, mixed>, order_id: int, intent_uuid: string|null} $placed      What the first unit of work placed.
 	 * @param array<string, mixed>                                                         $paymentData What the client sent for the gateway.
 	 * @param CartToken                                                                    $token       The token of the cart placed, which a decline is counted for.
+	 * @param string                                                                       $key         The idempotency key the request sent, which seals what the shopper must do.
 	 * @param Actor                                                                        $actor       Who places the order.
 	 * @return array<string, mixed> The answer.
 	 */
-	private function paid( array $placed, array $paymentData, CartToken $token, Actor $actor ): array {
+	private function paid( array $placed, array $paymentData, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): array {
 		$record = $placed['record'];
 		$order  = array( 'order_uuid' => $record['order_uuid'] );
 
@@ -361,20 +372,20 @@ final class PlaceOrder {
 		}
 
 		try {
-			$result = $this->payments->authorize( $placed['intent_uuid'], $paymentData, (string) $record['order_uuid'], (string) $record['order_number'] );
+			$result = $this->payments->authorize( $placed['intent_uuid'], $paymentData, (string) $record['order_uuid'], (string) $record['order_number'], ReturnUrls::for( $placed['intent_uuid'] ) );
 		} catch ( GatewayUnavailable $unavailable ) {
+			// The request may have reached the provider: the order waits as placed, and reconciliation asks.
 			throw CodedException::because( CheckoutError::GatewayUnavailable, array(), $unavailable, $order );
 		} catch ( CodedException $refused ) {
-			// The gateway was found able to take the payment before the order was placed; one that cannot be used now,
-			// or no longer declares the payment, is unavailable alike, and the order waits as placed.
 			if ( ! in_array( $refused->errorCode(), array( PaymentError::GatewayUnavailable, PaymentError::OperationUnsupported ), true ) ) {
 				throw $refused;
 			}
 
-			throw CodedException::because( CheckoutError::GatewayUnavailable, array(), $refused, $order );
+			$this->refuseUnsent( $placed['intent_uuid'], $refused, $order, $actor );
 		}
 
-		$settled = $this->settlement->apply( $result, $actor );
+		$sealed  = null === $result->nextAction ? null : KeptAnswer::sealAction( $result->nextAction, (string) $record['order_uuid'], $token, $key );
+		$settled = $this->settlement->apply( $result, $actor, null, $sealed );
 
 		if ( PlacementOutcome::Declined === $settled->outcome ) {
 			$limit = self::declineLimit();
@@ -384,7 +395,35 @@ final class PlaceOrder {
 			CodedException::raise( CheckoutError::PaymentDeclined, array(), $order );
 		}
 
-		return $this->settledAnswer( $record, $settled );
+		return $this->settledAnswer( $record, $settled, $result->nextAction );
+	}
+
+	/**
+	 * Releases a placement whose authorization the store refused to send, and refuses the placement as one the payment method cannot take.
+	 *
+	 * The gateway was found able to take the payment before the order was placed, but by the time
+	 * it was to be asked, it could not be used, or its matrix no longer declared the payment: the
+	 * refusal came before any request was built, so the provider never saw the intent, and nothing
+	 * will ever answer for it. The authorization is declined here, without a provider object, and
+	 * settled as a decline: the order fails, and its hold, its promotion uses and its cart are given
+	 * back. It is the store's refusal, not the card's, so the cart's count of declines is not added to.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException Always: `checkout.payment_method_unavailable`, naming the payment method and the order,
+	 *                        with the refusal as the previous exception.
+	 *
+	 * @param string                $intentUuid The intent.
+	 * @param CodedException        $refused    Why it was not sent.
+	 * @param array<string, string> $order      The order's details: its uuid.
+	 * @param Actor                 $actor      Who places the order.
+	 */
+	private function refuseUnsent( string $intentUuid, CodedException $refused, array $order, Actor $actor ): never {
+		$unsent = $this->payments->unsent( $intentUuid );
+
+		$this->settlement->apply( $unsent, $actor );
+
+		throw CodedException::because( CheckoutError::PaymentMethodUnavailable, array( 'payment_method_key' => $unsent->provider ), $refused, $order );
 	}
 
 	/**
@@ -637,28 +676,30 @@ final class PlaceOrder {
 	}
 
 	/**
-	 * Returns the answer of a settled placement: the kept record, with the outcome and the statuses after the settlement.
+	 * Returns the answer of a settled placement: the kept record, with the outcome and the statuses after the settlement, and what the shopper must do while they must act.
 	 *
 	 * The order's status is the settlement's when it changed it; otherwise, as for an answer the
-	 * gateway already delivered by another path, the order's status now, read.
+	 * gateway already delivered by another path, the order's status now, read
+	 * (SettlePlacement::statusesOf()).
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Answers what the shopper must do.
 	 *
-	 * @throws \LogicException When the order the settlement names is gone.
-	 *
-	 * @param array<string, mixed> $record  The record the key keeps.
-	 * @param SettledPlacement     $settled What the settlement came to.
+	 * @param array<string, mixed> $record     The record the key keeps.
+	 * @param SettledPlacement     $settled    What the settlement came to.
+	 * @param NextAction|null      $nextAction Optional. What the gateway asked the shopper to do. Default null.
 	 * @return array<string, mixed> The answer.
 	 */
-	private function settledAnswer( array $record, SettledPlacement $settled ): array {
-		$status = $settled->orderStatus ?? $this->orders->statusOf( $settled->orderId )['status'] ?? throw new \LogicException( sprintf( 'Order %d was settled, and is gone.', $settled->orderId ) );
+	private function settledAnswer( array $record, SettledPlacement $settled, ?NextAction $nextAction = null ): array {
+		$statuses = $this->settlement->statusesOf( $settled );
 
 		return array_merge(
 			$record,
 			array(
 				'outcome'        => $settled->outcome->value,
-				'status'         => $status->value,
-				'payment_status' => $settled->paymentStatus->value,
+				'status'         => $statuses['status']->value,
+				'payment_status' => $statuses['payment_status']->value,
+				'next_action'    => PlacementOutcome::RequiresAction === $settled->outcome && null !== $nextAction ? KeptAnswer::actionOf( $nextAction ) : null,
 			)
 		);
 	}

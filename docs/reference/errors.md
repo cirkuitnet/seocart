@@ -203,7 +203,7 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 409
 - Message: The payment method {payment_method_key} cannot take this order's payment now, so the order was not placed. Choose another way to pay, then place the order again.
 - Values: `payment_method_key`
-- Details: `reason`, beside the values
+- Details: `reason`, `order_uuid`, beside the values
 
 ## `checkout.placement_in_progress`
 
@@ -318,6 +318,18 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: An order cannot change from {from} to {to}.
 - Values: `from`, `to`
 
+## `payment.capture_exceeds_authorized`
+
+- HTTP status: 409
+- Message: A capture of {requested} would take more than the {authorized} authorized; nothing was asked of the payment gateway.
+- Values: `authorized`, `requested`
+
+## `payment.gateway_no_answer`
+
+- HTTP status: 502
+- Message: The payment gateway did not answer, and nothing was recorded. Asking again sends the same request, which the gateway carries out at most once.
+- Values: none
+
 ## `payment.gateway_unavailable`
 
 - HTTP status: 503
@@ -335,6 +347,19 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 409
 - Message: A payment that is {status} cannot be captured; only an authorized payment can.
 - Values: `status`
+- Details: `captured`, `currency`, beside the values
+
+## `payment.not_voidable`
+
+- HTTP status: 409
+- Message: A payment that is {status} cannot be voided; only an authorized payment can, and a captured one is given back by a refund.
+- Values: `status`
+
+## `payment.operation_declined`
+
+- HTTP status: 402
+- Message: The payment gateway {gateway_id} refused the {operation}. A refused void changes nothing; a refused capture is recorded, and leaves the payment failed.
+- Values: `gateway_id`, `operation`
 
 ## `payment.operation_unsupported`
 

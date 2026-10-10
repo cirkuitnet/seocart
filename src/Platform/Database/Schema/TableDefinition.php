@@ -327,6 +327,24 @@ final class TableDefinition {
 	}
 
 	/**
+	 * Returns the declared key of a name, unique or plain.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $name The key's name.
+	 * @return IndexSpec|null The key, or null when the table declares none by that name.
+	 */
+	public function index( string $name ): ?IndexSpec {
+		foreach ( array_merge( $this->uniqueKeys, $this->indexes ) as $index ) {
+			if ( $index->name() === $name ) {
+				return $index;
+			}
+		}
+
+		return null;
+	}
+
+	/**
 	 * Returns the retention policy.
 	 *
 	 * @since 0.1.0

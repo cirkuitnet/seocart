@@ -18,10 +18,10 @@ defined( 'ABSPATH' ) || exit;
 /**
  * A capture request: the intent, the provider's reference to it, the amount to take and the intent's mode.
  *
- * Owns one fact: what a capture sends a provider. The amount is the intent's frozen amount:
- * capturing less than was authorized waits for a gateway that declares it. Its idempotency key is
- * derived from the intent, so a capture asked again after its answer was lost is the same capture
- * at the provider.
+ * Owns one fact: what a capture sends a provider. The amount is what is captured: everything
+ * authorized, or less only for a gateway whose matrix declares `partial_capture`, the provider
+ * releasing the rest. Its idempotency key is derived from the intent, whatever the amount, so a
+ * capture asked again after its answer was lost is the same capture at the provider.
  *
  * @since 0.1.0
  * @since 0.2.0 Moved to the public contract, with the mode and the idempotency key.

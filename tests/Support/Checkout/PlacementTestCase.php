@@ -231,6 +231,20 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 	}
 
 	/**
+	 * Starts, in a process of its own, the end of a shopper's time to act, a capture, a void, or a capture killed once the provider made it, as the placement probe runs each.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string               $mode    `window-end`, `capture`, `void` or `capture-and-die`.
+	 * @param array<string, mixed> $request What the mode reads: `order_uuid`; `intent_uuid`, `user_id` and a void's
+	 *                                      `reason`; and optionally `provider_file`, the memory of a FileProviderGateway.
+	 * @return RunningProbe The running probe; its report names its answer or its refusal.
+	 */
+	protected function startPaymentProbe( string $mode, array $request ): RunningProbe {
+		return ChildProcessProbe::start( __DIR__ . '/placement-probe.php', array( $mode, base64_encode( (string) wp_json_encode( $request ) ) ) );
+	}
+
+	/**
 	 * Returns once the server shows a probe's statement waiting, and fails the test otherwise.
 	 *
 	 * Like awaitProbeWaiting(), but the statement is known by how it begins: a placement's

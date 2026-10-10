@@ -37,6 +37,8 @@ use SEOCart\Support\Money;
  *   order captured in full reads as partly paid;
  * - in Projection::status(), leave out the zero grand total: an order with nothing due reads as
  *   unpaid;
+ * - in Projection::status(), read the void after the authorizations: an order voided after its
+ *   authorization reads as authorized;
  * - in Projection::intentAfterRefund(), call the intent refunded only once more than it captured
  *   is refunded: the refund of the rest leaves it partly refunded.
  *
@@ -60,6 +62,7 @@ final class DeriveTest extends TestCase {
 			'the gateway is deciding'                 => array( array( 3080, 0, 0, 0 ), array( 0, 0, 0 ), IntentStatus::Processing, PaymentStatus::Pending ),
 			'declined, nothing tendered'              => array( array( 3080, 0, 0, 0 ), array( 0, 0, 0 ), IntentStatus::Failed, PaymentStatus::Failed ),
 			'voided, nothing tendered'                => array( array( 3080, 0, 0, 0 ), array( 0, 0, 0 ), IntentStatus::Voided, PaymentStatus::Voided ),
+			'voided after its authorization'          => array( array( 3080, 3080, 0, 0 ), array( 0, 0, 0 ), IntentStatus::Voided, PaymentStatus::Voided ),
 			'authorized in full'                      => array( array( 3080, 0, 0, 0 ), array( 3080, 0, 0 ), IntentStatus::Authorized, PaymentStatus::Authorized ),
 			'a declined capture of an authorization'  => array( array( 3080, 3080, 0, 0 ), array( 0, 0, 0 ), IntentStatus::Failed, PaymentStatus::Authorized ),
 			'captured in full'                        => array( array( 3080, 3080, 0, 0 ), array( 0, 3080, 0 ), IntentStatus::Captured, PaymentStatus::Paid ),

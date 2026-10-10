@@ -23,6 +23,7 @@ use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
 use SEOCart\Checkout\Application\ChangeCartCurrency;
 use SEOCart\Checkout\Application\PlaceOrder;
+use SEOCart\Checkout\Application\ResumePayment;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Checkout\Domain\AddressDocument;
 use SEOCart\Checkout\Domain\CheckoutDetails;
@@ -30,9 +31,11 @@ use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Domain\PlacementOutcome;
 use SEOCart\Contracts\Payment\GatewayDescriptor;
+use SEOCart\Contracts\Payment\NextAction;
 use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\PaymentStatus;
+use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Pricing\Domain\PricingError;
 use SEOCart\Pricing\Interfaces\TotalsFields;
 use SEOCart\Promotion\Application\PromotionError;
@@ -61,6 +64,12 @@ defined( 'ABSPATH' ) || exit;
  *   The `Idempotency-Key` header is required, a new key for each attempt and the same one when it
  *   is retried: a retry of a placement that went through gets its first answer again, its access
  *   key included, and never a second order.
+ *
+ * - `checkout.resume_payment`, `POST seocart/store/v1/checkout/resume`: once a shopper the payment
+ *   provider asked to act is back, has the store ask the provider where the payment stands and
+ *   settle what it answers, through the placement's own settlement. The cart token the placement
+ *   was made with is required, and it is counted in the placements' rate limit. The browser never
+ *   settles anything itself.
  *
  * - `checkout.change_currency`, `POST seocart/store/v1/cart/currency`: switches the request's cart
  *   to another currency the store sells in, at the version the client read. The switch moves the
@@ -97,6 +106,24 @@ final class CheckoutOperations {
 	 * @var string
 	 */
 	public const PLACE_ORDER = IdempotencyClaim::PLACE_ORDER_SCOPE;
+
+	/**
+	 * The id of the resume of a placement's payment.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const RESUME_PAYMENT = 'checkout.resume_payment';
+
+	/**
+	 * The route of the resume, relative to the Store API's namespace.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const RESUME_ROUTE = '/checkout/resume';
 
 	/**
 	 * The id of the switch of the cart's currency.
@@ -313,33 +340,10 @@ final class CheckoutOperations {
 						required: true,
 						minimum: 1
 					),
-					new FieldSpec(
-						name: 'outcome',
-						type: FieldType::String,
-						description: 'What the placement came to: approved, requires_action when the shopper must act, processing while the gateway decides, or, given to a retry with the same key, any outcome the placement came to since, declined included; pending only while the payment is not yet known.',
-						label: static fn(): string => __( 'Outcome', 'seocart' ),
-						example: PlacementOutcome::Approved->value,
-						required: true,
-						allowed: array_map( static fn( PlacementOutcome $outcome ): string => $outcome->value, PlacementOutcome::cases() )
-					),
-					new FieldSpec(
-						name: 'status',
-						type: FieldType::String,
-						description: 'The order\'s status once the placement settled.',
-						label: static fn(): string => __( 'Status', 'seocart' ),
-						example: OrderStatus::Processing->value,
-						required: true,
-						allowed: array_map( static fn( OrderStatus $status ): string => $status->value, OrderStatus::cases() )
-					),
-					new FieldSpec(
-						name: 'payment_status',
-						type: FieldType::String,
-						description: 'How far the order is paid once the placement settled.',
-						label: static fn(): string => __( 'Payment status', 'seocart' ),
-						example: PaymentStatus::Authorized->value,
-						required: true,
-						allowed: array_map( static fn( PaymentStatus $status ): string => $status->value, PaymentStatus::cases() )
-					),
+					self::outcome( 'What the placement came to: approved, requires_action when the shopper must act, processing while the gateway decides, or, given to a retry with the same key, any outcome the placement came to since, declined included; pending only while the payment is not yet known.' ),
+					self::orderStatus( 'The order\'s status once the placement settled.' ),
+					self::paymentStatus( 'How far the order is paid once the placement settled.' ),
+					self::nextAction(),
 				)
 			),
 			capability: null,
@@ -373,6 +377,54 @@ final class CheckoutOperations {
 				headers: array( IdempotencyKey::FIELD => new RequestHeader( self::IDEMPOTENCY_HEADER, true ) ),
 				retry_after: array( CheckoutError::PlacementInProgress->value => self::RETRY_AFTER_SECONDS )
 			),
+			public_write: StoreRequestPolicy::write( self::PLACE_BUCKET, self::PLACE_LIMIT, self::PLACE_WINDOW, true )
+		);
+	}
+
+	/**
+	 * Declares the resume of a placement's payment.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function resumePayment(): OperationDefinition {
+		return new OperationDefinition(
+			id: self::RESUME_PAYMENT,
+			label: static fn(): string => __( 'Resume the payment', 'seocart' ),
+			summary: 'Once the shopper is back from acting for the payment provider, has the store ask the provider where the placement\'s payment stands and settle what it answers, as the placement would have; answers the outcome and the order\'s statuses, the outcome duplicate when the store had settled the payment already. The cart token the placement was made with is required.',
+			input: array(
+				new FieldSpec(
+					name: 'intent_uuid',
+					type: FieldType::Uuid,
+					description: 'The payment\'s public identifier, as the address the provider sent the shopper back to carries it.',
+					label: static fn(): string => __( 'Payment', 'seocart' ),
+					example: '0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6e',
+					required: true
+				),
+			),
+			output: new ResourceSchema(
+				'ResumedPayment',
+				array(
+					new FieldSpec(
+						name: 'intent_uuid',
+						type: FieldType::Uuid,
+						description: 'The payment resumed.',
+						label: static fn(): string => __( 'Payment', 'seocart' ),
+						example: '0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6e',
+						required: true
+					),
+					self::outcome( 'What the payment came to: approved, declined, requires_action while the shopper still must act, processing while the provider decides, or duplicate when the store had settled it already; the statuses say where the order stands.' ),
+					self::orderStatus( 'The order\'s status now.' ),
+					self::paymentStatus( 'How far the order is paid now.' ),
+				)
+			),
+			capability: null,
+			resource_field: null,
+			errors: array( CartError::NotFound, PaymentError::IntentNotFound, CheckoutError::GatewayUnavailable ),
+			annotations: new Annotations( read_only: false, destructive: false, idempotent: true ),
+			service: array( ResumePayment::class, 'resume' ),
+			rest: new RestBinding( self::RESUME_ROUTE, WriteMethod::Post, store: true ),
 			public_write: StoreRequestPolicy::write( self::PLACE_BUCKET, self::PLACE_LIMIT, self::PLACE_WINDOW, true )
 		);
 	}
@@ -459,6 +511,114 @@ final class CheckoutOperations {
 				$text( 'tax_id', 'The tax identifier, such as a VAT number.', static fn(): string => __( 'Tax ID', 'seocart' ), 'GB000000000' ),
 			),
 			nullable: $output
+		);
+	}
+
+	/**
+	 * Returns what a placement, or the resume of its payment, came to.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $description What it says, in the answer it is part of.
+	 * @return FieldSpec The field.
+	 */
+	private static function outcome( string $description ): FieldSpec {
+		return new FieldSpec(
+			name: 'outcome',
+			type: FieldType::String,
+			description: $description,
+			label: static fn(): string => __( 'Outcome', 'seocart' ),
+			example: PlacementOutcome::Approved->value,
+			required: true,
+			allowed: array_map( static fn( PlacementOutcome $outcome ): string => $outcome->value, PlacementOutcome::cases() )
+		);
+	}
+
+	/**
+	 * Returns the order's status, as a placement or the resume of its payment answers it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $description What it says, in the answer it is part of.
+	 * @return FieldSpec The field.
+	 */
+	private static function orderStatus( string $description ): FieldSpec {
+		return new FieldSpec(
+			name: 'status',
+			type: FieldType::String,
+			description: $description,
+			label: static fn(): string => __( 'Status', 'seocart' ),
+			example: OrderStatus::Processing->value,
+			required: true,
+			allowed: array_map( static fn( OrderStatus $status ): string => $status->value, OrderStatus::cases() )
+		);
+	}
+
+	/**
+	 * Returns the order's payment status, as a placement or the resume of its payment answers it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $description What it says, in the answer it is part of.
+	 * @return FieldSpec The field.
+	 */
+	private static function paymentStatus( string $description ): FieldSpec {
+		return new FieldSpec(
+			name: 'payment_status',
+			type: FieldType::String,
+			description: $description,
+			label: static fn(): string => __( 'Payment status', 'seocart' ),
+			example: PaymentStatus::Authorized->value,
+			required: true,
+			allowed: array_map( static fn( PaymentStatus $status ): string => $status->value, PaymentStatus::cases() )
+		);
+	}
+
+	/**
+	 * Returns what the shopper must do for the payment provider: a redirect to its page, or a handle for its script in the browser.
+	 *
+	 * Its handle is answered to the shopper whose browser takes the step, so it is no secret field,
+	 * which no answer carries; the logs drop it by name (Redactor::ANSWERED_SECRETS).
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return FieldSpec The field.
+	 */
+	private static function nextAction(): FieldSpec {
+		return FieldSpec::object(
+			'next_action',
+			'What the shopper must do for the payment provider while the outcome is requires_action, for example confirm the payment with their bank, and null otherwise. It is answered again to a retry of the same request while the shopper must act. Once the provider sends the shopper back, resume the payment with checkout.resume_payment.',
+			static fn(): string => __( 'Next action', 'seocart' ),
+			array(
+				new FieldSpec(
+					name: 'type',
+					type: FieldType::String,
+					description: 'redirect, to send the shopper to url; or sdk, to give client_token to the provider\'s script in the browser.',
+					label: static fn(): string => __( 'Type', 'seocart' ),
+					example: NextAction::REDIRECT,
+					required: true,
+					allowed: NextAction::TYPES
+				),
+				new FieldSpec(
+					name: 'url',
+					type: FieldType::String,
+					description: 'The page to send the shopper to, as the provider gave it; null for a step the provider\'s script takes.',
+					label: static fn(): string => __( 'Address', 'seocart' ),
+					example: 'https://payments.example.com/authenticate/a1b2c3',
+					nullable: true,
+					max_length: NextAction::URL_MAX_LENGTH
+				),
+				new FieldSpec(
+					name: 'client_token',
+					type: FieldType::String,
+					description: 'The handle the provider\'s script in the browser needs, the browser\'s key to this payment at the provider: keep it out of every URL and log. Null when the step needs none.',
+					label: static fn(): string => __( 'Client token', 'seocart' ),
+					example: 'pi_a1b2c3_secret_d4e5f6',
+					nullable: true,
+					max_length: NextAction::CLIENT_TOKEN_MAX_LENGTH
+				),
+			),
+			nullable: true
 		);
 	}
 

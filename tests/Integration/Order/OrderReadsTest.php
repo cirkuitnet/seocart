@@ -73,7 +73,7 @@ final class OrderReadsTest extends OrderTestCase {
 	}
 
 	/**
-	 * Tests the two reads by internal id: what each line sells, in variant order, and the order's uuid and status, each one query and neither a lock.
+	 * Tests the two reads by internal id: what each line sells, in variant order, and the order's uuid, status, payment status and last clearance, each one query and neither a lock.
 	 *
 	 * Planted violation: in MysqlOrderRepository::STOCK_LINES, order by `sort_order` instead of
 	 * `variant_id, id`: the lines then come in the order they are shown, not the order stock is
@@ -97,8 +97,10 @@ final class OrderReadsTest extends OrderTestCase {
 		$this->assertCount( 2, array_unique( array_column( $lines, 'orderLineId' ) ) );
 		$this->assertSame(
 			array(
-				'uuid'   => $inserted->uuid,
-				'status' => OrderStatus::PendingPayment,
+				'uuid'                => $inserted->uuid,
+				'status'              => OrderStatus::PendingPayment,
+				'payment_status'      => PaymentStatus::Unpaid,
+				'money_reconciled_at' => null,
 			),
 			$status
 		);

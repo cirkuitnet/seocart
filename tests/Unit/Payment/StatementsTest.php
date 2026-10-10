@@ -59,6 +59,7 @@ final class StatementsTest extends TestCase {
 		'MysqlPaymentRepository::APPLY_AUTHORIZE',
 		'MysqlPaymentRepository::APPLY_CAPTURE',
 		'MysqlPaymentRepository::APPLY_REFUND',
+		'MysqlPaymentRepository::APPLY_VOID',
 		'MysqlPaymentRepository::APPLY_DECLINE',
 		'MysqlPaymentRepository::REQUIRE_ACTION',
 		'MysqlPaymentRepository::MARK_PROCESSING',

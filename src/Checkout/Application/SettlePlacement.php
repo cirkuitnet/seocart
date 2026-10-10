@@ -15,17 +15,23 @@ use SEOCart\Cart\Application\CartService;
 use SEOCart\Checkout\Domain\PlacementOutcome;
 use SEOCart\Checkout\Domain\SettledPlacement;
 use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\GatewayUnavailable;
 use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Domain\Allocation;
 use SEOCart\Order\Application\Orders;
 use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\PaymentStatus;
+use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Domain\Application;
 use SEOCart\Payment\Domain\ApplicationKind;
+use SEOCart\Payment\Domain\IntentRef;
+use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\IntentTransitions;
+use SEOCart\Payment\Domain\VoidReason;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Isolation;
 use SEOCart\Platform\Database\RetryPolicy;
@@ -58,7 +64,13 @@ defined( 'ABSPATH' ) || exit;
  *   keeps it unapplied and flags the order; the units, the uses and the cart it gave back stay so;
  * - the shopper must act, or the gateway is still deciding: nothing more; the order keeps its hold
  *   and its cart keeps placing it;
- * - an answer applied before: nothing.
+ * - the void of a payment whose shopper never acted, which the gateway made: what is left of its
+ *   hold released, its uses given back and its cart opened again, the payment path having cancelled
+ *   the order. A void that lands after the approval did releases nothing: the payment path parked
+ *   the order for a person, with what it holds. A gateway that answers the void with the
+ *   authorization's approval, the shopper having finished just before, is settled as an approval;
+ * - an answer applied before, or a stale one, about a state the intent has left, or a void kept
+ *   for a person: nothing.
  *
  * An order placed with nothing to pay has no answer to wait for: settleNothingDue() runs the
  * same unit of work with the payment path recording it paid instead of applying an answer, the
@@ -66,7 +78,10 @@ defined( 'ABSPATH' ) || exit;
  *
  * Last, after the cart, the answer the placement's key keeps is rewritten to what the settlement
  * came to, so a retry of the placement is told where it stands now; an answer applied before
- * leaves it as the first settlement wrote it.
+ * leaves it as the first settlement wrote it. While the shopper must act, the answer keeps what
+ * they must do, sealed by the placement's own request, which alone can seal it; once they need not,
+ * it is cleared. The placement's own request writes it even when another path settled the request
+ * to act first, as long as the payment still waits for the shopper under the intent's lock.
  *
  * @since 0.1.0
  */
@@ -115,28 +130,85 @@ final class SettlePlacement {
 	}
 
 	/**
-	 * Applies the gateway's answer to an order's authorization, and settles the order's stock, promotion uses and cart, in one transaction.
+	 * Applies the gateway's answer to an order's authorization, or to its void, and settles the order's stock, promotion uses and cart, in one transaction.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Settles the void of a payment whose shopper never acted.
 	 *
-	 * @throws CodedException|\InvalidArgumentException What the payment path refuses, such as an answer the
-	 *         intent's state cannot take: nothing is changed. An \InvalidArgumentException when the answer is not
-	 *         about an authorization: a placement settles nothing else.
+	 * @throws CodedException|\InvalidArgumentException What the payment path refuses: nothing is changed. An
+	 *         \InvalidArgumentException when the answer is not about the order's authorization or its void: a
+	 *         placement settles nothing else.
 	 *
-	 * @param GatewayResult $result The gateway's answer.
-	 * @param Actor         $actor  On whose authority: the shopper, or the system for a job.
+	 * @param GatewayResult   $result     The gateway's answer.
+	 * @param Actor           $actor      On whose authority: the shopper, or the system for a job.
+	 * @param VoidReason|null $voidReason Optional. Why the void the answer is about was asked for. Default null.
+	 * @param string|null     $keptAction Optional. What the shopper must do, sealed for the answer the placement's key
+	 *                                    keeps (KeptAnswer::sealAction()); only the placement's own request has it.
+	 *                                    Default null.
 	 * @return SettledPlacement What the settlement came to.
 	 */
-	public function apply( GatewayResult $result, Actor $actor ): SettledPlacement {
-		if ( Operation::Authorize !== $result->operation ) {
-			throw new \InvalidArgumentException( 'A placement is settled by the answer to its authorization.' );
+	public function apply( GatewayResult $result, Actor $actor, ?VoidReason $voidReason = null, ?string $keptAction = null ): SettledPlacement {
+		if ( ! in_array( $result->operation, array( Operation::Authorize, Operation::Void ), true ) ) {
+			throw new \InvalidArgumentException( 'A placement is settled by the answer to its authorization, or to the void of it.' );
 		}
 
 		return $this->tx->transaction(
-			fn(): SettledPlacement => $this->settle( $this->payments->applyGatewayResult( $result, $actor ), $actor ),
+			fn(): SettledPlacement => $this->settle( $this->payments->applyGatewayResult( $result, $actor, null, $voidReason ), $actor, $voidReason, $keptAction ),
 			RetryPolicy::deadlocks(),
 			Isolation::ReadCommitted
 		);
+	}
+
+	/**
+	 * Voids, as the store, a payment whose shopper was asked to act and whose time to do so ran out, and settles the void; answers null for any other payment.
+	 *
+	 * The end of a shopper's time to act, wherever it is found: by the reconciliation run, or by a
+	 * resume that comes too late. A real provider keeps such a payment waiting until something
+	 * cancels it, so the gateway is asked to void it, outside any transaction, before anything the
+	 * order holds is released; the void is then settled as apply() settles it. A provider that had
+	 * approved meanwhile answers with the approval, which is settled as an approval: the order goes
+	 * on, and nothing is released.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws GatewayUnavailable When the gateway has no answer; nothing was applied, and asking again sends the same key.
+	 * @throws CodedException     `payment.operation_declined` when the provider refuses to cancel, which changes
+	 *                            nothing; what asking for the void refuses (PaymentService::askVoid()); what the
+	 *                            settlement refuses.
+	 *
+	 * @param IntentRef $intent The payment, as read outside any transaction.
+	 * @return SettledPlacement|null What the settlement of the void came to; null when the payment does not wait for
+	 *                               a shopper whose time ran out, and nothing was asked.
+	 */
+	public function voidEndedAction( IntentRef $intent ): ?SettledPlacement {
+		if ( IntentStatus::RequiresAction !== $intent->status || ! $intent->waitEnded ) {
+			return null;
+		}
+
+		$void = $this->payments->askVoid( $intent->uuid, self::store(), VoidReason::ActionWindowEnded );
+
+		if ( Operation::Void === $void->operation && Outcome::Declined === $void->outcome ) {
+			CodedException::raise(
+				PaymentError::OperationDeclined,
+				array(
+					'gateway_id' => $void->provider,
+					'operation'  => Operation::Void->value,
+				)
+			);
+		}
+
+		return $this->apply( $void, self::store(), VoidReason::ActionWindowEnded );
+	}
+
+	/**
+	 * Returns the actor the store settles a waiting payment as, on no user's authority: the reconciliation run's, whoever found the payment waiting.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return Actor The actor.
+	 */
+	public static function store(): Actor {
+		return Actor::system( 'reconciliation', 0 );
 	}
 
 	/**
@@ -176,11 +248,22 @@ final class SettlePlacement {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param Application $applied What the payment path did.
-	 * @param Actor       $actor   On whose authority.
+	 * @param Application     $applied    What the payment path did.
+	 * @param Actor           $actor      On whose authority.
+	 * @param VoidReason|null $voidReason Why a void was asked for; null for an authorization's answer.
+	 * @param string|null     $keptAction What the shopper must do, sealed; null when the caller has none.
 	 * @return SettledPlacement What the settlement came to.
 	 */
-	private function settle( Application $applied, Actor $actor ): SettledPlacement {
+	private function settle( Application $applied, Actor $actor, ?VoidReason $voidReason, ?string $keptAction ): SettledPlacement {
+		if ( Operation::Void === $applied->operation && ApplicationKind::Applied === $applied->kind && null !== $voidReason ) {
+			return $this->voided( $applied, $voidReason );
+		}
+
+		if ( Operation::Void === $applied->operation ) {
+			// Applied before, stale, or kept for a person: the payment path settled the order, and nothing more moves.
+			return new SettledPlacement( PlacementOutcome::Duplicate, $applied->orderId, $applied->orderStatusTo, $applied->paymentTo );
+		}
+
 		switch ( $applied->kind ) {
 			case ApplicationKind::Applied:
 				return $this->accept( $applied->orderId, self::holdGroup( $applied->orderId, $applied->holdGroup ), $applied->orderStatusTo, $applied->paymentTo, $actor );
@@ -208,15 +291,64 @@ final class SettlePlacement {
 				$outcome = PlacementOutcome::RequiresAction;
 				break;
 
+			case ApplicationKind::Duplicate:
+				// Another path settled the request to act first; the shopper still must act, and only this request can say how.
+				if ( null !== $keptAction && IntentStatus::RequiresAction === $applied->intentTo ) {
+					return $this->answered( $applied->orderId, PlacementOutcome::RequiresAction, $applied->orderStatusTo, $applied->paymentTo, $keptAction );
+				}
+
+				return new SettledPlacement( PlacementOutcome::Duplicate, $applied->orderId, $applied->orderStatusTo, $applied->paymentTo );
+
 			case ApplicationKind::Pending:
 				$outcome = PlacementOutcome::Processing;
 				break;
 
 			default:
+				// Applied before, or stale: the payment path changed nothing, and nor does the settlement.
 				return new SettledPlacement( PlacementOutcome::Duplicate, $applied->orderId, $applied->orderStatusTo, $applied->paymentTo );
 		}
 
-		return $this->answered( $applied->orderId, $outcome, $applied->orderStatusTo, $applied->paymentTo );
+		return $this->answered( $applied->orderId, $outcome, $applied->orderStatusTo, $applied->paymentTo, $keptAction );
+	}
+
+	/**
+	 * Returns the order's status and payment status after a settlement: the settlement's, or, when it changed no status, as for an answer applied before by another path, the order's status now, read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When the order the settlement names is gone.
+	 *
+	 * @param SettledPlacement $settled What the settlement came to.
+	 * @return array{status: OrderStatus, payment_status: PaymentStatus} The two.
+	 */
+	public function statusesOf( SettledPlacement $settled ): array {
+		$status = $settled->orderStatus ?? $this->orders->statusOf( $settled->orderId )['status'] ?? throw new \LogicException( sprintf( 'Order %d was settled, and is gone.', $settled->orderId ) );
+
+		return array(
+			'status'         => $status,
+			'payment_status' => $settled->paymentStatus,
+		);
+	}
+
+	/**
+	 * Settles a void the payment path applied: what is left of the hold released, the uses given back and the cart opened again; or nothing, for an order whose approval landed first.
+	 *
+	 * The payment path cancelled an order still pending payment, and parked one already accepted,
+	 * which keeps what it holds for a person.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Application $applied What the payment path did: a void, applied.
+	 * @param VoidReason  $reason  Why the void was asked for, which the hold is released with.
+	 * @return SettledPlacement What the settlement came to.
+	 */
+	private function voided( Application $applied, VoidReason $reason ): SettledPlacement {
+		if ( IntentStatus::Authorized !== $applied->intentFrom ) {
+			$this->stock->release( self::holdGroup( $applied->orderId, $applied->holdGroup ), $reason->value );
+			$this->close( $applied->orderId, false );
+		}
+
+		return $this->answered( $applied->orderId, PlacementOutcome::Voided, $applied->orderStatusTo, $applied->paymentTo );
 	}
 
 	/**
@@ -253,10 +385,12 @@ final class SettlePlacement {
 	 * @param PlacementOutcome $outcome       What the settlement came to.
 	 * @param OrderStatus|null $orderStatus   The order's status after it, or null when it did not change.
 	 * @param PaymentStatus    $paymentStatus The order's payment status after it.
+	 * @param string|null      $keptAction    Optional. What the shopper must do, sealed, for an outcome that asks them to
+	 *                                        act. Default null: the one kept, or none.
 	 * @return SettledPlacement What the settlement came to.
 	 */
-	private function answered( int $orderId, PlacementOutcome $outcome, ?OrderStatus $orderStatus, PaymentStatus $paymentStatus ): SettledPlacement {
-		$this->keys->settleAnswer( $orderId, $outcome, $orderStatus, $paymentStatus );
+	private function answered( int $orderId, PlacementOutcome $outcome, ?OrderStatus $orderStatus, PaymentStatus $paymentStatus, ?string $keptAction = null ): SettledPlacement {
+		$this->keys->settleAnswer( $orderId, $outcome, $orderStatus, $paymentStatus, $keptAction );
 
 		return new SettledPlacement( $outcome, $orderId, $orderStatus, $paymentStatus );
 	}

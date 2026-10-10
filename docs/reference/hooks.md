@@ -171,6 +171,25 @@ Fires after a change of an order's payment status is committed.
 - `dueMinor` (int): Still to be paid, in minor units.
 - `currency` (string): The order's currency, ISO 4217.
 
+## `seocart_payment_voided`
+
+Fires after a void is committed to the ledger and its intent.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `payment_intent`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_payment_voided', $callback, 10, 2 )`; the first argument is a `SEOCart\Payment\Domain\Event\PaymentVoided`.
+
+### Event properties
+
+- `intentId` (int): The intent's internal id.
+- `orderId` (int): The order it was for.
+- `amountMinor` (int): The amount released, in minor units.
+- `currency` (string): The currency of the amount, ISO 4217.
+- `transactionId` (int): The ledger row the void was recorded in.
+- `reason` (string): Why it was voided, a VoidReason value such as `customer_request`.
+
 ## `seocart_product_binding_promoted`
 
 A product's source binding moved: another of its posts, in another locale, became the post that controls its existence.

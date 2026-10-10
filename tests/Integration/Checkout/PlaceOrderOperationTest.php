@@ -89,7 +89,8 @@ final class PlaceOrderOperationTest extends PlacementTestCase {
 		$sent = $this->place( $body, 'attempt-1' );
 
 		$this->assertSame( 200, $sent['status'], (string) wp_json_encode( $sent['body'] ) );
-		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status' ), array_keys( $sent['body'] ) );
+		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status', 'next_action' ), array_keys( $sent['body'] ) );
+		$this->assertNull( $sent['body']['next_action'], 'An approved shopper has nothing to do.' );
 		$this->assertSame( array( 'approved', 'processing', 'authorized' ), array( $sent['body']['outcome'], $sent['body']['status'], $sent['body']['payment_status'] ) );
 		$this->assertStringContainsString( 'no-store', $sent['headers']['Cache-Control'] ?? '' );
 
@@ -107,7 +108,23 @@ final class PlaceOrderOperationTest extends PlacementTestCase {
 		$kept  = (array) json_decode( (string) $this->secondConnection()->fetchValue( sprintf( 'SELECT response_json FROM `%s`', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ) ) ), true );
 
 		$this->assertSame( 200, $again['status'] );
-		$this->assertEquals( array_diff_key( $kept, array( KeptAnswer::SEALED => true ) ), array_diff_key( $again['body'], array( KeptAnswer::ORDER_KEY => true ) ), 'The same request answers what the key keeps.' );
+		$this->assertEquals(
+			array_diff_key(
+				$kept,
+				array(
+					KeptAnswer::SEALED             => true,
+					KeptAnswer::NEXT_ACTION_SEALED => true,
+				)
+			),
+			array_diff_key(
+				$again['body'],
+				array(
+					KeptAnswer::ORDER_KEY   => true,
+					KeptAnswer::NEXT_ACTION => true,
+				)
+			),
+			'The same request answers what the key keeps.'
+		);
 		$this->assertEquals( $sent['body'], $again['body'], 'What the key keeps is the placement as it stands: the first answer, its order key opened.' );
 		$this->assertSame( 1, $this->committedCount( $this->secondConnection(), OrderTables::ORDERS ) );
 

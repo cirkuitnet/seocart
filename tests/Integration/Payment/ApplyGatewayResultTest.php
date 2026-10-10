@@ -60,8 +60,11 @@ use SEOCart\Tests\Support\Payment\PaymentTestCase;
  * - in AmountCheck::accepts(), compare the currency with the intent's only: the approval in the
  *   intent's currency but not the order's is no longer parked, and adding it to the order's
  *   amounts throws a CurrencyMismatchException;
- * - in PaymentService::approve(), return a duplicate instead of refusing: the refused capture's
- *   ledger row stays.
+ * - in PaymentService::approve(), return a duplicate instead of refusing: the refused refund's
+ *   ledger row stays;
+ * - in PaymentService::applyMoneyFact(), skip the check of the intent's state: the capture of an
+ *   intent never authorized reaches its statement and is refused, its row gone with the savepoint,
+ *   instead of being kept for a person.
  *
  * @since 0.1.0
  */
@@ -268,14 +271,8 @@ final class ApplyGatewayResultTest extends PaymentTestCase {
 
 		$before = $this->snapshot();
 
-		try {
-			$this->deliver( $waiting );
-			$this->fail( 'A request to act was applied to an authorized intent.' );
-		} catch ( CodedException $refused ) {
-			$this->assertSame( PaymentError::UnexpectedResult, $refused->errorCode(), 'A late request to act finds the intent past waiting.' );
-		}
-
-		$this->assertSame( $before, $this->snapshot() );
+		$this->assertSame( ApplicationKind::Stale, $this->deliver( $waiting )->kind, 'A late request to act finds the intent past waiting, and is stale.' );
+		$this->assertSame( $before, $this->snapshot(), 'A stale result changes nothing.' );
 	}
 
 	/**
@@ -405,43 +402,54 @@ final class ApplyGatewayResultTest extends PaymentTestCase {
 	}
 
 	/**
-	 * Tests that a result the intent's state cannot take is refused, and that its ledger row goes with the savepoint even when the caller commits.
+	 * Tests that an approval the intent's state cannot take, a capture of an intent never authorized, is kept for a person: the provider moved money the ledger did not expect.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 */
-	public function test_a_result_the_intent_cannot_take_is_refused_and_leaves_no_row(): void {
+	public function test_a_capture_the_intent_cannot_take_is_kept_for_a_person(): void {
 		list( $order, $intent ) = $this->placeWithIntent();
 
-		$capture = self::stubResult( $intent, Operation::Capture, Outcome::Approved, 3080, 'EUR', 'stub-cap-' . $intent->uuid );
-		$before  = $this->snapshot();
+		$application = $this->deliver( self::stubResult( $intent, Operation::Capture, Outcome::Approved, 3080, 'EUR', 'stub-cap-' . $intent->uuid ) );
+
+		$this->assertSame( array( ApplicationKind::Mismatch, OrderStatus::OnHold ), array( $application->kind, $application->orderStatusTo ) );
+		$this->assertSame( array( array( 'capture', 'approved', '0' ) ), array_map( static fn( array $row ): array => array( (string) $row['operation'], (string) $row['result'], (string) $row['applied'] ), $this->ledgerOf( $order->id ) ), 'The capture is recorded, and moved nothing.' );
+		$this->assertIntent( $intent, 'created', 0, 0, 0, 0 );
+		$this->assertOrder( $order->id, 'on_hold', 'unpaid', 0, 0, 0, 3080, 0, 1 );
+		$this->assertSame( array( 'order:>pending_payment:placed', 'order:pending_payment>on_hold:unexpected_result' ), $this->eventsOf( $order->id ) );
+	}
+
+	/**
+	 * Tests that a result a statement refuses, a refund past what was captured, leaves no ledger row, even when the caller catches the refusal and commits.
+	 *
+	 * @since 0.1.0
+	 * @since 0.2.0 Refuses a refund past what was captured: a capture the state cannot take is kept for a person.
+	 */
+	public function test_a_result_a_statement_refuses_leaves_no_row(): void {
+		list( $order, $intent ) = $this->placeCaptured();
+
+		$refund = self::stubResult( $intent, Operation::Refund, Outcome::Approved, 3081, 'USD', 'stub-re-past' );
+		$before = $this->snapshot();
 
 		try {
-			$this->deliver( $capture );
-			$this->fail( 'A capture of an intent never authorized was applied.' );
+			$this->deliver( $refund );
+			$this->fail( 'A refund past what was captured was applied.' );
 		} catch ( CodedException $refused ) {
-			$this->assertSame( PaymentError::UnexpectedResult, $refused->errorCode() );
-			$this->assertSame(
-				array(
-					'intent_status' => 'created',
-					'operation'     => 'capture',
-				),
-				$refused->context()
-			);
+			$this->assertSame( PaymentError::RefundExceedsCaptured, $refused->errorCode() );
 		}
 
 		$this->assertSame( $before, $this->snapshot(), 'The refused result left no ledger row and no event.' );
 
 		$this->db->transaction(
-			function () use ( $capture ): void {
+			function () use ( $refund ): void {
 				try {
-					$this->payments->applyGatewayResult( $capture, self::system() );
+					$this->payments->applyGatewayResult( $refund, self::system(), Money::of( 3081, Currency::of( 'USD' ) ) );
 				} catch ( CodedException $refused ) {
-					$this->assertSame( PaymentError::UnexpectedResult, $refused->errorCode() );
+					$this->assertSame( PaymentError::RefundExceedsCaptured, $refused->errorCode() );
 				}
 			}
 		);
 
-		$this->assertSame( array(), $this->ledgerOf( $order->id ), 'A caller that catches the refusal and commits commits no ledger row: it went with the savepoint.' );
+		$this->assertCount( 2, $this->ledgerOf( $order->id ), 'A caller that catches the refusal and commits commits no ledger row: it went with the savepoint.' );
 	}
 
 	/**

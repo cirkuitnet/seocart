@@ -15,6 +15,8 @@ use SEOCart\Platform\Database\Database;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- A declaration error is a message for the developer who wrote the migration; it is never HTML.
+
 /**
  * Reads a table's shape from information_schema and lists every way it differs from its TableDefinition.
  *
@@ -259,18 +261,7 @@ final class SchemaVerifier {
 	 * @return list<string> One line per difference.
 	 */
 	private function indexDiff( TableDefinition $definition, string $table ): array {
-		$actual = array();
-
-		foreach ( $this->db->fetchAll(
-			'SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique, SEQ_IN_INDEX AS seq, COLUMN_NAME AS column_name, SUB_PART AS sub_part FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s ORDER BY INDEX_NAME, SEQ_IN_INDEX',
-			$table
-		) as $row ) {
-			$name = strtolower( (string) $row['index_name'] );
-
-			$actual[ $name ]['unique']    = '0' === (string) $row['non_unique'];
-			$actual[ $name ]['columns'][] = strtolower( (string) $row['column_name'] ) . ( null === $row['sub_part'] ? '' : '(' . $row['sub_part'] . ')' );
-		}
-
+		$actual   = $this->actualIndexes( $table );
 		$declared = array(
 			'primary' => array(
 				'unique'  => true,
@@ -279,16 +270,7 @@ final class SchemaVerifier {
 		);
 
 		foreach ( array_merge( $definition->uniqueKeys(), $definition->indexes() ) as $index ) {
-			$columns = array();
-
-			foreach ( $index->columns() as $column ) {
-				$columns[] = $column['name'] . ( null === $column['length'] ? '' : '(' . $column['length'] . ')' );
-			}
-
-			$declared[ $index->name() ] = array(
-				'unique'  => $index->isUnique(),
-				'columns' => $columns,
-			);
+			$declared[ $index->name() ] = self::declaredIndex( $index );
 		}
 
 		$lines = array();
@@ -318,6 +300,63 @@ final class SchemaVerifier {
 		}
 
 		return $lines;
+	}
+
+	/**
+	 * Tells whether a table's key of a declared key's name is as declared: as unique, over the same columns in the same order.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \InvalidArgumentException When the declaration declares no key by that name.
+	 *
+	 * @param TableDefinition $definition The table's declaration.
+	 * @param string          $name       The key's name.
+	 * @return bool|null True when it is as declared; false when it differs; null when the table has no key by that name.
+	 */
+	public function indexMatches( TableDefinition $definition, string $name ): ?bool {
+		$declared = $definition->index( $name ) ?? throw new \InvalidArgumentException( sprintf( 'Table %1$s declares no key named %2$s.', $definition->name(), $name ) );
+		$actual   = $this->actualIndexes( $this->db->table( $definition->name() ) )[ strtolower( $name ) ] ?? null;
+
+		return null === $actual ? null : self::declaredIndex( $declared ) === $actual;
+	}
+
+	/**
+	 * Reads a table's keys from information_schema: each one's uniqueness and its columns in key order, a prefix length after its column.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $table The full table name.
+	 * @return array<string, array{unique: bool, columns: list<string>}> The keys, by lowercase name.
+	 */
+	private function actualIndexes( string $table ): array {
+		$actual = array();
+
+		foreach ( $this->db->fetchAll(
+			'SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique, SEQ_IN_INDEX AS seq, COLUMN_NAME AS column_name, SUB_PART AS sub_part FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s ORDER BY INDEX_NAME, SEQ_IN_INDEX',
+			$table
+		) as $row ) {
+			$name = strtolower( (string) $row['index_name'] );
+
+			$actual[ $name ]['unique']    = '0' === (string) $row['non_unique'];
+			$actual[ $name ]['columns'][] = strtolower( (string) $row['column_name'] ) . ( null === $row['sub_part'] ? '' : '(' . $row['sub_part'] . ')' );
+		}
+
+		return $actual;
+	}
+
+	/**
+	 * Returns a declared key as actualIndexes() reads one: its uniqueness and its columns, a prefix length after its column.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param IndexSpec $index The declared key.
+	 * @return array{unique: bool, columns: list<string>} The key.
+	 */
+	private static function declaredIndex( IndexSpec $index ): array {
+		return array(
+			'unique'  => $index->isUnique(),
+			'columns' => array_map( static fn( array $column ): string => $column['name'] . ( null === $column['length'] ? '' : '(' . $column['length'] . ')' ), $index->columns() ),
+		);
 	}
 
 	/**

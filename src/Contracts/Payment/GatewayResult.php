@@ -33,8 +33,11 @@ defined( 'ABSPATH' ) || exit;
  * object where the provider makes one, and otherwise the provider's intent: an intent is voided
  * once, so the key stays unique.
  *
+ * A request for the customer to act may say what they must do (NextAction): the page to go to, or
+ * the handle the provider's script in the browser needs. No other answer carries one.
+ *
  * @since 0.1.0
- * @since 0.2.0 Moved to the public contract.
+ * @since 0.2.0 Moved to the public contract, and gained the next action.
  *
  * @api
  */
@@ -71,8 +74,11 @@ final readonly class GatewayResult {
 	 * Records the answer.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The next action was added.
 	 *
-	 * @throws \InvalidArgumentException When the amount is negative, an approved refund gives back nothing, or a reference is empty or longer than the ledger holds.
+	 * @throws \InvalidArgumentException When the amount is negative, an approved refund gives back nothing, a reference is
+	 *                                   empty or longer than the ledger holds, or an answer other than a request for the
+	 *                                   customer to act carries a next action.
 	 *
 	 * @param string          $provider         The gateway's id.
 	 * @param Operation       $operation        The operation answered.
@@ -83,6 +89,8 @@ final readonly class GatewayResult {
 	 * @param string|null     $providerIntentId Optional. The provider's reference to the intent. Default null.
 	 * @param string|null     $errorCode        Optional. The provider's machine code for a decline, for example `card_declined`. Default null.
 	 * @param Settlement|null $settlement       Optional. How the provider settles the amount, when it said. Default null.
+	 * @param NextAction|null $nextAction       Optional. What the customer must do, for an answer that asks them to act.
+	 *                                          Default null.
 	 */
 	public function __construct(
 		public string $provider,
@@ -93,7 +101,8 @@ final readonly class GatewayResult {
 		public ?string $providerObjectId = null,
 		public ?string $providerIntentId = null,
 		public ?string $errorCode = null,
-		public ?Settlement $settlement = null
+		public ?Settlement $settlement = null,
+		public ?NextAction $nextAction = null
 	) {
 		if ( $amount->isNegative() ) {
 			throw new \InvalidArgumentException( 'A gateway result reports the amount it moved, which is never negative.' );
@@ -101,6 +110,10 @@ final readonly class GatewayResult {
 
 		if ( Operation::Refund === $operation && Outcome::Approved === $outcome && $amount->isZero() ) {
 			throw new \InvalidArgumentException( 'An approved refund gives back more than nothing; a refund of nothing is no refund.' );
+		}
+
+		if ( null !== $nextAction && Outcome::RequiresAction !== $outcome ) {
+			throw new \InvalidArgumentException( 'Only an answer that asks the customer to act says what they must do.' );
 		}
 
 		self::requireFits( $provider, self::PROVIDER_LENGTH, 'provider id' );

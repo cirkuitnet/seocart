@@ -17,6 +17,7 @@ use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Contracts\Payment\PaymentQuery;
 use SEOCart\Contracts\Payment\PaymentRequest;
+use SEOCart\Contracts\Payment\VoidRequest;
 use SEOCart\Platform\Database\TransactionManager;
 
 /**
@@ -24,7 +25,9 @@ use SEOCart\Platform\Database\TransactionManager;
  *
  * Owns one fact, for the tests that hold the payment service to calling a gateway only outside
  * any transaction: which calls were made, and at what depth. A test can also give it a call to
- * make inside each call, as a real adapter's HTTP request would be made.
+ * make inside each call, as a real adapter's HTTP request would be made, and an answer of its own
+ * to every capture (`$captures`) or void (`$voids`), as a provider that declines, refuses to cancel,
+ * had already approved or never answers gives.
  *
  * @since 0.1.0
  */
@@ -49,6 +52,42 @@ final class RecordingGateway implements PaymentGateway {
 	 * @var list<array{key: string, object: string|null}>
 	 */
 	public array $refunds = array();
+
+	/**
+	 * Every authorization request received, in order, as the gateway was sent it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<PaymentRequest>
+	 */
+	public array $authorizations = array();
+
+	/**
+	 * What every capture answers, given the request, instead of the wrapped gateway; null to answer as it does.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var (\Closure(CaptureRequest): GatewayResult)|null
+	 */
+	public ?\Closure $captures = null;
+
+	/**
+	 * What every void answers, given the request, instead of the wrapped gateway; null to answer as it does.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var (\Closure(VoidRequest): GatewayResult)|null
+	 */
+	public ?\Closure $voids = null;
+
+	/**
+	 * What every status query answers, given the query, instead of the wrapped gateway; null to answer as it does.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var (\Closure(PaymentQuery): ?GatewayResult)|null
+	 */
+	public ?\Closure $queries = null;
 
 	/**
 	 * The gateway that answers.
@@ -114,6 +153,8 @@ final class RecordingGateway implements PaymentGateway {
 	public function authorize( PaymentRequest $request ): GatewayResult {
 		$this->record( __FUNCTION__ );
 
+		$this->authorizations[] = $request;
+
 		return $this->inner->authorize( $request );
 	}
 
@@ -128,7 +169,7 @@ final class RecordingGateway implements PaymentGateway {
 	public function capture( CaptureRequest $request ): GatewayResult {
 		$this->record( __FUNCTION__ );
 
-		return $this->inner->capture( $request );
+		return null === $this->captures ? $this->inner->capture( $request ) : ( $this->captures )( $request );
 	}
 
 	/**
@@ -152,9 +193,24 @@ final class RecordingGateway implements PaymentGateway {
 	}
 
 	/**
-	 * Records the call, then asks the wrapped gateway.
+	 * Records the call, then voids through the wrapped gateway, or answers as `$voids` says.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param VoidRequest $request The request.
+	 * @return GatewayResult Its answer.
+	 */
+	public function void( VoidRequest $request ): GatewayResult {
+		$this->record( __FUNCTION__ );
+
+		return null === $this->voids ? $this->inner->void( $request ) : ( $this->voids )( $request );
+	}
+
+	/**
+	 * Records the call, then answers as scripted, or asks the wrapped gateway.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Answers as scripted.
 	 *
 	 * @param PaymentQuery $query The query.
 	 * @return GatewayResult|null Its answer.
@@ -162,7 +218,7 @@ final class RecordingGateway implements PaymentGateway {
 	public function query( PaymentQuery $query ): ?GatewayResult {
 		$this->record( __FUNCTION__ );
 
-		return $this->inner->query( $query );
+		return null === $this->queries ? $this->inner->query( $query ) : ( $this->queries )( $query );
 	}
 
 	/**

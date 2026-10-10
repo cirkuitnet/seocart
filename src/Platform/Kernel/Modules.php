@@ -51,6 +51,7 @@ use SEOCart\Checkout\Application\ChangeCartCurrency;
 use SEOCart\Checkout\Application\CheckoutSessions;
 use SEOCart\Checkout\Application\IdempotencyKeys;
 use SEOCart\Checkout\Application\PlaceOrder;
+use SEOCart\Checkout\Application\ResumePayment;
 use SEOCart\Checkout\Application\SettlePlacement;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Checkout\Domain\CheckoutError;
@@ -113,6 +114,7 @@ use SEOCart\Payment\Domain\Event\PaymentCaptured;
 use SEOCart\Payment\Domain\Event\PaymentFailed;
 use SEOCart\Payment\Domain\Event\PaymentIntentCreated;
 use SEOCart\Payment\Domain\Event\PaymentStatusChanged;
+use SEOCart\Payment\Domain\Event\PaymentVoided;
 use SEOCart\Payment\Domain\Event\RefundRecorded;
 use SEOCart\Payment\Domain\PaymentRepository;
 use SEOCart\Payment\Domain\Refund\RefundRepository;
@@ -320,6 +322,7 @@ final class Modules {
 		PaymentFailed::class,
 		PaymentIntentCreated::class,
 		PaymentStatusChanged::class,
+		PaymentVoided::class,
 		RefundRecorded::class,
 		StockAdjusted::class,
 		StockAllocated::class,
@@ -1208,10 +1211,10 @@ final class Modules {
 	}
 
 	/**
-	 * The checkout module: its sessions and idempotency keys, the session write, the currency switch, the order placement and its settlement, the reconciliation and retention jobs, and doctor's check.
+	 * The checkout module: its sessions and idempotency keys, the session write, the currency switch, the order placement and its settlement, the resume of a placement's payment, the reconciliation and retention jobs, and doctor's check.
 	 *
-	 * It adds no hook: the session write, the currency switch and the placement are operations'
-	 * routes, the jobs run through JOB_HOOK, and the check through doctor.
+	 * It adds no hook: the session write, the currency switch, the placement and the resume are
+	 * operations' routes, the jobs run through JOB_HOOK, and the check through doctor.
 	 *
 	 * @since 0.1.0
 	 *
@@ -1256,6 +1259,7 @@ final class Modules {
 				$c->get( Gateways::class )
 			)
 		);
+		$container->bind( ResumePayment::class, static fn( Container $c ): ResumePayment => new ResumePayment( $c->get( TransactionManager::class ), $c->get( CartService::class ), $c->get( PaymentService::class ), $c->get( SettlePlacement::class ), $c->get( Orders::class ) ) );
 		$container->bind( ReconcileStalePlacements::class, static fn( Container $c ): ReconcileStalePlacements => new ReconcileStalePlacements( $c->get( PaymentService::class ), $c->get( Orders::class ), $c->get( SettlePlacement::class ), $c->get( Reporter::class ) ) );
 		$container->bind( IdempotencyKeyRetention::class, static fn( Container $c ): IdempotencyKeyRetention => new IdempotencyKeyRetention( $c->get( MysqlIdempotencyKeys::class ) ) );
 		$container->bind( CheckoutChecks::class, static fn( Container $c ): CheckoutChecks => new CheckoutChecks( $c->get( MysqlIdempotencyKeys::class ), $c->get( Database::class ), $c->get( PaymentRepository::class ), $c->get( OrderRepository::class ), $c->get( Gateways::class ) ) );

@@ -25,8 +25,10 @@ defined( 'ABSPATH' ) || exit;
  * - user(): a WordPress user acting in person. User 0 is a visitor who is not logged in, and
  *   holds no capability.
  * - system(): a process acting on a user's authority, such as a CLI command or a job. It is
- *   bound to a real user, whose capabilities are checked; the name only says which process
- *   acted, for the record. A system actor is never exempt from a check.
+ *   bound to a user, whose capabilities are checked; the name only says which process acted,
+ *   for the record. A system actor is never exempt from a check. A process acting on no user's
+ *   authority, such as a job nobody scheduled, is bound to user 0: it holds no capability, and
+ *   what it does is recorded as the system's, without a user.
  *
  * Nothing here calls WordPress.
  *
@@ -84,23 +86,25 @@ final class Actor {
 	}
 
 	/**
-	 * Creates the actor for a process acting on a user's authority.
+	 * Creates the actor for a process acting on a user's authority, or on no user's.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 User 0 is a process acting on no user's authority.
 	 *
 	 * @param string $name   What is acting, such as `cli` or the name of a job.
-	 * @param int    $userId The user whose authority the process acts on; a real user, never 0.
+	 * @param int    $userId The user whose authority the process acts on, or 0 for a process acting on no user's
+	 *                       authority, which holds no capability.
 	 * @return self The actor.
 	 *
-	 * @throws \InvalidArgumentException When the name is blank or the user id is not positive.
+	 * @throws \InvalidArgumentException When the name is blank or the user id is negative.
 	 */
 	public static function system( string $name, int $userId ): self {
 		if ( '' === trim( $name ) ) {
 			throw new \InvalidArgumentException( 'A system actor needs the name of the process that acts.' );
 		}
 
-		if ( $userId < 1 ) {
-			throw new \InvalidArgumentException( 'A system actor acts on the authority of a real user, so it needs that user\'s id.' );
+		if ( $userId < 0 ) {
+			throw new \InvalidArgumentException( 'A system actor acts on the authority of a user, by id, or on no user\'s authority, as user 0.' );
 		}
 
 		return new self( $userId, $name );

@@ -187,6 +187,18 @@ final class MysqlRefundRepository implements RefundRepository {
 	public const LOCK_ACTOR = 'INSERT INTO {refund_actor_locks} ( user_id, created_at ) VALUES ( %d, UTC_TIMESTAMP(6) ) ON DUPLICATE KEY UPDATE id = id';
 
 	/**
+	 * One ledger row of a provider object's operation, whatever its outcome, on the leading columns of the ledger's claim key: whether the ledger knows the object at all.
+	 *
+	 * A person's statement names a provider's refund; one the ledger holds in any outcome is
+	 * another refund's, so the outcome is not asked.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const RECORDED_OBJECT = 'SELECT id FROM {payment_transactions} WHERE provider = %s AND provider_object_id = %s AND operation = %s LIMIT 1';
+
+	/**
 	 * What a user asked of the gateway in the last 24 hours, by the database clock, in the base currency, on the `actor_created` key: every claim but a declined one.
 	 *
 	 * @since 0.2.0
@@ -548,15 +560,16 @@ final class MysqlRefundRepository implements RefundRepository {
 	}
 
 	/**
-	 * Tells whether the ledger holds a result under the key it would be recorded by, without a lock: the ledger's own read of that key.
+	 * Tells whether the ledger holds a result of the provider object's operation, whatever its outcome, without a lock (RECORDED_OBJECT).
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param GatewayResult $result The result, naming its provider object.
-	 * @return bool True when a row holds the provider object's result of the operation; false when none does, or the result names no object.
+	 * @return bool True when a row holds a result of the provider object's operation, in any outcome; false when none
+	 *              does, or the result names no object.
 	 */
 	public function holdsResult( GatewayResult $result ): bool {
-		return null !== $result->providerObjectId && array() !== $this->statements->rows( MysqlPaymentRepository::FIND_TRANSACTION, $result->provider, $result->providerObjectId, $result->operation->value );
+		return null !== $result->providerObjectId && array() !== $this->statements->rows( self::RECORDED_OBJECT, $result->provider, $result->providerObjectId, $result->operation->value );
 	}
 
 	/**

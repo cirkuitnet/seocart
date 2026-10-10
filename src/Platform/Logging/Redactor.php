@@ -23,11 +23,13 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Redacts what a log line carries, before it is written anywhere.
  *
- * Owns one fact: how a value becomes safe to log. The sensitive names are not listed here:
- * they are read from the declarations, once, when the redactor is built. A context key that
- * names a `pii` column, option or field anywhere in the plugin has its value replaced by
- * REDACTED; one that names a `secret` is dropped with its value. A name that is both is
- * dropped. Keys are compared without regard to case, at every depth of the context.
+ * Owns one fact: how a value becomes safe to log. The sensitive names are read from the
+ * declarations, once, when the redactor is built. A context key that names a `pii` column,
+ * option or field anywhere in the plugin has its value replaced by REDACTED; one that names a
+ * `secret` is dropped with its value. A name that is both is dropped. Keys are compared without
+ * regard to case, at every depth of the context. The one exception is ANSWERED_SECRETS: names
+ * an answer gives to the one who holds them, which therefore no declaration can call secret (a
+ * secret field is in no answer), but which no log may carry; they are dropped as secrets are.
  *
  * Every string that passes through, the message included, has its card-shaped numbers
  * removed by CardNumbers, and so has every integer and float that would print as one. A
@@ -86,6 +88,19 @@ final class Redactor {
 	 * @var string
 	 */
 	public const REDACTED = '[redacted]';
+
+	/**
+	 * The names an answer gives to their holder that no log may carry, and no input declares: the handle a payment provider gives the shopper's browser.
+	 *
+	 * An answered field cannot be declared secret, since a secret field is in no answer, and no
+	 * input takes these, so no declaration names them as secrets; they are listed here, and a test
+	 * holds each equal to the field that answers it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<string>
+	 */
+	public const ANSWERED_SECRETS = array( 'client_token' );
 
 	/**
 	 * The most characters a string value keeps.
@@ -349,6 +364,7 @@ final class Redactor {
 	 * @param array<string, true> $secret   Lowercase secret names.
 	 */
 	private function __construct( array $personal, array $secret ) {
+		$secret        += array_fill_keys( self::ANSWERED_SECRETS, true );
 		$this->personal = array_diff_key( $personal, $secret );
 		$this->secret   = $secret;
 	}

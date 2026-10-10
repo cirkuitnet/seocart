@@ -34,6 +34,7 @@ use SEOCart\Payment\Infrastructure\Migrations\AddRefundClaimSettlement;
 use SEOCart\Payment\Infrastructure\Migrations\CreatePaymentTables;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundClaimTable;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundTables;
+use SEOCart\Payment\Infrastructure\Migrations\KeyLedgerByOutcome;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Payment\Infrastructure\RefundClaimTables;
 use SEOCart\Payment\Infrastructure\RefundTables;
@@ -100,7 +101,7 @@ final class OwnedData {
 			new Contribution( tables: array( RateCountersTable::definition() ), migrations: array( new CreateRateCountersMigration() ) ),
 			new Contribution( tables: OrderTables::all(), migrations: array( new CreateOrderTables(), new AddOrderStatusIndex(), new AddOrderEventReference(), new AddMoneyReconciliation() ) ),
 			new Contribution( tables: CartTables::all(), migrations: array( new CreateCartTables() ) ),
-			new Contribution( tables: PaymentTables::all(), migrations: array( new CreatePaymentTables(), new AddIntentMode() ) ),
+			new Contribution( tables: PaymentTables::all(), migrations: array( new CreatePaymentTables(), new AddIntentMode(), new KeyLedgerByOutcome() ) ),
 			new Contribution( tables: CheckoutTables::all(), migrations: array( new CreateCheckoutTables() ) ),
 			new Contribution( tables: PricingTables::all(), migrations: array( new CreateRateTables() ) ),
 			new Contribution( tables: PromotionTables::all(), migrations: array( new CreatePromotionTables() ) ),

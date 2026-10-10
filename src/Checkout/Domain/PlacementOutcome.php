@@ -80,6 +80,13 @@ enum PlacementOutcome: string {
 	case LateApproval = 'late_approval';
 
 	/**
+	 * The shopper's time to act ran out and the payment was voided at the gateway: the order is cancelled, every reservation released, its cart open again; or, when the payment had been approved meanwhile, the order is on hold for a person, with what it holds.
+	 *
+	 * @since 0.2.0
+	 */
+	case Voided = 'voided';
+
+	/**
 	 * The result had been applied before, so nothing changed.
 	 *
 	 * @since 0.1.0

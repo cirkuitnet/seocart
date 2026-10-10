@@ -20,6 +20,7 @@ use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\IntentTransitions;
 use SEOCart\Payment\Domain\PaymentIntent;
 use SEOCart\Payment\Domain\PaymentRepository;
+use SEOCart\Payment\Domain\VoidReason;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Exception\DuplicateKey;
 use SEOCart\Platform\Database\ModuleStatements;
@@ -88,13 +89,13 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 		. 'authorized_minor, captured_minor, refunded_minor, provider_intent_id FROM {payment_intents} WHERE uuid = %s';
 
 	/**
-	 * One ledger row of an intent that the projection refused, if it has any, on the `intent_created` key.
+	 * When the newest ledger row of an intent that the projection refused was recorded, on the `intent_created` key; NULL when it has none.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
-	public const UNAPPLIED_OF_INTENT = 'SELECT id FROM {payment_transactions} WHERE intent_id = %d AND applied = 0 LIMIT 1';
+	public const NEWEST_UNAPPLIED_OF_INTENT = 'SELECT MAX( created_at ) AS newest FROM {payment_transactions} WHERE intent_id = %d AND applied = 0';
 
 	/**
 	 * When the newest ledger row of an order that the projection refused was recorded, on the `order_created` key: what a clearance of the order's unreconciled money is dated after.
@@ -127,13 +128,14 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 		. "actor_type = %s, actor_id = NULLIF( %d, 0 ), correlation_id = NULLIF( %s, '' ), created_at = GREATEST( UTC_TIMESTAMP(6), CAST( %s AS DATETIME(6) ) + INTERVAL 1 MICROSECOND )";
 
 	/**
-	 * The row a result was first recorded in, by the key that claims it.
+	 * The row a result was first recorded in, by the key that claims it: its provider object's outcome of the operation.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 By the outcome too: another outcome of the same object is another result.
 	 *
 	 * @var string
 	 */
-	public const FIND_TRANSACTION = 'SELECT id FROM {payment_transactions} WHERE provider = %s AND provider_object_id = %s AND operation = %s';
+	public const FIND_TRANSACTION = 'SELECT id FROM {payment_transactions} WHERE provider = %s AND provider_object_id = %s AND operation = %s AND result = %s';
 
 	/**
 	 * An authorization: the intent authorized for the amount, with the provider's reference recorded if none was.
@@ -174,6 +176,16 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 	public const APPLY_REFUND = "UPDATE {payment_intents} SET status = IF( refunded_minor + %d >= captured_minor, 'refunded', 'partially_refunded' ), "
 		. 'refunded_minor = refunded_minor + %d, base_refunded_minor = base_refunded_minor + %d, updated_at = GREATEST( UTC_TIMESTAMP(6), updated_at + INTERVAL 1 MICROSECOND ) '
 		. 'WHERE id = %d AND currency = %s AND base_currency = %s AND status IN ({list}) AND %d > 0 AND captured_minor - refunded_minor >= %d AND base_captured_minor - base_refunded_minor >= %d';
+
+	/**
+	 * A void: the intent's authorization cancelled, with why; no amount moves, and what was authorized stays recorded as authorized.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const APPLY_VOID = "UPDATE {payment_intents} SET status = 'voided', voided_reason = %s, updated_at = GREATEST( UTC_TIMESTAMP(6), updated_at + INTERVAL 1 MICROSECOND ) "
+		. 'WHERE id = %d AND currency = %s AND base_currency = %s AND status IN ({list})';
 
 	/**
 	 * A decline: the intent failed.
@@ -218,9 +230,16 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 	 *
 	 * @var string
 	 */
-	public const STALE_INTENTS = 'SELECT uuid, order_id, gateway_id, mode, status, provider_intent_id, amount_minor, currency, customer_action_expires_at, customer_action_expires_at <= UTC_TIMESTAMP() AS expired, '
-		. 'TIMESTAMPDIFF( SECOND, created_at, UTC_TIMESTAMP(6) ) AS age_seconds '
-		. 'FROM {payment_intents} WHERE status IN ({list}) AND updated_at < UTC_TIMESTAMP(6) - INTERVAL %d SECOND AND uuid > %s ORDER BY uuid LIMIT %d';
+	public const STALE_INTENTS = 'SELECT uuid, order_id, gateway_id, mode, status, provider_intent_id, amount_minor, currency, customer_action_expires_at, customer_action_expires_at <= UTC_TIMESTAMP() AS expired, TIMESTAMPDIFF( SECOND, created_at, UTC_TIMESTAMP(6) ) AS age_seconds FROM {payment_intents} WHERE status IN ({list}) AND updated_at < UTC_TIMESTAMP(6) - INTERVAL %d SECOND AND uuid > %s ORDER BY uuid LIMIT %d';
+
+	/**
+	 * One intent by its public identifier, as reconciliation sees an intent: its gateway, mode and age, and when its wait runs out and whether it has.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FIND_INTENT_REF = 'SELECT uuid, order_id, gateway_id, mode, status, provider_intent_id, amount_minor, currency, customer_action_expires_at, customer_action_expires_at <= UTC_TIMESTAMP() AS expired, TIMESTAMPDIFF( SECOND, created_at, UTC_TIMESTAMP(6) ) AS age_seconds FROM {payment_intents} WHERE uuid = %s';
 
 	/**
 	 * The open intents, counted per gateway and mode: how many, how many still wait for their authorization's answer, and how long the longest-waiting has gone unchanged, by the database clock.
@@ -438,15 +457,17 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 	}
 
 	/**
-	 * Tells whether an intent has a ledger row the projection refused.
+	 * Reads when the newest ledger row of an intent that the projection refused was recorded.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
 	 * @param int $intentId The intent.
-	 * @return bool True when it has one.
+	 * @return string|null The time, UTC to the microsecond, as the database clock wrote it; null when it has none.
 	 */
-	public function hasUnappliedResult( int $intentId ): bool {
-		return array() !== $this->statements->rows( self::UNAPPLIED_OF_INTENT, $intentId );
+	public function newestUnappliedOf( int $intentId ): ?string {
+		$newest = $this->statements->rows( self::NEWEST_UNAPPLIED_OF_INTENT, $intentId )[0]['newest'] ?? null;
+
+		return null === $newest ? null : (string) $newest;
 	}
 
 	/**
@@ -477,7 +498,7 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 	 * @param string        $correlationId The request's correlation id.
 	 * @param string|null   $datedAfter    Optional. A time the row is dated after, by a microsecond at least: the order's last
 	 *                                     clearance, for a row parked for a person; null for the clock alone. Default null.
-	 * @return int|null The row's id; null when the result's provider, object and operation were recorded before.
+	 * @return int|null The row's id; null when the result's provider, object, operation and outcome were recorded before.
 	 */
 	public function appendResult( PaymentIntent $intent, GatewayResult $result, Money $baseAmount, bool $applied, string $actorType, ?int $actorId, string $correlationId, ?string $datedAfter = null ): ?int {
 		$this->statements->requireTransaction( __METHOD__ );
@@ -535,7 +556,7 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 			return null;
 		}
 
-		$row = $this->statements->rows( self::FIND_TRANSACTION, $result->provider, $result->providerObjectId, $result->operation->value )[0] ?? null;
+		$row = $this->statements->rows( self::FIND_TRANSACTION, $result->provider, $result->providerObjectId, $result->operation->value, $result->outcome->value )[0] ?? null;
 
 		return null === $row ? null : (int) $row['id'];
 	}
@@ -544,16 +565,22 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 	 * Applies an approval to its intent, by its operation.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Applies a void, with its reason.
 	 *
-	 * @throws \LogicException For a void, which no statement applies yet.
+	 * @throws \InvalidArgumentException For a void given no reason, before any statement.
 	 *
-	 * @param PaymentIntent $intent     The intent, locked.
-	 * @param GatewayResult $result     The approval.
-	 * @param Money         $baseAmount The amount in the order's base currency, which the intent's base currency must be.
+	 * @param PaymentIntent   $intent     The intent, locked.
+	 * @param GatewayResult   $result     The approval.
+	 * @param Money           $baseAmount The amount in the order's base currency, which the intent's base currency must be.
+	 * @param VoidReason|null $voidReason Optional. Why a void was asked for; required for a void. Default null.
 	 * @return bool True when the intent changed; false when its state or its amounts refused the operation.
 	 */
-	public function applyApproval( PaymentIntent $intent, GatewayResult $result, Money $baseAmount ): bool {
+	public function applyApproval( PaymentIntent $intent, GatewayResult $result, Money $baseAmount, ?VoidReason $voidReason = null ): bool {
 		$this->statements->requireTransaction( __METHOD__ );
+
+		if ( Operation::Void === $result->operation && null === $voidReason ) {
+			throw new \InvalidArgumentException( 'A void is applied with the reason it was asked for.' );
+		}
 
 		// The result's currency and the base amount's, the order's base currency: the WHERE clause holds the intent's row to them.
 		$amount       = $result->amount->minorUnits();
@@ -565,7 +592,7 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 			Operation::Authorize => $this->statements->execute( self::APPLY_AUTHORIZE, $amount, $base, $result->providerIntentId ?? '', $intent->id, $currency, $baseCurrency, self::from( IntentStatus::Authorized ) ),
 			Operation::Capture   => $this->statements->execute( self::APPLY_CAPTURE, $amount, $base, $intent->id, $currency, $baseCurrency, self::from( IntentStatus::Captured ), $amount ),
 			Operation::Refund    => $this->statements->execute( self::APPLY_REFUND, $amount, $amount, $base, $intent->id, $currency, $baseCurrency, self::refundableFrom(), $amount, $amount, $base ),
-			Operation::Void      => throw new \LogicException( 'No statement applies a void yet: voiding an intent arrives with the gateway call that makes one.' ),
+			Operation::Void      => $this->statements->execute( self::APPLY_VOID, $voidReason->value, $intent->id, $currency, $baseCurrency, self::from( IntentStatus::Voided ) ),
 		};
 	}
 
@@ -622,19 +649,46 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 	 */
 	public function stale( array $states, int $olderThanSeconds, string $afterUuid, int $limit ): array {
 		return array_map(
-			static fn( array $row ): IntentRef => new IntentRef(
-				(string) $row['uuid'],
-				(int) $row['order_id'],
-				(string) $row['gateway_id'],
-				Mode::from( (string) $row['mode'] ),
-				IntentStatus::from( (string) $row['status'] ),
-				null === $row['provider_intent_id'] ? null : (string) $row['provider_intent_id'],
-				Money::of( (int) $row['amount_minor'], Currency::of( (string) $row['currency'] ) ),
-				(int) $row['age_seconds'],
-				null === $row['customer_action_expires_at'] ? null : new \DateTimeImmutable( (string) $row['customer_action_expires_at'], new \DateTimeZone( 'UTC' ) ),
-				'1' === (string) $row['expired']
-			),
+			static fn( array $row ): IntentRef => self::refOf( $row ),
 			$this->statements->rows( self::STALE_INTENTS, IntentTransitions::values( $states ), $olderThanSeconds, $afterUuid, $limit )
+		);
+	}
+
+	/**
+	 * Reads one intent as reconciliation sees it, without a lock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $uuid The intent's public identifier.
+	 * @return IntentRef|null The intent, with its gateway and mode, its age, and when its wait runs out and whether it had,
+	 *                        by the database's clock; or null when there is none.
+	 */
+	public function ref( string $uuid ): ?IntentRef {
+		$row = $this->statements->rows( self::FIND_INTENT_REF, $uuid )[0] ?? null;
+
+		return null === $row ? null : self::refOf( $row );
+	}
+
+	/**
+	 * Builds an intent's reference from its row.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, mixed> $row The row, as STALE_INTENTS and FIND_INTENT_REF read it.
+	 * @return IntentRef The reference.
+	 */
+	private static function refOf( array $row ): IntentRef {
+		return new IntentRef(
+			(string) $row['uuid'],
+			(int) $row['order_id'],
+			(string) $row['gateway_id'],
+			Mode::from( (string) $row['mode'] ),
+			IntentStatus::from( (string) $row['status'] ),
+			null === $row['provider_intent_id'] ? null : (string) $row['provider_intent_id'],
+			Money::of( (int) $row['amount_minor'], Currency::of( (string) $row['currency'] ) ),
+			(int) $row['age_seconds'],
+			null === $row['customer_action_expires_at'] ? null : new \DateTimeImmutable( (string) $row['customer_action_expires_at'], new \DateTimeZone( 'UTC' ) ),
+			'1' === (string) $row['expired']
 		);
 	}
 

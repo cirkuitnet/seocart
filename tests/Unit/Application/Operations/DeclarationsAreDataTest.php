@@ -30,9 +30,11 @@ use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
  *   codes and on currency switches, and the declared shape of totals with the enums it lists, the
  *   checkout's declarations with their error catalog, the address document whose fields they state,
  *   the details whose method key they bound and the payment gateway descriptor whose id length
- *   bounds the payment method, the refund caps' settings with the payment error catalog their
- *   check names, the refund's declaration with the reasons it lists, and the fixture — no service,
- *   no container, no kernel, no database layer.
+ *   bounds the payment method, the next action whose types and bounds the placement states, the
+ *   refund caps' settings with the payment error catalog their check names, the refund's
+ *   declaration with the reasons it lists, the capture's and the void's
+ *   with the void reasons, the payment states and the outcomes they list, and the fixture — no
+ *   service, no container, no kernel, no database layer.
  *
  * The probe can also add an operation whose factory translates a string, reads an option and reads
  * a file; the second test runs it that way and requires each of the three to be reported, so a
@@ -85,12 +87,16 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Checkout/Domain/IdempotencyClaim.php',
 		'src/Checkout/Domain/PlacementOutcome.php',
 		'src/Contracts/Payment/GatewayDescriptor.php',
+		'src/Contracts/Payment/NextAction.php',
 		'src/Payment/Application/RefundCapSettings.php',
 		'src/Payment/Application/PaymentError.php',
 		'src/Payment/Application/PaymentOperations.php',
 		'src/Payment/Application/ClaimStatement.php',
 		'src/Payment/Application/SettledClaim.php',
 		'src/Payment/Domain/Refund/RefundReason.php',
+		'src/Payment/Domain/VoidReason.php',
+		'src/Payment/Domain/IntentStatus.php',
+		'src/Payment/Domain/ApplicationKind.php',
 		'src/Pricing/Interfaces/TotalsFields.php',
 		'src/Pricing/Application/UnpricedLine.php',
 		'src/Pricing/Domain/PricingError.php',

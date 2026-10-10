@@ -1300,6 +1300,119 @@
                 }
             }
         },
+        "/checkout/resume": {
+            "servers": [
+                {
+                    "url": "{site}/wp-json/seocart/store/v1",
+                    "variables": {
+                        "site": {
+                            "default": "https://example.com",
+                            "description": "The address of the WordPress site."
+                        }
+                    }
+                }
+            ],
+            "post": {
+                "operationId": "checkout.resume_payment",
+                "summary": "Once the shopper is back from acting for the payment provider, has the store ask the provider where the placement's payment stands and settle what it answers, as the placement would have; answers the outcome and the order's statuses, the outcome duplicate when the store had settled the payment already. The cart token the placement was made with is required.",
+                "description": "Public: requires no capability. The Store API's request policy requires the header `X-SEOCart-Store: 1`, the `X-WP-Nonce` header when a login cookie is sent, the cart's token, and at most 5 requests per client in 3600 seconds.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "intent_uuid": {
+                                        "type": "string",
+                                        "format": "uuid",
+                                        "description": "The payment's public identifier, as the address the provider sent the shopper back to carries it.",
+                                        "examples": [
+                                            "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6e"
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "intent_uuid"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the ResumedPayment resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ResumedPayment"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`store_api.cart_token_missing`: This request changes an existing cart, so it must carry the cart's token.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "`store_api.header_missing`: This request changes the store, so it must carry the header X-SEOCart-Store: 1.\n\n`store_api.nonce_missing`: You are logged in, but this request carries no valid nonce, so it would run as a guest. Fetch a new nonce, send it as X-WP-Nonce, and try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`cart.not_found`: There is no cart for this request: it was never started, or it has expired. Start a new cart by adding a line.\n\n`payment.intent_not_found`: The payment {intent_uuid} was not found.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "405": {
+                        "description": "`store_api.read_method`: This request changes the store, so it must be sent as a POST, PUT, PATCH or DELETE request. A GET or HEAD request never changes it, whatever method it names.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "`store_api.rate_limited`: Too many requests. Wait a moment, then try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`checkout.gateway_unavailable`: The payment provider could not be reached. Your order is waiting for its answer: check its status in a few minutes before you try again.\n\n`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/orders/{order_uuid}/money-reconciliation": {
             "post": {
                 "operationId": "order.clear_unreconciled_money",
@@ -1706,6 +1819,283 @@
                     },
                     "404": {
                         "description": "`order.not_found`: The order was not found.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/payments/{intent_uuid}/captures": {
+            "post": {
+                "operationId": "payment.capture_payment",
+                "summary": "Captures an authorized payment through its gateway, everything authorized or, where the gateway declares partial captures, the amount given, the gateway releasing the rest; a payment is captured once, so a capture asked again after it was made is refused with payment.not_capturable and what was captured, and one whose answer was lost is asked again with the same request, which the gateway carries out once.",
+                "description": "Requires the capability `seocart_capture_payments`.",
+                "parameters": [
+                    {
+                        "name": "intent_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The public identifier of the payment, as its order's payment record names it.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6e"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": false,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "amount_minor": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "description": "What to capture, in minor units of the payment's currency: at most what was authorized, and less only where the payment's gateway declares partial captures; when absent, everything authorized.",
+                                        "examples": [
+                                            1500
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the PaymentResult resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaymentResult"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_capture_payments`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "402": {
+                        "description": "`payment.operation_declined`: The payment gateway {gateway_id} refused the {operation}. A refused void changes nothing; a refused capture is recorded, and leaves the payment failed.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_capture_payments`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`payment.intent_not_found`: The payment {intent_uuid} was not found.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`payment.not_capturable`: A payment that is {status} cannot be captured; only an authorized payment can.\n\n`payment.unreconciled`: The payment has a result that could not be recorded against its order; a person must reconcile it before anything else is done with the payment.\n\n`payment.capture_exceeds_authorized`: A capture of {requested} would take more than the {authorized} authorized; nothing was asked of the payment gateway.\n\n`payment.operation_unsupported`: The payment gateway {gateway_id} does not support {operation} for this payment; nothing was sent to it.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "`payment.gateway_no_answer`: The payment gateway did not answer, and nothing was recorded. Asking again sends the same request, which the gateway carries out at most once.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`payment.gateway_unavailable`: The payment gateway {gateway_id} cannot be used now ({reason}); nothing was sent to it.\n\n`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/payments/{intent_uuid}/voids": {
+            "post": {
+                "operationId": "payment.void_payment",
+                "summary": "Voids an authorized payment through its gateway, releasing what it authorized before anything is captured, for a declared reason; an order still waiting for its payment is cancelled, and an order accepted is left to the person who voids it; a captured payment is never voided, but refunded, and a void asked again after it was made is refused with payment.not_voidable.",
+                "description": "Requires the capability `seocart_void_payments`.",
+                "parameters": [
+                    {
+                        "name": "intent_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The public identifier of the payment, as its order's payment record names it.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6e"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "reason": {
+                                        "type": "string",
+                                        "enum": [
+                                            "customer_request",
+                                            "duplicate_order",
+                                            "fraud",
+                                            "out_of_stock",
+                                            "other"
+                                        ],
+                                        "description": "Why the payment is voided.",
+                                        "examples": [
+                                            "customer_request"
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "reason"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the PaymentResult resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaymentResult"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_void_payments`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "402": {
+                        "description": "`payment.operation_declined`: The payment gateway {gateway_id} refused the {operation}. A refused void changes nothing; a refused capture is recorded, and leaves the payment failed.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_void_payments`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`payment.intent_not_found`: The payment {intent_uuid} was not found.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`payment.not_voidable`: A payment that is {status} cannot be voided; only an authorized payment can, and a captured one is given back by a refund.\n\n`payment.unreconciled`: The payment has a result that could not be recorded against its order; a person must reconcile it before anything else is done with the payment.\n\n`payment.operation_unsupported`: The payment gateway {gateway_id} does not support {operation} for this payment; nothing was sent to it.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "`payment.gateway_no_answer`: The payment gateway did not answer, and nothing was recorded. Asking again sends the same request, which the gateway carries out at most once.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`payment.gateway_unavailable`: The payment gateway {gateway_id} cannot be used now ({reason}); nothing was sent to it.\n\n`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4102,6 +4492,91 @@
                     "money_reconciled_at"
                 ]
             },
+            "PaymentResult": {
+                "type": "object",
+                "properties": {
+                    "intent_uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The public identifier of the payment, as its order's payment record names it.",
+                        "examples": [
+                            "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6e"
+                        ]
+                    },
+                    "outcome": {
+                        "type": "string",
+                        "enum": [
+                            "applied",
+                            "duplicate"
+                        ],
+                        "description": "applied, or duplicate when another request had made the same capture or void a moment before.",
+                        "examples": [
+                            "applied"
+                        ]
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "created",
+                            "requires_action",
+                            "processing",
+                            "authorized",
+                            "captured",
+                            "partially_refunded",
+                            "refunded",
+                            "voided",
+                            "failed"
+                        ],
+                        "description": "The payment's status now.",
+                        "examples": [
+                            "captured"
+                        ]
+                    },
+                    "payment_status": {
+                        "type": "string",
+                        "enum": [
+                            "unpaid",
+                            "pending",
+                            "authorized",
+                            "partially_paid",
+                            "paid",
+                            "partially_refunded",
+                            "refunded",
+                            "voided",
+                            "failed",
+                            "disputed",
+                            "terms_pending"
+                        ],
+                        "description": "How far the payment's order is paid now.",
+                        "examples": [
+                            "paid"
+                        ]
+                    },
+                    "amount_minor": {
+                        "type": "integer",
+                        "description": "What the gateway captured, or released for a void, in minor units of the payment's currency.",
+                        "examples": [
+                            3080
+                        ]
+                    },
+                    "currency": {
+                        "type": "string",
+                        "maxLength": 3,
+                        "description": "The payment's currency, ISO 4217.",
+                        "examples": [
+                            "EUR"
+                        ]
+                    }
+                },
+                "required": [
+                    "intent_uuid",
+                    "outcome",
+                    "status",
+                    "payment_status",
+                    "amount_minor",
+                    "currency"
+                ]
+            },
             "Placement": {
                 "type": "object",
                 "properties": {
@@ -4146,6 +4621,7 @@
                             "amount_mismatch",
                             "stock_unavailable",
                             "late_approval",
+                            "voided",
                             "duplicate"
                         ],
                         "description": "What the placement came to: approved, requires_action when the shopper must act, processing while the gateway decides, or, given to a retry with the same key, any outcome the placement came to since, declined included; pending only while the payment is not yet known.",
@@ -4188,6 +4664,50 @@
                         "description": "How far the order is paid once the placement settled.",
                         "examples": [
                             "authorized"
+                        ]
+                    },
+                    "next_action": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "redirect",
+                                    "sdk"
+                                ],
+                                "description": "redirect, to send the shopper to url; or sdk, to give client_token to the provider's script in the browser."
+                            },
+                            "url": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ],
+                                "maxLength": 2048,
+                                "description": "The page to send the shopper to, as the provider gave it; null for a step the provider's script takes."
+                            },
+                            "client_token": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ],
+                                "maxLength": 512,
+                                "description": "The handle the provider's script in the browser needs, the browser's key to this payment at the provider: keep it out of every URL and log. Null when the step needs none."
+                            }
+                        },
+                        "required": [
+                            "type"
+                        ],
+                        "additionalProperties": false,
+                        "description": "What the shopper must do for the payment provider while the outcome is requires_action, for example confirm the payment with their bank, and null otherwise. It is answered again to a retry of the same request while the shopper must act. Once the provider sends the shopper back, resume the payment with checkout.resume_payment.",
+                        "examples": [
+                            {
+                                "type": "redirect",
+                                "url": "https://payments.example.com/authenticate/a1b2c3",
+                                "client_token": "pi_a1b2c3_secret_d4e5f6"
+                            }
                         ]
                     }
                 },
@@ -4384,6 +4904,81 @@
                     "decided_by",
                     "gateway_reading",
                     "has_unreconciled_money"
+                ]
+            },
+            "ResumedPayment": {
+                "type": "object",
+                "properties": {
+                    "intent_uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The payment resumed.",
+                        "examples": [
+                            "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6e"
+                        ]
+                    },
+                    "outcome": {
+                        "type": "string",
+                        "enum": [
+                            "pending",
+                            "approved",
+                            "declined",
+                            "requires_action",
+                            "processing",
+                            "amount_mismatch",
+                            "stock_unavailable",
+                            "late_approval",
+                            "voided",
+                            "duplicate"
+                        ],
+                        "description": "What the payment came to: approved, declined, requires_action while the shopper still must act, processing while the provider decides, or duplicate when the store had settled it already; the statuses say where the order stands.",
+                        "examples": [
+                            "approved"
+                        ]
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "pending_payment",
+                            "awaiting_review",
+                            "processing",
+                            "on_hold",
+                            "preorder",
+                            "completed",
+                            "cancelled",
+                            "failed"
+                        ],
+                        "description": "The order's status now.",
+                        "examples": [
+                            "processing"
+                        ]
+                    },
+                    "payment_status": {
+                        "type": "string",
+                        "enum": [
+                            "unpaid",
+                            "pending",
+                            "authorized",
+                            "partially_paid",
+                            "paid",
+                            "partially_refunded",
+                            "refunded",
+                            "voided",
+                            "failed",
+                            "disputed",
+                            "terms_pending"
+                        ],
+                        "description": "How far the order is paid now.",
+                        "examples": [
+                            "authorized"
+                        ]
+                    }
+                },
+                "required": [
+                    "intent_uuid",
+                    "outcome",
+                    "status",
+                    "payment_status"
                 ]
             },
             "Settings": {

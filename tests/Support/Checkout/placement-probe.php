@@ -4,6 +4,7 @@
  *
  * Usage: php tests/Support/Checkout/placement-probe.php <result-file> place <request>
  *        php tests/Support/Checkout/placement-probe.php <result-file> settle <order-uuid>
+ *        php tests/Support/Checkout/placement-probe.php <result-file> <window-end|capture|void|capture-and-die> <request>
  *
  * The placement concurrency and recovery tests start this script through
  * ChildProcessProbe::start(), so that a placement or a settlement runs on a connection of its own
@@ -18,6 +19,16 @@
  *   its unit of work committed: nothing after it runs, not even PHP's shutdown.
  * - `settle`: the stub gateway's answer for the order's intent, as a webhook delivers it, is
  *   applied through SettlePlacement.
+ * - `window-end`: the end of the shopper's time to act, as reconciliation runs it for the order
+ *   named by the request's `order_uuid`: its payment voided at the gateway on no user's authority,
+ *   then the void settled through SettlePlacement.
+ * - `capture` and `void`: the capture or the void operation's service, for the request's
+ *   `intent_uuid`, as `wp seocart payment capture|void` runs it for the request's `user_id`, who is
+ *   granted both capabilities; a void gives the request's `reason`.
+ * - `capture-and-die`: a capture whose process the gateway kills with SIGKILL once the provider
+ *   made the capture and remembered it, before anything is recorded.
+ *   For these three, a request's `provider_file` makes the gateway a FileProviderGateway that
+ *   remembers in that file, which the test's own process shares.
  *
  * The report names the answer (`answer_json`, as encoded), or the refusal (`refused`, `context`,
  * `details`), or any other failure, with the retries.
@@ -33,8 +44,11 @@ use SEOCart\Cart\Domain\CartToken;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\SettlePlacement;
 use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Contracts\Payment\PaymentQuery;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Domain\VoidReason;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Platform\Authorization\Actor;
@@ -44,12 +58,14 @@ use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Money;
 use SEOCart\Tests\Support\Checkout\PlacementKernel;
 use SEOCart\Tests\Support\Doubles\FakeCartTokens;
+use SEOCart\Tests\Support\Doubles\FileProviderGateway;
+use SEOCart\Tests\Support\Doubles\RecordingGateway;
 
 // phpcs:disable WordPress.WP.AlternativeFunctions -- The probe writes its report to the file its parent reads.
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- The probe reads the order's intent to ask the stub about it.
 
-if ( 'cli' !== PHP_SAPI || ! isset( $argv[1], $argv[2], $argv[3] ) || ! in_array( $argv[2], array( 'place', 'settle' ), true ) ) {
-	fwrite( STDERR, 'Usage: php tests/Support/Checkout/placement-probe.php <result-file> <place|settle> <request|order-uuid>' . PHP_EOL );
+if ( 'cli' !== PHP_SAPI || ! isset( $argv[1], $argv[2], $argv[3] ) || ! in_array( $argv[2], array( 'place', 'settle', 'window-end', 'capture', 'void', 'capture-and-die' ), true ) ) {
+	fwrite( STDERR, 'Usage: php tests/Support/Checkout/placement-probe.php <result-file> <place|settle|window-end|capture|void|capture-and-die> <request|order-uuid>' . PHP_EOL );
 
 	exit( 2 );
 }
@@ -75,7 +91,7 @@ global $wpdb;
 
 $seocart_probe_retries = 0;
 $seocart_probe_commits = 0;
-$seocart_probe_request = 'place' === $argv[2] ? (array) json_decode( (string) base64_decode( $argv[3], true ), true ) : array();
+$seocart_probe_request = 'settle' !== $argv[2] ? (array) json_decode( (string) base64_decode( $argv[3], true ), true ) : array();
 $seocart_probe_db      = new Database(
 	$wpdb,
 	true,
@@ -110,12 +126,57 @@ $seocart_probe_kernel            = PlacementKernel::over(
 			exec( 'kill -9 ' . getmypid() );
 		}
 	},
-	static function (): void {}
+	static function (): void {},
+	'' === (string) ( $seocart_probe_request['provider_file'] ?? '' ) ? array() : array(
+		PaymentGateway::class => static fn(): PaymentGateway => new RecordingGateway(
+			new FileProviderGateway(
+				new StubGateway(),
+				(string) $seocart_probe_request['provider_file'],
+				'capture-and-die' !== $argv[2] ? null : static function (): void {
+					// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.system_calls_exec -- No posix extension on every host: the shell kills the process.
+					exec( 'kill -9 ' . getmypid() );
+				}
+			),
+			$seocart_probe_db
+		),
+	)
+);
+
+// The user a capture or a void acts for holds both capabilities, as the test's own user does.
+$seocart_probe_user = (int) ( $seocart_probe_request['user_id'] ?? 0 );
+
+add_filter(
+	'user_has_cap',
+	static function ( $caps, $cap, $args ) use ( $seocart_probe_user ) {
+		if ( 0 < $seocart_probe_user && (int) ( $args[1] ?? 0 ) === $seocart_probe_user ) {
+			$caps[ PaymentService::CAPTURE_CAPABILITY ] = true;
+			$caps[ PaymentService::VOID_CAPABILITY ]    = true;
+		}
+
+		return $caps;
+	},
+	10,
+	3
 );
 
 try {
 	if ( 'place' === $argv[2] ) {
 		$seocart_probe_outcome = array( 'answer_json' => (string) wp_json_encode( $seocart_probe_kernel->get( PlaceOrder::class )->place( (array) ( $seocart_probe_request['input'] ?? array() ), Actor::user( 0 ) ) ) );
+	} elseif ( 'window-end' === $argv[2] ) {
+		$seocart_probe_store  = Actor::system( 'reconciliation', 0 );
+		$seocart_probe_intent = (string) $wpdb->get_var( $wpdb->prepare( 'SELECT i.uuid FROM %i i JOIN %i o ON o.id = i.order_id WHERE o.uuid = %s', $seocart_probe_db->table( PaymentTables::INTENTS ), $seocart_probe_db->table( OrderTables::ORDERS ), (string) ( $seocart_probe_request['order_uuid'] ?? '' ) ) );
+		$seocart_probe_void   = $seocart_probe_kernel->get( PaymentService::class )->askVoid( $seocart_probe_intent, $seocart_probe_store, VoidReason::ActionWindowEnded );
+
+		$seocart_probe_outcome = array( 'outcome' => $seocart_probe_kernel->get( SettlePlacement::class )->apply( $seocart_probe_void, $seocart_probe_store, VoidReason::ActionWindowEnded )->outcome->value );
+	} elseif ( 'void' === $argv[2] ) {
+		$seocart_probe_input   = array(
+			'intent_uuid' => (string) ( $seocart_probe_request['intent_uuid'] ?? '' ),
+			'reason'      => (string) ( $seocart_probe_request['reason'] ?? '' ),
+		);
+		$seocart_probe_outcome = array( 'answer_json' => (string) wp_json_encode( $seocart_probe_kernel->get( PaymentService::class )->voidPayment( $seocart_probe_input, Actor::system( 'cli', $seocart_probe_user ) ) ) );
+	} elseif ( 'settle' !== $argv[2] ) {
+		$seocart_probe_input   = array( 'intent_uuid' => (string) ( $seocart_probe_request['intent_uuid'] ?? '' ) );
+		$seocart_probe_outcome = array( 'answer_json' => (string) wp_json_encode( $seocart_probe_kernel->get( PaymentService::class )->capturePayment( $seocart_probe_input, Actor::system( 'cli', $seocart_probe_user ) ) ) );
 	} else {
 		$seocart_probe_intent = $wpdb->get_row(
 			$wpdb->prepare(

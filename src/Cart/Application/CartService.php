@@ -288,6 +288,23 @@ final class CartService {
 	}
 
 	/**
+	 * Returns the order the cart the request's token names last placed, whatever became of the cart since: one read, of the cart alone.
+	 *
+	 * For a shopper who resumes the payment of a placement: a settlement that ran first may have
+	 * converted the cart, which current() no longer answers for, and it is still theirs. A token that
+	 * names no cart, or a cart that has expired, answers null.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return int|null The order's internal id, or null.
+	 */
+	public function presentedOrder(): ?int {
+		$token = $this->tokens->presented();
+
+		return null === $token ? null : $this->carts->findRowByTokenHash( $token->hash() )?->orderId;
+	}
+
+	/**
 	 * Adds lines to the request's cart, or starts a cart with them.
 	 *
 	 * The lines are combined by identity first. With an expected version of 0 and no live cart, or

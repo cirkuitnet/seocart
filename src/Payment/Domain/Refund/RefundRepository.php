@@ -146,12 +146,13 @@ interface RefundRepository {
 	public function claimRequest( string $uuid ): ?ClaimRequest;
 
 	/**
-	 * Tells whether the ledger holds a result under the key it would be recorded by, the provider, its object and the operation, without a lock.
+	 * Tells whether the ledger holds a result of the provider object's operation, whatever its outcome, without a lock.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param GatewayResult $result The result, naming its provider object.
-	 * @return bool True when a row holds the provider object's result of the operation; false when none does, or the result names no object.
+	 * @return bool True when a row holds a result of the provider object's operation, in any outcome; false when none
+	 *              does, or the result names no object.
 	 */
 	public function holdsResult( GatewayResult $result ): bool;
 

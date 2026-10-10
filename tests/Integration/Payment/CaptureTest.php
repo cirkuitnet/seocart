@@ -11,18 +11,30 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
+use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\GatewayUnavailable;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Operations;
+use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Contracts\Payment\PaymentRequest;
 use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Payment\Application\PaymentError;
+use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Domain\ApplicationKind;
 use SEOCart\Payment\Domain\Event\PaymentCaptured;
 use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
+use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\AuthorizationError;
 use SEOCart\Platform\Database\Exception\ForbiddenInsideTransaction;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Tests\Support\Doubles\DeclaredGateway;
+
+use SEOCart\Tests\Support\Order\NewOrders;
 use SEOCart\Tests\Support\Payment\PaymentTestCase;
 
 /**
@@ -40,7 +52,13 @@ use SEOCart\Tests\Support\Payment\PaymentTestCase;
  * - in PaymentService::capture(), call the gateway inside the transaction that applies its answer:
  *   the gateway records the call at depth 1;
  * - in PaymentService::capture(), skip the intent's status check: the gateway is called for an
- *   intent never authorized.
+ *   intent never authorized;
+ * - in PaymentService::requireCapturable(), ask the matrix for `capture` whatever the amount: the
+ *   capture of part reaches a gateway that does not declare it;
+ * - in AmountCheck::capturable(), take only the intent's whole amount, as before: the capture of
+ *   part is parked as a mismatch;
+ * - in PaymentService::baseAmount(), take a capture's base amount as its amount in the order's
+ *   currency: the base figures of the capture of part are wrong.
  *
  * @since 0.1.0
  */
@@ -260,6 +278,150 @@ final class CaptureTest extends PaymentTestCase {
 		} catch ( ForbiddenInsideTransaction $refused ) {
 			$this->assertSame( ForbiddenInsideTransaction::KIND_HTTP, $refused->kind() );
 			$this->assertSame( 'gateway.example.test', $refused->detail() );
+		}
+	}
+
+	/**
+	 * Tests that a capture of part of what was authorized, where the gateway declares it, captures that part, with its share of the frozen base amount, and leaves the order partly paid.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_capture_of_part_takes_its_share_where_the_gateway_declares_it(): void {
+		list( $order, $intent ) = $this->placeWithIntent();
+
+		$this->deliver( $this->authorizeWith( $intent, StubGateway::APPROVE ) );
+
+		$application = $this->payments->capture( $intent->uuid, $this->userWithRole(), 1000 );
+
+		$this->assertSame( array( ApplicationKind::Applied, PaymentStatus::PartiallyPaid ), array( $application->kind, $application->paymentTo ) );
+		$this->assertSame( array( 'captured', '3080', '1000', '800' ), array_map( 'strval', array_values( self::pick( $this->intentRow( $intent->uuid ), 'status', 'authorized_minor', 'captured_minor', 'base_captured_minor' ) ) ), 'A third of 3080 EUR takes its share of the 2464 USD frozen with it: 800.' );
+		$this->assertSame( array( 'capture', '1000', 'EUR', '800', 'USD' ), array_values( self::pick( $this->ledgerOf( $order->id )[1], 'operation', 'amount_minor', 'currency', 'base_amount_minor', 'base_currency' ) ) );
+		$this->assertSame( array( 'processing', 'partially_paid', '1000', '2080', '800' ), array_map( 'strval', array_values( self::pick( $this->orderRow( $order->id ), 'status', 'payment_status', 'paid_minor', 'due_minor', 'base_paid_minor' ) ) ) );
+		$this->assertRefused( PaymentError::NotCapturable, fn() => $this->payments->capture( $intent->uuid, $this->userWithRole(), 2080 ), 'One capture per intent: the rest is released by the provider.' );
+	}
+
+	/**
+	 * Tests that a capture of part is refused where the gateway does not declare it, and a capture of more than was authorized everywhere, each before the gateway is asked.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_capture_the_gateway_or_the_authorization_cannot_take_is_refused_before_the_call(): void {
+		$whole    = array_values( array_diff( Operations::ALL, array( Operations::PARTIAL_CAPTURE, Operations::MULTI_CAPTURE, Operations::OFF_SESSION, Operations::WEBHOOKS ) ) );
+		$declared = new DeclaredGateway( DeclaredGateway::descriptor( 'declared', array( Mode::Test ), array(), DeclaredGateway::matrix( array( 'EUR' ), $whole ) ) );
+		$payments = $this->paymentsOver( $this->db, $this->ids, $declared );
+		$order    = NewOrders::forTwoLines( self::CURRENCY, self::BASE );
+		$intent   = $this->db->transaction(
+			function () use ( $payments, $order ) {
+				$inserted = $this->orders->insert( $order, Actor::user( 0 ) );
+
+				return $payments->createIntent( $inserted->id, 'declared', Mode::Test, $order->totals->grandTotal, $order->totals->baseGrandTotal, $inserted->conversionContextId );
+			}
+		);
+
+		$approval = $payments->authorize( $intent->uuid, array( PaymentService::PAYMENT_TOKEN => StubGateway::APPROVE ), self::ORDER_UUID, self::ORDER_NUMBER );
+
+		$this->db->transaction( fn() => $payments->applyGatewayResult( $approval, self::system() ) );
+
+		$agent = $this->userWithRole();
+
+		$this->assertRefused(
+			PaymentError::OperationUnsupported,
+			fn() => $payments->capture( $intent->uuid, $agent, 1000 ),
+			'A gateway that does not declare partial captures.',
+			array(
+				'gateway_id' => 'declared',
+				'operation'  => 'partial_capture',
+			)
+		);
+		$this->assertRefused(
+			PaymentError::CaptureExceedsAuthorized,
+			fn() => $payments->capture( $intent->uuid, $agent, 3081 ),
+			'More than was authorized.',
+			array(
+				'authorized' => 3080,
+				'requested'  => 3081,
+			)
+		);
+		$this->assertSame( array( 'authorize' ), array_column( $declared->calls, 'method' ), 'The gateway was never asked to capture.' );
+		$this->assertSame( ApplicationKind::Applied, $payments->capture( $intent->uuid, $agent )->kind, 'The whole amount is declared.' );
+	}
+
+	/**
+	 * Tests that a capture asked again after it was made is refused with what was captured, so a client reads it as done, and the gateway is not asked again.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_capture_asked_again_reads_as_done(): void {
+		list( , $intent ) = $this->placeWithIntent();
+
+		$this->deliver( $this->authorizeWith( $intent, StubGateway::APPROVE ) );
+		$this->payments->capture( $intent->uuid, $this->userWithRole() );
+
+		try {
+			$this->payments->capture( $intent->uuid, $this->userWithRole() );
+			$this->fail( 'A captured intent was captured again.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( array( PaymentError::NotCapturable, array( 'status' => 'captured' ) ), array( $refused->errorCode(), $refused->context() ) );
+			$this->assertSame(
+				array(
+					'captured' => 3080,
+					'currency' => 'EUR',
+				),
+				$refused->details()
+			);
+		}
+
+		$this->assertSame( array( 'authorize', 'capture' ), array_column( $this->gateway->calls, 'method' ) );
+	}
+
+	/**
+	 * Tests that a gateway that does not answer, or declines, leaves the capture unrecorded: nothing applied for no answer, the intent failed for a decline, and the accepted order left to a person.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws GatewayUnavailable Only from the gateway the test scripts, which the test catches.
+	 */
+	public function test_a_capture_without_an_answer_records_nothing_and_a_declined_one_fails_the_intent(): void {
+		list( $order, $intent ) = $this->placeWithIntent();
+
+		$this->deliver( $this->authorizeWith( $intent, StubGateway::APPROVE ) );
+
+		$this->gateway->captures = static fn(): GatewayResult => throw new GatewayUnavailable( 'The capture never reached the gateway.' );
+		$before                  = $this->snapshot();
+
+		try {
+			$this->payments->capture( $intent->uuid, $this->userWithRole() );
+			$this->fail( 'A capture with no answer was applied.' );
+		} catch ( GatewayUnavailable $unavailable ) {
+			$this->assertSame( $before, $this->snapshot(), 'Nothing was recorded.' );
+		}
+
+		$this->gateway->captures = static fn( CaptureRequest $request ): GatewayResult => new GatewayResult( StubGateway::ID, Operation::Capture, Outcome::Declined, $request->intentUuid, $request->amount, 'stub-cap-' . $request->intentUuid, $request->providerIntentId, 'card_declined' );
+
+		$this->assertSame( ApplicationKind::Declined, $this->payments->capture( $intent->uuid, $this->userWithRole() )->kind );
+		$this->assertSame( array( 'failed', 'processing' ), array( $this->intentRow( $intent->uuid )['status'], $this->orderRow( $order->id )['status'] ), 'A declined capture fails the intent and leaves the accepted order to a person.' );
+	}
+
+	/**
+	 * Asserts that a call is refused with a code, and a context when one is given.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param PaymentError              $code    The code.
+	 * @param \Closure                  $call    The call.
+	 * @param string                    $what    What is refused.
+	 * @param array<string, mixed>|null $context Optional. The context. Default not checked.
+	 */
+	private function assertRefused( PaymentError $code, \Closure $call, string $what, ?array $context = null ): void {
+		try {
+			$call();
+			$this->fail( $what . ': not refused.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( $code, $refused->errorCode(), $what );
+
+			if ( null !== $context ) {
+				$this->assertSame( $context, $refused->context(), $what );
+			}
 		}
 	}
 }

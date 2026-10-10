@@ -11,7 +11,9 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Checkout;
 
+use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Domain\CheckoutError;
+use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
 use SEOCart\Contracts\Payment\CapabilityMatrix;
 use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Contracts\Payment\GatewayRegistry;
@@ -23,8 +25,13 @@ use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Application\GatewaySettingsDeclaration;
 use SEOCart\Payment\Application\PaymentError;
+use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
+use SEOCart\Platform\Logging\LogsTable;
 use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
+use SEOCart\Platform\RateLimiter\ClientIdentities;
+use SEOCart\Platform\RateLimiter\RateLimiter;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
@@ -43,9 +50,17 @@ use SEOCart\Tests\Support\Payment\GatewayKernel;
  *
  * The matrix is checked once more right before the gateway is asked to authorize: a cell that
  * stops being declared after placement's check, because the account moved to another country,
- * sends nothing, and the order waits as placed, as it does when the gateway cannot be reached.
+ * sends nothing. The provider never saw the payment, so nothing will ever answer for it: the
+ * order is released as a declined one is, and the placement refused as one the payment method
+ * cannot take, naming the order; the cart's count of declines is not added to. A payment whose
+ * provider may have seen it, but the store cannot ask about now, is never released by the
+ * reconciliation run: it waits, deferred run after run, for the provider's answer.
  *
  * Planted violations, each shown red and removed:
+ * - in PlaceOrder::paid(), refuse a refused authorization as an unreachable gateway, as before:
+ *   the order waits as placed, with its hold;
+ * - in ReconcileStalePlacements::settle(), settle an intent it cannot ask about as unsent: it is
+ *   released;
  * - in PlaceOrder::place(), skip paymentMode() and create the intent in test mode: the placement
  *   through a gateway its matrix refuses is then made;
  * - in UpdateCheckoutSession::paymentMethod(), drop the registry's check: an unknown method is
@@ -197,7 +212,7 @@ final class PaymentMethodCheckTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Tests that an authorization whose cell the matrix stops declaring after placement's check is never sent, and the order waits as placed.
+	 * Tests that an authorization whose cell the matrix stops declaring after placement's check is never sent, and the order is released as a declined one is.
 	 *
 	 * @since 0.2.0
 	 */
@@ -218,21 +233,70 @@ final class PaymentMethodCheckTest extends PlacementTestCase {
 		};
 
 		$order = '';
+		$token = $this->tokens->presented ?? self::fail( 'No token.' );
 
 		try {
 			$this->freshPlacement()->place( $this->placeInput(), self::guest() );
 			$this->fail( 'The order was placed through a cell the matrix no longer declares.' );
 		} catch ( CodedException $refused ) {
-			$this->assertSame( CheckoutError::GatewayUnavailable, $refused->errorCode() );
+			$this->assertSame( array( CheckoutError::PaymentMethodUnavailable, array( 'payment_method_key' => 'shifting' ) ), array( $refused->errorCode(), $refused->context() ) );
 			$this->assertSame( PaymentError::OperationUnsupported, $refused->getPrevious() instanceof CodedException ? $refused->getPrevious()->errorCode() : null );
 
 			$order = (string) ( $refused->details()['order_uuid'] ?? '' );
 		}
 
-		$row = $this->db->fetchRow( 'SELECT o.status AS o_status, i.status AS i_status FROM %i o JOIN %i i ON i.order_id = o.id WHERE o.uuid = %s', $this->table( OrderTables::ORDERS ), $this->table( PaymentTables::INTENTS ), $order );
+		$row     = $this->db->fetchRow( 'SELECT o.status AS o_status, i.status AS i_status, o.id FROM %i o JOIN %i i ON i.order_id = o.id WHERE o.uuid = %s', $this->table( OrderTables::ORDERS ), $this->table( PaymentTables::INTENTS ), $order );
+		$decline = $this->db->fetchRow( 'SELECT result, error_code, provider, provider_object_id FROM %i WHERE order_id = %d', $this->table( PaymentTables::TRANSACTIONS ), (int) $row['id'] );
+		$limit   = PlaceOrder::declineLimit();
 
 		$this->assertSame( array(), $shifting->calls, 'Nothing was sent to the gateway.' );
-		$this->assertSame( array( 'pending_payment', 'created' ), array( (string) $row['o_status'], (string) $row['i_status'] ), 'The order waits as placed, its payment not asked for.' );
+		$this->assertSame( array( 'failed', 'failed' ), array( (string) $row['o_status'], (string) $row['i_status'] ), 'The order is released as a declined one is.' );
+		$this->assertSame( array( 'declined', PaymentService::NOT_SENT, 'shifting', null ), array_values( (array) $decline ), 'One declined row, naming no provider object.' );
+		$this->assertSame( 0, $this->committedCount( $this->secondConnection(), InventoryTables::HOLDS ), 'The hold is given back.' );
+		$this->assertSame( 'open', $this->committedCart( $this->secondConnection(), $cart->id )['status'] ?? null, 'The cart is open again.' );
+		$this->assertSame( 0, $this->kernel->get( RateLimiter::class )->peek( $limit->bucket(), $this->kernel->get( ClientIdentities::class )->ofCart( $token ), $limit->windowSeconds() ), 'The store\'s refusal is not the card\'s: no decline is counted.' );
+	}
+
+	/**
+	 * Tests that a payment whose provider may have seen it, but which the store can no longer ask about, is never released by the reconciliation run: it waits, reported deferred each run, with what its order holds.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_payment_the_store_cannot_ask_about_is_never_released(): void {
+		$country  = new FieldSpec( name: GatewayDescriptor::ACCOUNT_COUNTRY, type: FieldType::String, description: 'The country of the provider account.', label: static fn(): string => 'Account country', example: 'US', max_length: 2 );
+		$shifting = new DeclaredGateway( DeclaredGateway::descriptor( 'shifting', array( Mode::Test ), array( $country ), new CapabilityMatrix( array( new MatrixRow( Currency::of( 'USD' ), 'US', Operations::REQUIRED ) ) ) ) );
+
+		$this->plugins['shifting'] = $shifting;
+		$this->writeAccountCountry( 'US' );
+
+		$cart = $this->startCart( array( $this->sellable() => 1 ) );
+
+		$this->writeCheckout( $cart->version, 'shifting' );
+
+		try {
+			$this->freshPlacement()->place( $this->placeInput( 'unanswered', StubGateway::THROW ), self::guest() );
+			$this->fail( 'The gateway answered.' );
+		} catch ( CodedException $unanswered ) {
+			$this->assertSame( CheckoutError::GatewayUnavailable, $unanswered->errorCode(), 'The request may have reached the provider: the order waits.' );
+		}
+
+		// The account moves to a country whose cell declares nothing: the payment cannot be asked about now.
+		$this->writeAccountCountry( 'GB' );
+		$this->db->execute( 'UPDATE %i SET created_at = UTC_TIMESTAMP(6) - INTERVAL 11 MINUTE, updated_at = UTC_TIMESTAMP(6) - INTERVAL 11 MINUTE', $this->table( PaymentTables::INTENTS ) );
+
+		$this->freshPlacement();
+		$this->kernel->get( ReconcileStalePlacements::class )->handle( array() );
+		$this->freshPlacement();
+		$this->kernel->get( ReconcileStalePlacements::class )->handle( array() );
+
+		$this->assertSame( 'created', $this->db->fetchValue( 'SELECT GROUP_CONCAT( status ) FROM %i', $this->table( PaymentTables::INTENTS ) ), 'The payment still waits for its provider.' );
+		$this->assertSame( 1, $this->committedCount( $this->secondConnection(), InventoryTables::HOLDS ), 'Its order keeps its hold.' );
+		$this->assertSame(
+			array( PaymentError::OperationUnsupported->value, PaymentError::OperationUnsupported->value ),
+			array_map( static fn( array $line ): string => (string) ( json_decode( (string) $line['context_json'], true )['reason'] ?? '' ), $this->db->fetchAll( 'SELECT context_json FROM %i WHERE machine_code = %s ORDER BY id', $this->table( LogsTable::NAME ), ReconcileStalePlacements::DEFERRED ) ),
+			'Each run reports it deferred, and why.'
+		);
+		$this->assertSame( array( 'authorize' ), array_column( $shifting->calls, 'method' ), 'The provider was never asked about it, and never told to drop it.' );
 	}
 
 	/**

@@ -110,3 +110,51 @@ Lowers the flag of an order holding money a person must reconcile, with the note
 - `order_uuid` (always): The order whose unreconciled money was cleared. A uuid.
 - `has_unreconciled_money` (always): Whether the order holds money a person must reconcile: false once cleared. True or false.
 - `money_reconciled_at` (always): When the flag was cleared, UTC, in ISO 8601 to the microsecond, by the database clock. Text.
+
+## `seocart/capture-payment`
+
+Captures an authorized payment through its gateway, everything authorized or, where the gateway declares partial captures, the amount given, the gateway releasing the rest; a payment is captured once, so a capture asked again after it was made is refused with payment.not_capturable and what was captured, and one whose answer was lost is asked again with the same request, which the gateway carries out once.
+
+- Operation: `payment.capture_payment`
+- Capability: `seocart_capture_payments`
+- Error codes: `authorization.denied` (403), `payment.intent_not_found` (404), `payment.not_capturable` (409), `payment.unreconciled` (409), `payment.capture_exceeds_authorized` (409), `payment.operation_unsupported` (409), `payment.gateway_unavailable` (503), `payment.gateway_no_answer` (502), `payment.operation_declined` (402), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `true`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+- `intent_uuid` (required): The public identifier of the payment, as its order's payment record names it. A uuid.
+- `amount_minor`: What to capture, in minor units of the payment's currency: at most what was authorized, and less only where the payment's gateway declares partial captures; when absent, everything authorized. An integer of at least 1.
+
+### Output
+
+- `intent_uuid` (always): The public identifier of the payment, as its order's payment record names it. A uuid.
+- `outcome` (always): applied, or duplicate when another request had made the same capture or void a moment before. One of `applied`, `duplicate`.
+- `status` (always): The payment's status now. One of `created`, `requires_action`, `processing`, `authorized`, `captured`, `partially_refunded`, `refunded`, `voided`, `failed`.
+- `payment_status` (always): How far the payment's order is paid now. One of `unpaid`, `pending`, `authorized`, `partially_paid`, `paid`, `partially_refunded`, `refunded`, `voided`, `failed`, `disputed`, `terms_pending`.
+- `amount_minor` (always): What the gateway captured, or released for a void, in minor units of the payment's currency. An integer.
+- `currency` (always): The payment's currency, ISO 4217. Text of at most 3 characters.
+
+## `seocart/void-payment`
+
+Voids an authorized payment through its gateway, releasing what it authorized before anything is captured, for a declared reason; an order still waiting for its payment is cancelled, and an order accepted is left to the person who voids it; a captured payment is never voided, but refunded, and a void asked again after it was made is refused with payment.not_voidable.
+
+- Operation: `payment.void_payment`
+- Capability: `seocart_void_payments`
+- Error codes: `authorization.denied` (403), `payment.intent_not_found` (404), `payment.not_voidable` (409), `payment.unreconciled` (409), `payment.operation_unsupported` (409), `payment.gateway_unavailable` (503), `payment.gateway_no_answer` (502), `payment.operation_declined` (402), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `true`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+- `intent_uuid` (required): The public identifier of the payment, as its order's payment record names it. A uuid.
+- `reason` (required): Why the payment is voided. One of `customer_request`, `duplicate_order`, `fraud`, `out_of_stock`, `other`.
+
+### Output
+
+- `intent_uuid` (always): The public identifier of the payment, as its order's payment record names it. A uuid.
+- `outcome` (always): applied, or duplicate when another request had made the same capture or void a moment before. One of `applied`, `duplicate`.
+- `status` (always): The payment's status now. One of `created`, `requires_action`, `processing`, `authorized`, `captured`, `partially_refunded`, `refunded`, `voided`, `failed`.
+- `payment_status` (always): How far the payment's order is paid now. One of `unpaid`, `pending`, `authorized`, `partially_paid`, `paid`, `partially_refunded`, `refunded`, `voided`, `failed`, `disputed`, `terms_pending`.
+- `amount_minor` (always): What the gateway captured, or released for a void, in minor units of the payment's currency. An integer.
+- `currency` (always): The payment's currency, ISO 4217. Text of at most 3 characters.

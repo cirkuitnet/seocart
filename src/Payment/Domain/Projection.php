@@ -95,12 +95,15 @@ final readonly class Projection {
 	/**
 	 * Returns the payment status the amounts and the intent's state amount to.
 	 *
-	 * Refunds first, then captures, then authorizations. An order whose grand total is zero, with
-	 * nothing due, is paid: there was never anything to pay, so it has no intent, and it is never
-	 * left unpaid. Otherwise, with nothing tendered, the intent's state decides: failed, still
-	 * waiting, voided, or not paid yet.
+	 * Refunds first, then captures, then a void, then authorizations. A void releases what was
+	 * authorized without moving any money, so the amounts authorized stay recorded: with nothing
+	 * captured, the intent's being voided decides. An order whose grand total is zero, with nothing
+	 * due, is paid: there was never anything to pay, so it has no intent, and it is never left
+	 * unpaid. Otherwise, with nothing tendered, the intent's state decides: failed, still waiting,
+	 * or not paid yet.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 A voided intent with nothing captured is voided, whatever it had authorized.
 	 *
 	 * @param IntentStatus|null $intent The order's intent's state after the payment; null for an order that has none.
 	 * @return PaymentStatus The status.
@@ -118,6 +121,10 @@ final readonly class Projection {
 			return $this->paid->compare( $this->grandTotal ) >= 0 ? PaymentStatus::Paid : PaymentStatus::PartiallyPaid;
 		}
 
+		if ( IntentStatus::Voided === $intent ) {
+			return PaymentStatus::Voided;
+		}
+
 		if ( self::positive( $this->authorized ) ) {
 			return PaymentStatus::Authorized;
 		}
@@ -129,7 +136,6 @@ final readonly class Projection {
 		return match ( $intent ) {
 			IntentStatus::Failed                                 => PaymentStatus::Failed,
 			IntentStatus::RequiresAction, IntentStatus::Processing => PaymentStatus::Pending,
-			IntentStatus::Voided                                 => PaymentStatus::Voided,
 			default                                              => PaymentStatus::Unpaid,
 		};
 	}

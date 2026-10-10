@@ -152,6 +152,37 @@ final class RedactorTest extends TestCase {
 	}
 
 	/**
+	 * Tests that the handle a payment provider gives the shopper's browser is dropped at every depth and from free text, though no declaration calls it a secret: an answer gives it to its holder, and no log may carry it.
+	 *
+	 * Planted violation: take `client_token` out of Redactor::ANSWERED_SECRETS: the handle is logged.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_answered_secret_is_dropped_at_every_depth(): void {
+		$redactor = Redactor::fromDeclarations( new DataRegistry( new CapabilityDeclaration() ) );
+		$redacted = $redactor->context(
+			array(
+				'outcome'     => 'requires_action',
+				'next_action' => array(
+					'type'         => 'sdk',
+					'Client_Token' => 'pi_1_secret_2',
+				),
+				'answer'      => array( 'deep' => array( 'client_token' => 'pi_1_secret_2' ) ),
+			)
+		);
+
+		$this->assertSame(
+			array(
+				'outcome'     => 'requires_action',
+				'next_action' => array( 'type' => 'sdk' ),
+				'answer'      => array( 'deep' => array() ),
+			),
+			$redacted
+		);
+		$this->assertStringNotContainsString( 'pi_1_secret_2', $redactor->line( 'Answered {"client_token":"pi_1_secret_2"} to the shopper.', 200, array() )['message'] );
+	}
+
+	/**
 	 * Tests that a job's `key` is logged while an order's access key is dropped.
 	 *
 	 * The job runner logs a job's unique key under `key`. An order's access key is a declared

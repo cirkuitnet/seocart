@@ -25,8 +25,9 @@ defined( 'ABSPATH' ) || exit;
  * created with the generated CREATE TABLE, sent through Database, so a failure keeps its error
  * number (the bootstrap relies on seeing 1050 when two runners race). A table that exists is
  * handed to dbDelta with the same statement, which adds any missing column or index and does
- * nothing when the table already matches. dbDelta cannot drop, retype or rename a column; no
- * migration needs that yet. What any of this did is never taken on trust: the migrator
+ * nothing when the table already matches. dbDelta cannot drop, retype or rename a column, and
+ * never changes an index it finds; a unique key whose declared columns changed is replaced by
+ * replaceUniqueKey() instead. What any of this did is never taken on trust: the migrator
  * verifies the result.
  *
  * @since 0.1.0
@@ -94,6 +95,40 @@ final class SchemaOperations {
 		}
 
 		$this->reconcile( $statement );
+	}
+
+	/**
+	 * Gives an existing table's unique key the columns its declaration names now, in one statement, so the table is never without the key.
+	 *
+	 * One ALTER TABLE drops the key and adds it again under the same name, which the server applies
+	 * whole. A key already as declared is left as it is, and nothing is sent, as on a site that
+	 * created the table from the declaration since; a table, or a key, that does not exist yet is
+	 * created from the declaration as createTable() creates it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \InvalidArgumentException When the declaration declares no unique key by that name, before any statement.
+	 * @throws QueryFailed               When the server refuses the DDL, as when rows already break the key as declared.
+	 *
+	 * @param TableDefinition $definition The table's declaration, with the key as it must end.
+	 * @param string          $name       The unique key's name.
+	 */
+	public function replaceUniqueKey( TableDefinition $definition, string $name ): void {
+		$statement = $this->generator->replaceUniqueKey( $definition, $this->db->table( $definition->name() ), $name );
+
+		$matches = $this->verifier->hasTable( $definition->name() ) ? $this->verifier->indexMatches( $definition, $name ) : null;
+
+		if ( true === $matches ) {
+			return;
+		}
+
+		if ( null === $matches ) {
+			$this->createTable( $definition );
+
+			return;
+		}
+
+		$this->db->execute( $statement );
 	}
 
 	/**

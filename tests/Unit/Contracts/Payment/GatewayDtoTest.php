@@ -56,6 +56,9 @@ final class GatewayDtoTest extends TestCase {
 		'providerIntentId',
 		'errorCode',
 		'settlement',
+		'nextAction',
+		// The step a provider asks of the shopper: its type, its page and the handle for the provider's script.
+		'clientToken',
 		// Settlements.
 		'rate',
 		'fee',

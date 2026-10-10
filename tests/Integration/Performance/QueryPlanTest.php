@@ -425,7 +425,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		// A settlement rewrites the answer the placement's key keeps, found by the order too.
 		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The statement is the repository's constant, with its own placeholders; this is its prepare step.
-		$answer = $wpdb->get_row( $wpdb->prepare( 'EXPLAIN ' . MysqlIdempotencyKeys::SETTLE_ANSWER, $this->db->table( CheckoutTables::IDEMPOTENCY_KEYS ), 'approved', 'processing', 'authorized', 1 ), ARRAY_A );
+		$answer = $wpdb->get_row( $wpdb->prepare( 'EXPLAIN ' . MysqlIdempotencyKeys::SETTLE_ANSWER, $this->db->table( CheckoutTables::IDEMPOTENCY_KEYS ), 'approved', 'processing', 'authorized', 'approved', 'requires_action', '', '', 1 ), ARRAY_A );
 
 		$this->assertSame( 'order_id', $answer['key'] ?? null, 'A key\'s answer is settled by its order_id key: ' . (string) wp_json_encode( $answer ) );
 

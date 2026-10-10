@@ -15,7 +15,7 @@ use PHPUnit\Framework\TestCase;
 use SEOCart\Platform\Authorization\Actor;
 
 /**
- * Proves the two kinds of actor, and that a system actor is always bound to a real user.
+ * Proves the two kinds of actor: a user in person, and a process bound to a user or to none.
  *
  * @since 0.1.0
  */
@@ -45,10 +45,20 @@ final class ActorTest extends TestCase {
 	}
 
 	/**
+	 * Tests a process acting on no user's authority, such as a job nobody scheduled: bound to user 0, which holds no capability.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_system_actor_may_act_on_no_users_authority(): void {
+		$actor = Actor::system( 'reconciliation', 0 );
+
+		$this->assertSame( array( 0, 'reconciliation' ), array( $actor->userId(), $actor->systemName() ) );
+	}
+
+	/**
 	 * Tests the actors that cannot exist.
 	 *
-	 * A system actor bound to no user would hold no capability, so building one is a mistake,
-	 * not a way to act without authority.
+	 * A user id is never negative, and a process always says which process it is.
 	 *
 	 * @since 0.1.0
 	 *
@@ -71,9 +81,9 @@ final class ActorTest extends TestCase {
 	 */
 	public function impossibleActors(): array {
 		return array(
-			'a negative user id'             => array( static fn(): Actor => Actor::user( -1 ) ),
-			'a system actor with no name'    => array( static fn(): Actor => Actor::system( ' ', 5 ) ),
-			'a system actor bound to no one' => array( static fn(): Actor => Actor::system( 'cli', 0 ) ),
+			'a negative user id'                         => array( static fn(): Actor => Actor::user( -1 ) ),
+			'a system actor with no name'                => array( static fn(): Actor => Actor::system( ' ', 5 ) ),
+			'a system actor bound to a negative user id' => array( static fn(): Actor => Actor::system( 'cli', -1 ) ),
 		);
 	}
 }

@@ -28,6 +28,7 @@ use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\PlacementOutcome;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Contracts\Payment\GatewayDescriptor;
+use SEOCart\Platform\Logging\Redactor;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
 use SEOCart\Support\Schema\Privacy;
@@ -179,8 +180,10 @@ final class CheckoutOperationsTest extends TestCase {
 		$this->assertSame( array( 'cart_version', 'grand_total_minor', 'currency', 'payment_data', 'idempotency_key' ), array_keys( $input ) );
 		$this->assertFalse( $input['idempotency_key']->isRequired() );
 		$this->assertSame( Privacy::Secret, self::byName( $input['payment_data']->fields() )['payment_token']->privacy() );
-		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status' ), array_keys( $output ) );
+		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status', 'next_action' ), array_keys( $output ) );
 		$this->assertSame( array_map( static fn( PlacementOutcome $outcome ): string => $outcome->value, PlacementOutcome::cases() ), $output['outcome']->allowedValues() );
+		$this->assertSame( array( Privacy::Public, array( 'type', 'url', 'client_token' ) ), array( self::byName( $output['next_action']->fields() )['client_token']->privacy(), array_keys( self::byName( $output['next_action']->fields() ) ) ), 'The handle is answered: it is no secret field, which no answer carries.' );
+		$this->assertSame( Redactor::ANSWERED_SECRETS, array( self::byName( $output['next_action']->fields() )['client_token']->name() ), 'The logs drop the answered handle by the field\'s own name.' );
 
 		foreach ( array( CheckoutError::IdempotencyKeyMissing, CheckoutError::IdempotencyKeyReused, CheckoutError::PlacementInProgress, CheckoutError::CartEmpty, CheckoutError::SessionIncomplete, CheckoutError::TotalsChanged, CheckoutError::PaymentMethodUnavailable, CheckoutError::LineUnsellable, CheckoutError::PaymentDeclined, CheckoutError::GatewayUnavailable, CartError::NotOpen, CartError::VersionStale ) as $code ) {
 			$this->assertContains( $code->value, $codes );

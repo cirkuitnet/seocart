@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Payment;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\IntentTransitions;
 
@@ -58,6 +59,41 @@ final class IntentTransitionsTest extends TestCase {
 		);
 
 		$this->assertSame( array(), IntentTransitions::allowedFrom( IntentStatus::Created ) );
+	}
+
+	/**
+	 * Tests the two lists of late answers against the table: a decline fails an intent only from a state the table lets fail, and a stale approval meets only a state its operation can no longer enter.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_late_answer_lists_agree_with_the_table(): void {
+		$this->assertSame( array( 'authorize', 'capture', 'void' ), array_keys( IntentTransitions::DECLINABLE ), 'Every operation but a refund, whose decline changes no state, says where its decline applies.' );
+		$this->assertSame( IntentStatus::awaitingResult(), IntentTransitions::declinableFrom( Operation::Authorize ), 'A declined authorization fails only an intent still waiting for it.' );
+		$this->assertSame( array(), IntentTransitions::declinableFrom( Operation::Void ), 'A declined void fails nothing.' );
+		$this->assertNull( IntentTransitions::declinableFrom( Operation::Refund ) );
+
+		foreach ( IntentTransitions::DECLINABLE as $operation => $states ) {
+			foreach ( $states as $state ) {
+				$this->assertTrue( IntentTransitions::isAllowed( IntentStatus::from( $state ), IntentStatus::Failed ), $operation . ' declined from ' . $state . ' must be able to fail the intent.' );
+			}
+		}
+
+		$entered = array(
+			'authorize' => IntentStatus::Authorized,
+			'void'      => IntentStatus::Voided,
+		);
+
+		foreach ( IntentTransitions::STALE_APPROVALS as $operation => $states ) {
+			foreach ( $states as $state ) {
+				$this->assertFalse( IntentTransitions::isAllowed( IntentStatus::from( $state ), $entered[ $operation ] ), $operation . ' approved for ' . $state . ' is stale only where the table refuses it.' );
+				$this->assertTrue( IntentTransitions::isStaleApproval( Operation::from( $operation ), IntentStatus::from( $state ) ) );
+			}
+		}
+
+		$this->assertFalse( IntentTransitions::isStaleApproval( Operation::Authorize, IntentStatus::Failed ), 'An authorization after the intent failed holds money a person must settle: it is not stale.' );
+		$this->assertTrue( IntentTransitions::isStaleDecline( Operation::Authorize, IntentStatus::Authorized ) );
+		$this->assertFalse( IntentTransitions::isStaleDecline( Operation::Capture, IntentStatus::Authorized ) );
+		$this->assertFalse( IntentTransitions::isStaleDecline( Operation::Refund, IntentStatus::Refunded ), 'A declined refund is never stale: it is recorded.' );
 	}
 
 	/**

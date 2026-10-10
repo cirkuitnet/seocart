@@ -83,12 +83,12 @@ final class RefundCapTest extends PaymentTestCase {
 		$this->assertSame( array( 'refunded', '3080', '3080' ), array( $orderRow['payment_status'], (string) $orderRow['refunded_minor'], (string) $orderRow['base_refunded_minor'] ) );
 		$this->assertSame( 'processing', $orderRow['status'], 'A refund changes the payment status, not the order status.' );
 
-		try {
-			$this->deliver( self::stubResult( $intent, Operation::Refund, Outcome::Approved, 1, 'USD', 'stub-re-4' ) );
-			$this->fail( 'A refund of a refunded intent was applied.' );
-		} catch ( CodedException $refused ) {
-			$this->assertSame( PaymentError::UnexpectedResult, $refused->errorCode(), 'A refunded intent takes no refund at all.' );
-		}
+		$late = $this->deliver( self::stubResult( $intent, Operation::Refund, Outcome::Approved, 1, 'USD', 'stub-re-4' ) );
+
+		$this->assertSame( ApplicationKind::Mismatch, $late->kind, 'A refunded intent takes no refund at all: one the gateway made all the same is kept for a person.' );
+		$this->assertSame( array( 'refunded', '3080' ), array( $this->intentRow( $intent->uuid )['status'], (string) $this->intentRow( $intent->uuid )['refunded_minor'] ) );
+		$this->assertSame( array( 'stub-re-4', '0' ), array( (string) $this->ledgerOf( $order->id )[ $rows + 1 ]['provider_object_id'], (string) $this->ledgerOf( $order->id )[ $rows + 1 ]['applied'] ) );
+		$this->assertSame( '1', (string) $this->orderRow( $order->id )['has_unreconciled_money'] );
 	}
 
 	/**

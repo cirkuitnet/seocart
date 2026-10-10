@@ -64,4 +64,11 @@ enum ApplicationKind: string {
 	 * @since 0.1.0
 	 */
 	case Pending = 'pending';
+
+	/**
+	 * The gateway reported a state the intent has left, such as an earlier attempt's decline after a later attempt was authorized, or an authorization after the intent was voided; nothing changed, and no ledger row was written.
+	 *
+	 * @since 0.2.0
+	 */
+	case Stale = 'stale';
 }

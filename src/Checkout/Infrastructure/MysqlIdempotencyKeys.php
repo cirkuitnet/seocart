@@ -95,11 +95,17 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	/**
 	 * Writes a settlement's outcome and statuses into the answer the key of its order keeps, found by the `order_id` key; an order's status left unchanged when none is given.
 	 *
+	 * The sealed next action follows the outcome: null unless the shopper must act; then the one
+	 * given, or the one kept when none is given. Every branch is typed JSON, so a box is kept as an
+	 * object, as the sealed order key is.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Writes the sealed next action.
 	 *
 	 * @var string
 	 */
-	public const SETTLE_ANSWER = "UPDATE %i SET response_json = JSON_SET( response_json, '$.outcome', %s, '$.status', COALESCE( NULLIF( %s, '' ), JSON_UNQUOTE( JSON_EXTRACT( response_json, '$.status' ) ) ), '$.payment_status', %s ) "
+	public const SETTLE_ANSWER = "UPDATE %i SET response_json = JSON_SET( response_json, '$.outcome', %s, '$.status', COALESCE( NULLIF( %s, '' ), JSON_UNQUOTE( JSON_EXTRACT( response_json, '$.status' ) ) ), '$.payment_status', %s, "
+		. "'$.next_action_sealed', CASE WHEN %s <> %s THEN NULL WHEN %s <> '' THEN CAST( NULLIF( %s, '' ) AS JSON ) ELSE JSON_EXTRACT( response_json, '$.next_action_sealed' ) END ) "
 		. "WHERE order_id = %d AND state = 'placed'";
 
 	/**
@@ -255,11 +261,13 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	 * @param PlacementOutcome $outcome       What the settlement came to.
 	 * @param OrderStatus|null $orderStatus   The order's status after it, or null when it did not change.
 	 * @param PaymentStatus    $paymentStatus The order's payment status after it.
+	 * @param string|null      $keptAction    Optional. The next action, sealed (KeptAnswer::sealAction()), for an outcome
+	 *                                        that asks the shopper to act. Default null: the one kept.
 	 */
-	public function settleAnswer( int $orderId, PlacementOutcome $outcome, ?OrderStatus $orderStatus, PaymentStatus $paymentStatus ): void {
+	public function settleAnswer( int $orderId, PlacementOutcome $outcome, ?OrderStatus $orderStatus, PaymentStatus $paymentStatus, ?string $keptAction = null ): void {
 		$this->requireTransaction( __FUNCTION__ );
 
-		$this->db->execute( self::SETTLE_ANSWER, $this->keys(), $outcome->value, $orderStatus->value ?? '', $paymentStatus->value, $orderId );
+		$this->db->execute( self::SETTLE_ANSWER, $this->keys(), $outcome->value, $orderStatus->value ?? '', $paymentStatus->value, $outcome->value, PlacementOutcome::RequiresAction->value, $keptAction ?? '', $keptAction ?? '', $orderId );
 	}
 
 	/**

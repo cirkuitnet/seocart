@@ -20,7 +20,11 @@ use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Application\Operations\WriteMethod;
 use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Application\OrderOperations;
+use SEOCart\Order\Domain\PaymentStatus;
+use SEOCart\Payment\Domain\ApplicationKind;
+use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\Refund\RefundReason;
+use SEOCart\Payment\Domain\VoidReason;
 use SEOCart\Platform\Authorization\AuthorizationError;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
@@ -30,26 +34,36 @@ use SEOCart\Support\Schema\ResourceSchema;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Declares `payment.refund_order`, a merchant's refund of units of an order's lines and of what is left of its shipping; and `payment.settle_refund_claim`, a person's settlement of a refund the gateway cannot account for.
+ * Declares the payment operations a merchant's client calls: the refund of an order, the settlement of a refund claim, and the capture and the void of a payment.
  *
- * Owns one fact: how a refund is offered to clients. One declaration serves the REST route
- * `POST seocart/v1/orders/{order_uuid}/refunds`, the ability `seocart/refund-order` and the
- * command `wp seocart order refund <order_uuid>`; each is compiled from it and none restates it.
- * The lines are a list of objects, which the command takes as JSON. The reasons a client may give
- * are RefundReason::merchant(), read here and written down nowhere else.
+ * Owns one fact: how a refund, a claim's settlement, a capture and a void are offered to clients.
+ * Each declaration serves a REST route, an ability and a command, compiled from it, none
+ * restating it:
  *
- * A refund gives money back, so it is destructive, and it is never exposed to agents. It is
- * idempotent by the `Idempotency-Key` it requires: the same key with the same request names the
- * same refund for good, so a retry after a lost answer is answered with the refund it made.
+ * - `payment.refund_order`: `POST seocart/v1/orders/{order_uuid}/refunds`, `seocart/refund-order`,
+ *   `wp seocart order refund <order_uuid>`; units of an order's lines, and what is left of its
+ *   shipping. The lines are a list of objects, which the command takes as JSON. It is idempotent
+ *   by the `Idempotency-Key` it requires: the same key with the same request names the same refund
+ *   for good, so a retry after a lost answer is answered with the refund it made.
+ * - `payment.settle_refund_claim`: `POST seocart/v1/refund-claims/{refund_uuid}/settlement`,
+ *   `seocart/settle-refund-claim`, `wp seocart refund settle <refund_uuid>`; ends the claim of a
+ *   refund the gateway cannot account for, on a person's say-so. It overrides what the plugin
+ *   knows of the money, so it needs `seocart_override_money_state`. It needs no idempotency key:
+ *   the claim's state is one, as a claim that has ended is refused.
+ * - `payment.capture_payment`: `POST seocart/v1/payments/{intent_uuid}/captures`,
+ *   `seocart/capture-payment`, `wp seocart payment capture <intent_uuid>`; everything authorized, or
+ *   an amount where the gateway declares partial captures.
+ * - `payment.void_payment`: `POST seocart/v1/payments/{intent_uuid}/voids`, `seocart/void-payment`,
+ *   `wp seocart payment void <intent_uuid> --reason=<reason>`; an authorized payment, released.
  *
- * A settlement ends a refund's claim on a person's say-so: route
- * `POST seocart/v1/refund-claims/{refund_uuid}/settlement`, ability `seocart/settle-refund-claim`,
- * command `wp seocart refund settle <refund_uuid>`. It overrides what the plugin knows of the
- * money, so it needs `seocart_override_money_state`, is destructive, and is never exposed to
- * agents. It needs no idempotency key: the claim's state is one, as a claim that has ended is
- * refused.
+ * A capture and a void take no idempotency key: the payment's state and the key its gateway is
+ * sent, derived from the payment, make one asked twice one capture or one void, and one asked
+ * again after it was made is refused with where the payment stands. The reasons a client may give
+ * are RefundReason::merchant() and VoidReason::merchant(), read here and written down nowhere
+ * else. Each operation moves money or overrides what the plugin knows of it, so each is
+ * destructive, and none is ever exposed to agents.
  *
- * Declarations are data: building a definition reads the refund reasons and nothing else.
+ * Declarations are data: building a definition reads the reasons and nothing else.
  *
  * @since 0.2.0
  */
@@ -153,6 +167,60 @@ final class PaymentOperations {
 	 * @var int
 	 */
 	public const PROVIDER_REFUND_MAX_LENGTH = 191;
+
+	/**
+	 * The id of the capture.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CAPTURE_PAYMENT = 'payment.capture_payment';
+
+	/**
+	 * The id of the void.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const VOID_PAYMENT = 'payment.void_payment';
+
+	/**
+	 * The capability a capture requires.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CAPTURE_CAPABILITY = 'seocart_capture_payments';
+
+	/**
+	 * The capability a void requires.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const VOID_CAPABILITY = 'seocart_void_payments';
+
+	/**
+	 * The REST route of the capture, relative to the namespace.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CAPTURE_ROUTE = '/payments/{intent_uuid}/captures';
+
+	/**
+	 * The REST route of the void, relative to the namespace.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const VOID_ROUTE = '/payments/{intent_uuid}/voids';
 
 	/**
 	 * Builds the refund.
@@ -311,6 +379,162 @@ final class PaymentOperations {
 			ability: self::SETTLE_ABILITY,
 			cli: new CliBinding( array( 'refund', 'settle' ), array( 'refund_uuid' ) ),
 			agent_exposed: false
+		);
+	}
+
+	/**
+	 * Builds the capture.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function capturePayment(): OperationDefinition {
+		return new OperationDefinition(
+			id: self::CAPTURE_PAYMENT,
+			label: static fn(): string => __( 'Capture a payment', 'seocart' ),
+			summary: 'Captures an authorized payment through its gateway, everything authorized or, where the gateway declares partial captures, the amount given, the gateway releasing the rest; a payment is captured once, so a capture asked again after it was made is refused with payment.not_capturable and what was captured, and one whose answer was lost is asked again with the same request, which the gateway carries out once.',
+			input: array(
+				self::intentUuid(),
+				new FieldSpec(
+					name: 'amount_minor',
+					type: FieldType::Integer,
+					description: 'What to capture, in minor units of the payment\'s currency: at most what was authorized, and less only where the payment\'s gateway declares partial captures; when absent, everything authorized.',
+					label: static fn(): string => __( 'Amount', 'seocart' ),
+					example: 1500,
+					minimum: 1,
+					privacy: Privacy::Financial
+				),
+			),
+			output: self::payment(),
+			capability: self::CAPTURE_CAPABILITY,
+			resource_field: null,
+			errors: array(
+				AuthorizationError::Denied,
+				PaymentError::IntentNotFound,
+				PaymentError::NotCapturable,
+				PaymentError::Unreconciled,
+				PaymentError::CaptureExceedsAuthorized,
+				PaymentError::OperationUnsupported,
+				PaymentError::GatewayUnavailable,
+				PaymentError::GatewayNoAnswer,
+				PaymentError::OperationDeclined,
+			),
+			annotations: new Annotations( read_only: false, destructive: true, idempotent: true ),
+			service: array( PaymentService::class, 'capturePayment' ),
+			rest: new RestBinding( self::CAPTURE_ROUTE, WriteMethod::Post ),
+			ability: 'capture-payment',
+			cli: new CliBinding( array( 'payment', 'capture' ), array( 'intent_uuid' ) ),
+			agent_exposed: false
+		);
+	}
+
+	/**
+	 * Builds the void.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function voidPayment(): OperationDefinition {
+		return new OperationDefinition(
+			id: self::VOID_PAYMENT,
+			label: static fn(): string => __( 'Void a payment', 'seocart' ),
+			summary: 'Voids an authorized payment through its gateway, releasing what it authorized before anything is captured, for a declared reason; an order still waiting for its payment is cancelled, and an order accepted is left to the person who voids it; a captured payment is never voided, but refunded, and a void asked again after it was made is refused with payment.not_voidable.',
+			input: array(
+				self::intentUuid(),
+				new FieldSpec(
+					name: 'reason',
+					type: FieldType::String,
+					description: 'Why the payment is voided.',
+					label: static fn(): string => __( 'Reason', 'seocart' ),
+					example: VoidReason::CustomerRequest->value,
+					required: true,
+					allowed: array_map( static fn( VoidReason $reason ): string => $reason->value, VoidReason::merchant() )
+				),
+			),
+			output: self::payment(),
+			capability: self::VOID_CAPABILITY,
+			resource_field: null,
+			errors: array(
+				AuthorizationError::Denied,
+				PaymentError::IntentNotFound,
+				PaymentError::NotVoidable,
+				PaymentError::Unreconciled,
+				PaymentError::OperationUnsupported,
+				PaymentError::GatewayUnavailable,
+				PaymentError::GatewayNoAnswer,
+				PaymentError::OperationDeclined,
+			),
+			annotations: new Annotations( read_only: false, destructive: true, idempotent: true ),
+			service: array( PaymentService::class, 'voidPayment' ),
+			rest: new RestBinding( self::VOID_ROUTE, WriteMethod::Post ),
+			ability: 'void-payment',
+			cli: new CliBinding( array( 'payment', 'void' ), array( 'intent_uuid' ) ),
+			agent_exposed: false
+		);
+	}
+
+	/**
+	 * Returns a payment's public identifier, which names the payment a capture or a void is for.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return FieldSpec The field.
+	 */
+	private static function intentUuid(): FieldSpec {
+		return new FieldSpec(
+			name: 'intent_uuid',
+			type: FieldType::Uuid,
+			description: 'The public identifier of the payment, as its order\'s payment record names it.',
+			label: static fn(): string => __( 'Payment', 'seocart' ),
+			example: '0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6e',
+			required: true
+		);
+	}
+
+	/**
+	 * Returns the payment a capture or a void answers with: where the payment and its order stand, and the money the gateway moved or released.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return ResourceSchema The resource.
+	 */
+	private static function payment(): ResourceSchema {
+		return new ResourceSchema(
+			'PaymentResult',
+			array(
+				self::intentUuid(),
+				new FieldSpec(
+					name: 'outcome',
+					type: FieldType::String,
+					description: 'applied, or duplicate when another request had made the same capture or void a moment before.',
+					label: static fn(): string => __( 'Outcome', 'seocart' ),
+					example: 'applied',
+					required: true,
+					allowed: array( ApplicationKind::Applied->value, ApplicationKind::Duplicate->value )
+				),
+				new FieldSpec(
+					name: 'status',
+					type: FieldType::String,
+					description: 'The payment\'s status now.',
+					label: static fn(): string => __( 'Status', 'seocart' ),
+					example: IntentStatus::Captured->value,
+					required: true,
+					allowed: array_map( static fn( IntentStatus $status ): string => $status->value, IntentStatus::cases() )
+				),
+				new FieldSpec(
+					name: 'payment_status',
+					type: FieldType::String,
+					description: 'How far the payment\'s order is paid now.',
+					label: static fn(): string => __( 'Payment status', 'seocart' ),
+					example: PaymentStatus::Paid->value,
+					required: true,
+					allowed: array_map( static fn( PaymentStatus $status ): string => $status->value, PaymentStatus::cases() )
+				),
+				self::amount( 'amount_minor', 'What the gateway captured, or released for a void, in minor units of the payment\'s currency.', static fn(): string => __( 'Amount', 'seocart' ), 3080 ),
+				self::currency( 'currency', 'The payment\'s currency, ISO 4217.', static fn(): string => __( 'Currency', 'seocart' ), 'EUR' ),
+			)
 		);
 	}
 

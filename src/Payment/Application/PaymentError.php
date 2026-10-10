@@ -17,9 +17,12 @@ use SEOCart\Support\Error\ErrorDefinition;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * The errors applying a gateway result, capturing a payment or refunding an order can end in.
+ * The errors applying a gateway result, capturing or voiding a payment, or refunding an order can end in.
  *
- * Owns one fact: how a refused payment operation is reported. A refused result was refused in
+ * Owns one fact: how a refused payment operation is reported. A capture or a void is refused,
+ * wherever it can be, before the gateway is asked; one the gateway refused, or did not answer, is
+ * reported `payment.operation_declined` or `payment.gateway_no_answer`, and asking again sends the
+ * same request, which the gateway answers once. A refused result was refused in
  * the database, by the conditional update's WHERE clause, and its ledger row goes back with the
  * savepoint it was written in: a fact that cannot be reconciled is not recorded, and a gateway's
  * retry meets the same answer. A duplicate and a mismatch are not errors but outcomes, which the
@@ -54,6 +57,34 @@ enum PaymentError: string implements ErrorCode {
 	 * @since 0.1.0
 	 */
 	case NotCapturable = 'payment.not_capturable';
+
+	/**
+	 * A capture asks for more than the payment authorized. Nothing was asked of the gateway.
+	 *
+	 * @since 0.2.0
+	 */
+	case CaptureExceedsAuthorized = 'payment.capture_exceeds_authorized';
+
+	/**
+	 * The gateway refused the capture or the void asked of it. A refused void changes nothing: the authorization stands. A refused capture is recorded, and leaves the payment failed: what was authorized can no longer be captured.
+	 *
+	 * @since 0.2.0
+	 */
+	case OperationDeclined = 'payment.operation_declined';
+
+	/**
+	 * The gateway did not answer: nothing was recorded, and asking again sends the same request, which the gateway answers once.
+	 *
+	 * @since 0.2.0
+	 */
+	case GatewayNoAnswer = 'payment.gateway_no_answer';
+
+	/**
+	 * Only an authorized payment can be voided: one captured is given back by a refund, and one ended has nothing to release.
+	 *
+	 * @since 0.2.0
+	 */
+	case NotVoidable = 'payment.not_voidable';
 
 	/**
 	 * The payment has a gateway result that did not match its order, which a person must reconcile first.
@@ -235,6 +266,37 @@ enum PaymentError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: The payment's status, for example created. */
 					__( 'A payment that is %1$s cannot be captured; only an authorized payment can.', 'seocart' ),
+				array( 'status' ),
+				details: array( 'captured', 'currency' )
+			),
+			new ErrorDefinition(
+				self::CaptureExceedsAuthorized,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: The amount authorized, in minor units. %2$s: The capture asked for, in minor units. */
+					__( 'A capture of %2$s would take more than the %1$s authorized; nothing was asked of the payment gateway.', 'seocart' ),
+				array( 'authorized', 'requested' )
+			),
+			new ErrorDefinition(
+				self::OperationDeclined,
+				402,
+				static fn(): string =>
+					/* translators: %1$s: The payment gateway's id, for example stripe. %2$s: The operation, for example capture. */
+					__( 'The payment gateway %1$s refused the %2$s. A refused void changes nothing; a refused capture is recorded, and leaves the payment failed.', 'seocart' ),
+				array( 'gateway_id', 'operation' )
+			),
+			new ErrorDefinition(
+				self::GatewayNoAnswer,
+				502,
+				static fn(): string =>
+					__( 'The payment gateway did not answer, and nothing was recorded. Asking again sends the same request, which the gateway carries out at most once.', 'seocart' )
+			),
+			new ErrorDefinition(
+				self::NotVoidable,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: The payment's status, for example captured. */
+					__( 'A payment that is %1$s cannot be voided; only an authorized payment can, and a captured one is given back by a refund.', 'seocart' ),
 				array( 'status' )
 			),
 			new ErrorDefinition(

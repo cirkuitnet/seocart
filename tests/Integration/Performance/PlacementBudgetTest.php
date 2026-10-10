@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Integration\Performance;
 
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Checkout\Application\PlaceOrder;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 use SEOCart\Tests\Support\Performance\ReferenceCarts;
@@ -134,6 +135,20 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	);
 
 	/**
+	 * The statements of each part of a placement of Cart A whose shopper the gateway asks to act: the second unit is the wait, which keeps the next action sealed.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array{before: int, first: int, between: int, second: int}
+	 */
+	private const CART_A_ACTING = array(
+		'before'  => 7,
+		'first'   => 31,
+		'between' => 1,
+		'second'  => 15,
+	);
+
+	/**
 	 * The most statements a placement of Cart B in a presentment currency may send beyond one in the base currency.
 	 *
 	 * @since 0.1.0
@@ -209,6 +224,21 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Tests that placing Cart A whose shopper the gateway asks to act stays within its baseline, in two transactions, the second the wait.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_placing_cart_a_whose_shopper_must_act_stays_within_its_baseline(): void {
+		$variant = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+
+		$this->readyCart( self::quantities( ReferenceCarts::cartA( $variant ) ) );
+
+		$parts = $this->measure( 'Cart A, the shopper to act', StubGateway::REQUIRES_ACTION, 'requires_action' );
+
+		$this->assertWithin( self::CART_A_ACTING, $parts, 'Cart A, the shopper to act' );
+	}
+
+	/**
 	 * Tests that placing Cart B, with its two promotion codes, stays within its baseline, in two transactions.
 	 *
 	 * @since 0.1.0
@@ -247,15 +277,17 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Places the request's cart, approved, and returns its statements by part, after printing them by step.
+	 * Places the request's cart, approved unless another token is given, and returns its statements by part, after printing them by step.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string $name The cart's name, for the report.
+	 * @param string $name    The cart's name, for the report.
+	 * @param string $token   Optional. The payment token. Default APPROVE.
+	 * @param string $outcome Optional. What the placement comes to. Default `approved`.
 	 * @return array{before: int, first: int, between: int, second: int} The statements of each part.
 	 */
-	private function measure( string $name ): array {
-		$input = $this->placeInput( 'budget-' . $name );
+	private function measure( string $name, string $token = self::APPROVE, string $outcome = 'approved' ): array {
+		$input = $this->placeInput( 'budget-' . $name, $token );
 
 		// A request starts cold: a container of its own, and no object cache but the options WordPress loads at boot.
 		$placement = $this->kernelOver( $this->db, $this->tokens )->get( PlaceOrder::class );
@@ -270,7 +302,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 			}
 		);
 
-		$this->assertSame( 'approved', $answer['outcome'] ?? null, $name );
+		$this->assertSame( $outcome, $answer['outcome'] ?? null, $name );
 		$this->assertSame( 2, $log->matching( '/^START TRANSACTION$/' )->count(), $name . ': two transactions.' );
 
 		$parts = array(

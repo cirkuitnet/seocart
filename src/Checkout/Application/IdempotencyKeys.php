@@ -95,13 +95,16 @@ interface IdempotencyKeys {
 	public function complete( int $id, int $orderId, string $responseJson ): void;
 
 	/**
-	 * Writes what a placement's settlement came to into the answer its key keeps: the outcome, the order's status when it changed, and the payment status.
+	 * Writes what a placement's settlement came to into the answer its key keeps: the outcome, the order's status when it changed, the payment status, and what the shopper must do while they must act.
 	 *
 	 * One conditional statement, found by the order. The order's uuid, number and key, and the
-	 * cart's version, stay as the placement answered them. A key that is gone, because its
-	 * retention passed, is left gone.
+	 * cart's version, stay as the placement answered them. The next action is sealed by the one
+	 * request that can (KeptAnswer); for an outcome that asks the shopper to act it is written when
+	 * given and kept otherwise, and for any other outcome it is cleared. A key that is gone, because
+	 * its retention passed, is left gone.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Writes the sealed next action.
 	 *
 	 * @throws \LogicException Outside a transaction: the answer changes with the settlement, or not at all.
 	 *
@@ -109,6 +112,8 @@ interface IdempotencyKeys {
 	 * @param PlacementOutcome $outcome       What the settlement came to.
 	 * @param OrderStatus|null $orderStatus   The order's status after it, or null when it did not change.
 	 * @param PaymentStatus    $paymentStatus The order's payment status after it.
+	 * @param string|null      $keptAction    Optional. The next action, sealed, for an outcome that asks the shopper to
+	 *                                        act. Default null: the one kept.
 	 */
-	public function settleAnswer( int $orderId, PlacementOutcome $outcome, ?OrderStatus $orderStatus, PaymentStatus $paymentStatus ): void;
+	public function settleAnswer( int $orderId, PlacementOutcome $outcome, ?OrderStatus $orderStatus, PaymentStatus $paymentStatus, ?string $keptAction = null ): void;
 }

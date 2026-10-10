@@ -21,6 +21,7 @@ use SEOCart\Contracts\Payment\GatewayUnavailable;
 use SEOCart\Contracts\Payment\IdempotencyProfile;
 use SEOCart\Contracts\Payment\MatrixRow;
 use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Contracts\Payment\NextAction;
 use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Contracts\Payment\Operations;
 use SEOCart\Contracts\Payment\Outcome;
@@ -42,11 +43,17 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: the script each token stands for. It calls no WordPress function and sends no
  * request. The token names the outcome: `stub:approve`, `stub:approve_settled` (with a
- * settlement in another currency), `stub:decline`, `stub:requires_action`, `stub:pending`,
+ * settlement in another currency), `stub:decline`, `stub:requires_action`,
+ * `stub:requires_action_completed` (the shopper acts just as the store voids the payment, so the
+ * void is answered with the authorization's approval), `stub:pending`,
  * `stub:wrong_amount` and `stub:wrong_currency` (approvals that do not match their intent),
  * `stub:capture_wrong_amount` (an approval whose capture does not match), `stub:refund_decline`
  * (an approval whose refunds are declined), and `stub:throw` (the gateway is unavailable). Any
  * other token is declined.
+ *
+ * Asking the customer to act, it says what they must do: go back to the return address the
+ * authorization named, the stand-in's challenge passing at once, with the handle
+ * `stub_cs_{intent uuid}` for a script; with no return address, the handle alone.
  *
  * Like a provider, it remembers what it did with an intent by the reference it gives it, which
  * the plugin records on the intent: `stub-pi-{scenario}-{intent uuid}`. So a capture, a refund and
@@ -124,6 +131,15 @@ final class StubGateway implements PaymentGateway {
 	 * @var string
 	 */
 	public const REQUIRES_ACTION = 'stub:requires_action';
+
+	/**
+	 * Asks the customer to act, as `stub:requires_action` does; a void is then answered with the authorization's approval, as a provider whose shopper finished just before the void reached it answers.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const REQUIRES_ACTION_COMPLETED = 'stub:requires_action_completed';
 
 	/**
 	 * Keeps deciding; a status query finds it still pending.
@@ -279,6 +295,15 @@ final class StubGateway implements PaymentGateway {
 	private const VOID_PREFIX = 'stub-void-';
 
 	/**
+	 * What the handle a shopper's browser is given is made of, before the intent's uuid.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CLIENT_TOKEN_PREFIX = 'stub_cs_';
+
+	/**
 	 * The currencies the stub takes.
 	 *
 	 * @since 0.2.0
@@ -376,7 +401,29 @@ final class StubGateway implements PaymentGateway {
 			return self::authorization( $request->intentUuid, Outcome::Declined, $request->amount, null, self::INVALID_TOKEN );
 		}
 
-		return self::firstAnswer( $request->intentUuid, $request->amount, self::scenario( $request->paymentToken ) );
+		$answer = self::firstAnswer( $request->intentUuid, $request->amount, self::scenario( $request->paymentToken ) );
+
+		if ( Outcome::RequiresAction !== $answer->outcome ) {
+			return $answer;
+		}
+
+		return new GatewayResult( self::ID, Operation::Authorize, Outcome::RequiresAction, $answer->intentUuid, $answer->amount, null, $answer->providerIntentId, null, null, self::nextAction( $request ) );
+	}
+
+	/**
+	 * Returns what the shopper asked to act must do: the stand-in's challenge passes at once, so it sends them straight back to the return address, with a handle for a script as a provider gives one; with no return address, the handle alone.
+	 *
+	 * The handle is made from the intent's uuid, so it is the same for every answer about the intent.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param PaymentRequest $request The authorization asked for.
+	 * @return NextAction The step.
+	 */
+	private static function nextAction( PaymentRequest $request ): NextAction {
+		$handle = self::CLIENT_TOKEN_PREFIX . $request->intentUuid;
+
+		return null === $request->returnUrl ? NextAction::sdk( $handle ) : NextAction::redirect( $request->returnUrl, $handle );
 	}
 
 	/**
@@ -398,12 +445,20 @@ final class StubGateway implements PaymentGateway {
 	/**
 	 * Voids an authorization: approved, and named by the intent, so the same void answered again is the same result.
 	 *
+	 * An intent authorized with `stub:requires_action_completed` was approved before the void
+	 * reached the stub: the void is answered with the authorization's approval, named as its
+	 * charge, as a provider answers a cancel that came too late.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @param VoidRequest $request The intent and why it is voided.
-	 * @return GatewayResult The approval.
+	 * @return GatewayResult The void's approval, or the authorization's.
 	 */
 	public function void( VoidRequest $request ): GatewayResult {
+		if ( self::scenario( self::REQUIRES_ACTION_COMPLETED ) === self::scenarioOf( $request->providerIntentId ) ) {
+			return self::authorization( $request->intentUuid, Outcome::Approved, $request->amount, $request->providerIntentId );
+		}
+
 		return new GatewayResult( self::ID, Operation::Void, Outcome::Approved, $request->intentUuid, $request->amount, self::VOID_PREFIX . $request->intentUuid, $request->providerIntentId );
 	}
 
@@ -500,7 +555,7 @@ final class StubGateway implements PaymentGateway {
 	 * @return list<string> The tokens.
 	 */
 	public static function scripted(): array {
-		return array( self::APPROVE, self::APPROVE_SETTLED, self::DECLINE, self::REQUIRES_ACTION, self::PENDING, self::WRONG_AMOUNT, self::WRONG_CURRENCY, self::CAPTURE_WRONG_AMOUNT, self::REFUND_DECLINE );
+		return array( self::APPROVE, self::APPROVE_SETTLED, self::DECLINE, self::REQUIRES_ACTION, self::REQUIRES_ACTION_COMPLETED, self::PENDING, self::WRONG_AMOUNT, self::WRONG_CURRENCY, self::CAPTURE_WRONG_AMOUNT, self::REFUND_DECLINE );
 	}
 
 	/**
@@ -520,7 +575,8 @@ final class StubGateway implements PaymentGateway {
 
 		return match ( $scenario ) {
 			self::scenario( self::DECLINE )         => self::authorization( $intentUuid, Outcome::Declined, $amount, $reference, self::CARD_DECLINED ),
-			self::scenario( self::REQUIRES_ACTION ) => new GatewayResult( self::ID, Operation::Authorize, Outcome::RequiresAction, $intentUuid, $amount, null, $reference ),
+			self::scenario( self::REQUIRES_ACTION ),
+			self::scenario( self::REQUIRES_ACTION_COMPLETED ) => new GatewayResult( self::ID, Operation::Authorize, Outcome::RequiresAction, $intentUuid, $amount, null, $reference ),
 			self::scenario( self::PENDING )         => new GatewayResult( self::ID, Operation::Authorize, Outcome::Pending, $intentUuid, $amount, null, $reference ),
 			self::scenario( self::WRONG_AMOUNT )    => self::authorization( $intentUuid, Outcome::Approved, $amount->add( $oneMore ), $reference ),
 			self::scenario( self::WRONG_CURRENCY )  => self::authorization( $intentUuid, Outcome::Approved, Money::of( $amount->minorUnits(), $other ), $reference ),
@@ -544,7 +600,8 @@ final class StubGateway implements PaymentGateway {
 	 */
 	private static function laterAnswer( string $intentUuid, Money $amount, string $scenario ): ?GatewayResult {
 		return match ( $scenario ) {
-			self::scenario( self::REQUIRES_ACTION ) => self::authorization( $intentUuid, Outcome::Approved, $amount, self::reference( $scenario, $intentUuid ) ),
+			self::scenario( self::REQUIRES_ACTION ),
+			self::scenario( self::REQUIRES_ACTION_COMPLETED ) => self::authorization( $intentUuid, Outcome::Approved, $amount, self::reference( $scenario, $intentUuid ) ),
 			self::scenario( self::PENDING )         => null,
 			default                                 => self::firstAnswer( $intentUuid, $amount, $scenario ),
 		};

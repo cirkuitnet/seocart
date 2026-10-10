@@ -34,7 +34,7 @@ use SEOCart\Tests\Support\Doubles\FrozenClock;
  * The payment tables are created exactly as declared, after the order tables, and a second run changes nothing.
  *
  * The keys that carry the money path's rules exist in the database as declared: the ledger's
- * `provider_object_operation`, which applies a gateway result at most once, and the intents'
+ * `provider_object_operation`, which applies each outcome of a provider object at most once, and the intents'
  * `uuid` and `gateway_provider_intent`.
  *
  * Planted violation: at the end of CreatePaymentTables::up(), drop the `provider_object_operation`
@@ -67,7 +67,7 @@ final class PaymentTablesMigrationTest extends DatabaseTestCase {
 			array(
 				'payment_intents.gateway_provider_intent' => 'gateway_id,provider_intent_id',
 				'payment_intents.uuid'                    => 'uuid',
-				'payment_transactions.provider_object_operation' => 'provider,provider_object_id,operation',
+				'payment_transactions.provider_object_operation' => 'provider,provider_object_id,operation,result',
 				'payment_transactions.uuid'               => 'uuid',
 			),
 			$this->uniqueKeys(),

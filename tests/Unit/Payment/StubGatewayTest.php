@@ -63,16 +63,17 @@ final class StubGatewayTest extends TestCase {
 		$charge = 'stub-ch-' . self::INTENT;
 
 		return array(
-			'approve'              => array( StubGateway::APPROVE, array( Outcome::Approved, 3080, 'EUR', $charge, 'stub-pi-approve-' . self::INTENT, null ) ),
-			'approve, settled'     => array( StubGateway::APPROVE_SETTLED, array( Outcome::Approved, 3080, 'EUR', $charge, 'stub-pi-approve_settled-' . self::INTENT, null ) ),
-			'decline'              => array( StubGateway::DECLINE, array( Outcome::Declined, 3080, 'EUR', $charge, 'stub-pi-decline-' . self::INTENT, 'card_declined' ) ),
-			'requires action'      => array( StubGateway::REQUIRES_ACTION, array( Outcome::RequiresAction, 3080, 'EUR', null, 'stub-pi-requires_action-' . self::INTENT, null ) ),
-			'pending'              => array( StubGateway::PENDING, array( Outcome::Pending, 3080, 'EUR', null, 'stub-pi-pending-' . self::INTENT, null ) ),
-			'wrong amount'         => array( StubGateway::WRONG_AMOUNT, array( Outcome::Approved, 3081, 'EUR', $charge, 'stub-pi-wrong_amount-' . self::INTENT, null ) ),
-			'wrong currency'       => array( StubGateway::WRONG_CURRENCY, array( Outcome::Approved, 3080, 'USD', $charge, 'stub-pi-wrong_currency-' . self::INTENT, null ) ),
-			'capture wrong amount' => array( StubGateway::CAPTURE_WRONG_AMOUNT, array( Outcome::Approved, 3080, 'EUR', $charge, 'stub-pi-capture_wrong_amount-' . self::INTENT, null ) ),
-			'refund decline'       => array( StubGateway::REFUND_DECLINE, array( Outcome::Approved, 3080, 'EUR', $charge, 'stub-pi-refund_decline-' . self::INTENT, null ) ),
-			'a token not scripted' => array( 'tok_visa', array( Outcome::Declined, 3080, 'EUR', $charge, null, StubGateway::INVALID_TOKEN ) ),
+			'approve'                    => array( StubGateway::APPROVE, array( Outcome::Approved, 3080, 'EUR', $charge, 'stub-pi-approve-' . self::INTENT, null ) ),
+			'approve, settled'           => array( StubGateway::APPROVE_SETTLED, array( Outcome::Approved, 3080, 'EUR', $charge, 'stub-pi-approve_settled-' . self::INTENT, null ) ),
+			'decline'                    => array( StubGateway::DECLINE, array( Outcome::Declined, 3080, 'EUR', $charge, 'stub-pi-decline-' . self::INTENT, 'card_declined' ) ),
+			'requires action'            => array( StubGateway::REQUIRES_ACTION, array( Outcome::RequiresAction, 3080, 'EUR', null, 'stub-pi-requires_action-' . self::INTENT, null ) ),
+			'requires action, completed' => array( StubGateway::REQUIRES_ACTION_COMPLETED, array( Outcome::RequiresAction, 3080, 'EUR', null, 'stub-pi-requires_action_completed-' . self::INTENT, null ) ),
+			'pending'                    => array( StubGateway::PENDING, array( Outcome::Pending, 3080, 'EUR', null, 'stub-pi-pending-' . self::INTENT, null ) ),
+			'wrong amount'               => array( StubGateway::WRONG_AMOUNT, array( Outcome::Approved, 3081, 'EUR', $charge, 'stub-pi-wrong_amount-' . self::INTENT, null ) ),
+			'wrong currency'             => array( StubGateway::WRONG_CURRENCY, array( Outcome::Approved, 3080, 'USD', $charge, 'stub-pi-wrong_currency-' . self::INTENT, null ) ),
+			'capture wrong amount'       => array( StubGateway::CAPTURE_WRONG_AMOUNT, array( Outcome::Approved, 3080, 'EUR', $charge, 'stub-pi-capture_wrong_amount-' . self::INTENT, null ) ),
+			'refund decline'             => array( StubGateway::REFUND_DECLINE, array( Outcome::Approved, 3080, 'EUR', $charge, 'stub-pi-refund_decline-' . self::INTENT, null ) ),
+			'a token not scripted'       => array( 'tok_visa', array( Outcome::Declined, 3080, 'EUR', $charge, null, StubGateway::INVALID_TOKEN ) ),
 		);
 	}
 
@@ -94,6 +95,21 @@ final class StubGatewayTest extends TestCase {
 		$this->assertSame( array( StubGateway::ID, Operation::Authorize, self::INTENT ), array( $result->provider, $result->operation, $result->intentUuid ) );
 		$this->assertSame( $expected, array( $result->outcome, $result->amount->minorUnits(), $result->amount->currency()->code(), $result->providerObjectId, $result->providerIntentId, $result->errorCode ) );
 		$this->assertSame( StubGateway::APPROVE_SETTLED === $token, null !== $result->settlement, 'Only the settled approval reports a settlement.' );
+		$this->assertSame( Outcome::RequiresAction === $result->outcome, null !== $result->nextAction, 'Only a request to act says what to do.' );
+	}
+
+	/**
+	 * Tests what the stub asks a shopper to do: go back to the return address, with a handle made from the intent's uuid; with no return address, the handle alone.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_request_to_act_says_what_to_do(): void {
+		$return     = 'https://shop.example.test/?seocart_payment=' . self::INTENT;
+		$redirected = ( new StubGateway() )->authorize( new PaymentRequest( self::INTENT, self::amount(), StubGateway::REQUIRES_ACTION, Mode::Test, '01928c3e-0000-7000-8000-0000000000a1', '1001', $return ) )->nextAction;
+		$scripted   = ( new StubGateway() )->authorize( self::authorization( StubGateway::REQUIRES_ACTION ) )->nextAction;
+
+		$this->assertSame( array( 'redirect', $return, 'stub_cs_' . self::INTENT ), array( $redirected?->type, $redirected?->url, $redirected?->clientToken ) );
+		$this->assertSame( array( 'sdk', null, 'stub_cs_' . self::INTENT ), array( $scripted?->type, $scripted?->url, $scripted?->clientToken ) );
 	}
 
 	/**
@@ -227,6 +243,10 @@ final class StubGatewayTest extends TestCase {
 
 		$this->assertSame( array( Operation::Void, Outcome::Approved, 3080, 'stub-void-' . self::INTENT ), array( $voided->operation, $voided->outcome, $voided->amount->minorUnits(), $voided->providerObjectId ) );
 		$this->assertEquals( $voided, $stub->void( $request ), 'The same void asked again is the same result.' );
+
+		$late = $stub->void( new VoidRequest( self::INTENT, 'stub-pi-requires_action_completed-' . self::INTENT, self::amount(), Mode::Test, 'action_window_ended' ) );
+
+		$this->assertSame( array( Operation::Authorize, Outcome::Approved, 'stub-ch-' . self::INTENT ), array( $late->operation, $late->outcome, $late->providerObjectId ), 'A shopper who finished before the void reached the stub: the void is answered with the authorization.' );
 
 		$reading = $stub->readWebhook( new WebhookEnvelope( StubGateway::ID, Mode::Test, array(), '{"id":"evt_1"}', new \DateTimeImmutable( '2026-10-03 12:00:00', new \DateTimeZone( 'UTC' ) ) ) );
 

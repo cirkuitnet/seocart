@@ -24,7 +24,7 @@ defined( 'ABSPATH' ) || exit;
  * state is one conditional update whose WHERE clause lists the states IntentTransitions allows
  * the target to be entered from, so a method that returns false was refused by the database.
  * The ledger is appended to and never changed; appending a result is also the claim that
- * applies it once, by its provider, provider object and operation.
+ * applies it once, by its provider, provider object, operation and outcome.
  *
  * Every method that writes runs only inside the caller's transaction, and refuses to run
  * outside one.
@@ -71,14 +71,14 @@ interface PaymentRepository {
 	public function find( string $uuid ): ?PaymentIntent;
 
 	/**
-	 * Tells whether an intent has a ledger row the projection refused: money a person must reconcile.
+	 * Reads when the newest ledger row of an intent that the projection refused was recorded: money a person must reconcile, unless a person cleared the order's unreconciled money since.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
 	 * @param int $intentId The intent.
-	 * @return bool True when it has one.
+	 * @return string|null The time, UTC to the microsecond, as the database clock wrote it; null when it has none.
 	 */
-	public function hasUnappliedResult( int $intentId ): bool;
+	public function newestUnappliedOf( int $intentId ): ?string;
 
 	/**
 	 * Appends a gateway result to the ledger, which claims it: a result is applied once.
@@ -95,7 +95,7 @@ interface PaymentRepository {
 	 * @param string|null   $datedAfter    Optional. A time the row is dated after, by a microsecond at least, whatever the
 	 *                                     database clock reads: the order's last clearance, for a row parked for a person;
 	 *                                     null for the clock alone. Default null.
-	 * @return int|null The ledger row's id; null when a row with the same provider, provider object and operation exists.
+	 * @return int|null The ledger row's id; null when a row with the same provider, provider object, operation and outcome exists.
 	 */
 	public function appendResult( PaymentIntent $intent, GatewayResult $result, Money $baseAmount, bool $applied, string $actorType, ?int $actorId, string $correlationId, ?string $datedAfter = null ): ?int;
 
@@ -114,16 +114,21 @@ interface PaymentRepository {
 	 *
 	 * An authorization authorizes the amount and records the provider's reference; a capture
 	 * captures it, never past what was authorized; a refund refunds it, never past what was
-	 * captured, and leaves the intent refunded once everything captured is.
+	 * captured, and leaves the intent refunded once everything captured is; a void cancels it,
+	 * with why, and moves no amount.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Applies a void, with its reason.
 	 *
-	 * @param PaymentIntent $intent     The intent, locked.
-	 * @param GatewayResult $result     The approval.
-	 * @param Money         $baseAmount The amount in the order's base currency, which the intent's base currency must be.
+	 * @throws \InvalidArgumentException For a void given no reason, before any statement.
+	 *
+	 * @param PaymentIntent   $intent     The intent, locked.
+	 * @param GatewayResult   $result     The approval.
+	 * @param Money           $baseAmount The amount in the order's base currency, which the intent's base currency must be.
+	 * @param VoidReason|null $voidReason Optional. Why a void was asked for; required for a void. Default null.
 	 * @return bool True when the intent changed; false when its state or its amounts refused the operation.
 	 */
-	public function applyApproval( PaymentIntent $intent, GatewayResult $result, Money $baseAmount ): bool;
+	public function applyApproval( PaymentIntent $intent, GatewayResult $result, Money $baseAmount, ?VoidReason $voidReason = null ): bool;
 
 	/**
 	 * Fails an intent the gateway declined.
@@ -134,6 +139,16 @@ interface PaymentRepository {
 	 * @return bool True when the intent changed; false when its state refused it.
 	 */
 	public function applyDecline( int $intentId ): bool;
+
+	/**
+	 * Reads one intent as reconciliation sees it, without a lock: its gateway and mode, its age, and when its wait runs out and whether it had, by the database's clock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $uuid The intent's public identifier.
+	 * @return IntentRef|null The intent, or null when there is none.
+	 */
+	public function ref( string $uuid ): ?IntentRef;
 
 	/**
 	 * Moves an intent to a state that waits: for the customer to act, or for the gateway to decide.

@@ -124,7 +124,7 @@ final class PlaceOrderTest extends PlacementTestCase {
 		$answer = $this->placement->place( $this->placeInput(), self::guest() );
 		$b      = $this->secondConnection();
 
-		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status' ), array_keys( $answer ) );
+		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status', 'next_action' ), array_keys( $answer ) );
 		$this->assertSame( array( 'approved', 'processing', 'authorized', 3 ), array( $answer['outcome'], $answer['status'], $answer['payment_status'], $answer['cart_version'] ) );
 
 		$order = $this->committedOrder( $b, $answer['order_uuid'] );
@@ -306,7 +306,24 @@ final class PlaceOrderTest extends PlacementTestCase {
 		$hash     = (string) $b->fetchValue( sprintf( "SELECT access_key_hash FROM `%s` WHERE uuid = '%s'", $this->table( OrderTables::ORDERS ), (string) ( $kept['order_uuid'] ?? '' ) ) );
 
 		$this->assertSame( 'pending', $kept['outcome'] ?? null );
-		$this->assertSame( array_diff_key( $kept, array( KeptAnswer::SEALED => true ) ), array_diff_key( $replayed, array( KeptAnswer::ORDER_KEY => true ) ), 'Before its payment is known, the retry gets the answer unit of work 1 kept.' );
+		$this->assertSame(
+			array_diff_key(
+				$kept,
+				array(
+					KeptAnswer::SEALED             => true,
+					KeptAnswer::NEXT_ACTION_SEALED => true,
+				)
+			),
+			array_diff_key(
+				$replayed,
+				array(
+					KeptAnswer::ORDER_KEY   => true,
+					KeptAnswer::NEXT_ACTION => true,
+				)
+			),
+			'Before its payment is known, the retry gets the answer unit of work 1 kept.'
+		);
+		$this->assertSame( array( true, null, true, null ), array( array_key_exists( KeptAnswer::NEXT_ACTION_SEALED, $kept ), $kept[ KeptAnswer::NEXT_ACTION_SEALED ], array_key_exists( KeptAnswer::NEXT_ACTION, $replayed ), $replayed[ KeptAnswer::NEXT_ACTION ] ), 'Nothing for the shopper to do yet, kept and answered as none.' );
 		$this->assertTrue( $this->kernel->get( AccessKeys::class )->verify( (string) ( $replayed['order_key'] ?? '' ), $hash ), 'The retry gets the order key the refused request never received.' );
 
 		$mug  = $this->sellable();
@@ -323,7 +340,23 @@ final class PlaceOrderTest extends PlacementTestCase {
 		);
 
 		$this->assertSame( 'approved', $first['outcome'] );
-		$this->assertEquals( array_diff_key( $first, array( KeptAnswer::ORDER_KEY => true ) ), array_diff_key( $stored, array( KeptAnswer::SEALED => true ) ), 'The key keeps the settled placement.' );
+		$this->assertEquals(
+			array_diff_key(
+				$first,
+				array(
+					KeptAnswer::ORDER_KEY   => true,
+					KeptAnswer::NEXT_ACTION => true,
+				)
+			),
+			array_diff_key(
+				$stored,
+				array(
+					KeptAnswer::SEALED             => true,
+					KeptAnswer::NEXT_ACTION_SEALED => true,
+				)
+			),
+			'The key keeps the settled placement.'
+		);
 		$this->assertEquals( $first, $again, 'The retry gets the placement as it stands: the first answer, its order key included.' );
 		$this->assertSame( 2, $this->committedCount( $b, OrderTables::ORDERS ) );
 		$this->assertSame( 2, $this->committedCount( $b, CheckoutTables::IDEMPOTENCY_KEYS ) );

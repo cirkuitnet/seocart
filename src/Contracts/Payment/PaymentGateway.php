@@ -119,7 +119,8 @@ interface PaymentGateway {
 	 * Asks the provider to cancel an authorization without taking its amount.
 	 *
 	 * A provider that says the authorization had already succeeded answers the authorization's
-	 * approval instead, which the plugin applies as an ordinary authorization.
+	 * approval instead, which the plugin applies as an ordinary authorization. An approved void
+	 * reports the request's amount as the amount it moved: what the cancellation released.
 	 *
 	 * @since 0.2.0
 	 *

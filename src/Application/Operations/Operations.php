@@ -57,12 +57,15 @@ final class Operations {
 		$registry->add( OrderStoreOperations::GET_STATUS, array( OrderStoreOperations::class, 'getStatus' ) );
 		$registry->add( CheckoutOperations::UPDATE_SESSION, array( CheckoutOperations::class, 'updateSession' ) );
 		$registry->add( CheckoutOperations::PLACE_ORDER, array( CheckoutOperations::class, 'placeOrder' ) );
+		$registry->add( CheckoutOperations::RESUME_PAYMENT, array( CheckoutOperations::class, 'resumePayment' ) );
 		$registry->add( CartOperations::APPLY_CODE, array( CartOperations::class, 'applyCode' ) );
 		$registry->add( CartOperations::REMOVE_CODE, array( CartOperations::class, 'removeCode' ) );
 		$registry->add( CheckoutOperations::CHANGE_CURRENCY, array( CheckoutOperations::class, 'changeCurrency' ) );
 		$registry->add( PaymentOperations::REFUND_ORDER, array( PaymentOperations::class, 'refundOrder' ) );
 		$registry->add( PaymentOperations::SETTLE_REFUND_CLAIM, array( PaymentOperations::class, 'settleRefundClaim' ) );
 		$registry->add( OrderOperations::CLEAR_UNRECONCILED_MONEY, array( OrderOperations::class, 'clearUnreconciledMoney' ) );
+		$registry->add( PaymentOperations::CAPTURE_PAYMENT, array( PaymentOperations::class, 'capturePayment' ) );
+		$registry->add( PaymentOperations::VOID_PAYMENT, array( PaymentOperations::class, 'voidPayment' ) );
 
 		return $registry;
 	}

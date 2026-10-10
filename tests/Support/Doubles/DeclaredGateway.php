@@ -345,6 +345,6 @@ final class DeclaredGateway implements PaymentGateway {
 			return null;
 		}
 
-		return new GatewayResult( $this->descriptor->id, $result->operation, $result->outcome, $result->intentUuid, $result->amount, $result->providerObjectId, $result->providerIntentId, $result->errorCode, $result->settlement );
+		return new GatewayResult( $this->descriptor->id, $result->operation, $result->outcome, $result->intentUuid, $result->amount, $result->providerObjectId, $result->providerIntentId, $result->errorCode, $result->settlement, $result->nextAction );
 	}
 }

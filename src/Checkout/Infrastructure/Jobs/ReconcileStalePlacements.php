@@ -15,7 +15,7 @@ use SEOCart\Checkout\Application\SettlePlacement;
 use SEOCart\Contracts\Payment\GatewayUnavailable;
 use SEOCart\Order\Application\Orders;
 use SEOCart\Payment\Application\PaymentService;
-use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Platform\Jobs\JobHandler;
 use SEOCart\Support\Error\CodedException;
 
@@ -27,7 +27,18 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: when a placement that lost its gateway's answer is settled. Every five minutes it
  * takes the intents still waiting for an answer that have not changed for STALE_SECONDS, a page at
  * a time in a cursor's order, asks the gateway about each, outside any transaction, and settles
- * each answer through SettlePlacement, the path every answer takes. An intent the gateway still
+ * each answer through SettlePlacement, the path every answer takes.
+ *
+ * A shopper asked to act whose time to do so ran out never acted: a real provider keeps such a
+ * payment waiting until something cancels it, so the run asks the gateway to void it before
+ * anything the order holds is released, and settles the void the same way (the end of the
+ * shopper's time to act). A provider that had approved meanwhile answers the void with the
+ * approval, which is settled as an approval: the order goes on, never released. A provider that
+ * refuses to cancel leaves the placement as it was, reported deferred, for the next run to ask
+ * again. A payment the gateway itself is still deciding is never voided because time passed: it is
+ * only asked about.
+ *
+ * An intent the gateway still
  * has no answer for, or cannot be asked about now, is left as it is for the next run: a placement
  * is never released only because time has passed here, nor because its gateway is gone, switched
  * to another mode or kept from live calls by Safe Mode. An intent that could not be asked about is
@@ -207,12 +218,7 @@ final class ReconcileStalePlacements implements JobHandler {
 				$after = $intent->uuid;
 
 				try {
-					$answer = $this->payments->queryGateway( $intent );
-
-					if ( null !== $answer ) {
-						// A job acts on no user's authority: what it applies is recorded without a user.
-						$this->settlement->apply( $answer, Actor::user( 0 ) );
-					}
+					$this->settle( $intent );
 				} catch ( GatewayUnavailable | CodedException $deferred ) {
 					( $this->report )(
 						self::DEFERRED,
@@ -228,6 +234,29 @@ final class ReconcileStalePlacements implements JobHandler {
 
 			$full = count( $page ) >= self::PAGE;
 		} while ( $full && ( $this->clock )() < $deadline );
+	}
+
+	/**
+	 * Settles one stale intent: the void of one whose shopper's time to act ran out, or the gateway's answer about any other.
+	 *
+	 * @since 0.2.0
+	 *
+	 * Throws GatewayUnavailable when the gateway has no answer, and a CodedException for what asking
+	 * the gateway, or settling its answer, refuses: `payment.operation_declined` when the gateway
+	 * refuses to void, which changes nothing (SettlePlacement::voidEndedAction()).
+	 *
+	 * @param IntentRef $intent The intent, as the page read it.
+	 */
+	private function settle( IntentRef $intent ): void {
+		if ( null !== $this->settlement->voidEndedAction( $intent ) ) {
+			return;
+		}
+
+		$answer = $this->payments->queryGateway( $intent );
+
+		if ( null !== $answer ) {
+			$this->settlement->apply( $answer, SettlePlacement::store() );
+		}
 	}
 
 	/**
@@ -247,8 +276,7 @@ final class ReconcileStalePlacements implements JobHandler {
 				$after = $orderId;
 
 				try {
-					// A job acts on no user's authority: what it records is recorded without a user.
-					$this->settlement->settleNothingDue( $orderId, Actor::user( 0 ) );
+					$this->settlement->settleNothingDue( $orderId, SettlePlacement::store() );
 				} catch ( CodedException $deferred ) {
 					( $this->report )(
 						self::DEFERRED,

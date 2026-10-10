@@ -57,6 +57,7 @@ final class NoMoneyArithmeticTest extends TestCase {
 	 */
 	private const ALLOWED = array(
 		'src/Payment/Domain/AmountCheck.php'             => 'It adds a tender to what the order has tendered, to decide whether an approval stays within the grand total.',
+		'src/Payment/Domain/CaptureShare.php'            => 'It splits the intent\'s frozen base amount between what a partial capture takes and what it leaves, by largest remainder: a stored figure split, not a total computed.',
 		'src/Payment/Domain/Projection.php'              => 'It adds a payment to the locked order\'s amounts, and a refund to the intent\'s, to decide which state the database\'s update will record.',
 		'src/Payment/Domain/Refund/RefundAllocation.php' => 'It allocates each share from the stored figures less what earlier refunds returned, and adds stored figures and their shares up to state the refund document.',
 		'src/Payment/Infrastructure/Gateway/StubGateway.php' => 'It is a stand-in gateway that answers with an amount one minor unit off on purpose, so that the tests can show such an approval parked for a person.',

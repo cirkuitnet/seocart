@@ -490,13 +490,14 @@ final class MysqlOrderRepository implements OrderRepository {
 	public const STOCK_LINES = 'SELECT id, variant_id, quantity FROM {order_lines} WHERE order_id = %d ORDER BY variant_id, id';
 
 	/**
-	 * An order's public identifier and status, by its internal id: a plain read, which locks nothing.
+	 * An order's public identifier, status and payment status, and when a person last cleared its unreconciled money, by its internal id: a plain read, which locks nothing.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Reads the payment status and the clearance too.
 	 *
 	 * @var string
 	 */
-	public const STATUS_OF = 'SELECT uuid, status FROM {orders} WHERE id = %d';
+	public const STATUS_OF = 'SELECT uuid, status, payment_status, money_reconciled_at FROM {orders} WHERE id = %d';
 
 	/**
 	 * The scope of a line's tax component.
@@ -1451,19 +1452,23 @@ final class MysqlOrderRepository implements OrderRepository {
 	}
 
 	/**
-	 * Reads an order's public identifier and status, without a lock.
+	 * Reads an order's public identifier, status and payment status, and its last clearance, without a lock.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Reads the payment status and the clearance too.
 	 *
 	 * @param int $orderId The order's internal id.
-	 * @return array{uuid: string, status: OrderStatus}|null The two, or null when there is no such order.
+	 * @return array{uuid: string, status: OrderStatus, payment_status: PaymentStatus, money_reconciled_at: string|null}|null
+	 *         The four, the clearance UTC to the microsecond or null for never; null when there is no such order.
 	 */
 	public function statusOf( int $orderId ): ?array {
 		$row = $this->statements->rows( self::STATUS_OF, $orderId )[0] ?? null;
 
 		return null === $row ? null : array(
-			'uuid'   => (string) $row['uuid'],
-			'status' => OrderStatus::from( (string) $row['status'] ),
+			'uuid'                => (string) $row['uuid'],
+			'status'              => OrderStatus::from( (string) $row['status'] ),
+			'payment_status'      => PaymentStatus::from( (string) $row['payment_status'] ),
+			'money_reconciled_at' => null === $row['money_reconciled_at'] ? null : (string) $row['money_reconciled_at'],
 		);
 	}
 
