@@ -21,6 +21,7 @@ use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\IntentTransitions;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
+use SEOCart\Payment\Infrastructure\MysqlRefundRepository;
 use SEOCart\Platform\Database\MysqlErrno;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\Payment\PaymentTestCase;
@@ -202,7 +203,8 @@ final class ApplyConcurrencyTest extends PaymentTestCase {
 			'',
 			'system',
 			3,
-			''
+			'',
+			MysqlRefundRepository::NEVER_RECONCILED
 		);
 	}
 

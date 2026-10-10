@@ -760,8 +760,13 @@ final class PaymentService {
 	 * Keeps an approval that moves no money, for a person: its ledger row with `applied = 0`, and the order flagged and parked.
 	 *
 	 * The row is the claim, so a result recorded before is a duplicate, which changes nothing.
+	 * Every writer of such a row keeps this order, a provider's delivery included: it locks the
+	 * order, appends the row dated after the order's last clearance, then raises the flag, so a
+	 * clearance, which takes the same lock, comes after every row it clears and before every row
+	 * that holds the refunds back again, whatever the database clock does.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The row is dated after the order's last clearance.
 	 *
 	 * @param GatewayResult $result The approval.
 	 * @param PaymentIntent $intent The intent, locked.
@@ -773,7 +778,7 @@ final class PaymentService {
 	private function keepUnapplied( GatewayResult $result, PaymentIntent $intent, LockedOrder $order, string $reason, Actor $actor ): Application {
 		list( $actorType, $actorId ) = self::actorOf( $actor );
 
-		$transactionId = $this->payments->appendResult( $intent, $result, Money::zero( $order->baseCurrency() ), false, $actorType, $actorId, $this->correlation->current() );
+		$transactionId = $this->payments->appendResult( $intent, $result, Money::zero( $order->baseCurrency() ), false, $actorType, $actorId, $this->correlation->current(), $order->moneyReconciledAt );
 
 		if ( null === $transactionId ) {
 			return $this->unchanged( ApplicationKind::Duplicate, $result, $intent, $order, $this->payments->findResult( $result ) );

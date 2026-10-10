@@ -92,9 +92,12 @@ interface PaymentRepository {
 	 * @param string        $actorType     `user` or `system`.
 	 * @param int|null      $actorId       The user on whose authority, or null.
 	 * @param string        $correlationId The request's correlation id.
+	 * @param string|null   $datedAfter    Optional. A time the row is dated after, by a microsecond at least, whatever the
+	 *                                     database clock reads: the order's last clearance, for a row parked for a person;
+	 *                                     null for the clock alone. Default null.
 	 * @return int|null The ledger row's id; null when a row with the same provider, provider object and operation exists.
 	 */
-	public function appendResult( PaymentIntent $intent, GatewayResult $result, Money $baseAmount, bool $applied, string $actorType, ?int $actorId, string $correlationId ): ?int;
+	public function appendResult( PaymentIntent $intent, GatewayResult $result, Money $baseAmount, bool $applied, string $actorType, ?int $actorId, string $correlationId, ?string $datedAfter = null ): ?int;
 
 	/**
 	 * Reads the ledger row a result was first recorded in.

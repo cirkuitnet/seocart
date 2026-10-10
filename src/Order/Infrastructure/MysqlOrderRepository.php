@@ -204,14 +204,15 @@ final class MysqlOrderRepository implements OrderRepository {
 		. "SELECT id, %s, payment_status, payment_status, %s, %s, %s, NULLIF( %d, 0 ), NULLIF( %s, '' ), UTC_TIMESTAMP(6) FROM {orders} WHERE id = %d";
 
 	/**
-	 * The order's lock: a locking read of what a transition, an acceptance and a payment decide from.
+	 * The order's lock: a locking read of what a transition, an acceptance and a payment decide from, with the order's last clearance, which money kept for a person is dated after.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The order's last clearance.
 	 *
 	 * @var string
 	 */
 	public const LOCK = 'SELECT id, uuid, order_number, channel, status, payment_status, currency, base_currency, grand_total_minor, authorized_minor, paid_minor, refunded_minor, due_minor, '
-		. 'base_grand_total_minor, base_authorized_minor, base_paid_minor, base_refunded_minor, customer_id, actor_type, actor_id, hold_group FROM {orders} WHERE id = %d FOR UPDATE';
+		. 'base_grand_total_minor, base_authorized_minor, base_paid_minor, base_refunded_minor, customer_id, actor_type, actor_id, hold_group, money_reconciled_at FROM {orders} WHERE id = %d FOR UPDATE';
 
 	/**
 	 * The transition: only from a status the registry lists for the target, and, for a status that claims payment, only while the payment status is settled.
@@ -990,7 +991,8 @@ final class MysqlOrderRepository implements OrderRepository {
 			self::nullableId( $row['customer_id'] ),
 			(string) $row['actor_type'],
 			self::nullableId( $row['actor_id'] ),
-			null === $row['hold_group'] ? null : (string) $row['hold_group']
+			null === $row['hold_group'] ? null : (string) $row['hold_group'],
+			null === $row['money_reconciled_at'] ? null : (string) $row['money_reconciled_at']
 		);
 	}
 

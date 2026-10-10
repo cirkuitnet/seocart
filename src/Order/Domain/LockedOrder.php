@@ -20,9 +20,9 @@ defined( 'ABSPATH' ) || exit;
  * The facts of an order a transaction decides from, read with a locking read.
  *
  * Owns one fact: the order's statuses, its money and what settling its payment needs, as the
- * row stood when the transaction locked it. Because the read is a locking read, the values are
- * current until the transaction ends, under any isolation level, so a decision made from them is
- * not a check made before an act.
+ * row stood when the transaction locked it, with when a person last cleared its unreconciled
+ * money. Because the read is a locking read, the values are current until the transaction ends,
+ * under any isolation level, so a decision made from them is not a check made before an act.
  *
  * @since 0.1.0
  */
@@ -33,25 +33,26 @@ final readonly class LockedOrder {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int           $id             The internal id.
-	 * @param string        $uuid           The public identifier.
-	 * @param string        $orderNumber    The number shown to people.
-	 * @param OrderChannel  $channel        Where the order came from.
-	 * @param OrderStatus   $status         Its status.
-	 * @param PaymentStatus $paymentStatus  Its payment status.
-	 * @param Money         $grandTotal     The grand total.
-	 * @param Money         $authorized     Authorized so far.
-	 * @param Money         $paid           Captured so far.
-	 * @param Money         $refunded       Refunded so far.
-	 * @param Money         $due            Still to be paid.
-	 * @param Money         $baseGrandTotal The grand total, in the base currency.
-	 * @param Money         $baseAuthorized Authorized so far, in the base currency.
-	 * @param Money         $basePaid       Captured so far, in the base currency.
-	 * @param Money         $baseRefunded   Refunded so far, in the base currency.
-	 * @param int|null      $customerId     The id of the customer record it belongs to, never a WordPress user's; null for a guest order.
-	 * @param string        $actorType      Who placed it: `user` in person, `system` for a process on a user's authority.
-	 * @param int|null      $actorId        The WordPress user who placed it, or null for a visitor.
-	 * @param string|null   $holdGroup      The stock hold placement took for it, or null when nothing was held.
+	 * @param int           $id                The internal id.
+	 * @param string        $uuid              The public identifier.
+	 * @param string        $orderNumber       The number shown to people.
+	 * @param OrderChannel  $channel           Where the order came from.
+	 * @param OrderStatus   $status            Its status.
+	 * @param PaymentStatus $paymentStatus     Its payment status.
+	 * @param Money         $grandTotal        The grand total.
+	 * @param Money         $authorized        Authorized so far.
+	 * @param Money         $paid              Captured so far.
+	 * @param Money         $refunded          Refunded so far.
+	 * @param Money         $due               Still to be paid.
+	 * @param Money         $baseGrandTotal    The grand total, in the base currency.
+	 * @param Money         $baseAuthorized    Authorized so far, in the base currency.
+	 * @param Money         $basePaid          Captured so far, in the base currency.
+	 * @param Money         $baseRefunded      Refunded so far, in the base currency.
+	 * @param int|null      $customerId        The id of the customer record it belongs to, never a WordPress user's; null for a guest order.
+	 * @param string        $actorType         Who placed it: `user` in person, `system` for a process on a user's authority.
+	 * @param int|null      $actorId           The WordPress user who placed it, or null for a visitor.
+	 * @param string|null   $holdGroup         The stock hold placement took for it, or null when nothing was held.
+	 * @param string|null   $moneyReconciledAt Optional. When a person last cleared its unreconciled money, UTC to the microsecond, as the database clock wrote it; null for never. Default null.
 	 */
 	public function __construct(
 		public int $id,
@@ -72,7 +73,8 @@ final readonly class LockedOrder {
 		public ?int $customerId,
 		public string $actorType,
 		public ?int $actorId,
-		public ?string $holdGroup
+		public ?string $holdGroup,
+		public ?string $moneyReconciledAt = null
 	) {
 	}
 

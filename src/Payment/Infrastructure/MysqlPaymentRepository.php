@@ -108,7 +108,14 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 	/**
 	 * A ledger row: the claim that applies a result once. 0 and '' stand for no settlement, no object, no error, no actor and no correlation id.
 	 *
+	 * The row is dated by the database clock, and after the time its last value names, by a
+	 * microsecond at least: for a row parked for a person, the order's last clearance, so a clock
+	 * that stepped back since the clearance cannot date the row before it, where the clearance
+	 * would free the payment's refunds of it with the order flagged. Any other row is given
+	 * MysqlRefundRepository::NEVER_RECONCILED, and is dated by the clock alone.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Dated after a time it is given.
 	 *
 	 * @var string
 	 */
@@ -117,7 +124,7 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 		. "settlement_currency = NULLIF( %s, '' ), settlement_amount_minor = IF( %d = 1, %d, NULL ), settlement_rate = NULLIF( %s, '' ), "
 		. "settlement_fee_minor = IF( %d = 1, %d, NULL ), settlement_source = NULLIF( %s, '' ), "
 		. "provider = %s, provider_object_id = NULLIF( %s, '' ), result = %s, applied = %d, error_code = NULLIF( %s, '' ), "
-		. "actor_type = %s, actor_id = NULLIF( %d, 0 ), correlation_id = NULLIF( %s, '' ), created_at = UTC_TIMESTAMP(6)";
+		. "actor_type = %s, actor_id = NULLIF( %d, 0 ), correlation_id = NULLIF( %s, '' ), created_at = GREATEST( UTC_TIMESTAMP(6), CAST( %s AS DATETIME(6) ) + INTERVAL 1 MICROSECOND )";
 
 	/**
 	 * The row a result was first recorded in, by the key that claims it.
@@ -468,9 +475,11 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 	 * @param string        $actorType     `user` or `system`.
 	 * @param int|null      $actorId       The user on whose authority, or null.
 	 * @param string        $correlationId The request's correlation id.
+	 * @param string|null   $datedAfter    Optional. A time the row is dated after, by a microsecond at least: the order's last
+	 *                                     clearance, for a row parked for a person; null for the clock alone. Default null.
 	 * @return int|null The row's id; null when the result's provider, object and operation were recorded before.
 	 */
-	public function appendResult( PaymentIntent $intent, GatewayResult $result, Money $baseAmount, bool $applied, string $actorType, ?int $actorId, string $correlationId ): ?int {
+	public function appendResult( PaymentIntent $intent, GatewayResult $result, Money $baseAmount, bool $applied, string $actorType, ?int $actorId, string $correlationId, ?string $datedAfter = null ): ?int {
 		$this->statements->requireTransaction( __METHOD__ );
 
 		$settlement = $result->settlement;
@@ -502,7 +511,8 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 				$result->errorCode ?? '',
 				$actorType,
 				$actorId ?? 0,
-				$correlationId
+				$correlationId,
+				$datedAfter ?? MysqlRefundRepository::NEVER_RECONCILED
 			);
 		} catch ( DuplicateKey $recorded ) {
 			// The claim: this provider object's outcome for this operation has a row already.

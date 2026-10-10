@@ -44,7 +44,10 @@ use SEOCart\Tests\Support\RunningProbe;
  *   money that lands is claimed and made;
  * - in MysqlOrderRepository::CLEARANCE, leave out the newest money's time, as the statement was
  *   before: a clearance of money dated after its flag, as a database clock that stepped back
- *   leaves it, lowers the flag while the money still holds the refunds back, for good.
+ *   leaves it, lowers the flag while the money still holds the refunds back, for good;
+ * - in MysqlPaymentRepository::INSERT_TRANSACTION, date the row by `UTC_TIMESTAMP(6)` alone: money
+ *   landing after a clearance dated ahead of the clock, as a clock that stepped back since leaves
+ *   it, is dated before the clearance, and the payment refunds with the flag up.
  *
  * The clearance racing money that lands no longer has a plant of one edit: the clearance takes the
  * order's lock before it reads the clock, the row's time or the money's, so each of the three
@@ -160,6 +163,36 @@ final class ClearUnreconciledMoneyTest extends RefundTestCase {
 		$this->assertNull( $this->refusalOf( fn() => $this->refund( $order->uuid, array( $tee => 1 ) ) ), sprintf( 'With the flag down, the payment refunds again: the money is dated %1$s, the clearance %2$s.', $landed, (string) $cleared['money_reconciled_at'] ) );
 		$this->assertGreaterThan( $landed, (string) $cleared['money_reconciled_at'], 'The clearance is dated after the money it cleared.' );
 		$this->assertSame( (string) $cleared['money_reconciled_at'], (string) $cleared['updated_at'], 'The order\'s row is dated by its clearance.' );
+	}
+
+	/**
+	 * Tests that money landing after a clearance is dated after it, even when the database clock reads earlier than the clearance, as one that stepped back since the clearance does: the flag goes up and the payment's refunds are held back, together.
+	 *
+	 * The clearance is moved an hour ahead of the clock, with the order's row, as a clock that
+	 * stepped back after the clearance leaves them. Dated by the clock alone, the money landing then
+	 * would be dated before the clearance: the order flagged while its payment refunds on, over money
+	 * no person has reconciled.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_money_landing_after_a_clearance_dated_ahead_of_the_clock_is_dated_after_it(): void {
+		list( $order, $intent ) = $this->placePaid( self::order() );
+		list( $tee )            = $this->lineUuids( $order->id );
+
+		$this->keepUnappliedRefund( $intent, 500, 'EUR', 'external-re-1' );
+		$this->clear( $order->uuid );
+
+		// The clearance, and the order's row with it, an hour ahead of the clock.
+		$this->db->execute( 'UPDATE %i SET money_reconciled_at = money_reconciled_at + INTERVAL 1 HOUR, updated_at = updated_at + INTERVAL 1 HOUR WHERE id = %d', $this->table( OrderTables::ORDERS ), $order->id );
+
+		$this->keepUnappliedRefund( $intent, 300, 'EUR', 'external-re-2' );
+
+		$landed  = (string) $this->db->fetchValue( "SELECT created_at FROM %i WHERE provider_object_id = 'external-re-2'", $this->table( PaymentTables::TRANSACTIONS ) );
+		$cleared = (string) $this->db->fetchValue( 'SELECT money_reconciled_at FROM %i WHERE id = %d', $this->table( OrderTables::ORDERS ), $order->id );
+
+		$this->assertSame( '1', (string) $this->orderRow( $order->id )['has_unreconciled_money'], 'The money flags the order again.' );
+		$this->assertSame( PaymentError::Unreconciled->value, $this->refusalOf( fn() => $this->refund( $order->uuid, array( $tee => 1 ) ) ), sprintf( 'With the flag up, the money holds the payment\'s refunds back: it is dated %1$s, the clearance %2$s.', $landed, $cleared ) );
+		$this->assertGreaterThan( $cleared, $landed, 'The money is dated after the clearance.' );
 	}
 
 	/**
