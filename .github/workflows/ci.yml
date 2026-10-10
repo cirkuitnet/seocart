@@ -7,7 +7,7 @@
 #
 # Job graph (arrows are `needs`):
 #
-#   lint-php ------+-> static-analysis --+-> integration-tests (PHP x WordPress), integration-tests-multisite, query-plans,
+#   lint-php ------+-> static-analysis --+-> integration-tests (PHP x WordPress), integration-tests-multisite, integration-tests-mariadb, query-plans,
 #                  |                     |    multilingual-conformance
 #                  +-> unit-tests -------+-> package: build -> packaging-validate
 #                  +-> dry-gates         |                       -> plugin-check
@@ -205,6 +205,21 @@ jobs:
             php: '8.4'
             wp: '7.1'
             multisite: true
+
+    # The same suite on MariaDB (the long-term support image), where WordPress also runs and
+    # where the end-to-end lane already ran: a statement only MySQL accepts fails here, not in
+    # a shopper's checkout. One cell: PHP 8.4, WordPress 7.1. A job of its own for the same
+    # reason as the multisite cell.
+    integration-tests-mariadb:
+        name: integration-tests-mariadb
+        needs:
+            - static-analysis
+            - unit-tests
+        uses: ./.github/workflows/reusable-integration-tests.yml
+        with:
+            php: '8.4'
+            wp: '7.1'
+            database: mariadb:lts
 
     # The query plans of the plugin's reads on the medium reference dataset: `composer
     # test:query-plans` seeds it into the cell's own database, prints how long seeding took, and

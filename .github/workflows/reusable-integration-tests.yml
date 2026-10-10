@@ -1,6 +1,7 @@
 # One cell of the WordPress integration suite: one PHP version against one WordPress
-# version, on a real MySQL 8.4 server. WordPress Playground and SQLite are not a
-# correctness oracle for this plugin, so there is no cell without MySQL.
+# version, on a real MySQL 8.4 server, or on MariaDB when the caller asks for it. WordPress
+# Playground and SQLite are not a correctness oracle for this plugin, so there is no cell
+# without a real server.
 #
 # Reusable because two workflows run it: ci.yml (the PHP x WordPress matrix, the multisite
 # cell, the query-plan cell and the multilingual-conformance cell) and nightly.yml (WordPress
@@ -38,6 +39,11 @@ on:
                 required: false
                 type: string
                 default: test:integration
+            database:
+                description: 'The database server image, "mysql:8.4" (the default) or a MariaDB image such as "mariadb:lts". WordPress runs on both, so the plugin must too.'
+                required: false
+                type: string
+                default: 'mysql:8.4'
             polylang:
                 description: 'Download Polylang (free) at the pinned version through bin/ci/download-polylang.sh, and export SEOCART_ML_ADAPTER and SEOCART_ML_PLUGIN for the test step.'
                 required: false
@@ -58,13 +64,13 @@ env:
 
 jobs:
     integration:
-        name: PHP ${{ inputs.php || '(development version)' }}, WordPress ${{ inputs.wp }}${{ inputs.multisite && ', multisite' || '' }}${{ inputs.script != 'test:integration' && format(', {0}', inputs.script) || '' }}
+        name: PHP ${{ inputs.php || '(development version)' }}, WordPress ${{ inputs.wp }}${{ startsWith(inputs.database, 'mariadb') && ', MariaDB' || '' }}${{ inputs.multisite && ', multisite' || '' }}${{ inputs.script != 'test:integration' && format(', {0}', inputs.script) || '' }}
         runs-on: ubuntu-24.04
         timeout-minutes: 20
         continue-on-error: ${{ inputs.allow-failure }}
         services:
             mysql:
-                image: mysql:8.4
+                image: ${{ inputs.database }}
                 env:
                     MYSQL_ROOT_PASSWORD: ${{ env.SEOCART_CI_DB_PASSWORD }}
                     MYSQL_DATABASE: ${{ env.SEOCART_CI_DB_NAME }}
@@ -72,8 +78,9 @@ jobs:
                     - 3306:3306
                 # --host forces TCP: while the image initialises, MySQL listens on its socket
                 # only, so the container turns healthy when the real server accepts connections.
+                # The MariaDB image ships its own health check script instead of mysqladmin.
                 options: >-
-                    --health-cmd="mysqladmin ping --host=127.0.0.1 --silent"
+                    --health-cmd="${{ startsWith(inputs.database, 'mariadb') && 'healthcheck.sh --connect --innodb_initialized' || 'mysqladmin ping --host=127.0.0.1 --silent' }}"
                     --health-interval=5s
                     --health-timeout=5s
                     --health-retries=24
