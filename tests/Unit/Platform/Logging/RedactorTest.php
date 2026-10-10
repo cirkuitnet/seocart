@@ -294,6 +294,36 @@ final class RedactorTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a UUID whose digits pass the checksum across its dashes is logged whole, in the message and in the context.
+	 *
+	 * Planted violation: in CardNumbers::scrubChain(), stop skipping the groups inside an
+	 * identifier (the UUID loses its middle, and the line says a card number was removed).
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_uuid_is_logged_whole(): void {
+		$uuid = '01a12284-eea9-7242-9777-409181ee1128';
+		$line = self::redactor()->line(
+			'Intent ' . $uuid . ' deferred.',
+			500,
+			array(
+				'intent_uuid' => $uuid,
+				'nested'      => array( 'order_uuid' => $uuid ),
+			)
+		);
+
+		$this->assertSame( 'Intent ' . $uuid . ' deferred.', $line['message'] );
+		$this->assertSame(
+			array(
+				'intent_uuid' => $uuid,
+				'nested'      => array( 'order_uuid' => $uuid ),
+			),
+			$line['context']
+		);
+		$this->assertFalse( $line['card_number_removed'] );
+	}
+
+	/**
 	 * Tests that a database failure is written with the shape of its statement and without the values the statement and the server quoted.
 	 *
 	 * @since 0.1.0

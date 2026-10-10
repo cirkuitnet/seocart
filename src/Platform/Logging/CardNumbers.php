@@ -37,9 +37,27 @@ defined( 'ABSPATH' ) || exit;
  * number survives. A run of more than 19 digits without a separator is not a card number and
  * is kept too, by design: that includes a card number fused to more digits, such as one
  * followed directly by its expiry date. Card data never reaches PHP, so this detector is
- * defence in depth, not the boundary. Nothing else is exempt: an identifier whose digit groups happen to pass the
- * checksum is replaced as well, which is rare for a UUID and accepted, and so is a date range
- * written with only dashes and spaces between two dates.
+ * defence in depth, not the boundary.
+ *
+ * The one exemption: a group of digits inside an identifier, a UUID or a hexadecimal word of
+ * HEX_WORD_MINIMUM characters or more that holds a letter from a to f, is never joined to its
+ * neighbours into a card number, but a single unbroken run of 13 to 19 digits that passes the
+ * checksum is removed wherever it stands, identifier or not. About one time-ordered UUID in 400
+ * holds digits that pass the checksum once its dashes are read through, and removing them lost
+ * the identifier from the log line; a dashed UUID has no unbroken run of more than 12 digits, so
+ * every one of them stays whole, and a UUID written without dashes can hold an unbroken run
+ * that passes the checksum and loses it, which is accepted. A UUID of digits alone has no letter
+ * and is not exempt, nor is a shorter word, which cannot be told from a card number with a stray
+ * letter beside it. The groups of an identifier break a chain: a card number beside a UUID is
+ * still found, and the UUID stays whole. A known limit: a card number written in a UUID frame
+ * with a hexadecimal letter in another group (`41111111-1111-1111-1111-11111111111a`) is read as
+ * an identifier; a real log line does not format a card that way, while a real UUID does cross
+ * its groups with a run that passes the checksum. Likewise a card written with spaces or dashes
+ * whose first or last group is glued to a hexadecimal word of HEX_WORD_MINIMUM characters or
+ * more (`4111 1111 1111 1111abcdef...`, `abcdef...ab4111 1111 1111 1111`) is kept, because the
+ * glued group is an identifier group and the chain beside it is too short; a real log line does not format a card that way. Nothing
+ * else is exempt: a date range written
+ * with only dashes and spaces between two dates is replaced, which is accepted.
  *
  * The plugin never accepts, stores or logs a card number on purpose; this is the net under
  * that rule for text that arrives by accident, for example in an exception message. It makes
@@ -111,6 +129,28 @@ final class CardNumbers {
 	private const CHAIN = '/\p{Nd}++(?:' . self::SEPARATOR . '{1,' . self::MAX_SEPARATOR . '}+\p{Nd}++)*+/u';
 
 	/**
+	 * The fewest characters of a hexadecimal word that is an identifier: a UUID written without dashes, the shortest standard one.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const HEX_WORD_MINIMUM = 32;
+
+	/**
+	 * An identifier: a UUID, or a hexadecimal word of HEX_WORD_MINIMUM characters or more, that holds a letter from a to f and has no letter or number touching either end.
+	 *
+	 * The look-ahead inside each alternative asks for the letter within the identifier itself: within
+	 * the UUID's 36 characters, or anywhere in the word. The quantifiers are
+	 * possessive, so a long run is read once.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const IDENTIFIER = '/(?<![\p{L}\p{N}])(?:(?=[0-9-]{0,35}[a-f])[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|(?=[0-9a-f]*[a-f])[0-9a-f]{' . self::HEX_WORD_MINIMUM . ',}+)(?![\p{L}\p{N}])/iu';
+
+	/**
 	 * What replaces text the regular expression engine could not scan.
 	 *
 	 * @since 0.1.0
@@ -122,8 +162,9 @@ final class CardNumbers {
 	/**
 	 * Replaces every card-shaped run in a text with the marker.
 	 *
-	 * Text that is not valid UTF-8 has every byte outside ASCII replaced by a question mark
-	 * first, so it can be read at all.
+	 * Digits inside an identifier are not counted, as the class description says. Text that is
+	 * not valid UTF-8 has every byte outside ASCII replaced by a question mark first, so it can
+	 * be read at all.
 	 *
 	 * @since 0.1.0
 	 *
@@ -137,10 +178,14 @@ final class CardNumbers {
 			return $text;
 		}
 
-		$scrubbed = preg_replace_callback(
+		$identifiers = self::identifiers( $text );
+		$scrubbed    = preg_replace_callback(
 			self::CHAIN,
-			static fn( array $chain ): string => self::scrubChain( $chain[0] ),
-			$text
+			static fn( array $chain ): string => self::scrubChain( $chain[0][0], $chain[0][1], $identifiers ),
+			$text,
+			-1,
+			$replaced,
+			PREG_OFFSET_CAPTURE
 		);
 
 		return null === $scrubbed ? self::UNSCANNABLE : $scrubbed;
@@ -214,19 +259,24 @@ final class CardNumbers {
 	 *
 	 * Every sequence of whole groups holding 13 to 19 digits is checked; the spans of those that
 	 * pass the checksum are merged where they overlap, and each merged span becomes one marker.
+	 * A group inside an identifier is checked alone, never in a sequence with another group.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string $chain Groups of digits joined by separators, valid UTF-8.
+	 * @param string $chain       Groups of digits joined by separators, valid UTF-8.
+	 * @param int    $offset      Where the chain starts in the text, in bytes.
+	 * @param array  $identifiers The text's identifiers, as identifiers() returns them.
 	 * @return string The chain with each card-shaped span replaced.
+	 *
+	 * @phpstan-param list<array{0: int, 1: int}> $identifiers
 	 */
-	private static function scrubChain( string $chain ): string {
+	private static function scrubChain( string $chain, int $offset, array $identifiers ): string {
 		preg_match_all( '/\p{Nd}+/u', $chain, $found, PREG_OFFSET_CAPTURE );
 
 		$groups = array();
 
 		foreach ( $found[0] as $group ) {
-			$groups[] = array( self::asciiDigits( $group[0] ), $group[1], strlen( $group[0] ) );
+			$groups[] = array( self::asciiDigits( $group[0] ), $group[1], strlen( $group[0] ), self::insideAny( $identifiers, $offset + $group[1] ) );
 		}
 
 		$count = count( $groups );
@@ -236,6 +286,11 @@ final class CardNumbers {
 			$digits = '';
 
 			for ( $last = $first; $last < $count; $last++ ) {
+				// A group inside an identifier stands alone: it is never joined to a neighbour.
+				if ( $last > $first && ( $groups[ $first ][3] || $groups[ $last ][3] ) ) {
+					break;
+				}
+
 				$digits .= $groups[ $last ][0];
 				$length  = strlen( $digits );
 
@@ -271,6 +326,58 @@ final class CardNumbers {
 		}
 
 		return $chain;
+	}
+
+	/**
+	 * Finds the identifiers in a text.
+	 *
+	 * When the regular expression engine gives up, nothing is exempt: the text is then scrubbed as if it held no identifier.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $text Valid UTF-8.
+	 * @return list<array{0: int, 1: int}> Where each identifier starts and where it ends, in bytes, in order.
+	 */
+	private static function identifiers( string $text ): array {
+		$spans = array();
+
+		if ( false !== preg_match_all( self::IDENTIFIER, $text, $found, PREG_OFFSET_CAPTURE ) ) {
+			foreach ( $found[0] as $identifier ) {
+				$spans[] = array( $identifier[1], $identifier[1] + strlen( $identifier[0] ) );
+			}
+		}
+
+		return $spans;
+	}
+
+	/**
+	 * Tells whether a position falls inside one of a list of spans, by binary search.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $spans    Where each span starts and where it ends, in order and apart.
+	 * @param int   $position A byte position.
+	 * @return bool True when a span holds it.
+	 *
+	 * @phpstan-param list<array{0: int, 1: int}> $spans
+	 */
+	private static function insideAny( array $spans, int $position ): bool {
+		$low  = 0;
+		$high = count( $spans ) - 1;
+
+		while ( $low <= $high ) {
+			$middle = intdiv( $low + $high, 2 );
+
+			if ( $position < $spans[ $middle ][0] ) {
+				$high = $middle - 1;
+			} elseif ( $position >= $spans[ $middle ][1] ) {
+				$low = $middle + 1;
+			} else {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
