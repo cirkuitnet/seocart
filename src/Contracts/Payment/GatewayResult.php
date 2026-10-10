@@ -36,8 +36,12 @@ defined( 'ABSPATH' ) || exit;
  * A request for the customer to act may say what they must do (NextAction): the page to go to, or
  * the handle the provider's script in the browser needs. No other answer carries one.
  *
+ * A result a webhook delivers may name no intent of the plugin's, when the provider's event carries
+ * only its own reference to the intent: its intent uuid is then empty, and the plugin finds the
+ * intent by that reference and continues with forIntent().
+ *
  * @since 0.1.0
- * @since 0.2.0 Moved to the public contract, and gained the next action.
+ * @since 0.2.0 Moved to the public contract, and gained the next action and forIntent().
  *
  * @api
  */
@@ -83,7 +87,8 @@ final readonly class GatewayResult {
 	 * @param string          $provider         The gateway's id.
 	 * @param Operation       $operation        The operation answered.
 	 * @param Outcome         $outcome          The answer.
-	 * @param string          $intentUuid       The intent the answer is about, as the provider echoed it.
+	 * @param string          $intentUuid       The intent the answer is about, as the provider echoed it; empty in a
+	 *                                          webhook's result whose event names only the provider's intent.
 	 * @param Money           $amount           The amount the provider reports, in the currency it reports.
 	 * @param string|null     $providerObjectId Optional. The provider's object for this outcome: a charge, a capture or a refund. Default null.
 	 * @param string|null     $providerIntentId Optional. The provider's reference to the intent. Default null.
@@ -120,6 +125,20 @@ final readonly class GatewayResult {
 		self::requireFits( $providerObjectId, self::REFERENCE_LENGTH, 'provider object id' );
 		self::requireFits( $providerIntentId, self::REFERENCE_LENGTH, 'provider intent id' );
 		self::requireFits( $errorCode, self::ERROR_CODE_LENGTH, 'error code' );
+	}
+
+	/**
+	 * Returns the same answer about an intent the plugin found by the provider's reference to it.
+	 *
+	 * Every other field is kept, the next action included.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $intentUuid The plugin's intent.
+	 * @return self The answer, about that intent.
+	 */
+	public function forIntent( string $intentUuid ): self {
+		return new self( $this->provider, $this->operation, $this->outcome, $intentUuid, $this->amount, $this->providerObjectId, $this->providerIntentId, $this->errorCode, $this->settlement, $this->nextAction );
 	}
 
 	/**

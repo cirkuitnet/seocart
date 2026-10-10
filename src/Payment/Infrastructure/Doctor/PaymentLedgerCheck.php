@@ -13,7 +13,9 @@ namespace SEOCart\Payment\Infrastructure\Doctor;
 
 use SEOCart\Order\Domain\OrderRepository;
 use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Domain\Webhook\ReceiptResult;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
+use SEOCart\Payment\Infrastructure\MysqlWebhookReceipts;
 use SEOCart\Platform\Cli\Doctor\Check;
 use SEOCart\Platform\Cli\Doctor\CheckResult;
 
@@ -50,7 +52,13 @@ defined( 'ABSPATH' ) || exit;
  * are reads of what they report, the first LIMIT found. It prints uuids and amounts in minor
  * units, never anything about a person.
  *
+ * Given the webhook receipts, it also warns of a provider's event received longer ago than any
+ * delivery takes and never settled, and notes, never as a problem, the events of the last thirty
+ * days the store ignored, such as disputes, and those whose money it kept for a person, such as a
+ * refund made outside the store.
+ *
  * @since 0.1.0
+ * @since 0.2.0 The webhook receipts.
  */
 final class PaymentLedgerCheck implements Check {
 
@@ -125,6 +133,15 @@ final class PaymentLedgerCheck implements Check {
 	private int $page;
 
 	/**
+	 * The webhook receipts' statements, or null for a check of the ledger alone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var MysqlWebhookReceipts|null
+	 */
+	private ?MysqlWebhookReceipts $receipts;
+
+	/**
 	 * Creates the check. Sends nothing.
 	 *
 	 * @since 0.1.0
@@ -134,8 +151,11 @@ final class PaymentLedgerCheck implements Check {
 	 * @param MysqlPaymentRepository $payments The payment statements.
 	 * @param OrderRepository        $orders   The order statements.
 	 * @param int                    $page     Optional. How many intents or orders one read compares. Default PAGE.
+	 * @param MysqlWebhookReceipts   $receipts Optional. The webhook receipts' statements, whose undecided receipts and
+	 *                                         lately ignored or kept events the check reports. Default null: the
+	 *                                         ledger alone.
 	 */
-	public function __construct( MysqlPaymentRepository $payments, OrderRepository $orders, int $page = self::PAGE ) {
+	public function __construct( MysqlPaymentRepository $payments, OrderRepository $orders, int $page = self::PAGE, ?MysqlWebhookReceipts $receipts = null ) {
 		if ( $page < 1 ) {
 			throw new \InvalidArgumentException( 'The check reads at least one row at a time.' );
 		}
@@ -143,6 +163,7 @@ final class PaymentLedgerCheck implements Check {
 		$this->payments = $payments;
 		$this->orders   = $orders;
 		$this->page     = $page;
+		$this->receipts = $receipts;
 	}
 
 	/**
@@ -179,14 +200,17 @@ final class PaymentLedgerCheck implements Check {
 			$this->unappliedResults( $flagged ),
 			$this->unreconciledOrders( $flagged ),
 			$this->unsettledRefundClaims(),
-			$this->unrecordedRefundClaims()
+			$this->unrecordedRefundClaims(),
+			$this->unsettledReceipts()
 		);
 
+		$notes = $this->webhookEvents();
+
 		if ( array() === $findings ) {
-			return CheckResult::pass( self::NAME, 'Every intent\'s and every order\'s payment amounts agree with the ledger, every refund with its lines and components, and no payment waits for a person to reconcile it.' );
+			return CheckResult::pass( self::NAME, 'Every intent\'s and every order\'s payment amounts agree with the ledger, every refund with its lines and components, and no payment waits for a person to reconcile it.', $notes );
 		}
 
-		return CheckResult::fail( self::NAME, sprintf( '%d payment %s found.', count( $findings ), 1 === count( $findings ) ? 'problem' : 'problems' ), $findings );
+		return CheckResult::fail( self::NAME, sprintf( '%d payment %s found.', count( $findings ), 1 === count( $findings ) ? 'problem' : 'problems' ), array_merge( $findings, $notes ) );
 	}
 
 	/**
@@ -463,5 +487,69 @@ final class PaymentLedgerCheck implements Check {
 		}
 
 		return implode( '; ', $parts );
+	}
+
+	/**
+	 * Lists the webhook receipts still undecided longer after they were received than any delivery takes: events their provider reported that nothing settled.
+	 *
+	 * The provider delivers such an event again until it is settled, so each is a fault to look
+	 * into, logged `payment.webhook_faulted` when it happened: a warning, not a repair.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> One warning line per receipt, at most LIMIT; none without the receipts.
+	 */
+	private function unsettledReceipts(): array {
+		if ( null === $this->receipts ) {
+			return array();
+		}
+
+		return array_map(
+			static fn( array $receipt ): string => sprintf(
+				'Warning: the webhook event %1$s (%2$s) of %3$s in %4$s mode was received %5$d seconds ago and never settled; its provider delivers it again, and the log line payment.webhook_faulted says why it failed.',
+				CheckResult::identifier( $receipt['event_id'] ),
+				CheckResult::identifier( $receipt['event_type'] ),
+				CheckResult::identifier( $receipt['provider'] ),
+				CheckResult::identifier( $receipt['mode'] ),
+				$receipt['age_seconds']
+			),
+			$this->receipts->unsettled( PaymentService::STALE_SECONDS, self::LIMIT )
+		);
+	}
+
+	/**
+	 * Counts the webhook events of the last thirty days the store ignored, such as disputes, and those it kept for a person, such as a refund made outside the store: information, never a problem.
+	 *
+	 * A dispute changes nothing in the store, so a merchant who never reads the log sees it here;
+	 * money kept for a person flagged its order, which the lines above report until a person clears it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> An information line per decision with events, at most two; none without the receipts.
+	 */
+	private function webhookEvents(): array {
+		if ( null === $this->receipts ) {
+			return array();
+		}
+
+		$counts = array();
+
+		foreach ( $this->receipts->resultCounts( array( ReceiptResult::Ignored, ReceiptResult::Unapplied ), MysqlWebhookReceipts::RETENTION_SECONDS, self::LIMIT ) as $row ) {
+			$counts[ $row['result'] ][] = CheckResult::identifier( (string) $row['result_code'] ) . ': ' . $row['n'];
+		}
+
+		$formats = array(
+			ReceiptResult::Ignored->value   => 'Info: webhook events ignored in the last 30 days: %s.',
+			ReceiptResult::Unapplied->value => 'Info: webhook events whose money was kept for a person in the last 30 days: %s.',
+		);
+		$lines   = array();
+
+		foreach ( $formats as $result => $format ) {
+			if ( isset( $counts[ $result ] ) ) {
+				$lines[] = sprintf( $format, implode( ', ', $counts[ $result ] ) );
+			}
+		}
+
+		return $lines;
 	}
 }

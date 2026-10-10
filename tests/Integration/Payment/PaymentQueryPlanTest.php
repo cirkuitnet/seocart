@@ -24,11 +24,19 @@ use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Payment\Domain\Refund\RefundLineRequest;
 use SEOCart\Payment\Domain\Refund\RefundRequest;
 use SEOCart\Payment\Domain\Refund\RequestKey;
+use SEOCart\Payment\Domain\Webhook\ReceiptDecision;
 use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Payment\Infrastructure\MysqlRefundRepository;
+use SEOCart\Payment\Infrastructure\Jobs\WebhookReceiptRetention;
+use SEOCart\Payment\Infrastructure\Migrations\CreateWebhookReceipts;
+use SEOCart\Payment\Infrastructure\MysqlWebhookReceipts;
 use SEOCart\Payment\Infrastructure\PaymentTables;
+use SEOCart\Payment\Infrastructure\WebhookReceiptTables;
+use SEOCart\Platform\Database\Schema\DdlGenerator;
+use SEOCart\Platform\Database\Schema\SchemaVerifier;
+use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
@@ -90,6 +98,8 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 		if ( '1' !== getenv( 'SEOCART_QUERY_PLANS' ) ) {
 			$this->markTestSkipped( 'The query-plan run is `composer test:query-plans`.' );
 		}
+
+		( new CreateWebhookReceipts() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
 	}
 
 	/**
@@ -156,8 +166,17 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 		$db->transaction( static fn(): Application => $payments->applyGatewayResult( $approval, Actor::system( 'payment', 3 ) ) );
 		$db->transaction( static fn(): Application => $payments->applyGatewayResult( $approval, Actor::system( 'payment', 3 ) ) );
 
-		// A shopper's resume reads the intent as reconciliation sees it, by its uuid.
+		// A shopper's resume reads the intent as reconciliation sees it, by its uuid; a webhook naming only the provider's
+		// reference to it, by that reference.
 		$payments->intentRef( $intent->uuid );
+		$payments->intentByProvider( StubGateway::ID, (string) $approval->providerIntentId );
+
+		// A webhook's receipt, recorded and then met by a second delivery of the event, which reads it by its key.
+		$receipts = new MysqlWebhookReceipts( $db );
+		$receipt  = $receipts->record( StubGateway::ID, Mode::Test, 'evt_plan', 'capture.approved', null, str_repeat( 'a', 64 ), '' );
+
+		$receipts->settle( $receipt->id, ReceiptDecision::ignored( 'capture.approved' ) );
+		$receipts->record( StubGateway::ID, Mode::Test, 'evt_plan', 'capture.approved', null, str_repeat( 'a', 64 ), '' );
 
 		// A capture's plain reads of the intent and of its unreconciled rows.
 		$payments->capture( $intent->uuid, $this->userWithRole() );
@@ -215,13 +234,43 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 		// The open intents of every gateway, counted once for the gateways' status and doctor's gateways check.
 		( new MysqlPaymentRepository( $db, $ids ) )->openIntents();
 
-		// Every line of doctor's payment check, which reads the order tables through the order repository, and the refund
-		// claims never settled; and the results applied to nothing of the orders still flagged, which the check reads only
-		// when an order is, here sent for the order refunded.
-		( new PaymentLedgerCheck( new MysqlPaymentRepository( $db, $ids ), new MysqlOrderRepository( new OrderStatements( $db ), $ids ) ) )->run();
+		// Every line of doctor's payment check, which reads the order tables through the order repository, the refund
+		// claims never settled and the webhook receipts; and the results applied to nothing of the orders still flagged,
+		// which the check reads only when an order is, here sent for the order refunded.
+		( new PaymentLedgerCheck( new MysqlPaymentRepository( $db, $ids ), new MysqlOrderRepository( new OrderStatements( $db ), $ids ), receipts: $receipts ) )->run();
 		( new MysqlPaymentRepository( $db, $ids ) )->unappliedResults( array( $inserted->id ), PaymentLedgerCheck::LIMIT );
 
 		// When the newest result of the order applied to nothing landed, which a clearance of its flag is dated after.
 		( new MysqlPaymentRepository( $db, $ids ) )->newestAt( $inserted->id );
+	}
+
+	/**
+	 * Tests that the prune of the webhook receipts deletes on the expiry key, a batch at a time, never by a scan.
+	 *
+	 * A DELETE is not one of the reads the run sends, so its plan is read here: with a few hundred
+	 * receipts, the statement must still find its rows by `expires_at`.
+	 *
+	 * Planted violation: in MysqlWebhookReceipts::DELETE_EXPIRED, delete by reception
+	 * (`WHERE received_at <= UTC_TIMESTAMP() - INTERVAL 30 DAY ORDER BY received_at`): no key serves it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_receipts_prune_deletes_on_the_expiry_key(): void {
+		global $wpdb;
+
+		$receipts = new MysqlWebhookReceipts( $this->db );
+
+		for ( $event = 0; $event < 300; $event++ ) {
+			$receipts->record( StubGateway::ID, Mode::Test, 'evt_' . $event, 'capture.approved', null, str_repeat( 'a', 64 ), '' );
+		}
+
+		$this->db->execute( 'ANALYZE TABLE %i', $this->table( WebhookReceiptTables::RECEIPTS ) );
+
+		list( $sql, $arguments ) = MysqlWebhookReceipts::expand( MysqlWebhookReceipts::DELETE_EXPIRED, array( WebhookReceiptRetention::BATCH ), fn( string $name ): string => $this->table( $name ) );
+
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- The statement is the repository's constant, expanded; this is its prepare step.
+		$plan = (array) $wpdb->get_row( 'EXPLAIN ' . $wpdb->prepare( $sql, ...$arguments ), ARRAY_A );
+
+		$this->assertSame( 'expires_at', $plan['key'] ?? null, 'The prune\'s plan: ' . (string) wp_json_encode( $plan ) );
 	}
 }

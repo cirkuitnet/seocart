@@ -34,6 +34,7 @@ use SEOCart\Contracts\Payment\WebhookEnvelope;
 use SEOCart\Contracts\Payment\WebhookReading;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Decimal;
+use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Money;
 
 defined( 'ABSPATH' ) || exit;
@@ -62,6 +63,15 @@ defined( 'ABSPATH' ) || exit;
  * outcome delivered again is the same result: `stub-ch-{uuid}` for an authorization's charge,
  * `stub-cap-{uuid}` for a capture, `stub-void-{uuid}` for a void, and `stub-re-{refund uuid}` for
  * a refund, named by the idempotency key the refund was asked with.
+ *
+ * It delivers webhooks the way a provider does, for the suites and the soak to send: a JSON event
+ * `{ id, type, created, data }` signed in the header `X-Stub-Signature: t={unix time},v1={hex}`,
+ * an HMAC-SHA256 of `{t}.{body}` with WEBHOOK_SECRET. readWebhook() checks the signature over the
+ * raw body with a constant-time comparison, then the signed time against the delivery's arrival,
+ * within WEBHOOK_TOLERANCE_SECONDS, and only then decodes the body. WEBHOOK_EVENTS lists the types
+ * that report a payment's result; `dispute.created` is ignored as a dispute, naming its payment,
+ * and any other type is ignored. The secret is a constant: the stand-in moves no money and is
+ * absent on production.
  *
  * It approves every payment, so it must never be offered on a live store: the registry registers
  * it only on a site whose environment type is not `production`, or where SEOCART_STUB_GATEWAY is
@@ -304,6 +314,69 @@ final class StubGateway implements PaymentGateway {
 	public const CLIENT_TOKEN_PREFIX = 'stub_cs_';
 
 	/**
+	 * The secret the stand-in signs and verifies its webhook deliveries with: a fixed value, since the stand-in moves no money and is absent on production.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const WEBHOOK_SECRET = 'stub-webhook-signing-secret';
+
+	/**
+	 * The header a delivery's signature travels in, lower-case as the plugin passes headers.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const SIGNATURE_HEADER = 'x-stub-signature';
+
+	/**
+	 * How far a delivery's signed time may be from its arrival, either way, in seconds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const WEBHOOK_TOLERANCE_SECONDS = 300;
+
+	/**
+	 * The event types that report a payment's result, each with its operation and its outcome.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, array{0: string, 1: string}>
+	 */
+	public const WEBHOOK_EVENTS = array(
+		'authorization.approved'        => array( 'authorize', 'approved' ),
+		'authorization.declined'        => array( 'authorize', 'declined' ),
+		'authorization.requires_action' => array( 'authorize', 'requires_action' ),
+		'authorization.pending'         => array( 'authorize', 'pending' ),
+		'capture.approved'              => array( 'capture', 'approved' ),
+		'void.approved'                 => array( 'void', 'approved' ),
+		'refund.approved'               => array( 'refund', 'approved' ),
+		'refund.declined'               => array( 'refund', 'declined' ),
+	);
+
+	/**
+	 * The event type of a dispute, which the plugin ignores as a dispute.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DISPUTE_EVENT = 'dispute.created';
+
+	/**
+	 * Why a genuine delivery of a type the stand-in does not report on is ignored.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const UNKNOWN_EVENT = 'unknown_type';
+
+	/**
 	 * The currencies the stub takes.
 	 *
 	 * @since 0.2.0
@@ -340,7 +413,7 @@ final class StubGateway implements PaymentGateway {
 	private const UUID_LENGTH = 36;
 
 	/**
-	 * Describes the stub: test mode only, no settings, and every operation but capturing in parts, charging without the customer, and webhooks, in USD, GBP and EUR.
+	 * Describes the stub: test mode only, no settings, and every operation but capturing in parts and charging without the customer, in USD, GBP and EUR.
 	 *
 	 * Its provider can always be searched, at once: it remembers every intent by the reference it
 	 * gave it, and has no key to forget.
@@ -350,7 +423,7 @@ final class StubGateway implements PaymentGateway {
 	 * @return GatewayDescriptor The descriptor.
 	 */
 	public function describe(): GatewayDescriptor {
-		$operations = array_values( array_diff( Operations::ALL, array( Operations::MULTI_CAPTURE, Operations::OFF_SESSION, Operations::WEBHOOKS ) ) );
+		$operations = array_values( array_diff( Operations::ALL, array( Operations::MULTI_CAPTURE, Operations::OFF_SESSION ) ) );
 
 		return new GatewayDescriptor(
 			self::ID,
@@ -463,17 +536,114 @@ final class StubGateway implements PaymentGateway {
 	}
 
 	/**
-	 * Rejects every webhook delivery: the stub sends none, so whatever claims to come from it is not genuine.
+	 * Reads a webhook delivery: verified first, then checked against its window, and only then decoded.
+	 *
+	 * A delivery whose signature header is missing, malformed, or does not match the raw body is
+	 * rejected `bad_signature`, its body unread; one signed more than WEBHOOK_TOLERANCE_SECONDS
+	 * before or after it arrived is rejected `stale`; one that verifies but is not an event the
+	 * stand-in can read is rejected `malformed`. A dispute is ignored as one, naming its payment;
+	 * a type that reports no result is ignored; any other is the result it reports.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param WebhookEnvelope $envelope The delivery.
-	 * @return WebhookReading Rejected, its signature unverified.
+	 * @return WebhookReading What it says, or why it was rejected.
 	 */
 	public function readWebhook( WebhookEnvelope $envelope ): WebhookReading {
-		unset( $envelope );
+		$signedAt = self::signedAt( $envelope );
 
-		return WebhookReading::rejected( WebhookReading::BAD_SIGNATURE );
+		if ( null === $signedAt ) {
+			return WebhookReading::rejected( WebhookReading::BAD_SIGNATURE );
+		}
+
+		if ( abs( $envelope->receivedAt->getTimestamp() - $signedAt ) > self::WEBHOOK_TOLERANCE_SECONDS ) {
+			return WebhookReading::rejected( WebhookReading::STALE );
+		}
+
+		// Only now, the delivery verified and in its window, is its body read.
+		$event = json_decode( $envelope->rawBody, true );
+
+		if ( ! is_array( $event ) || ! is_string( $event['id'] ?? null ) || '' === $event['id'] || ! is_string( $event['type'] ?? null ) || '' === $event['type'] ) {
+			return WebhookReading::rejected( WebhookReading::MALFORMED );
+		}
+
+		try {
+			return self::reading( $event['id'], $event['type'], is_int( $event['created'] ?? null ) ? $event['created'] : null, is_array( $event['data'] ?? null ) ? $event['data'] : array() );
+		} catch ( \InvalidArgumentException | CodedException $unreadable ) {
+			return WebhookReading::rejected( WebhookReading::MALFORMED );
+		}
+	}
+
+	/**
+	 * Returns the time a delivery was signed at, when its signature verifies over its raw body.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param WebhookEnvelope $envelope The delivery.
+	 * @return int|null The signed Unix time; null when the header is missing or malformed, or the signature does not match.
+	 */
+	private static function signedAt( WebhookEnvelope $envelope ): ?int {
+		$header = $envelope->headers[ self::SIGNATURE_HEADER ] ?? '';
+
+		if ( 1 !== preg_match( '/^t=(\d{1,12}),v1=([0-9a-f]{64})\z/', $header, $parts ) ) {
+			return null;
+		}
+
+		$expected = hash_hmac( 'sha256', $parts[1] . '.' . $envelope->rawBody, self::WEBHOOK_SECRET );
+
+		return hash_equals( $expected, $parts[2] ) ? (int) $parts[1] : null;
+	}
+
+	/**
+	 * Reads a verified event: a dispute, a result, or a type the stand-in does not report on.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \InvalidArgumentException When the event reports no amount in minor units; an unknown currency is
+	 *                                   refused by Currency::of(), as a CodedException.
+	 *
+	 * @param string               $eventId   The event's id.
+	 * @param string               $eventType The event's type.
+	 * @param int|null             $created   When the event happened, as a Unix time; null when the event does not say.
+	 * @param array<string, mixed> $data      What the event reports.
+	 * @return WebhookReading The reading.
+	 */
+	private static function reading( string $eventId, string $eventType, ?int $created, array $data ): WebhookReading {
+		$occurredAt = null === $created ? null : new \DateTimeImmutable( '@' . $created );
+
+		if ( self::DISPUTE_EVENT === $eventType ) {
+			return WebhookReading::ignored( $eventId, $eventType, WebhookReading::DISPUTE, $occurredAt, self::text( $data, 'intent_uuid' ), self::text( $data, 'provider_intent_id' ) );
+		}
+
+		$answer = self::WEBHOOK_EVENTS[ $eventType ] ?? null;
+
+		if ( null === $answer ) {
+			return WebhookReading::ignored( $eventId, $eventType, self::UNKNOWN_EVENT, $occurredAt );
+		}
+
+		if ( ! is_int( $data['amount_minor'] ?? null ) ) {
+			throw new \InvalidArgumentException( 'A result event reports its amount in minor units.' );
+		}
+
+		$operation = Operation::from( $answer[0] );
+		$result    = new GatewayResult( self::ID, $operation, Outcome::from( $answer[1] ), self::text( $data, 'intent_uuid' ) ?? '', Money::of( $data['amount_minor'], Currency::of( (string) self::text( $data, 'currency' ) ) ), self::text( $data, 'provider_object_id' ), self::text( $data, 'provider_intent_id' ), self::text( $data, 'error_code' ) );
+
+		return WebhookReading::result( $eventId, $eventType, $occurredAt, $result, Operation::Refund === $operation ? self::text( $data, 'refund_uuid' ) : null );
+	}
+
+	/**
+	 * Reads one text field of an event's data.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, mixed> $data  The event's data.
+	 * @param string               $field The field.
+	 * @return string|null The text; null when the field is missing, empty or not text.
+	 */
+	private static function text( array $data, string $field ): ?string {
+		$value = $data[ $field ] ?? null;
+
+		return is_string( $value ) && '' !== $value ? $value : null;
 	}
 
 	/**

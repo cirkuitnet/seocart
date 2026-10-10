@@ -47,6 +47,7 @@ final class TestGroupsTest extends TestCase {
 		'multilingual-conformance',
 		'performance',
 		'reference-fixture',
+		'soak',
 	);
 
 	/**

@@ -207,7 +207,7 @@ final class StubGatewayTest extends TestCase {
 	}
 
 	/**
-	 * Tests the stub's declaration: test mode only, no settings, USD, GBP and EUR for an account of any country, every operation but capturing in parts, charging without the customer and webhooks, and a provider searchable at once.
+	 * Tests the stub's declaration: test mode only, no settings, USD, GBP and EUR for an account of any country, every operation but capturing in parts and charging without the customer, and a provider searchable at once.
 	 *
 	 * The unit suite loads no WordPress, so describe() calling any WordPress function would fail here.
 	 *
@@ -215,7 +215,7 @@ final class StubGatewayTest extends TestCase {
 	 */
 	public function test_it_describes_itself_as_a_test_mode_stand_in(): void {
 		$descriptor = ( new StubGateway() )->describe();
-		$expected   = array_values( array_diff( Operations::ALL, array( Operations::MULTI_CAPTURE, Operations::OFF_SESSION, Operations::WEBHOOKS ) ) );
+		$expected   = array_values( array_diff( Operations::ALL, array( Operations::MULTI_CAPTURE, Operations::OFF_SESSION ) ) );
 
 		$this->assertSame( array( StubGateway::ID, GatewayDescriptor::TYPE_PAYMENTS, PaymentGateway::CONTRACT_VERSION ), array( $descriptor->id, $descriptor->type, $descriptor->contract ) );
 		$this->assertSame( array( Mode::Test ), $descriptor->modes );
@@ -232,7 +232,7 @@ final class StubGatewayTest extends TestCase {
 	}
 
 	/**
-	 * Tests that a void is approved under an object named by the intent, the same every time, and that every webhook delivery is rejected.
+	 * Tests that a void is approved under an object named by the intent, the same every time, and that a webhook delivery with no signature is rejected.
 	 *
 	 * @since 0.2.0
 	 */

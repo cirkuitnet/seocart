@@ -31,7 +31,7 @@ defined( 'ABSPATH' ) || exit;
  * through user_can(), and so through the one map_meta_cap callback (CapabilityMapper), which
  * the admin screens and the CLI use as well. There is no shortcut for logged-in users.
  *
- * Four kinds exist:
+ * Its kinds (PermissionKind) are built by five constructors:
  *
  * - requiring(): one of the plugin's declared primitives;
  * - requiringOn(): one of the declared meta capabilities, checked on the resource a request
@@ -45,7 +45,14 @@ defined( 'ABSPATH' ) || exit;
  *   API's, which requires a request that arrived as a write, its request header, a nonce under
  *   cookie authentication and the cart token where one is needed. The rate limit is not the
  *   policy's: the REST adapter counts it once, where the endpoint runs. The walker refuses it
- *   on GET and HEAD, and on a route whose policies do not include the Store API's.
+ *   on GET and HEAD, and on a route whose policies do not include the Store API's;
+ * - signed(): a write a payment provider sends, signed over its body with a secret the store
+ *   shares with it. It checks no capability, and it cannot be built without the RequestPolicy
+ *   that checks the request's shape: the webhook route's, which requires a request that arrived
+ *   as a write and a body of a bounded size. The signature is not the policy's to verify: a
+ *   permission callback may be asked any number of times for one request, and the route's
+ *   handler, which runs once, verifies it before it reads anything. The walker refuses it on GET
+ *   and HEAD, and on a route whose policies do not include the webhook route's.
  *
  * A callback is checked against CapabilityDeclaration when it is built, and cannot be built
  * for anything else. A core capability such as `exist` or `read` would admit every visitor or
@@ -64,7 +71,7 @@ defined( 'ABSPATH' ) || exit;
 final class PermissionCallback {
 
 	/**
-	 * The capability to check, or null for a public read or a public write.
+	 * The capability to check, or null for a public read, a public write or a signed request.
 	 *
 	 * @since 0.1.0
 	 *
@@ -82,13 +89,13 @@ final class PermissionCallback {
 	private ?string $resourceParameter;
 
 	/**
-	 * Whether this is a public write: no capability, and a policy that decides instead.
+	 * What decides: a capability, nothing for a public read, or a policy for a public write and a signed request.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
-	 * @var bool
+	 * @var PermissionKind
 	 */
-	private bool $publicWrite;
+	private PermissionKind $kind;
 
 	/**
 	 * Policies consulted after the capability check, in the order they were added.
@@ -103,15 +110,16 @@ final class PermissionCallback {
 	 * Creates a callback. Use the named constructors.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Takes the kind in place of whether it is a public write.
 	 *
-	 * @param string|null $capability        The capability to check, or null for a public read or write.
-	 * @param string|null $resourceParameter The request parameter that names the resource, if any.
-	 * @param bool        $publicWrite       Optional. Whether this is a public write. Default false.
+	 * @param PermissionKind $kind              What decides.
+	 * @param string|null    $capability        Optional. The capability to check; null for a kind that checks none. Default null.
+	 * @param string|null    $resourceParameter Optional. The request parameter that names the resource, if any. Default null.
 	 */
-	private function __construct( ?string $capability, ?string $resourceParameter, bool $publicWrite = false ) {
+	private function __construct( PermissionKind $kind, ?string $capability = null, ?string $resourceParameter = null ) {
+		$this->kind              = $kind;
 		$this->capability        = $capability;
 		$this->resourceParameter = $resourceParameter;
-		$this->publicWrite       = $publicWrite;
 	}
 
 	/**
@@ -129,7 +137,7 @@ final class PermissionCallback {
 			throw new \InvalidArgumentException( 'PermissionCallback::requiring() accepts only a primitive capability that CapabilityDeclaration declares.' );
 		}
 
-		return new self( $capability, null );
+		return new self( PermissionKind::Capability, $capability );
 	}
 
 	/**
@@ -153,7 +161,7 @@ final class PermissionCallback {
 			throw new \InvalidArgumentException( 'PermissionCallback::requiringOn() needs the name of the request parameter that carries the resource.' );
 		}
 
-		return new self( $capability, $resourceParameter );
+		return new self( PermissionKind::Capability, $capability, $resourceParameter );
 	}
 
 	/**
@@ -164,7 +172,7 @@ final class PermissionCallback {
 	 * @return self The marker.
 	 */
 	public static function publicRead(): self {
-		return new self( null, null );
+		return new self( PermissionKind::PublicRead );
 	}
 
 	/**
@@ -179,7 +187,27 @@ final class PermissionCallback {
 	 * @return self The callback.
 	 */
 	public static function publicWrite( RequestPolicy $policy ): self {
-		$callback             = new self( null, null, true );
+		$callback             = new self( PermissionKind::PublicWrite );
+		$callback->policies[] = $policy;
+
+		return $callback;
+	}
+
+	/**
+	 * Creates a signed request's guard: a write a payment provider signs over its body, whose shape a policy checks instead of a capability.
+	 *
+	 * The policy is not optional, so a signed request's guard cannot be built without one. It checks
+	 * the request's shape only, its method and its body's size; the route's handler verifies the
+	 * signature, once, before it reads anything of the body. The policy is consulted first, before
+	 * any policy added later with withPolicy().
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param RequestPolicy $policy The policy that checks the request's shape: the webhook route's.
+	 * @return self The callback.
+	 */
+	public static function signed( RequestPolicy $policy ): self {
+		$callback             = new self( PermissionKind::Signed );
 		$callback->policies[] = $policy;
 
 		return $callback;
@@ -204,11 +232,12 @@ final class PermissionCallback {
 	 * Tells whether this is the public-read marker.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Read from the kind: a signed request's guard checks no capability either, and is no public read.
 	 *
-	 * @return bool True when no capability is checked and the callback is not a public write.
+	 * @return bool True for a callback built by publicRead().
 	 */
 	public function isPublicRead(): bool {
-		return null === $this->capability && ! $this->publicWrite;
+		return PermissionKind::PublicRead === $this->kind;
 	}
 
 	/**
@@ -219,7 +248,18 @@ final class PermissionCallback {
 	 * @return bool True for a callback built by publicWrite().
 	 */
 	public function isPublicWrite(): bool {
-		return $this->publicWrite;
+		return PermissionKind::PublicWrite === $this->kind;
+	}
+
+	/**
+	 * Tells whether this guards a signed request.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return bool True for a callback built by signed().
+	 */
+	public function isSigned(): bool {
+		return PermissionKind::Signed === $this->kind;
 	}
 
 	/**
@@ -238,7 +278,7 @@ final class PermissionCallback {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return string|null The capability, or null for a public read or a public write.
+	 * @return string|null The capability, or null for a public read, a public write or a signed request.
 	 */
 	public function capability(): ?string {
 		return $this->capability;
@@ -258,9 +298,11 @@ final class PermissionCallback {
 	/**
 	 * Answers the REST server: may the current request run?
 	 *
-	 * A public write that holds no policy, which only reflection could build, is refused.
+	 * A public write or a signed request's guard that holds no policy, which only reflection could
+	 * build, is refused.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 A signed request's guard.
 	 *
 	 * @param WP_REST_Request $request The request being answered.
 	 * @return bool|WP_Error True when the current user holds the capability, on the resource if
@@ -268,7 +310,7 @@ final class PermissionCallback {
 	 *                       or the error a policy refused it with.
 	 */
 	public function __invoke( WP_REST_Request $request ): bool|WP_Error {
-		if ( $this->publicWrite && array() === $this->policies ) {
+		if ( in_array( $this->kind, array( PermissionKind::PublicWrite, PermissionKind::Signed ), true ) && array() === $this->policies ) {
 			return false;
 		}
 

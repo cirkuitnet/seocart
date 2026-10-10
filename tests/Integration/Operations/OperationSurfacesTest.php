@@ -15,6 +15,8 @@ use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\Operations;
 use SEOCart\Cart\Interfaces\StoreApi\StoreOperations;
+use SEOCart\Checkout\Interfaces\Rest\WebhookRequestPolicy;
+use SEOCart\Interfaces\Operations\ErrorTranslator;
 use SEOCart\Interfaces\Operations\RestAdapter;
 use SEOCart\Inventory\Application\InventoryOperations;
 use SEOCart\Platform\Authorization\PermissionCallback;
@@ -122,6 +124,7 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 		$this->assertArrayHasKey( '/seocart/v1/settings', $server->get_routes(), 'The kernel registered no operation route, so a clean walk would prove nothing.' );
 		$this->assertArrayHasKey( self::STOCK_ROUTE, $server->get_routes(), 'The kernel registered no route with a resource id, so the URL-only check would prove nothing.' );
 		$this->assertSame( array(), OperationSurfaceWalker::restViolations( $server, Operations::registry() ) );
+		$this->assertSame( array(), OperationSurfaceWalker::signedRouteViolations( OperationSurfaceWalker::SIGNED_ROUTES, $server ) );
 		$this->assertSame( array(), OperationSurfaceWalker::abilityViolations( self::abilityNames(), Operations::registry() ) );
 	}
 
@@ -483,6 +486,135 @@ final class OperationSurfacesTest extends WP_UnitTestCase {
 		}
 
 		$this->assertNotContains( 'SEOCart\\Interfaces\\Operations\\CliCommand', OperationSurfaceWalker::commandClasses( 'src' ), 'The operations\' command is registered per operation, not as a maintenance command.' );
+	}
+
+	/**
+	 * Tests that a signed route is held to its list both ways: listed with its class it passes, unlisted it resolves to no operation, and served by another class, gone or not registered it is reported.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_signed_route_is_checked_against_its_list_both_ways(): void {
+		add_action( 'rest_api_init', array( self::class, 'registerSignedRoute' ) );
+
+		$registry = self::fixtureRegistry();
+		$surfaces = new OperationSurfaces( $registry );
+		$address  = 'POST /seocart/v1/signed-fixture';
+		$listed   = array(
+			$address => array(
+				'class'  => self::class,
+				'reason' => 'A fixture a provider would deliver to.',
+			),
+		);
+
+		$this->assertSame( array(), OperationSurfaceWalker::restViolations( $surfaces->server(), $registry, $listed ) );
+		$this->assertSame( array(), OperationSurfaceWalker::signedRouteViolations( $listed, $surfaces->server() ) );
+		$this->assertSame(
+			array( "The REST route {$address} resolves to no operation definition." ),
+			OperationSurfaceWalker::restViolations( $surfaces->server(), $registry, array() ),
+			'An unlisted route without an operation passed.'
+		);
+		$this->assertSame(
+			array( "The signed route {$address} is served by a callback that is not a method of its listed class " . OperationSurfaces::class . '.' ),
+			OperationSurfaceWalker::restViolations( $surfaces->server(), $registry, array( $address => array( 'class' => OperationSurfaces::class ) + $listed[ $address ] ) ),
+			'A signed route served by another class than its own passed.'
+		);
+		$this->assertSame(
+			array(
+				'The signed route POST /seocart/v1/signed-gone is listed, but its class SEOCart\Tests\Gone no longer exists: remove it from the list.',
+				'The signed route POST /seocart/v1/signed-gone is listed, but it is not registered.',
+			),
+			OperationSurfaceWalker::signedRouteViolations(
+				array(
+					'POST /seocart/v1/signed-gone' => array(
+						'class'  => 'SEOCart\Tests\Gone',
+						'reason' => 'Gone.',
+					),
+				),
+				$surfaces->server()
+			)
+		);
+	}
+
+	/**
+	 * Tests that a listed signed route guarded by anything but a signed request's guard is reported: a capability would let a user, not a provider, reach the receiver.
+	 *
+	 * Planted violation: in OperationSurfaceWalker::signedServiceViolations(), drop the check of the
+	 * guard: the route guarded by a capability passes.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_signed_route_guarded_otherwise_is_reported(): void {
+		add_action( 'rest_api_init', array( self::class, 'registerCapabilitySignedRoute' ) );
+
+		$registry = self::fixtureRegistry();
+		$surfaces = new OperationSurfaces( $registry );
+		$address  = 'POST /seocart/v1/signed-capability';
+
+		$this->assertSame(
+			array( "The signed route {$address} is not guarded by PermissionCallback::signed()." ),
+			OperationSurfaceWalker::restViolations(
+				$surfaces->server(),
+				$registry,
+				array(
+					$address => array(
+						'class'  => self::class,
+						'reason' => 'A fixture guarded by a capability.',
+					),
+				)
+			)
+		);
+	}
+
+	/**
+	 * Registers a signed route no operation declares, served by this class. Hooked to `rest_api_init`.
+	 *
+	 * @since 0.2.0
+	 */
+	public static function registerSignedRoute(): void {
+		self::registerSignedFixture( '/signed-fixture', PermissionCallback::signed( new WebhookRequestPolicy( Kernel::container()->get( ErrorTranslator::class ) ) ) );
+	}
+
+	/**
+	 * Registers a route served by this class as a signed route is, but guarded by a capability. Hooked to `rest_api_init`.
+	 *
+	 * @since 0.2.0
+	 */
+	public static function registerCapabilitySignedRoute(): void {
+		self::registerSignedFixture( '/signed-capability', PermissionCallback::requiring( 'seocart_manage_inventory' ) );
+	}
+
+	/**
+	 * Registers a fixture a provider would deliver to, served by this class.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string             $route The route below the namespace.
+	 * @param PermissionCallback $guard Its guard.
+	 */
+	private static function registerSignedFixture( string $route, PermissionCallback $guard ): void {
+		register_rest_route(
+			'seocart/v1',
+			$route,
+			array(
+				array(
+					'methods'             => 'POST',
+					'callback'            => array( self::class, 'acknowledge' ),
+					'permission_callback' => $guard,
+				),
+				'schema' => static fn(): array => array( 'title' => 'signed-fixture' ),
+			)
+		);
+	}
+
+	/**
+	 * Answers the signed fixture route.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array{received: bool} The acknowledgement.
+	 */
+	public static function acknowledge(): array {
+		return array( 'received' => true );
 	}
 
 	/**

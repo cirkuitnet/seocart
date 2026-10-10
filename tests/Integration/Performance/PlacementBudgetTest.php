@@ -13,9 +13,24 @@ namespace SEOCart\Tests\Integration\Performance;
 
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Checkout\Application\PlaceOrder;
+use SEOCart\Checkout\Application\ReceiveWebhook;
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Outcome;
+use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Payment\Domain\Webhook\ReceiptResult;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
+use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Database\Schema\DdlGenerator;
+use SEOCart\Platform\Database\Schema\SchemaVerifier;
+use SEOCart\Platform\Database\SchemaOperations;
+use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
+use SEOCart\Support\Currency;
+use SEOCart\Support\Error\CodedException;
+use SEOCart\Support\Money;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
+use SEOCart\Tests\Support\Payment\StubWebhooks;
 use SEOCart\Tests\Support\Performance\ReferenceCarts;
 use SEOCart\Tests\Support\Pricing\Inputs;
 use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
@@ -149,6 +164,15 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	);
 
 	/**
+	 * The statements a delivered approval costs beyond the second unit of work it runs: the receipt recorded, the intent read, the receipt settled, and the line logged.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const WEBHOOK_EXTRA = 4;
+
+	/**
 	 * The most statements a placement of Cart B in a presentment currency may send beyond one in the base currency.
 	 *
 	 * @since 0.1.0
@@ -249,6 +273,62 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		$parts = $this->measure( 'Cart B' );
 
 		$this->assertWithin( self::CART_B, $parts, 'Cart B' );
+	}
+
+	/**
+	 * Tests that settling Cart A and Cart B by a delivered approval, for placements the gateway never answered, costs the second unit of work and WEBHOOK_EXTRA statements, exactly.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_settling_by_webhook_costs_the_second_unit_and_the_receipt(): void {
+		( new CreateLogsMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+
+		$variant = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+
+		$this->readyCart( self::quantities( ReferenceCarts::cartA( $variant ) ) );
+		$this->assertSame( self::CART_A['second'] + self::WEBHOOK_EXTRA, $this->settledByWebhook( 'Cart A' ), 'Cart A, settled by a delivered approval.' );
+
+		$this->readyCartB();
+		$this->assertSame( self::CART_B['second'] + self::WEBHOOK_EXTRA, $this->settledByWebhook( 'Cart B' ), 'Cart B, settled by a delivered approval.' );
+	}
+
+	/**
+	 * Places the request's cart with a gateway that does not answer, then settles it by the stand-in's delivered approval, in a request of its own, cold, and returns the delivery's statements, after printing them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $name The cart's name.
+	 * @return int The delivery's statements.
+	 */
+	private function settledByWebhook( string $name ): int {
+		try {
+			$this->placement->place( $this->placeInput( 'webhook-' . $name, StubGateway::THROW ), self::guest() );
+		} catch ( CodedException $unanswered ) {
+			unset( $unanswered );
+		}
+
+		$intent   = (array) $this->db->fetchRow( 'SELECT uuid, amount_minor, currency FROM %i ORDER BY id DESC LIMIT 1', $this->table( PaymentTables::INTENTS ) );
+		$uuid     = (string) $intent['uuid'];
+		$approval = StubWebhooks::of( new GatewayResult( StubGateway::ID, Operation::Authorize, Outcome::Approved, $uuid, Money::of( (int) $intent['amount_minor'], Currency::of( (string) $intent['currency'] ) ), 'stub-ch-' . $uuid, 'stub-pi-approve-' . $uuid ) );
+		$receiver = $this->kernelOver( $this->db, $this->tokens )->get( ReceiveWebhook::class );
+		$envelope = $approval->envelope( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) );
+		$results  = array();
+
+		wp_cache_flush();
+		wp_load_alloptions();
+
+		$log = $this->captureQueries(
+			static function () use ( $receiver, $envelope, &$results ): void {
+				$results[] = $receiver->receive( $envelope );
+			}
+		);
+
+		$this->assertSame( array( ReceiptResult::Applied ), $results, $name );
+		$this->assertSame( 'processing', $this->db->fetchValue( 'SELECT o.status FROM %i o JOIN %i i ON i.order_id = o.id WHERE i.uuid = %s', $this->table( OrderTables::ORDERS ), $this->table( PaymentTables::INTENTS ), $uuid ), $name );
+
+		fwrite( STDOUT, sprintf( "\nSettling %s by a delivered approval: %d statements.\n  %s\n", $name, $log->count(), implode( "\n  ", array_map( static fn( string $sql ): string => substr( (string) preg_replace( '/\s+/', ' ', $sql ), 0, 110 ), $log->sqls() ) ) ) );
+
+		return $log->count();
 	}
 
 	/**

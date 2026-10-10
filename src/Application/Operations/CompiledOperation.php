@@ -125,7 +125,7 @@ final class CompiledOperation {
 	 * @return array<string, mixed> The schema, titled with the operation id.
 	 */
 	public function inputSchema(): array {
-		$this->inputSchema ??= $this->wordPressSchema( $this->definition->id(), $this->definition->input() );
+		$this->inputSchema ??= self::wordPressSchema( $this->definition->id(), $this->definition->input() );
 
 		return $this->inputSchema;
 	}
@@ -140,7 +140,7 @@ final class CompiledOperation {
 	public function outputSchema(): array {
 		$output = $this->definition->output();
 
-		$this->outputSchema ??= $this->wordPressSchema( $output->name(), $output->serializedFields() );
+		$this->outputSchema ??= self::wordPressSchema( $output->name(), $output->serializedFields() );
 
 		return $this->outputSchema;
 	}
@@ -167,7 +167,11 @@ final class CompiledOperation {
 	/**
 	 * Compiles fields into the WordPress object dialect: the one call site of that dialect.
 	 *
+	 * Public for the one route that is not an operation's, the webhook route, whose answer is
+	 * compiled here too, so the dialect keeps its one call site.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Public and static, for the webhook route.
 	 *
 	 * @param string      $title  The schema title.
 	 * @param FieldSpec[] $fields The fields.
@@ -175,7 +179,7 @@ final class CompiledOperation {
 	 *
 	 * @phpstan-param list<FieldSpec> $fields
 	 */
-	private function wordPressSchema( string $title, array $fields ): array {
+	public static function wordPressSchema( string $title, array $fields ): array {
 		return JsonSchemaCompiler::wordPressSchema( $title, $fields );
 	}
 }

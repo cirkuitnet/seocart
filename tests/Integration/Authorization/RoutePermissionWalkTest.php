@@ -19,6 +19,9 @@ use SEOCart\Platform\Authorization\PermissionCallback;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Cart\Interfaces\StoreApi\StoreWrites;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
+use SEOCart\Checkout\Interfaces\Rest\WebhookRequestPolicy;
+use SEOCart\Interfaces\Operations\ErrorTranslator;
+use SEOCart\Platform\Authorization\PermissionKind;
 use SEOCart\Platform\Authorization\RequestPolicy;
 use SEOCart\Platform\Kernel\Kernel;
 use SEOCart\Tests\Support\Doubles\SubclassedAutosavesController;
@@ -36,7 +39,8 @@ use WP_UnitTestCase;
  * registers on `rest_api_init` is walked. It fails, naming route, method, rule and fix, when an
  * endpoint of a `seocart*` namespace, in any letter case, has no permission callback, has one
  * that is not the plugin's PermissionCallback type, uses the public-read marker for a method
- * other than GET or HEAD, or uses a public write on GET or HEAD or without the Store API's request
+ * other than GET or HEAD, uses a public write on GET or HEAD or without the Store API's request
+ * policy, or a signed request's guard on GET or HEAD or without the webhook route's request
  * policy, and when a route has no schema.
  *
  * The self-tests keep their planted violations as permanent fixtures, in the namespace
@@ -143,7 +147,13 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 	 *   policy allowing everything guards, and the one built without a policy, are no longer
 	 *   reported;
 	 * - in checkPublicWrite(), check the Store API's policy only on POST and PATCH: the DELETE
-	 *   public write that a policy allowing everything guards is no longer reported.
+	 *   public write that a policy allowing everything guards is no longer reported;
+	 * - in checkEndpoint(), drop the branch for a signed request's guard: the signed request served
+	 *   by GET, the one a policy allowing everything guards and the one built without a policy are
+	 *   no longer reported;
+	 * - in PermissionCallback::isPublicRead(), answer "no capability and not a public write", as it
+	 *   did before the signed kind: the signed request served by GET passes as a public read, and
+	 *   the two signed requests served by POST are reported as public reads beyond GET instead.
 	 *
 	 * @since 0.1.0
 	 */
@@ -179,6 +189,9 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 				array( $route . '/public-write-allow-all', 'POST', RoutePermissionWalker::RULE_PUBLIC_WRITE_WITHOUT_POLICY ),
 				array( $route . '/public-write-delete-allow-all', 'DELETE', RoutePermissionWalker::RULE_PUBLIC_WRITE_WITHOUT_POLICY ),
 				array( $route . '/public-write-reflected', 'POST', RoutePermissionWalker::RULE_PUBLIC_WRITE_WITHOUT_POLICY ),
+				array( $route . '/signed-get', 'GET', RoutePermissionWalker::RULE_SIGNED_ON_READ ),
+				array( $route . '/signed-allow-all', 'POST', RoutePermissionWalker::RULE_SIGNED_WITHOUT_VERIFIER ),
+				array( $route . '/signed-reflected', 'POST', RoutePermissionWalker::RULE_SIGNED_WITHOUT_VERIFIER ),
 			),
 			$found,
 			"The walker reported something other than the planted violations:\n" . RoutePermissionWalker::describe( $walk['violations'] ) . "\n"
@@ -211,6 +224,7 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 			'LINK ' . $route . '/public-read-link',
 			'POST ' . $route . '/public-write-allow-all',
 			'DELETE ' . $route . '/public-write-delete-allow-all',
+			'POST ' . $route . '/signed-allow-all',
 			'POST /' . self::UPPERCASE_NAMESPACE . '/uppercase-namespace',
 			// WordPress matches routes without regard to case, so the plugin's own spelling reaches it too.
 			'POST /' . strtolower( self::UPPERCASE_NAMESPACE ) . '/uppercase-namespace',
@@ -230,7 +244,7 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Tests that a public write holding no policy, which only reflection can build, refuses every request.
+	 * Tests that a public write and a signed request's guard holding no policy, which only reflection can build, refuse every request.
 	 *
 	 * The walk reports it; this shows that the callback itself fails closed as well.
 	 *
@@ -244,6 +258,7 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 		wp_set_current_user( 0 );
 
 		$this->assertSame( 401, rest_do_request( new WP_REST_Request( 'POST', '/' . self::SELFTEST_NAMESPACE . '/public-write-reflected' ) )->get_status() );
+		$this->assertSame( 401, rest_do_request( new WP_REST_Request( 'POST', '/' . self::SELFTEST_NAMESPACE . '/signed-reflected' ) )->get_status() );
 	}
 
 	/**
@@ -285,7 +300,7 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 		$route = '/' . self::SELFTEST_NAMESPACE;
 
 		$this->assertSame( array(), $walk['violations'], "A compliant route was reported:\n" . RoutePermissionWalker::describe( $walk['violations'] ) . "\n" );
-		$this->assertEqualsCanonicalizing( array( $route . '/compliant', $route . '/compliant/(?P<id>[\d]+)', $route . '/compliant-public-write' ), $walk['plugin_routes'] );
+		$this->assertEqualsCanonicalizing( array( $route . '/compliant', $route . '/compliant/(?P<id>[\d]+)', $route . '/compliant-public-write', $route . '/compliant-signed' ), $walk['plugin_routes'] );
 		$this->assertNotContains( $route, $walk['plugin_routes'], 'The namespace index core registers was walked.' );
 		$this->assertNotContains( '/wp/v2/posts', $walk['plugin_routes'], 'A core route was walked.' );
 	}
@@ -530,7 +545,10 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 		self::registerRoute( '/public-write-get', array( self::endpoint( 'GET', PermissionCallback::publicWrite( self::storePolicy() ) ) ) );
 		self::registerRoute( '/public-write-allow-all', array( self::endpoint( 'POST', PermissionCallback::publicWrite( self::allowAllPolicy() ) ) ) );
 		self::registerRoute( '/public-write-delete-allow-all', array( self::endpoint( 'DELETE', PermissionCallback::publicWrite( self::allowAllPolicy() ) ) ) );
-		self::registerRoute( '/public-write-reflected', array( self::endpoint( 'POST', self::publicWriteWithoutPolicy() ) ) );
+		self::registerRoute( '/public-write-reflected', array( self::endpoint( 'POST', self::withoutPolicy( PermissionKind::PublicWrite ) ) ) );
+		self::registerRoute( '/signed-get', array( self::endpoint( 'GET', PermissionCallback::signed( self::webhookPolicy() ) ) ) );
+		self::registerRoute( '/signed-allow-all', array( self::endpoint( 'POST', PermissionCallback::signed( self::allowAllPolicy() ) ) ) );
+		self::registerRoute( '/signed-reflected', array( self::endpoint( 'POST', self::withoutPolicy( PermissionKind::Signed ) ) ) );
 
 		register_rest_route(
 			self::UPPERCASE_NAMESPACE,
@@ -570,6 +588,18 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 				self::endpoint( 'DELETE', PermissionCallback::publicWrite( self::storePolicy() ) ),
 			)
 		);
+		self::registerRoute( '/compliant-signed', array( self::endpoint( 'POST', PermissionCallback::signed( self::webhookPolicy() ) ) ) );
+	}
+
+	/**
+	 * Returns the webhook route's request policy, as the kernel builds it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return WebhookRequestPolicy The policy.
+	 */
+	private static function webhookPolicy(): WebhookRequestPolicy {
+		return new WebhookRequestPolicy( Kernel::container()->get( ErrorTranslator::class ) );
 	}
 
 	/**
@@ -609,20 +639,22 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Builds a public write that holds no policy, which only reflection can: the plant of a public write without its policy.
+	 * Builds a public write or a signed request's guard that holds no policy, which only reflection can: the plant of either kind without its policy.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Of either kind.
 	 *
+	 * @param PermissionKind $kind PermissionKind::PublicWrite or PermissionKind::Signed.
 	 * @return PermissionCallback The callback.
 	 */
-	private static function publicWriteWithoutPolicy(): PermissionCallback {
+	private static function withoutPolicy( PermissionKind $kind ): PermissionCallback {
 		$reflection = new \ReflectionClass( PermissionCallback::class );
 		$callback   = $reflection->newInstanceWithoutConstructor();
 
 		foreach ( array(
+			'kind'              => $kind,
 			'capability'        => null,
 			'resourceParameter' => null,
-			'publicWrite'       => true,
 		) as $property => $value ) {
 			$reflection->getProperty( $property )->setValue( $callback, $value );
 		}

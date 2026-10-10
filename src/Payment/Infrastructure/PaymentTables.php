@@ -103,16 +103,18 @@ final class PaymentTables {
 	}
 
 	/**
-	 * Returns the unprefixed names of every table of the payment module: these two, the refund tables and the refund claims.
+	 * Returns the unprefixed names of every table of the payment module: these two, the webhook receipts, the refund tables and the refund claims.
 	 *
-	 * The tables the module's statements may name; each migration still creates only its own.
+	 * The tables the module's statements may name, in the order the data registry lists them; each
+	 * migration still creates only its own.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The webhook receipts.
 	 *
 	 * @return list<string> The names.
 	 */
 	public static function moduleNames(): array {
-		return array_merge( self::names(), RefundTables::names(), RefundClaimTables::names() );
+		return array_merge( self::names(), WebhookReceiptTables::names(), RefundTables::names(), RefundClaimTables::names() );
 	}
 
 	/**

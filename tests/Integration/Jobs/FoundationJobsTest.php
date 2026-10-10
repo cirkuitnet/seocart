@@ -15,6 +15,7 @@ use SEOCart\Cart\Infrastructure\Jobs\SweepExpiredCarts;
 use SEOCart\Checkout\Infrastructure\Jobs\IdempotencyKeyRetention;
 use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
 use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
+use SEOCart\Payment\Infrastructure\Jobs\WebhookReceiptRetention;
 use SEOCart\Platform\Database\LockMode;
 use SEOCart\Platform\Database\LockService;
 use SEOCart\Platform\Database\Migration;
@@ -93,7 +94,7 @@ final class FoundationJobsTest extends JobsTestCase {
 	public function test_the_production_recurring_jobs_are_scheduled_at_their_intervals(): void {
 		$this->wirePlatform();
 
-		$this->assertSame( array( OutboxCatchUp::name(), OutboxRetention::name(), JobHistoryCleanup::name(), LogRetentionJob::name(), SweepHolds::name(), SweepRateCounters::name(), SweepExpiredCarts::name(), IdempotencyKeyRetention::name(), ReconcileStalePlacements::name() ), $this->queue->ensureRecurring() );
+		$this->assertSame( array( OutboxCatchUp::name(), OutboxRetention::name(), JobHistoryCleanup::name(), LogRetentionJob::name(), SweepHolds::name(), SweepRateCounters::name(), SweepExpiredCarts::name(), IdempotencyKeyRetention::name(), ReconcileStalePlacements::name(), WebhookReceiptRetention::name() ), $this->queue->ensureRecurring() );
 		$this->assertSame(
 			array(
 				'[{"h":"outbox.catch_up","r":300}]',
@@ -105,6 +106,7 @@ final class FoundationJobsTest extends JobsTestCase {
 				'[{"h":"carts.sweep_expired","r":3600}]',
 				'[{"h":"idempotency_keys.prune","r":3600}]',
 				'[{"h":"checkout.reconcile_placements","r":300}]',
+				'[{"h":"webhook_receipts.prune","r":3600}]',
 			),
 			array_column( $this->actions(), 'args' )
 		);

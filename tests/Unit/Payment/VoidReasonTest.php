@@ -25,7 +25,7 @@ use SEOCart\Payment\Domain\VoidReason;
 final class VoidReasonTest extends TestCase {
 
 	/**
-	 * Tests that a merchant may give every reason but the end of a shopper's time to act, in the enum's order.
+	 * Tests that a merchant may give every reason but the end of a shopper's time to act and a void the provider reports on its own, in the enum's order.
 	 *
 	 * @since 0.2.0
 	 */
@@ -37,13 +37,13 @@ final class VoidReasonTest extends TestCase {
 	}
 
 	/**
-	 * Tests that only the end of a shopper's time to act is the store's own reason.
+	 * Tests that only the end of a shopper's time to act, the store's own reason, and a void the provider reports on its own were asked by nobody of the store.
 	 *
 	 * @since 0.2.0
 	 */
-	public function test_only_the_end_of_a_shoppers_time_is_the_stores_reason(): void {
+	public function test_only_the_end_of_a_shoppers_time_and_a_providers_own_void_are_nobodys_ask(): void {
 		$stores = array_filter( VoidReason::cases(), static fn( VoidReason $reason ): bool => ! $reason->askedByAPerson() );
 
-		$this->assertSame( array( VoidReason::ActionWindowEnded ), array_values( $stores ) );
+		$this->assertSame( array( VoidReason::ActionWindowEnded, VoidReason::VoidedExternally ), array_values( $stores ) );
 	}
 }

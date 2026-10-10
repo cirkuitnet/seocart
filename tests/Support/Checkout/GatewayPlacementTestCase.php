@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Checkout;
 
+use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Contracts\Payment\GatewayRegistry;
 use SEOCart\Contracts\Payment\Mode;
@@ -80,7 +81,7 @@ abstract class GatewayPlacementTestCase extends PlacementTestCase {
 	protected bool $safeMode = false;
 
 	/**
-	 * Creates the log's table and has `second` register through the action.
+	 * Creates the log's table, has `second` register through the action, and has readyCart() write the checkout through the kernel's registry, which gives `second` its context.
 	 *
 	 * @since 0.2.0
 	 */
@@ -89,10 +90,12 @@ abstract class GatewayPlacementTestCase extends PlacementTestCase {
 
 		( new CreateLogsMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
 
+		$this->checkout = $this->kernel->get( UpdateCheckoutSession::class );
+
 		add_action(
 			GatewayRegistry::ACTION,
 			function ( GatewayRegistry $registry ): void {
-				$this->second = new DeclaredGateway( self::descriptor(), $registry->context( self::SECOND ) );
+				$this->second = new DeclaredGateway( static::descriptor(), $registry->context( self::SECOND ) );
 
 				$registry->register( $this->second );
 			}
@@ -121,15 +124,19 @@ abstract class GatewayPlacementTestCase extends PlacementTestCase {
 	 * @return Container The container.
 	 */
 	protected function kernelOver( Database $db, FakeCartTokens $tokens ): Container {
-		return PlacementKernel::over(
-			$db,
-			$tokens,
-			$this->identities,
-			$this->wake,
-			$this->reporter(),
-			array(
-				SafeMode::class => fn( Container $c ): SafeMode => new SafeMode( $c->get( BootOption::class ), $c->get( Clock::class ), $this->safeMode ? true : null ),
-			)
+		return PlacementKernel::over( $db, $tokens, $this->identities, $this->wake, $this->reporter(), $this->overrides() );
+	}
+
+	/**
+	 * Returns what the test's wiring replaces: Safe Mode, forced on while `$safeMode` is true.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, callable(Container): object> The replacements.
+	 */
+	protected function overrides(): array {
+		return array(
+			SafeMode::class => fn( Container $c ): SafeMode => new SafeMode( $c->get( BootOption::class ), $c->get( Clock::class ), $this->safeMode ? true : null ),
 		);
 	}
 
@@ -158,7 +165,7 @@ abstract class GatewayPlacementTestCase extends PlacementTestCase {
 	protected function configureSecond( Mode $mode ): void {
 		GatewayKernel::writeDocument(
 			$this->kernel,
-			self::descriptor(),
+			static::descriptor(),
 			array(
 				self::SECOND . '_mode' => $mode->value,
 				GatewayKernel::name( self::SECOND, Mode::Test, GatewayDescriptor::ACCOUNT_COUNTRY ) => 'US',
