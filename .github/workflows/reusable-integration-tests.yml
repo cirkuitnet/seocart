@@ -88,7 +88,7 @@ jobs:
               with:
                   php-version: ${{ inputs.php }}
                   extensions: mysqli
-                  tools: wp-cli
+                  tools: wp-cli:2.12.0
                   install: full
 
             # Nightly uses the master test library built from WordPress trunk. Other cells
