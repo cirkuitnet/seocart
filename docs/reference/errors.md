@@ -488,6 +488,42 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The payment has a result that could not be recorded against its order; a person must reconcile it before anything else is done with the payment.
 - Values: none
 
+## `payment.webhook_body_empty`
+
+- HTTP status: 400
+- Message: The webhook delivery has no body; nothing was read.
+- Values: none
+
+## `payment.webhook_body_too_large`
+
+- HTTP status: 413
+- Message: A webhook delivery's body is at most {max_bytes} bytes; nothing was read.
+- Values: `max_bytes`
+
+## `payment.webhook_gateway_unknown`
+
+- HTTP status: 404
+- Message: No payment gateway receives webhook deliveries at this address.
+- Values: none
+
+## `payment.webhook_not_settled`
+
+- HTTP status: 503
+- Message: The webhook delivery was received, but it could not be settled now; send it again later.
+- Values: none
+
+## `payment.webhook_read_method`
+
+- HTTP status: 405
+- Message: A webhook delivery is sent with POST; nothing was read.
+- Values: none
+
+## `payment.webhook_rejected`
+
+- HTTP status: 401
+- Message: The webhook delivery could not be verified; nothing of it was kept.
+- Values: none
+
 ## `pricing.currency_not_enabled`
 
 - HTTP status: 409

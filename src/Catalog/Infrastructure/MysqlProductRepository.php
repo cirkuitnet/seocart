@@ -899,7 +899,8 @@ final class MysqlProductRepository implements ProductRepository {
 	public function lockedPostTypeAndStatus( int $postId ): ?array {
 		$this->requireTransaction( __FUNCTION__ );
 
-		$row = $this->db->fetchRow( 'SELECT post_type, post_status FROM %i WHERE ID = %d FOR SHARE', $this->postsTable(), $postId );
+		// LOCK IN SHARE MODE, which MySQL and MariaDB both read; MariaDB refuses FOR SHARE.
+		$row = $this->db->fetchRow( 'SELECT post_type, post_status FROM %i WHERE ID = %d LOCK IN SHARE MODE', $this->postsTable(), $postId );
 
 		if ( null === $row ) {
 			return null;

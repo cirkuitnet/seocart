@@ -18,6 +18,8 @@ use SEOCart\Application\Operations\CliBinding;
 use SEOCart\Application\Operations\CompiledOperation;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
+use SEOCart\Checkout\Interfaces\Rest\WebhookRoute;
+use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Interfaces\Operations\RestAdapter;
 use SEOCart\Payment\Infrastructure\Cli\GatewayCommand;
 use SEOCart\Platform\Authorization\PermissionCallback;
@@ -63,6 +65,15 @@ use WP_REST_Server;
  * for another operation, is not the operation's. The operation's own endpoint must also read each
  * route parameter from the URL only: its argument carries the adapter's validation, which refuses
  * the parameter in the query or the body.
+ *
+ * The one exception on the REST surface is a signed route: an address a payment provider delivers
+ * to, whose input is a raw body and the provider's headers and whose only answer is an
+ * acknowledgement, so it has no Ability, no command and no operation of its own. Those are an
+ * asserted set too, SIGNED_ROUTES, each with the class that serves it and the reason, checked both
+ * ways: a plugin route at no operation's address that is not listed is reported as resolving to
+ * no operation, a listed one must be served by its class, and a listed route that is not
+ * registered, or whose class is gone, is reported by signedRouteViolations(). RoutePermissionWalker
+ * holds its guard to the signed kind.
  *
  * The REST walk reuses RoutePermissionWalker's decision of which routes are the plugin's, so the
  * two walks cannot disagree about that.
@@ -115,17 +126,38 @@ final class OperationSurfaceWalker {
 	);
 
 	/**
+	 * The signed routes: the plugin routes that have no operation definition by design.
+	 *
+	 * Keyed by the method and the route as the REST server lists them, each with the class whose
+	 * method serves it and the reason it has no definition. A module that adds a signed route adds
+	 * exactly one entry here, in the same change as its class.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, array{class: string, reason: string}>
+	 */
+	public const SIGNED_ROUTES = array(
+		'POST /seocart/v1/webhooks/(?P<gateway_id>' . GatewayDescriptor::ID_SEGMENT . ')/(?P<mode>test|live)' => array(
+			'class'  => WebhookRoute::class,
+			'reason' => 'A payment provider delivers its events here, one address per gateway and mode: the input is a raw body and the provider\'s headers, verified by the gateway before anything is read, and the only answer is an acknowledgement, so there is no Ability, command, form or declared field for an operation to describe.',
+		),
+	);
+
+	/**
 	 * Checks the plugin's REST routes against the registry.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 A listed signed route is not an operation's, and must be served by its class.
 	 *
-	 * @param WP_REST_Server    $server   A server on which `rest_api_init` has run.
-	 * @param OperationRegistry $registry The operations that should be registered.
+	 * @param WP_REST_Server                                      $server   A server on which `rest_api_init` has run.
+	 * @param OperationRegistry                                   $registry The operations that should be registered.
+	 * @param array<string, array{class: string, reason: string}> $signed   Optional. The signed routes. Default SIGNED_ROUTES.
 	 * @return list<string> One message per route without an operation, per operation route not
-	 *                      registered, and per endpoint at an operation's address guarded otherwise
-	 *                      than the operation declares.
+	 *                      registered, per endpoint at an operation's address guarded otherwise
+	 *                      than the operation declares, and per signed route served by another class
+	 *                      than its own.
 	 */
-	public static function restViolations( WP_REST_Server $server, OperationRegistry $registry ): array {
+	public static function restViolations( WP_REST_Server $server, OperationRegistry $registry, array $signed = self::SIGNED_ROUTES ): array {
 		$declared    = array();
 		$definitions = array();
 
@@ -147,7 +179,14 @@ final class OperationSurfaceWalker {
 		foreach ( ( new RoutePermissionWalker() )->walk( $server )['plugin_routes'] as $route ) {
 			foreach ( $routes[ $route ] as $handler ) {
 				foreach ( array_keys( (array) ( $handler['methods'] ?? array() ) ) as $method ) {
-					$address                = $method . ' ' . $route;
+					$address = $method . ' ' . $route;
+
+					if ( ! isset( $definitions[ $address ] ) && isset( $signed[ $address ] ) ) {
+						$guards = array_merge( $guards, self::signedServiceViolations( $address, $handler, $signed[ $address ]['class'] ) );
+
+						continue;
+					}
+
 					$registered[ $address ] = true;
 
 					if ( isset( $definitions[ $address ] ) ) {
@@ -169,6 +208,71 @@ final class OperationSurfaceWalker {
 		}
 
 		return array_merge( self::compare( $declared, $registered, 'the REST route' ), $guards );
+	}
+
+	/**
+	 * Checks the signed routes against a booted server: every listed route is registered, and its class exists.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, array{class: string, reason: string}> $signed The signed routes.
+	 * @param WP_REST_Server                                      $server A server on which `rest_api_init` has run.
+	 * @return list<string> One message per listed class that is gone and per listed route not registered.
+	 */
+	public static function signedRouteViolations( array $signed, WP_REST_Server $server ): array {
+		$violations = array();
+		$registered = array();
+
+		foreach ( $server->get_routes() as $route => $handlers ) {
+			foreach ( $handlers as $handler ) {
+				foreach ( array_keys( (array) ( $handler['methods'] ?? array() ) ) as $method ) {
+					$registered[ $method . ' ' . $route ] = true;
+				}
+			}
+		}
+
+		foreach ( $signed as $address => $entry ) {
+			if ( ! class_exists( $entry['class'] ) ) {
+				$violations[] = "The signed route {$address} is listed, but its class {$entry['class']} no longer exists: remove it from the list.";
+			}
+
+			if ( ! isset( $registered[ $address ] ) ) {
+				$violations[] = "The signed route {$address} is listed, but it is not registered.";
+			}
+		}
+
+		return $violations;
+	}
+
+	/**
+	 * Checks that a listed signed route is served by its class, and guarded as a signed request.
+	 *
+	 * RoutePermissionWalker holds a signed request's guard to the webhook route's policy; this holds
+	 * the listed route to that kind of guard, so it cannot be served with a capability or as a
+	 * public write instead.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string               $address     The endpoint's method and route.
+	 * @param array<string, mixed> $handler     The endpoint, as the REST server lists it.
+	 * @param string               $listedClass The class the list names.
+	 * @return list<string> One message per way the endpoint differs, or none.
+	 */
+	private static function signedServiceViolations( string $address, array $handler, string $listedClass ): array {
+		$callback   = $handler['callback'] ?? null;
+		$owner      = is_array( $callback ) && isset( $callback[0] ) ? $callback[0] : null;
+		$guard      = $handler['permission_callback'] ?? null;
+		$violations = array();
+
+		if ( ! ( is_object( $owner ) ? $owner instanceof $listedClass : ( is_string( $owner ) && is_a( $owner, $listedClass, true ) ) ) ) {
+			$violations[] = "The signed route {$address} is served by a callback that is not a method of its listed class {$listedClass}.";
+		}
+
+		if ( ! $guard instanceof PermissionCallback || ! $guard->isSigned() ) {
+			$violations[] = "The signed route {$address} is not guarded by PermissionCallback::signed().";
+		}
+
+		return $violations;
 	}
 
 	/**

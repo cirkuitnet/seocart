@@ -205,7 +205,7 @@ final class IdempotencyClaimConcurrencyTest extends CheckoutTestCase {
 	 * and B commits; A's second attempt reads the key live and claimed by B, and answers "placement
 	 * in progress". So a claim runs only in a unit of work that retries on a deadlock.
 	 *
-	 * Planted violation: in MysqlIdempotencyKeys::TAKEN, drop `FOR SHARE`: A's read then leaves no
+	 * Planted violation: in MysqlIdempotencyKeys::TAKEN, drop `LOCK IN SHARE MODE`: A's read then leaves no
 	 * lock on the row, nothing orders B's re-claim after A's read, and B's UPDATE goes through
 	 * without waiting.
 	 *

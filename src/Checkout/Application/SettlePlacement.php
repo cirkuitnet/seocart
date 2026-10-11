@@ -145,7 +145,7 @@ final class SettlePlacement {
 	 * @param string|null     $keptAction Optional. What the shopper must do, sealed for the answer the placement's key
 	 *                                    keeps (KeptAnswer::sealAction()); only the placement's own request has it.
 	 *                                    Default null.
-	 * @return SettledPlacement What the settlement came to.
+	 * @return SettledPlacement What the settlement came to, with what the payment path did.
 	 */
 	public function apply( GatewayResult $result, Actor $actor, ?VoidReason $voidReason = null, ?string $keptAction = null ): SettledPlacement {
 		if ( ! in_array( $result->operation, array( Operation::Authorize, Operation::Void ), true ) ) {
@@ -153,7 +153,11 @@ final class SettlePlacement {
 		}
 
 		return $this->tx->transaction(
-			fn(): SettledPlacement => $this->settle( $this->payments->applyGatewayResult( $result, $actor, null, $voidReason ), $actor, $voidReason, $keptAction ),
+			function () use ( $result, $actor, $voidReason, $keptAction ): SettledPlacement {
+				$applied = $this->payments->applyGatewayResult( $result, $actor, null, $voidReason );
+
+				return $this->settle( $applied, $actor, $voidReason, $keptAction )->withApplication( $applied );
+			},
 			RetryPolicy::deadlocks(),
 			Isolation::ReadCommitted
 		);

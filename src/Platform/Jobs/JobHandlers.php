@@ -15,6 +15,7 @@ use SEOCart\Cart\Infrastructure\Jobs\SweepExpiredCarts;
 use SEOCart\Checkout\Infrastructure\Jobs\IdempotencyKeyRetention;
 use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
 use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
+use SEOCart\Payment\Infrastructure\Jobs\WebhookReceiptRetention;
 use SEOCart\Platform\Jobs\Handlers\JobHistoryCleanup;
 use SEOCart\Platform\Jobs\Handlers\MigrationAttempt;
 use SEOCart\Platform\Jobs\Handlers\OutboxCatchUp;
@@ -63,6 +64,7 @@ final class JobHandlers {
 		SweepExpiredCarts::class,
 		IdempotencyKeyRetention::class,
 		ReconcileStalePlacements::class,
+		WebhookReceiptRetention::class,
 	);
 
 	/**

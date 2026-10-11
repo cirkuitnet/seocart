@@ -28,6 +28,7 @@ use SEOCart\Platform\Kernel\BootRecord;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Checkout\GatewayPlacementTestCase;
 use SEOCart\Tests\Support\KernelTestCase;
+use SEOCart\Tests\Support\Payment\CanonicalGateways;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- The test reads and removes the boot record it planted, as the database holds it.
 
@@ -117,7 +118,7 @@ final class KillSwitchTest extends GatewayPlacementTestCase {
 
 		$this->assertSame( array( 'capture', 'refund', 'query' ), array_column( $this->second->calls, 'method' ), 'Its payments are captured, refunded and asked about.' );
 		$this->assertSame( 'partially_refunded', $this->intentOf( $authorized )['status'], 'The line was refunded; the shipping was not asked for.' );
-		$this->assertSame( $this->second, $this->gateways()->get( self::SECOND, Mode::Test ), 'The registry gives it for the payments it holds.' );
+		$this->assertSame( $this->second, CanonicalGateways::behind( $this->gateways()->get( self::SECOND, Mode::Test ) ), 'The registry gives it for the payments it holds.' );
 
 		$this->assertTrue( $this->kernel->get( GatewaySwitches::class )->enable( self::SECOND ) );
 		$this->assertSame( array(), (array) json_decode( (string) $this->stored(), true )['kill'] );

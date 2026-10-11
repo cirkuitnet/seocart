@@ -300,15 +300,23 @@ final class DeclaredGateway implements PaymentGateway {
 	}
 
 	/**
-	 * Rejects every delivery, as the stub does.
+	 * Reads a delivery as the stub does, a result under this gateway's id, after opening the credentials of the delivery's mode as an adapter opens its webhook secret.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param WebhookEnvelope $envelope The delivery.
-	 * @return WebhookReading Rejected.
+	 * @return WebhookReading What the stub reads in it.
 	 */
 	public function readWebhook( WebhookEnvelope $envelope ): WebhookReading {
-		return $this->inner->readWebhook( $envelope );
+		$this->called( __FUNCTION__, $envelope->mode );
+
+		$reading = $this->inner->readWebhook( $envelope );
+
+		if ( null === $reading->result ) {
+			return $reading;
+		}
+
+		return WebhookReading::result( (string) $reading->eventId, (string) $reading->eventType, $reading->occurredAt, $this->own( $reading->result ) ?? $reading->result, $reading->refundUuid );
 	}
 
 	/**

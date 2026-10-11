@@ -56,6 +56,15 @@ final class TableRateLimiter implements RateLimiter {
 	public const PEEK = 'SELECT count FROM %i WHERE scope = %s AND key_hash = %s AND window_start = UTC_TIMESTAMP() - INTERVAL (UNIX_TIMESTAMP() MOD %d) SECOND';
 
 	/**
+	 * Counts one request in the window's row while it holds fewer than a limit: inserted at 1, or counted in only below the limit, and left as it is at the limit.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const COUNT_BELOW = 'INSERT INTO %i (scope, key_hash, window_start, count, expires_at) VALUES (%s, %s, UTC_TIMESTAMP() - INTERVAL (UNIX_TIMESTAMP() MOD %d) SECOND, 1, UTC_TIMESTAMP() - INTERVAL (UNIX_TIMESTAMP() MOD %d) SECOND + INTERVAL %d SECOND) ON DUPLICATE KEY UPDATE count = IF( count < %d, count + 1, count )';
+
+	/**
 	 * The connection.
 	 *
 	 * @since 0.1.0
@@ -113,5 +122,33 @@ final class TableRateLimiter implements RateLimiter {
 		RateLimit::checkCounter( $bucket, $window );
 
 		return (int) $this->db->fetchValue( self::PEEK, $this->db->table( RateCountersTable::NAME ), $bucket, $identity->key(), $window );
+	}
+
+	/**
+	 * Counts one request only while its window has counted fewer than a limit, in one statement that changes no row at the limit.
+	 *
+	 * The insert's row lock serialises requests racing at the limit, and the update counts only
+	 * below it. The server reports the row it inserted as one row affected, one it counted in as two,
+	 * and one left unchanged at the limit as none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws DatabaseException|\InvalidArgumentException When the statement fails, or the bucket, the window or the limit
+	 *                                                     is refused.
+	 *
+	 * @param string         $bucket   What is counted.
+	 * @param ClientIdentity $identity Who sent the request.
+	 * @param int            $window   The length of a window, in seconds.
+	 * @param int            $limit    The most requests a window counts, at least 1.
+	 * @return bool True when the request was counted; false when the window was at the limit.
+	 */
+	public function countBelow( string $bucket, ClientIdentity $identity, int $window, int $limit ): bool {
+		RateLimit::checkCounter( $bucket, $window );
+
+		if ( $limit < 1 ) {
+			throw new \InvalidArgumentException( 'A limit counts at least one request.' );
+		}
+
+		return 0 < $this->db->execute( self::COUNT_BELOW, $this->db->table( RateCountersTable::NAME ), $bucket, $identity->key(), $window, $window, $window, $limit );
 	}
 }

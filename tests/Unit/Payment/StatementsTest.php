@@ -112,6 +112,17 @@ final class StatementsTest extends TestCase {
 	}
 
 	/**
+	 * The one change a ledger row takes, each exactly as written: a data migration rewriting a provider's reference to its canonical form, from the value it read; no amount, outcome or state is part of it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, string>
+	 */
+	private const LEDGER_REWRITES = array(
+		'CanonicalizeProviderReferences::REWRITE_LEDGER' => 'UPDATE {payment_transactions} SET provider_object_id = %s WHERE id = %d AND provider_object_id = %s',
+	);
+
+	/**
 	 * Tests that no statement updates or deletes a ledger or refund row, and that the declarations agree that those tables are append-only.
 	 *
 	 * @since 0.1.0
@@ -130,6 +141,11 @@ final class StatementsTest extends TestCase {
 		$changes = array();
 
 		foreach ( self::statements() as $name => $statement ) {
+			if ( isset( self::LEDGER_REWRITES[ $name ] ) ) {
+				$this->assertSame( self::LEDGER_REWRITES[ $name ], $statement, $name . ' changes nothing of a ledger row but its provider object, from the value it read.' );
+				continue;
+			}
+
 			$changesRows = 1 === preg_match( '/^\s*(UPDATE|DELETE)\b/i', $statement ) || str_contains( $statement, 'ON DUPLICATE KEY UPDATE' );
 
 			foreach ( $appendOnly as $table ) {

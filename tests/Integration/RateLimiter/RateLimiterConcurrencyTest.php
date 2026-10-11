@@ -116,6 +116,45 @@ final class RateLimiterConcurrencyTest extends DatabaseTestCase {
 	}
 
 	/**
+	 * Tests that two requests at one below the limit are counted once: the second waits on the row the first counted in, and when the first commits it finds the window at the limit and changes nothing.
+	 *
+	 * Planted violation: in TableRateLimiter::COUNT_BELOW, update `count = count + 1` whatever
+	 * it holds: B's statement then counts past the limit, and the row holds 21.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_two_requests_at_the_limit_are_counted_once(): void {
+		global $wpdb;
+
+		$client  = ClientIdentity::ofClient( '192.0.2.1', 0, 'test secret' );
+		$limiter = new TableRateLimiter( $this->db );
+		$b       = $this->secondConnection();
+		$count   = (string) $wpdb->prepare( TableRateLimiter::COUNT_BELOW, $this->db->table( RateCountersTable::NAME ), 'payment.webhook_rejected', $client->key(), self::WINDOW, self::WINDOW, self::WINDOW, 20 ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- The statement is the adapter's constant; this is its prepare step.
+
+		for ( $request = 0; $request < 19; $request++ ) {
+			$limiter->countBelow( 'payment.webhook_rejected', $client, self::WINDOW, 20 );
+		}
+
+		$wpdb->query( 'START TRANSACTION' );
+
+		try {
+			$this->assertTrue( $limiter->countBelow( 'payment.webhook_rejected', $client, self::WINDOW, 20 ), 'A, the twentieth, is counted.' );
+
+			$b->queryAsync( $count );
+			$this->awaitWaiting( $b, $count, 'update' );
+		} finally {
+			$wpdb->query( 'COMMIT' );
+		}
+
+		$this->assertTrue( $b->isReady( 5000 ), 'B did not finish after A committed.' );
+		$b->reap();
+
+		$this->assertSame( 0, $b->affectedRows(), 'B, at the limit, changed no row.' );
+		$this->assertSame( 20, $limiter->peek( 'payment.webhook_rejected', $client, self::WINDOW ), 'The row holds the limit, not one more.' );
+		$this->assertFalse( $limiter->countBelow( 'payment.webhook_rejected', $client, self::WINDOW, 20 ), 'Past the limit, nothing is counted.' );
+	}
+
+	/**
 	 * Tests that a hit waiting on the row another connection is counting in is counted after it, not instead of it.
 	 *
 	 * A counts inside an open transaction, so the row stays locked. B sends the adapter's statement

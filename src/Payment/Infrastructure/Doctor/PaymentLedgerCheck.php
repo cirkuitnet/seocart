@@ -12,8 +12,11 @@ declare( strict_types=1 );
 namespace SEOCart\Payment\Infrastructure\Doctor;
 
 use SEOCart\Order\Domain\OrderRepository;
+use SEOCart\Payment\Application\DeliveredValues;
 use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Domain\Webhook\ReceiptResult;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
+use SEOCart\Payment\Infrastructure\MysqlWebhookReceipts;
 use SEOCart\Platform\Cli\Doctor\Check;
 use SEOCart\Platform\Cli\Doctor\CheckResult;
 
@@ -50,9 +53,25 @@ defined( 'ABSPATH' ) || exit;
  * are reads of what they report, the first LIMIT found. It prints uuids and amounts in minor
  * units, never anything about a person.
  *
+ * Given the webhook receipts, it also notes, never as a problem, the events of the last thirty
+ * days the store ignored, such as disputes, and those whose money it kept for a person, such as a
+ * refund made outside the store; and says where a delivery that fails on every retry shows: a
+ * receipt is settled in the transaction that applies its event, so such a delivery leaves none,
+ * and only its log line, `payment.webhook_faulted`, tells of it.
+ *
  * @since 0.1.0
+ * @since 0.2.0 The webhook receipts.
  */
 final class PaymentLedgerCheck implements Check {
+
+	/**
+	 * Doctor's line on the deliveries that fail: a failed delivery leaves no receipt, so the log alone tells of one that fails on every retry.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FAULTED_DELIVERIES = 'Info: a webhook delivery the store cannot settle leaves no receipt, and its provider sends it again; one that fails on every retry shows only in the log, as payment.webhook_faulted.';
 
 	/**
 	 * The check's name.
@@ -125,6 +144,15 @@ final class PaymentLedgerCheck implements Check {
 	private int $page;
 
 	/**
+	 * The webhook receipts' statements, or null for a check of the ledger alone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var MysqlWebhookReceipts|null
+	 */
+	private ?MysqlWebhookReceipts $receipts;
+
+	/**
 	 * Creates the check. Sends nothing.
 	 *
 	 * @since 0.1.0
@@ -134,8 +162,10 @@ final class PaymentLedgerCheck implements Check {
 	 * @param MysqlPaymentRepository $payments The payment statements.
 	 * @param OrderRepository        $orders   The order statements.
 	 * @param int                    $page     Optional. How many intents or orders one read compares. Default PAGE.
+	 * @param MysqlWebhookReceipts   $receipts Optional. The webhook receipts' statements, whose lately ignored or kept
+	 *                                         events the check reports. Default null: the ledger alone.
 	 */
-	public function __construct( MysqlPaymentRepository $payments, OrderRepository $orders, int $page = self::PAGE ) {
+	public function __construct( MysqlPaymentRepository $payments, OrderRepository $orders, int $page = self::PAGE, ?MysqlWebhookReceipts $receipts = null ) {
 		if ( $page < 1 ) {
 			throw new \InvalidArgumentException( 'The check reads at least one row at a time.' );
 		}
@@ -143,6 +173,7 @@ final class PaymentLedgerCheck implements Check {
 		$this->payments = $payments;
 		$this->orders   = $orders;
 		$this->page     = $page;
+		$this->receipts = $receipts;
 	}
 
 	/**
@@ -182,11 +213,13 @@ final class PaymentLedgerCheck implements Check {
 			$this->unrecordedRefundClaims()
 		);
 
+		$notes = $this->webhookEvents();
+
 		if ( array() === $findings ) {
-			return CheckResult::pass( self::NAME, 'Every intent\'s and every order\'s payment amounts agree with the ledger, every refund with its lines and components, and no payment waits for a person to reconcile it.' );
+			return CheckResult::pass( self::NAME, 'Every intent\'s and every order\'s payment amounts agree with the ledger, every refund with its lines and components, and no payment waits for a person to reconcile it.', $notes );
 		}
 
-		return CheckResult::fail( self::NAME, sprintf( '%d payment %s found.', count( $findings ), 1 === count( $findings ) ? 'problem' : 'problems' ), $findings );
+		return CheckResult::fail( self::NAME, sprintf( '%d payment %s found.', count( $findings ), 1 === count( $findings ) ? 'problem' : 'problems' ), array_merge( $findings, $notes ) );
 	}
 
 	/**
@@ -463,5 +496,47 @@ final class PaymentLedgerCheck implements Check {
 		}
 
 		return implode( '; ', $parts );
+	}
+
+	/**
+	 * Counts the webhook events of the last thirty days the store ignored, such as disputes, and those it kept for a person, such as a refund made outside the store: information, never a problem.
+	 *
+	 * A dispute changes nothing in the store, so a merchant who never reads the log sees it here;
+	 * money kept for a person flagged its order, which the lines above report until a person clears it.
+	 * The last line, always given with the receipts, says that a delivery failing on every retry
+	 * shows in the log alone: it leaves no receipt to count.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> An information line per decision with events, at most two, then FAULTED_DELIVERIES; none
+	 *                      without the receipts.
+	 */
+	private function webhookEvents(): array {
+		if ( null === $this->receipts ) {
+			return array();
+		}
+
+		$counts = array();
+
+		foreach ( $this->receipts->resultCounts( array( ReceiptResult::Ignored, ReceiptResult::Unapplied ), MysqlWebhookReceipts::RETENTION_SECONDS, self::LIMIT ) as $row ) {
+			// Only a constrained word is printed: a type the row holds from before it was constrained is `other`.
+			$counts[ $row['result'] ][] = CheckResult::identifier( DeliveredValues::type( (string) $row['result_code'] ) ) . ': ' . $row['n'];
+		}
+
+		$formats = array(
+			ReceiptResult::Ignored->value   => 'Info: webhook events ignored in the last 30 days: %s.',
+			ReceiptResult::Unapplied->value => 'Info: webhook events whose money was kept for a person in the last 30 days: %s.',
+		);
+		$lines   = array();
+
+		foreach ( $formats as $result => $format ) {
+			if ( isset( $counts[ $result ] ) ) {
+				$lines[] = sprintf( $format, implode( ', ', $counts[ $result ] ) );
+			}
+		}
+
+		$lines[] = self::FAULTED_DELIVERIES;
+
+		return $lines;
 	}
 }

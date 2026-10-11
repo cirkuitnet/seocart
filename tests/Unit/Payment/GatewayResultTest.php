@@ -13,8 +13,11 @@ namespace SEOCart\Tests\Unit\Payment;
 
 use PHPUnit\Framework\TestCase;
 use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\NextAction;
 use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Contracts\Payment\Outcome;
+use SEOCart\Contracts\Payment\Settlement;
+use SEOCart\Support\Decimal;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Money;
 
@@ -76,6 +79,31 @@ final class GatewayResultTest extends TestCase {
 		$this->assertTrue( self::result( Operation::Refund, Outcome::Declined, 0 )->amount->isZero() );
 		$this->assertSame( 1, self::result( Operation::Refund, Outcome::Approved, 1 )->amount->minorUnits() );
 		$this->assertSame( 191, strlen( (string) self::result( Operation::Capture, Outcome::Approved, 1, str_repeat( 'x', 191 ) )->providerObjectId ) );
+	}
+
+	/**
+	 * Tests that a result found by the provider's reference keeps every field but the intent it names: forIntent() changes the intent alone.
+	 *
+	 * Planted violation: in GatewayResult::forIntent(), leave out the settlement (pass null): the
+	 * result found by its reference then loses what the provider reported.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_result_found_by_its_reference_keeps_every_field_but_its_intent(): void {
+		$settlement = new Settlement( Money::of( 1234, Currency::of( 'CHF' ) ), Decimal::of( '0.912345678901' ), Money::of( 56, Currency::of( 'CHF' ) ), 'stub' );
+		$waiting    = new GatewayResult( 'stub', Operation::Authorize, Outcome::RequiresAction, '', Money::of( 700, Currency::of( 'USD' ) ), null, 'pi_123', null, null, NextAction::sdk( 'cs_1' ) );
+		$approved   = new GatewayResult( 'stub', Operation::Authorize, Outcome::Approved, '', Money::of( 700, Currency::of( 'USD' ) ), 'ch_1', 'pi_123', null, $settlement );
+		$uuid       = '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c';
+
+		foreach ( array( $waiting, $approved ) as $delivered ) {
+			$found = $delivered->forIntent( $uuid );
+			$keep  = get_object_vars( $delivered );
+
+			$keep['intentUuid'] = $uuid;
+
+			$this->assertEquals( $keep, get_object_vars( $found ), 'Every field but the intent is kept.' );
+			$this->assertSame( '', $delivered->intentUuid, 'The result delivered is unchanged.' );
+		}
 	}
 
 	/**

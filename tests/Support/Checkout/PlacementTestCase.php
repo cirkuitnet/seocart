@@ -27,6 +27,7 @@ use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\Migrations\CreatePaymentTables;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundClaimTable;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundTables;
+use SEOCart\Payment\Infrastructure\Migrations\CreateWebhookReceipts;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
@@ -149,6 +150,7 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 		( new CreatePaymentTables() )->up( $operations );
 		( new CreateRefundTables() )->up( $operations );
 		( new CreateRefundClaimTable() )->up( $operations );
+		( new CreateWebhookReceipts() )->up( $operations );
 		( new CreateRateTables() )->up( $operations );
 
 		$this->posts     = array();

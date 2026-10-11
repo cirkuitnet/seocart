@@ -105,7 +105,7 @@ final class OrderReadsTest extends OrderTestCase {
 			$status
 		);
 		$this->assertQueryCount( 2, $log, 'One read each' );
-		$this->assertSame( 0, $log->matching( '/FOR UPDATE|FOR SHARE/' )->count(), 'Neither read locks.' );
+		$this->assertSame( 0, $log->matching( '/FOR UPDATE|FOR SHARE|LOCK IN SHARE MODE/' )->count(), 'Neither read locks.' );
 		$this->assertNull( $this->orders->statusOf( $inserted->id + 1000 ) );
 		$this->assertSame( array(), $this->orders->stockLines( $inserted->id + 1000 ) );
 	}

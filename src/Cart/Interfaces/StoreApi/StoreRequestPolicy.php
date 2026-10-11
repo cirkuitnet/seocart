@@ -16,6 +16,7 @@ use SEOCart\Cart\Application\StoreApiError;
 use SEOCart\Interfaces\Operations\ErrorTranslator;
 use SEOCart\Platform\Authorization\RequestPolicy;
 use SEOCart\Platform\RateLimiter\RateLimit;
+use SEOCart\Platform\Rest\HttpMethod;
 use SEOCart\Support\Error\CodedException;
 use WP_Error;
 use WP_REST_Request;

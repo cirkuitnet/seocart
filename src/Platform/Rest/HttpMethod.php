@@ -1,6 +1,6 @@
 <?php
 /**
- * HttpMethod: tells whether a Store API request is a write the way it arrived over HTTP
+ * HttpMethod: tells whether a plugin request is a write the way it arrived over HTTP
  *
  * @package SEOCart
  * @since   0.1.0
@@ -9,14 +9,14 @@
 
 declare( strict_types=1 );
 
-namespace SEOCart\Cart\Interfaces\StoreApi;
+namespace SEOCart\Platform\Rest;
 
 use WP_REST_Request;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
- * The one test of whether a request may change the store and carry a new cart token.
+ * The one test of whether a request arrived as a write: a Store API change, which may carry a new cart token, or a provider's delivery to the webhook route.
  *
  * Owns one fact: which requests count as writes. WordPress routes a request by the method it names,
  * and lets a `_method` parameter or an `X-HTTP-Method-Override` header name another than the one it
@@ -26,6 +26,7 @@ defined( 'ABSPATH' ) || exit;
  * that did not arrive over HTTP at all, such as a dispatch from the command line, is not one.
  *
  * @since 0.1.0
+ * @since 0.2.0 Moved from the Store API to the plugin's REST support, for its second consumer, the webhook route.
  */
 final class HttpMethod {
 

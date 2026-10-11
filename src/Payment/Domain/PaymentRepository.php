@@ -151,6 +151,17 @@ interface PaymentRepository {
 	public function ref( string $uuid ): ?IntentRef;
 
 	/**
+	 * Reads one intent by its gateway's own reference to it, without a lock, as ref() reads one by its uuid.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $gatewayId        The gateway.
+	 * @param string $providerIntentId The gateway's reference to the intent.
+	 * @return IntentRef|null The intent, or null when no intent of the gateway has the reference.
+	 */
+	public function findByProvider( string $gatewayId, string $providerIntentId ): ?IntentRef;
+
+	/**
 	 * Moves an intent to a state that waits: for the customer to act, or for the gateway to decide.
 	 *
 	 * @since 0.1.0

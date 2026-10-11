@@ -59,11 +59,15 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	/**
 	 * The key a claim found taken: what it holds, and whether it has expired. A locking read, by the unique key.
 	 *
+	 * The shared lock is written LOCK IN SHARE MODE, which MySQL and MariaDB both read; MariaDB
+	 * refuses MySQL's FOR SHARE.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 LOCK IN SHARE MODE, for MariaDB.
 	 *
 	 * @var string
 	 */
-	public const TAKEN = 'SELECT id, request_fingerprint, state, order_id, response_json, expires_at <= UTC_TIMESTAMP() AS expired FROM %i WHERE scope = %s AND key_hash = %s FOR SHARE';
+	public const TAKEN = 'SELECT id, request_fingerprint, state, order_id, response_json, expires_at <= UTC_TIMESTAMP() AS expired FROM %i WHERE scope = %s AND key_hash = %s LOCK IN SHARE MODE';
 
 	/**
 	 * A key as last committed, before any transaction: what it holds, and whether it has expired. A plain read, by the unique key.
@@ -97,15 +101,16 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	 *
 	 * The sealed next action follows the outcome: null unless the shopper must act; then the one
 	 * given, or the one kept when none is given. Every branch is typed JSON, so a box is kept as an
-	 * object, as the sealed order key is.
+	 * object, as the sealed order key is: the box given is parsed with JSON_EXTRACT( …, '$' ),
+	 * which MySQL and MariaDB both read, where MariaDB refuses MySQL's CAST( … AS JSON ).
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 Writes the sealed next action.
+	 * @since 0.2.0 Writes the sealed next action, parsed so MariaDB reads it too.
 	 *
 	 * @var string
 	 */
 	public const SETTLE_ANSWER = "UPDATE %i SET response_json = JSON_SET( response_json, '$.outcome', %s, '$.status', COALESCE( NULLIF( %s, '' ), JSON_UNQUOTE( JSON_EXTRACT( response_json, '$.status' ) ) ), '$.payment_status', %s, "
-		. "'$.next_action_sealed', CASE WHEN %s <> %s THEN NULL WHEN %s <> '' THEN CAST( NULLIF( %s, '' ) AS JSON ) ELSE JSON_EXTRACT( response_json, '$.next_action_sealed' ) END ) "
+		. "'$.next_action_sealed', CASE WHEN %s <> %s THEN NULL WHEN %s <> '' THEN JSON_EXTRACT( NULLIF( %s, '' ), '$' ) ELSE JSON_EXTRACT( response_json, '$.next_action_sealed' ) END ) "
 		. "WHERE order_id = %d AND state = 'placed'";
 
 	/**

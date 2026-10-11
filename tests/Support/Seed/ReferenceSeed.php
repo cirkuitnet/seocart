@@ -23,6 +23,7 @@ use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Payment\Infrastructure\RefundClaimTables;
 use SEOCart\Payment\Infrastructure\RefundTables;
+use SEOCart\Payment\Infrastructure\WebhookReceiptTables;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Schema\PlatformTables;
@@ -314,6 +315,7 @@ final class ReferenceSeed {
 			+ array_fill_keys( PaymentTables::names(), 'A payment is made for an order, and the dataset has no orders yet.' )
 			+ array_fill_keys( RefundTables::names(), 'A refund gives back part of a paid order, and the dataset has no orders yet.' )
 			+ array_fill_keys( RefundClaimTables::names(), 'A refund is claimed before the gateway is asked for it, and the dataset has no orders yet; doctor\'s search for claims never settled reads it by its state and age.' )
+			+ array_fill_keys( WebhookReceiptTables::names(), 'A receipt records an event a payment provider delivered, and the dataset has no payments yet. Every statement reads it by a key; the query-plan run records receipts of its own to judge them.' )
 			+ array_fill_keys( PricingTables::names(), 'The dataset sells in its base currency only; a store has a few dozen currencies and rates at most, read by their keys.' );
 	}
 

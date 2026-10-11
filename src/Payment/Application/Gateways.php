@@ -379,10 +379,11 @@ final class Gateways implements GatewayRegistry {
 	 *
 	 * @param string $gatewayId The gateway's id, as the intent records it.
 	 * @param Mode   $mode      The intent's mode.
-	 * @return PaymentGateway The gateway.
+	 * @return CanonicalGateway The gateway, its answers kept canonical: a provider's reference is kept the same way in the
+	 *                          request as by webhook.
 	 */
-	public function get( string $gatewayId, Mode $mode ): PaymentGateway {
-		$gateway = $this->registered( $gatewayId );
+	public function get( string $gatewayId, Mode $mode ): CanonicalGateway {
+		$gateway = new CanonicalGateway( $this->registered( $gatewayId ) );
 
 		$this->requireMode( $gatewayId, $mode );
 

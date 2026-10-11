@@ -179,7 +179,10 @@ final class OrderQueryPlanTest extends OrderTestCase {
 			$values[]  = $override[ $name ] ?? 'o.`' . $name . '`';
 		}
 
-		$this->db->execute( 'SET SESSION cte_max_recursion_depth = %d', $count + 1 );
+		// MySQL bounds a recursive common table expression by cte_max_recursion_depth, MariaDB by max_recursive_iterations.
+		$mariadb = str_contains( (string) $this->db->fetchValue( 'SELECT VERSION()' ), 'MariaDB' );
+
+		$this->db->execute( $mariadb ? 'SET SESSION max_recursive_iterations = %d' : 'SET SESSION cte_max_recursion_depth = %d', $count + 1 );
 		$this->db->execute(
 			'INSERT INTO %i ( ' . implode( ', ', $columns ) . ' ) WITH RECURSIVE n ( i ) AS ( SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < %d ) SELECT ' . implode( ', ', $values ) . ' FROM n JOIN %i o ON o.id = %d',
 			$orders,

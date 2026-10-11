@@ -163,6 +163,33 @@ final class ObjectCacheRateLimiter implements RateLimiter {
 	}
 
 	/**
+	 * Counts one request only while its window has counted fewer than a limit: the cache's increment is atomic, so exactly the first `$limit` increments are counted.
+	 *
+	 * Once the cache has failed, the table counts, conditionally, in its place.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \InvalidArgumentException When the bucket or the window is refused, or the limit is below 1.
+	 *
+	 * @param string         $bucket   What is counted.
+	 * @param ClientIdentity $identity Who sent the request.
+	 * @param int            $window   The length of a window, in seconds.
+	 * @param int            $limit    The most requests a window counts, at least 1.
+	 * @return bool True when the request was one of the first `$limit` of its window.
+	 */
+	public function countBelow( string $bucket, ClientIdentity $identity, int $window, int $limit ): bool {
+		if ( $limit < 1 ) {
+			throw new \InvalidArgumentException( 'A limit counts at least one request.' );
+		}
+
+		if ( $this->failed ) {
+			return ( $this->fallback )()->countBelow( $bucket, $identity, $window, $limit );
+		}
+
+		return $this->hit( $bucket, $identity, $window ) <= $limit;
+	}
+
+	/**
 	 * Returns the count of the current window without counting.
 	 *
 	 * @since 0.1.0

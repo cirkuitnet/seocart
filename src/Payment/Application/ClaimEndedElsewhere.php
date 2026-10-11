@@ -22,7 +22,11 @@ defined( 'ABSPATH' ) || exit;
  * does. RefundService catches this once its transaction has rolled back, and answers from the
  * claim as the other request ended it. It never leaves the refund service.
  *
+ * Thrown too when a person's settlement, or the provider's own delivery of the refund's answer,
+ * finds under the intent's lock that the claim it read open has ended since.
+ *
  * @since 0.1.0
+ * @since 0.2.0 A settlement or a delivery finding the claim ended.
  */
 final class ClaimEndedElsewhere extends \RuntimeException {
 }

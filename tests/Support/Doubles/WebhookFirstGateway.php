@@ -19,11 +19,11 @@ use SEOCart\Contracts\Payment\PaymentQuery;
 use SEOCart\Contracts\Payment\PaymentRequest;
 
 /**
- * Wraps a gateway, and hands each authorization's result to a webhook before returning it.
+ * Wraps a gateway, and hands each authorization's result to a webhook before returning it, and each refund's too when given a webhook for refunds.
  *
  * Owns one fact: the race a real provider allows, where its webhook reaches the store while the
- * authorization call is still on its way back. The webhook runs where the call ran: outside any
- * transaction. Everything else is the wrapped gateway's.
+ * authorization or refund call is still on its way back. The webhook runs where the call ran:
+ * outside any transaction. Everything else is the wrapped gateway's.
  *
  * @since 0.1.0
  */
@@ -35,13 +35,17 @@ final class WebhookFirstGateway implements PaymentGateway {
 	 * Creates the gateway.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The webhook for refunds.
 	 *
-	 * @param PaymentGateway $inner   The gateway that answers.
-	 * @param \Closure       $webhook Receives each authorization's result before the call returns it.
+	 * @param PaymentGateway $inner         The gateway that answers.
+	 * @param \Closure       $webhook       Receives each authorization's result before the call returns it.
+	 * @param \Closure|null  $refundWebhook Optional. Receives each refund's request and result before the call returns
+	 *                                      the result. Default null, none.
 	 *
 	 * @phpstan-param \Closure(GatewayResult): mixed $webhook
+	 * @phpstan-param (\Closure(GatewayRefund, GatewayResult): mixed)|null $refundWebhook
 	 */
-	public function __construct( private PaymentGateway $inner, private \Closure $webhook ) {
+	public function __construct( private PaymentGateway $inner, private \Closure $webhook, private ?\Closure $refundWebhook = null ) {
 	}
 
 	/**
@@ -73,15 +77,22 @@ final class WebhookFirstGateway implements PaymentGateway {
 	}
 
 	/**
-	 * Refunds through the wrapped gateway.
+	 * Refunds through the wrapped gateway, and delivers the request and result to the webhook for refunds first, when there is one.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The webhook for refunds.
 	 *
 	 * @param GatewayRefund $request The request.
 	 * @return GatewayResult The result.
 	 */
 	public function refund( GatewayRefund $request ): GatewayResult {
-		return $this->inner->refund( $request );
+		$result = $this->inner->refund( $request );
+
+		if ( null !== $this->refundWebhook ) {
+			( $this->refundWebhook )( $request, $result );
+		}
+
+		return $result;
 	}
 
 	/**

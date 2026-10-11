@@ -103,9 +103,9 @@ final class RateLimiterTest extends DatabaseTestCase {
 		$this->assertQueryCount( 2, $log, 'Two hits, one statement each: the count is read back as the insert id' );
 		$this->assertSame( 2, $limiter->peek( 'cart.write', $client, self::WINDOW ) );
 
-		$row = $this->db->fetchRow( 'SELECT TIMESTAMPDIFF( SECOND, window_start, expires_at ) AS length, TIMESTAMPDIFF( SECOND, %s, window_start ) MOD %d AS offset, window_start <= UTC_TIMESTAMP() AND expires_at > UTC_TIMESTAMP() AS current FROM %i', '1970-01-01 00:00:00', self::WINDOW, $this->table() );
+		$row = $this->db->fetchRow( 'SELECT TIMESTAMPDIFF( SECOND, window_start, expires_at ) AS length, TIMESTAMPDIFF( SECOND, %s, window_start ) MOD %d AS window_offset, window_start <= UTC_TIMESTAMP() AND expires_at > UTC_TIMESTAMP() AS current FROM %i', '1970-01-01 00:00:00', self::WINDOW, $this->table() );
 
-		$this->assertSame( array( (string) self::WINDOW, '0', '1' ), array( $row['length'] ?? null, $row['offset'] ?? null, $row['current'] ?? null ), 'The row is the current window, aligned to the epoch, and expires when it ends.' );
+		$this->assertSame( array( (string) self::WINDOW, '0', '1' ), array( $row['length'] ?? null, $row['window_offset'] ?? null, $row['current'] ?? null ), 'The row is the current window, aligned to the epoch, and expires when it ends.' );
 	}
 
 	/**
@@ -134,6 +134,26 @@ final class RateLimiterTest extends DatabaseTestCase {
 			array_column( $this->db->fetchAll( 'SELECT key_hash FROM %i', $this->table() ), 'key_hash' ),
 			'Every ended row went, one batch at a time; the current one stayed.'
 		);
+	}
+
+	/**
+	 * Tests that each adapter counts below a limit and nothing at it: the table in one statement that changes no row there.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_each_adapter_counts_below_a_limit_and_nothing_at_it(): void {
+		$client = self::client( '192.0.2.1' );
+		$table  = new TableRateLimiter( $this->db );
+		$cache  = new ObjectCacheRateLimiter( new FrozenClock( new \DateTimeImmutable( '2026-09-25 10:00:30', new \DateTimeZone( 'UTC' ) ) ), $this->noFallback() );
+
+		$this->assertSame( array( true, true, true ), array( $table->countBelow( 'cart.write', $client, self::MINUTE, 3 ), $table->countBelow( 'cart.write', $client, self::MINUTE, 3 ), $table->countBelow( 'cart.write', $client, self::MINUTE, 3 ) ) );
+
+		$at = $this->captureQueries( static fn(): bool => $table->countBelow( 'cart.write', $client, self::MINUTE, 3 ) );
+
+		$this->assertFalse( $table->countBelow( 'cart.write', $client, self::MINUTE, 3 ) );
+		$this->assertQueryCount( 1, $at, 'A request at the limit' );
+		$this->assertSame( 3, $table->peek( 'cart.write', $client, self::MINUTE ), 'The table changed nothing at the limit.' );
+		$this->assertSame( array( true, true, false ), array( $cache->countBelow( 'cart.write', $client, self::MINUTE, 2 ), $cache->countBelow( 'cart.write', $client, self::MINUTE, 2 ), $cache->countBelow( 'cart.write', $client, self::MINUTE, 2 ) ) );
 	}
 
 	/**

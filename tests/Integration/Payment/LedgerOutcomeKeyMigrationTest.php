@@ -170,13 +170,12 @@ final class LedgerOutcomeKeyMigrationTest extends KernelTestCase {
 	 *
 	 * @since 0.2.0
 	 */
-	public function test_the_migration_sorts_last_and_declares_the_ledger(): void {
+	public function test_the_migration_sorts_after_its_predecessors_and_declares_the_ledger(): void {
 		$migration = new KeyLedgerByOutcome();
 		$ids       = array_map( static fn( Migration $registered ): string => $registered->id(), OwnedData::registry()->migrations() );
 
 		$this->assertContains( KeyLedgerByOutcome::ID, $ids, 'The registry runs the migration.' );
-		$this->assertSame( KeyLedgerByOutcome::ID, max( $ids ), 'The migration sorts after every migration registered before it.' );
-		$this->assertGreaterThan( AddRefundClaimSettlement::ID, $migration->id() );
+		$this->assertGreaterThan( AddRefundClaimSettlement::ID, $migration->id(), 'The migration sorts after every migration registered before it.' );
 		$this->assertFalse( $migration->canOperateHalfApplied(), 'Under three columns a second outcome of the same object is lost, so the store waits for the key.' );
 		$this->assertEquals( array( PaymentTables::transactions() ), $migration->tables() );
 	}

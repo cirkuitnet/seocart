@@ -162,8 +162,8 @@ final class MysqlRefundRepository implements RefundRepository {
 	 *
 	 * @var string
 	 */
-	public const INSERT_CLAIM_LINES = 'INSERT INTO {refund_claim_lines} ( claim_id, line_uuid, quantity, restock ) SELECT portion.claim_id, portion.line_uuid, portion.quantity, portion.restock '
-		. 'FROM ( SELECT %d AS claim_id, %s AS line_uuid, %d AS quantity, %d AS restock ) AS portion';
+	public const INSERT_CLAIM_LINES = 'INSERT INTO {refund_claim_lines} ( claim_id, line_uuid, quantity, restock ) SELECT given.claim_id, given.line_uuid, given.quantity, given.restock '
+		. 'FROM ( SELECT %d AS claim_id, %s AS line_uuid, %d AS quantity, %d AS restock ) AS given';
 
 	/**
 	 * The claim an idempotency key names, by the `key_hash` unique key: where it stands, the ledger row that ended it, and the fingerprint of the request it was made for.
@@ -306,8 +306,8 @@ final class MysqlRefundRepository implements RefundRepository {
 	 * @var string
 	 */
 	public const INSERT_LINES = 'INSERT INTO {refund_lines} ( refund_id, order_line_id, quantity, amount_minor, net_minor, tax_minor, gross_minor, currency, base_net_minor, base_tax_minor, base_gross_minor, restock, created_at ) SELECT '
-		. 'portion.refund_id, portion.order_line_id, portion.quantity, portion.gross, portion.net, portion.tax, portion.gross, portion.currency, portion.base_net, portion.base_tax, portion.base_gross, portion.restock, UTC_TIMESTAMP(6) '
-		. 'FROM ( SELECT %d AS refund_id, %d AS order_line_id, %d AS quantity, %d AS net, %d AS tax, %d AS gross, %s AS currency, %d AS base_net, %d AS base_tax, %d AS base_gross, %d AS restock ) AS portion';
+		. 'given.refund_id, given.order_line_id, given.quantity, given.gross, given.net, given.tax, given.gross, given.currency, given.base_net, given.base_tax, given.base_gross, given.restock, UTC_TIMESTAMP(6) '
+		. 'FROM ( SELECT %d AS refund_id, %d AS order_line_id, %d AS quantity, %d AS net, %d AS tax, %d AS gross, %s AS currency, %d AS base_net, %d AS base_tax, %d AS base_gross, %d AS restock ) AS given';
 
 	/**
 	 * The shares of the tax components a refund returns, from one derived row repeated once per component, each only while it fits what is left of its component.
@@ -323,14 +323,14 @@ final class MysqlRefundRepository implements RefundRepository {
 	 * @var string
 	 */
 	public const INSERT_COMPONENTS = 'INSERT INTO {refund_components} ( refund_id, refund_line_id, order_tax_component_id, net_minor, tax_minor, gross_minor, currency, base_net_minor, base_tax_minor, base_gross_minor, created_at ) SELECT '
-		. 'portion.refund_id, refund_line.id, portion.component_id, portion.net, portion.tax, portion.gross, portion.currency, portion.base_net, portion.base_tax, portion.base_gross, UTC_TIMESTAMP(6) '
+		. 'given.refund_id, refund_line.id, given.component_id, given.net, given.tax, given.gross, given.currency, given.base_net, given.base_tax, given.base_gross, UTC_TIMESTAMP(6) '
 		. 'FROM ( SELECT %d AS refund_id, %d AS order_line_id, %d AS component_id, %d AS net, %d AS tax, %d AS gross, %s AS currency, %d AS base_net, %d AS base_tax, %d AS base_gross, '
-		. '%d AS stored_gross, %d AS stored_base_gross ) AS portion '
-		. 'LEFT JOIN {refund_lines} refund_line ON refund_line.refund_id = portion.refund_id AND refund_line.order_line_id = portion.order_line_id '
-		. 'WHERE IF( portion.stored_gross < 0, -1, 1 ) * portion.gross >= 0 '
-		. 'AND IF( portion.stored_gross < 0, -1, 1 ) * ( portion.stored_gross - portion.gross - COALESCE( ( SELECT SUM( returned.gross_minor ) FROM {refund_components} returned WHERE returned.order_tax_component_id = portion.component_id ), 0 ) ) >= 0 '
-		. 'AND IF( portion.stored_base_gross < 0, -1, 1 ) * portion.base_gross >= 0 '
-		. 'AND IF( portion.stored_base_gross < 0, -1, 1 ) * ( portion.stored_base_gross - portion.base_gross - COALESCE( ( SELECT SUM( returned.base_gross_minor ) FROM {refund_components} returned WHERE returned.order_tax_component_id = portion.component_id ), 0 ) ) >= 0';
+		. '%d AS stored_gross, %d AS stored_base_gross ) AS given '
+		. 'LEFT JOIN {refund_lines} refund_line ON refund_line.refund_id = given.refund_id AND refund_line.order_line_id = given.order_line_id '
+		. 'WHERE IF( given.stored_gross < 0, -1, 1 ) * given.gross >= 0 '
+		. 'AND IF( given.stored_gross < 0, -1, 1 ) * ( given.stored_gross - given.gross - COALESCE( ( SELECT SUM( returned.gross_minor ) FROM {refund_components} returned WHERE returned.order_tax_component_id = given.component_id ), 0 ) ) >= 0 '
+		. 'AND IF( given.stored_base_gross < 0, -1, 1 ) * given.base_gross >= 0 '
+		. 'AND IF( given.stored_base_gross < 0, -1, 1 ) * ( given.stored_base_gross - given.base_gross - COALESCE( ( SELECT SUM( returned.base_gross_minor ) FROM {refund_components} returned WHERE returned.order_tax_component_id = given.component_id ), 0 ) ) >= 0';
 
 	/**
 	 * The refund document that states a ledger row, on the `transaction_id` key.

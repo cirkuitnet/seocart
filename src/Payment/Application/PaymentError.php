@@ -244,6 +244,48 @@ enum PaymentError: string implements ErrorCode {
 	case RefundStatementIncomplete = 'payment.refund_statement_incomplete';
 
 	/**
+	 * A webhook delivery arrived as a read: a provider delivers with POST, and a GET that names another method is still a GET. Nothing was read.
+	 *
+	 * @since 0.2.0
+	 */
+	case WebhookReadMethod = 'payment.webhook_read_method';
+
+	/**
+	 * A webhook delivery has no body, so there is nothing to verify. Nothing was read.
+	 *
+	 * @since 0.2.0
+	 */
+	case WebhookBodyEmpty = 'payment.webhook_body_empty';
+
+	/**
+	 * A webhook delivery's body is larger than any provider's object. Nothing was read.
+	 *
+	 * @since 0.2.0
+	 */
+	case WebhookBodyTooLarge = 'payment.webhook_body_too_large';
+
+	/**
+	 * No gateway receives webhook deliveries at the address: none is registered by the id, it does not declare the mode, or it declares no webhooks.
+	 *
+	 * @since 0.2.0
+	 */
+	case WebhookGatewayUnknown = 'payment.webhook_gateway_unknown';
+
+	/**
+	 * The gateway could not verify the delivery: its signature, its time, or its body. Nothing of it was kept.
+	 *
+	 * @since 0.2.0
+	 */
+	case WebhookRejected = 'payment.webhook_rejected';
+
+	/**
+	 * The delivery was verified, but what it reports could not be settled now; nothing was decided, and a delivery of it again is processed again.
+	 *
+	 * @since 0.2.0
+	 */
+	case WebhookNotSettled = 'payment.webhook_not_settled';
+
+	/**
 	 * Returns the catalog's rows.
 	 *
 	 * @since 0.1.0
@@ -454,6 +496,39 @@ enum PaymentError: string implements ErrorCode {
 					/* translators: %1$s: What is wrong with the statement: incomplete, contradictory, card_number, note_too_long or already_recorded. %2$s: The longest note, in characters, for example 500. */
 					__( 'The statement cannot settle the refund\'s claim (%1$s): every statement says why, in at most %2$s characters; one that the refund was made also names the payment provider\'s refund, in printable ASCII with no space, and the amount given back, and one that it was not names neither; the provider\'s refund never holds a card number, and is never one already recorded.', 'seocart' ),
 				array( 'problem', 'max_length' )
+			),
+			new ErrorDefinition(
+				self::WebhookReadMethod,
+				405,
+				static fn(): string => __( 'A webhook delivery is sent with POST; nothing was read.', 'seocart' )
+			),
+			new ErrorDefinition(
+				self::WebhookBodyEmpty,
+				400,
+				static fn(): string => __( 'The webhook delivery has no body; nothing was read.', 'seocart' )
+			),
+			new ErrorDefinition(
+				self::WebhookBodyTooLarge,
+				413,
+				static fn(): string =>
+					/* translators: %1$s: The largest body accepted, in bytes, for example 1048576. */
+					__( 'A webhook delivery\'s body is at most %1$s bytes; nothing was read.', 'seocart' ),
+				array( 'max_bytes' )
+			),
+			new ErrorDefinition(
+				self::WebhookGatewayUnknown,
+				404,
+				static fn(): string => __( 'No payment gateway receives webhook deliveries at this address.', 'seocart' )
+			),
+			new ErrorDefinition(
+				self::WebhookRejected,
+				401,
+				static fn(): string => __( 'The webhook delivery could not be verified; nothing of it was kept.', 'seocart' )
+			),
+			new ErrorDefinition(
+				self::WebhookNotSettled,
+				503,
+				static fn(): string => __( 'The webhook delivery was received, but it could not be settled now; send it again later.', 'seocart' )
 			),
 		);
 	}

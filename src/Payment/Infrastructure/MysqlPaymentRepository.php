@@ -242,6 +242,15 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 	public const FIND_INTENT_REF = 'SELECT uuid, order_id, gateway_id, mode, status, provider_intent_id, amount_minor, currency, customer_action_expires_at, customer_action_expires_at <= UTC_TIMESTAMP() AS expired, TIMESTAMPDIFF( SECOND, created_at, UTC_TIMESTAMP(6) ) AS age_seconds FROM {payment_intents} WHERE uuid = %s';
 
 	/**
+	 * One intent by its gateway's own reference to it, on the `gateway_provider_intent` key, read as FIND_INTENT_REF reads one by its uuid.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FIND_INTENT_BY_PROVIDER = 'SELECT uuid, order_id, gateway_id, mode, status, provider_intent_id, amount_minor, currency, customer_action_expires_at, customer_action_expires_at <= UTC_TIMESTAMP() AS expired, TIMESTAMPDIFF( SECOND, created_at, UTC_TIMESTAMP(6) ) AS age_seconds FROM {payment_intents} WHERE gateway_id = %s AND provider_intent_id = %s';
+
+	/**
 	 * The open intents, counted per gateway and mode: how many, how many still wait for their authorization's answer, and how long the longest-waiting has gone unchanged, by the database clock.
 	 *
 	 * The states filter reads the status index; the grouping is over the open intents only.
@@ -670,11 +679,26 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 	}
 
 	/**
+	 * Reads one intent by its gateway's own reference to it, without a lock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $gatewayId        The gateway.
+	 * @param string $providerIntentId The gateway's reference to the intent.
+	 * @return IntentRef|null The intent, as ref() reads one; or null when no intent of the gateway has the reference.
+	 */
+	public function findByProvider( string $gatewayId, string $providerIntentId ): ?IntentRef {
+		$row = $this->statements->rows( self::FIND_INTENT_BY_PROVIDER, $gatewayId, $providerIntentId )[0] ?? null;
+
+		return null === $row ? null : self::refOf( $row );
+	}
+
+	/**
 	 * Builds an intent's reference from its row.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param array<string, mixed> $row The row, as STALE_INTENTS and FIND_INTENT_REF read it.
+	 * @param array<string, mixed> $row The row, as STALE_INTENTS, FIND_INTENT_REF and FIND_INTENT_BY_PROVIDER read it.
 	 * @return IntentRef The reference.
 	 */
 	private static function refOf( array $row ): IntentRef {

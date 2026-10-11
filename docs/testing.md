@@ -57,7 +57,7 @@ From many, fast and cheap to few, slow and high in value:
   in `tests/Support/Factories/`, never through raw SQL, so that a test exercises the write
   path that production uses.
 - Select specialised sets with PHPUnit groups: `concurrency`, `migration`, `performance`,
-  `contract`, `reference-fixture`, `international` and `multilingual-conformance`. The
+  `contract`, `reference-fixture`, `international`, `multilingual-conformance` and `soak`. The
   commands below map to those groups.
 - Never trust the return value of `dbDelta()`. A migration test inspects
   `information_schema` after the migration runs.
@@ -125,6 +125,7 @@ the source of truth. Run `composer list` or `npm run` to see them with their des
 | `composer test:migration`                | The integration suite, group `migration`                                                                        |
 | `composer test:performance`              | The integration suite, group `performance`: query counts, autoload size and the idle-request budget             |
 | `composer test:query-plans`              | `test:performance` with the query-plan run switched on: the medium reference dataset and the query-plan gate    |
+| `composer test:soak`                     | The integration suite, group `soak`: the webhook storm; `SEOCART_WEBHOOK_SOAK` sets its deliveries              |
 | `composer test:contracts`                | Group `contract` in both suites: the DRY derivation checks                                                      |
 | `composer test:contracts:unit`           | The unit half of that group; fails when the group selects no test                                               |
 | `composer test:reference-fixtures`       | Group `reference-fixture` in both suites: hand-authored input and expected-output scenarios                     |

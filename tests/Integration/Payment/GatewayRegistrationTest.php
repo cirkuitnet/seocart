@@ -23,6 +23,7 @@ use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\Doubles\DeclaredGateway;
 use SEOCart\Tests\Support\Doubles\UndescribableGateway;
+use SEOCart\Tests\Support\Payment\CanonicalGateways;
 use SEOCart\Tests\Support\Payment\TestGateways;
 
 /**
@@ -60,8 +61,8 @@ final class GatewayRegistrationTest extends DatabaseTestCase {
 		);
 
 		$this->assertSame( 0, $fired, 'Building the registry fires nothing.' );
-		$this->assertSame( $example, $gateways->get( 'example', Mode::Test ) );
-		$this->assertInstanceOf( StubGateway::class, $gateways->get( StubGateway::ID, Mode::Test ), 'The stand-in is registered too.' );
+		$this->assertSame( $example, CanonicalGateways::behind( $gateways->get( 'example', Mode::Test ) ), 'The registry serves the gateway registered, its answers kept canonical.' );
+		$this->assertInstanceOf( StubGateway::class, CanonicalGateways::behind( $gateways->get( StubGateway::ID, Mode::Test ) ), 'The stand-in is registered too.' );
 		$gateways->descriptor( 'example' );
 		$this->assertSame( 1, $fired, 'The action fires once per request.' );
 		$this->assertSame( array(), $this->reports );
@@ -96,7 +97,7 @@ final class GatewayRegistrationTest extends DatabaseTestCase {
 			20
 		);
 
-		$this->assertSame( $first, $gateways->get( 'example', Mode::Test ), 'The first registration of an id stays.' );
+		$this->assertSame( $first, CanonicalGateways::behind( $gateways->get( 'example', Mode::Test ) ), 'The first registration of an id stays.' );
 		$this->assertNotNull( $late );
 		$late->register( new DeclaredGateway( DeclaredGateway::descriptor( 'latecomer', array( Mode::Test ), array() ) ) );
 
