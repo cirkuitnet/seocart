@@ -4,8 +4,8 @@
 # without a real server.
 #
 # Reusable because two workflows run it: ci.yml (the PHP x WordPress matrix, the multisite
-# cell, the query-plan cell and the multilingual-conformance cell) and nightly.yml (WordPress
-# nightly). Every command below is one of the repository's own scripts, so the same cell runs
+# cell, the MariaDB cell, the query-plan cell and the multilingual-conformance cell) and
+# nightly.yml (WordPress nightly). Every command below is one of the repository's own scripts, so the same cell runs
 # on a developer machine with the same two lines. A cell runs the whole suite unless its
 # caller names another Composer script; only then does the script's name join the cell's
 # name, so the names of the existing cells, some of them required checks, do not change.

@@ -315,17 +315,17 @@ A test that can fail because of when or where it ran is a defect in the test.
 
 ## Where the suites run
 
-| Suite or gate                         | On a development machine                                                           | In continuous integration                                                                                        |
-| ------------------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Static gates, unit, tool self-tests   | Anywhere PHP and Composer are installed                                            | Every pull request, on each supported PHP version                                                                |
-| JavaScript lint and unit              | Anywhere Node.js is installed                                                      | Every pull request                                                                                               |
-| Integration and its groups            | Against a dedicated MySQL database                                                 | Every pull request, against a MySQL service, also as a multisite and, for the query plans, on the medium dataset |
-| Integration on MariaDB                | Against a dedicated MariaDB database, named in `WP_PHPUNIT__TESTS_CONFIG`          | Nightly: the whole suite on the `mariadb:lts` image (`nightly.yml`, job `mariadb`); not a required check yet     |
-| Action Scheduler coexistence          | In the integration suite, and by hand on a disposable site with WooCommerce active | In the integration suite (`tests/Integration/Jobs/CoexistenceTest.php`); no job installs WooCommerce             |
-| Multilingual conformance              | On a disposable site with Polylang (free) active                                   | Every pull request and every push to main; not a required check                                                  |
-| End-to-end and accessibility          | From any machine with a browser, against a disposable site                         | A secondary job against a disposable site                                                                        |
-| Packaging and the WordPress.org gates | `composer wporg:check`, `composer licenses:check`, the zip scripts                 | Every pull request and every release                                                                             |
-| Install smoke and the smoke suite     | `sh bin/ci/install-smoke.sh`, `sh bin/ci/smoke-suite.sh`                           | Every pull request: `package / install-smoke` on two PHP and WordPress pairs, and the `smoke-suite` job          |
+| Suite or gate                         | On a development machine                                                           | In continuous integration                                                                                                    |
+| ------------------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Static gates, unit, tool self-tests   | Anywhere PHP and Composer are installed                                            | Every pull request, on each supported PHP version                                                                            |
+| JavaScript lint and unit              | Anywhere Node.js is installed                                                      | Every pull request                                                                                                           |
+| Integration and its groups            | Against a dedicated MySQL database                                                 | Every pull request, against a MySQL service, also as a multisite and, for the query plans, on the medium dataset             |
+| Integration on MariaDB                | Against a dedicated MariaDB database, named in `WP_PHPUNIT__TESTS_CONFIG`          | Every pull request: the whole suite on the `mariadb:lts` image (`ci.yml`, job `integration-tests-mariadb`); a required check |
+| Action Scheduler coexistence          | In the integration suite, and by hand on a disposable site with WooCommerce active | In the integration suite (`tests/Integration/Jobs/CoexistenceTest.php`); no job installs WooCommerce                         |
+| Multilingual conformance              | On a disposable site with Polylang (free) active                                   | Every pull request and every push to main; not a required check                                                              |
+| End-to-end and accessibility          | From any machine with a browser, against a disposable site                         | A secondary job against a disposable site                                                                                    |
+| Packaging and the WordPress.org gates | `composer wporg:check`, `composer licenses:check`, the zip scripts                 | Every pull request and every release                                                                                         |
+| Install smoke and the smoke suite     | `sh bin/ci/install-smoke.sh`, `sh bin/ci/smoke-suite.sh`                           | Every pull request: `package / install-smoke` on two PHP and WordPress pairs, and the `smoke-suite` job                      |
 
 `bin/ci/polylang-pin.env` states the one Polylang (free) version, and its checksum, that both
 places install. To run the suite by hand: `sh bin/ci/download-polylang.sh <dir>` downloads
@@ -338,7 +338,7 @@ silently skipped, not failed: check the run's `Skipped:` count against its `Test
 ## MariaDB
 
 WordPress runs on MariaDB as well as on MySQL, so the integration suite runs on both: the
-pull-request checks on MySQL 8.4, and the nightly workflow's `mariadb` job on the `mariadb:lts`
+pull-request checks on MySQL 8.4, and the `integration-tests-mariadb` check on the `mariadb:lts`
 image. To run it by hand, copy `tests/wp-tests-config.local.php`, point the copy at a test
 database of its own on a MariaDB server, and name the copy in `WP_PHPUNIT__TESTS_CONFIG`:
 

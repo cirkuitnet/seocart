@@ -8,7 +8,7 @@
 # Job graph (arrows are `needs`):
 #
 #   lint-php ------+-> static-analysis --+-> integration-tests (PHP x WordPress), integration-tests-multisite, query-plans,
-#                  |                     |    multilingual-conformance
+#                  |                     |    integration-tests-mariadb, multilingual-conformance
 #                  +-> unit-tests -------+-> package: build -> packaging-validate
 #                  +-> dry-gates         |                       -> plugin-check
 #                  +-> docs-drift        |                       -> install-smoke
@@ -21,7 +21,8 @@
 #
 # Required checks for branch protection on main: lint-php, workflow-lint, static-analysis,
 # dry-gates, docs-drift, wporg-gates, every unit-tests cell, the "WordPress 7.1"
-# integration-tests cells, integration-tests-multisite, query-plans, js-lint-test, and the
+# integration-tests cells, integration-tests-multisite, integration-tests-mariadb, query-plans,
+# js-lint-test, and the
 # package jobs. The WordPress nightly cells are informational. multilingual-conformance must
 # pass like any other job (it is not allow-failure), but it is not a required check either,
 # because it downloads Polylang from wordpress.org at test time; the merge script still refuses
@@ -205,6 +206,22 @@ jobs:
             php: '8.4'
             wp: '7.1'
             multisite: true
+
+    # The same suite on MariaDB (the long-term support image), where WordPress runs as often as on
+    # MySQL: a statement only MySQL accepts, a column type the two servers report differently, or
+    # a lock the two servers take differently fails here rather than in a shopper's checkout. One
+    # cell: PHP 8.4, WordPress 7.1. It ran nightly, allowed to fail, until the server-specific
+    # differences its first runs found were settled; now a required check.
+    integration-tests-mariadb:
+        name: integration-tests-mariadb
+        needs:
+            - static-analysis
+            - unit-tests
+        uses: ./.github/workflows/reusable-integration-tests.yml
+        with:
+            php: '8.4'
+            wp: '7.1'
+            database: mariadb:lts
 
     # The query plans of the plugin's reads on the medium reference dataset: `composer
     # test:query-plans` seeds it into the cell's own database, prints how long seeding took, and

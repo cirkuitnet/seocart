@@ -33,19 +33,6 @@ jobs:
         with:
             wp: nightly
 
-    # The whole integration suite on MariaDB (the long-term support image), where WordPress
-    # also runs and where the end-to-end lane already did: a statement only MySQL accepts
-    # fails here, not in a shopper's checkout. Nightly rather than a pull-request cell until
-    # the server-specific differences its first runs found are settled (the migrator's column
-    # comparison, two query plans whose MariaDB estimates ignore LIMIT, one concurrency test
-    # that assumes MySQL's duplicate-key lock); then it moves to ci.yml as a required check.
-    mariadb:
-        uses: ./.github/workflows/reusable-integration-tests.yml
-        with:
-            php: '8.4'
-            wp: '7.1'
-            database: mariadb:lts
-
     composer-audit:
         runs-on: ubuntu-24.04
         timeout-minutes: 10
