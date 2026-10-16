@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Performance;
 
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\ServerKind;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\QueryPlan\AllowList;
 use SEOCart\Tests\Support\QueryPlan\PlanRecorder;
@@ -219,11 +220,11 @@ final class QueryPlanRuleTest extends DatabaseTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_the_committed_allow_list_gives_every_entry_a_reason(): void {
-		$entries = AllowList::load( dirname( __DIR__, 3 ) . '/' . AllowList::FILE );
-
-		foreach ( $entries as $id => $entry ) {
-			$this->assertSame( $id, Statement::idOf( $entry['statement'] ) );
-			$this->assertNotSame( '', $entry['reason'] );
+		foreach ( ServerKind::cases() as $server ) {
+			foreach ( AllowList::load( dirname( __DIR__, 3 ) . '/' . AllowList::FILE, $server ) as $id => $entry ) {
+				$this->assertSame( (string) $id, Statement::idOf( $entry['statement'] ) );
+				$this->assertNotSame( '', $entry['reason'] );
+			}
 		}
 	}
 
@@ -246,7 +247,7 @@ final class QueryPlanRuleTest extends DatabaseTestCase {
 			$this->expectException( \UnexpectedValueException::class );
 			$this->expectExceptionMessage( $refusal );
 
-			AllowList::load( $file );
+			AllowList::load( $file, ServerKind::MySQL );
 		} finally {
 			unlink( $file );
 		}

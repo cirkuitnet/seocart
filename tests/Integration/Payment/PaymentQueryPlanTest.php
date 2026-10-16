@@ -111,7 +111,7 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 	public function test_every_payment_read_is_sent_and_keeps_the_rule(): void {
 		global $wpdb;
 
-		$allowed  = AllowList::load( dirname( __DIR__, 3 ) . '/' . AllowList::FILE );
+		$allowed  = AllowList::load( dirname( __DIR__, 3 ) . '/' . AllowList::FILE, $this->db->server()->kind() );
 		$recorder = PlanRecorder::open();
 
 		try {

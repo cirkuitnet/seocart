@@ -19,17 +19,22 @@ use SEOCart\Platform\Database\Schema\IndexSpec;
 use SEOCart\Platform\Database\Schema\MutationPattern;
 use SEOCart\Platform\Database\Schema\PlatformTables;
 use SEOCart\Platform\Database\Schema\TableDefinition;
+use SEOCart\Platform\Database\SchemaMigration;
+use SEOCart\Platform\DataRegistry\OwnedData;
 
 /**
  * The generator's output, byte for byte, for a declaration that uses every rule.
  *
  * The expected strings are written out by hand, so a change to the generator is a change to
  * this test, never a silent change to every table. MigratorTest proves the other
- * half: that dbDelta, parsing this output for an existing table, sends no ALTER.
+ * half: that dbDelta, parsing this output for an existing table, sends no ALTER, on MySQL in
+ * the plain form and on MariaDB in the form with integer display widths.
  *
  * Planted violations, each shown red and removed: in DdlGenerator::createTable(), write
  * `PRIMARY KEY (` with one space; in DdlGenerator::replaceUniqueKey(), write the key's columns as
- * a separate ADD after the DROP, in two statements: the table goes without the key between them.
+ * a separate ADD after the DROP, in two statements: the table goes without the key between them;
+ * in DdlGenerator::withDisplayWidth(), return the type unchanged: on MariaDB every "second run
+ * sends no DDL" test then counts a CHANGE COLUMN for each integer column again.
  *
  * @since 0.1.0
  */
@@ -63,6 +68,104 @@ final class DdlGeneratorTest extends TestCase {
 			. ') ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci';
 
 		$this->assertSame( $expected, ( new DdlGenerator() )->createTable( self::widgets(), 'wp_seocart_widgets', self::CHARSET ) );
+	}
+
+	/**
+	 * Tests the statement for an existing table on a server that reports integer display widths: only the integer types change.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_statement_with_integer_widths_changes_only_the_integer_types(): void {
+		$expected = "CREATE TABLE `wp_seocart_widgets` (\n"
+			. "\t`id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,\n"
+			. "\t`uuid` char(36) COLLATE ascii_bin NOT NULL,\n"
+			. "\t`name` varchar(191) NOT NULL DEFAULT '',\n"
+			. "\t`price_minor` bigint(20) NOT NULL DEFAULT '0',\n"
+			. "\t`note` longtext NULL,\n"
+			. "\t`created_at` datetime(6) NOT NULL,\n"
+			. "\tPRIMARY KEY  (`id`),\n"
+			. "\tUNIQUE KEY `uuid` (`uuid`),\n"
+			. "\tKEY `name_created` (`name`(20),`created_at`)\n"
+			. ') ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci';
+
+		$this->assertSame( $expected, ( new DdlGenerator() )->createTable( self::widgets(), 'wp_seocart_widgets', self::CHARSET, true ) );
+	}
+
+	/**
+	 * Lists declared types with the form a server that reports integer display widths shows, as `SHOW COLUMNS` printed it on MariaDB 11.8.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string, string}> Declared, reported.
+	 */
+	public static function reportedTypes(): array {
+		return array(
+			'bigint unsigned'    => array( 'bigint unsigned', 'bigint(20) unsigned' ),
+			'bigint'             => array( 'bigint', 'bigint(20)' ),
+			'int unsigned'       => array( 'int unsigned', 'int(10) unsigned' ),
+			'int'                => array( 'int', 'int(11)' ),
+			'mediumint unsigned' => array( 'mediumint unsigned', 'mediumint(8) unsigned' ),
+			'mediumint'          => array( 'mediumint', 'mediumint(9)' ),
+			'smallint unsigned'  => array( 'smallint unsigned', 'smallint(5) unsigned' ),
+			'smallint'           => array( 'smallint', 'smallint(6)' ),
+			'tinyint unsigned'   => array( 'tinyint unsigned', 'tinyint(3) unsigned' ),
+			'tinyint'            => array( 'tinyint', 'tinyint(4)' ),
+			'a boolean'          => array( 'tinyint(1)', 'tinyint(1)' ),
+			'varchar'            => array( 'varchar(191)', 'varchar(191)' ),
+			'decimal'            => array( 'decimal(24,12)', 'decimal(24,12)' ),
+			'datetime'           => array( 'datetime(6)', 'datetime(6)' ),
+		);
+	}
+
+	/**
+	 * Tests that each integer type gains the width a server that reports widths shows, and every other type is left alone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider reportedTypes
+	 *
+	 * @param string $declared The type as a declaration writes it.
+	 * @param string $reported The type as MariaDB reports it.
+	 */
+	public function test_a_type_is_written_as_a_server_that_reports_widths_reports_it( string $declared, string $reported ): void {
+		$this->assertSame( $reported, DdlGenerator::withDisplayWidth( $declared ) );
+	}
+
+	/**
+	 * Tests that every integer type a production table declares has a reported form, so a new one cannot be declared without it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_every_integer_type_the_declarations_use_has_its_reported_width(): void {
+		$types = array();
+
+		foreach ( OwnedData::registry()->migrations() as $migration ) {
+			if ( $migration instanceof SchemaMigration ) {
+				foreach ( $migration->tables() as $table ) {
+					foreach ( $table->columns() as $column ) {
+						if ( 1 === preg_match( '/^(?:tinyint|smallint|mediumint|int|integer|bigint)\b/', $column->type() ) ) {
+							$types[ $column->type() ] = DdlGenerator::withDisplayWidth( $column->type() );
+						}
+					}
+				}
+			}
+		}
+
+		ksort( $types );
+
+		$this->assertSame(
+			array(
+				'bigint'            => 'bigint(20)',
+				'bigint unsigned'   => 'bigint(20) unsigned',
+				'int'               => 'int(11)',
+				'int unsigned'      => 'int(10) unsigned',
+				'smallint unsigned' => 'smallint(5) unsigned',
+				'tinyint unsigned'  => 'tinyint(3) unsigned',
+				'tinyint(1)'        => 'tinyint(1)',
+			),
+			$types,
+			'A declaration uses an integer type this list does not know: add it here and to DdlGenerator::DISPLAY_WIDTHS, as SHOW COLUMNS prints it on MariaDB.'
+		);
 	}
 
 	/**

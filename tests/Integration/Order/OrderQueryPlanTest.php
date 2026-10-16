@@ -18,6 +18,7 @@ use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\ServerKind;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\Order\NewOrders;
 use SEOCart\Tests\Support\Order\OrderTestCase;
@@ -77,7 +78,7 @@ final class OrderQueryPlanTest extends OrderTestCase {
 	public function test_every_order_read_is_sent_and_keeps_the_rule(): void {
 		global $wpdb;
 
-		$allowed  = AllowList::load( dirname( __DIR__, 3 ) . '/' . AllowList::FILE );
+		$allowed  = AllowList::load( dirname( __DIR__, 3 ) . '/' . AllowList::FILE, $this->db->server()->kind() );
 		$recorder = PlanRecorder::open();
 
 		try {
@@ -180,7 +181,7 @@ final class OrderQueryPlanTest extends OrderTestCase {
 		}
 
 		// MySQL bounds a recursive common table expression by cte_max_recursion_depth, MariaDB by max_recursive_iterations.
-		$mariadb = str_contains( (string) $this->db->fetchValue( 'SELECT VERSION()' ), 'MariaDB' );
+		$mariadb = ServerKind::MariaDB === $this->db->server()->kind();
 
 		$this->db->execute( $mariadb ? 'SET SESSION max_recursive_iterations = %d' : 'SET SESSION cte_max_recursion_depth = %d', $count + 1 );
 		$this->db->execute(

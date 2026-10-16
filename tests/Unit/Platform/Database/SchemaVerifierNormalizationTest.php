@@ -90,4 +90,40 @@ final class SchemaVerifierNormalizationTest extends TestCase {
 	public function test_defaults_are_normalized( ?string $reported, ?string $normalized ): void {
 		$this->assertSame( $normalized, SchemaVerifier::normalizeDefault( $reported ) );
 	}
+
+	/**
+	 * Lists reported EXTRA values with their normalized form, as information_schema printed them on MySQL 8.4 and MariaDB 11.8.
+	 *
+	 * Planted violation: in SchemaVerifier::normalizeExtra(), only lowercase and trim. The MariaDB
+	 * cases then keep their parentheses, and SchemaVerifierTest's "extra clause" line differs
+	 * between the two servers.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string, string}> Reported, normalized.
+	 */
+	public static function extras(): array {
+		return array(
+			'none'                         => array( '', '' ),
+			'auto_increment'               => array( 'auto_increment', 'auto_increment' ),
+			'MySQL on update'              => array( 'on update CURRENT_TIMESTAMP', 'on update current_timestamp' ),
+			'MariaDB on update'            => array( 'on update current_timestamp()', 'on update current_timestamp' ),
+			'MySQL on update, precision'   => array( 'on update CURRENT_TIMESTAMP(6)', 'on update current_timestamp(6)' ),
+			'MariaDB on update, precision' => array( 'on update current_timestamp(6)', 'on update current_timestamp(6)' ),
+		);
+	}
+
+	/**
+	 * Tests that MariaDB's `current_timestamp()` and MySQL's `CURRENT_TIMESTAMP` read the same.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider extras
+	 *
+	 * @param string $reported   EXTRA as a server reports it.
+	 * @param string $normalized The expected normal form.
+	 */
+	public function test_extras_are_normalized( string $reported, string $normalized ): void {
+		$this->assertSame( $normalized, SchemaVerifier::normalizeExtra( $reported ) );
+	}
 }

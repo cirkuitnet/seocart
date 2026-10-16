@@ -29,8 +29,9 @@ defined( 'ABSPATH' ) || exit;
  * return value is never taken as evidence.
  *
  * Both sides are normalized before they are compared. Integer display widths are dropped
- * (MySQL 8.0.19 and later omit them, MariaDB does not), type keywords are lowercased, and
- * MariaDB's quoted string defaults and its literal `NULL` default are unquoted. The storage
+ * (MySQL 8.0.19 and later omit them, MariaDB does not), type keywords are lowercased,
+ * MariaDB's quoted string defaults and its literal `NULL` default are unquoted, and EXTRA is
+ * lowercased with MariaDB's `current_timestamp()` written as MySQL writes it. The storage
  * conventions use no expression default, no ENUM and no generated column, so no other server
  * difference matters.
  *
@@ -178,6 +179,20 @@ final class SchemaVerifier {
 	}
 
 	/**
+	 * Normalizes a column's EXTRA for comparison.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $extra EXTRA as information_schema reports it.
+	 * @return string Lowercase and trimmed, with MariaDB's `current_timestamp()` written as MySQL writes it:
+	 *                `on update current_timestamp()` becomes `on update current_timestamp`. A precision, as in
+	 *                `current_timestamp(6)`, is kept.
+	 */
+	public static function normalizeExtra( string $extra ): string {
+		return str_replace( 'current_timestamp()', 'current_timestamp', strtolower( trim( $extra ) ) );
+	}
+
+	/**
 	 * Compares the columns.
 	 *
 	 * @since 0.1.0
@@ -227,7 +242,7 @@ final class SchemaVerifier {
 				$lines[] = sprintf( '%s.%s: default is %s, declared %s', $table, $name, self::show( $default ), self::show( $column->defaultValue() ) );
 			}
 
-			$extra    = strtolower( trim( (string) $row['extra'] ) );
+			$extra    = self::normalizeExtra( (string) $row['extra'] );
 			$declared = $column->autoIncrement() ? 'auto_increment' : '';
 
 			if ( $declared !== $extra ) {

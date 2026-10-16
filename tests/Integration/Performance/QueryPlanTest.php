@@ -72,7 +72,8 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  * run in a transaction, and the write path, run in one that is rolled back. Each plugin SELECT they
  * sent is explained once per query and IN-list length, and judged by QueryPlan's rule. The run
  * prints every plan, and fails on a plan that breaks the rule unless its query is on the
- * allow-list (AllowList); on an allow-list entry that names no query of the run, or a query
+ * allow-list (AllowList), whose entries scoped to other servers this run leaves out; on an
+ * allow-list entry that names no query of the run, or a query
  * that keeps the rule; and, for the catalog, the inventory, the rate limiter, the cart, the
  * checkout and promotions, on a SELECT
  * their source writes that the run did not send, or a SELECT of their tables their source does
@@ -288,7 +289,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 	public function test_every_plugin_select_keeps_the_query_plan_rule(): void {
 		global $wpdb;
 
-		$allowed  = AllowList::load( dirname( __DIR__, 3 ) . '/' . AllowList::FILE );
+		$allowed  = AllowList::load( dirname( __DIR__, 3 ) . '/' . AllowList::FILE, $this->db->server()->kind() );
 		$recorder = PlanRecorder::open();
 
 		PluginActions::purge();
@@ -320,7 +321,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 			$verdict = 'ok';
 
 			if ( array() !== $plan->breaches ) {
-				$verdict = isset( $allowed[ $id ] ) ? 'allowed' : 'BREAKS THE RULE';
+				$verdict = isset( $allowed[ $id ] ) ? 'allowed' . ( array() === $allowed[ $id ]['servers'] ? '' : ' on ' . implode( ', ', $allowed[ $id ]['servers'] ) ) : 'BREAKS THE RULE';
 
 				if ( ! isset( $allowed[ $id ] ) ) {
 					$breaking = array_merge( $breaking, $plan->lines( $verdict ) );
@@ -337,7 +338,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 			$report = array_merge( $report, $plan->lines( $verdict ) );
 		}
 
-		fwrite( STDOUT, sprintf( "\nThe plans of the %d plugin SELECTs of the run, one per query and IN-list length:\n%s\n", count( $sent ), implode( "\n", $report ) ) );
+		fwrite( STDOUT, sprintf( "\nThe plans of the %d plugin SELECTs of the run on %s, one per query and IN-list length:\n%s\n", count( $sent ), $this->db->server()->label(), implode( "\n", $report ) ) );
 
 		$this->assertSame( array(), $this->inventoryGaps( $recorder->allSent() ), 'The run and the reads the catalog\'s, the inventory\'s, the rate limiter\'s, the cart\'s, the checkout\'s and the promotions\' source write differ. Send each read in exercise(), so its plan is judged; a read of their tables belongs in their source.' );
 		$this->assertSame( array(), $breaking, sprintf( "These plugin SELECTs break the query-plan rule (a full scan of, or more than %d rows examined in, a table of %d rows or more). Fix the query, or add the index it needs with a migration, or put it on %s with the reason its plan is accepted:\n%s\n", QueryPlan::MOST_ROWS, QueryPlan::LARGE_TABLE, AllowList::FILE, implode( "\n", $breaking ) ) );

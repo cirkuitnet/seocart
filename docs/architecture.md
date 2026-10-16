@@ -182,8 +182,9 @@ Everything that must change together changes inside one database transaction, th
 `Database` implements it).
 
 - Transactions **nest** with savepoints. Only the outermost level commits, and only the outermost
-  level may retry: when a deadlock or a lock-wait timeout aborts it, the whole unit of work runs
-  again from the start, after the rollback has finished.
+  level may retry: when a deadlock, a lock-wait timeout or, on MariaDB, a row changed since the
+  transaction's snapshot aborts it, the whole unit of work runs again from the start, after the
+  rollback has finished.
 - A unit asks for its **isolation level** when it starts. A unit that changes stock asks for
   `READ COMMITTED`, so a lock on one item never waits on another's.
 - **Contended changes are one conditional `UPDATE`.** The invariant is in its `WHERE` clause. The

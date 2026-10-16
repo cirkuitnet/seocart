@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Events;
 
+use SEOCart\Platform\Database\ServerKind;
 use SEOCart\Platform\Events\DrainOptions;
 use SEOCart\Platform\Events\DrainReport;
 use SEOCart\Platform\Events\EventEnvelope;
@@ -54,7 +55,8 @@ final class DrainerConcurrencyTest extends OutboxTestCase {
 	 * B1 claims five rows inside an open transaction and holds their locks; B2 sends the same
 	 * claim and is seen waiting in the server; B1 commits; B2 then takes the other five. MySQL
 	 * 8.4 shows an `UPDATE … ORDER BY … LIMIT` that waits for a row lock in the process-list
-	 * state `System lock`, not `updating` as a plain `UPDATE … WHERE id =` does.
+	 * state `System lock`, not `updating` as a plain `UPDATE … WHERE id =` does; MariaDB 11.8
+	 * shows it in `init for update`.
 	 *
 	 * Planted violation: in Outbox::CLAIM, drop `AND ( claimed_until IS NULL OR claimed_until < UTC_TIMESTAMP(6) )`.
 	 * B2 then takes B1's rows as soon as it may.
@@ -85,7 +87,14 @@ final class DrainerConcurrencyTest extends OutboxTestCase {
 
 		$b2->queryAsync( $claimB );
 
-		$this->awaitWaiting( $b2, $claimB, 'System lock' );
+		$this->awaitWaiting(
+			$b2,
+			$claimB,
+			array(
+				ServerKind::MySQL->value   => 'System lock',
+				ServerKind::MariaDB->value => 'init for update',
+			)
+		);
 
 		$b1->query( 'COMMIT' );
 

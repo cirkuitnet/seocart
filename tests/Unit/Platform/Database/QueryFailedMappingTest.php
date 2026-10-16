@@ -45,6 +45,7 @@ final class QueryFailedMappingTest extends TestCase {
 	 * @var array<int, class-string<DatabaseException>>
 	 */
 	private const DOCUMENTED = array(
+		1020 => TransactionRetryable::class,
 		1062 => DuplicateKey::class,
 		1205 => TransactionRetryable::class,
 		1213 => TransactionRetryable::class,
@@ -83,6 +84,7 @@ final class QueryFailedMappingTest extends TestCase {
 			'1213 deadlock'                         => array( 1213, true, TransactionRetryable::class ),
 			'1205 lock-wait timeout'                => array( 1205, true, TransactionRetryable::class ),
 			'1205 outside a window'                 => array( 1205, false, TransactionRetryable::class ),
+			'1020 MariaDB, a stale snapshot'        => array( 1020, true, TransactionRetryable::class ),
 			'2006 server gone, inside a window'     => array( 2006, true, TransactionIntegrityLost::class ),
 			'2013 connection lost, inside a window' => array( 2013, true, TransactionIntegrityLost::class ),
 			'2006 server gone, outside a window'    => array( 2006, false, QueryFailed::class ),
@@ -212,7 +214,7 @@ final class QueryFailedMappingTest extends TestCase {
 	 */
 	public function test_error_numbers_are_named_in_one_place(): void {
 		$root     = dirname( __DIR__, 4 ) . '/src/Platform/Database';
-		$numbers  = array( '1050', '1062', '1146', '1205', '1213', '1305', '2006', '2013' );
+		$numbers  = array( '1020', '1050', '1062', '1146', '1205', '1213', '1305', '2006', '2013' );
 		$literals = array();
 		$files    = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( $root, \FilesystemIterator::SKIP_DOTS ) );
 

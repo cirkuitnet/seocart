@@ -18,6 +18,8 @@ use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Database\RetryPolicy;
+use SEOCart\Platform\Database\ServerKind;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Inventory\StockTestCase;
 use SEOCart\Tests\Support\SecondConnection;
@@ -38,7 +40,10 @@ use SEOCart\Tests\Support\SecondConnection;
  * the allocation B commits at the moment of the lock is missed and the item deleted (at
  * REPEATABLE READ the early check's gap lock makes B wait until its lock-wait timeout). In
  * MysqlStockRepository::OPEN_ALLOCATION, drop `FOR UPDATE`: at REPEATABLE READ the check reads
- * the caller's older snapshot and misses the allocation too.
+ * the caller's older snapshot and misses the allocation too. That one shows on MySQL only: on
+ * MariaDB at REPEATABLE READ the item's lock refuses the older snapshot first (error 1020), and
+ * the caller's unit of work, run again with a new snapshot, finds the allocation even with a
+ * plain read.
  *
  * @since 0.1.0
  */
@@ -208,7 +213,15 @@ final class SeamsTest extends StockTestCase {
 	 * there are no gap locks, so a check made before the item lock does not stop B's allocation, and
 	 * misses it; at REPEATABLE READ such a check's own gap lock would make B wait instead.
 	 *
+	 * The item lock is an UPDATE of a row B changed after that snapshot. MySQL's reads the newest
+	 * row, sees the allocation and refuses the delete in the first run. MariaDB refuses the UPDATE
+	 * at REPEATABLE READ (error 1020) and rolls the transaction back; the caller's unit of work, run
+	 * again with a new snapshot, refuses the delete there. What both guarantee: the item and its
+	 * allocation stand, the refusal is `stock.delete_blocked`, and a second run only follows a
+	 * rollback.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Holds on MariaDB, where the caller's unit of work runs again at REPEATABLE READ.
 	 *
 	 * @dataProvider isolationLevels
 	 *
@@ -239,14 +252,21 @@ final class SeamsTest extends StockTestCase {
 			}
 		);
 
+		$runs = 0;
+
 		try {
 			$this->db->transaction(
-				function () use ( $variant ): void {
-					// The caller reads stock first, which fixes its snapshot before B's commit at REPEATABLE READ.
-					$this->assertSame( 0, $this->service->levels( array( $variant ) )[ $variant ]->allocated );
+				function () use ( $variant, &$runs ): void {
+					// The caller reads stock first, which fixes the first run's snapshot before B's commit at REPEATABLE READ.
+					$allocated = $this->service->levels( array( $variant ) )[ $variant ]->allocated;
+
+					if ( 1 === ++$runs ) {
+						$this->assertSame( 0, $allocated );
+					}
 
 					$this->service->deleteVariants( array( $variant ), Actor::user( 4 ) );
-				}
+				},
+				RetryPolicy::deadlocks()
 			);
 			$this->fail( 'The item was deleted although an allocation exists.' );
 		} catch ( CodedException $refused ) {
@@ -257,6 +277,8 @@ final class SeamsTest extends StockTestCase {
 
 		$this->assertTrue( $converted->fired, 'B never converted, so nothing raced the delete.' );
 		$this->assertSame( 1, $this->committedItem( $b, $variant )['allocated'] ?? null, 'The item and its allocation stand.' );
+		$this->assertSame( ServerKind::MariaDB === $this->db->server()->kind() && 'REPEATABLE READ' === $isolation ? 2 : 1, $runs, 'MySQL, and MariaDB at READ COMMITTED, refuse in the first run; MariaDB at REPEATABLE READ refuses the older snapshot once and the delete in the second.' );
+		$this->assertCount( $runs - 1, $this->sleeps, 'A run again that no rollback came before.' );
 	}
 
 	/**

@@ -44,7 +44,11 @@ defined( 'ABSPATH' ) || exit;
  *   it reads the keys as they are now, reads the record, and replaces it by compare-and-swap before
  *   the keys can change. A record is therefore only ever re-sealed with the key that is active
  *   while it is written, whatever rotations, re-sealings and retirements run beside it, and a
- *   record changed meanwhile is left for the next batch rather than overwritten. After the batch
+ *   record changed meanwhile is never re-sealed from its older value: on MySQL the
+ *   compare-and-swap finds the row changed and the record is left for the next batch; on MariaDB
+ *   the server refuses the swap of a row changed since the transaction's snapshot and rolls the
+ *   transaction back, and underLock() runs it again, which reads the newer value and re-seals
+ *   that. After the batch
  *   the retiring key is retired through SecretKeys::retireIfUnused(), which counts again with every
  *   writer held off, and refuses while any record names the key or cannot be read as stored. It
  *   can stop at any point and be run again: every record is at every moment sealed with a key the

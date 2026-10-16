@@ -16,6 +16,7 @@ use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Platform\Database\RetryPolicy;
+use SEOCart\Platform\Database\ServerKind;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Checkout\CheckoutTestCase;
 use SEOCart\Tests\Support\SecondConnection;
@@ -151,9 +152,17 @@ final class IdempotencyClaimConcurrencyTest extends CheckoutTestCase {
 	 * and drop `AND expires_at <= UTC_TIMESTAMP()` from RECLAIM_EXPIRED: B's claim then claims the
 	 * key A has just claimed, and both own it.
 	 *
+	 * MySQL only: MariaDB keeps no lock from a failed duplicate INSERT at REPEATABLE READ, so B's
+	 * INSERT cannot wait there. The test after this one pins what holds on MariaDB.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Skipped on MariaDB.
 	 */
 	public function test_a_claim_of_an_expired_key_waits_for_another_claim_and_finds_it_live(): void {
+		if ( ServerKind::MariaDB === $this->db->server()->kind() ) {
+			$this->markTestSkipped( 'MariaDB keeps no lock from a failed duplicate INSERT at REPEATABLE READ, so B\'s INSERT cannot wait for A; test_on_mariadb_a_claim_of_an_expired_key_racing_another_fails_its_insert_at_once_and_finds_it_live pins what holds there.' );
+		}
+
 		$hash   = self::keyHash( 'attempt-1' );
 		$old    = $this->placedKey( $hash );
 		$b      = $this->secondConnection();
@@ -175,6 +184,72 @@ final class IdempotencyClaimConcurrencyTest extends CheckoutTestCase {
 		$this->assertTrue( $raced->fired, 'B never raced A.' );
 		$this->assertSame( array( true, $old->id ), array( $owner->owned, $owner->id ), 'A did not claim the expired key again.' );
 		$this->assertSame( 1062, $this->reapError( $b ), 'B\'s INSERT did not fail as a duplicate once A committed.' );
+
+		$read = (array) $b->fetchRow( $this->raw( MysqlIdempotencyKeys::TAKEN, $this->keyTable(), self::SCOPE, $hash ) );
+
+		$this->assertSame( array( 'claimed', '0', self::digest( 'request 2' ) ), array( $read['state'] ?? null, $read['expired'] ?? null, $read['request_fingerprint'] ?? null ), 'B did not read the key live and claimed by A.' );
+
+		$b->query( 'ROLLBACK' );
+
+		try {
+			$this->claimCommitted( $hash, self::digest( 'request 3' ) );
+			$this->fail( 'B owned the key A claimed: two owners.' );
+		} catch ( CodedException $held ) {
+			$this->assertSame( CheckoutError::PlacementInProgress, $held->errorCode() );
+		}
+
+		$this->assertSame( array(), $this->sleeps, 'A was retried, so something deadlocked.' );
+		$this->assertSame( self::digest( 'request 2' ), $this->committedKey( $b, $hash )['request_fingerprint'] ?? null );
+	}
+
+	/**
+	 * Tests that, on MariaDB, a claim of an expired key that another request is claiming fails its INSERT at once as a duplicate, then finds the key live: one owner.
+	 *
+	 * The test before this one holds on MySQL, whose failed duplicate INSERT at REPEATABLE READ keeps
+	 * a lock that B's INSERT waits for. MariaDB keeps none, so B's INSERT fails at once, while A has
+	 * read the key expired and is about to claim it again. A then claims the key and commits; B's
+	 * locking read finds it live and claimed by A, and B's claim, as the plugin answers it, is
+	 * "placement in progress". Nothing deadlocks and nothing retries.
+	 *
+	 * Planted violation: the one of the test before this one (in MysqlIdempotencyKeys::answerTaken(),
+	 * treat every taken key as expired, and drop `AND expires_at <= UTC_TIMESTAMP()` from
+	 * RECLAIM_EXPIRED): B's claim then claims the key A has just claimed, and both own it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_on_mariadb_a_claim_of_an_expired_key_racing_another_fails_its_insert_at_once_and_finds_it_live(): void {
+		if ( ServerKind::MariaDB !== $this->db->server()->kind() ) {
+			$this->markTestSkipped( 'MySQL keeps a lock from a failed duplicate INSERT at REPEATABLE READ, so B\'s INSERT waits for A; test_a_claim_of_an_expired_key_waits_for_another_claim_and_finds_it_live pins that.' );
+		}
+
+		$hash    = self::keyHash( 'attempt-1' );
+		$old     = $this->placedKey( $hash );
+		$b       = $this->secondConnection();
+		$insert  = $this->raw( MysqlIdempotencyKeys::CLAIM, $this->keyTable(), self::SCOPE, $hash, self::digest( 'request 3' ), self::KEY_TTL );
+		$refused = null;
+
+		$this->keyExpiresIn( $old->id, -1 );
+
+		$raced = $this->beforeStatement(
+			self::shapeOf( MysqlIdempotencyKeys::RECLAIM_EXPIRED ),
+			function () use ( $b, $insert, &$refused ): void {
+				// A wait would end in a timeout (1205) after a second, not in a duplicate.
+				$b->query( 'SET SESSION innodb_lock_wait_timeout = 1' );
+				$b->query( 'START TRANSACTION' );
+
+				try {
+					$b->query( $insert );
+				} catch ( \RuntimeException $failed ) {
+					$refused = (int) $failed->getCode();
+				}
+			}
+		);
+
+		$owner = $this->db->transaction( fn(): IdempotencyClaim => $this->keys->claim( self::SCOPE, $hash, self::digest( 'request 2' ), self::KEY_TTL ), RetryPolicy::deadlocks() );
+
+		$this->assertTrue( $raced->fired, 'B never raced A.' );
+		$this->assertSame( 1062, $refused, 'B\'s INSERT did not fail at once as a duplicate.' );
+		$this->assertSame( array( true, $old->id ), array( $owner->owned, $owner->id ), 'A did not claim the expired key again.' );
 
 		$read = (array) $b->fetchRow( $this->raw( MysqlIdempotencyKeys::TAKEN, $this->keyTable(), self::SCOPE, $hash ) );
 

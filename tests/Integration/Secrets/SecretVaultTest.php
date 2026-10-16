@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Secrets;
 
+use SEOCart\Platform\Database\ServerKind;
 use SEOCart\Platform\Secrets\Envelope;
 use SEOCart\Platform\Secrets\SecretKeys;
 use SEOCart\Platform\Secrets\SecretKeysTable;
@@ -340,19 +341,24 @@ final class SecretVaultTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Tests that a record changed between the rekey's read and its write is left for the next batch, not overwritten.
+	 * Tests that a record changed between the rekey's read and its write is never re-sealed from its stale value.
 	 *
 	 * Another request, on a second connection, writes a newer value at the moment the rekey's
-	 * replacement is about to leave: after the rekey has read the record and sealed it again. The
-	 * replacement must find the row changed and leave it.
+	 * replacement is about to leave: after the rekey has read the record and sealed it again. Both
+	 * servers keep the newer value; they differ in how. MySQL's compare-and-swap reads the newest
+	 * row, finds it changed and writes nothing: the record is left for the next batch, still sealed
+	 * with the old key, which stays. MariaDB refuses the swap of a row changed since the
+	 * transaction's snapshot (error 1020) and rolls the transaction back; the re-seal's unit of
+	 * work runs again, once, reads the newer value and re-seals that, so the old key goes.
 	 *
 	 * Planted violation: in SecretVault::replace(), write scalars with
-	 * `$this->store->writeScalars( array( $setting->name() => $fresh ) ); return true;`. The rekey then
-	 * overwrites the newer value with the older secret.
+	 * `$this->store->writeScalars( array( $setting->name() => $fresh ) ); return true;`. On MySQL the
+	 * rekey then overwrites the newer value with the older secret.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Holds on MariaDB, where the re-seal runs again from the newer value.
 	 */
-	public function test_a_record_changed_meanwhile_is_left_for_the_next_batch(): void {
+	public function test_a_record_changed_meanwhile_is_never_resealed_from_its_stale_value(): void {
 		global $wpdb;
 
 		$secrets = new SecretsHarness( $this->db );
@@ -384,6 +390,17 @@ final class SecretVaultTest extends DatabaseTestCase {
 		$report = $secrets->vault->rekey( 10 );
 
 		$this->assertTrue( $fired, 'The other request never wrote, so the test proves nothing.' );
+		$this->assertSame( 'sk_live_newer', ( new SecretsHarness( $this->db ) )->vault->reveal( 'api_key' ), 'The rekey overwrote a newer value with the older secret.' );
+
+		if ( ServerKind::MariaDB === $this->db->server()->kind() ) {
+			$this->assertCount( 1, $this->sleeps, 'The re-seal did not run again, once, after MariaDB refused the swap.' );
+			$this->assertSame( array( 1, 0, 0 ), array( $report->resealed, $report->changed, $report->pending ), 'The run again did not re-seal the newer value.' );
+			$this->assertNotNull( $report->retired, 'The old key stayed although no record names it any more.' );
+
+			return;
+		}
+
+		$this->assertSame( array(), $this->sleeps, 'MySQL ran the re-seal again: nothing but a deadlock could make it.' );
 		$this->assertSame( 0, $report->resealed );
 		$this->assertSame( 1, $report->changed );
 		$this->assertSame( 1, $report->pending );

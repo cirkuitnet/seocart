@@ -184,6 +184,15 @@ final class Database implements TransactionManager {
 	private bool $charsetFilterRegistered = false;
 
 	/**
+	 * The connected server, read from the client handshake on first use.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var DatabaseServer|null
+	 */
+	private ?DatabaseServer $server = null;
+
+	/**
 	 * Wraps a wpdb connection. Constructing it sends nothing and registers nothing.
 	 *
 	 * @since 0.1.0
@@ -227,8 +236,8 @@ final class Database implements TransactionManager {
 	 *
 	 * @throws TransactionDepthExceeded|TransactionIntegrityLost|TransactionRetryable When the level would be
 	 *         deeper than the ceiling (no statement is sent); when the transaction cannot be committed as
-	 *         the one that began; or when a deadlock or lock-wait timeout ended the last attempt the
-	 *         policy allows.
+	 *         the one that began; or when a deadlock, a lock-wait timeout or MariaDB's refusal of a
+	 *         stale snapshot ended the last attempt the policy allows.
 	 *
 	 * @param-immediately-invoked-callable $work
 	 *
@@ -244,7 +253,7 @@ final class Database implements TransactionManager {
 		}
 
 		if ( 0 !== $this->depth ) {
-			// After a deadlock an inner savepoint no longer exists; only the outermost level may run the work again.
+			// After a deadlock, or MariaDB's refusal of a stale snapshot, an inner savepoint no longer exists; only the outermost level may run the work again.
 			return $this->savepoint( $work );
 		}
 
@@ -488,6 +497,22 @@ final class Database implements TransactionManager {
 	}
 
 	/**
+	 * Returns the server the connection reached: MySQL or MariaDB, and its version. Sends nothing.
+	 *
+	 * Read once, from the version string of the client handshake as wpdb::db_server_info()
+	 * returns it, the string dbDelta() reads as well.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return DatabaseServer The server.
+	 */
+	public function server(): DatabaseServer {
+		$this->server ??= DatabaseServer::fromHandshake( (string) $this->wpdb->db_server_info() );
+
+		return $this->server;
+	}
+
+	/**
 	 * Returns the server thread id of the connection wpdb holds now. Sends nothing.
 	 *
 	 * @since 0.1.0
@@ -724,7 +749,7 @@ final class Database implements TransactionManager {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws TransactionIntegrityLost When a deadlock or lock-wait timeout already ended the unit of work.
+	 * @throws TransactionIntegrityLost When a deadlock, a lock-wait timeout or a stale snapshot already ended the unit of work.
 	 *
 	 * @param string $sql The statement, ready to send.
 	 * @return int|bool What wpdb::query() returned.
@@ -801,7 +826,7 @@ final class Database implements TransactionManager {
 		$failure = QueryFailed::fromErrno( $error[0], $error[1], $sql, $wpdb->last_error, $inside );
 
 		if ( $inside && ( $failure instanceof TransactionRetryable || $failure instanceof TransactionIntegrityLost ) ) {
-			// InnoDB rolled back the transaction (deadlock) or the statement (lock-wait timeout), or the connection is gone.
+			// InnoDB rolled back the transaction (a deadlock, or MariaDB's refusal of a stale snapshot) or the statement (lock-wait timeout), or the connection is gone.
 			$this->aborted = true;
 		}
 

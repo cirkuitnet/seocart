@@ -15,12 +15,14 @@ use SEOCart\Catalog\Domain\Event\ProductDeleted;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
+use SEOCart\Platform\Database\ServerKind;
 use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Support\Locale;
 use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
 use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\Doubles\SeveralLocales;
+use SEOCart\Tests\Support\SecondConnection;
 
 /**
  * A reconciliation of a translation group and a link of one of its posts, each on its own connection, lock the same two products in one order and end in the one state either would reach alone.
@@ -35,9 +37,15 @@ use SEOCart\Tests\Support\Doubles\SeveralLocales;
  *
  * The reconciliation locks every product it may change before its first change, the lower id
  * first, so neither side ever waits for the other while holding a lock the other waits for: no
- * deadlock, no retry on either side. However they interleave, the German post presents the
- * product with commerce data in its locale, the empty product is deleted once, and nothing is
- * reported.
+ * deadlock on either side. However they interleave, the German post presents the product with
+ * commerce data in its locale, the empty product is deleted once, and nothing is reported.
+ *
+ * The servers differ in what the side that waited does once it has the lock. Each side reads
+ * before it locks, so its snapshot is older than the other side's commit. MySQL's locking reads
+ * reach past the snapshot to the newest rows, so neither side runs twice. MariaDB refuses a
+ * locking read of a row committed after the snapshot (error 1020) and rolls that side back; its
+ * unit of work runs once more, with a new snapshot. What both guarantee: no deadlock, each
+ * change made once, and a second run only after a rollback.
  *
  * The products a reconciliation locks are the ones its reading of the group named. When a post of
  * the group is bound, between that reading and the locks, to a product it did not name and whose
@@ -46,14 +54,20 @@ use SEOCart\Tests\Support\Doubles\SeveralLocales;
  * post that way, to the product of a third post, with the lowest id, just as the reconciliation
  * takes its first lock; no transaction of the reconciliation ever takes a product lock below one
  * it holds, and the German post, which now presents a product holding another post, is left
- * there as a conflict.
+ * there as a conflict. On MySQL the reconciliation's reading under the locks finds the moved
+ * binding and starts it again. On MariaDB the server comes first: the first lock is of the empty
+ * product, which the probe changed after the reconciliation's snapshot, so the server refuses it,
+ * and the reconciliation's unit of work runs again from its reading of the group.
  *
  * Planted violations, each confirmed to fail the test:
  * - In TranslationGroups::reconcile(), have the plan name no product (`array()` in place of
  *   `$facts['touches']`): the reconciliation locks the product with commerce data as it links the
  *   source post, then the empty product as it links the German post, out of order; the probe,
  *   holding the empty product and waiting for the other, deadlocks with it, and the test that
- *   starts the probe at the lower product fails, the link run again.
+ *   starts the probe at the lower product fails. On MySQL it fails on "A side was run again: on
+ *   MySQL only a deadlock does that". On MariaDB the deadlock and then a refused stale snapshot
+ *   (error 1020) each run a side again, so it fails on "A side was run again more than once"
+ *   before it reads the deadlock counter.
  * - In TranslationGroups::facts(), leave the group's posts' products out of the products a
  *   reconciliation may change: the reading under the locks finds the German post on a product
  *   the plan never names, the reconciliation gives up before it locks that product, and the tests
@@ -61,6 +75,9 @@ use SEOCart\Tests\Support\Doubles\SeveralLocales;
  * - In TranslationBindings::changeTogether(), never read the bindings again under the locks: the
  *   reconciliation goes on with the plan it read, and its one transaction locks the lowest product
  *   after the others; the test of a binding moved off the plan fails.
+ *
+ * The second and third show on MySQL. On MariaDB the server refuses the reconciliation's first
+ * lock before its reading under the locks, so those two plants never get to act there.
  *
  * @group concurrency
  *
@@ -136,9 +153,10 @@ final class TranslationGroupsConcurrencyTest extends ProductWriteTestCase {
 
 		$this->locales->assign( $german, Locale::of( 'de_DE' ), $saved->postId );
 
-		$first = $atLower ? $empty : $saved->productId;
-		$other = $atLower ? $saved->productId : $empty;
-		$raced = $this->beforeStatement(
+		$first     = $atLower ? $empty : $saved->productId;
+		$other     = $atLower ? $saved->productId : $empty;
+		$deadlocks = $this->deadlocksSoFar( $b );
+		$raced     = $this->beforeStatement(
 			'/^' . preg_quote( $this->productLock( $first ), '/' ) . '$/',
 			function () use ( &$probe, $saved, $german, $other ): void {
 				$probe = ChildProcessProbe::start( dirname( __DIR__, 2 ) . '/Support/product-link-probe.php', array( (string) $saved->productId, (string) $german, 'de_DE' ) );
@@ -155,17 +173,9 @@ final class TranslationGroupsConcurrencyTest extends ProductWriteTestCase {
 
 		$report = $probe->finish();
 
-		$this->assertSame(
-			array(
-				'outcome' => 'linked',
-				'retries' => 0,
-				'reports' => array(),
-			),
-			$report,
-			'The link failed, or was run again after a deadlock.'
-		);
-		$this->assertSame( array(), $this->sleeps, 'The reconciliation was run again after a deadlock.' );
+		$this->assertSame( array( 'linked', array() ), array( $report['outcome'] ?? null, $report['reports'] ?? null ), 'The link failed: ' . wp_json_encode( $report ) );
 		$this->assertSame( array(), $this->reports );
+		$this->assertNoDeadlock( $b, $deadlocks, (int) ( $report['retries'] ?? 0 ) + count( $this->sleeps ) );
 
 		$product = $this->products->findByPost( $german );
 
@@ -233,12 +243,25 @@ final class TranslationGroupsConcurrencyTest extends ProductWriteTestCase {
 			),
 			$report
 		);
-		$this->assertSame(
-			array( array( $empty, $saved->productId ), array( $lowest, $saved->productId ) ),
-			array_values( array_filter( $acquired ) ),
-			'The reconciliation did not start again, or locked a product below one it held.'
-		);
-		$this->assertSame( array(), $this->sleeps, 'The reconciliation was run again after a deadlock.' );
+		$acquired = array_values( array_filter( $acquired ) );
+
+		foreach ( $acquired as $locks ) {
+			$inOrder = $locks;
+
+			sort( $inOrder );
+
+			$this->assertSame( $inOrder, $locks, 'A transaction of the reconciliation locked a product below one it held.' );
+		}
+
+		// Both servers start the reconciliation again, once, from the empty product the plan named; how differs (see the class).
+		if ( ServerKind::MariaDB === $this->db->server()->kind() ) {
+			$this->assertSame( array( array( $empty ), array( $lowest, $saved->productId ) ), $acquired, 'MariaDB did not refuse the first lock, or the run again locked otherwise.' );
+			$this->assertCount( 1, $this->sleeps, 'The reconciliation was not run again, once, after its rollback.' );
+		} else {
+			$this->assertSame( array( array( $empty, $saved->productId ), array( $lowest, $saved->productId ) ), $acquired, 'The reconciliation did not start again.' );
+			$this->assertSame( array(), $this->sleeps, 'The reconciliation was run again after a deadlock.' );
+		}
+
 		$this->assertSame( $lowest, $this->products->findByPost( $german )?->id(), 'The German post left the product it was bound to meanwhile.' );
 		$this->assertSame( array( $saved->postId ), array_map( static fn( $binding ): int => $binding->postId(), $this->products->findByPost( $saved->postId )?->bindings() ?? array() ) );
 		$this->assertSame( 0, $this->committedCount( $b, CatalogTables::PRODUCTS, sprintf( 'id = %d', $empty ) ) );
@@ -254,6 +277,43 @@ final class TranslationGroupsConcurrencyTest extends ProductWriteTestCase {
 			),
 			$this->reports
 		);
+	}
+
+	/**
+	 * Asserts that the race deadlocked nowhere, and that a side ran again only where its server refused a stale snapshot.
+	 *
+	 * MySQL reads the newest row under a lock, so only a deadlock makes it run a side again: none
+	 * may. MariaDB refuses a locking read of a row the other side committed after this side's
+	 * snapshot and rolls that side back, so one side may run once more there; its deadlock counter
+	 * must stay where it was.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param SecondConnection $b               The second connection.
+	 * @param int              $deadlocksBefore MariaDB's deadlock count before the race.
+	 * @param int              $runsAgain       How often either side ran again: the probe's retries and this process's pauses.
+	 */
+	private function assertNoDeadlock( SecondConnection $b, int $deadlocksBefore, int $runsAgain ): void {
+		if ( ServerKind::MariaDB !== $this->db->server()->kind() ) {
+			$this->assertSame( 0, $runsAgain, 'A side was run again: on MySQL only a deadlock does that.' );
+
+			return;
+		}
+
+		$this->assertLessThanOrEqual( 1, $runsAgain, 'A side was run again more than once.' );
+		$this->assertSame( $deadlocksBefore, $this->deadlocksSoFar( $b ), 'MariaDB counted a deadlock.' );
+	}
+
+	/**
+	 * Reads how many deadlocks MariaDB has counted since it started. MySQL keeps no such counter.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param SecondConnection $b The second connection.
+	 * @return int The count; 0 on MySQL.
+	 */
+	private function deadlocksSoFar( SecondConnection $b ): int {
+		return (int) ( $b->fetchRow( "SHOW GLOBAL STATUS LIKE 'Innodb_deadlocks'" )['Value'] ?? 0 );
 	}
 
 	/**

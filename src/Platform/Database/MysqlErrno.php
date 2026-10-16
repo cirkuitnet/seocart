@@ -26,6 +26,17 @@ defined( 'ABSPATH' ) || exit;
 final class MysqlErrno {
 
 	/**
+	 * MariaDB's snapshot isolation: a locking read or an UPDATE reached a row committed after the
+	 * transaction's snapshot ("Record has changed since last read"). InnoDB rolled the whole
+	 * transaction back, as for a deadlock. MySQL's InnoDB reads the newest row instead.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const RECORD_CHANGED = 1020;
+
+	/**
 	 * CREATE TABLE of a table that exists.
 	 *
 	 * @since 0.1.0

@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Platform\Secrets;
 
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Settings\Setting;
 use SEOCart\Platform\Settings\SettingsDocument;
 use SEOCart\Platform\Settings\SettingsError;
@@ -356,7 +357,12 @@ final class SecretKeys {
 	/**
 	 * Runs work in a transaction of its own, holding the keys as ringForWrite() does.
 	 *
+	 * A deadlock, a lock-wait timeout, or MariaDB's refusal of a row changed since the
+	 * transaction's snapshot runs the work again from its start (RetryPolicy::deadlocks()), with
+	 * the keys and every row read again; so the work does nothing outside the transaction.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Runs the work again after a retryable failure.
 	 *
 	 * @throws CodedException With what ringForWrite() raises, or what the work raises.
 	 *
@@ -366,7 +372,7 @@ final class SecretKeys {
 	 * @phpstan-param callable(KeyRing): mixed $work
 	 */
 	public function underLock( callable $work ): mixed {
-		return $this->database->transaction( fn(): mixed => $work( $this->ringForWrite() ) );
+		return $this->database->transaction( fn(): mixed => $work( $this->ringForWrite() ), RetryPolicy::deadlocks() );
 	}
 
 	/**

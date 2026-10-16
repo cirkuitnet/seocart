@@ -327,6 +327,12 @@ final class SettingsStore {
 	 * The compare-and-swap of one option, for a writer that must not overwrite a value written
 	 * after it read, such as the job that re-seals secrets under a new key.
 	 *
+	 * Inside a REPEATABLE READ transaction that read the option before another writer changed it,
+	 * MySQL compares with the newest row and this returns false. MariaDB refuses the UPDATE of a
+	 * row changed since the transaction's snapshot (error 1020) and rolls the whole transaction
+	 * back: the caller's unit of work ends in TransactionRetryable, and its retry reads the option
+	 * as it is now.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \InvalidArgumentException When the name is not a scalar setting, or the new value does

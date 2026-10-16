@@ -1,6 +1,6 @@
 <?php
 /**
- * RetryPolicy: how often, and after what pause, a deadlocked unit of work runs again
+ * RetryPolicy: how often, and after what pause, a unit of work ended by a deadlock runs again
  *
  * @package SEOCart
  * @since   0.1.0
@@ -76,7 +76,7 @@ final class RetryPolicy {
 	}
 
 	/**
-	 * Returns the policy for deadlocks and lock-wait timeouts.
+	 * Returns the policy for deadlocks, lock-wait timeouts and MariaDB's refusals of a stale snapshot.
 	 *
 	 * @since 0.1.0
 	 *

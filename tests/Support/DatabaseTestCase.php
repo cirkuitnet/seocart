@@ -337,13 +337,19 @@ abstract class DatabaseTestCase extends WP_UnitTestCase {
 	 * B was never blocked and the test fails. The deadline fails the test too; it never passes it.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 A state per server, where the servers show different words for the same wait.
 	 *
-	 * @param SecondConnection $b     Connection B, with an asynchronous statement in flight.
-	 * @param string           $sql   The statement B sent, exactly.
-	 * @param string           $state The process-list state of the wait, compared without case: `User lock`
-	 *                                for GET_LOCK, `updating` for an UPDATE waiting for a row lock.
+	 * @param SecondConnection             $b     Connection B, with an asynchronous statement in flight.
+	 * @param string                       $sql   The statement B sent, exactly.
+	 * @param string|array<string, string> $state The process-list state of the wait, compared without case: `User lock`
+	 *                                            for GET_LOCK, `updating` for an UPDATE waiting for a row lock. Where
+	 *                                            the servers show different words for the same wait, a map from the
+	 *                                            server (a ServerKind value) to its word; a server it does not name
+	 *                                            fails the test.
 	 */
-	protected function awaitWaiting( SecondConnection $b, string $sql, string $state ): void {
+	protected function awaitWaiting( SecondConnection $b, string $sql, string|array $state ): void {
+		$state = $this->stateOnThisServer( $state );
+
 		$this->observer ??= $this->secondConnection();
 
 		$query    = sprintf( 'SELECT COMMAND, STATE, INFO FROM information_schema.PROCESSLIST WHERE ID = %d', $b->threadId() );
@@ -365,6 +371,28 @@ abstract class DatabaseTestCase extends WP_UnitTestCase {
 				$this->fail( sprintf( 'The server did not show B waiting (%s) within %d ms; last seen: %s.', $state, self::WAITING_DEADLINE_MS, (string) wp_json_encode( $row ) ) );
 			}
 		}
+	}
+
+	/**
+	 * Picks, from a state per server, the process-list state the connected server shows.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string|array<string, string> $state One state for every server, or a map from a ServerKind value to its state.
+	 * @return string The state to wait for.
+	 */
+	private function stateOnThisServer( string|array $state ): string {
+		if ( is_string( $state ) ) {
+			return $state;
+		}
+
+		$server = $this->db->server()->kind()->value;
+
+		if ( ! isset( $state[ $server ] ) ) {
+			$this->fail( sprintf( 'The wait names no process-list state for %s.', $server ) );
+		}
+
+		return $state[ $server ];
 	}
 
 	/**

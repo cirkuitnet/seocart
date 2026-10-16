@@ -101,7 +101,8 @@ final class SchemaVerifierTest extends DatabaseTestCase {
 			'engine'             => array( '%e', 'MEMORY', ': engine is MEMORY, declared InnoDB' ),
 			'table collation'    => array( '%c', 'DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci', ': table collation is utf8mb4_general_ci, expected %collation%' ),
 			'column collation'   => array( 'char(3) COLLATE ascii_bin', 'char(3)', '.code: collation is \'%collation%\', declared ascii_bin' ),
-			'undeclared charset' => array( 'name varchar(50)', 'name varchar(50) CHARACTER SET utf8mb3', '.name: collation is \'utf8mb3_general_ci\', declared the table\'s %collation%' ),
+			// The collation is named: MySQL's default for utf8mb3 is utf8mb3_general_ci, MariaDB 11's utf8mb3_uca1400_ai_ci.
+			'undeclared charset' => array( 'name varchar(50)', 'name varchar(50) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci', '.name: collation is \'utf8mb3_general_ci\', declared the table\'s %collation%' ),
 			'extra clause'       => array( 'seen datetime NULL', 'seen datetime NULL ON UPDATE CURRENT_TIMESTAMP', '.seen: extra is \'on update current_timestamp\', declared none' ),
 		);
 	}

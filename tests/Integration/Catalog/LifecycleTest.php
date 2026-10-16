@@ -27,9 +27,11 @@ use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
+use SEOCart\Platform\Database\ServerKind;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Events\OutboxTable;
@@ -101,7 +103,9 @@ use SEOCart\Tests\Support\SecondConnection;
  *   after a save fails, its event naming `SKU-1`. Either half alone keeps it green: the first
  *   statement is the lock, or every read after it is a locking read.
  * - In MysqlProductRepository::delete(), read the variants without FOR UPDATE: the test of an
- *   older snapshot fails, its event naming `SKU-1`.
+ *   older snapshot fails, its event naming `SKU-1`. This one shows on MySQL only: on MariaDB the
+ *   product's lock refuses the older snapshot first (error 1020), and the delete, run again with
+ *   a new snapshot, reads the newest variants even without FOR UPDATE.
  * - In DeleteProduct::delete(), give deleteVariants() the loaded product's default variant in
  *   place of the variants delete() returns: both tests fail, the newer generation's stock item
  *   left.
@@ -289,18 +293,25 @@ final class LifecycleTest extends ProductWriteTestCase {
 	}
 
 	/**
-	 * Tests that a product deleted in a transaction that read it before the lock is still deleted as the newest commit left it.
+	 * Tests that a product deleted in a transaction that read it before the lock is deleted once, as the newest commit left it, never as the older snapshot saw it.
 	 *
 	 * DeleteProduct runs in its caller's transaction, whose snapshot may be older than the lock
-	 * it takes; every read under the lock is a locking read, which the snapshot does not reach.
+	 * it takes, and every read under the lock is a locking read. The servers differ in what that
+	 * read does with a row committed after the snapshot. MySQL's reaches past the snapshot to the
+	 * newest row, so the first run deletes the newest rows. MariaDB refuses it (error 1020) and
+	 * rolls the whole transaction back; the caller's unit of work, run again with a new snapshot,
+	 * deletes the newest rows. What both guarantee: the delete happens once, from the newest rows,
+	 * and a second run only follows a rollback.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Holds on MariaDB, where the caller's unit of work runs again.
 	 */
 	public function test_a_delete_in_an_older_snapshot_deletes_the_newest_rows(): void {
 		$b         = $this->secondConnection();
 		$saved     = $this->stocked( 3 );
 		$variantId = (int) $saved->variantId;
 		$next      = 0;
+		$runs      = 0;
 
 		$raced = $this->beforeStatement(
 			'/^SELECT .* FOR UPDATE$/s',
@@ -310,16 +321,23 @@ final class LifecycleTest extends ProductWriteTestCase {
 		);
 
 		$this->db->transaction(
-			function () use ( $saved, $variantId ): void {
-				// The transaction's snapshot is taken here, before the other writer commits.
-				$this->assertSame( 'SKU-1', $this->db->fetchValue( 'SELECT sku FROM %i WHERE id = %d', $this->catalogTable( CatalogTables::VARIANTS ), $variantId ) );
+			function () use ( $saved, $variantId, &$runs ): void {
+				$sku = $this->db->fetchValue( 'SELECT sku FROM %i WHERE id = %d', $this->catalogTable( CatalogTables::VARIANTS ), $variantId );
+
+				// The first run's snapshot is taken here, before the other writer commits.
+				if ( 1 === ++$runs ) {
+					$this->assertSame( 'SKU-1', $sku );
+				}
 
 				$this->services->delete->delete( $saved->productId, Actor::user( 1 ) );
-			}
+			},
+			RetryPolicy::deadlocks()
 		);
 
 		$this->assertTrue( $raced->fired, 'The other writer never committed.' );
 		$this->assertDeletedAsSaved( $b, $saved, $next );
+		$this->assertSame( ServerKind::MariaDB === $this->db->server()->kind() ? 2 : 1, $runs, 'MySQL deletes in the first run; MariaDB refuses the older snapshot once and deletes in the second.' );
+		$this->assertCount( $runs - 1, $this->sleeps, 'A run again that no rollback came before.' );
 	}
 
 	/**
@@ -882,6 +900,7 @@ final class LifecycleTest extends ProductWriteTestCase {
 		$stored = $b->fetchRow( sprintf( "SELECT payload_json FROM `%s` WHERE event_name = '%s'", $this->db->table( OutboxTable::NAME ), ProductDeleted::eventName() ) );
 
 		$this->assertSame( array( 'SKU-NEW', 'SKU-NEXT' ), json_decode( (string) ( $stored['payload_json'] ?? '' ), true )['p']['skus'] ?? null, 'The event names SKUs the variants no longer had.' );
+		$this->assertSame( 1, $this->committedCount( $b, OutboxTable::NAME, sprintf( "event_name = '%s' AND aggregate_id = '%d'", ProductDeleted::eventName(), $saved->productId ) ), 'The product was not deleted exactly once.' );
 		$this->assertSame(
 			array( 0, 0, 0, 0 ),
 			array(

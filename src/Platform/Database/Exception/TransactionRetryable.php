@@ -16,7 +16,8 @@ use SEOCart\Platform\Database\DatabaseError;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * A deadlock (MySQL error 1213) or a lock-wait timeout (1205) ended the unit of work.
+ * A deadlock (MySQL error 1213), a lock-wait timeout (1205), or MariaDB's refusal of a row
+ * changed since the transaction's snapshot (1020) ended the unit of work.
  *
  * Owns one fact: that running the whole unit of work again from its beginning is the correct
  * recovery. Only the outermost transaction may do that, under a RetryPolicy; a caller that

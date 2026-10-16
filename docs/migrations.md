@@ -315,6 +315,10 @@ A column is a change to the table's declaration plus a migration that brings exi
    statement to `dbDelta()`, which adds the missing column or index and changes nothing else, and on
    a new site the migration finds nothing to do and sends no DDL. `AddOrderStatusIndex`
    (`src/Order/Infrastructure/Migrations/AddOrderStatusIndex.php`) does exactly this for an index.
+   `dbDelta()` compares each column's type with the one the server reports, as text. MariaDB, and
+   MySQL before 8.0.19, report an integer column with its display width (`bigint(20) unsigned`), so
+   on those servers the statement for an existing table names each integer type that way. Declare
+   the type as MySQL 8.4 reports it (`bigint unsigned`); the migrator does the rest.
 3. **Say whether the store may trade meanwhile.** Return `true` from `canOperateHalfApplied()` only
    if the code works, and the invariants hold, on a site that has not got the column yet. Otherwise
    return `false`, and the store refuses commerce writes until the migration is applied.

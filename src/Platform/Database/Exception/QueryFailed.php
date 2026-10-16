@@ -48,7 +48,9 @@ class QueryFailed extends DatabaseException {
 	 *
 	 * A duplicate entry is a unique key doing its job. A deadlock rolls back the whole
 	 * transaction; a lock-wait timeout rolls back the statement, but the unit of work cannot
-	 * safely continue. Both are worth running again from the beginning.
+	 * safely continue. MariaDB's refusal of a row changed since the transaction's snapshot rolls
+	 * back the whole transaction as well, and a new snapshot reads the row as it is now. All
+	 * three are worth running again from the beginning.
 	 *
 	 * @since 0.1.0
 	 *
@@ -58,6 +60,7 @@ class QueryFailed extends DatabaseException {
 		MysqlErrno::DUPLICATE_ENTRY   => DuplicateKey::class,
 		MysqlErrno::LOCK_WAIT_TIMEOUT => TransactionRetryable::class,
 		MysqlErrno::DEADLOCK          => TransactionRetryable::class,
+		MysqlErrno::RECORD_CHANGED    => TransactionRetryable::class,
 	);
 
 	/**

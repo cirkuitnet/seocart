@@ -1,5 +1,5 @@
 {
-	"about": "Plugin SELECTs whose plans may break the query-plan rule, each with the reason its plan is accepted. Copy an entry's id and statement from the report of `composer test:query-plans`. That run fails on an entry whose query it no longer sends, or whose query keeps the rule.",
+	"about": "Plugin SELECTs whose plans may break the query-plan rule, each with the reason its plan is accepted. Copy an entry's id and statement from the report of `composer test:query-plans`. That run fails on an entry whose query it no longer sends, or whose query keeps the rule. An entry with `servers` (`mysql`, `mariadb`) holds only on those servers: it is judged, and judged stale, only on a run of one of them.",
 	"entries": [
 		{
 			"id": "ec63742afd5e",
@@ -30,6 +30,18 @@
 			"id": "6bba32b5d503",
 			"statement": "SELECT id, scope, TIMESTAMPDIFF( SECOND, created_at, UTC_TIMESTAMP() ) AS age_seconds FROM {prefix}seocart_idempotency_keys WHERE state = ? AND created_at <= UTC_TIMESTAMP() - INTERVAL ? SECOND ORDER BY created_at, id LIMIT ?",
 			"reason": "Doctor's check for idempotency keys stranded in `claimed` reads the whole key table, oldest first: a stranded key is rare, and the table holds only the keys of the retention period, which the retention job keeps to that. An index on (state, created_at) would be written by every claim and every completion of an order placement for doctor alone. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+		},
+		{
+			"id": "ce2eaf888e63",
+			"statement": "SELECT DISTINCT variant_id FROM {prefix}seocart_stock_holds WHERE expires_at <= UTC_TIMESTAMP() AND reclaim_token IS NULL AND variant_id > ? ORDER BY variant_id LIMIT ?",
+			"servers": [ "mariadb" ],
+			"reason": "MariaDB only. The hold sweep's page of items with expired holds walks the variant_expires index from its cursor and stops at its LIMIT. MariaDB estimates the whole range past the cursor without the LIMIT (11707 of 11949 rows on the medium dataset); MySQL plans the same walk at 240 rows and keeps the rule."
+		},
+		{
+			"id": "471508706270",
+			"statement": "SELECT v.id FROM {prefix}seocart_variants v JOIN {prefix}seocart_products p ON p.id = v.product_id AND v.id > ? ORDER BY v.id LIMIT ?",
+			"servers": [ "mariadb" ],
+			"reason": "MariaDB only. Doctor's missing-stock-item check pages the variant ids by the primary key from its cursor, each product joined by its own primary key, and stops at its LIMIT. MariaDB estimates the whole range past the cursor without the LIMIT (9944 of 10000 rows on the medium dataset); MySQL keeps the rule (4937 rows)."
 		}
 	]
 }

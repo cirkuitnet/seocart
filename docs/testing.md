@@ -120,7 +120,7 @@ the source of truth. Run `composer list` or `npm run` to see them with their des
 | `composer test`                          | `test:unit`, then `test:integration`                                                                            |
 | `composer test:unit`                     | The `unit` suite. WordPress is never loaded                                                                     |
 | `composer test:tools`                    | The `tools` suite: self-tests for the custom sniffs and checkers                                                |
-| `composer test:integration`              | The `integration` suite, against WordPress and a real MySQL database                                            |
+| `composer test:integration`              | The `integration` suite, against WordPress and a real MySQL or MariaDB database                                 |
 | `composer test:concurrency`              | The integration suite, group `concurrency`                                                                      |
 | `composer test:migration`                | The integration suite, group `migration`                                                                        |
 | `composer test:performance`              | The integration suite, group `performance`: query counts, autoload size and the idle-request budget             |
@@ -312,6 +312,7 @@ A test that can fail because of when or where it ran is a defect in the test.
 | Static gates, unit, tool self-tests   | Anywhere PHP and Composer are installed                                            | Every pull request, on each supported PHP version                                                                |
 | JavaScript lint and unit              | Anywhere Node.js is installed                                                      | Every pull request                                                                                               |
 | Integration and its groups            | Against a dedicated MySQL database                                                 | Every pull request, against a MySQL service, also as a multisite and, for the query plans, on the medium dataset |
+| Integration on MariaDB                | Against a dedicated MariaDB database, named in `WP_PHPUNIT__TESTS_CONFIG`          | Nightly: the whole suite on the `mariadb:lts` image (`nightly.yml`, job `mariadb`); not a required check yet     |
 | Action Scheduler coexistence          | In the integration suite, and by hand on a disposable site with WooCommerce active | In the integration suite (`tests/Integration/Jobs/CoexistenceTest.php`); no job installs WooCommerce             |
 | Multilingual conformance              | On a disposable site with Polylang (free) active                                   | Every pull request and every push to main; not a required check                                                  |
 | End-to-end and accessibility          | From any machine with a browser, against a disposable site                         | A secondary job against a disposable site                                                                        |
@@ -325,3 +326,30 @@ run `SEOCART_ML_ADAPTER=polylang SEOCART_ML_PLUGIN=<that path> composer
 test:multilingual-conformance` against a real MySQL database. Leave either variable unset, or
 point `SEOCART_ML_PLUGIN` at a path that is not readable, and every test in the group is
 silently skipped, not failed: check the run's `Skipped:` count against its `Tests:` count.
+
+## MariaDB
+
+WordPress runs on MariaDB as well as on MySQL, so the integration suite runs on both: the
+pull-request checks on MySQL 8.4, and the nightly workflow's `mariadb` job on the `mariadb:lts`
+image. To run it by hand, copy `tests/wp-tests-config.local.php`, point the copy at a test
+database of its own on a MariaDB server, and name the copy in `WP_PHPUNIT__TESTS_CONFIG`:
+
+```sh
+WP_PHPUNIT__TESTS_CONFIG=/path/to/mariadb-tests-config.php composer test:integration
+```
+
+`composer test:migration`, `test:concurrency` and `test:query-plans` read the same variable.
+Where the two servers behave differently, the code and the tests say so:
+
+- MariaDB reports an integer column with its display width (`bigint(20) unsigned`), as MySQL did
+  before 8.0.19. On such a server the migrator writes the statement `dbDelta()` compares with an
+  existing table that way (see [migrations.md](migrations.md#adding-a-column)).
+- At `REPEATABLE READ`, MariaDB refuses a locking read or an `UPDATE` of a row committed after the
+  transaction's snapshot (error 1020) and rolls the transaction back, where MySQL reads the newest
+  row. The plugin treats it as it treats a deadlock (`TransactionRetryable`), and a unit of work
+  with a retry policy runs again. A concurrency test whose race meets it says what each server does.
+- A test whose premise holds on one server only is skipped on the other, with the reason, and a
+  sibling test pins what holds there.
+- An entry of `tests/query-plan-allow-list.json` may name the servers it holds on
+  (`"servers": ["mariadb"]`): MariaDB estimates two cursor reads without the `LIMIT` that ends
+  them, and so would break the rule where MySQL keeps it.

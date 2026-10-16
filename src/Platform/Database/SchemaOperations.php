@@ -25,7 +25,10 @@ defined( 'ABSPATH' ) || exit;
  * created with the generated CREATE TABLE, sent through Database, so a failure keeps its error
  * number (the bootstrap relies on seeing 1050 when two runners race). A table that exists is
  * handed to dbDelta with the same statement, which adds any missing column or index and does
- * nothing when the table already matches. dbDelta cannot drop, retype or rename a column, and
+ * nothing when the table already matches. dbDelta compares each column's type as the server
+ * reports it with the statement's, as text, so on a server that reports integer display widths
+ * (MariaDB, and MySQL before 8.0.19) that statement writes them, or dbDelta would change every
+ * integer column on every run. dbDelta cannot drop, retype or rename a column, and
  * never changes an index it finds; a unique key whose declared columns changed is replaced by
  * replaceUniqueKey() instead. What any of this did is never taken on trust: the migrator
  * verifies the result.
@@ -86,15 +89,15 @@ final class SchemaOperations {
 	 * @param TableDefinition $definition The declaration.
 	 */
 	public function createTable( TableDefinition $definition ): void {
-		$statement = $this->generator->createTable( $definition, $this->db->table( $definition->name() ), $this->db->charsetCollate() );
+		$table = $this->db->table( $definition->name() );
 
 		if ( ! $this->verifier->hasTable( $definition->name() ) ) {
-			$this->db->execute( $statement );
+			$this->db->execute( $this->generator->createTable( $definition, $table, $this->db->charsetCollate() ) );
 
 			return;
 		}
 
-		$this->reconcile( $statement );
+		$this->reconcile( $this->generator->createTable( $definition, $table, $this->db->charsetCollate(), $this->db->server()->reportsIntegerDisplayWidths() ) );
 	}
 
 	/**

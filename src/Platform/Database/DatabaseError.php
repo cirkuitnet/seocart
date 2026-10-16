@@ -24,11 +24,11 @@ defined( 'ABSPATH' ) || exit;
  * its case in its CODE constant. The context keys of a failure are the placeholders of its
  * row. Codes that are only logged or recorded, never thrown, are in ReportCode instead.
  *
- * A transaction that could not be completed, a unit of work ended by a deadlock or lock-wait
- * timeout, and a lock another process holds answer 503: the request may succeed if it is sent
- * again. A duplicate unique key answers 409. Everything else is a server fault, 500. No row
- * carries SQL or the server's error text: those can hold a customer's data, and stay in the
- * StatementDiagnostic the exception carries.
+ * A transaction that could not be completed, a unit of work ended by a deadlock, a lock-wait
+ * timeout or a snapshot conflict, and a lock another process holds answer 503: the request may
+ * succeed if it is sent again. A duplicate unique key answers 409. Everything else is a server
+ * fault, 500. No row carries SQL or the server's error text: those can hold a customer's data,
+ * and stay in the StatementDiagnostic the exception carries.
  *
  * Every row is internal: a client gets the status and a generic message, never the message or
  * the values below, which go to the site's log. A service that expects one of these failures,
@@ -53,7 +53,8 @@ enum DatabaseError: string implements ErrorCode {
 	case DuplicateKey = 'database.duplicate_key';
 
 	/**
-	 * A deadlock or a lock-wait timeout ended the unit of work; running it again may succeed.
+	 * A deadlock, a lock-wait timeout, or MariaDB's refusal of a row changed since the
+	 * transaction's snapshot ended the unit of work; running it again may succeed.
 	 *
 	 * @since 0.1.0
 	 */
