@@ -43,23 +43,40 @@ namespace SEOCart\Tests\Support\QueryPlan;
  * A variable a statement is joined to is read from its one assignment, directly in the function's
  * body; assigned in a block, or more than once, it is refused.
  *
- * A known limit, and a temporary one: a statement assigned to a variable that the function goes
- * on to extend with `.=` is built in steps (a keyset page, a locking clause) that no reading of
- * the source can follow, so it is an open read, matched by its beginning as every read once
- * was. The Catalog repository writes six of them; the exception goes when they are written as
- * complete statements. It is closed meanwhile: OPEN_READS lists the (class, methods) that may
- * be open reads, the run's output names each one it accepts, and a stepwise read anywhere else
- * is refused by name. A clause appended that way and left out of the run is not named.
+ * A statement assigned to a variable that its function, or its file when it is written outside
+ * any function, goes on to give a value again (a keyset page extended with `.=`, a clause added by
+ * an `if`, the variable assigned in both branches of an `if`) is built in steps that no reading of
+ * the source can follow whole, so it is refused by name, in any class: write it as complete
+ * statements, constants or literals. The limits below say what this does not see.
  *
- * Limits of the reader, to be closed with the Catalog rewrite, not recorded as fixed: a call that
- * the scan of a method does not recognise (one from a trait the class uses, `$that = $this`
- * then `$that->m()`, `call_user_func( array( $this, 'm' ) )`) adds no shape to the parameter it
- * passes; `static::CONSTANT` in a non-final base class is evaluated against the base, so a
- * subclass's constant adds no shape; the constants of an anonymous class are not read; and a
- * SELECT written as a parenthesised literal, or starting with a comment or a parenthesis, is
- * neither inventoried nor refused, because the refusal of a compound statement is narrowed to a
- * WITH and a parenthesised UNION: the fragment constants UNAPPLIED_RESULT, DECLINED_REFUNDS and
- * OPEN_CLAIM legitimately hold a SELECT.
+ * A constant that holds a SELECT is a read of its own, sent whole. A method that joins it to
+ * anything with a dot, or hands it to implode() or sprintf(), builds a statement no constant holds,
+ * and is refused by name as well. The constant may be the class's own (`self::`, `static::`) or
+ * another class's of the module, written in full, imported, or with a prefix; one that stops at IN
+ * may be followed by the placeholder list of its IN clause. Passing it whole, to a call, is its use.
+ *
+ * Known limits of the reader: a call that the scan of a method does not recognise (one from a
+ * trait the class uses, `$that = $this` then `$that->m()`, `call_user_func( array( $this, 'm' ) )`)
+ * adds no shape to the parameter it passes; `static::CONSTANT` in a non-final base class is
+ * evaluated against the base, so a subclass's constant adds no shape; the constants of an
+ * anonymous class are not read; and a SELECT written as a parenthesised literal, or starting with
+ * a comment or a parenthesis, is neither inventoried nor refused, because the refusal of a
+ * compound statement is narrowed to a WITH and a parenthesised UNION: the fragment constants
+ * UNAPPLIED_RESULT, DECLINED_REFUNDS and OPEN_CLAIM legitimately hold a SELECT. A SELECT constant
+ * gathered in a variable or an array first (`$parts = array( self::A, self::B )` and later
+ * `implode( '', $parts )`), one named through a group `use`, and one inherited from a class that is
+ * not loaded are not seen assembled. A constant reached through a variable class (`$class::HEAD`)
+ * or through `constant()` is not seen. A constant gathered into a variable before it is joined is
+ * not seen. A constant passed through `str_replace()`, `strtr()` or `preg_replace()` is not seen,
+ * and only its head is inventoried. A statement at the top of a file that a function extends through
+ * `$GLOBALS['sql']` is not seen. A SELECT assigned to a variable that a closure of its function
+ * also assigns is counted as built in steps though the closure's variable is its own: that fails
+ * closed, and no module has such a case. Four ways of completing a statement in steps are not seen
+ * as such: a helper that takes the variable by reference (`self::cursor( $sql, $after )` with
+ * `string &$sql`), a property (`$this->sql .= …`), the variable joined where it is sent
+ * (`fetchAll( $sql . ' WHERE id > %d' )`), and a destructuring assignment
+ * (`[ $sql ] = array( $sql . … )`). The query-plan run catches each of them, unless the bare head
+ * is also sent and the completed statement reads a table outside the module.
  *
  * Compared with the run both ways: a head no statement matches is a read the run did not send;
  * a statement of the run that names one of the module's tables and matches no head is a read
@@ -77,37 +94,6 @@ final class ReadInventory {
 	 * @var string
 	 */
 	private const TABLE = '{table}';
-
-	/**
-	 * The methods that may build a statement in steps, matched by its beginning: today the Catalog repository's scans.
-	 *
-	 * This is temporary. The Catalog's builders are to be written as complete statements, and this
-	 * list emptied; until then it is closed, so a new stepwise read anywhere, in the Catalog or
-	 * outside it, is refused by name until it is added here on purpose.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @var array<string, list<string>>
-	 */
-	public const OPEN_READS = array(
-		'SEOCart\Catalog\Infrastructure\MysqlProductRepository' => array(
-			'unboundProductIds',
-			'invalidSourceBindings',
-			'unboundPostIds',
-			'boundPostBindings',
-			'incompleteMismatchIds',
-			'variantIds',
-		),
-	);
-
-	/**
-	 * What ends the shape of an open read: one the source builds in steps, matched by its beginning.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @var string
-	 */
-	private const OPEN = ' …';
 
 	/**
 	 * The most texts one statement may take, so that a few ternaries are read and a generator of statements is not.
@@ -141,87 +127,26 @@ final class ReadInventory {
 
 		'interpolated' => 'written in an interpolated string or a heredoc',
 		'compound'     => 'written as a WITH or a UNION',
+		'steps'        => 'built in steps, by `.=` or by assigning to its variable again',
+		'assembled'    => 'built in steps, by joining a constant that holds a SELECT to something, or by handing it to implode() or sprintf()',
 		'visibility'   => 'completed by a parameter of a method that is not private, or protected in a final class, so that its callers may be outside the class',
 	);
 
 	/**
 	 * Finds the heads of the reads under a directory.
 	 *
-	 * Every open read it accepts is named on the output of the run, and one that is not on the list
-	 * of OPEN_READS is refused.
-	 *
 	 * @since 0.1.0
 	 * @since 0.2.0 A class constant is read from its class, evaluated; a source that cannot be read is refused.
 	 *
-	 * @param string                           $directory The module's source directory.
-	 * @param array<string, list<string>>|null $allowed   Optional. The (class, methods) whose open reads are accepted. Default OPEN_READS.
+	 * @param string $directory The module's source directory.
 	 * @return array<string, list<string>> Each read's shapes, one for each text it can take, keyed by where it is written: `path/File.php:line` relative to the directory, or `Full\Class\Name::CONSTANT`.
 	 *
-	 * @throws \UnexpectedValueException When a class's constants cannot be evaluated, a SELECT cannot be read from the source, two reads have one name, or an open read is not on the list.
+	 * @throws \UnexpectedValueException When a class's constants cannot be evaluated, a SELECT cannot be read from the source, two reads have one name, a source cannot be read, or the directory holds a file that is not PHP or one that includes another.
 	 */
-	public static function of( string $directory, ?array $allowed = null ): array {
-		$scan  = self::scan( $directory );
-		$lines = self::openReadLines( self::unlisted( $scan['open'], $allowed ?? self::OPEN_READS ) );
-
-		if ( array() !== $lines && defined( 'STDOUT' ) ) {
-			fwrite( STDOUT, implode( "\n", $lines ) . "\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- the run's report, as the query-plan tests write theirs.
-		}
-
-		return $scan['heads'];
-	}
-
-	/**
-	 * Finds the open reads under a directory: the statements built in steps, matched by their beginning.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param string $directory The module's source directory.
-	 * @return list<array{class: string, method: string, file: string, line: int, head: string}> Each open read: where it is and what it begins with.
-	 *
-	 * @throws \UnexpectedValueException When a source cannot be read.
-	 */
-	public static function openReadsOf( string $directory ): array {
-		return self::scan( $directory )['open'];
-	}
-
-	/**
-	 * Describes open reads for the output of a run.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param array $open The open reads, as openReadsOf() returns them.
-	 * @return list<string> The lines, none when there is no open read.
-	 *
-	 * @phpstan-param list<array{class: string, method: string, file: string, line: int, head: string}> $open
-	 */
-	public static function openReadLines( array $open ): array {
-		if ( array() === $open ) {
-			return array();
-		}
-
-		$lines = array( 'Open reads, accepted for now and matched by their beginning only (the list is ReadInventory::OPEN_READS; the builders are to become complete statements):' );
-
-		foreach ( $open as $read ) {
-			$lines[] = sprintf( '  %s::%s, %s:%d: %s', $read['class'], $read['method'], $read['file'], $read['line'], $read['head'] );
-		}
-
-		return $lines;
-	}
-
-	/**
-	 * Reads every source under a directory.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param string $directory The module's source directory.
-	 * @return array{heads: array<string, list<string>>, open: list<array{class: string, method: string, file: string, line: int, head: string}>} The heads, and the open reads.
-	 *
-	 * @throws \UnexpectedValueException When a source cannot be read, or the directory holds a file that is not PHP or one that includes another.
-	 */
-	private static function scan( string $directory ): array {
-		$heads = array();
-		$open  = array();
-		$files = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( $directory, \FilesystemIterator::SKIP_DOTS ) );
+	public static function of( string $directory ): array {
+		$heads   = array();
+		$sources = array();
+		$files   = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( $directory, \FilesystemIterator::SKIP_DOTS ) );
 
 		foreach ( $files as $file ) {
 			if ( ! $file instanceof \SplFileInfo ) {
@@ -239,17 +164,374 @@ final class ReadInventory {
 
 			self::refuseIncludes( $name, $tokens );
 
-			$written = self::literalHeads( $name, $tokens, array() !== $classes, $classes[0] ?? null );
-			$heads   = self::merged( $heads, $written['heads'], self::constantHeads( self::constantsMayHoldReads( $tokens ) ? $classes : array() ) );
-			$open    = array_merge( $open, $written['open'] );
+			$heads     = self::merged( $heads, self::literalHeads( $name, $tokens, array() !== $classes, $classes[0] ?? null ), self::constantHeads( self::constantsMayHoldReads( $tokens ) ? $classes : array() ) );
+			$sources[] = array( $name, $tokens, $classes[0] ?? null );
+		}
+
+		$constants = self::constantNames( $heads );
+
+		foreach ( $sources as list( $name, $tokens, $owner ) ) {
+			self::refuseAssembledConstants( $name, $tokens, $owner, $constants );
 		}
 
 		ksort( $heads );
 
+		return $heads;
+	}
+
+	/**
+	 * Names the constants that hold a read, in lower case, each as `class::constant`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, list<string>> $heads The heads of the module.
+	 * @return array<string, bool> Each name, with whether the constant stops at IN, to take a placeholder list.
+	 */
+	private static function constantNames( array $heads ): array {
+		$names = array();
+
+		foreach ( $heads as $key => $shapes ) {
+			if ( ! str_contains( $key, '::' ) ) {
+				continue;
+			}
+
+			$name  = strtolower( (string) preg_replace( '/\[.*$/s', '', $key ) );
+			$stops = array() !== $shapes && array() === array_filter( $shapes, static fn( string $shape ): bool => ! str_ends_with( $shape, ' IN ( ?+ )' ) );
+
+			$names[ $name ] = $stops && ( $names[ $name ] ?? true );
+		}
+
+		return $names;
+	}
+
+	/**
+	 * Refuses a method that joins a constant holding a SELECT to anything, or hands it to implode() or sprintf().
+	 *
+	 * A constant that holds a SELECT is a read of its own, sent whole. A method that completes it,
+	 * `self::HEAD . self::TAIL` or `implode( '', array( self::HEAD, self::TAIL ) )`, sends a statement
+	 * no constant holds, and none of the reads the inventory has describes it. The constant may be the
+	 * class's own (`self::`, `static::`), or another class's, written with its name as it is imported.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string              $name      The file's name.
+	 * @param array               $tokens    The file's tokens.
+	 * @param string|null         $owner     The file's class.
+	 * @param array<string, bool> $constants The constants that hold a read, as constantNames() lists them.
+	 *
+	 * @throws \UnexpectedValueException When a method does.
+	 *
+	 * @phpstan-param list<array{0: int, 1: string, 2: int}|string> $tokens
+	 */
+	private static function refuseAssembledConstants( string $name, array $tokens, ?string $owner, array $constants ): void {
+		if ( array() === $constants ) {
+			return;
+		}
+
+		$names = self::importsOf( $tokens );
+
+		foreach ( $tokens as $at => $token ) {
+			if ( ! is_array( $token ) || T_DOUBLE_COLON !== $token[0] ) {
+				continue;
+			}
+
+			$subject  = self::significantBefore( $tokens, $at );
+			$member   = self::significantAfter( $tokens, $at );
+			$fetched  = self::classNamed( $tokens[ $subject ] ?? '', $owner, $names );
+			$constant = $tokens[ $member ] ?? '';
+			$stops    = null !== $fetched && is_array( $constant ) && T_STRING === $constant[0] && '(' !== ( $tokens[ self::significantAfter( $tokens, $member ) ] ?? '' ) ? self::stopsAtIn( $fetched, $constant[1], $constants ) : null;
+
+			if ( null === $stops ) {
+				continue;
+			}
+
+			$end = $member;
+
+			while ( '[' === ( $tokens[ self::significantAfter( $tokens, $end ) ] ?? '' ) ) {
+				$end = self::closerOf( $tokens, self::significantAfter( $tokens, $end ) ) ?? $end + 1;
+			}
+
+			// A constant that stops at IN is completed by the placeholder list of its IN clause, which the inventory reads: the constant and its list are one operand, which may itself be joined.
+			$completed = $stops ? self::takesPlaceholderList( $tokens, $end ) : null;
+
+			if ( null !== self::bodyAround( $tokens, $subject ) && self::isJoined( $tokens, $subject, $completed ?? $end ) ) {
+				throw self::refusal( $name, (int) $tokens[ $subject ][2], 'assembled' );
+			}
+		}
+	}
+
+	/**
+	 * Names the class a static member is fetched from, in full.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array|string $token The token before the `::`.
+	 * @param string|null  $owner The file's class, which `self` and `static` name.
+	 * @param array        $names The file's namespace and imports, as importsOf() returns them.
+	 * @return string|null The class's full name; null when it is not a name that can be resolved here.
+	 *
+	 * @phpstan-param array{0: int, 1: string, 2: int}|string $token
+	 * @phpstan-param array{namespace: string, uses: array<string, string>} $names
+	 */
+	private static function classNamed( $token, ?string $owner, array $names ): ?string {
+		if ( ! is_array( $token ) ) {
+			return null;
+		}
+
+		if ( T_STATIC === $token[0] || ( T_STRING === $token[0] && 1 === preg_match( '/^self$/i', $token[1] ) ) ) {
+			return $owner;
+		}
+
+		$kind = token_name( $token[0] );
+
+		if ( 'T_NAME_FULLY_QUALIFIED' === $kind ) {
+			return ltrim( $token[1], '\\' );
+		}
+
+		if ( 'T_NAME_QUALIFIED' === $kind ) {
+			$parts = explode( '\\', $token[1], 2 );
+
+			return ( $names['uses'][ strtolower( $parts[0] ) ] ?? $names['namespace'] . $parts[0] ) . '\\' . $parts[1];
+		}
+
+		return T_STRING === $token[0] && 'parent' !== strtolower( $token[1] ) ? ( $names['uses'][ strtolower( $token[1] ) ] ?? $names['namespace'] . $token[1] ) : null;
+	}
+
+	/**
+	 * Reads the namespace a file declares and the classes it imports.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $tokens The file's tokens.
+	 * @return array{namespace: string, uses: array<string, string>} The namespace, with its trailing backslash, and each imported class by its lower-case alias.
+	 *
+	 * @phpstan-param list<array{0: int, 1: string, 2: int}|string> $tokens
+	 */
+	private static function importsOf( array $tokens ): array {
+		$namespace = '';
+		$uses      = array();
+		$depth     = 0;
+
+		foreach ( $tokens as $at => $token ) {
+			$depth += self::opensBlock( $token ) ? 1 : ( '}' === $token ? -1 : 0 );
+
+			if ( ! is_array( $token ) || ( T_NAMESPACE !== $token[0] && ( T_USE !== $token[0] || 0 !== $depth ) ) ) {
+				continue;
+			}
+
+			$next = $tokens[ self::significantAfter( $tokens, $at ) ] ?? '';
+
+			if ( ! is_array( $next ) || ! in_array( $next[0], array( T_STRING, T_NAME_QUALIFIED ), true ) ) {
+				continue;
+			}
+
+			if ( T_NAMESPACE === $token[0] ) {
+				$namespace = $next[1] . '\\';
+
+				continue;
+			}
+
+			$named = self::significantAfter( $tokens, $at );
+			$then  = self::significantAfter( $tokens, $named );
+			$alias = is_array( $tokens[ $then ] ?? null ) && T_AS === $tokens[ $then ][0] ? ( $tokens[ self::significantAfter( $tokens, $then ) ] ?? '' ) : '';
+			$full  = ltrim( $next[1], '\\' );
+			$last  = (string) substr( strrchr( '\\' . $full, '\\' ), 1 );
+
+			$uses[ strtolower( is_array( $alias ) ? $alias[1] : $last ) ] = $full;
+		}
+
 		return array(
-			'heads' => $heads,
-			'open'  => $open,
+			'namespace' => $namespace,
+			'uses'      => $uses,
 		);
+	}
+
+	/**
+	 * Finds the constant of a class, or of a class it extends that is already loaded, that holds a read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string              $fetched   The class's full name.
+	 * @param string              $constant  The constant's name.
+	 * @param array<string, bool> $constants  The constants that hold a read, as constantNames() lists them.
+	 * @return bool|null Whether the constant stops at IN; null when no constant of the class or its parents holds a read.
+	 */
+	private static function stopsAtIn( string $fetched, string $constant, array $constants ): ?bool {
+		$current = $fetched;
+
+		while ( '' !== $current ) {
+			if ( isset( $constants[ strtolower( $current . '::' . $constant ) ] ) ) {
+				return $constants[ strtolower( $current . '::' . $constant ) ];
+			}
+
+			$parent  = class_exists( $current, false ) ? get_parent_class( $current ) : false;
+			$current = false === $parent ? '' : $parent;
+		}
+
+		return null;
+	}
+
+	/**
+	 * Finds where the placeholder list of an IN clause ends, when the operand that ends at a position is followed by it: `. '( ' . implode( ', ', array_fill( … ) ) . ' )'`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $tokens The file's tokens.
+	 * @param int   $end    Where the operand ends.
+	 * @return int|null Where the closing literal is; null when the list is not there, or is closed otherwise.
+	 *
+	 * @phpstan-param list<array{0: int, 1: string, 2: int}|string> $tokens
+	 */
+	private static function takesPlaceholderList( array $tokens, int $end ): ?int {
+		$dot    = self::significantAfter( $tokens, $end );
+		$open   = self::significantAfter( $tokens, $dot );
+		$second = self::significantAfter( $tokens, $open );
+		$call   = self::significantAfter( $tokens, $second );
+		$text   = $tokens[ $open ] ?? '';
+		$then   = $tokens[ $call ] ?? '';
+		$list   = is_array( $then ) && T_STRING === $then[0] && 'implode' === strtolower( $then[1] ) ? self::placeholderList( $tokens, $call, array( 'IN ( ' ) ) : null;
+
+		if ( '.' !== ( $tokens[ $dot ] ?? '' ) || ! is_array( $text ) || T_CONSTANT_ENCAPSED_STRING !== $text[0] || 1 !== preg_match( '/^[\'"]\(\s*[\'"]$/', $text[1] ) || '.' !== ( $tokens[ $second ] ?? '' ) || null === $list ) {
+			return null;
+		}
+
+		$tail   = self::significantAfter( $tokens, self::significantAfter( $tokens, $list['end'] ) );
+		$closes = $tokens[ $tail ] ?? '';
+
+		// The list closes with a parenthesis of its own, and the statement ends there.
+		$ends = '.' === ( $tokens[ self::significantAfter( $tokens, $list['end'] ) ] ?? '' ) && is_array( $closes ) && T_CONSTANT_ENCAPSED_STRING === $closes[0] && 1 === preg_match( '/^[\'"]\s*\)\s*[\'"]$/', $closes[1] ) && '.' !== ( $tokens[ self::significantAfter( $tokens, $tail ) ] ?? '' );
+
+		return $ends ? $tail : null;
+	}
+
+	/**
+	 * Tells whether an operand is joined to something by a dot, or handed to implode() or sprintf().
+	 *
+	 * The operand may sit in a group, an array or a ternary that is itself joined or handed on, so
+	 * the groups around it are followed outwards until a call that is none of those, or the end of the
+	 * statement.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $tokens The file's tokens.
+	 * @param int   $start  Where the operand starts.
+	 * @param int   $end    Where it ends.
+	 * @return bool True when it is.
+	 *
+	 * @phpstan-param list<array{0: int, 1: string, 2: int}|string> $tokens
+	 */
+	private static function isJoined( array $tokens, int $start, int $end ): bool {
+		while ( true ) {
+			$before = $tokens[ self::significantBefore( $tokens, $start ) ] ?? '';
+			$after  = $tokens[ self::significantAfter( $tokens, $end ) ] ?? '';
+
+			if ( '.' === $before || '.' === $after || ( is_array( $before ) && T_CONCAT_EQUAL === $before[0] ) ) {
+				return true;
+			}
+
+			$open  = self::enclosingOpen( $tokens, $start );
+			$close = null === $open ? null : self::closerOf( $tokens, $open );
+
+			if ( null === $open || null === $close ) {
+				return false;
+			}
+
+			$callee = self::significantBefore( $tokens, $open );
+			$name   = $tokens[ $callee ] ?? '';
+
+			if ( '(' === $tokens[ $open ] && is_array( $name ) && in_array( $name[0], array( T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED ), true ) ) {
+				$on = $tokens[ self::significantBefore( $tokens, $callee ) ] ?? '';
+
+				return ! ( is_array( $on ) && in_array( $on[0], array( T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR, T_DOUBLE_COLON ), true ) ) && 1 === preg_match( '/(?:^|\\\\)(?:implode|join|sprintf|vsprintf)$/i', $name[1] );
+			}
+
+			$start = $open;
+			$end   = $close;
+		}
+	}
+
+	/**
+	 * Finds the body of the function that a `function` token begins: a method, a function or a closure.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $tokens   The file's tokens.
+	 * @param int   $keyword  Where the `function` token is.
+	 * @return array{0: int, 1: int}|null Where the body opens and closes; null when it has none.
+	 *
+	 * @phpstan-param list<array{0: int, 1: string, 2: int}|string> $tokens
+	 */
+	private static function bodyOfFunction( array $tokens, int $keyword ): ?array {
+		$open = self::significantAfter( $tokens, $keyword );
+
+		while ( ( is_array( $tokens[ $open ] ?? null ) && T_STRING === $tokens[ $open ][0] ) || '&' === ( $tokens[ $open ] ?? '' ) ) {
+			$open = self::significantAfter( $tokens, $open );
+		}
+
+		$close = '(' === ( $tokens[ $open ] ?? '' ) ? self::closingParenthesis( $tokens, $open ) : null;
+
+		return null === $close ? null : self::bodyOf( $tokens, $close );
+	}
+
+	/**
+	 * Finds the parenthesis or bracket that opens around a position and is not closed before it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $tokens The file's tokens.
+	 * @param int   $at     The position.
+	 * @return int|null Where it is; null when the statement ends first.
+	 *
+	 * @phpstan-param list<array{0: int, 1: string, 2: int}|string> $tokens
+	 */
+	private static function enclosingOpen( array $tokens, int $at ): ?int {
+		$depth = 0;
+
+		for ( $back = $at - 1; $back >= 0; $back-- ) {
+			$token = $tokens[ $back ];
+
+			if ( ')' === $token || ']' === $token ) {
+				++$depth;
+			} elseif ( '(' === $token || '[' === $token ) {
+				if ( 0 === $depth ) {
+					return $back;
+				}
+
+				--$depth;
+			} elseif ( 0 === $depth && ( ';' === $token || '{' === $token || '}' === $token ) ) {
+				return null;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Finds the parenthesis or bracket that closes the one at a position.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $tokens The file's tokens.
+	 * @param int   $open   Where the `(` or `[` is.
+	 * @return int|null Where its closing character is; null when there is none.
+	 *
+	 * @phpstan-param list<array{0: int, 1: string, 2: int}|string> $tokens
+	 */
+	private static function closerOf( array $tokens, int $open ): ?int {
+		$opening = $tokens[ $open ] ?? '';
+		$closing = '(' === $opening ? ')' : ']';
+		$depth   = 0;
+		$count   = count( $tokens );
+
+		for ( $at = $open; $at < $count; $at++ ) {
+			$depth += $opening === $tokens[ $at ] ? 1 : ( $closing === $tokens[ $at ] ? -1 : 0 );
+
+			if ( 0 === $depth ) {
+				return $at;
+			}
+		}
+
+		return null;
 	}
 
 	/**
@@ -279,30 +561,6 @@ final class ReadInventory {
 
 			throw new \UnexpectedValueException( sprintf( '%s:%d includes a file, and the inventory reads only the files of the directory it is given, so a read in an included file would never be seen. The source of a module does not include files.', $name, $token[2] ) );
 		}
-	}
-
-	/**
-	 * Refuses the first open read whose method is not on the list.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param array                       $open    The open reads, as openReadsOf() returns them.
-	 * @param array<string, list<string>> $allowed The methods allowed to build a statement in steps, by class.
-	 * @return array The open reads, when all are listed.
-	 *
-	 * @throws \UnexpectedValueException When one is not listed.
-	 *
-	 * @phpstan-param list<array{class: string, method: string, file: string, line: int, head: string}> $open
-	 * @phpstan-return list<array{class: string, method: string, file: string, line: int, head: string}>
-	 */
-	private static function unlisted( array $open, array $allowed ): array {
-		foreach ( $open as $read ) {
-			if ( ! in_array( $read['method'], $allowed[ $read['class'] ] ?? array(), true ) ) {
-				throw new \UnexpectedValueException( sprintf( '%s:%d starts a SELECT that is built in steps, by `.=` or by assigning to its variable again, and %s::%s is not on the list of open reads (ReadInventory::OPEN_READS), so its statement cannot be read from the source. Write the statement as one class constant, or as string literals, or add the method to the list deliberately.', $read['file'], $read['line'], $read['class'], $read['method'] ) );
-			}
-		}
-
-		return $open;
 	}
 
 	/**
@@ -368,9 +626,7 @@ final class ReadInventory {
 	 * Tells whether a statement's shape is, in full, one of a head's shapes.
 	 *
 	 * A table token of the head stands for any one table name, and an IN list is the same shape
-	 * whatever its length, so the whole text is compared and nothing may follow the head. The one
-	 * exception is an open read, whose shape ends in OPEN: the statement it is built into goes on
-	 * after what the source writes, so only its beginning is compared.
+	 * whatever its length, so the whole text is compared and nothing may follow the head.
 	 *
 	 * @since 0.1.0
 	 * @since 0.2.0 The whole shape must match, not its beginning.
@@ -381,10 +637,7 @@ final class ReadInventory {
 	 */
 	private static function matches( array $head, Statement $statement ): bool {
 		foreach ( $head as $shape ) {
-			$open = str_ends_with( $shape, self::OPEN );
-			$text = $open ? substr( $shape, 0, -strlen( self::OPEN ) ) : $shape;
-
-			if ( 1 === preg_match( '/^' . str_replace( preg_quote( self::TABLE, '/' ), '\S+', preg_quote( $text, '/' ) ) . ( $open ? '/' : '$/D' ), $statement->shape() ) ) {
+			if ( 1 === preg_match( '/^' . str_replace( preg_quote( self::TABLE, '/' ), '\S+', preg_quote( $shape, '/' ) ) . '$/D', $statement->shape() ) ) {
 				return true;
 			}
 		}
@@ -407,7 +660,7 @@ final class ReadInventory {
 	 * @param array       $tokens    The file's tokens.
 	 * @param bool        $inClasses Whether the file declares a class, so that its constants are class constants.
 	 * @param string|null $owner     The file's class, whose constants a ternary may name.
-	 * @return array{heads: array<string, list<string>>, open: list<array{class: string, method: string, file: string, line: int, head: string}>} Each read's alternatives, as shapes, keyed by `File.php:line`, and the open reads.
+	 * @return array<string, list<string>> Each read's alternatives, as shapes, keyed by `File.php:line`.
 	 *
 	 * @throws \UnexpectedValueException When a SELECT is joined to, or handed to, something that cannot be read.
 	 *
@@ -415,7 +668,6 @@ final class ReadInventory {
 	 */
 	private static function literalHeads( string $name, array $tokens, bool $inClasses, ?string $owner ): array {
 		$heads    = array();
-		$open     = array();
 		$constant = false;
 		$count    = count( $tokens );
 
@@ -434,19 +686,14 @@ final class ReadInventory {
 				// A class constant is read from its class, whole; see constantHeads().
 				$read  = $constant ? array(
 					'heads' => array(),
-					'open'  => array(),
 					'end'   => $run['end'],
 				) : self::statementRead( $name, $tokens, $run, $owner );
 				$heads = self::merged( $heads, $read['heads'] );
-				$open  = array_merge( $open, $read['open'] );
 				$at    = $read['end'];
 			}
 		}
 
-		return array(
-			'heads' => $heads,
-			'open'  => $open,
-		);
+		return $heads;
 	}
 
 	/**
@@ -492,9 +739,8 @@ final class ReadInventory {
 	 * with WITH, or with a parenthesis and holds a UNION, cannot be read and is refused. Whatever
 	 * is joined to the run by a dot must be one of the dynamic parts the inventory knows
 	 * (completions()), and a SELECT written after something that is not a literal, or handed to
-	 * sprintf(), is refused. A statement assigned to a variable that the function goes on to extend
-	 * with `.=` is built in steps the source does not show whole: it is an open read, matched by
-	 * its beginning (OPEN), which is the one place the inventory still does.
+	 * sprintf(), is refused. So is a statement assigned to a variable that the function goes on to
+	 * give a value again, with `.=` or any other assignment: it is built in steps the source does not show whole.
 	 *
 	 * @since 0.2.0
 	 *
@@ -502,7 +748,7 @@ final class ReadInventory {
 	 * @param array       $tokens The file's tokens.
 	 * @param array       $run    The run, as literalRun() returns it.
 	 * @param string|null $owner  The file's class.
-	 * @return array{heads: array<string, list<string>>, open: list<array{class: string, method: string, file: string, line: int, head: string}>, end: int} The read, whether it is open, and where the statement ends.
+	 * @return array{heads: array<string, list<string>>, end: int} The read, and where the statement ends.
 	 *
 	 * @throws \UnexpectedValueException When the statement cannot be read from the source.
 	 *
@@ -514,7 +760,6 @@ final class ReadInventory {
 		$line   = $run['pieces'][0][1];
 		$none   = array(
 			'heads' => array(),
-			'open'  => array(),
 			'end'   => $run['end'],
 		);
 
@@ -525,24 +770,15 @@ final class ReadInventory {
 				throw self::refusal( $name, $line, $preceded );
 			}
 
+			if ( self::isExtendedLater( $tokens, $run ) ) {
+				throw self::refusal( $name, $line, 'steps' );
+			}
+
 			$statement = self::completions( $name, $tokens, $run, $folded, $line, $owner );
 			$shapes    = array_values( array_unique( array_map( array( self::class, 'shapeOf' ), $statement['texts'] ) ) );
-			$open      = array();
-
-			if ( self::isExtendedLater( $tokens, $run ) ) {
-				$shapes = array_map( static fn( string $shape ): string => $shape . self::OPEN, $shapes );
-				$open[] = array(
-					'class'  => $owner ?? '',
-					'method' => self::functionAt( $tokens, $run['start'] ),
-					'file'   => $name,
-					'line'   => $line,
-					'head'   => $shapes[0],
-				);
-			}
 
 			return array(
 				'heads' => array( $name . ':' . $line => $shapes ),
-				'open'  => $open,
 				'end'   => $statement['end'],
 			);
 		}
@@ -554,7 +790,6 @@ final class ReadInventory {
 
 			return array(
 				'heads' => array() === $shapes ? array() : array( $name . ':' . $line => $shapes ),
-				'open'  => array(),
 				'end'   => $statement['end'],
 			);
 		}
@@ -582,6 +817,10 @@ final class ReadInventory {
 	/**
 	 * Tells whether a statement is assigned to a variable that the same function gives a value again afterwards, with `.=` or any other assignment.
 	 *
+	 * The whole rest of the function's body is read, closures and arrow functions in it included. A
+	 * statement outside any function, at the top of a file or as a property's default, is followed to
+	 * the end of the file, past the bodies of the functions declared after it.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @param array $tokens The file's tokens.
@@ -594,18 +833,28 @@ final class ReadInventory {
 	private static function isExtendedLater( array $tokens, array $run ): bool {
 		$equals   = self::significantBefore( $tokens, $run['start'] );
 		$variable = $tokens[ self::significantBefore( $tokens, $equals ) ] ?? '';
+		$body     = self::bodyAround( $tokens, $run['start'] );
 
 		if ( '=' !== ( $tokens[ $equals ] ?? '' ) || ! is_array( $variable ) || T_VARIABLE !== $variable[0] ) {
 			return false;
 		}
 
-		$count = count( $tokens );
+		$until = null === $body ? count( $tokens ) : $body[1];
 
-		for ( $at = $run['end'] + 1; $at < $count; $at++ ) {
+		for ( $at = $run['end'] + 1; $at < $until; $at++ ) {
 			$token = $tokens[ $at ];
 
-			if ( is_array( $token ) && T_FUNCTION === $token[0] ) {
-				return false;
+			// Outside a function the variable is the file's, or a property's default: the bodies of the functions that follow have variables of their own, unless they take it as global.
+			if ( null === $body && is_array( $token ) && T_FUNCTION === $token[0] ) {
+				$skipped = self::bodyOfFunction( $tokens, $at );
+
+				if ( null !== $skipped && self::assignsGlobal( $tokens, $skipped, $variable[1] ) ) {
+					return true;
+				}
+
+				$at = $skipped[1] ?? $at;
+
+				continue;
 			}
 
 			if ( is_array( $token ) && T_VARIABLE === $token[0] && $token[1] === $variable[1] && self::assignsTo( $tokens, $at ) ) {
@@ -617,27 +866,66 @@ final class ReadInventory {
 	}
 
 	/**
-	 * Names the function a position is in.
+	 * Tells whether a function body takes a variable as global and then assigns it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array  $tokens The file's tokens.
+	 * @param array  $body   Where the body opens and closes.
+	 * @param string $name  The variable, with its `$`.
+	 * @return bool True when it does.
+	 *
+	 * @phpstan-param list<array{0: int, 1: string, 2: int}|string> $tokens
+	 * @phpstan-param array{0: int, 1: int} $body
+	 */
+	private static function assignsGlobal( array $tokens, array $body, string $name ): bool {
+		$naming   = false;
+		$declared = false;
+
+		for ( $at = $body[0]; $at < $body[1]; $at++ ) {
+			$token = $tokens[ $at ];
+
+			if ( ';' === $token ) {
+				$naming = false;
+			} elseif ( is_array( $token ) && T_GLOBAL === $token[0] ) {
+				$naming = true;
+			} elseif ( is_array( $token ) && T_VARIABLE === $token[0] && $name === $token[1] ) {
+				$declared = $declared || $naming;
+
+				if ( $declared && ! $naming && self::assignsTo( $tokens, $at ) ) {
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Finds the body of the function, method or closure that a position is in: the innermost.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param array $tokens The file's tokens.
 	 * @param int   $at     The position.
-	 * @return string The function's name; empty outside one, or in a closure.
+	 * @return array{0: int, 1: int}|null Where the body opens and closes; null outside one.
 	 *
 	 * @phpstan-param list<array{0: int, 1: string, 2: int}|string> $tokens
 	 */
-	private static function functionAt( array $tokens, int $at ): string {
-		for ( ; $at >= 0; --$at ) {
-			if ( is_array( $tokens[ $at ] ) && T_FUNCTION === $tokens[ $at ][0] ) {
-				$next = self::significantAfter( $tokens, $at );
-				$next = '&' === $tokens[ $next ] ? self::significantAfter( $tokens, $next ) : $next;
+	private static function bodyAround( array $tokens, int $at ): ?array {
+		for ( $back = $at; $back >= 0; $back-- ) {
+			if ( ! is_array( $tokens[ $back ] ) || T_FUNCTION !== $tokens[ $back ][0] ) {
+				continue;
+			}
 
-				return is_array( $tokens[ $next ] ?? null ) && T_STRING === $tokens[ $next ][0] ? $tokens[ $next ][1] : '';
+			$body = self::bodyOfFunction( $tokens, $back );
+
+			if ( null !== $body && $body[0] < $at && $at < $body[1] ) {
+				return $body;
 			}
 		}
 
-		return '';
+		return null;
 	}
 
 	/**

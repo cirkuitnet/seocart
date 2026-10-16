@@ -129,13 +129,15 @@ final class SellabilityIsOneRuleTest extends TestCase {
 	/**
 	 * Doctor's read-only statements that compare the marker with a value, never deciding
 	 * sellability: they list or count products by their structural state (stuck, mismatched,
-	 * incomplete), for a report, not a sale. The verdict stays sellabilityFacts()'s alone.
+	 * incomplete), for a report, not a sale. The verdict stays sellabilityFacts()'s alone. The
+	 * mismatch scan is written as a class constant, INCOMPLETE_MISMATCH_SCAN, which both pages of
+	 * incompleteMismatchIds() send.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var list<string>
 	 */
-	private const MARKER_FILTERS = array( 'incompleteCount', 'incompleteMismatchIds', 'stuckUpdating' );
+	private const MARKER_FILTERS = array( 'incompleteCount', 'INCOMPLETE_MISMATCH_SCAN', 'stuckUpdating' );
 
 	/**
 	 * The files that may name a verdict: the rule and the enum.
@@ -171,7 +173,7 @@ final class SellabilityIsOneRuleTest extends TestCase {
 	}
 
 	/**
-	 * Tests that inside the repository the marker is compared with a value only in the statements that write it.
+	 * Tests that inside the repository the marker is compared with a value only in the statements that write it, in a method or in a class constant.
 	 *
 	 * @since 0.1.0
 	 */
@@ -179,7 +181,7 @@ final class SellabilityIsOneRuleTest extends TestCase {
 		$naming = array();
 		$tests  = array();
 
-		foreach ( self::stringsByMethod( (string) file_get_contents( PhpSource::root() . '/' . self::REPOSITORY ) ) as $method => $literals ) {
+		foreach ( self::stringsByMember( (string) file_get_contents( PhpSource::root() . '/' . self::REPOSITORY ) ) as $method => $literals ) {
 			$named = array_filter( $literals, static fn( string $literal ): bool => str_contains( $literal, self::MARKER ) );
 
 			if ( array() === $named ) {
@@ -282,6 +284,7 @@ final class SellabilityIsOneRuleTest extends TestCase {
 		$source = <<<'PHP'
 <?php
 final class Shown {
+	private const SCAN = 'SELECT a FROM t WHERE generation_state = %s';
 	public function one(): string {
 		$inner = static fn(): string => 'SELECT a FROM t WHERE generation_state = %s';
 		return 'x' . $inner();
@@ -294,10 +297,11 @@ PHP;
 
 		$this->assertSame(
 			array(
-				'one' => array( "'SELECT a FROM t WHERE generation_state = %s'", "'x'" ),
-				'two' => array( '"UPDATE t SET b = 1"' ),
+				'SCAN' => array( "'SELECT a FROM t WHERE generation_state = %s'" ),
+				'one'  => array( "'SELECT a FROM t WHERE generation_state = %s'", "'x'" ),
+				'two'  => array( '"UPDATE t SET b = 1"' ),
 			),
-			self::stringsByMethod( $source )
+			self::stringsByMember( $source )
 		);
 
 		$this->assertTrue( self::comparesTheMarker( "'SELECT a FROM t WHERE p.generation_state = %s'" ) );
@@ -370,25 +374,32 @@ PHP;
 	}
 
 	/**
-	 * Collects the string literals of each named method of a class, closures within it included.
+	 * Collects the string literals of each named method and each class constant of a class, closures within them included.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 A class constant is read as a member, since a statement may be written there and sent by a method.
 	 *
 	 * @param string $source The PHP source.
-	 * @return array<string, list<string>> Each method's string literals, quotes included, keyed by method name.
+	 * @return array<string, list<string>> Each member's string literals, quotes included, keyed by method or constant name.
 	 */
-	private static function stringsByMethod( string $source ): array {
-		$tokens  = PhpSource::tokens( $source );
-		$methods = array();
-		$current = null;
-		$depth   = 0;
-		$open    = 0;
+	private static function stringsByMember( string $source ): array {
+		$tokens   = PhpSource::tokens( $source );
+		$members  = array();
+		$current  = null;
+		$constant = null;
+		$depth    = 0;
+		$open     = 0;
 
 		foreach ( $tokens as $index => $token ) {
-			if ( null === $current && $token->is( T_FUNCTION ) && ( $tokens[ $index + 1 ] ?? null )?->is( T_STRING ) ) {
+			if ( null === $current && null === $constant && $token->is( T_FUNCTION ) && ( $tokens[ $index + 1 ] ?? null )?->is( T_STRING ) ) {
 				$current             = $tokens[ $index + 1 ]->text;
 				$open                = $depth;
-				$methods[ $current ] = array();
+				$members[ $current ] = array();
+			} elseif ( null === $current && null === $constant && $token->is( T_CONST ) && ( $tokens[ $index + 1 ] ?? null )?->is( T_STRING ) ) {
+				$constant             = $tokens[ $index + 1 ]->text;
+				$members[ $constant ] = array();
+			} elseif ( null !== $constant && ';' === $token->text ) {
+				$constant = null;
 			}
 
 			if ( '{' === $token->text || $token->is( array( T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES ) ) ) {
@@ -399,12 +410,12 @@ PHP;
 				if ( null !== $current && $depth === $open ) {
 					$current = null;
 				}
-			} elseif ( null !== $current && self::isString( $token ) ) {
-				$methods[ $current ][] = $token->text;
+			} elseif ( null !== ( $current ?? $constant ) && self::isString( $token ) ) {
+				$members[ $current ?? $constant ][] = $token->text;
 			}
 		}
 
-		return $methods;
+		return $members;
 	}
 
 	/**

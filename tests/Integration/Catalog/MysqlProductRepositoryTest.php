@@ -32,7 +32,10 @@ use SEOCart\Tests\Support\Catalog\CatalogTestCase;
  * product keeps its marker when saved again; marking returns the instant it wrote, and settling
  * and restoring the marker are one conditional statement each, a restore only over its own mark;
  * and a SKU another variant holds is `catalog.sku_taken`, never the database's duplicate key,
- * even when the other variant was committed after this transaction's snapshot.
+ * even when the other variant was committed after this transaction's snapshot. The six reads
+ * doctor pages through (unbound products, invalid source bindings, unbound posts, bindings,
+ * incomplete products, variants) list the rows each WHERE clause selects, from the first page
+ * and from a cursor.
  *
  * Planted violations, one at a time, each put back afterwards:
  *
@@ -46,6 +49,8 @@ use SEOCart\Tests\Support\Catalog\CatalogTestCase;
  *   test_a_restore_puts_back_only_its_own_mark restores over a mark of another instant.
  * - In MysqlProductRepository::remark(), write `updated_at = UTC_TIMESTAMP(6)`:
  *   test_every_instant_is_later_than_the_rows_last_one sees a mark earlier than the row's last instant.
+ * - In the cursor statement of boundPostBindings(), compare `post_id >= %d`: the cursor test sees the cursor's own binding on the next page.
+ * - In the unbound-posts scan of unboundPostIds(), drop `AND pp.post_id IS NULL`: its test sees the bound post listed.
  *
  * @since 0.1.0
  */
@@ -392,5 +397,187 @@ final class MysqlProductRepositoryTest extends CatalogTestCase {
 		}
 
 		$this->assertSame( CatalogError::SkuTaken, $code );
+	}
+
+	/**
+	 * Tests that the products with no `product_posts` row are listed by id, a page at a time, from a cursor.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_unbound_product_ids_page_by_cursor_and_leave_out_the_bound_ones(): void {
+		$this->storedProduct( 'SKU-BOUND' );
+
+		$first  = $this->bareProduct();
+		$second = $this->bareProduct();
+		$third  = $this->bareProduct();
+
+		$this->assertSame( array( $first, $second, $third ), $this->products->unboundProductIds( 0, 10 ), 'The bound product is not listed.' );
+		$this->assertSame( array( $first, $second, $third ), $this->products->unboundProductIds( -1, 10 ), 'A cursor that is not positive is a first page.' );
+		$this->assertSame( array( $first, $second ), $this->products->unboundProductIds( 0, 2 ), 'The limit ends the page.' );
+		$this->assertSame( array( $second, $third ), $this->products->unboundProductIds( $first, 10 ), 'A cursor lists the products above it.' );
+		$this->assertSame( array( $second ), $this->products->unboundProductIds( $first, 1 ), 'The limit applies after a cursor.' );
+		$this->assertSame( array(), $this->products->unboundProductIds( $third, 10 ), 'Nothing is above the last.' );
+	}
+
+	/**
+	 * Tests that each way a source binding is invalid lists the product, and a valid one is not listed, from a cursor.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_invalid_source_bindings_page_by_cursor_and_leave_out_the_valid_ones(): void {
+		global $wpdb;
+
+		$this->storedProduct( 'SKU-VALID' );
+
+		$noSource = $this->bareProduct();
+
+		$unbound = (int) $this->storedProduct( 'SKU-UNBOUND' )->id();
+
+		$this->db->execute( 'DELETE FROM %i WHERE product_id = %d', $this->catalogTable( CatalogTables::PRODUCT_POSTS ), $unbound );
+
+		$goneProduct = $this->storedProduct( 'SKU-GONE' );
+		$gone        = (int) $goneProduct->id();
+
+		$this->db->execute( 'DELETE FROM %i WHERE ID = %d', $wpdb->posts, (int) $goneProduct->sourcePostId() );
+
+		$otherTypeProduct = $this->storedProduct( 'SKU-OTHER-TYPE' );
+		$otherType        = (int) $otherTypeProduct->id();
+
+		$this->db->execute( 'UPDATE %i SET post_type = %s WHERE ID = %d', $wpdb->posts, 'page', (int) $otherTypeProduct->sourcePostId() );
+
+		$invalid = array( $noSource, $unbound, $gone, $otherType );
+
+		$this->assertSame( $invalid, $this->products->invalidSourceBindings( 0, 10 ), 'The valid product is not listed; each other one is.' );
+		$this->assertSame( $invalid, $this->products->invalidSourceBindings( -1, 10 ) );
+		$this->assertSame( array( $noSource, $unbound ), $this->products->invalidSourceBindings( 0, 2 ) );
+		$this->assertSame( array( $unbound, $gone, $otherType ), $this->products->invalidSourceBindings( $noSource, 10 ) );
+		$this->assertSame( array( $unbound ), $this->products->invalidSourceBindings( $noSource, 1 ) );
+		$this->assertSame( array(), $this->products->invalidSourceBindings( $otherType, 10 ) );
+	}
+
+	/**
+	 * Tests that the product posts with no binding are listed by id from a cursor, and a bound post, an auto-draft and a post of another type are not.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_unbound_post_ids_page_by_cursor_and_leave_out_what_the_check_does_not_cover(): void {
+		$this->storedProduct( 'SKU-BOUND-POST' );
+		$this->unboundPost( 'auto-draft' );
+		$this->post( 'publish', 'page' );
+
+		$published = $this->unboundPost();
+		$draft     = $this->unboundPost( 'draft' );
+		$private   = $this->unboundPost( 'private' );
+
+		$unbound = array( $published, $draft, $private );
+
+		$this->assertSame( $unbound, $this->products->unboundPostIds( 0, 10 ) );
+		$this->assertSame( $unbound, $this->products->unboundPostIds( -1, 10 ) );
+		$this->assertSame( array( $published, $draft ), $this->products->unboundPostIds( 0, 2 ) );
+		$this->assertSame( array( $draft, $private ), $this->products->unboundPostIds( $published, 10 ), 'A cursor lists the posts above it.' );
+		$this->assertSame( array( $draft ), $this->products->unboundPostIds( $published, 1 ) );
+		$this->assertSame( array(), $this->products->unboundPostIds( $private, 10 ) );
+	}
+
+	/**
+	 * Tests that every binding is listed by post id with its product and locale, from a cursor.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_bound_post_bindings_page_by_cursor_with_their_product_and_locale(): void {
+		$bindings = array();
+
+		foreach ( array( 'SKU-BIND-A', 'SKU-BIND-B', 'SKU-BIND-C' ) as $sku ) {
+			$product    = $this->storedProduct( $sku );
+			$bindings[] = array(
+				'post_id'    => (int) $product->sourcePostId(),
+				'product_id' => (int) $product->id(),
+				'locale'     => self::LOCALE,
+			);
+		}
+
+		$this->assertSame( $bindings, $this->products->boundPostBindings( 0, 10 ) );
+		$this->assertSame( $bindings, $this->products->boundPostBindings( -1, 10 ) );
+		$this->assertSame( array_slice( $bindings, 0, 2 ), $this->products->boundPostBindings( 0, 2 ) );
+		$this->assertSame( array_slice( $bindings, 1 ), $this->products->boundPostBindings( $bindings[0]['post_id'], 10 ), 'A cursor lists the bindings of the posts above it.' );
+		$this->assertSame( array( $bindings[1] ), $this->products->boundPostBindings( $bindings[0]['post_id'], 1 ) );
+		$this->assertSame( array(), $this->products->boundPostBindings( $bindings[2]['post_id'], 10 ) );
+	}
+
+	/**
+	 * Tests that a complete product with no enabled variant or no base price is listed from a cursor, and a whole one and an incomplete one are not.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_incomplete_mismatch_ids_page_by_cursor_and_cover_only_complete_products(): void {
+		$prices = $this->catalogTable( CatalogTables::VARIANT_PRICES );
+
+		$whole = (int) $this->storedProduct( 'SKU-WHOLE' )->id();
+
+		$unpriced = $this->storedProduct( 'SKU-UNPRICED' );
+
+		$this->db->execute( 'DELETE FROM %i WHERE variant_id = %d', $prices, (int) $unpriced->defaultVariant()?->id() );
+
+		$disabled = (int) $this->storedProduct( 'SKU-DISABLED' )->id();
+
+		$this->db->execute( 'UPDATE %i SET enabled_variant_count = 0 WHERE id = %d', $this->catalogTable( CatalogTables::PRODUCTS ), $disabled );
+
+		$stillIncomplete = $this->storedProduct( 'SKU-INCOMPLETE' );
+
+		$this->db->execute( 'DELETE FROM %i WHERE variant_id = %d', $prices, (int) $stillIncomplete->defaultVariant()?->id() );
+		$this->db->execute( 'UPDATE %i SET generation_state = %s WHERE id = %d', $this->catalogTable( CatalogTables::PRODUCTS ), GenerationState::Incomplete->value, (int) $stillIncomplete->id() );
+
+		$mismatched = array( (int) $unpriced->id(), $disabled );
+
+		$this->assertSame( $mismatched, $this->products->incompleteMismatchIds( self::BASE_CURRENCY, 0, 10 ), 'The whole product and the incomplete one are not listed.' );
+		$this->assertSame( $mismatched, $this->products->incompleteMismatchIds( self::BASE_CURRENCY, -1, 10 ) );
+		$this->assertSame( array( $mismatched[0] ), $this->products->incompleteMismatchIds( self::BASE_CURRENCY, 0, 1 ) );
+		$this->assertSame( array( $mismatched[1] ), $this->products->incompleteMismatchIds( self::BASE_CURRENCY, $mismatched[0], 10 ), 'A cursor lists the products above it.' );
+		$this->assertSame( array(), $this->products->incompleteMismatchIds( self::BASE_CURRENCY, $mismatched[1], 10 ) );
+		$this->assertSame( array( $whole, $mismatched[0], $mismatched[1] ), $this->products->incompleteMismatchIds( 'EUR', 0, 10 ), 'The price asked for is the one in the currency given: no product has a EUR price, and the incomplete one is still left out.' );
+	}
+
+	/**
+	 * Tests that the variants whose product exists are listed by id from a cursor, and an orphan variant is not.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_variant_ids_page_by_cursor_and_leave_out_a_variant_with_no_product(): void {
+		$first  = (int) $this->storedProduct( 'SKU-VARIANT-A' )->defaultVariant()?->id();
+		$second = (int) $this->storedProduct( 'SKU-VARIANT-B' )->defaultVariant()?->id();
+		$third  = (int) $this->storedProduct( 'SKU-VARIANT-C' )->defaultVariant()?->id();
+
+		$this->db->execute(
+			'INSERT INTO %i ( uuid, product_id, sku, combination_hash, generation, is_enabled, position, created_at, updated_at ) VALUES ( %s, 999999997, %s, %s, 1, 1, 0, UTC_TIMESTAMP(), UTC_TIMESTAMP() )',
+			$this->catalogTable( CatalogTables::VARIANTS ),
+			$this->ids->generate(),
+			'SKU-ORPHAN',
+			str_repeat( '0', 64 )
+		);
+
+		$this->assertSame( array( $first, $second, $third ), $this->products->variantIds( 0, 10 ), 'The orphan variant is not listed.' );
+		$this->assertSame( array( $first, $second, $third ), $this->products->variantIds( -1, 10 ) );
+		$this->assertSame( array( $first, $second ), $this->products->variantIds( 0, 2 ) );
+		$this->assertSame( array( $second, $third ), $this->products->variantIds( $first, 10 ), 'A cursor lists the variants above it.' );
+		$this->assertSame( array( $second ), $this->products->variantIds( $first, 1 ) );
+		$this->assertSame( array(), $this->products->variantIds( $third, 10 ) );
+	}
+
+	/**
+	 * Stores a product row with no source post and no binding.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return int The product's id.
+	 */
+	private function bareProduct(): int {
+		$this->db->execute(
+			'INSERT INTO %i ( uuid, generation_state, active_variant_generation, created_at, updated_at ) VALUES ( %s, %s, 0, UTC_TIMESTAMP(), UTC_TIMESTAMP(6) )',
+			$this->catalogTable( CatalogTables::PRODUCTS ),
+			$this->ids->generate(),
+			GenerationState::Incomplete->value
+		);
+
+		return $this->db->lastInsertId();
 	}
 }

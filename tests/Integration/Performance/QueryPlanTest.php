@@ -64,8 +64,9 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  * PlanRecorder: the catalog's lookups by post, by source post and by variant, its sellability
  * query in a locale and without one, the price read of a calculation, the promotions of a
  * calculation's codes, the reads of its write path, the locking reads of a trash
- * and a delete, and the reads of a change of a product's posts, and every read of the stock
- * repository, doctor's
+ * and a delete, and the reads of a change of a product's posts, the pages after a cursor of
+ * doctor's catalog scans (their first pages come from the seed verifier's doctor run), and every
+ * read of the stock repository, doctor's
  * projection checks and the sweep's search for expired holds included; the cart's reads by
  * token, its lines, the locking read that classifies a refused write, and the sweep's search for
  * expired carts; the lock of an order's promotion uses that a release takes; the reads that must
@@ -99,6 +100,10 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  *   repository's EXPIRED_VARIANTS statement as a read it did not send;
  * - in exercise(), leave out the rolled-back save: the run names the catalog's reads of the
  *   write path, the SKU check among them, as reads it did not send;
+ * - in exercise(), leave out one of the catalog's cursor calls, unboundPostIds( $latePost, 20 ): the run
+ *   names MysqlProductRepository::UNBOUND_POST_IDS as a read it did not send;
+ * - in MysqlProductRepository, write a statement of a doctor scan in steps again (`$sql .= ' AND p.id > %d'`):
+ *   the inventory refuses it by name, with its file and line, before the run starts;
  * - in exercise(), leave out the rate limiter's peek(): the run names TableRateLimiter::PEEK as a
  *   read it did not send;
  * - in exercise(), leave out the sweep's search for expired carts, deleteExpired(): the run
@@ -397,6 +402,18 @@ final class QueryPlanTest extends DatabaseTestCase {
 		// anything; this is the only place either shape of this statement is sent.
 		$products->boundPostBindings( 0, 500 );
 		$products->boundPostBindings( ReferenceSeed::FIRST_POST_ID + 7000, 500 );
+
+		// Doctor's other catalog scans page from 0, and the seed verifier sends their first pages. A
+		// page after a cursor is a statement of its own, so each is sent here with a cursor 1000 rows
+		// from the end of its table, as itemVariantIds() is above: the range stays under MOST_ROWS.
+		// variantIds() needs no call: doctor's walk of the variants pages through the whole table.
+		$lateProduct = Dataset::Medium->products() - 1000;
+		$latePost    = ReferenceSeed::FIRST_POST_ID + Dataset::Medium->products() + intdiv( Dataset::Medium->products(), 2 ) - 1000;
+
+		$products->unboundProductIds( $lateProduct, 20 );
+		$products->invalidSourceBindings( $lateProduct, 20 );
+		$products->unboundPostIds( $latePost, 20 );
+		$products->incompleteMismatchIds( self::$baseCurrency, $lateProduct, 20 );
 
 		// The rate limiter's one read: the count of a client's current window, by its primary key.
 		( new TableRateLimiter( $db ) )->peek( 'cart.write', ClientIdentity::ofClient( '192.0.2.1', 0, 'query plans' ), 60 );

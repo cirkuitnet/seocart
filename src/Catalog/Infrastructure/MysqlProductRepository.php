@@ -118,6 +118,175 @@ final class MysqlProductRepository implements ProductRepository {
 	private const LOCK_ATTEMPTS = 3;
 
 	/**
+	 * The unbound products scan of doctor's first check: products with no `product_posts` row, without its select list or its paging.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const UNBOUND_PRODUCTS_SCAN = ' FROM %i p LEFT JOIN %i pp ON pp.product_id = p.id WHERE pp.product_id IS NULL';
+
+	/**
+	 * The first page of the unbound products, with no cursor comparison: see keysetPage().
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const UNBOUND_PRODUCT_IDS_FROM_START = 'SELECT p.id' . self::UNBOUND_PRODUCTS_SCAN . ' ORDER BY p.id LIMIT %d';
+
+	/**
+	 * A page of the unbound products after a cursor.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const UNBOUND_PRODUCT_IDS = 'SELECT p.id' . self::UNBOUND_PRODUCTS_SCAN . ' AND p.id > %d ORDER BY p.id LIMIT %d';
+
+	/**
+	 * The invalid source bindings scan of doctor's second check, without its select list or its paging.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const INVALID_SOURCE_SCAN = ' FROM %i p'
+		. ' LEFT JOIN %i pp ON pp.product_id = p.id AND pp.post_id = p.source_post_id'
+		. ' LEFT JOIN %i wpp ON wpp.ID = p.source_post_id'
+		. ' WHERE ( p.source_post_id IS NULL OR pp.post_id IS NULL OR wpp.ID IS NULL OR wpp.post_type <> %s )';
+
+	/**
+	 * The first page of the products whose source binding is invalid: see keysetPage().
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const INVALID_SOURCE_BINDINGS_FROM_START = 'SELECT p.id' . self::INVALID_SOURCE_SCAN . ' ORDER BY p.id LIMIT %d';
+
+	/**
+	 * A page of the products whose source binding is invalid, after a cursor.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const INVALID_SOURCE_BINDINGS = 'SELECT p.id' . self::INVALID_SOURCE_SCAN . ' AND p.id > %d ORDER BY p.id LIMIT %d';
+
+	/**
+	 * The unbound posts scan of doctor's fourth check, without its select list or its paging.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const UNBOUND_POSTS_SCAN = ' FROM %i wpp LEFT JOIN %i pp ON pp.post_id = wpp.ID'
+		. ' WHERE wpp.post_type = %s AND wpp.post_status <> %s AND pp.post_id IS NULL';
+
+	/**
+	 * The first page of the product posts with no binding: see keysetPage().
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const UNBOUND_POST_IDS_FROM_START = 'SELECT wpp.ID' . self::UNBOUND_POSTS_SCAN . ' ORDER BY wpp.ID LIMIT %d';
+
+	/**
+	 * A page of the product posts with no binding, after a cursor.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const UNBOUND_POST_IDS = 'SELECT wpp.ID' . self::UNBOUND_POSTS_SCAN . ' AND wpp.ID > %d ORDER BY wpp.ID LIMIT %d';
+
+	/**
+	 * The first page of the bindings, every bound post with its product and locale: see keysetPage().
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const BOUND_POST_BINDINGS_FROM_START = 'SELECT post_id, product_id, locale FROM %i ORDER BY post_id LIMIT %d';
+
+	/**
+	 * A page of the bindings after a cursor on the post id.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const BOUND_POST_BINDINGS = 'SELECT post_id, product_id, locale FROM %i WHERE post_id > %d ORDER BY post_id LIMIT %d';
+
+	/**
+	 * The scan of doctor's fifth check up to the cursor: complete products with their default variant and its base price.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const INCOMPLETE_MISMATCH_SCAN = ' FROM %i p'
+		. ' LEFT JOIN %i v ON v.product_id = p.id AND v.combination_hash = %s'
+		. ' LEFT JOIN %i vp ON vp.variant_id = v.id AND vp.currency = %s'
+		. ' WHERE p.generation_state = %s';
+
+	/**
+	 * What the fifth check's scan asks of those products, and its paging: no enabled variant, no default variant or no base price.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const INCOMPLETE_MISMATCH_FILTER = ' AND ( p.enabled_variant_count = 0 OR v.id IS NULL OR vp.id IS NULL ) ORDER BY p.id LIMIT %d';
+
+	/**
+	 * The first page of the complete products that are not whole: see keysetPage().
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const INCOMPLETE_MISMATCH_IDS_FROM_START = 'SELECT p.id' . self::INCOMPLETE_MISMATCH_SCAN . self::INCOMPLETE_MISMATCH_FILTER;
+
+	/**
+	 * A page of the complete products that are not whole, after a cursor.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const INCOMPLETE_MISMATCH_IDS = 'SELECT p.id' . self::INCOMPLETE_MISMATCH_SCAN . ' AND p.id > %d' . self::INCOMPLETE_MISMATCH_FILTER;
+
+	/**
+	 * The variants scan of doctor's sixth check: variants whose product exists, without its select list or its paging.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const VARIANT_IDS_SCAN = ' FROM %i v JOIN %i p ON p.id = v.product_id';
+
+	/**
+	 * The first page of the variants: see keysetPage().
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const VARIANT_IDS_FROM_START = 'SELECT v.id' . self::VARIANT_IDS_SCAN . ' ORDER BY v.id LIMIT %d';
+
+	/**
+	 * A page of the variants after a cursor, which the join's condition carries.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const VARIANT_IDS = 'SELECT v.id' . self::VARIANT_IDS_SCAN . ' AND v.id > %d ORDER BY v.id LIMIT %d';
+
+	/**
 	 * The connection.
 	 *
 	 * @since 0.1.0
@@ -774,15 +943,16 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @return list<int> The product ids, ascending.
 	 */
 	public function unboundProductIds( int $afterId, int $limit ): array {
-		$args = array( $this->table( CatalogTables::PRODUCTS ), $this->table( CatalogTables::PRODUCT_POSTS ) );
-
-		$sql  = 'SELECT p.id FROM %i p LEFT JOIN %i pp ON pp.product_id = p.id WHERE pp.product_id IS NULL';
-		$sql .= self::afterFragment( 'p.id', $afterId, $args );
-		$sql .= ' ORDER BY p.id LIMIT %d';
-
-		$args[] = $limit;
-
-		return self::intColumn( $this->db->fetchAll( $sql, ...$args ), 'id' );
+		return self::intColumn(
+			$this->keysetPage(
+				self::UNBOUND_PRODUCT_IDS_FROM_START,
+				self::UNBOUND_PRODUCT_IDS,
+				array( $this->table( CatalogTables::PRODUCTS ), $this->table( CatalogTables::PRODUCT_POSTS ) ),
+				$afterId,
+				$limit
+			),
+			'id'
+		);
 	}
 
 	/**
@@ -795,21 +965,16 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @return list<int> The product ids, ascending.
 	 */
 	public function invalidSourceBindings( int $afterId, int $limit ): array {
-		$args = array( $this->table( CatalogTables::PRODUCTS ), $this->table( CatalogTables::PRODUCT_POSTS ), $this->postsTable() );
-
-		$sql = 'SELECT p.id FROM %i p'
-			. ' LEFT JOIN %i pp ON pp.product_id = p.id AND pp.post_id = p.source_post_id'
-			. ' LEFT JOIN %i wpp ON wpp.ID = p.source_post_id'
-			. ' WHERE ( p.source_post_id IS NULL OR pp.post_id IS NULL OR wpp.ID IS NULL OR wpp.post_type <> %s )';
-
-		$args[] = ProductCapabilities::POST_TYPE;
-
-		$sql .= self::afterFragment( 'p.id', $afterId, $args );
-		$sql .= ' ORDER BY p.id LIMIT %d';
-
-		$args[] = $limit;
-
-		return self::intColumn( $this->db->fetchAll( $sql, ...$args ), 'id' );
+		return self::intColumn(
+			$this->keysetPage(
+				self::INVALID_SOURCE_BINDINGS_FROM_START,
+				self::INVALID_SOURCE_BINDINGS,
+				array( $this->table( CatalogTables::PRODUCTS ), $this->table( CatalogTables::PRODUCT_POSTS ), $this->postsTable(), ProductCapabilities::POST_TYPE ),
+				$afterId,
+				$limit
+			),
+			'id'
+		);
 	}
 
 	/**
@@ -875,16 +1040,16 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @return list<int> The post ids, ascending.
 	 */
 	public function unboundPostIds( int $afterId, int $limit ): array {
-		$args = array( $this->postsTable(), $this->table( CatalogTables::PRODUCT_POSTS ), ProductCapabilities::POST_TYPE, ProductCapabilities::AUTO_DRAFT );
-
-		$sql  = 'SELECT wpp.ID FROM %i wpp LEFT JOIN %i pp ON pp.post_id = wpp.ID'
-			. ' WHERE wpp.post_type = %s AND wpp.post_status <> %s AND pp.post_id IS NULL';
-		$sql .= self::afterFragment( 'wpp.ID', $afterId, $args );
-		$sql .= ' ORDER BY wpp.ID LIMIT %d';
-
-		$args[] = $limit;
-
-		return self::intColumn( $this->db->fetchAll( $sql, ...$args ), 'ID' );
+		return self::intColumn(
+			$this->keysetPage(
+				self::UNBOUND_POST_IDS_FROM_START,
+				self::UNBOUND_POST_IDS,
+				array( $this->postsTable(), $this->table( CatalogTables::PRODUCT_POSTS ), ProductCapabilities::POST_TYPE, ProductCapabilities::AUTO_DRAFT ),
+				$afterId,
+				$limit
+			),
+			'ID'
+		);
 	}
 
 	/**
@@ -923,21 +1088,7 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @return list<array{post_id: int, product_id: int, locale: string}> The bindings, ascending by post id.
 	 */
 	public function boundPostBindings( int $afterId, int $limit ): array {
-		$args = array( $this->table( CatalogTables::PRODUCT_POSTS ) );
-		$sql  = 'SELECT post_id, product_id, locale FROM %i';
-
-		// No cursor on the first page: a bare ORDER BY … LIMIT lets EXPLAIN cost the scan by the
-		// limit alone, the way variantIds() and unboundPostIds() page their own first page.
-		if ( $afterId > 0 ) {
-			$sql   .= ' WHERE post_id > %d';
-			$args[] = $afterId;
-		}
-
-		$sql .= ' ORDER BY post_id LIMIT %d';
-
-		$args[] = $limit;
-
-		$rows = $this->db->fetchAll( $sql, ...$args );
+		$rows = $this->keysetPage( self::BOUND_POST_BINDINGS_FROM_START, self::BOUND_POST_BINDINGS, array( $this->table( CatalogTables::PRODUCT_POSTS ) ), $afterId, $limit );
 
 		return array_map(
 			static fn( array $row ): array => array(
@@ -964,28 +1115,23 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @return list<int> The product ids, ascending.
 	 */
 	public function incompleteMismatchIds( string $baseCurrency, int $afterId, int $limit ): array {
-		$args = array(
-			$this->table( CatalogTables::PRODUCTS ),
-			$this->table( CatalogTables::VARIANTS ),
-			Variant::defaultCombinationHash(),
-			$this->table( CatalogTables::VARIANT_PRICES ),
-			$baseCurrency,
+		return self::intColumn(
+			$this->keysetPage(
+				self::INCOMPLETE_MISMATCH_IDS_FROM_START,
+				self::INCOMPLETE_MISMATCH_IDS,
+				array(
+					$this->table( CatalogTables::PRODUCTS ),
+					$this->table( CatalogTables::VARIANTS ),
+					Variant::defaultCombinationHash(),
+					$this->table( CatalogTables::VARIANT_PRICES ),
+					$baseCurrency,
+					GenerationState::Complete->value,
+				),
+				$afterId,
+				$limit
+			),
+			'id'
 		);
-
-		$sql = 'SELECT p.id FROM %i p'
-			. ' LEFT JOIN %i v ON v.product_id = p.id AND v.combination_hash = %s'
-			. ' LEFT JOIN %i vp ON vp.variant_id = v.id AND vp.currency = %s'
-			. ' WHERE p.generation_state = %s';
-
-		$args[] = GenerationState::Complete->value;
-
-		$sql .= self::afterFragment( 'p.id', $afterId, $args );
-		$sql .= ' AND ( p.enabled_variant_count = 0 OR v.id IS NULL OR vp.id IS NULL )';
-		$sql .= ' ORDER BY p.id LIMIT %d';
-
-		$args[] = $limit;
-
-		return self::intColumn( $this->db->fetchAll( $sql, ...$args ), 'id' );
 	}
 
 	/**
@@ -1090,15 +1236,16 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @return list<int> The variant ids, ascending.
 	 */
 	public function variantIds( int $afterId, int $limit ): array {
-		$args = array( $this->table( CatalogTables::VARIANTS ), $this->table( CatalogTables::PRODUCTS ) );
-
-		$sql  = 'SELECT v.id FROM %i v JOIN %i p ON p.id = v.product_id';
-		$sql .= self::afterFragment( 'v.id', $afterId, $args );
-		$sql .= ' ORDER BY v.id LIMIT %d';
-
-		$args[] = $limit;
-
-		return self::intColumn( $this->db->fetchAll( $sql, ...$args ), 'id' );
+		return self::intColumn(
+			$this->keysetPage(
+				self::VARIANT_IDS_FROM_START,
+				self::VARIANT_IDS,
+				array( $this->table( CatalogTables::VARIANTS ), $this->table( CatalogTables::PRODUCTS ) ),
+				$afterId,
+				$limit
+			),
+			'id'
+		);
 	}
 
 	/**
@@ -1217,31 +1364,33 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
-	 * The `AND <column> > <id>` fragment doctor's paging reads add only when they carry a cursor.
+	 * Reads one page of a keyset scan: the first page, or the page after a cursor.
 	 *
-	 * Every caller in this codebase pages from 0, so the fragment is normally left out: `id > 0`
-	 * matches every row of the table anyway, and keeping the comparison would still make MySQL
-	 * cost a primary-key range over it, which it estimates near half the table for a keyset scan
-	 * like this one's, defeating the cheap, LIMIT-bounded plan the check is meant to get for no
-	 * reason. A genuine cursor (a caller walking a table page by page) still gets the comparison.
+	 * Every caller in this codebase pages from 0, so the first page is its own statement, with
+	 * no cursor comparison. `id > 0` matches every row of the table anyway, and keeping the
+	 * comparison would still make MySQL cost a primary-key range over it, which it estimates
+	 * near half the table for a keyset scan like these, defeating the cheap, LIMIT-bounded plan
+	 * the check is meant to get for no reason. A genuine cursor (a caller walking a table page by
+	 * page) gets the statement that compares. In every scan the cursor is the argument before the
+	 * limit, and the limit is the last.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
-	 * @param string $column  The column, qualified as the statement needs it.
-	 * @param int    $afterId The cursor; no fragment when it is not positive.
-	 * @param array  $args    The statement's arguments, appended to when the fragment is used.
-	 * @return string The fragment, or '' when there is no cursor.
+	 * @param string $fromStart   The statement of the first page: no cursor, the limit last.
+	 * @param string $afterCursor The statement of a page after a cursor: the cursor, then the limit, last.
+	 * @param array  $arguments   The statement's arguments before the cursor.
+	 * @param int    $afterId     The cursor; the first page when it is not positive.
+	 * @param int    $limit       The most rows to read.
+	 * @return list<array<string, mixed>> The rows.
 	 *
-	 * @phpstan-param list<mixed> $args
+	 * @phpstan-param list<mixed> $arguments
 	 */
-	private static function afterFragment( string $column, int $afterId, array &$args ): string {
-		if ( $afterId <= 0 ) {
-			return '';
+	private function keysetPage( string $fromStart, string $afterCursor, array $arguments, int $afterId, int $limit ): array {
+		if ( $afterId > 0 ) {
+			return $this->db->fetchAll( $afterCursor, ...$arguments, ...array( $afterId, $limit ) );
 		}
 
-		$args[] = $afterId;
-
-		return ' AND ' . $column . ' > %d';
+		return $this->db->fetchAll( $fromStart, ...$arguments, ...array( $limit ) );
 	}
 
 	/**

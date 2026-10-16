@@ -37,9 +37,10 @@ use SEOCart\Tests\Unit\TestSupport\TemporaryPluginDirectory;
  * variable as one; read a parameter as a locking clause whatever the calls pass, or only the first call; let a call that cannot be read pass; ignore a default; read a variable assigned something unreadable as if it were never assigned; count one shape of a read as the sending of all of them; count only `.=` as a step of a stepwise read; give the generic reason for a public method's parameter; read a parameter of a public method; combine the values of a parameter into pairs; read a named argument as positional; read a default only when it is a literal; skip a file that includes another or is not PHP; look for declarations only at the start of a line; read only the first call of a parameter's function, skip a call that cannot be read, ignore a default, or accept a parameter nothing calls; take the first assignment of a variable assigned twice or in a block, or count the parameter list as a body; leave an INSERT ... SELECT in a method unread; read a WITH or a UNION as nothing, in a method or in a constant; ignore an unpacked argument; name a read by its short class
  * name or by a file name alone (two reads of one name overwrite each other); stop at the end of a
  * constant that ends at IN; read an INSERT ... SELECT constant whole instead of its SELECT; leave
- * a heredoc or an interpolated SELECT unread; treat every statement as open, or none; accept a
- * stepwise read that is not on the list of open reads; name no open read on the output; widen the
- * list by a class and a method no repository has.
+ * a heredoc or an interpolated SELECT unread; accept a statement built in steps, or refuse only one
+ * built with `.=`; stop looking for a statement's extension at the first closure that follows it, or
+ * read only the function's own tokens; match a head by its beginning for the Catalog repository's
+ * reads (the twelve constants must be complete statements).
  *
  * @since 0.2.0
  */
@@ -646,116 +647,344 @@ final class ReadInventoryTest extends TestCase {
 	}
 
 	/**
-	 * Tests that a statement a function builds in steps with `.=` is an open read matched by its beginning, and one it does not extend is whole.
+	 * Tests that a statement a function extends or gives a value again is refused by name, whatever the class and the method.
 	 *
 	 * @since 0.2.0
-	 */
-	public function test_a_statement_built_in_steps_is_an_open_read(): void {
-		$class = $this->repository(
-			array(
-				'public function scan( int $after ) { $sql = "SELECT id FROM %i"; if ( $after > 0 ) { $sql .= " WHERE id > %d"; } $sql .= " ORDER BY id LIMIT %d"; return $sql; }',
-				'public function whole() { $sql = "SELECT id FROM %i WHERE id = 1"; return $sql; }',
-			)
-		);
-		$heads = ReadInventory::of( $this->pluginDirectory, array( $class => array( 'scan' ) ) );
-
-		$this->assertSame(
-			array(
-				'Repository.php:4' => array( 'SELECT id FROM {table} …' ),
-				'Repository.php:5' => array( 'SELECT id FROM {table} WHERE id = ?' ),
-			),
-			$heads
-		);
-
-		$sent = array(
-			new Statement( 'SELECT id FROM wp_seocart_things WHERE id > 5 ORDER BY id LIMIT 10', 'wp_' ),
-			new Statement( 'SELECT id FROM wp_seocart_things WHERE id = 1 ORDER BY id', 'wp_' ),
-		);
-
-		$this->assertSame( array( 'Repository.php:5 SELECT id FROM {table} WHERE id = ?' ), ReadInventory::unsent( $heads, $sent ), 'The open read is sent; the whole one is not, since a clause follows it.' );
-	}
-
-	/**
-	 * Tests that a statement built in steps by a method that is not on the list of open reads is refused, by name.
 	 *
-	 * @since 0.2.0
+	 * @dataProvider stepwiseReads
+	 *
+	 * @param string $member The class member that holds the statement, on line 4.
 	 */
-	public function test_a_stepwise_read_that_is_not_on_the_list_is_refused_by_name(): void {
-		$class = $this->repository( array( 'public function scan() { $sql = "SELECT id FROM %i"; $sql .= " ORDER BY id"; return $sql; }' ) );
+	public function test_a_statement_built_in_steps_is_refused_by_name( string $member ): void {
+		$this->repository( array( $member ) );
 
 		$this->expectException( \UnexpectedValueException::class );
-		$this->expectExceptionMessage( 'Repository.php:4 starts a SELECT that is built in steps, by `.=` or by assigning to its variable again, and ' . $class . '::scan is not on the list of open reads (ReadInventory::OPEN_READS)' );
+		$this->expectExceptionMessage( 'Repository.php:4 starts a SELECT that is built in steps, by `.=` or by assigning to its variable again, so its statement cannot be read from the source.' );
 
 		ReadInventory::of( $this->pluginDirectory );
 	}
 
 	/**
-	 * Tests that a class on the list is not enough: only the methods it names may build a statement in steps.
+	 * Returns members that build a SELECT in steps.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{0: string}> The cases.
+	 */
+	public static function stepwiseReads(): array {
+		return array(
+			'extended with .='                   => array( 'public function scan( int $after ) { $sql = "SELECT id FROM %i"; if ( $after > 0 ) { $sql .= " WHERE id > %d"; } $sql .= " ORDER BY id LIMIT %d"; return $sql; }' ),
+			'joined to itself'                   => array( 'public function scan( bool $lock ) { $sql = "SELECT id FROM %i"; if ( $lock ) { $sql = $sql . " FOR UPDATE"; } return $sql; }' ),
+			'assigned in both branches'          => array( 'public function scan( bool $all ) { if ( $all ) { $sql = "SELECT id FROM %i"; } else { $sql = "SELECT id FROM %i WHERE id > 0"; } return $sql; }' ),
+			'assigned something else after'      => array( 'public function scan() { $sql = "SELECT id FROM %i"; $sql = $this->db->prepare( $sql ); return $sql; }' ),
+			'extended after a closure'           => array( 'public function scan( array $ids ) { $sql = "SELECT id FROM %i"; $ids = array_map( function ( $id ) { return $id; }, $ids ); $sql .= " WHERE id > 0"; return $sql; }' ),
+			'extended after an arrow function'   => array( 'public function scan( array $ids ) { $sql = "SELECT id FROM %i"; $ids = array_map( fn( $id ) => $id + 1, $ids ); $sql .= " WHERE id > 0"; return $sql; }' ),
+			'extended by a closure that uses it' => array( 'public function scan() { $sql = "SELECT id FROM %i"; $add = function () use ( &$sql ) { $sql .= " WHERE id > 0"; }; $add(); return $sql; }' ),
+			'built in a closure'                 => array( 'public function scan() { return function () { $sql = "SELECT id FROM %i"; $sql .= " WHERE id > 0"; return $sql; }; }' ),
+			'in a private static method'         => array( 'private static function scan() { $sql = "SELECT id FROM %i"; $sql .= " ORDER BY id"; return $sql; }' ),
+		);
+	}
+
+	/**
+	 * Tests that a statement is read whole when it is assigned to a variable the function does not give a value again, whatever else the function builds.
 	 *
 	 * @since 0.2.0
 	 */
-	public function test_only_the_listed_methods_of_a_listed_class_may_build_a_statement_in_steps(): void {
-		$class = $this->repository(
+	public function test_a_statement_assigned_and_not_extended_is_one_whole_read(): void {
+		$this->repository(
 			array(
-				'public function scan() { $sql = "SELECT id FROM %i"; $sql .= " ORDER BY id"; return $sql; }',
-				'public function other() { $sql = "SELECT id FROM %i"; $sql .= " ORDER BY id"; return $sql; }',
+				'public function whole() { $sql = "SELECT id FROM %i WHERE id = 1"; return $sql; }',
+				'public function other() { $sql = "SELECT id FROM %i"; $other = "x"; $other .= "y"; return $sql; }',
 			)
 		);
 
-		$this->expectException( \UnexpectedValueException::class );
-		$this->expectExceptionMessage( 'Repository.php:5 starts a SELECT that is built in steps, by `.=` or by assigning to its variable again, and ' . $class . '::other is not on the list' );
-
-		ReadInventory::of( $this->pluginDirectory, array( $class => array( 'scan' ) ) );
-	}
-
-	/**
-	 * Tests that each open read is named, with its class, method, line and head, for the output of the run.
-	 *
-	 * @since 0.2.0
-	 */
-	public function test_each_open_read_is_named_for_the_output_of_the_run(): void {
-		$class = $this->repository( array( 'public function scan() { $sql = "SELECT id FROM %i"; $sql .= " ORDER BY id"; return $sql; }' ) );
-
-		$this->assertSame( array(), ReadInventory::openReadLines( array() ) );
 		$this->assertSame(
 			array(
-				'Open reads, accepted for now and matched by their beginning only (the list is ReadInventory::OPEN_READS; the builders are to become complete statements):',
-				'  ' . $class . '::scan, Repository.php:4: SELECT id FROM {table} …',
+				'Repository.php:4' => array( 'SELECT id FROM {table} WHERE id = ?' ),
+				'Repository.php:5' => array( 'SELECT id FROM {table}' ),
 			),
-			ReadInventory::openReadLines( ReadInventory::openReadsOf( $this->pluginDirectory ) )
+			ReadInventory::of( $this->pluginDirectory )
+		);
+
+		$heads = ReadInventory::of( $this->pluginDirectory );
+		$sent  = array( new Statement( 'SELECT id FROM wp_seocart_things WHERE id = 1 ORDER BY id', 'wp_' ) );
+
+		$this->assertSame( array( 'Repository.php:4 SELECT id FROM {table} WHERE id = ?', 'Repository.php:5 SELECT id FROM {table}' ), ReadInventory::unsent( $heads, $sent ), 'A whole read is matched in full: a clause that follows it is another statement.' );
+	}
+
+	/**
+	 * Tests that a statement written outside any function, at the top of a file, is refused when the file goes on to extend it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_stepwise_read_at_the_top_of_a_file_is_refused_by_name(): void {
+		$this->createPluginDirectory( array( 'Script.php' => "<?php\n\$sql = 'SELECT id FROM %i';\n\$sql .= ' WHERE id > %d';\n" ) );
+
+		$this->expectException( \UnexpectedValueException::class );
+		$this->expectExceptionMessage( 'Script.php:2 starts a SELECT that is built in steps, by `.=` or by assigning to its variable again, so its statement cannot be read from the source.' );
+
+		ReadInventory::of( $this->pluginDirectory );
+	}
+
+	/**
+	 * Tests that a statement outside any function is not extended by a function that follows it, whose variable is its own.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_variables_of_a_function_that_follows_are_not_the_statements_variable(): void {
+		$this->createPluginDirectory( array( 'Script.php' => "<?php\n\$sql = 'SELECT id FROM %i';\nfunction other() { \$sql = 'x'; \$sql .= 'y'; return \$sql; }\n" ) );
+
+		$this->assertSame( array( 'Script.php:2' => array( 'SELECT id FROM {table}' ) ), ReadInventory::of( $this->pluginDirectory ) );
+	}
+
+	/**
+	 * Tests that a property's default statement is not extended by the variables of the methods that follow it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_variables_of_a_method_are_not_a_properties_default_statement(): void {
+		$this->repository(
+			array(
+				'private $sql = "SELECT id FROM %i";',
+				'public function other() { $sql = "x"; $sql .= "y"; return $sql; }',
+			)
+		);
+
+		$this->assertSame( array( 'Repository.php:4' => array( 'SELECT id FROM {table}' ) ), ReadInventory::of( $this->pluginDirectory ) );
+	}
+
+	/**
+	 * Tests that a method that joins a constant holding a SELECT to anything, or hands it to implode() or sprintf(), is refused by name.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider assembledConstants
+	 *
+	 * @param string $member The class member that uses the constants, on line 4.
+	 */
+	public function test_a_method_that_assembles_a_statement_from_a_select_constant_is_refused_by_name( string $member ): void {
+		$this->repository( array( $member, 'const HEAD = "SELECT id FROM %i";', 'const TAIL = " WHERE id > %d";' ) );
+
+		$this->expectException( \UnexpectedValueException::class );
+		$this->expectExceptionMessage( 'Repository.php:4 starts a SELECT that is built in steps, by joining a constant that holds a SELECT to something, or by handing it to implode() or sprintf(), so its statement cannot be read from the source. Write the statement as one class constant, or as string literals.' );
+
+		ReadInventory::of( $this->pluginDirectory );
+	}
+
+	/**
+	 * Returns members that assemble a statement from a constant that holds a SELECT.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{0: string}> The cases.
+	 */
+	public static function assembledConstants(): array {
+		return array(
+			'joined to a constant'        => array( 'public function read() { return self::HEAD . self::TAIL; }' ),
+			'joined to a literal'         => array( 'public function read() { return self::HEAD . " ORDER BY id"; }' ),
+			'after a literal'             => array( 'public function read() { return "x " . self::HEAD; }' ),
+			'appended with .='            => array( 'public function read() { $sql = ""; $sql .= self::HEAD; return $sql; }' ),
+			'through static'              => array( 'public function read() { return static::HEAD . self::TAIL; }' ),
+			'in a ternary that is joined' => array( 'public function read( bool $all ) { return ( $all ? self::HEAD : self::HEAD ) . " LIMIT 1"; }' ),
+			'implode of an array'         => array( 'public function read() { return implode( "", array( self::HEAD, self::TAIL ) ); }' ),
+			'implode of a short array'    => array( 'public function read() { return implode( "", [ self::HEAD, self::TAIL ] ); }' ),
+			'join of an array'            => array( 'public function read() { return \join( "", array( self::HEAD, self::TAIL ) ); }' ),
+			'sprintf format'              => array( 'public function read() { return sprintf( self::HEAD, 1 ); }' ),
+			'sprintf argument'            => array( 'public function read() { return sprintf( "WITH x AS ( %s )", self::HEAD ); }' ),
 		);
 	}
 
 	/**
-	 * Tests that the open reads allowed today are exactly the Catalog repository's six, and that no module has another.
+	 * Tests that a constant of another class that holds a SELECT is refused the same way, written fully qualified, by its short name in the same namespace, or imported with an alias.
 	 *
-	 * A new stepwise read, in the Catalog or elsewhere, fails here until it is added to the list on purpose.
+	 * @since 0.2.0
+	 *
+	 * @dataProvider otherClassNames
+	 *
+	 * @param string $reference How the member names the other class; `{class}` is its name, `{namespace}` its namespace.
+	 * @param string $import    The `use` line the file needs, or an empty string.
+	 */
+	public function test_a_select_constant_of_another_class_is_refused_when_a_method_joins_it( string $reference, string $import ): void {
+		$suffix    = bin2hex( random_bytes( 4 ) );
+		$other     = 'Other' . $suffix;
+		$namespace = self::NAMESPACE . '\\Elsewhere';
+		$name      = str_replace( array( '{class}', '{namespace}' ), array( $other, $namespace ), $reference );
+		$import    = str_replace( array( '{class}', '{namespace}' ), array( $other, $namespace ), $import );
+
+		$this->createPluginDirectory(
+			array(
+				'Other.php'      => "<?php\nnamespace {$namespace};\nfinal class {$other} {\nconst HEAD = \"SELECT id FROM %i\";\n}\n",
+				'Repository.php' => "<?php\nnamespace " . self::NAMESPACE . ";\n{$import}\nfinal class Repository{$suffix} {\npublic function read() { return {$name}::HEAD . \" WHERE id > 0\"; }\n}\n",
+			)
+		);
+
+		require_once $this->pluginDirectory . '/Other.php';
+		require_once $this->pluginDirectory . '/Repository.php';
+
+		$this->expectException( \UnexpectedValueException::class );
+		$this->expectExceptionMessage( 'Repository.php:5 starts a SELECT that is built in steps, by joining a constant that holds a SELECT to something' );
+
+		ReadInventory::of( $this->pluginDirectory );
+	}
+
+	/**
+	 * Returns the ways a file may name another class.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{0: string, 1: string}> The cases.
+	 */
+	public static function otherClassNames(): array {
+		return array(
+			'fully qualified' => array( '\{namespace}\{class}', '' ),
+			'imported'        => array( '{class}', 'use {namespace}\\{class};' ),
+			'imported as'     => array( 'Aliased', 'use {namespace}\\{class} as Aliased;' ),
+			'by a prefix'     => array( 'Elsewhere\{class}', '' ),
+		);
+	}
+
+	/**
+	 * Tests that a constant holding a SELECT passed on whole, to a call or to a ternary, stays one read, and a call named implode on an object is no implode().
 	 *
 	 * @since 0.2.0
 	 */
-	public function test_the_open_reads_allowed_today_are_the_catalogs_six_and_no_others_exist(): void {
-		$pinned = array(
-			'SEOCart\Catalog\Infrastructure\MysqlProductRepository' => array(
-				'unboundProductIds',
-				'invalidSourceBindings',
-				'unboundPostIds',
-				'boundPostBindings',
-				'incompleteMismatchIds',
-				'variantIds',
-			),
+	public function test_a_select_constant_used_alone_stays_one_whole_read(): void {
+		$class = $this->repository(
+			array(
+				'public function read( $id ) { return $this->db->fetchAll( self::HEAD, $id ); }',
+				'public function pick( bool $all ) { return $this->db->fetchAll( $all ? self::HEAD : self::OTHER, 1 ); }',
+				'public function handed() { return $this->send( self::HEAD, array( self::OTHER ), $this->implode( self::HEAD ) ); }',
+				'const HEAD = "SELECT id FROM %i";',
+				'const OTHER = "SELECT id FROM %i WHERE id = 1";',
+			)
 		);
 
-		$this->assertSame( $pinned, ReadInventory::OPEN_READS );
+		$this->assertSame(
+			array(
+				$class . '::HEAD'  => array( 'SELECT id FROM {table}' ),
+				$class . '::OTHER' => array( 'SELECT id FROM {table} WHERE id = ?' ),
+			),
+			ReadInventory::of( $this->pluginDirectory )
+		);
+	}
 
-		$found = array();
+	/**
+	 * Tests that a constant that stops at IN may be completed by the placeholder list of its IN clause.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_constant_that_stops_at_in_is_completed_by_the_placeholder_list(): void {
+		$class = $this->repository(
+			array(
+				'public function some( array $ids ) { return $this->db->fetchAll( self::MATCHING . "( " . implode( ", ", array_fill( 0, count( $ids ), "%d" ) ) . " )", 1, ...$ids ); }',
+				'const MATCHING = "SELECT id FROM %i WHERE id IN ";',
+			)
+		);
 
-		foreach ( self::MODULES as $module ) {
-			foreach ( ReadInventory::openReadsOf( dirname( __DIR__, 4 ) . '/src/' . $module ) as $read ) {
-				$found[ $read['class'] ][] = $read['method'];
+		$this->assertSame( array( $class . '::MATCHING' => array( 'SELECT id FROM {table} WHERE id IN ( ?+ )' ) ), ReadInventory::of( $this->pluginDirectory ) );
+	}
+
+	/**
+	 * Tests that a constant that stops at IN is refused when anything but the placeholder list, closed by its own parenthesis, completes it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider unfinishedInLists
+	 *
+	 * @param string $member The class member that completes the constant, on line 4.
+	 */
+	public function test_a_constant_that_stops_at_in_is_refused_when_anything_else_completes_it( string $member ): void {
+		$this->repository( array( $member, 'const MATCHING = "SELECT id FROM %i WHERE id IN ";' ) );
+
+		$this->expectException( \UnexpectedValueException::class );
+		$this->expectExceptionMessage( 'Repository.php:4 starts a SELECT that is built in steps, by joining a constant that holds a SELECT' );
+
+		ReadInventory::of( $this->pluginDirectory );
+	}
+
+	/**
+	 * Returns members that complete a constant that stops at IN with more than its placeholder list.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{0: string}> The cases.
+	 */
+	public static function unfinishedInLists(): array {
+		$list = 'implode( ", ", array_fill( 0, count( $ids ), "%d" ) )';
+
+		return array(
+			'a list written out'               => array( 'public function some() { return $this->db->fetchAll( self::MATCHING . "( 1, 2 ) ORDER BY id", 1 ); }' ),
+			'a closing literal with a suffix'  => array( 'public function some( array $ids ) { return $this->db->fetchAll( self::MATCHING . "( " . ' . $list . ' . " ) OR 1 = 1", 1, ...$ids ); }' ),
+			'a literal joined after the close' => array( 'public function some( array $ids ) { return $this->db->fetchAll( self::MATCHING . "( " . ' . $list . ' . " )" . " OR 1 = 1", 1, ...$ids ); }' ),
+			'a variable before the constant'   => array( 'public function some( array $ids, $p ) { return $p . self::MATCHING . "( " . ' . $list . ' . " )"; }' ),
+			'a literal before the constant'    => array( 'public function some( array $ids ) { return "x " . self::MATCHING . "( " . ' . $list . ' . " )"; }' ),
+			'appended with .='                 => array( 'public function some( array $ids, $p ) { $p .= self::MATCHING . "( " . ' . $list . ' . " )"; return $p; }' ),
+			'the whole joined after a group'   => array( 'public function some( array $ids ) { return ( self::MATCHING . "( " . ' . $list . ' . " )" ) . " ORDER BY id"; }' ),
+			'no closing literal'               => array( 'public function some( array $ids ) { return $this->db->fetchAll( self::MATCHING . "( " . ' . $list . ', 1, ...$ids ); }' ),
+		);
+	}
+
+	/**
+	 * Tests that a function that follows a statement at the top of a file and takes its variable as global, then assigns it, makes the statement one built in steps.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_function_that_extends_the_variable_of_a_statement_as_global_is_refused(): void {
+		$this->createPluginDirectory( array( 'Script.php' => "<?php\n\$sql = 'SELECT id FROM %i';\nfunction extend(): void {\n\tglobal \$other, \$sql;\n\t\$sql .= ' WHERE id > 0';\n}\n" ) );
+
+		$this->expectException( \UnexpectedValueException::class );
+		$this->expectExceptionMessage( 'Script.php:2 starts a SELECT that is built in steps, by `.=` or by assigning to its variable again, so its statement cannot be read from the source.' );
+
+		ReadInventory::of( $this->pluginDirectory );
+	}
+
+	/**
+	 * Tests that a function that takes another variable as global, or only reads this one, leaves the statement whole.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_function_that_only_reads_the_variable_as_global_leaves_the_statement_whole(): void {
+		$this->createPluginDirectory( array( 'Script.php' => "<?php\n\$sql = 'SELECT id FROM %i';\nfunction read() { global \$sql; return \$sql; }\nfunction other() { global \$count; \$count .= 'x'; \$sql = 'y'; \$sql .= 'z'; }\n" ) );
+
+		$this->assertSame( array( 'Script.php:2' => array( 'SELECT id FROM {table}' ) ), ReadInventory::of( $this->pluginDirectory ) );
+	}
+
+	/**
+	 * Tests that the Catalog repository holds twelve complete statements, matched in full: no read of it is built in steps or ends open.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_catalogs_product_repository_holds_twelve_complete_statements(): void {
+		$heads = ReadInventory::of( dirname( __DIR__, 4 ) . '/src/Catalog' );
+		$class = 'SEOCart\Catalog\Infrastructure\MysqlProductRepository::';
+		$pages = array(
+			'UNBOUND_PRODUCT_IDS',
+			'INVALID_SOURCE_BINDINGS',
+			'UNBOUND_POST_IDS',
+			'BOUND_POST_BINDINGS',
+			'INCOMPLETE_MISMATCH_IDS',
+			'VARIANT_IDS',
+		);
+
+		foreach ( $heads as $name => $shapes ) {
+			foreach ( $shapes as $shape ) {
+				$this->assertStringEndsNotWith( ' …', $shape, $name . ' is matched by its beginning only.' );
 			}
 		}
 
-		$this->assertSame( $pinned, $found );
+		$this->assertCount( 12, array_filter( array_keys( $heads ), static fn( string $name ): bool => str_starts_with( $name, $class ) ), 'The repository\'s constants that hold a statement are these twelve.' );
+
+		foreach ( $pages as $page ) {
+			$first = $heads[ $class . $page . '_FROM_START' ] ?? array();
+			$after = $heads[ $class . $page ] ?? array();
+
+			$this->assertCount( 1, $first, $page );
+			$this->assertCount( 1, $after, $page );
+			$this->assertStringEndsWith( ' LIMIT ?', $first[0], $page . ' is a complete statement, to its LIMIT.' );
+			$this->assertStringEndsWith( ' LIMIT ?', $after[0], $page . ' is a complete statement, to its LIMIT.' );
+			$this->assertDoesNotMatchRegularExpression( '/[^<]> \?/', $first[0], 'The first page of ' . $page . ' compares no cursor.' );
+			$this->assertMatchesRegularExpression( '/[^<]> \? /', $after[0], 'The page of ' . $page . ' after a cursor compares it.' );
+		}
 	}
 
 	/**
@@ -818,22 +1047,6 @@ final class ReadInventoryTest extends TestCase {
 
 		$this->expectException( \UnexpectedValueException::class );
 		$this->expectExceptionMessage( 'Repository.php:4 starts a SELECT that is completed by a parameter of a method that is not private, or protected in a final class, so that its callers may be outside the class, so its statement cannot be read from the source.' );
-
-		ReadInventory::of( $this->pluginDirectory );
-	}
-
-	/**
-	 * Tests that any later assignment to the variable of a statement makes it a read built in steps, not only `.=`.
-	 *
-	 * @since 0.2.0
-	 */
-	public function test_any_later_assignment_to_the_variable_makes_a_read_stepwise(): void {
-		$class = $this->repository( array( 'public function scan( bool $lock ) { $sql = "SELECT id FROM %i"; if ( $lock ) { $sql = $sql . " FOR UPDATE"; } return $sql; }' ) );
-
-		$this->assertSame( array( 'Repository.php:4' => array( 'SELECT id FROM {table} …' ) ), ReadInventory::of( $this->pluginDirectory, array( $class => array( 'scan' ) ) ) );
-
-		$this->expectException( \UnexpectedValueException::class );
-		$this->expectExceptionMessage( 'Repository.php:4 starts a SELECT that is built in steps, by `.=` or by assigning to its variable again, and ' . $class . '::scan is not on the list' );
 
 		ReadInventory::of( $this->pluginDirectory );
 	}
