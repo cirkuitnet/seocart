@@ -35,6 +35,7 @@ use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Isolation;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
+use SEOCart\Platform\Logging\BodyDigest;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Platform\Logging\Logger;
 use SEOCart\Platform\Logging\Reporter;
@@ -88,7 +89,7 @@ defined( 'ABSPATH' ) || exit;
  * `payment.webhook_not_settled`, so the provider sends it again.
  *
  * Never logged: a header, the body, the signature, or the secret. The rejection's line carries the
- * body's hash and length; the decision's line the event's id and type, the decision, the intent
+ * body's hash, in groups of eight joined by colons (BodyDigest), and its length; the decision's line the event's id and type, the decision, the intent
  * and the ledger row.
  *
  * @since 0.2.0
@@ -484,6 +485,10 @@ final class ReceiveWebhook {
 	/**
 	 * Counts a rejected delivery and logs it, while the client's rejections this window are few enough: a wrong secret is the one misconfiguration the merchant must see.
 	 *
+	 * The line identifies the delivery by its body's hash, so it can be matched with the provider's delivery log.
+	 * The hash is written by BodyDigest, in groups of eight joined by colons: written as one run of hexadecimal,
+	 * about 1 in 232 would hold digits the logger's card-number check removes.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @param WebhookEnvelope $envelope The delivery.
@@ -509,7 +514,7 @@ final class ReceiveWebhook {
 				'gateway_id'  => $envelope->gatewayId,
 				'mode'        => $envelope->mode->value,
 				'reason'      => $reason,
-				'body_sha256' => hash( 'sha256', $envelope->rawBody ),
+				'body_sha256' => BodyDigest::of( $envelope->rawBody ),
 				'body_length' => strlen( $envelope->rawBody ),
 			)
 		);

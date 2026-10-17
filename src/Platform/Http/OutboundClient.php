@@ -16,6 +16,7 @@ use SEOCart\Contracts\OutboundHost;
 use SEOCart\Contracts\OutboundRequest;
 use SEOCart\Contracts\OutboundResponse;
 use SEOCart\Contracts\TransportFailure;
+use SEOCart\Platform\Logging\BodyDigest;
 use SEOCart\Platform\Logging\Level;
 
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- These exceptions report a caller's programming error to its developer; they are never HTML.
@@ -173,7 +174,7 @@ final class OutboundClient implements HttpClient {
 			$line + array(
 				'status'      => $response->status,
 				'duration_ms' => self::millisecondsSince( $started ),
-				'body_sha256' => self::hash( $response->body ),
+				'body_sha256' => BodyDigest::of( $response->body ),
 			)
 		);
 
@@ -238,23 +239,6 @@ final class OutboundClient implements HttpClient {
 	 */
 	private static function withoutQuery( string $url ): string {
 		return substr( $url, 0, strcspn( $url, '?#' ) );
-	}
-
-	/**
-	 * Hashes an answer's body, for the log: SHA-256 in hexadecimal, in groups of eight joined by colons.
-	 *
-	 * Not one run of 64 digits: such a run holds 13 to 19 decimal digits in a row in about one
-	 * hash in twenty-five, and the logger's card-number filter would remove them whenever they
-	 * passed the Luhn check. A colon ends a run of digits for that filter, and a group of eight
-	 * is shorter than any card number.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param string $body The body.
-	 * @return string The hash, such as `9f86d081:884c7d65:…:b0f00a08`.
-	 */
-	private static function hash( string $body ): string {
-		return implode( ':', str_split( hash( 'sha256', $body ), 8 ) );
 	}
 
 	/**

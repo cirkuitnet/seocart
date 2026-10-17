@@ -22,6 +22,7 @@ use SEOCart\Payment\Domain\Webhook\WebhookReceipts;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Payment\Infrastructure\WebhookReceiptTables;
 use SEOCart\Platform\Database\Schema\TableDefinition;
+use SEOCart\Platform\Logging\BodyDigest;
 use SEOCart\Platform\Logging\CardNumbers;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Money;
@@ -40,7 +41,9 @@ use SEOCart\Support\Money;
  * - in DeliveredValues::madeReference(), drop the mode test: `~event:prod:…`, which the store never
  *   makes, is taken for an identity it made;
  * - in DeliveredValues::madeReference(), drop the length test: an identity longer than the store
- *   makes is taken for one it made.
+ *   makes is taken for one it made;
+ * - in DeliveredValues::printable(), print a stand-in as the scrubber alone leaves it (drop the
+ *   branch for a made stand-in): some printed stand-ins are card-shaped.
  *
  * @since 0.2.0
  */
@@ -205,9 +208,37 @@ final class DeliveredValuesTest extends TestCase {
 		$this->assertSame( 'evt_' . CardNumbers::MARKER, DeliveredValues::printable( 'evt_4242424242424242' ) );
 		$this->assertSame( CardNumbers::MARKER, DeliveredValues::printable( '4242424242424242' ) );
 		$this->assertSame( '60123456789', DeliveredValues::printable( '60123456789' ), 'A transaction number that reads as no card is printed.' );
-		$this->assertSame( DeliveredValues::eventId( 'evt 1' ), DeliveredValues::printable( DeliveredValues::eventId( 'evt 1' ) ), 'A stand-in is printed as it is.' );
+		$this->assertSame( DeliveredValues::STAND_IN . BodyDigest::grouped( hash( 'sha256', 'evt 1' ) ), DeliveredValues::printable( DeliveredValues::eventId( 'evt 1' ) ), 'A stand-in is printed with its digest in groups.' );
 		$this->assertSame( '~event:test:evt_1', DeliveredValues::printable( '~event:test:evt_1' ) );
 		$this->assertSame( DeliveredValues::WITHHELD, DeliveredValues::printable( "evt 1'; DROP" ) );
+	}
+
+	/**
+	 * Tests that a stand-in the store made is printed in groups joined by colons, which no card-number check can take part of, and is the kept stand-in once the colons are taken out of its digest.
+	 *
+	 * The 3 000 values are `evt 0` to `evt 2999`, each with a space, so each is kept as a stand-in. The scrubber's own output is never card-shaped, so the second assertion is the one that proves nothing of a digest was removed.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_printed_stand_in_is_never_card_shaped(): void {
+		$card  = array();
+		$wrong = array();
+
+		for ( $value = 0; $value < 3000; $value++ ) {
+			$kept    = DeliveredValues::eventId( 'evt ' . $value );
+			$printed = DeliveredValues::printable( $kept );
+
+			if ( CardNumbers::contains( $printed ) ) {
+				$card[] = $value;
+			}
+
+			if ( ! str_starts_with( $printed, DeliveredValues::STAND_IN ) || str_replace( ':', '', substr( $printed, strlen( DeliveredValues::STAND_IN ) ) ) !== substr( $kept, strlen( DeliveredValues::STAND_IN ) ) ) {
+				$wrong[] = $value;
+			}
+		}
+
+		$this->assertSame( array(), $card, 'The card filter would remove part of these stand-ins.' );
+		$this->assertSame( array(), $wrong, 'These stand-ins are not printed as the stand-in kept, with colons between groups.' );
 	}
 
 	/**

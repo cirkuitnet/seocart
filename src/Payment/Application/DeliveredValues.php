@@ -16,6 +16,7 @@ use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Contracts\Payment\WebhookReading;
 use SEOCart\Contracts\Payment\WebhookReadingKind;
 use SEOCart\Payment\Domain\Webhook\WebhookReceipts;
+use SEOCart\Platform\Logging\BodyDigest;
 use SEOCart\Platform\Logging\CardNumbers;
 
 defined( 'ABSPATH' ) || exit;
@@ -309,12 +310,20 @@ final class DeliveredValues {
 	/**
 	 * Returns a kept value as a log line or doctor prints it: a run that reads as a card number replaced by the scrubber's marker, and a value of no kept shape withheld.
 	 *
+	 * A stand-in the store made is printed with its digest in groups joined by colons (BodyDigest), since
+	 * about 1 digest in 232 written as one run holds digits the scrubber would remove. The value kept
+	 * stays plain, and a provider's value, which is never a stand-in, is scrubbed as it was.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @param string $kept The value as the store keeps it.
 	 * @return string What is printed.
 	 */
 	public static function printable( string $kept ): string {
+		if ( null !== self::madeStandIn( $kept ) ) {
+			return self::STAND_IN . BodyDigest::grouped( substr( $kept, strlen( self::STAND_IN ) ) );
+		}
+
 		return 1 === preg_match( self::KEPT, $kept ) ? CardNumbers::scrub( $kept ) : self::WITHHELD;
 	}
 

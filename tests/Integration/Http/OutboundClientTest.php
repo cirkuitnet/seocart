@@ -19,6 +19,7 @@ use SEOCart\Platform\Database\Exception\ForbiddenInsideTransaction;
 use SEOCart\Platform\Http\OutboundClient;
 use SEOCart\Platform\Http\ReportCode;
 use SEOCart\Platform\Http\WordPressTransport;
+use SEOCart\Platform\Logging\BodyDigest;
 use SEOCart\Platform\Logging\Redactor;
 use SEOCart\Tests\Support\Logging\LogsTestCase;
 use WpOrg\Requests\Requests;
@@ -82,7 +83,7 @@ final class OutboundClientTest extends LogsTestCase {
 		$this->assertSame( 'https://api.example.test/v1/rates', $context['url'] );
 		$this->assertSame( 'POST', $context['method'] );
 		$this->assertSame( 200, $context['status'] );
-		$this->assertSame( implode( ':', str_split( hash( 'sha256', $response->body ), 8 ) ), $context['body_sha256'] );
+		$this->assertSame( BodyDigest::of( $response->body ), $context['body_sha256'] );
 		$this->assertStringNotContainsString( self::SECRET, (string) wp_json_encode( $this->lines() ), 'No query, header or body reached the log.' );
 	}
 

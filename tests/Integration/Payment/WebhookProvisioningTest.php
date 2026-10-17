@@ -270,7 +270,8 @@ final class WebhookProvisioningTest extends PaymentTestCase {
 		$this->assertContains( 'second takes no payment in test mode until its test settings are complete (they are missing).', $command->lines );
 		$this->assertCount( 1, $this->logContexts( GatewayConfiguration::PROVISIONING_FAILED ) );
 
-		foreach ( array( '4242', 'sk_test_planted' ) as $value ) {
+		// The whole planted number in both forms it can be printed in, and the whole credential: never a four-digit fragment, which a random identifier in the text can hold by chance.
+		foreach ( array( '4242 4242 4242 4242', '4242424242424242', 'sk_test_planted' ) as $value ) {
 			$this->assertStringNotContainsString( $value, $command->printed() . $this->logText(), 'A card number or a credential was printed or logged.' );
 		}
 	}
@@ -392,7 +393,8 @@ final class WebhookProvisioningTest extends PaymentTestCase {
 		$this->assertSame( $held, $this->openedSecret( Mode::Test ), 'The signing secret held before stays.' );
 		$this->assertCount( 1, $this->logContexts( GatewayConfiguration::PROVISIONING_FAILED ) );
 
-		foreach ( array( $held, '4242' ) as $value ) {
+		// The whole signing secret held and the whole planted number in both forms it can be printed in: never a four-digit fragment, which a random identifier in the text can hold by chance.
+		foreach ( array( $held, '4242 4242 4242 4242', '4242424242424242' ) as $value ) {
 			$this->assertStringNotContainsString( $value, $command->printed() . $this->logText(), 'The provider\'s message was printed or logged.' );
 		}
 	}

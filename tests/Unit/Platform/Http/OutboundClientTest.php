@@ -21,6 +21,7 @@ use SEOCart\Contracts\TransportFailure;
 use SEOCart\Platform\Http\OutboundClient;
 use SEOCart\Platform\Http\ReportCode;
 use SEOCart\Platform\Http\Transport;
+use SEOCart\Platform\Logging\BodyDigest;
 use SEOCart\Platform\Logging\CardNumbers;
 use SEOCart\Platform\Logging\Level;
 
@@ -257,7 +258,7 @@ final class OutboundClientTest extends TestCase {
 		$this->assertSame( 201, $line['context']['status'] );
 		$this->assertIsInt( $line['context']['duration_ms'] );
 		$this->assertGreaterThanOrEqual( 0, $line['context']['duration_ms'] );
-		$this->assertSame( implode( ':', str_split( hash( 'sha256', $this->next->body ), 8 ) ), $line['context']['body_sha256'] );
+		$this->assertSame( BodyDigest::of( $this->next->body ), $line['context']['body_sha256'] );
 		$this->assertStringNotContainsString( self::SECRET, (string) json_encode( $line ), 'No query, header or body reaches the line.' );
 	}
 
@@ -314,7 +315,7 @@ final class OutboundClientTest extends TestCase {
 	/**
 	 * Tests that a logged body hash never looks like a card number to the log's card filter.
 	 *
-	 * Planted violation, shown red and removed: in OutboundClient::hash(), return the hexadecimal
+	 * Planted violation, shown red and removed: in BodyDigest::of(), return the hexadecimal
 	 * digest as one string; the filter then finds a card-shaped run in some of these hashes.
 	 *
 	 * @since 0.2.0

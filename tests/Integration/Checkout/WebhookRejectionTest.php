@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Integration\Checkout;
 use SEOCart\Checkout\Application\ReceiveWebhook;
 use SEOCart\Payment\Domain\Webhook\ReceiptResult;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
+use SEOCart\Platform\Logging\BodyDigest;
 use SEOCart\Platform\RateLimiter\RateCountersTable;
 use SEOCart\Tests\Support\Checkout\WebhookTestCase;
 use SEOCart\Tests\Support\Payment\StubWebhooks;
@@ -58,7 +59,8 @@ final class WebhookRejectionTest extends WebhookTestCase {
 			$delivery = array_values( $rejected )[ $index ];
 
 			$this->assertSame( array( 'gateway_id', 'mode', 'reason', 'body_sha256', 'body_length' ), array_keys( $line ) );
-			$this->assertSame( array( StubGateway::ID, 'test', hash( 'sha256', $delivery->body() ), strlen( $delivery->body() ) ), array( $line['gateway_id'], $line['mode'], $line['body_sha256'], $line['body_length'] ) );
+			// The digest is the one the receiver writes: in groups joined by colons, so that the logger's card-number check never removes part of it, as it would one hash in about 230 written as one run of hexadecimal.
+			$this->assertSame( array( StubGateway::ID, 'test', BodyDigest::of( $delivery->body() ), strlen( $delivery->body() ) ), array( $line['gateway_id'], $line['mode'], $line['body_sha256'], $line['body_length'] ) );
 		}
 	}
 

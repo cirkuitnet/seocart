@@ -19,6 +19,7 @@ use SEOCart\Payment\Infrastructure\Doctor\PaymentLedgerCheck;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Payment\Infrastructure\WebhookReceiptTables;
+use SEOCart\Platform\Logging\BodyDigest;
 use SEOCart\Platform\Logging\CardNumbers;
 use SEOCart\Platform\Logging\LogsTable;
 use SEOCart\Tests\Support\Checkout\WebhookTestCase;
@@ -69,8 +70,10 @@ final class WebhookCardDataTest extends WebhookTestCase {
 		$forged = $this->withCardNumber( StubWebhooks::of( $this->approvalOf( $placed ) ) )->withBadSignature();
 
 		$this->assertSame( 'payment.webhook_rejected', $this->refusalOf( $forged ) );
+		// The line carries the body's digest in groups joined by colons, so the logger is never handed part of it as a card number to remove, whatever the body. The check that it was not holds by construction.
 		$this->assertKeptNowhere();
 		$this->assertSame( array( array( 'gateway_id', 'mode', 'reason', 'body_sha256', 'body_length' ) ), array_map( 'array_keys', $this->logged( 'payment.webhook_rejected' ) ) );
+		$this->assertSame( BodyDigest::of( $forged->body() ), $this->logged( 'payment.webhook_rejected' )[0]['body_sha256'] ?? null, 'The line identifies the delivery by the digest of its body.' );
 	}
 
 	/**
