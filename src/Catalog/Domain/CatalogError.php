@@ -54,9 +54,11 @@ enum CatalogError: string implements ErrorCode {
 	case CurrencyNotBase = 'catalog.currency_not_base';
 
 	/**
-	 * WordPress refused to write the product's post.
+	 * WordPress refused to write the product's post, or its database refused the update (`db_update_error`),
+	 * as MariaDB does when another request changed the post since the save first read it.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The message says what `db_update_error` means.
 	 */
 	case PostRejected = 'catalog.post_rejected';
 
@@ -161,7 +163,7 @@ enum CatalogError: string implements ErrorCode {
 				400,
 				static fn(): string =>
 					/* translators: %1$s: The error code WordPress gave, such as empty_content. */
-					__( 'WordPress did not save the product\'s post (%1$s).', 'seocart' ),
+					__( 'WordPress did not save the product\'s post (%1$s), so nothing was saved. db_update_error: the database refused the update, as it does when another request changed the post meanwhile: save it again.', 'seocart' ),
 				array( 'wordpress_code' )
 			),
 			new ErrorDefinition(

@@ -17,6 +17,7 @@ use SEOCart\Platform\Secrets\KeyRing;
 use SEOCart\Platform\Secrets\SecretKeys;
 use SEOCart\Platform\Secrets\SecretKeysTable;
 use SEOCart\Platform\Secrets\SecretsError;
+use SEOCart\Platform\Settings\SettingsError;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\SecretsHarness;
@@ -202,6 +203,70 @@ final class SecretKeysTest extends DatabaseTestCase {
 
 		$this->assertSame( $before, SecretsHarness::stored( SecretsHarness::DATA_KEYS_OPTION ) );
 		$this->assertCount( 2, SecretsHarness::registryRows() );
+	}
+
+	/**
+	 * Tests that a rotation another rotation beat to the data keys is refused alike on both servers, as a conflict, changes nothing, and leaves the request reading the winner's key.
+	 *
+	 * The other rotation commits its document (version 2, a new active key) and its registry rows
+	 * from a second connection just before this rotation's compare-and-swap leaves, after this one
+	 * read version 1. MySQL's swap finds the document changed; MariaDB refuses the swap of a row
+	 * changed since the transaction read it (error 1020) and rolls the transaction back. Both answer
+	 * `settings.version_conflict`, and this rotation's key is recorded nowhere. This request had the
+	 * keys document cached before it lost; its next cached read of the active key must find the
+	 * winner's.
+	 *
+	 * Planted violations: in ChangedMeanwhile::refusedAs(), rethrow MariaDB's refusal unchanged: on
+	 * MariaDB the rotation fails with `database.transaction_retryable`. In SecretKeys::rotate(), refuse
+	 * without SettingsStore::documentConflict(), building the conflict itself: on MariaDB the request
+	 * still reads the replaced key from its cache.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_rotation_another_writer_beat_is_refused_as_a_conflict_and_changes_nothing(): void {
+		global $wpdb;
+
+		$secrets  = new SecretsHarness( $this->db );
+		$active   = $secrets->keys->initialize();
+		$before   = (string) SecretsHarness::stored( SecretsHarness::DATA_KEYS_OPTION );
+		$registry = $this->db->table( SecretKeysTable::NAME );
+
+		// The other rotation, made here and taken back, so that a second connection commits it at the barrier.
+		$winner = ( new SecretsHarness( $this->db ) )->keys->rotate();
+		$newer  = (string) SecretsHarness::stored( SecretsHarness::DATA_KEYS_OPTION );
+		$row    = (array) $this->db->fetchRow( 'SELECT key_id, state, algorithm, created_at FROM %i WHERE key_id = %s', $registry, $winner );
+
+		$this->db->execute( 'UPDATE %i SET option_value = %s WHERE option_name = %s', $wpdb->options, $before, SecretsHarness::DATA_KEYS_OPTION );
+		$this->db->execute( 'DELETE FROM %i WHERE key_id = %s', $registry, $winner );
+		$this->db->execute( "UPDATE %i SET state = 'active', retired_at = NULL WHERE key_id = %s", $registry, $active );
+		wp_cache_flush();
+
+		$this->assertSame( $active, $secrets->keys->active()->id(), 'The active key, read through the cache before the race.' );
+
+		$b     = $this->secondConnection();
+		$raced = $this->beforeStatement(
+			'/^UPDATE `' . preg_quote( $wpdb->options, '/' ) . '` .*' . SecretsHarness::DATA_KEYS_OPTION . '/s',
+			static function () use ( $b, $wpdb, $newer, $registry, $row, $active ): void {
+				$b->query( 'START TRANSACTION' );
+				$b->query( (string) $wpdb->prepare( 'UPDATE %i SET option_value = %s WHERE option_name = %s', $wpdb->options, $newer, SecretsHarness::DATA_KEYS_OPTION ) );
+				$b->query( (string) $wpdb->prepare( 'INSERT INTO %i ( key_id, state, algorithm, created_at ) VALUES ( %s, %s, %s, %s )', $registry, $row['key_id'], $row['state'], $row['algorithm'], $row['created_at'] ) );
+				$b->query( (string) $wpdb->prepare( 'UPDATE %i SET state = %s WHERE key_id = %s', $registry, SecretKeysTable::RETIRING, $active ) );
+				$b->query( 'COMMIT' );
+			}
+		);
+
+		try {
+			$secrets->keys->rotate();
+			$this->fail( 'The rotation went on although another rotation changed the data keys.' );
+		} catch ( CodedException $lost ) {
+			$this->assertSame( SettingsError::VersionConflict, $lost->errorCode() );
+			$this->assertSame( array( 'group' => SecretKeys::GROUP ), $lost->context() );
+		}
+
+		$this->assertTrue( $raced->fired, 'The other rotation never committed, so nothing raced this one.' );
+		$this->assertSame( $newer, SecretsHarness::stored( SecretsHarness::DATA_KEYS_OPTION ), 'The rotation wrote over the other rotation\'s document.' );
+		$this->assertSame( array( array( $active, SecretKeysTable::RETIRING ), array( $winner, SecretKeysTable::ACTIVE ) ), array_map( static fn( array $row ): array => array( $row['key_id'], $row['state'] ), SecretsHarness::registryRows() ), 'The rotation recorded a key.' );
+		$this->assertSame( $winner, $secrets->keys->active()->id(), 'After losing, the request reads the active key from the copy it had cached, not the winner\'s.' );
 	}
 
 	/**

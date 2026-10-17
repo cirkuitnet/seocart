@@ -17,6 +17,7 @@ use SEOCart\Platform\Cli\Doctor\CheckResult;
 use SEOCart\Platform\Cli\Doctor\Repairable;
 use SEOCart\Platform\Cli\Doctor\RepairResult;
 use SEOCart\Platform\Database\Exception\LockNotAcquired;
+use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 
 defined( 'ABSPATH' ) || exit;
@@ -171,7 +172,12 @@ final class DanglingBindingCheck implements Repairable {
 	/**
 	 * Locks a binding's product first, then deletes the binding in the same transaction.
 	 *
+	 * The transaction runs again whole after a deadlock, or MariaDB's refusal of a row changed since
+	 * its snapshot, such as a post created again under the binding's post id: the delete re-states
+	 * both of its conditions, so a second run deletes what is still dangling, and nothing else.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Runs again after a retryable failure.
 	 *
 	 * @param int $postId    The binding's post.
 	 * @param int $productId The binding's product.
@@ -194,7 +200,8 @@ final class DanglingBindingCheck implements Repairable {
 							}
 
 							return sprintf( 'deleted the binding of post %1$d to product %2$d.', $postId, $productId );
-						}
+						},
+						RetryPolicy::deadlocks()
 					);
 				}
 			);

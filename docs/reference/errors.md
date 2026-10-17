@@ -103,7 +103,7 @@ An internal error carries a generic message and empty details: it is a code mark
 ## `catalog.post_rejected`
 
 - HTTP status: 400
-- Message: WordPress did not save the product's post ({wordpress_code}).
+- Message: WordPress did not save the product's post ({wordpress_code}), so nothing was saved. db_update_error: the database refused the update, as it does when another request changed the post meanwhile: save it again.
 - Values: `wordpress_code`
 
 ## `catalog.product_not_found`

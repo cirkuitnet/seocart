@@ -523,7 +523,15 @@ final class Migrator {
 	/**
 	 * Runs a data migration's batches until it is done or the budget is spent.
 	 *
+	 * Each batch and its cursor are one unit of work, run again whole after a deadlock, a lock-wait
+	 * timeout or MariaDB's refusal of a row changed since the batch's snapshot, such as a request
+	 * already under way when the store was held committing to a row of the batch's page. A failed
+	 * migration holds the store until a person runs it again, so a conflict that clears on its own
+	 * must not fail it. Once every attempt has failed, the failure propagates and the migration is
+	 * recorded failed, at the last cursor committed.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 A batch runs again after a retryable failure.
 	 *
 	 * @param DataMigration       $migration The migration.
 	 * @param string|null         $cursor    Where to resume.
@@ -542,7 +550,8 @@ final class Migrator {
 					$this->recordCursor( $migration, $next );
 
 					return $next;
-				}
+				},
+				RetryPolicy::deadlocks()
 			);
 
 			if ( null === $cursor ) {

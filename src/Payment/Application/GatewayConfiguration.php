@@ -21,6 +21,8 @@ use SEOCart\Contracts\Payment\WebhookProvisioning;
 use SEOCart\Contracts\Payment\WebhookTarget;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\Authorizer;
+use SEOCart\Platform\Database\ChangedMeanwhile;
+use SEOCart\Platform\Database\Exception\TransactionRetryable;
 use SEOCart\Platform\Database\TransactionManager;
 
 use SEOCart\Platform\Secrets\SecretVault;
@@ -261,6 +263,14 @@ final class GatewayConfiguration {
 	/**
 	 * Replaces values of a gateway's document, keeping every other value as stored, by compare-and-swap in one transaction.
 	 *
+	 * Another writer can win in two ways, and both are answered `settings.version_conflict`: MySQL's
+	 * compare-and-swap finds the document changed and writes nothing; MariaDB refuses the swap of a
+	 * document changed since this transaction read it, and the refusal is answered the same once the
+	 * server has rolled the transaction back. Both go through SettingsStore::documentConflict(), which
+	 * drops the cached document, so the rest of the request (the gateway's mode among it) reads the
+	 * winner's values. On MariaDB a key rotation that lands between the read
+	 * and the sealing of a credential is answered so too, where MySQL seals with the newer key.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @throws CodedException `settings.version_conflict` when another writer won; a secrets code when
@@ -274,7 +284,8 @@ final class GatewayConfiguration {
 		$group    = GatewaySettingsDeclaration::group( $gatewayId );
 		$settings = $this->gateways->settingsOf( $gatewayId );
 
-		return $this->tx->transaction(
+		return ChangedMeanwhile::refusedAs(
+			$this->tx,
 			function () use ( $group, $settings, $changes ): SettingsDocument {
 				$document = $this->store->documentAsStored( $group );
 				$values   = $document->values();
@@ -288,7 +299,8 @@ final class GatewayConfiguration {
 				}
 
 				return $this->store->replaceDocument( $group, $document->version(), $values );
-			}
+			},
+			fn( TransactionRetryable $changed ): CodedException => $this->store->documentConflict( $group, $changed )
 		);
 	}
 

@@ -18,6 +18,7 @@ use SEOCart\Platform\Cli\Doctor\CheckResult;
 use SEOCart\Platform\Cli\Doctor\Repairable;
 use SEOCart\Platform\Cli\Doctor\RepairResult;
 use SEOCart\Platform\Database\Exception\LockNotAcquired;
+use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 
 defined( 'ABSPATH' ) || exit;
@@ -239,7 +240,12 @@ final class MissingStockItemCheck implements Repairable {
 	 * its variants: reloadUnderLock() is called for that locking read alone, its own reload
 	 * unused here.
 	 *
+	 * The transaction runs again whole after a deadlock, or MariaDB's refusal of a row changed since
+	 * its snapshot, such as a stock item another writer created after the re-check read the levels:
+	 * the re-check is read again, so a second run creates only what is still missing.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Runs again after a retryable failure.
 	 *
 	 * @param int   $productId  The variants' product.
 	 * @param array $variantIds The variants run() found for this product.
@@ -276,7 +282,8 @@ final class MissingStockItemCheck implements Repairable {
 							}
 
 							return $changes;
-						}
+						},
+						RetryPolicy::deadlocks()
 					);
 				}
 			);

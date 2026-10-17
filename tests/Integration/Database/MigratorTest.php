@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Database;
 
 use SEOCart\Platform\Database\Cli\MigrateCommand;
+use SEOCart\Platform\Database\DataMigration;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\DatabaseError;
 use SEOCart\Platform\Database\DatabaseState;
@@ -28,6 +29,7 @@ use SEOCart\Platform\Database\Migrator;
 use SEOCart\Platform\Database\ReportCode;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\PlatformTables;
+use SEOCart\Platform\Database\ServerKind;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
 use SEOCart\Tests\Support\Doubles\RecordingDatabaseState;
@@ -351,6 +353,107 @@ final class MigratorTest extends DatabaseTestCase {
 		$this->assertSame( Migrator::APPLIED, $this->migrationRow( $b, $marks->id() )['state'] );
 		$this->assertNull( $this->migrationRow( $b, $marks->id() )['batch_cursor'] );
 		$this->assertSame( 2, $this->assertEachBatchCommitsWithItsCursor( $log ), 'Two batches remained: rows 6 to 8, then row 9.' );
+	}
+
+	/**
+	 * A batch that meets another writer's commit runs again whole, at most as the deadlock policy allows, and writes its cursor once.
+	 *
+	 * The batch reads its page without a lock, then marks each row only while the row still holds
+	 * what was read, as a data migration rewrites rows. Another writer commits a change of row 2's
+	 * other column from a second connection just before the batch's update of row 2 leaves. MySQL
+	 * updates the newest row and the batch commits at once. MariaDB refuses the update of a row
+	 * changed since the batch's snapshot (error 1020) and rolls the batch back, cursor and all;
+	 * the batch runs again, once, from a new snapshot. Both mark every row once, and each batch
+	 * that committed wrote its cursor exactly once.
+	 *
+	 * Planted violation: in Migrator::runBatches(), run the batch with no retry policy: on MariaDB
+	 * the migration fails, recorded failed with `database.transaction_retryable`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group concurrency
+	 */
+	public function test_a_batch_that_meets_another_writer_runs_again_and_writes_its_cursor_once(): void {
+		$b = $this->secondConnection();
+
+		for ( $id = 0; $id < 10; $id++ ) {
+			$this->insertRow( $id );
+		}
+
+		$batches = new class( $this->rowsTable() ) implements DataMigration {
+
+			/**
+			 * How many batches ran, a batch run again counted again.
+			 *
+			 * @var int
+			 */
+			public int $runs = 0;
+
+			/**
+			 * Creates the migration over the fixture table.
+			 *
+			 * @param string $table The fixture table's full name.
+			 */
+			public function __construct( private string $table ) {
+			}
+
+			/**
+			 * Returns the id.
+			 *
+			 * @return string The id.
+			 */
+			public function id(): string {
+				return '20990101_0010_reads_then_marks';
+			}
+
+			/**
+			 * Lets the store trade while it runs.
+			 *
+			 * @return bool True.
+			 */
+			public function canOperateHalfApplied(): bool {
+				return true;
+			}
+
+			/**
+			 * Reads a page of five rows without a lock, then marks each one still as read.
+			 *
+			 * @param string|null $cursor The last id of the page before, or null.
+			 * @param Database    $db     The connection, in the batch's transaction.
+			 * @return string|null The last id of this page, or null when it was empty.
+			 */
+			public function runBatch( ?string $cursor, Database $db ): ?string {
+				++$this->runs;
+
+				$page = $db->fetchAll( 'SELECT id, n FROM %i WHERE id > %d ORDER BY id LIMIT 5', $this->table, null === $cursor ? -1 : (int) $cursor );
+
+				foreach ( $page as $row ) {
+					$db->execute( 'UPDATE %i SET n = n + 1 WHERE id = %d AND n = %d', $this->table, (int) $row['id'], (int) $row['n'] );
+				}
+
+				return array() === $page ? null : (string) $page[ count( $page ) - 1 ]['id'];
+			}
+		};
+
+		$raced = $this->beforeStatement(
+			'/^UPDATE `' . preg_quote( $this->rowsTable(), '/' ) . '` SET n = n \+ 1 WHERE id = 2 /',
+			function () use ( $b ): void {
+				$b->query( sprintf( "UPDATE `%s` SET value = 'changed meanwhile' WHERE id = 2", $this->rowsTable() ) );
+			}
+		);
+
+		$log = $this->captureQueries( fn() => $this->migrator( array( new PlatformBootstrapMigration(), $batches ) )->migrate( new MigrationRunOptions( 0 ) ) );
+
+		$this->assertTrue( $raced->fired, 'The other writer never committed, so nothing raced the batch.' );
+		$this->assertSame( Migrator::APPLIED, $this->migrationRow( $b, $batches->id() )['state'] );
+		$this->assertSame( '1,1,1,1,1,1,1,1,1,1', $this->marks( $b ), 'Every row marked exactly once.' );
+		$this->assertSame( 3, $this->assertEachBatchCommitsWithItsCursor( $log ), 'Three batches committed: rows 0 to 4, rows 5 to 9, then the empty page.' );
+		$this->assertSame( 3, substr_count( $log->describe(), 'SET batch_cursor' ), 'A cursor was written by a batch that rolled back.' );
+
+		$again = ServerKind::MariaDB === $this->db->server()->kind() ? 1 : 0;
+
+		$this->assertCount( $again, $this->sleeps, 'MySQL updates the newest row at once; MariaDB runs the batch again, once.' );
+		$this->assertSame( 3 + $again, $batches->runs, 'The batches that ran.' );
 	}
 
 	/**

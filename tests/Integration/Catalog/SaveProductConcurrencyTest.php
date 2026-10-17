@@ -12,12 +12,16 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Catalog;
 
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
+use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\LockService;
+use SEOCart\Platform\Database\ServerKind;
+use SEOCart\Support\Error\CodedException;
+use SEOCart\Support\Error\ErrorDefinition;
 use SEOCart\Tests\Support\Catalog\ProductWrites;
 use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
 
@@ -207,5 +211,133 @@ final class SaveProductConcurrencyTest extends ProductWriteTestCase {
 		$this->assertSame( 'updating', $this->committedMarker( $b, $saved->productId )[0], 'A\'s committed statements sit under B\'s `complete`.' );
 		$this->assertSame( SellabilityReason::Updating, $this->verdict( (int) $saved->variantId ) );
 		$this->assertSame( array( 'Lost after another save', 'SKU-1', '2222' ), $this->committedProduct( $b, $saved ), 'A\'s post write was committed by its listener; B\'s price stands.' );
+	}
+
+	/**
+	 * Tests that a first save of a post another writer binds meanwhile is refused alike on both servers, as a write conflict, and writes nothing.
+	 *
+	 * The other writer links the post to another product, committing the binding from a second
+	 * connection just before this save's binding leaves, after WordPress's reads of the post
+	 * opened the window's snapshot. MySQL's insert of the binding meets the duplicate; MariaDB
+	 * refuses the insert of a binding committed since the snapshot (error 1020) and rolls the window
+	 * back. Both answer `catalog.write_conflict`, and the post and the binding are as the other
+	 * writer left them.
+	 *
+	 * Planted violation: in SaveProduct::firstBind(), run the window with
+	 * `$this->transactions->transaction( ..., RetryPolicy::none() )` again: on MariaDB the save fails
+	 * with `database.transaction_retryable`.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_first_save_of_a_post_bound_meanwhile_is_refused_as_a_write_conflict(): void {
+		$other  = $this->savedProduct( 'SKU-OTHER', 'Other product' );
+		$postId = $this->unboundPost();
+		$posts  = $this->db->table( CatalogTables::PRODUCT_POSTS );
+		$b      = $this->secondConnection();
+		$raced  = $this->beforeStatement(
+			'/^INSERT INTO `' . preg_quote( $posts, '/' ) . '`/',
+			static function () use ( $b, $posts, $postId, $other ): void {
+				$b->query( "INSERT INTO `$posts` ( post_id, product_id, locale, linked_at, created_at ) VALUES ( $postId, {$other->productId}, 'fr_FR', UTC_TIMESTAMP(), UTC_TIMESTAMP() )" );
+			}
+		);
+
+		$failure = $this->saveFailure(
+			fn() => $this->save(
+				$postId,
+				array( 'post_title' => 'Bound by this save' ),
+				array(
+					'sku'         => 'SKU-FIRST',
+					'price_minor' => 500,
+				)
+			)
+		);
+
+		$this->assertTrue( $raced->fired, 'The other writer never committed, so nothing raced the save.' );
+		$this->assertInstanceOf( CodedException::class, $failure );
+		$this->assertSame( array( CatalogError::WriteConflict, array( 'post_id' => $postId ) ), array( $failure->errorCode(), $failure->context() ) );
+		$this->assertSame( 'Unbound product', (string) $b->fetchValue( sprintf( 'SELECT post_title FROM `%s` WHERE ID = %d', $this->postsTable(), $postId ) ), 'The save\'s post write was kept.' );
+		$this->assertSame( (string) $other->productId, (string) $b->fetchValue( "SELECT product_id FROM `$posts` WHERE post_id = $postId" ), 'The other writer\'s binding is gone.' );
+		$this->assertSame( 0, $this->committedCount( $b, CatalogTables::VARIANTS, "sku = 'SKU-FIRST'" ), 'The save\'s variant was kept.' );
+	}
+
+	/**
+	 * Tests a save during which the post's row changes: MySQL saves; MariaDB refuses it, writes nothing, and tells the editor the post changed meanwhile.
+	 *
+	 * A comment counted on the post commits from a second connection just before WordPress's update
+	 * of the post leaves, after the window's first read. MySQL's update writes over the row and
+	 * keeps the count. MariaDB refuses the update of a row changed since the snapshot (error 1020),
+	 * inside WordPress's own query: WordPress reports `db_update_error`, the save is refused with
+	 * `catalog.post_rejected`, and the server has rolled the window back. The window is never run
+	 * again (other plugins' listeners run inside it): the editor saves again.
+	 *
+	 * Planted violation: in CatalogError::definitions(), give PostRejected its earlier message
+	 * ("WordPress did not save the product's post (%1$s)."): on MariaDB the editor is not told the
+	 * post changed meanwhile.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_save_meeting_a_change_of_the_post_saves_on_mysql_and_is_refused_on_mariadb(): void {
+		global $wpdb;
+
+		$saved   = $this->savedProduct( 'SKU-POST' );
+		$posts   = $this->postsTable();
+		$failure = null;
+		$b       = $this->secondConnection();
+		$raced   = $this->beforeStatement(
+			'/^UPDATE `' . preg_quote( $posts, '/' ) . '` SET/',
+			static function () use ( $b, $posts, $saved ): void {
+				$b->query( "UPDATE `$posts` SET comment_count = comment_count + 1 WHERE ID = {$saved->postId}" );
+			}
+		);
+
+		// On MariaDB the refusal meets WordPress's own query, which would print it to the error log.
+		$suppressed = $wpdb->suppress_errors( true );
+
+		try {
+			$this->save(
+				$saved->postId,
+				array( 'post_title' => 'Renamed by this save' ),
+				array(
+					'sku'         => 'SKU-POST',
+					'price_minor' => 2500,
+				)
+			);
+		} catch ( CodedException $refused ) {
+			$failure = $refused;
+		} finally {
+			$wpdb->suppress_errors( $suppressed );
+		}
+
+		$title = (string) $b->fetchValue( "SELECT post_title FROM `$posts` WHERE ID = {$saved->postId}" );
+
+		$this->assertTrue( $raced->fired, 'The other request never committed, so nothing raced the save.' );
+		$this->assertSame( '1', (string) $b->fetchValue( "SELECT comment_count FROM `$posts` WHERE ID = {$saved->postId}" ), 'The other request\'s count was lost.' );
+		$this->assertSame( 'complete', $this->committedMarker( $b, $saved->productId )[0], 'The product was left marked.' );
+		$this->assertSame( array(), $this->sleeps, 'The window ran again.' );
+
+		if ( ServerKind::MariaDB !== $this->db->server()->kind() ) {
+			$this->assertNull( $failure, 'MySQL refused the save.' );
+			$this->assertSame( 'Renamed by this save', $title );
+
+			return;
+		}
+
+		$this->assertInstanceOf( CodedException::class, $failure );
+		$this->assertSame( array( CatalogError::PostRejected, array( 'wordpress_code' => 'db_update_error' ) ), array( $failure->errorCode(), $failure->context() ) );
+		$this->assertStringContainsString( 'another request changed the post meanwhile: save it again', ErrorDefinition::of( $failure->errorCode() )->render( $failure->context() ) );
+		$this->assertSame( 'Saved product', $title, 'The refused save wrote the post.' );
+	}
+
+	/**
+	 * Returns the full name of `wp_posts`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return string The name.
+	 */
+	private function postsTable(): string {
+		global $wpdb;
+
+		return $wpdb->posts;
 	}
 }

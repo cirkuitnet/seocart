@@ -11,13 +11,17 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
+use SEOCart\Contracts\Payment\Outcome;
+use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Application\ClaimStatement;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\RefundService;
 use SEOCart\Payment\Application\SettledClaim;
+use SEOCart\Payment\Domain\Event\RefundRecorded;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\MysqlRefundRepository;
 use SEOCart\Payment\Infrastructure\RefundClaimTables;
+use SEOCart\Platform\Database\ServerKind;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Doubles\BarrierRefundRepository;
 use SEOCart\Tests\Support\Doubles\BarrierTransactions;
@@ -207,6 +211,53 @@ final class SettleClaimConcurrencyTest extends RefundTestCase {
 		$this->assertSame( array(), $this->refundLedgerRows( $order->id ), 'Nothing reached the ledger.' );
 		$this->assertSame( '0', (string) $this->orderRow( $order->id )['has_unreconciled_money'] );
 		$this->assertSettledOnceBy( $order->id, $uuid, ClaimStatement::NOT_REFUNDED );
+	}
+
+	/**
+	 * Tests that a settlement the gateway decides, meeting another request's change of the order, records the refund once on both servers.
+	 *
+	 * The claim's lock reads the ledger and the claims in subqueries, which no lock covers, so it
+	 * takes the transaction's snapshot. Another request commits a change of the order's row from a
+	 * second connection just before the settlement locks the order. MySQL's lock reads the newest
+	 * row and the settlement goes on. MariaDB refuses the lock of a row changed since the snapshot
+	 * (error 1020) and rolls the settlement back; its deadlock policy runs it again, once. Both end
+	 * alike: one refund on the ledger, the claim recorded once, one settlement event, one
+	 * `refund_recorded` event.
+	 *
+	 * Planted violation: in RefundService::settleClaim(), run the transaction with no retry policy:
+	 * on MariaDB the settlement fails with `database.transaction_retryable`.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_settlement_meeting_a_change_of_the_order_records_the_refund_once(): void {
+		$provider = new RememberingGateway( new StubGateway() );
+		$service  = $this->refundsOver( $this->db, $this->ids, $provider );
+
+		list( $order, $intent ) = $this->placePaid( self::order() );
+		list( $tee )            = $this->lineUuids( $order->id );
+		$uuid                   = $this->openClaim( $order->uuid, $tee, $provider, $service );
+
+		$provider->made[ $uuid ][] = $this->claimedResult( $intent, $uuid, Outcome::Approved );
+
+		$b      = $this->secondConnection();
+		$orders = $this->table( OrderTables::ORDERS );
+		$raced  = $this->beforeStatement(
+			'/^SELECT id, uuid, order_number, .* FROM `' . preg_quote( $orders, '/' ) . '` WHERE id = ' . $order->id . ' FOR UPDATE/s',
+			static function () use ( $b, $orders, $order ): void {
+				$b->query( "UPDATE `$orders` SET updated_at = UTC_TIMESTAMP(6) WHERE id = {$order->id}" );
+			}
+		);
+
+		$settled = $service->settleClaim( $uuid, new ClaimStatement( true, self::NOTE, 'stub-re-' . $uuid, (int) $this->claimRows( $order->id )[0]['amount_minor'] ), $this->manager() );
+
+		$this->assertTrue( $raced->fired, 'The other request never committed, so nothing raced the settlement.' );
+		$this->assertSame( array( 'recorded', SettledClaim::BY_GATEWAY ), array( $settled->state->value, $settled->decidedBy ) );
+		$this->assertCount( 1, $this->refundLedgerRows( $order->id ), 'One refund on the ledger.' );
+		$this->assertCount( 1, $this->refundRows( $order->id ), 'One refund document.' );
+		$this->assertSame( array( 'recorded' ), array_column( $this->claimRows( $order->id ), 'state' ), 'The claim ended once.' );
+		$this->assertSettledOnceBy( $order->id, $uuid, ClaimStatement::REFUNDED );
+		$this->assertSame( 1, $this->outboxRows( RefundRecorded::eventName() ), 'One refund_recorded event.' );
+		$this->assertCount( ServerKind::MariaDB === $this->db->server()->kind() ? 1 : 0, $this->sleeps, 'MySQL locks the newest row at once; MariaDB runs the settlement again, once.' );
 	}
 
 	/**

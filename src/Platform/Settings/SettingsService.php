@@ -134,6 +134,10 @@ final class SettingsService {
 	 * Every value is checked, and every secret sealed, before any is written, so a change refused
 	 * for one value saves none.
 	 *
+	 * The transaction that seals and writes secrets reads nothing without a lock: the keys under a
+	 * shared lock, then each value written over whatever is stored. With no snapshot taken, MariaDB
+	 * has no stale write to refuse, and the last writer wins on both servers, so it needs no retry.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws CodedException With AuthorizationError::Denied when the input names a secret and the

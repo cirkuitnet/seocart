@@ -354,8 +354,13 @@ Where the two servers behave differently, the code and the tests say so:
   existing table that way (see [migrations.md](migrations.md#adding-a-column)).
 - At `REPEATABLE READ`, MariaDB refuses a locking read or an `UPDATE` of a row committed after the
   transaction's snapshot (error 1020) and rolls the transaction back, where MySQL reads the newest
-  row. The plugin treats it as it treats a deadlock (`TransactionRetryable`), and a unit of work
-  with a retry policy runs again. A concurrency test whose race meets it says what each server does.
+  row. It refuses so an `INSERT` of a primary key, and an upsert, of a row committed after the
+  snapshot too, where MySQL answers 1062 or updates the row; a duplicate of another unique key is
+  1062 on both. A sorting locking read that meets such a row also leaves error 1028 ("Sort
+  aborted") among its warnings, but the error the client receives is 1020. The plugin treats it as
+  it treats a deadlock (`TransactionRetryable`): a unit of work with a retry policy runs again, and
+  each unit that runs once says in its docblock what it answers. A concurrency test whose race
+  meets it says what each server does.
 - A test whose premise holds on one server only is skipped on the other, with the reason, and a
   sibling test pins what holds there.
 - An entry of `tests/query-plan-allow-list.json` may name the servers it holds on

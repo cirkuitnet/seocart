@@ -513,7 +513,10 @@ final class SettingsStore {
 	 * it and reads as its default. Every value is checked before anything is written.
 	 *
 	 * A writer that lost the race gets SettingsError::VersionConflict and changes nothing: the
-	 * document is no longer the version it read. An unreadable stored document is reported with
+	 * document is no longer the version it read, and its cached copy is dropped (documentConflict()).
+	 * On MariaDB, inside a transaction that read the document before another writer changed it, the
+	 * swap is refused by the server instead (error 1020), and the whole transaction rolled back; its
+	 * caller answers that with documentConflict() too. An unreadable stored document is reported with
 	 * SettingsError::StoredValueInvalid, and a value a setting's own check refuses with its code.
 	 *
 	 * @since 0.1.0
@@ -549,7 +552,7 @@ final class SettingsStore {
 		$current = $this->readRow( $option );
 
 		if ( $this->decode( $group, null === $current ? false : $current )->version() !== $read_version ) {
-			$this->conflict( $group, $option );
+			$this->conflict( $group );
 		}
 
 		$written = new SettingsDocument( $read_version + 1, $checked );
@@ -568,10 +571,10 @@ final class SettingsStore {
 			try {
 				$this->database->execute( self::CREATE_DOCUMENT, $table, $option, $json );
 			} catch ( DuplicateKey ) {
-				$this->conflict( $group, $option );
+				$this->conflict( $group );
 			}
 		} elseif ( 1 !== $this->database->execute( self::COMPARE_AND_SWAP, $table, $json, $option, $current ) ) {
-			$this->conflict( $group, $option );
+			$this->conflict( $group );
 		}
 
 		$this->forget( $option );
@@ -724,20 +727,41 @@ final class SettingsStore {
 	}
 
 	/**
+	 * Returns the refusal of a document write that lost the race, after dropping the cached copy it was based on.
+	 *
+	 * The one answer to a lost race, whoever finds it: this store, when its compare-and-swap finds
+	 * the document changed, and the caller of a unit of work that MariaDB rolled back because the
+	 * document changed after the unit read it (ChangedMeanwhile). Either way the rest of the request
+	 * reads the winner's document, never the copy the object cache kept.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \InvalidArgumentException When the group is not a document: a programming error.
+	 *
+	 * @param string          $group The group.
+	 * @param \Throwable|null $cause Optional. What found the race lost, kept as the refusal's previous exception. Default null.
+	 * @return CodedException With SettingsError::VersionConflict, to be thrown.
+	 */
+	public function documentConflict( string $group, ?\Throwable $cause = null ): CodedException {
+		$this->forget( $this->documentOption( $group ) );
+
+		return CodedException::because( SettingsError::VersionConflict, array( 'group' => $group ), $cause );
+	}
+
+	/**
 	 * Refuses a document write that lost the race, after dropping the cached copy it was based on.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @throws CodedException With SettingsError::VersionConflict, always.
 	 *
-	 * @param string $group  The group.
-	 * @param string $option The option.
+	 * @param string $group The group.
 	 * @return never
 	 */
-	private function conflict( string $group, string $option ): never {
-		$this->forget( $option );
+	private function conflict( string $group ): never {
+		$conflict = $this->documentConflict( $group );
 
-		CodedException::raise( SettingsError::VersionConflict, array( 'group' => $group ) );
+		throw $conflict;
 	}
 
 	/**

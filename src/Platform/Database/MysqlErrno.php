@@ -30,6 +30,11 @@ final class MysqlErrno {
 	 * transaction's snapshot ("Record has changed since last read"). InnoDB rolled the whole
 	 * transaction back, as for a deadlock. MySQL's InnoDB reads the newest row instead.
 	 *
+	 * The same number answers an INSERT of a primary key, and an upsert (INSERT with ON DUPLICATE KEY UPDATE)
+	 * of a row, committed after the snapshot. A sorting locking read that meets such a row also
+	 * leaves error 1028 ("Sort aborted") among the statement's warnings; the error the client
+	 * receives is 1020, so 1028 needs no name here.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @var int

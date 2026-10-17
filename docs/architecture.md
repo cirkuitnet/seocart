@@ -184,7 +184,10 @@ Everything that must change together changes inside one database transaction, th
 - Transactions **nest** with savepoints. Only the outermost level commits, and only the outermost
   level may retry: when a deadlock, a lock-wait timeout or, on MariaDB, a row changed since the
   transaction's snapshot aborts it, the whole unit of work runs again from the start, after the
-  rollback has finished.
+  rollback has finished. A unit that runs once (a product save, inside which other plugins' code
+  runs, or a settings document's compare-and-swap) answers that refusal of a row changed meanwhile
+  as its own conflict, `catalog.write_conflict` or `settings.version_conflict`, as MySQL's compare
+  answers it; only the outermost level does, once the server has rolled the unit back.
 - A unit asks for its **isolation level** when it starts. A unit that changes stock asks for
   `READ COMMITTED`, so a lock on one item never waits on another's.
 - **Contended changes are one conditional `UPDATE`.** The invariant is in its `WHERE` clause. The

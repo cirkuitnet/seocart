@@ -15,14 +15,17 @@ use SEOCart\Contracts\Payment\GatewayRefund;
 use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Order\Domain\NewOrder;
+use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Application\ClaimStatement;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\RefundService;
+use SEOCart\Payment\Domain\Event\RefundRecorded;
 use SEOCart\Payment\Domain\Refund\ProviderRefundKind;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\MysqlRefundRepository;
 use SEOCart\Payment\Infrastructure\RefundClaimTables;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Database\ServerKind;
 use SEOCart\Tests\Support\Doubles\RememberingGateway;
 use SEOCart\Tests\Support\Doubles\WebhookFirstGateway;
 use SEOCart\Tests\Support\Payment\RefundOrders;
@@ -269,6 +272,45 @@ final class ProviderRefundRaceTest extends RefundTestCase {
 		$this->assertSame( array( 'stub-re-' . $refund->uuid ), $this->appliedRefunds( $order->id ), 'One row.' );
 		$this->assertCount( 1, $this->refundRows( $order->id ) );
 		$this->assertSame( 'recorded', (string) $this->claimRow( $refund->uuid )['state'] );
+	}
+
+	/**
+	 * Tests that the provider's word for an open claim, meeting another request's change of the order, records the refund once on both servers.
+	 *
+	 * The claim's lock reads the ledger and the claims in subqueries, which no lock covers, so it
+	 * takes the transaction's snapshot. Another request commits a change of the order's row from a
+	 * second connection just before the delivery locks the order. MySQL's lock reads the newest row
+	 * and the delivery goes on. MariaDB refuses the lock of a row changed since the snapshot (error
+	 * 1020) and rolls the delivery's transaction back; its deadlock policy runs it again, once. Both
+	 * end alike: one refund on the ledger, the claim recorded once, one `refund_recorded` event.
+	 *
+	 * Planted violation: in RefundService::recordClaimed(), run the transaction with no retry
+	 * policy: on MariaDB the delivery fails with `database.transaction_retryable`.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_providers_word_meeting_a_change_of_the_order_records_the_refund_once(): void {
+		list( $order, $intent, $uuid ) = $this->claimed();
+
+		$b      = $this->secondConnection();
+		$orders = $this->table( OrderTables::ORDERS );
+		$raced  = $this->beforeStatement(
+			'/^SELECT id, uuid, order_number, .* FROM `' . preg_quote( $orders, '/' ) . '` WHERE id = ' . $order->id . ' FOR UPDATE/s',
+			static function () use ( $b, $orders, $order ): void {
+				$b->query( "UPDATE `$orders` SET updated_at = UTC_TIMESTAMP(6) WHERE id = {$order->id}" );
+			}
+		);
+
+		$outcome = $this->service->recordProviderRefund( $uuid, $this->claimedResult( $intent, $uuid, Outcome::Approved ), Actor::system( 'webhook', 0 ) );
+
+		$this->assertTrue( $raced->fired, 'The other request never committed, so nothing raced the delivery.' );
+		$this->assertSame( array( ProviderRefundKind::Recorded, $uuid ), array( $outcome->kind, $outcome->claimUuid ) );
+		$this->assertSame( array( 'stub-re-' . $uuid ), $this->appliedRefunds( $order->id ), 'One refund on the ledger.' );
+		$this->assertCount( 1, $this->refundLedgerRows( $order->id ), 'No other refund row.' );
+		$this->assertSame( 'recorded', (string) $this->claimRow( $uuid )['state'], 'The claim ended once, recorded.' );
+		$this->assertCount( 1, $this->refundRows( $order->id ), 'One refund document.' );
+		$this->assertSame( 1, $this->outboxRows( RefundRecorded::eventName() ), 'One refund_recorded event.' );
+		$this->assertCount( ServerKind::MariaDB === $this->db->server()->kind() ? 1 : 0, $this->sleeps, 'MySQL locks the newest row at once; MariaDB runs the delivery again, once.' );
 	}
 
 	/**

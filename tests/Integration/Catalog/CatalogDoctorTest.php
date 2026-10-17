@@ -40,12 +40,14 @@ use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
+use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Cli\DoctorCommand;
 use SEOCart\Platform\Database\LockMode;
 use SEOCart\Platform\Database\LockService;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
+use SEOCart\Platform\Database\ServerKind;
 use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Support\Currency;
@@ -651,6 +653,108 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		$this->assertTrue( $raced->fired, 'The other connection never raced the repair.' );
 		$this->assertSame( array(), $repair->changes, 'A variant already gone by the time of the re-check gets no stock item.' );
 		$this->assertArrayNotHasKey( $variantId, $this->stock->levels( array( $variantId ) ) );
+	}
+
+	/**
+	 * Tests row 6's repair against a stock item another writer creates after the re-check read the levels: that item is kept, on both servers.
+	 *
+	 * The other writer commits the item, with 7 units, from a second connection just before the
+	 * repair's insert leaves. MySQL's insert finds the item and leaves it as it is. MariaDB refuses
+	 * the insert of a row committed after the repair's snapshot (error 1020) and rolls the
+	 * transaction back; the repair runs again, once, reads the levels again, and creates nothing.
+	 * MySQL's change line still says it created the item, which the insert's answer cannot tell
+	 * apart; only MariaDB's is asserted.
+	 *
+	 * Planted violation: in MissingStockItemCheck::createUnderLock(), run the transaction with no
+	 * retry policy: on MariaDB the repair fails with `database.transaction_retryable`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group concurrency
+	 */
+	public function test_row_6_repair_keeps_an_item_another_writer_created_meanwhile(): void {
+		$product   = $this->storedProduct( 'SKU-ROW6ITEM' );
+		$variantId = (int) $product->defaultVariant()?->id();
+		$check     = new MissingStockItemCheck( $this->products, $this->stock, $this->db, $this->withLock );
+
+		$this->assertFalse( $check->run()->passed );
+
+		$items = $this->db->table( InventoryTables::ITEMS );
+		$b     = $this->secondConnection();
+		$raced = $this->beforeStatement(
+			'/^INSERT INTO `' . preg_quote( $items, '/' ) . '`/',
+			static function () use ( $b, $items, $variantId ): void {
+				$b->query( "INSERT INTO `$items` ( variant_id, on_hand, updated_at ) VALUES ( $variantId, 7, UTC_TIMESTAMP(6) )" );
+			}
+		);
+
+		$repair = $check->repair();
+
+		$this->assertTrue( $raced->fired, 'The other writer never committed, so nothing raced the repair.' );
+		$this->assertSame( 7, $this->stock->levels( array( $variantId ) )[ $variantId ]->onHand ?? null, 'The repair wrote over the item the other writer created.' );
+
+		if ( ServerKind::MariaDB === $this->db->server()->kind() ) {
+			$this->assertCount( 1, $this->sleeps, 'The repair did not run again, once, after MariaDB refused the insert.' );
+			$this->assertSame( array(), $repair->changes, 'The run again created an item that was there.' );
+
+			return;
+		}
+
+		$this->assertSame( array(), $this->sleeps, 'MySQL ran the repair again: nothing but a deadlock could make it.' );
+	}
+
+	/**
+	 * Tests row 3's repair against a post created again under the dangling binding's post id after the repair's first read: the binding is kept, on both servers.
+	 *
+	 * The other writer commits the post's row from a second connection just before the repair's
+	 * delete leaves, after the repair's plain read of the product's marker opened its snapshot.
+	 * MySQL's delete reads the newest rows: the post exists, the binding no longer dangles, and
+	 * nothing is deleted. MariaDB refuses the delete's read of a row committed after the snapshot
+	 * (error 1020) and rolls the transaction back; the repair runs again, once, and deletes nothing.
+	 *
+	 * Planted violation: in DanglingBindingCheck::deleteUnderLock(), run the transaction with no
+	 * retry policy: on MariaDB the repair fails with `database.transaction_retryable`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group concurrency
+	 */
+	public function test_row_3_repair_keeps_a_binding_whose_post_exists_again(): void {
+		global $wpdb;
+
+		$product    = $this->storedProduct( 'SKU-ROW3AGAIN' );
+		$productId  = (int) $product->id();
+		$secondPost = $this->post();
+
+		$this->db->execute(
+			'INSERT INTO %i ( post_id, product_id, locale, linked_at, created_at ) VALUES ( %d, %d, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP() )',
+			$this->catalogTable( CatalogTables::PRODUCT_POSTS ),
+			$secondPost,
+			$productId,
+			'de_DE'
+		);
+		wp_delete_post( $secondPost, true );
+
+		$check = new DanglingBindingCheck( $this->products, $this->db, $this->withLock );
+
+		$this->assertFalse( $check->run()->passed );
+
+		$b     = $this->secondConnection();
+		$posts = $wpdb->posts;
+		$type  = ProductCapabilities::POST_TYPE;
+		$raced = $this->beforeStatement(
+			'/^DELETE pp FROM/',
+			static function () use ( $b, $posts, $secondPost, $type ): void {
+				$b->query( "INSERT INTO `$posts` ( ID, post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, guid, post_type ) VALUES ( $secondPost, 1, NOW(), UTC_TIMESTAMP(), '', 'Back again', '', 'publish', 'back-again', '', '', NOW(), UTC_TIMESTAMP(), '', '', '$type' )" );
+			}
+		);
+
+		$repair = $check->repair();
+
+		$this->assertTrue( $raced->fired, 'The other writer never committed, so nothing raced the repair.' );
+		$this->assertSame( array(), $repair->changes, 'The binding of a post that exists again was deleted.' );
+		$this->assertNotNull( $this->bindingRow( $secondPost, $productId ), 'The binding is gone.' );
+		$this->assertCount( ServerKind::MariaDB === $this->db->server()->kind() ? 1 : 0, $this->sleeps, 'MySQL reads the newest rows at once; MariaDB runs the repair again, once.' );
 	}
 
 	/**

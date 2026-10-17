@@ -27,9 +27,11 @@ use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\ProductCapabilities;
+use SEOCart\Platform\Database\ChangedMeanwhile;
 use SEOCart\Platform\Database\Exception\DuplicateKey;
 use SEOCart\Platform\Database\Exception\LockNotAcquired;
 use SEOCart\Platform\Database\Exception\TransactionIntegrityLost;
+use SEOCart\Platform\Database\Exception\TransactionRetryable;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\EventPublisher;
@@ -475,7 +477,14 @@ final class SaveProduct {
 	/**
 	 * Binds a post for the first time: the post, the product and its commerce rows, in one window.
 	 *
+	 * The window runs once, never again: other plugins' listeners on the post's hooks run inside
+	 * it, and nothing may run them twice. Another writer that binds the post meanwhile is answered
+	 * CatalogError::WriteConflict on both servers: on MySQL the binding's insert meets the duplicate;
+	 * MariaDB refuses the insert of a binding committed since the window's first read (error 1020),
+	 * which is answered the same once the server has rolled the window back.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Answers MariaDB's refusal of a row changed meanwhile as a write conflict.
 	 *
 	 * @param ProductSave $command The save.
 	 * @param Currency    $base    The store's base currency.
@@ -484,7 +493,8 @@ final class SaveProduct {
 	private function firstBind( ProductSave $command, Currency $base ): SaveResult {
 		$created = null === $command->postId();
 
-		$product = $this->transactions->transaction(
+		$product = ChangedMeanwhile::refusedAs(
+			$this->transactions,
 			function () use ( $command, $base, $created ): Product {
 				$postId = $created || $this->hasPostFields( $command ) ? $this->posts->write( $this->postFields( $command ) ) : (int) $command->postId();
 				$locale = $command->locale() ?? $this->locales->localeOf( $postId ) ?? $this->locales->siteLocale();
@@ -503,7 +513,7 @@ final class SaveProduct {
 
 				return $this->finish( $product, $changed );
 			},
-			RetryPolicy::none()
+			static fn( TransactionRetryable $changed ): CodedException => CodedException::because( CatalogError::WriteConflict, array( 'post_id' => (int) $command->postId() ), $changed )
 		);
 
 		return $this->result( $product, (int) $product->sourcePostId(), $created );
@@ -563,6 +573,14 @@ final class SaveProduct {
 
 	/**
 	 * Saves a stored product while holding its lock: the mark, then the window; after a failed window, the mark is taken back when that can be trusted.
+	 *
+	 * The window runs once, never again (RetryPolicy::none()): other plugins' listeners on the
+	 * post's hooks run inside it. The servers differ when WordPress or another request changes the
+	 * post's own row after the window's first read, such as a comment counted on it: MySQL's update
+	 * of the post writes over it and the save goes on; MariaDB refuses that update of a row changed
+	 * meanwhile (error 1020), WordPress reports its write failed, and the save is refused with
+	 * CatalogError::PostRejected (`db_update_error`). The server has rolled the window back, so
+	 * nothing is written; the editor is told the post changed meanwhile, and saves again.
 	 *
 	 * @since 0.1.0
 	 *

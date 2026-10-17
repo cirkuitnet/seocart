@@ -223,6 +223,10 @@ final class MysqlExchangeRates implements ExchangeRates {
 	/**
 	 * Inserts the set at the next version in a transaction of its own, then records that version as current.
 	 *
+	 * The newest version is a plain read, and nothing retries the insert: every save runs under the
+	 * rates lock, so no other version can be inserted between the two. A writer outside the lock
+	 * would meet the version's unique key, a duplicate on both servers.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @param ManualRate[] $rates The rates, checked.

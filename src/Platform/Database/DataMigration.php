@@ -19,9 +19,12 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: how a data migration advances. The migrator runs each batch in its own
  * transaction together with the update of the migration's cursor, so a batch and the record
  * that it happened commit together; a crash can neither skip a batch nor replay one that
- * committed. A batch must still be idempotent, because the whole unit can be retried.
+ * committed. A batch must still be idempotent, and read what it decides from inside its
+ * transaction: after a deadlock, a lock-wait timeout or MariaDB's refusal of a row changed since
+ * the batch's snapshot, the migrator runs the whole unit again.
  *
  * @since 0.1.0
+ * @since 0.2.0 A batch runs again after a retryable failure.
  */
 interface DataMigration extends Migration {
 

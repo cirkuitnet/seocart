@@ -11,7 +11,9 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Secrets;
 
+use SEOCart\Platform\Database\ChangedMeanwhile;
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\Exception\TransactionRetryable;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Settings\Setting;
 use SEOCart\Platform\Settings\SettingsDocument;
@@ -473,6 +475,11 @@ final class SecretKeys {
 	 * holds no usable active key, or that is gone while the registry lists keys, is refused with
 	 * SecretsError::KeysDamaged and left as it is.
 	 *
+	 * Two activations at once: the one whose insert of the document comes second meets the
+	 * option name's unique key, which MySQL and MariaDB both refuse as a duplicate (it is not the
+	 * table's primary key, which MariaDB would refuse as a row changed since the snapshot), and it
+	 * returns the winner's key.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws CodedException With SecretsError::KeysDamaged; SecretsError::EncryptionKeyInvalid when
@@ -534,6 +541,12 @@ final class SecretKeys {
 	 * Records sealed with the old key still open; SecretVault::rekey() re-seals them. The canary is
 	 * sealed again with the new key at once, so it always proves the key new secrets are sealed with.
 	 *
+	 * A rotation that loses the race is refused alike on both servers: MySQL's compare-and-swap of
+	 * the document finds it changed, and MariaDB's refusal of a document changed since this
+	 * transaction read it is answered as the same conflict once the transaction is rolled back. Both
+	 * go through SettingsStore::documentConflict(), which drops the cached keys document, so the rest
+	 * of the request reads the winner's active key.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws CodedException With SecretsError::RotationPending while a key is still retiring;
@@ -558,7 +571,8 @@ final class SecretKeys {
 		$key      = DataKey::generate( $this->cipher() );
 		$material = KeyMaterial::write( $key, $this->encryptionKey, $this->cipher() );
 
-		$this->database->transaction(
+		ChangedMeanwhile::refusedAs(
+			$this->database,
 			function () use ( $document, $current, $old, $key, $material ): void {
 				$this->store->replaceDocument(
 					self::GROUP,
@@ -571,7 +585,8 @@ final class SecretKeys {
 				);
 				$this->changeState( $old->id(), SecretKeysTable::ACTIVE, SecretKeysTable::RETIRING );
 				$this->database->execute( self::INSERT_KEY, $this->table(), $key->id(), SecretKeysTable::ACTIVE, Cipher::ALGORITHM );
-			}
+			},
+			fn( TransactionRetryable $changed ): CodedException => $this->store->documentConflict( self::GROUP, $changed )
 		);
 
 		return $key->id();
@@ -585,6 +600,10 @@ final class SecretKeys {
 	 * it ends, and the caller's check, which runs under that lock, reads everything committed before
 	 * it. SecretVault::rekey() is the caller; its check refuses while any record names the key or
 	 * cannot be read as stored.
+	 *
+	 * Its check's reads are plain, after that lock; what it then writes, the document and the key's
+	 * row, every other writer writes only after taking the document's lock. So no row it writes can
+	 * change after its snapshot, and MariaDB has no stale write to refuse: it needs no retry.
 	 *
 	 * @since 0.1.0
 	 *

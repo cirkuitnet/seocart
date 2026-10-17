@@ -97,11 +97,12 @@ use SEOCart\Tests\Support\SecondConnection;
  *   test of an earlier refusal fails.
  * - In PostLifecycle::statusChanged(), release the product's default variant alone, as before:
  *   the test of every variant fails, the second variant's hold still held.
- * - Put back the reads under review in the delete: PostLifecycle::deleting() reads the product
- *   with findByPost(), MysqlProductRepository::lock() locks the product's row and then
- *   reads it without FOR UPDATE, and delete() reads the variants without it: the test of a delete
- *   after a save fails, its event naming `SKU-1`. Either half alone keeps it green: the first
- *   statement is the lock, or every read after it is a locking read.
+ * - In PostLifecycle::deleting(), run the check with RetryPolicy::none(): on MariaDB the test of a
+ *   delete after a save fails, wp_delete_post() refused, as the check's lock of the product meets
+ *   the other writer's commit (error 1020) and nothing runs the check again. MySQL stays green: its
+ *   locks read the newest rows. The delete's own reads are not this test's to catch: the other
+ *   writer commits inside the check, before the delete opens a transaction of its own; the test
+ *   of an older snapshot covers them.
  * - In MysqlProductRepository::delete(), read the variants without FOR UPDATE: the test of an
  *   older snapshot fails, its event naming `SKU-1`. This one shows on MySQL only: on MariaDB the
  *   product's lock refuses the older snapshot first (error 1020), and the delete, run again with

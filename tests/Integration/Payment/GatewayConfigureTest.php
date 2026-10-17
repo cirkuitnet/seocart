@@ -15,8 +15,11 @@ use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Contracts\Payment\GatewayRegistry;
 use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Payment\Application\Gateways;
+use SEOCart\Payment\Application\GatewaySettingsDeclaration;
 use SEOCart\Payment\Infrastructure\Cli\GatewayCommand;
 use SEOCart\Platform\Kernel\Container;
+use SEOCart\Platform\Settings\Setting;
+use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
 use SEOCart\Support\Schema\Privacy;
@@ -204,6 +207,56 @@ final class GatewayConfigureTest extends PaymentTestCase {
 		$this->assertSame( 'SHOP', $after['values']['second_test_statement_suffix'] ?? null, 'A setting the file leaves out keeps its value.' );
 		$this->assertNotSame( $values['second_test_secret_key'], $after['values']['second_test_secret_key'] ?? null, 'The credential given is replaced.' );
 		$this->assertSame( 'sk_test_rotated', $this->kernel->get( Gateways::class )->context( 'second' )->settings( Mode::Test )->secret( 'secret_key' ) );
+	}
+
+	/**
+	 * Tests that a save another save beat to the document is refused alike on both servers, as a conflict, and writes nothing.
+	 *
+	 * The other save commits version 2 from a second connection just before this save's
+	 * compare-and-swap leaves: after this save has read version 1. MySQL's swap finds the document
+	 * changed and matches nothing; MariaDB refuses the swap of a row changed since the transaction
+	 * read it (error 1020) and rolls the transaction back. Both answer `settings.version_conflict`.
+	 * The other save also switched the gateway to live mode: this request had the document cached
+	 * before it lost, and its next cached read of the mode, which GatewayContext::mode() makes, must
+	 * find the winner's.
+	 *
+	 * Planted violations: in ChangedMeanwhile::refusedAs(), rethrow MariaDB's refusal unchanged: on
+	 * MariaDB the command reports `database.transaction_retryable`. In SettingsStore::replaceDocument(),
+	 * swap without comparing (`WHERE option_name = %s`): on MySQL this save writes over the other's.
+	 * In GatewayConfiguration::write(), refuse without SettingsStore::documentConflict(), building the
+	 * conflict itself: on MariaDB the request still reads test mode from its cache.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_save_another_save_beat_is_refused_as_a_conflict_and_writes_nothing(): void {
+		global $wpdb;
+
+		$admin  = $this->userWithRole( 'administrator' )->userId();
+		$option = Setting::OPTION_PREFIX . GatewaySettingsDeclaration::group( 'second' );
+
+		$this->assertSame( GatewayCommand::EXIT_OK, $this->configureFrom( $this->file( self::values() ), $admin ) );
+
+		$store = $this->kernel->get( SettingsStore::class );
+
+		$this->assertSame( Mode::Test->value, $store->value( 'second_mode' ), 'The mode, read through the cache before the race.' );
+
+		$b       = $this->secondConnection();
+		$options = $wpdb->options;
+		$raced   = $this->beforeStatement(
+			'/^UPDATE `' . preg_quote( $options, '/' ) . '` SET option_value = .* WHERE option_name = \'' . $option . '\'/s',
+			static function () use ( $b, $options, $option ): void {
+				$b->query( "UPDATE `$options` SET option_value = REPLACE( REPLACE( option_value, '\"version\":1,', '\"version\":2,' ), '\"values\":{', '\"values\":{\"second_mode\":\"live\",' ) WHERE option_name = '$option'" );
+			}
+		);
+
+		$this->assertRefused( $this->file( array( GatewayDescriptor::ACCOUNT_COUNTRY => 'GB' ) + self::values() ), $admin, 'settings.version_conflict: The gateway_second settings were changed by someone else after you read them', 'A save the other save beat.' );
+		$this->assertTrue( $raced->fired, 'The other save never committed, so nothing raced this one.' );
+
+		$stored = GatewayKernel::storedDocument( 'second' );
+
+		$this->assertSame( 2, $stored['version'] ?? null, 'The document is the other save\'s.' );
+		$this->assertSame( 'US', $stored['values']['second_test_account_country'] ?? null, 'This save wrote over the other\'s.' );
+		$this->assertSame( Mode::Live->value, $store->value( 'second_mode' ), 'After losing, the request reads the mode from the copy it had cached, not the winner\'s.' );
 	}
 
 	/**
