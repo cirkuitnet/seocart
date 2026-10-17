@@ -13,8 +13,10 @@ namespace SEOCart\Tests\Support\Payment;
 
 use SEOCart\Application\Operations\IdempotencyKey;
 use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\GatewayRefund;
 use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\GatewayUnavailable;
+use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Contracts\Payment\PaymentGateway;
@@ -55,6 +57,7 @@ use SEOCart\Support\IdGenerator;
 use SEOCart\Support\Money;
 use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
+use SEOCart\Tests\Support\Doubles\RecordingGateway;
 use SEOCart\Tests\Support\Doubles\RememberingGateway;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\RunningProbe;
@@ -65,7 +68,9 @@ use SEOCart\Tests\Support\RunningProbe;
  * Owns one fact: how a refund test gets a paid order, asks for a refund the way a merchant does,
  * and reads back what it stored. The order is placed, authorized and captured in full through the
  * stub; the gateway's record of calls is then cleared, so a test reads only the refund's calls.
- * A second runner is the refund service over a connection of its own.
+ * A second runner is the refund service over a connection of its own. A test that recovers a
+ * refund whose answer was lost first puts a provider that remembers its refunds behind the
+ * recorded gateway (rememberRefunds()), since the stub cannot say what became of one.
  *
  * @since 0.1.0
  */
@@ -246,6 +251,50 @@ abstract class RefundTestCase extends PaymentTestCase {
 		list( , $db ) = $this->secondOrders();
 
 		return $this->refundsOver( $db, new SequentialIdGenerator( 800000 ), new StubGateway() );
+	}
+
+	/**
+	 * Puts a provider that remembers its refunds inside the test's recorded gateway, and builds the services over it again.
+	 *
+	 * The stub keeps no record of the refunds it made, so asked what became of one, it cannot say.
+	 * A test that recovers a refund needs a provider that can: a RememberingGateway answers with
+	 * the refund it made under the refund's uuid, or that it made none. It sits inside the recorded
+	 * gateway, where the test counts the calls, and every runner built over `$this->gateway` asks
+	 * the same one, as two requests ask one provider. Call it before anything else in the test.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return RememberingGateway The provider, for a second runner to ask, or to make a refund another process made.
+	 */
+	protected function rememberRefunds(): RememberingGateway {
+		$provider       = new RememberingGateway( new StubGateway() );
+		$this->gateway  = new RecordingGateway( $provider, $this->db );
+		$this->payments = $this->paymentsOver( $this->db, $this->ids, $this->gateway );
+		$this->refunds  = $this->refundsOver( $this->db, $this->ids, $this->gateway );
+
+		return $provider;
+	}
+
+	/**
+	 * Returns the refund a claim asked the gateway for, as the refund service sends it: the intent, the amount, the refund's uuid and the mode.
+	 *
+	 * A test hands it to its provider's refund() to have the provider make a refund that was asked
+	 * for elsewhere, such as in a process that was killed.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $refundUuid The refund's uuid, its claim's.
+	 * @return GatewayRefund The request.
+	 */
+	protected function claimedRefund( string $refundUuid ): GatewayRefund {
+		$claim = (array) $this->db->fetchRow(
+			'SELECT i.uuid AS intent_uuid, i.provider_intent_id, i.mode, c.amount_minor, c.currency FROM %i c JOIN %i i ON i.id = c.intent_id WHERE c.uuid = %s',
+			$this->table( RefundClaimTables::CLAIMS ),
+			$this->table( PaymentTables::INTENTS ),
+			$refundUuid
+		);
+
+		return new GatewayRefund( (string) $claim['intent_uuid'], (string) $claim['provider_intent_id'], Money::of( (int) $claim['amount_minor'], Currency::of( (string) $claim['currency'] ) ), $refundUuid, Mode::from( (string) $claim['mode'] ) );
 	}
 
 	/**

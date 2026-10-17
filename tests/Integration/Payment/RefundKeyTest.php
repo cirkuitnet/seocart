@@ -220,6 +220,7 @@ final class RefundKeyTest extends RefundTestCase {
 	 * @since 0.2.0
 	 */
 	public function test_the_same_key_sent_while_the_first_is_with_the_gateway_is_one_refund(): void {
+		$provider      = $this->rememberRefunds();
 		list( $order ) = $this->placePaid( self::order() );
 		list( $tee )   = $this->lineUuids( $order->id );
 		$other         = $this->otherConnection();
@@ -227,9 +228,13 @@ final class RefundKeyTest extends RefundTestCase {
 
 		// While the gateway gives A's refund back, B sends the same request with the same key, whole; once.
 		$this->gateway->during(
-			function () use ( $order, $tee, $other, &$theirs ): void {
+			function () use ( $order, $tee, $other, $provider, &$theirs ): void {
 				if ( null === $theirs ) {
 					$theirs = false;
+
+					// A's request has reached the provider, which makes the refund; the answer is still on its way back to A.
+					$provider->refund( $this->claimedRefund( (string) $this->claimRows( $order->id )[0]['uuid'] ) );
+
 					$theirs = $this->refundWithKey( $order->uuid, array( $tee => 1 ), 'attempt-1', null, $other );
 				}
 			}

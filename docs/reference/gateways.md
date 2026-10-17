@@ -27,12 +27,6 @@ SEOCart itself registers one gateway, the stand-in, on a site that is not in pro
 | ------------- | ------------------------------------ | ------------ |
 | no key        | yes                                  | 0 seconds    |
 
-### What the conformance suite skips for it
-
-The stand-in is stateless by design: it answers from the references it issues. A check that needs a memory of what it did is skipped for it, with the reason the suite prints; every real adapter is held to it.
-
-- Rule 8's refund half is skipped for the stand-in: it keeps no record of its refunds and answers every refund it is asked about as made, a known lie accepted only because it moves no money.
-
 ## Conformance rules
 
 SEOCart's payment gateway conformance suite holds every gateway to these rules, the stand-in included. A gateway plugin's test extends `SEOCart\Tests\Conformance\Payment\GatewayConformanceCase` and runs with `sh ../seocart/bin/ci/extension.sh conformance . payments` (`docs/writing-an-extension.md` shows how). The plant of a rule is a gateway, in `tests/Conformance/Payment/Plants/`, that breaks it and that the suite must fail.

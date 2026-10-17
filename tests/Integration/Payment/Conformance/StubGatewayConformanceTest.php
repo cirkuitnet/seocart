@@ -20,7 +20,6 @@ use SEOCart\Support\Currency;
 use SEOCart\Support\Money;
 use SEOCart\Tests\Conformance\Payment\GatewayConformanceCase;
 use SEOCart\Tests\Conformance\Payment\Scenario;
-use SEOCart\Tests\Conformance\Payment\StandInLimits;
 use SEOCart\Tests\Support\Payment\StubWebhooks;
 
 /**
@@ -53,17 +52,6 @@ final class StubGatewayConformanceTest extends GatewayConformanceCase {
 	 */
 	protected function tapes(): ?string {
 		return null;
-	}
-
-	/**
-	 * Returns why the stand-in keeps no record of its refunds: rule 8's refund half is skipped for it, saying so.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @return string The reason, declared once in StandInLimits.
-	 */
-	protected function refundsUnrecorded(): string {
-		return StandInLimits::REFUNDS;
 	}
 
 	/**

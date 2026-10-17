@@ -15,10 +15,8 @@ use SEOCart\Payment\Application\ClaimStatement;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\RefundService;
 use SEOCart\Payment\Application\SettledClaim;
-use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\RefundClaimTables;
 use SEOCart\Support\Error\CodedException;
-use SEOCart\Tests\Support\Doubles\RememberingGateway;
 use SEOCart\Tests\Support\Payment\RefundOrders;
 use SEOCart\Tests\Support\Payment\RefundTestCase;
 
@@ -47,11 +45,11 @@ final class SettleClaimRecoveryTest extends RefundTestCase {
 	 * @since 0.2.0
 	 */
 	public function test_a_settlement_killed_before_its_transaction_is_settled_once_by_the_retry(): void {
+		$provider      = $this->rememberRefunds();
 		list( $order ) = $this->placePaid( RefundOrders::priced( array( RefundOrders::line( 'tee', '12.34', 3, 'standard' ) ) ) );
 		list( $tee )   = $this->lineUuids( $order->id );
 		$statement     = new ClaimStatement( false, 'Checked with the provider.' );
-		$provider      = new RememberingGateway( new StubGateway() );
-		$uuid          = $this->openClaim( $order->uuid, $tee, $provider, $this->refundsOver( $this->db, $this->ids, $provider ) );
+		$uuid          = $this->openClaim( $order->uuid, $tee, $provider, $this->refunds );
 
 		$log = (string) tempnam( sys_get_temp_dir(), 'seocart-settle-calls-' );
 
@@ -69,7 +67,10 @@ final class SettleClaimRecoveryTest extends RefundTestCase {
 		$this->assertSame( array(), $this->refundLedgerRows( $order->id ), 'Nothing reached the ledger.' );
 		$this->assertSame( 0, $this->settlementEvents( $order->id ) );
 
-		// The same settlement asked again: the gateway, asked once more, made the refund, and it is recorded once.
+		// The request the store gave up on reached the provider late, and it made the refund. The same
+		// settlement asked again: the gateway, asked once more, says so, and the refund is recorded once.
+		$provider->refund( $this->claimedRefund( $uuid ) );
+
 		$settled = $this->refunds->settleClaim( $uuid, $statement, $this->manager() );
 
 		$this->assertSame( array( 'recorded', SettledClaim::BY_GATEWAY ), array( $settled->state->value, $settled->decidedBy ) );

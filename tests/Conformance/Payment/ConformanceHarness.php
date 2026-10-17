@@ -834,9 +834,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 
 				$this->end();
 
-				$unrecorded = $this->refundsUnrecorded();
-
-				if ( $cell->supports( Operations::QUERY_REFUND ) && null === $unrecorded ) {
+				if ( $cell->supports( Operations::QUERY_REFUND ) ) {
 					$this->refundsNeverMade( $rule, $cell, $profile->searchable );
 				}
 
@@ -854,10 +852,6 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 				}
 
 				$this->end();
-
-				if ( $cell->supports( Operations::QUERY_REFUND ) && null !== $unrecorded ) {
-					self::markTestSkipped( $rule->message() . 'skipped in part: ' . $unrecorded . ' The rest of the rule ran and passed.' );
-				}
 			}
 		);
 	}
@@ -1400,21 +1394,6 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 
 		$this->scrubber->scanSettings( $settings, $tape->directory() . '/' . Tape::SETTINGS );
 		$tape->writeSettings( $settings );
-	}
-
-	/**
-	 * Returns why the gateway keeps no record of its refunds, so that rule 8's refund half is skipped for it, saying why: null for every real adapter.
-	 *
-	 * Only the stand-in answers otherwise (StandInLimits::REFUNDS): it is stateless by design, and
-	 * a gateway that keeps no record cannot answer truthfully what became of a refund it never
-	 * made. A real adapter asks its provider, which keeps one.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @return string|null The reason, which the skip prints; null to hold the gateway to the refund half.
-	 */
-	protected function refundsUnrecorded(): ?string {
-		return null;
 	}
 
 	/**

@@ -240,26 +240,30 @@ final class RefundConcurrencyTest extends RefundTestCase {
 	/**
 	 * Tests that the same refund asked twice at once is asked of the gateway once and recorded once, and both are answered with its document.
 	 *
-	 * B asks for the same unit as A, from the same reads, while the gateway makes A's refund: A's
-	 * claim is committed, so B's is refused, and B asks the gateway what became of the refund, never
-	 * for it again. The gateway made it, so B records it and commits. Then A's answer arrives: the
-	 * ledger has it, and its document is A's answer too.
+	 * B asks for the same unit as A, from the same reads, once the provider has made A's refund and
+	 * before its answer reaches A: A's claim is committed, so B's is refused, and B asks the same
+	 * provider what became of the refund, never for it again. The provider made it, so B records it
+	 * and commits. Then A's answer arrives: the ledger has it, and its document is A's answer too.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_the_same_refund_asked_twice_at_once_is_made_and_recorded_once(): void {
+		$provider      = $this->rememberRefunds();
 		list( $order ) = $this->placePaid( RefundOrders::priced( array( RefundOrders::line( 'gift', '10.00', 2, 'standard' ) ), null ) );
 		list( $gift )  = $this->lineUuids( $order->id );
 
 		list( , $connectionB ) = $this->secondOrders();
 
-		$gatewayB = new RecordingGateway( new StubGateway(), $connectionB );
+		$gatewayB = new RecordingGateway( $provider, $connectionB );
 		$b        = $this->refundsOver( $connectionB, new SequentialIdGenerator( 810000 ), $gatewayB );
 		$won      = array();
 
 		$this->gateway->during(
-			function () use ( &$won, $order, $gift, $b ): void {
+			function () use ( &$won, $order, $gift, $b, $provider ): void {
 				if ( array() === $won ) {
+					// A's request has reached the provider, which makes the refund; the answer is still on its way back to A.
+					$provider->refund( $this->claimedRefund( (string) $this->claimRows( $order->id )[0]['uuid'] ) );
+
 					$won[] = $this->refund( $order->uuid, array( $gift => 1 ), false, $b );
 				}
 			}

@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Integration\Payment;
 use SEOCart\Order\Domain\NewOrder;
 use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Infrastructure\RefundClaimTables;
+use SEOCart\Tests\Support\Doubles\RememberingGateway;
 use SEOCart\Tests\Support\Payment\RefundOrders;
 use SEOCart\Tests\Support\Payment\RefundTestCase;
 
@@ -28,7 +29,9 @@ use SEOCart\Tests\Support\Payment\RefundTestCase;
  * before the gateway was called, is all that is left; nothing else was recorded. Once it is older
  * than any call to the gateway takes, by the database clock, doctor's payments check names it. Then
  * the same refund is asked for again in the test's process: the gateway is asked what became of
- * it, never for it again, and the refund is recorded once, as the stub made it.
+ * it, never for it again, and the refund is recorded once, as the stub made it. The test's
+ * gateway is a provider that remembers its refunds, handed the killed process's refund from its
+ * call log, as a real provider keeps a refund whichever process asks.
  *
  * A refund asked through the refund operation's service, with an idempotency key, is killed the
  * same way: its claim keeps the key, and the retry with the key finds it by the key, asks the
@@ -54,6 +57,7 @@ final class RefundRecoveryTest extends RefundTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_a_refund_killed_after_the_gateway_approved_is_found_and_recorded_once(): void {
+		$provider               = $this->rememberRefunds();
 		list( $order, $intent ) = $this->placePaid( self::order() );
 		list( $tee )            = $this->lineUuids( $order->id );
 		$log                    = (string) tempnam( sys_get_temp_dir(), 'seocart-refund-calls-' );
@@ -101,6 +105,9 @@ final class RefundRecoveryTest extends RefundTestCase {
 		$this->assertCount( 1, $findings );
 		$this->assertStringStartsWith( "Warning: refund {$key} of payment {$intent->uuid}, ", $findings[0] );
 
+		// The provider made the refund in the killed process, and keeps it.
+		$this->rememberKilledRefund( $provider, $key, $object );
+
 		// The same refund asked for again: the gateway is asked what became of it, and its answer is recorded once.
 		$refund = $this->refund( $order->uuid, array( $tee => 1 ) );
 
@@ -128,6 +135,7 @@ final class RefundRecoveryTest extends RefundTestCase {
 	 * @since 0.2.0
 	 */
 	public function test_a_keyed_refund_killed_after_the_gateway_approved_is_recorded_once_by_its_key(): void {
+		$provider      = $this->rememberRefunds();
 		list( $order ) = $this->placePaid( self::order() );
 		list( $tee )   = $this->lineUuids( $order->id );
 		$log           = (string) tempnam( sys_get_temp_dir(), 'seocart-refund-calls-' );
@@ -145,11 +153,14 @@ final class RefundRecoveryTest extends RefundTestCase {
 
 		$this->assertCount( 1, $made, 'The gateway gave the money back once, in the killed process.' );
 
-		list( $key ) = explode( ' ', $made[0] );
-		$claim       = $this->claimRows( $order->id );
+		list( $key, $object ) = explode( ' ', $made[0] );
+		$claim                = $this->claimRows( $order->id );
 
 		$this->assertSame( array( array( $key, 'claimed' ) ), array_map( static fn( array $row ): array => array( $row['uuid'], $row['state'] ), $claim ), 'The claim is what is left.' );
 		$this->assertNotNull( $this->db->fetchValue( 'SELECT key_hash FROM %i WHERE uuid = %s', $this->table( RefundClaimTables::CLAIMS ), $key ), 'The claim keeps the key.' );
+
+		// The provider made the refund in the killed process, and keeps it.
+		$this->rememberKilledRefund( $provider, $key, $object );
 
 		// The client retries with the same key, as after a lost answer.
 		$answer = $this->refunds->refundOrder(
@@ -171,6 +182,22 @@ final class RefundRecoveryTest extends RefundTestCase {
 		$this->assertSame( array( 0, 1 ), array( $this->refundCalls(), $this->refundQueries() ), 'The gateway was asked what became of the refund, never for it again.' );
 		$this->assertCount( 1, $this->refundRows( $order->id ), 'One document.' );
 		$this->assertSame( 'recorded', (string) $this->claimRows( $order->id )[0]['state'] );
+	}
+
+	/**
+	 * Has the provider make the refund the killed process's gateway made, from the call log that process wrote: a real provider keeps it, whichever process asks.
+	 *
+	 * The provider in this process never saw that refund, so it is handed the request the claim
+	 * made, and the refund it makes is checked to be the one the call log names.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param RememberingGateway $provider     The provider the test's refund service asks.
+	 * @param string             $key          The refund's uuid, from the call log.
+	 * @param string             $refundObject The refund object the killed process's gateway answered, from the call log.
+	 */
+	private function rememberKilledRefund( RememberingGateway $provider, string $key, string $refundObject ): void {
+		$this->assertSame( $refundObject, $provider->refund( $this->claimedRefund( $key ) )->providerObjectId, 'The provider made the refund the call log names.' );
 	}
 
 	/**

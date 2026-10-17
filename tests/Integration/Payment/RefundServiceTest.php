@@ -336,6 +336,8 @@ final class RefundServiceTest extends RefundTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_the_same_refund_asked_again_after_its_answer_was_lost_is_recorded_once(): void {
+		$this->rememberRefunds();
+
 		list( $order )     = $this->placePaid( self::order() );
 		list( $tee, $mug ) = $this->lineUuids( $order->id );
 		$losing            = $this->refundsOver( $this->db, $this->ids, new AnswerLosingGateway( $this->gateway ) );

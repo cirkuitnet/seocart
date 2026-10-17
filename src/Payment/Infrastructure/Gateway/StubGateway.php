@@ -86,14 +86,11 @@ defined( 'ABSPATH' ) || exit;
  * intent's wait has run out, and asked about it then, it answers a declined authorization
  * `expired` named `stub-ex-{intent uuid}`, which ends the placement too.
  *
- * It keeps no record of the refunds it made. Asked what became of one, it answers as refund()
- * answers the same request: the refund `stub-re-{refund uuid}`, made, or declined for an intent
- * authorized with `stub:refund_decline`. So it answers a refund it was never actually asked for,
- * whose request died before reaching it, as made. That is acceptable only because the stub moves
- * no money: a real adapter answers from what its provider made, and says not-found or that it
- * cannot say when it does not know. It is a known limitation: the payment conformance suite
- * skips rule 8's refund half for the stand-in, printing why (StandInLimits in the suite), and the
- * reference page lists it.
+ * It keeps no record of the refunds it made, so it cannot say what became of one: asked, it
+ * answers that it cannot say, and a refund whose answer was lost waits for a person to settle its
+ * claim. A refund it made and one whose request died before reaching it look the same to it. A
+ * real adapter answers from what its provider made: the refund, or, when the provider says for
+ * certain it made none, not-found.
  *
  * @since 0.1.0
  */
@@ -675,18 +672,21 @@ final class StubGateway implements PaymentGateway {
 	}
 
 	/**
-	 * Says what became of a refund: what refund() answers for the same request.
+	 * Says that it cannot say what became of a refund.
 	 *
-	 * The stub keeps no record of its refunds, so it cannot tell a refund it made from one it was
-	 * never asked for; it answers both as made. Acceptable only because it moves no money.
+	 * The stub keeps no record of its refunds, so it cannot tell a refund it made from one whose
+	 * request never reached it, and answering either as made or as not found could be false. The
+	 * refund service then leaves the refund's claim for a person to settle. A real adapter
+	 * answers from what its provider made.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Answers that it cannot say, instead of answering every refund as made.
 	 *
 	 * @param GatewayRefund $request The refund, as it was asked.
-	 * @return GatewayResult The approval, or the decline, named by the refund's uuid.
+	 * @return GatewayResult|null Null: it cannot say.
 	 */
-	public function queryRefund( GatewayRefund $request ): GatewayResult {
-		return $this->refund( $request );
+	public function queryRefund( GatewayRefund $request ): ?GatewayResult {
+		return null;
 	}
 
 	/**

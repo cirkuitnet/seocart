@@ -20,7 +20,6 @@ use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\Privacy;
 use SEOCart\Tests\Conformance\Payment\NetworkCalls;
 use SEOCart\Tests\Conformance\Payment\Rule;
-use SEOCart\Tests\Conformance\Payment\StandInLimits;
 use SEOCart\Tests\Conformance\Payment\TapeScrubber;
 use SEOCart\Tests\Support\Doubles\AssertingLogger;
 
@@ -187,7 +186,7 @@ final class GatewayMatrixPage implements Generator {
 		}
 
 		if ( $this->core ) {
-			$blocks = array_merge( $blocks, self::standInSkips(), self::rulesSection() );
+			$blocks = array_merge( $blocks, self::rulesSection() );
 		}
 
 		return implode( "\n\n", $blocks ) . "\n";
@@ -358,21 +357,6 @@ final class GatewayMatrixPage implements Generator {
 			NetworkCalls::LIMIT,
 			AssertingLogger::LIMIT,
 			TapeScrubber::LIMIT,
-		);
-	}
-
-	/**
-	 * Returns what the conformance suite knowingly skips for the stand-in, from its one declaration.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @return list<string> The blocks.
-	 */
-	private static function standInSkips(): array {
-		return array(
-			'### What the conformance suite skips for it',
-			'The stand-in is stateless by design: it answers from the references it issues. A check that needs a memory of what it did is skipped for it, with the reason the suite prints; every real adapter is held to it.',
-			'- ' . StandInLimits::REFUNDS,
 		);
 	}
 
