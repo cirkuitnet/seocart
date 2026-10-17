@@ -47,6 +47,15 @@ final class RecordingTransportTest extends WP_UnitTestCase {
 	private const KEY = 'ref_test_transport_key';
 
 	/**
+	 * A provider's tracing header, an opaque token a recording drops unless the test declares the header.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const TRACE = 'Zx81Qw7Er6Ty5Ui4Op3As2Df';
+
+	/**
 	 * The scratch tape directory.
 	 *
 	 * @since 0.2.0
@@ -109,6 +118,7 @@ final class RecordingTransportTest extends WP_UnitTestCase {
 					'headers'  => array(
 						'content-type' => 'application/json',
 						'set-cookie'   => 'session=' . self::KEY,
+						'x-trace'      => self::TRACE,
 					),
 					'body'     => (string) wp_json_encode(
 						array(
@@ -174,6 +184,8 @@ final class RecordingTransportTest extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'key={{secret:secret_key}}', $taped );
 		$this->assertStringNotContainsStringIgnoringCase( '"authorization"', $taped );
 		$this->assertStringNotContainsStringIgnoringCase( '"set-cookie"', $taped );
+		$this->assertStringNotContainsString( self::TRACE, $taped, 'A response header the test does not declare reached the tape.' );
+		$this->assertStringContainsString( '"content-type": "application/json"', $taped );
 
 		$player = $this->player();
 		$player->scenario( 'one' );
@@ -257,20 +269,31 @@ final class RecordingTransportTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Tests that a recording holding a card field or number is refused and not written.
+	 * Tests that a recording holding a card's verification code is refused and not written, the part and the field named, while one holding the card fields a receipt shows is written.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @group conformance
 	 */
-	public function test_a_recording_with_card_data_is_not_written(): void {
+	public function test_a_recording_with_a_verification_code_is_not_written(): void {
 		$recorder = $this->recorder();
 		$recorder->scenario( 'card' );
-		$recorder->send( self::request( 'card[last4]=4242' ), 15 );
+		$recorder->send( self::request( 'card[last4]=0002&card[exp_month]=12&card[cvc]=737' ), 15 );
 		$recorder->finish();
 
-		$this->assertStringContainsString( 'the card field last4', implode( ' ', $recorder->violations() ) );
+		$noted = implode( ' ', $recorder->violations() );
+
+		$this->assertStringContainsString( 'Exchange 1 of card, its request body field card.cvc is named cvc', $noted );
+		$this->assertStringNotContainsString( '737', $noted, 'A refusal never quotes the value.' );
 		$this->assertFileDoesNotExist( $this->directory . '/card/1.json' );
+
+		$receipt = $this->recorder();
+		$receipt->scenario( 'receipt' );
+		$receipt->send( self::request( 'card[last4]=0002&card[exp_month]=12&card[exp_year]=2034' ), 15 );
+		$receipt->finish();
+
+		$this->assertSame( array(), $receipt->violations() );
+		$this->assertStringContainsString( 'card[last4]=0002&card[exp_month]=12&card[exp_year]=2034', (string) file_get_contents( $this->directory . '/receipt/1.json' ) );
 	}
 
 	/**
@@ -291,6 +314,49 @@ final class RecordingTransportTest extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'Exchange 1 of secret, its request body field client_secret holds a client secret (cs_', $noted );
 		$this->assertStringNotContainsString( 'a1B2c3D4e5F6g7H8', $noted, 'A refusal never quotes the secret.' );
 		$this->assertFileDoesNotExist( $this->directory . '/secret/1.json' );
+	}
+
+	/**
+	 * Tests that a recording keeps a publishable key in the shape its test declares, and refuses a secret key in the same shape, the field named and the value not.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_recording_keeps_a_publishable_key_and_refuses_a_secret_key(): void {
+		$suffix = str_repeat( 'Ab1', 8 );
+
+		foreach ( array(
+			'publishable' => 'pk_test_' . $suffix,
+			'secret'      => 'sk_test_' . $suffix,
+		) as $scenario => $key ) {
+			$recorder = RecordingTransport::recording( new Tape( $this->directory ), $this->tx, $this->watch );
+			$recorder->scrubWith(
+				new TapeScrubber(
+					array( 'secret_key' => array( self::KEY ) ),
+					array(),
+					array(
+						'pk_test_' => 24,
+						'sk_test_' => 24,
+					)
+				)
+			);
+			$recorder->scenario( $scenario );
+			$recorder->send( self::request( 'amount=1000&publishable_key=' . $key ), 15 );
+			$recorder->finish();
+
+			$noted = implode( ' ', $recorder->violations() );
+
+			if ( 'publishable' === $scenario ) {
+				$this->assertSame( array(), $recorder->violations() );
+				$this->assertStringContainsString( 'publishable_key=' . $key, (string) file_get_contents( $this->directory . '/publishable/1.json' ) );
+				continue;
+			}
+
+			$this->assertStringContainsString( 'Exchange 1 of secret, its request body field publishable_key holds a secret or restricted key', $noted );
+			$this->assertStringNotContainsString( $suffix, $noted, 'A refusal never quotes the key.' );
+			$this->assertFileDoesNotExist( $this->directory . '/secret/1.json' );
+		}
 	}
 
 	/**
@@ -336,6 +402,27 @@ final class RecordingTransportTest extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'Exchange 1 of forged, its request body field note holds text in the shape of a scrubbed secret\'s placeholder', $noted );
 		$this->assertStringNotContainsString( 'abcdefghijklmnopqrst', $noted, 'A refusal never quotes the value.' );
 		$this->assertFileDoesNotExist( $this->directory . '/forged/1.json' );
+	}
+
+	/**
+	 * Tests that a recording refuses a response header its test declares when it holds an opaque token, the header named and the value not, as it scans every header it keeps.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_recording_scans_a_declared_response_header(): void {
+		$recorder = RecordingTransport::recording( new Tape( $this->directory ), $this->tx, $this->watch );
+		$recorder->scrubWith( new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), array(), array(), array(), array( 'x-trace' ) ) );
+		$recorder->scenario( 'traced' );
+		$recorder->send( self::request( 'amount=1000' ), 15 );
+		$recorder->finish();
+
+		$noted = implode( ' ', $recorder->violations() );
+
+		$this->assertStringContainsString( 'Exchange 1 of traced, its response header x-trace holds an opaque token of 20 characters or more', $noted );
+		$this->assertStringNotContainsString( self::TRACE, $noted, 'A refusal never quotes the token.' );
+		$this->assertFileDoesNotExist( $this->directory . '/traced/1.json' );
 	}
 
 	/**

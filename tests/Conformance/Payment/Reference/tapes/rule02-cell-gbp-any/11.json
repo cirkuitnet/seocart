@@ -12,8 +12,7 @@
 	"response": {
 		"body": "{\"id\":\"ri_67\",\"status\":\"requires_action\",\"amount\":2872,\"amount_captured\":0,\"amount_refunded\":0,\"currency\":\"gbp\",\"intent_uuid\":\"019b76da-a800-736d-b9c4-07316313425f\",\"order_number\":\"000012\",\"charge\":null,\"capture\":null,\"decline_code\":null,\"decline_message\":null,\"next_action\":{\"type\":\"redirect\",\"url\":\"https:\\/\\/pay.reference.example\\/act\\/ri_67\"},\"cancellation_reason\":null}",
 		"headers": {
-			"content-type": "application/json",
-			"request-id": "req_69"
+			"content-type": "application/json"
 		},
 		"status": 200
 	}

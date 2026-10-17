@@ -10,10 +10,9 @@
 		"path": "/v1/intents"
 	},
 	"response": {
-		"body": "{\"id\":\"ri_14\",\"status\":\"failed\",\"amount\":3000,\"amount_captured\":0,\"amount_refunded\":0,\"currency\":\"usd\",\"intent_uuid\":\"019b76da-a800-769d-8c59-36b0de84e7f4\",\"order_number\":\"000005\",\"charge\":\"rch_15\",\"capture\":null,\"decline_code\":\"card_declined\",\"decline_message\":\"The card was declined by its issuer.\",\"next_action\":null,\"cancellation_reason\":null}",
+		"body": "{\"id\":\"ri_14\",\"status\":\"failed\",\"amount\":3000,\"amount_captured\":0,\"amount_refunded\":0,\"currency\":\"usd\",\"intent_uuid\":\"019b76da-a800-769d-8c59-36b0de84e7f4\",\"order_number\":\"000005\",\"charge\":\"rch_15\",\"capture\":null,\"decline_code\":\"card_declined\",\"decline_message\":\"The card was declined by its issuer.\",\"next_action\":null,\"cancellation_reason\":null,\"card\":{\"last4\":\"0002\",\"exp_month\":12,\"exp_year\":2034}}",
 		"headers": {
-			"content-type": "application/json",
-			"request-id": "req_16"
+			"content-type": "application/json"
 		},
 		"status": 200
 	}

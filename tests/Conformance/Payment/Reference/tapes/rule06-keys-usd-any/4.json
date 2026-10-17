@@ -12,8 +12,7 @@
 	"response": {
 		"body": "{\"id\":\"rre_8\",\"status\":\"succeeded\",\"intent\":\"ri_1\",\"intent_uuid\":\"019b76da-a800-7f5a-886a-2b01165550a8\",\"amount\":1800,\"currency\":\"usd\",\"refund_uuid\":\"09b3d920-2e84-5f8d-93e6-9661c6ac71f8\"}",
 		"headers": {
-			"content-type": "application/json",
-			"request-id": "req_9"
+			"content-type": "application/json"
 		},
 		"status": 200
 	}

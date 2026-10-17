@@ -104,7 +104,8 @@ use SEOCart\Tools\Docs\GatewayMatrixPage;
  * client (a RecordingTransport), the gateway's logger (an AssertingLogger) and its clock (frozen,
  * moved by the webhook rule). The plugin registers the gateway through its own registration
  * listener, so the gateway checked is the one the plugin's payment service resolves. Ids are seeded
- * per scenario and amounts are fixed, so a scenario sends the same bytes every run.
+ * per scenario, with the recording's nonce when it has one, and amounts are fixed, so a scenario
+ * sends the same bytes every run.
  *
  * @since 0.2.0
  */
@@ -186,6 +187,24 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	public const SETTINGS_FILE = 'SEOCART_TAPE_SETTINGS';
 
 	/**
+	 * The environment variable naming a recording's nonce, which every scenario's ids are seeded with beside its name.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const NONCE = 'SEOCART_TAPE_NONCE';
+
+	/**
+	 * The shape of a recording's nonce: plain, and shorter than an opaque token, as the tape's settings hold it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const NONCE_SHAPE = '/^[A-Za-z0-9][A-Za-z0-9.:_\-]{0,' . ( TapeScrubber::TOKEN_LENGTH - 2 ) . '}$/D';
+
+	/**
 	 * The transport under the gateway's HTTP client.
 	 *
 	 * @since 0.2.0
@@ -256,6 +275,15 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * @var array<string, array<string, string>>
 	 */
 	private array $secrets = array();
+
+	/**
+	 * The nonce every scenario's ids are seeded with beside its name: the recording's, or the one the replayed tape holds; empty for none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private string $nonce = '';
 
 	/**
 	 * The person who captures, voids and refunds.
@@ -392,6 +420,47 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
+	 * Returns the nonce a recording seeds every scenario's ids with beside its name: SEOCART_TAPE_NONCE, or none.
+	 *
+	 * A provider that keeps each idempotency key for a while answers a key it has seen with its
+	 * first answer, so a recording made again within that while, sending the same keys, would get
+	 * the first recording's answers back. A fresh nonce draws every seeded id anew, and with them
+	 * every idempotency key and store uuid the requests carry. The nonce is written to the tape's
+	 * settings, and a replay seeds its ids with it again; without one, the ids are those of the
+	 * scenario's name alone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return string The nonce; empty for none.
+	 */
+	protected function recordingNonce(): string {
+		return (string) getenv( self::NONCE );
+	}
+
+	/**
+	 * Returns the nonce of this run: the recording's, refused unless it is of the shape the tape's settings can hold, or the one the replayed tape holds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return string The nonce; empty for none.
+	 */
+	private function nonceOfRun(): string {
+		if ( ! $this->transport->records() ) {
+			$taped = null === $this->tapes() ? '' : ( ( new Tape( $this->tapes() ) )->settings()[ Tape::NONCE ] ?? '' );
+
+			return is_string( $taped ) ? $taped : '';
+		}
+
+		$nonce = $this->recordingNonce();
+
+		if ( '' !== $nonce && 1 !== preg_match( self::NONCE_SHAPE, $nonce ) ) {
+			self::fail( sprintf( 'A recording\'s nonce, in %1$s, is 1 to %2$d letters, digits, `.`, `:`, `_` and `-`, beginning with a letter or a digit: the tape\'s settings hold it.', self::NONCE, TapeScrubber::TOKEN_LENGTH - 1 ) );
+		}
+
+		return $nonce;
+	}
+
+	/**
 	 * Builds the transport under the gateway's HTTP client.
 	 *
 	 * @since 0.2.0
@@ -426,6 +495,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->kernel->get( SecretKeys::class )->initialize();
 
 		$this->transport = $this->transportOver( $this->db );
+		$this->nonce     = $this->nonceOfRun();
 		$this->http->install();
 
 		add_action(
@@ -1270,6 +1340,10 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$descriptor = $this->descriptor();
 
 		if ( array() === $descriptor->settings ) {
+			if ( '' !== $this->nonce ) {
+				$this->writeTapeSettings( array() );
+			}
+
 			return;
 		}
 
@@ -1290,7 +1364,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 
 				if ( Privacy::Secret === $field->privacy() ) {
 					$this->secrets[ $declared->value ][ $name ] = (string) $value;
-				} elseif ( Mode::Test === $declared ) {
+				} elseif ( ModeSettings::RECORDED === $declared ) {
 					$plain[ $name ] = $value;
 				}
 			}
@@ -1304,14 +1378,28 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 
 		GatewayKernel::writeDocument( $this->kernel, $descriptor, $values );
 
-		$this->scrubber = new TapeScrubber( $this->credentialsToScrub(), $this->providerSecrets(), $this->publicIdShapes(), $this->publicDigestFields(), $this->publicCodes() );
+		$this->scrubber = new TapeScrubber( $this->credentialsToScrub(), $this->providerSecrets(), $this->publicIdShapes(), $this->publicDigestFields(), $this->publicCodes(), $this->publicHeaders() );
 		$this->transport->scrubWith( $this->scrubber );
+		$this->writeTapeSettings( $plain );
+	}
 
-		if ( $recording && null !== $this->tapes() ) {
-			$tape = new Tape( $this->tapes() );
-			$this->scrubber->scanSettings( $plain, $tape->directory() . '/' . Tape::SETTINGS );
-			$tape->writeSettings( $plain );
+	/**
+	 * Writes a recording's settings file, scanned first: the test mode's non-secret settings, and the run's nonce when it has one; nothing while replaying, or for a gateway without tapes.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, int|string> $plain The test mode's non-secret settings, by name.
+	 */
+	private function writeTapeSettings( array $plain ): void {
+		if ( ! $this->transport->records() || null === $this->tapes() ) {
+			return;
 		}
+
+		$settings = $plain + ( '' === $this->nonce ? array() : array( Tape::NONCE => $this->nonce ) );
+		$tape     = new Tape( $this->tapes() );
+
+		$this->scrubber->scanSettings( $settings, $tape->directory() . '/' . Tape::SETTINGS );
+		$tape->writeSettings( $settings );
 	}
 
 	/**
@@ -1390,7 +1478,28 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
+	 * Returns the response headers a tape keeps beside `content-type`, by lower-case name: none unless the test names them.
+	 *
+	 * A tape keeps only the headers a reader of the answer needs: `content-type`, and each header
+	 * the gateway reads, such as a request id it logs, named here. Every other response header is
+	 * dropped before the recording is scanned, so a provider's security and tracing headers never
+	 * refuse it. A header named here is scanned as every other part is: a request id of
+	 * TapeScrubber::TOKEN_LENGTH characters or more passes in a shape publicIdShapes() declares.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> The headers' names.
+	 */
+	protected function publicHeaders(): array {
+		return array();
+	}
+
+	/**
 	 * Returns the value of one setting for one mode.
+	 *
+	 * A non-secret setting is the recorded one, which a mode no recording used takes as
+	 * ModeSettings gives it; a secret is the recording's while a recording is made in its mode,
+	 * and otherwise the published webhook secret or the test's placeholder().
 	 *
 	 * @since 0.2.0
 	 *
@@ -1412,14 +1521,14 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		if ( Privacy::Secret !== $field->privacy() ) {
 			$value = $recorded[ $name ] ?? $taped[ $name ] ?? $field->example();
 
-			return is_int( $value ) ? $value : (string) $value;
+			return ModeSettings::valueFor( is_int( $value ) ? $value : (string) $value, $mode );
 		}
 
 		if ( GatewayDescriptor::WEBHOOK_SECRET === $name && ( $publishedWebhook || ! $this->transport->records() ) ) {
 			return TapeScrubber::PUBLISHED_WEBHOOK_SECRET;
 		}
 
-		if ( $this->transport->records() && Mode::Test === $mode ) {
+		if ( $this->transport->records() && ModeSettings::RECORDED === $mode ) {
 			if ( ! isset( $recorded[ $name ] ) ) {
 				self::fail( sprintf( 'The settings file %1$s has no %2$s, a credential the gateway declares.', getenv( self::SETTINGS_FILE ), $name ) );
 			}
@@ -1452,7 +1561,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
-	 * Starts a scenario: its ids seeded by its name, its tape the transport's.
+	 * Starts a scenario: its ids seeded by its name and the run's nonce, its tape the transport's.
 	 *
 	 * @since 0.2.0
 	 *
@@ -1460,7 +1569,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * @param bool   $expectsRequests  Whether it sends requests at all; one that must not needs no tape.
 	 */
 	protected function begin( string $scenario, bool $expectsRequests = true ): void {
-		$this->seeded->reseed( $this->gatewayId() . ' ' . $scenario );
+		$this->seeded->reseed( $this->gatewayId() . ' ' . $scenario . ( '' === $this->nonce ? '' : ' ' . $this->nonce ) );
 		$this->transport->scenario( $scenario, $expectsRequests );
 	}
 

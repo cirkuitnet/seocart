@@ -29,7 +29,8 @@ namespace SEOCart\Tests\Conformance\Payment;
  * records them), the gateway's logger (an AssertingLogger) and its clock (frozen, moved by the
  * webhook rule). The plugin registers the gateway through its own registration listener, so the
  * gateway the case drives is the one the plugin's payment service resolves. Ids are seeded per
- * scenario and amounts are fixed, so a scenario sends the same bytes every run.
+ * scenario, with the recording's nonce when it has one (SEOCART_TAPE_NONCE), and amounts are
+ * fixed, so a scenario sends the same bytes every run.
  *
  * Each rule is one test; its failure begins with the rule's message (Rule::message()). A rule
  * that needs something the gateway does not declare is skipped and says so: a gateway whose

@@ -12,8 +12,7 @@
 	"response": {
 		"body": "{\"id\":\"ri_4\",\"status\":\"requires_capture\",\"amount\":3000,\"amount_captured\":0,\"amount_refunded\":0,\"currency\":\"usd\",\"intent_uuid\":\"019b76da-a800-775c-bf12-196da15fc5b6\",\"order_number\":\"000002\",\"charge\":\"rch_5\",\"capture\":null,\"decline_code\":null,\"decline_message\":null,\"next_action\":null,\"cancellation_reason\":null}",
 		"headers": {
-			"content-type": "application/json",
-			"request-id": "req_6"
+			"content-type": "application/json"
 		},
 		"status": 200
 	}

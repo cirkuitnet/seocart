@@ -433,9 +433,10 @@ The suite never reaches the provider on a pull request. It replays the provider'
 `tests/tapes/`, one directory per scenario, one file per request (`1.json`, `2.json`, …), each
 holding the request as sent (method, host, path with its query, headers, body) and the answer
 (status, headers, body); `tests/tapes/settings.json` holds the non-secret settings of the
-recording, and `tests/tapes/webhooks/` the recorded deliveries. A replayed request must equal its
-tape in its method, its path with its query, and its body; when the adapter sends anything else,
-the test fails and names the scenario, the request's number and the part that differs.
+recording and its nonce, if it had one, and `tests/tapes/webhooks/` the recorded deliveries. A
+replayed request must equal its tape in its method, its path with its query, and its body; when
+the adapter sends anything else, the test fails and names the scenario, the request's number and
+the part that differs.
 
 Recording calls the provider for real, in test mode, from a developer's shell: name a JSON file of
 the test mode's settings, in the format `wp seocart gateway configure --from-file` reads, readable
@@ -452,23 +453,48 @@ writes no tape:
 $ git status --short
 ```
 
+Each scenario's ids, and with them every idempotency key and store uuid its requests carry, are
+drawn from the scenario's name, so a recording sends the same requests every time it is made. A
+provider that keeps idempotency keys for a while answers a key it has seen with its first answer,
+so to record again within that while, set a fresh nonce, and every id is drawn anew. A nonce is 1
+to 19 characters of letters, digits, `.`, `:`, `_` and `-`, beginning with a letter or a digit;
+an empty `SEOCART_TAPE_NONCE` is no nonce:
+
+```text
+$ SEOCART_TAPE=record SEOCART_TAPE_NONCE=2026-10-16.b SEOCART_TAPE_SETTINGS=~/dev/example-test.json sh ../seocart/bin/ci/extension.sh conformance . payments
+```
+
+The nonce is no secret: `tests/tapes/settings.json` keeps it as `recording-nonce`, and a replay
+draws its ids with it again, so the whole directory is recorded with one nonce.
+
+A recording is made in test mode alone, and rule 16 also places a live-mode payment, which never
+reaches the provider: its secret keys come from the test's `placeholder()`, and each non-secret
+setting is the recorded one with `_test_` in it written `_live_` (`pk_test_…` becomes
+`pk_live_…`), so an availability check that reads a key's mode offers the gateway in both modes.
+
 Before a tape is written, it is scrubbed and scanned:
 
 1. every value of a credential of the run becomes `{{secret:<setting>}}`, wherever it is and in
    whatever form it was sent (as it is, URL-encoded, escaped for JSON, base64-encoded or
    hexadecimal), and so does every secret the provider issues that the test names in
    `providerSecrets()`, such as a client secret the customer's browser needs;
-2. the `Authorization`, `Proxy-Authorization` and `Cookie` request headers and the `Set-Cookie`
-   response header are dropped;
+2. the `Authorization`, `Proxy-Authorization` and `Cookie` request headers are dropped, and of the
+   answer's headers only `Content-Type` and those the test names in `publicHeaders()` are kept:
+   every other response header, a provider's security and tracing headers among them, is dropped
+   before the scan and never read, and `Set-Cookie` is dropped even when named;
 3. each delivery is signed again, by the test's `signDelivery()`, with SEOCart's published test
    secret, so the provider's signing secret never reaches the tape;
 4. everything about to be written is read field by field (the URL and each field of its query,
    each header, each field of a JSON or form body and of a URL a field holds, each delivery,
-   each setting) for a credential of the run, a value shaped like a provider's secret (`sk_`,
-   `rk_` or `pk_` then `test_` or `live_`, `whsec_`, `cs_test_` or `cs_live_`, or `_secret_`), an
+   each setting) for a credential of the run, a value shaped like a provider's secret (`sk_` or
+   `rk_` then `test_` or `live_`, `whsec_`, `cs_test_` or `cs_live_`, or `_secret_`), an
    opaque token (a run of 20 or more letters, digits, `_` and `-`, in any case) in no public
-   shape, a header that carries credentials, a card number, and the card fields `exp_month`,
-   `exp_year`, `last4` and `cvc`; a field's name is read for all of these but the opaque token.
+   shape, a header that carries credentials, a card number wherever it is, and a field named for
+   a card's verification code or its full number (`cvc`, `cvv`, `cvv2`, `cvc2`, `csc`,
+   `security_code`, `number`, `card_number` or `account_number`) whatever its value; a field's
+   name is read for all of these but the opaque token. A card's `last4`, `exp_month`, `exp_year`,
+   `brand`, `funding` and `country` are kept: PCI-DSS lets a merchant store them, every receipt
+   shows them, and a provider's decline answer carries them.
    Then the raw text of each body and query, as it is written, is read for an opaque token or a
    card number that none of its decoded fields holds, such as the first of a field sent twice
    or a number too long to read as one. A hit fails the recording, names the part, the field
@@ -481,13 +507,16 @@ number of letters and digits after it (`'pi_' => 24`) or the least and the most
 (`'cus_' => array( 14, 24 )`); a
 64-character hexadecimal digest in a field the test names in `publicDigestFields()`, such as a
 delivery's signature header; and the media type of a `Content-Type` or `Accept` header. No public
-shape passes for a token with a secret's prefix (`sk_`, `rk_`, `pk_`, `whsec_`, `cs_`, `secret_`,
+shape passes for a token with a secret's prefix (`sk_`, `rk_`, `whsec_`, `cs_`, `secret_`,
 `private_`, `token_`, `key_`, `pass_` or `password_`, or `_live_`, `_test_`, `_secret_`,
 `_private_`, `_token_` or `_key_` inside it), in a field named like a credential (`key`, or a name
 holding `secret`, `token`, `password`, `passphrase`, `authorization`, `cookie` or `credential`, or
 ending in `api_key`, `client_key`, `signing_key` and the like), or in the query of a redirect's
-`Location`. A secret the provider issues is named in `providerSecrets()`, by a name for its
-placeholder:
+`Location`. A publishable key (`pk_test_` or `pk_live_`, then letters and digits) is public, as
+the provider publishes it in the customer's browser: it is no secret's shape or prefix, and
+`publishable_key` is no credential's name, so a short one is written as it is and a long one in
+the shape the test declares for it, such as `'pk_test_' => array( 90, 110 )`. A secret the
+provider issues is named in `providerSecrets()`, by a name for its placeholder:
 
 ```php
 protected function providerSecrets(): array {
@@ -509,13 +538,22 @@ protected function publicDigestFields(): array {
 protected function publicCodes(): array {
 	return array( 'requires_payment_method' );
 }
+
+protected function publicHeaders(): array {
+	return array( 'request-id' );
+}
 ```
+
+`publicHeaders()` names, in lower case, each response header the gateway reads, such as a request
+id it logs. A header named there is scanned as every other part is, so a request id of 20 or more
+characters is declared in `publicIdShapes()` too, such as `'req_' => 24`.
 
 The same `publicCodes()` is rule 13's list of the provider's words a log line may carry: a gateway
 that logs a status from the provider's answer, such as `succeeded`, declares it there. Any other
 text of the answers the gateway was served, an error's message above all, fails rule 13 when a
 line it logs holds it, found however the line encodes it, writes it in another case or splits it
-across its values.
+across its values. A log line never names a card field either, `last4` and the expiry included: a
+tape keeps them, as a receipt shows them, but a log has no need of them.
 
 A tape's JSON keeps its keys sorted, so a new recording's diff shows only what changed. The
 suite writes the files, so they are left out of formatting: SEOCart's `.prettierignore` names

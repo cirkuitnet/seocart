@@ -16,7 +16,7 @@ namespace SEOCart\Tests\Conformance\Payment;
  *
  * Owns one fact: the tape's layout on disk.
  *
- *     {tapes}/settings.json         the non-secret settings of the recording
+ *     {tapes}/settings.json         the non-secret settings of the recording, and its nonce
  *     {tapes}/{scenario}/{n}.json   the n-th exchange of a scenario, from 1
  *     {tapes}/webhooks/{name}.json  one delivery
  *
@@ -45,6 +45,15 @@ final class Tape {
 	 * @var string
 	 */
 	public const WEBHOOKS = 'webhooks';
+
+	/**
+	 * The key of the settings file that holds the nonce the recording seeded its ids with, when it had one: no setting's name holds a `-`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const NONCE = 'recording-nonce';
 
 	/**
 	 * The tapes' directory, without a trailing slash.

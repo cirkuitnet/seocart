@@ -53,6 +53,15 @@ final class TapeScrubberTest extends TestCase {
 	private const ESCAPED_TIME = '2026-06-01%2012%3A00%3A05';
 
 	/**
+	 * The response headers the tests plant values in, which their scrubbers keep so the scan reads them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<string>
+	 */
+	private const PLANTED_HEADERS = array( 'x-signing', 'location' );
+
+	/**
 	 * A scratch tape file, removed after each test.
 	 *
 	 * @since 0.2.0
@@ -218,28 +227,82 @@ final class TapeScrubberTest extends TestCase {
 	}
 
 	/**
-	 * Tests that a card field or a card number refuses the recording, in a text and as a field of a body.
+	 * Returns a card's verification code or full number, each under a name a tape never holds, with the field its refusal names and the value it must not quote.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string, string, string}> The body, the field the refusal names after the part, and the value.
+	 */
+	public function cardFields(): array {
+		return array(
+			'a verification code in JSON'     => array( '{"card":{"cvc":"737"}}', 'card.cvc is named cvc', '737' ),
+			'a verification code in a form'   => array( 'amount=1000&card[cvv2]=737', 'card.cvv2 is named cvv2', '737' ),
+			'a card security code'            => array( '{"card":{"csc":"737"}}', 'card.csc is named csc', '737' ),
+			'a security code in another case' => array( '{"card":{"Security_Code":"7373"}}', 'card.Security_Code is named Security_Code', '7373' ),
+			'a full number holding no digits' => array( '{"source":{"number":"tok_visa"}}', 'source.number is named number', 'tok_visa' ),
+			'a card number field of digits'   => array( '{"card_number":"000000000"}', 'card_number is named card_number', '000000000' ),
+			'a bank account number in a form' => array( 'account_number=000123456789', 'account_number is named account_number', '000123456789' ),
+		);
+	}
+
+	/**
+	 * Tests that a field named for a card's verification code or its full number refuses the recording whatever its value, the part and the field named, in a body read field by field and in a text of no structure.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider cardFields
+	 * @group conformance
+	 *
+	 * @param string $body  The request body planted.
+	 * @param string $named The field the refusal names, after the part.
+	 * @param string $value The value the refusal must not quote.
+	 */
+	public function test_a_verification_code_or_a_full_number_refuses_the_recording( string $body, string $named, string $value ): void {
+		$this->assertRefused( self::WHERE . ', its request body field ' . $named . ', for a card\'s verification code or its full number', $value, fn() => self::scrubber()->scanExchange( self::scrubber()->exchange( self::exchangeWith( 'body', $body ) ), self::WHERE ) );
+		$this->assertRefused( 'The text holds a field named ', $value, fn() => self::scrubber()->scan( $body, 'The text' ) );
+	}
+
+	/**
+	 * Tests that a card number refuses the recording under a name a tape keeps, `last4` included: the card number's rule reads every value, whatever its field.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @group conformance
 	 */
-	public function test_card_data_refuses_the_recording(): void {
-		$refused = array();
+	public function test_a_card_number_refuses_the_recording_under_a_kept_name(): void {
+		$this->assertRefused( self::WHERE . ', its response body field card.last4 holds a card number', '4242424242424242', fn() => self::scrubber()->scanExchange( self::scrubber()->exchange( self::exchangeWith( 'responseBody', '{"card":{"last4":"4242424242424242"}}' ) ), self::WHERE ) );
+		$this->assertRefused( 'The text holds a card number', '4242424242424242', fn() => self::scrubber()->scan( 'last4: 4242424242424242', 'The text' ) );
+	}
 
-		foreach ( array( '{"card":{"last4":"4242"}}', 'card[exp_month]=12', '{"cvc":"123"}', '{"number":"4242424242424242"}' ) as $text ) {
-			foreach ( array( fn() => self::scrubber()->scan( $text, 'The text' ), fn() => self::scrubber()->scanExchange( self::exchangeWith( 'body', $text ), self::WHERE ) ) as $scan ) {
-				try {
-					$scan();
-				} catch ( TapeRefused $refusal ) {
-					$refused[] = $refusal->getMessage();
-				}
-			}
+	/**
+	 * Tests that the card fields a receipt shows are written, in an answer, a form and a text: the last four digits, the expiry, the brand, the funding and the country; and that the word `number` in prose passes.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_the_card_fields_a_receipt_shows_are_written(): void {
+		$card     = '{"card":{"brand":"visa","country":"US","exp_month":12,"exp_year":2034,"funding":"credit","last4":"0002"}}';
+		$scrubber = self::scrubber();
+		$clean    = $scrubber->exchange( self::exchangeWith( 'responseBody', $card )->with( array( 'body' => 'card[last4]=0002&card[exp_month]=12&card[exp_year]=2034' ) ) );
+
+		$this->assertSame( $card, $clean->responseBody );
+		$scrubber->scanExchange( $clean, self::WHERE );
+		$scrubber->scan( 'last4: 0002, exp_month: 12, exp_year: 2034. The card number was declined: enter another number.', 'A decline in words' );
+		$scrubber->scan( '{"id":"pi_1","amount":1000,"last4_digits_shown":false,"order_number":"000001"}', 'A clean exchange' );
+	}
+
+	/**
+	 * Tests that the reference page's sentence on what the scan cannot see names every field a tape never holds, so the page says which names are refused.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_the_limit_names_every_refused_card_field(): void {
+		foreach ( TapeScrubber::CARD_FIELDS as $field ) {
+			$this->assertStringContainsString( '`' . $field . '`', TapeScrubber::LIMIT );
 		}
-
-		$this->assertCount( 8, $refused, 'Each card field and the card number refused the recording, as a text and as a body.' );
-		$this->assertContains( self::WHERE . ', its request body field card.exp_month is the card field exp_month: an adapter never asks for card details, and a tape never keeps them.', $refused );
-		self::scrubber()->scan( '{"id":"pi_1","amount":1000,"last4_digits_shown":false}', 'A clean exchange' );
 	}
 
 	/**
@@ -276,9 +339,9 @@ final class TapeScrubberTest extends TestCase {
 
 		return array(
 			'a client secret in a response body'         => array( 'responseBody', '{"client_secret":"cs_test_a1B2c3D4e5F6g7H8"}', 'its response body field client_secret', 'a client secret (cs_' ),
-			'a restricted key in the URL\'s query'       => array( 'url', 'https://api.example.com/v1/charges?key=rk_live_abcdef123456', 'its URL query field key', 'a secret, restricted or publishable key' ),
+			'a restricted key in the URL\'s query'       => array( 'url', 'https://api.example.com/v1/charges?key=rk_live_abcdef123456', 'its URL query field key', 'a secret or restricted key' ),
 			'a signing secret in a response header'      => array( 'responseHeaders', 'whsec_AbC123xyz987', 'its response header x-signing', 'a webhook signing secret' ),
-			'a publishable key in a request body'        => array( 'body', 'key=pk_test_abcdef123456', 'its request body field key', 'a secret, restricted or publishable key' ),
+			'a secret key in a request body'             => array( 'body', 'amount=1000&secret=sk_test_abcdef123456', 'its request body field secret', 'a secret or restricted key' ),
 			'a client secret by its infix'               => array( 'responseBody', '{"handle":"pi_1_secret_Ab1Cd2Ef3Gh4"}', 'its response body field handle', 'a client secret (_secret_)' ),
 			'a mixed-case token in a request header'     => array( 'headers', 'Zx81Qw7Er6Ty5Ui4Op3As2Df', 'its request header x-signing', 'an opaque token of 20 characters or more' ),
 			'a lower-case token in a response body'      => array( 'responseBody', '{"session_key":"' . $token . '"}', 'its response body field session_key', 'an opaque token of 20 characters or more' ),
@@ -328,6 +391,37 @@ final class TapeScrubberTest extends TestCase {
 		$this->assertRefused( self::WHERE . ', its response body field handle holds an opaque token', 'pi_test_', fn() => $public->scanExchange( self::exchangeWith( 'responseBody', '{"handle":"pi_test_3MtwBwLkdIwHu7ix28a3t"}' ), self::WHERE ) );
 		$this->assertRefused( self::WHERE . ', its response header location query field intent holds an opaque token of 20 characters or more, the shape of a secret, in a redirect\'s query', $uuid, fn() => $public->scanExchange( self::exchangeWith( 'responseHeaders', array( 'location' => 'https://pay.example.com/return?intent=' . $uuid ) ), self::WHERE ) );
 		$public->scanExchange( self::exchangeWith( 'responseHeaders', array( 'location' => 'https://pay.example.com/act/' . $id ) ), self::WHERE );
+	}
+
+	/**
+	 * Tests that a publishable key is written, in its own field, a URL's query and the settings: one shorter than an opaque token as it is, a longer one in the shape its test declares; and that a secret key is refused even in a declared shape.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_publishable_key_is_written_and_a_secret_key_is_not(): void {
+		$publishable = 'pk_test_' . str_repeat( 'Ab1', 8 );
+		$secret      = 'sk_test_' . str_repeat( 'Ab1', 8 );
+		$declared    = new TapeScrubber(
+			array( 'secret_key' => array( self::KEY ) ),
+			array(),
+			array(
+				'pk_test_' => 24,
+				'sk_test_' => 24,
+			)
+		);
+		$answer      = '{"publishable_key":"' . $publishable . '","next_action":{"url":"https://hooks.example.com/3ds?publishable_key=' . $publishable . '"}}';
+		$clean       = $declared->exchange( new Exchange( 'GET', 'https://api.example.com/v1/elements?publishable_key=' . $publishable, array(), null, 200, array( 'content-type' => 'application/json' ), $answer ) );
+
+		$this->assertSame( $answer, $clean->responseBody );
+		$declared->scanExchange( $clean, self::WHERE );
+		$declared->scanSettings( array( 'publishable_key' => $publishable ), 'The settings' );
+		self::scrubber()->scanSettings( array( 'publishable_key' => 'pk_live_A1b2C3d4' ), 'The settings' );
+
+		$this->assertRefused( self::WHERE . ', its URL query field publishable_key holds an opaque token of 20 characters or more, the shape of a secret: declare it', $publishable, fn() => self::scrubber()->scanExchange( $clean, self::WHERE ) );
+		$this->assertRefused( 'The settings, the setting publishable_key holds a secret or restricted key', $secret, fn() => $declared->scanSettings( array( 'publishable_key' => $secret ), 'The settings' ) );
+		$this->assertRefused( self::WHERE . ', its response body field secret_key holds an opaque token of 20 characters or more, the shape of a secret, in the field secret_key, named like a credential', $publishable, fn() => $declared->scanExchange( self::exchangeWith( 'responseBody', '{"secret_key":"' . $publishable . '"}' ), self::WHERE ) );
 	}
 
 	/**
@@ -476,6 +570,52 @@ final class TapeScrubberTest extends TestCase {
 	}
 
 	/**
+	 * Tests that an answer keeps only `content-type` and the headers its test declares, in any case: every other is dropped unread, a token in it refusing nothing, while a declared one is scanned, and `set-cookie` is dropped even when declared.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_response_header_is_kept_only_when_declared(): void {
+		$token  = 'Zx81Qw7Er6Ty5Ui4Op3As2Df';
+		$answer = new Exchange(
+			'POST',
+			'https://api.example.com/v1/charges',
+			array( 'X-Trace' => 'trace-1' ),
+			'amount=1000',
+			200,
+			array(
+				'Content-Type'              => 'application/json',
+				'Request-Id'                => 'req_1',
+				'Set-Cookie'                => 'id=1',
+				'Strict-Transport-Security' => 'max-age=63072000; includeSubDomains',
+				'X-Trace'                   => $token,
+			),
+			'{"id":"ch_1"}'
+		);
+
+		$undeclared = new TapeScrubber( array( 'secret_key' => array( self::KEY ) ) );
+		$dropped    = $undeclared->exchange( $answer );
+
+		$this->assertSame( array( 'content-type' => 'application/json' ), $dropped->responseHeaders );
+		$this->assertSame( array( 'x-trace' => 'trace-1' ), $dropped->headers, 'A request\'s headers are kept as they were.' );
+		$undeclared->scanExchange( $dropped, self::WHERE );
+
+		$declaring = new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), array(), array(), array(), array( 'request-id', 'X-Trace', 'set-cookie' ) );
+		$kept      = $declaring->exchange( $answer );
+
+		$this->assertSame(
+			array(
+				'content-type' => 'application/json',
+				'request-id'   => 'req_1',
+				'x-trace'      => $token,
+			),
+			$kept->responseHeaders
+		);
+		$this->assertRefused( self::WHERE . ', its response header x-trace holds an opaque token of 20 characters or more', $token, fn() => $declaring->scanExchange( $kept, self::WHERE ) );
+	}
+
+	/**
 	 * Tests that a secret the provider issues is replaced when the test names it, and that a public id passes when the test declares its shape.
 	 *
 	 * @since 0.2.0
@@ -540,7 +680,7 @@ final class TapeScrubberTest extends TestCase {
 	 * @group conformance
 	 */
 	public function test_settings_and_deliveries_are_scanned(): void {
-		$this->assertRefused( 'settings.json, the setting account_id holds a secret, restricted or publishable key', 'sk_live_abcdef123456', fn() => self::scrubber()->scanSettings( array( 'account_id' => 'sk_live_abcdef123456' ), 'settings.json' ) );
+		$this->assertRefused( 'settings.json, the setting account_id holds a secret or restricted key', 'sk_live_abcdef123456', fn() => self::scrubber()->scanSettings( array( 'account_id' => 'sk_live_abcdef123456' ), 'settings.json' ) );
 		$this->assertRefused( 'settings.json, the setting merchant holds an opaque token', 'abcdefghijklmnopqrstuvwxyz', fn() => self::scrubber()->scanSettings( array( 'merchant' => 'abcdefghijklmnopqrstuvwxyz' ), 'settings.json' ) );
 		$this->assertRefused(
 			'The delivery authorized, its header x-signing holds a webhook signing secret',
@@ -820,14 +960,14 @@ final class TapeScrubberTest extends TestCase {
 	}
 
 	/**
-	 * Builds the scrubber of the test's credential.
+	 * Builds the scrubber of the test's credential, keeping the response headers the tests plant values in.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @return TapeScrubber The scrubber.
 	 */
 	private static function scrubber(): TapeScrubber {
-		return new TapeScrubber( array( 'secret_key' => array( self::KEY ) ) );
+		return new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), array(), array(), array(), self::PLANTED_HEADERS );
 	}
 
 	/**
@@ -838,6 +978,6 @@ final class TapeScrubberTest extends TestCase {
 	 * @return TapeScrubber The scrubber.
 	 */
 	private static function publicScrubber(): TapeScrubber {
-		return new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), array( 'pi_' => 24 ), array( 'reference-signature' ), array( 'requires_payment_method' ) );
+		return new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), array( 'pi_' => 24 ), array( 'reference-signature' ), array( 'requires_payment_method' ), self::PLANTED_HEADERS );
 	}
 }

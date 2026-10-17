@@ -9,8 +9,7 @@
 	"response": {
 		"body": "{\"data\":[]}",
 		"headers": {
-			"content-type": "application/json",
-			"request-id": "req_1"
+			"content-type": "application/json"
 		},
 		"status": 200
 	}

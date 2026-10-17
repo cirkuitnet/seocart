@@ -28,8 +28,13 @@
 #   idle                SEOCart's idle-request probe with the extension loaded: the
 #                       extension's share of an idle request is at most one hook, one file
 #                       and no query. Needs the test database too.
-#   conformance <type>  SEOCart's conformance suite for the extension's type, once SEOCart has
-#                       one; until then it says so and passes. Needs the test database too.
+#   conformance <type>  SEOCart's conformance suite for the extension's type: its unit group,
+#                       then the extension's own conformance test (for payments, the test
+#                       that extends GatewayConformanceCase) run through the suite. An
+#                       extension without that test is skipped, exit 0, with a line that
+#                       begins `conformance: SKIPPED:` naming the file to add, and a ::warning
+#                       annotation under GitHub Actions; a type SEOCart has no suite for says
+#                       so and passes. Needs the test database too.
 #   zip                 Builds and checks the extension's release zip (bin/build-zip.php and
 #                       bin/check-zip.php with --plugin).
 #   version <tag>       The main file's Version and readme.txt's Stable tag equal the tag.

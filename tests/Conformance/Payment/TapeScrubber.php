@@ -22,16 +22,20 @@ use SEOCart\Platform\Logging\CardNumbers;
  *    URL, a header, a body) and in whatever form it was sent: as it is, URL-encoded, escaped for
  *    JSON, base64-encoded or as hexadecimal; so does every secret the provider issues that the test
  *    names (GatewayConformanceCase::providerSecrets(), such as a client secret in an answer);
- * 2. the `authorization`, `proxy-authorization` and `cookie` request headers and the `set-cookie`
- *    response header are dropped;
+ * 2. the `authorization`, `proxy-authorization` and `cookie` request headers are dropped, and of
+ *    an answer's headers only `content-type` and those the test declares
+ *    (GatewayConformanceCase::publicHeaders(), such as a request id the gateway reads) are kept:
+ *    every other response header, a provider's security headers among them, is dropped before
+ *    the scan and never read, and `set-cookie` is dropped even when declared;
  * 3. a webhook delivery is signed again, with PUBLISHED_WEBHOOK_SECRET, by the signer the test
  *    gives (the gateway's own scheme), so the provider's signing secret never reaches the tape;
  * 4. what is about to be written is read field by field (each header; each field of a JSON or form
  *    body, of a URL's query and of a URL held in a field; each setting), and the recording refused,
  *    the part and the field named and nothing written, when a value holds a credential of the run,
- *    a value shaped like a provider's secret (SECRET_SHAPES), a card number, a card field, or an
- *    opaque token: a run of TOKEN_LENGTH or more letters, digits, `_` and `-`, in any case; then
- *    the raw text of each body, query and tape file, for an opaque token or a card number that
+ *    a value shaped like a provider's secret (SECRET_SHAPES), a card number, or an opaque token: a
+ *    run of TOKEN_LENGTH or more letters, digits, `_` and `-`, in any case; or when a field is
+ *    named for a card's verification code or its full number (CARD_FIELDS), whatever its value;
+ *    then the raw text of each body, query and tape file, for an opaque token or a card number that
  *    none of its decoded fields holds (scanUnread()), as decoding drops the first of a field sent
  *    twice and the digits of a number too long to read as one.
  *
@@ -79,23 +83,39 @@ final class TapeScrubber {
 	public const SHORTEST_CREDENTIAL = 8;
 
 	/**
-	 * The card fields a tape may not hold, as a JSON key or a form field.
+	 * The fields named for a card's verification code or its full number, as a JSON key or a form field: a tape holds none of them, whatever the value.
+	 *
+	 * A card's `last4`, `exp_month`, `exp_year`, `brand`, `funding` and `country` are kept: PCI-DSS
+	 * lets a merchant store them, every receipt shows them, and a provider's decline answer carries
+	 * them. A card number is refused wherever it is, under any name, `last4` included.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var list<string>
 	 */
-	public const CARD_FIELDS = array( 'exp_month', 'exp_year', 'last4', 'cvc' );
+	public const CARD_FIELDS = array( 'cvc', 'cvv', 'cvv2', 'cvc2', 'csc', 'security_code', 'number', 'card_number', 'account_number' );
+
+	/**
+	 * Why a field named in CARD_FIELDS refuses a recording, the end of each such refusal.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const CARD_FIELD_REASON = 'for a card\'s verification code or its full number: an adapter never asks for either, and a tape never keeps one, whatever its value.';
 
 	/**
 	 * The shapes of secrets providers issue, by what each is: a recording that holds one is refused.
+	 *
+	 * A publishable key (`pk_test_`, `pk_live_`) is none of them: a provider publishes it in the
+	 * customer's browser by definition, so a tape holds it as it holds an id.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var array<string, string>
 	 */
 	public const SECRET_SHAPES = array(
-		'a secret, restricted or publishable key (sk_, rk_ or pk_, then test_ or live_)' => '/(?<![A-Za-z0-9_])(?:sk|rk|pk)_(?:test|live)_[A-Za-z0-9]{6,}/',
+		'a secret or restricted key (sk_ or rk_, then test_ or live_)' => '/(?<![A-Za-z0-9_])(?:sk|rk)_(?:test|live)_[A-Za-z0-9]{6,}/',
 		'a webhook signing secret (whsec_)'          => '/(?<![A-Za-z0-9_])whsec_[A-Za-z0-9]{6,}/',
 		'a client secret (cs_, then test_ or live_)' => '/(?<![A-Za-z0-9_])cs_(?:test|live)_[A-Za-z0-9]{6,}/',
 		'a client secret (_secret_)'                 => '/_secret_[A-Za-z0-9]{10,}/',
@@ -117,25 +137,28 @@ final class TapeScrubber {
 	 *
 	 * @var string
 	 */
-	public const LIMIT = 'Rule 14 reads a recording value by value for an opaque token of ' . self::TOKEN_LENGTH . ' characters or more: a secret shorter than that, or one split across values, is beyond that reading, so every credential of the run is a secret setting the gateway declares, replaced in every form it is sent in, and every secret the provider issues is named in its test\'s `providerSecrets()`. A field\'s name is not held to the token rule, as providers name fields with ' . self::TOKEN_LENGTH . ' characters and more, so a secret sent as a field\'s name is beyond it. A form-encoded copy of a placeholder the scrub itself wrote passes as that placeholder, which names a declared setting and carries no value: the tape keeps the placeholder\'s text, and a replay has that text where the provider sent the encoded copy.';
+	public const LIMIT = 'Rule 14 reads a recording value by value for an opaque token of ' . self::TOKEN_LENGTH . ' characters or more: a secret shorter than that, or one split across values, is beyond that reading, so every credential of the run is a secret setting the gateway declares, replaced in every form it is sent in, and every secret the provider issues is named in its test\'s `providerSecrets()`. A field\'s name is not held to the token rule, as providers name fields with ' . self::TOKEN_LENGTH . ' characters and more, so a secret sent as a field\'s name is beyond it. A form-encoded copy of a placeholder the scrub itself wrote passes as that placeholder, which names a declared setting and carries no value: the tape keeps the placeholder\'s text, and a replay has that text where the provider sent the encoded copy. A card number is refused wherever it is, and a card\'s verification code or full number by the name of its field, `cvc`, `cvv`, `cvv2`, `cvc2`, `csc`, `security_code`, `number`, `card_number` or `account_number`, whatever its value: a verification code under any other name is beyond the reading, as three or four digits read as any number. A card\'s `last4`, `exp_month`, `exp_year`, `brand`, `funding` and `country` are kept.';
 
 	/**
 	 * The prefix or infix of a secret: a token that has one passes in no public shape.
 	 *
+	 * A publishable key's `pk_test_` or `pk_live_` is neither: the key is public, and passes in the
+	 * shape its test declares, as an id does.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
-	public const SECRET_PREFIX = '/^(?:sk|rk|pk|whsec|cs|secret|private|token|key|pass|password)_|_(?:live|test|secret|private|token|key)_/i';
+	public const SECRET_PREFIX = '/^(?:sk|rk|whsec|cs|secret|private|token|key|pass|password)_|(?<!^pk)_(?:live|test)_|_(?:secret|private|token|key)_/i';
 
 	/**
-	 * A field named like a credential: no public shape passes in its value.
+	 * A field named like a credential: no public shape passes in its value. A publishable key's field is not one.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
-	public const CREDENTIAL_FIELD = '/secret|token|passw|passphrase|authori[sz]ation|cookie|credential|^key$|(?:api|access|private|secret|client|signing|publishable|restricted|transaction|merchant|license|encryption|auth)[_.\-]?key$/i';
+	public const CREDENTIAL_FIELD = '/secret|token|passw|passphrase|authori[sz]ation|cookie|credential|^key$|(?:api|access|private|secret|client|signing|restricted|transaction|merchant|license|encryption|auth)[_.\-]?key$/i';
 
 	/**
 	 * A UUID, the one public shape every tape may hold: the store's own references are UUIDs.
@@ -201,13 +224,31 @@ final class TapeScrubber {
 	private const DROPPED_REQUEST_HEADERS = array( 'authorization', 'proxy-authorization', 'cookie' );
 
 	/**
-	 * The response headers never written.
+	 * The response headers never written, even when the test declares them.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var list<string>
 	 */
 	private const DROPPED_RESPONSE_HEADERS = array( 'set-cookie' );
+
+	/**
+	 * The response header every tape keeps: a reader of the answer needs its media type.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const KEPT_RESPONSE_HEADER = 'content-type';
+
+	/**
+	 * The response headers a tape keeps, by lower-case name: `content-type` and those the test declares.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<string>
+	 */
+	private array $keptResponseHeaders;
 
 	/**
 	 * What each form of each credential is replaced with, longest first.
@@ -276,18 +317,25 @@ final class TapeScrubber {
 	 * @param array<string, int|list<int>> $publicIdShapes     Optional. The shapes of the provider's public object ids: by each id's prefix, the number of letters and digits after it, or the least and the most, such as `'pi_' => 24`. Default none.
 	 * @param string[]                     $publicDigestFields Optional. The fields whose 64-hex digests are public, such as a delivery's signature header. Default none.
 	 * @param string[]                     $publicCodes        Optional. The provider's enumerated codes a tape may hold, as exact strings. Default none.
+	 * @param string[]                     $publicHeaders      Optional. The response headers a tape keeps beside `content-type`, by name, such as a request id the gateway reads. Default none.
 	 *
 	 * @phpstan-param array<string, int|array{int, int}> $publicIdShapes
 	 * @phpstan-param list<string> $publicDigestFields
 	 * @phpstan-param list<string> $publicCodes
+	 * @phpstan-param list<string> $publicHeaders
 	 */
 	public function __construct(
 		#[\SensitiveParameter] array $credentials,
 		private array $providerSecrets = array(),
 		private array $publicIdShapes = array(),
 		private array $publicDigestFields = array(),
-		private array $publicCodes = array()
+		private array $publicCodes = array(),
+		array $publicHeaders = array()
 	) {
+		$kept = array_merge( array( self::KEPT_RESPONSE_HEADER ), array_map( 'strtolower', $publicHeaders ) );
+
+		$this->keptResponseHeaders = array_values( array_diff( array_unique( $kept ), self::DROPPED_RESPONSE_HEADERS ) );
+
 		foreach ( $publicIdShapes as $prefix => $length ) {
 			list( $least, $most ) = is_int( $length ) ? array( $length, $length ) : $length;
 
@@ -318,7 +366,7 @@ final class TapeScrubber {
 	}
 
 	/**
-	 * Scrubs an exchange: the secrets replaced, the headers that carry credentials dropped.
+	 * Scrubs an exchange: the secrets replaced, the headers that carry credentials and the response headers no reader needs dropped.
 	 *
 	 * It begins a scrub: scanExchange() of the exchange it returns lets through the placeholders
 	 * this scrub wrote, and no other.
@@ -337,7 +385,7 @@ final class TapeScrubber {
 				'url'             => $this->text( $sent->url ),
 				'headers'         => $this->headers( $sent->headers, self::DROPPED_REQUEST_HEADERS ),
 				'body'            => null === $sent->body ? null : $this->text( $sent->body ),
-				'responseHeaders' => $this->headers( $sent->responseHeaders, self::DROPPED_RESPONSE_HEADERS ),
+				'responseHeaders' => $this->headers( $sent->responseHeaders, self::DROPPED_RESPONSE_HEADERS, $this->keptResponseHeaders ),
 				'responseBody'    => $this->text( $sent->responseBody ),
 			)
 		);
@@ -512,7 +560,7 @@ final class TapeScrubber {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @throws TapeRefused When it holds a credential, a secret's shape, an opaque token, a card field or a card number.
+	 * @throws TapeRefused When it holds a credential, a secret's shape, an opaque token, a card number, or a field named for a card's verification code or full number.
 	 *
 	 * @param string $text  The text.
 	 * @param string $where Where it is, for the message.
@@ -571,6 +619,9 @@ final class TapeScrubber {
 	/**
 	 * Refuses a text of no known structure, with the placeholders the current scan lets through.
 	 *
+	 * A name of CARD_FIELDS counts in it where it is written as a field's: followed by `:` or `=`,
+	 * after a closing quote or bracket, as a word such as `number` is ordinary prose.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @throws TapeRefused When it is refused.
@@ -580,8 +631,8 @@ final class TapeScrubber {
 	 */
 	private function scanLoose( string $text, string $where ): void {
 		foreach ( self::CARD_FIELDS as $field ) {
-			if ( 1 === preg_match( '/(?<![A-Za-z0-9_])' . $field . '(?![A-Za-z0-9_])/', $text ) ) {
-				throw new TapeRefused( sprintf( '%1$s holds the card field %2$s: an adapter never asks for card details, and a tape never keeps them.', $where, $field ) );
+			if ( 1 === preg_match( '/(?<![A-Za-z0-9_])' . $field . '(?![A-Za-z0-9_])["\'\]]*\s*[:=]/i', $text ) ) {
+				throw new TapeRefused( sprintf( '%1$s holds a field named %2$s, %3$s', $where, $field, self::CARD_FIELD_REASON ) );
 			}
 		}
 
@@ -915,7 +966,7 @@ final class TapeScrubber {
 			$named = '' === $path ? (string) $key : $path . '.' . $key;
 
 			if ( in_array( strtolower( $field ), self::CARD_FIELDS, true ) ) {
-				throw new TapeRefused( sprintf( '%1$s %2$s is the card field %3$s: an adapter never asks for card details, and a tape never keeps them.', $where, $named, $field ) );
+				throw new TapeRefused( sprintf( '%1$s %2$s is named %3$s, %4$s', $where, $named, $field, self::CARD_FIELD_REASON ) );
 			}
 
 			if ( is_string( $key ) ) {
@@ -962,23 +1013,25 @@ final class TapeScrubber {
 	}
 
 	/**
-	 * Scrubs headers: their names in lower case and sorted, the dropped ones left out.
+	 * Scrubs headers: their names in lower case and sorted, the dropped ones left out, and, when only some are kept, every other left out unread.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param array<mixed> $headers The headers.
-	 * @param string[]     $dropped The names left out.
+	 * @param array<mixed>  $headers The headers.
+	 * @param string[]      $dropped The names left out.
+	 * @param string[]|null $only    Optional. The names kept, the dropped ones aside; null keeps every other. Default null.
 	 * @return array<string, string> The headers.
 	 *
 	 * @phpstan-param list<string> $dropped
+	 * @phpstan-param list<string>|null $only
 	 */
-	private function headers( array $headers, array $dropped ): array {
+	private function headers( array $headers, array $dropped, ?array $only = null ): array {
 		$kept = array();
 
 		foreach ( $headers as $name => $value ) {
 			$name = strtolower( (string) $name );
 
-			if ( ! in_array( $name, $dropped, true ) ) {
+			if ( ! in_array( $name, $dropped, true ) && ( null === $only || in_array( $name, $only, true ) ) ) {
 				$kept[ $name ] = $this->text( (string) $value );
 			}
 		}

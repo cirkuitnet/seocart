@@ -9,8 +9,7 @@
 	"response": {
 		"body": "{\"data\":[{\"id\":\"rre_53\",\"status\":\"succeeded\",\"intent\":\"ri_47\",\"intent_uuid\":\"019b76da-a800-736d-b9c4-0724cb2d9efb\",\"amount\":1200,\"currency\":\"gbp\",\"refund_uuid\":\"5d63eec1-b110-5504-a104-48120f07e45a\"}]}",
 		"headers": {
-			"content-type": "application/json",
-			"request-id": "req_55"
+			"content-type": "application/json"
 		},
 		"status": 200
 	}

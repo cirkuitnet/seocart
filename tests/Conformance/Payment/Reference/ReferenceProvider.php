@@ -30,7 +30,8 @@ namespace SEOCart\Tests\Conformance\Payment\Reference;
  * is a bearer secret starting `ref_test_` or `ref_live_`; the two modes keep separate state. The
  * tokens: `ref_approve`, `ref_decline`, `ref_action`, `ref_action_done` (the customer acts,
  * so a cancel finds it approved), `ref_expiring` (waits, and is found cancelled afterwards) and
- * `ref_pending` (waits, and is still processing when asked).
+ * `ref_pending` (waits, and is still processing when asked). A declined intent names the card as a
+ * provider's decline does, by its last four digits and its expiry, which a tape keeps.
  * Ids are counted from 1, so a scenario's answers are the same in every run.
  *
  * @since 0.2.0
@@ -60,6 +61,19 @@ final class ReferenceProvider {
 		'requires_action_completed' => 'ref_action_done',
 		'expires'                   => 'ref_expiring',
 		'pending'                   => 'ref_pending',
+	);
+
+	/**
+	 * What a declined intent says of the card: the last four digits of the published test card that is always declined, and an expiry.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, int|string>
+	 */
+	private const DECLINED_CARD = array(
+		'last4'     => '0002',
+		'exp_month' => 12,
+		'exp_year'  => 2034,
 	);
 
 	/**
@@ -298,6 +312,10 @@ final class ReferenceProvider {
 			$intent['status']          = 'failed';
 			$intent['decline_code']    = self::TOKENS['decline'] === $token ? 'card_declined' : 'invalid_token';
 			$intent['decline_message'] = self::TOKENS['decline'] === $token ? 'The card was declined by its issuer.' : 'The payment token is not one this provider issued.';
+
+			if ( self::TOKENS['decline'] === $token ) {
+				$intent['card'] = self::DECLINED_CARD;
+			}
 		} elseif ( in_array( $token, array( self::TOKENS['requires_action'], self::TOKENS['requires_action_completed'] ), true ) ) {
 			$intent['status']      = 'requires_action';
 			$intent['charge']      = null;
