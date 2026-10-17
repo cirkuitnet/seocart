@@ -455,6 +455,11 @@ final class WebhookSoakTest extends WebhookTestCase {
 	/**
 	 * Builds the delivery of one of a payment's events, as the stand-in reports it.
 	 *
+	 * An approval names the provider's reference to the intent the stand-in gave in its answer to
+	 * the placement, as a provider names one intent by one reference: a shopper who had to act is
+	 * approved under the reference of the wait. An intent the stand-in never answered for is named
+	 * as an approval names it.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @param string       $event   The event.
@@ -468,7 +473,7 @@ final class WebhookSoakTest extends WebhookTestCase {
 		$intent    = (array) $context['intent'];
 		$amount    = (int) $intent['amount_minor'];
 		$currency  = (string) $intent['currency'];
-		$reference = 'stub-pi-approve-' . $uuid;
+		$reference = null === $intent['provider_intent_id'] ? 'stub-pi-approve-' . $uuid : (string) $intent['provider_intent_id'];
 
 		return match ( $event ) {
 			'authorized' => StubWebhooks::of( self::stubResult( $uuid, Operation::Authorize, Outcome::Approved, $amount, $currency, 'stub-ch-' . $uuid, $reference ) ),

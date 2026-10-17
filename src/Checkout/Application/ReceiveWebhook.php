@@ -82,7 +82,9 @@ defined( 'ABSPATH' ) || exit;
  *    next delivery processes the event once. A dispute and any event the store does not act on
  *    are ignored; a result is settled after its intent is read, which refuses an intent of another
  *    gateway or of the other mode: a delivery signed with a gateway's test secret never moves a
- *    live payment.
+ *    live payment. A delivery that names an intent by its uuid and by a provider reference the
+ *    intent does not hold, or that another intent holds, names two payments, and is ignored as
+ *    naming none.
  *
  * Anything that is not a decision, such as a database failure or an adapter's exception, rolls
  * the transaction back, receipt and all, is reported `payment.webhook_faulted`, and is
@@ -131,6 +133,15 @@ final class ReceiveWebhook {
 	 * @var int
 	 */
 	public const REJECTION_WINDOW_SECONDS = 3600;
+
+	/**
+	 * Why a delivery's line says its result was ignored, beyond its receipt's word: it named one of the store's intents by its uuid and a provider reference that intent does not hold.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const IDS_DISAGREE = 'ids_disagree';
 
 	/**
 	 * Creates the receiver. Sends nothing.
@@ -247,7 +258,7 @@ final class ReceiveWebhook {
 			return $decided;
 		}
 
-		list( $result, $decision, $disputed ) = $this->decideInTransaction( $envelope, $reading );
+		list( $result, $decision, $disputed, $disagreed ) = $this->decideInTransaction( $envelope, $reading );
 
 		if ( null === $decision ) {
 			return $result;
@@ -256,7 +267,7 @@ final class ReceiveWebhook {
 		if ( WebhookReadingKind::Ignored === $reading->kind ) {
 			$this->logIgnored( $envelope, $reading, $disputed );
 		} else {
-			$this->logDecided( $envelope, $reading, $decision );
+			$this->logDecided( $envelope, $reading, $decision, $disagreed );
 		}
 
 		return $result;
@@ -269,7 +280,7 @@ final class ReceiveWebhook {
 	 *
 	 * @param WebhookEnvelope $envelope The delivery.
 	 * @param WebhookReading  $reading  What the gateway read in it, constrained.
-	 * @return array{0: ReceiptResult, 1: ReceiptDecision|null, 2: IntentRef|null} What decideOnce() answered.
+	 * @return array{0: ReceiptResult, 1: ReceiptDecision|null, 2: IntentRef|null, 3: bool} What decideOnce() answered.
 	 */
 	private function decideInTransaction( WebhookEnvelope $envelope, WebhookReading $reading ): array {
 		return $this->tx->transaction( fn(): array => $this->decideOnce( $envelope, $reading ), RetryPolicy::deadlocks(), Isolation::ReadCommitted );
@@ -284,55 +295,78 @@ final class ReceiveWebhook {
 	 *
 	 * @param WebhookEnvelope $envelope The delivery.
 	 * @param WebhookReading  $reading  What the gateway read in it, constrained: ignored, or a result.
-	 * @return array{0: ReceiptResult, 1: ReceiptDecision|null, 2: IntentRef|null} What was decided; the decision, or null when
-	 *                                                                         an earlier delivery made it; the store's intent a
-	 *                                                                         dispute names, or null.
+	 * @return array{0: ReceiptResult, 1: ReceiptDecision|null, 2: IntentRef|null, 3: bool} What was decided; the decision, or
+	 *                                                                                  null when an earlier delivery made it;
+	 *                                                                                  the store's intent a dispute names, or
+	 *                                                                                  null; and whether a result was ignored
+	 *                                                                                  because its two ids disagree.
 	 */
 	private function decideOnce( WebhookEnvelope $envelope, WebhookReading $reading ): array {
 		$receipt = $this->receipts->claim( $envelope->gatewayId, $envelope->mode, (string) $reading->eventId, (string) $reading->eventType, $reading->occurredAt, hash( 'sha256', $envelope->rawBody ), $this->correlation->current() );
 
 		if ( null !== $receipt->result ) {
-			return array( $receipt->result, null, null );
+			return array( $receipt->result, null, null, false );
 		}
 
-		$disputed = null;
+		$disputed  = null;
+		$disagreed = false;
 
 		if ( WebhookReadingKind::Ignored === $reading->kind ) {
 			$disputed = $this->disputedIntent( $envelope, $reading );
 			$decision = ReceiptDecision::ignored( (string) $reading->eventType, $disputed?->uuid );
 		} else {
-			$decision = $this->decide( $envelope, $reading->result ?? throw new \UnexpectedValueException( 'A result reading carries its result.' ), $reading->refundUuid );
+			list( $decision, $disagreed ) = $this->decide( $envelope, $reading->result ?? throw new \UnexpectedValueException( 'A result reading carries its result.' ), $reading->refundUuid );
 		}
 
 		$this->receipts->settle( $receipt->id, $decision );
 
-		return array( $decision->result, $decision, $disputed );
+		return array( $decision->result, $decision, $disputed, $disagreed );
 	}
 
 	/**
 	 * Decides what a result reports, once its intent is read: the store's own intent of the address's gateway and mode, or none.
 	 *
+	 * A result whose two ids disagree (intentOf()) names none of the store's intents, and is ignored
+	 * as one naming an unknown intent is; the caller is told, for the delivery's log line. What the
+	 * money path refuses is raised as decideAbout() raises it.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @throws \UnexpectedValueException When the gateway read a result of another provider.
-	 * @throws CodedException            What the money path refuses, but an intent gone since it was read.
 	 *
 	 * @param WebhookEnvelope $envelope   The delivery.
 	 * @param GatewayResult   $result     The result it reports.
 	 * @param string|null     $refundUuid For a refund, the uuid the provider echoed; null otherwise.
-	 * @return ReceiptDecision The decision.
+	 * @return array{0: ReceiptDecision, 1: bool} The decision, and whether the result was ignored because its two ids disagree.
 	 */
-	private function decide( WebhookEnvelope $envelope, GatewayResult $result, ?string $refundUuid ): ReceiptDecision {
+	private function decide( WebhookEnvelope $envelope, GatewayResult $result, ?string $refundUuid ): array {
 		if ( $result->provider !== $envelope->gatewayId ) {
 			throw new \UnexpectedValueException( sprintf( 'The gateway %1$s read a result of the provider %2$s.', $envelope->gatewayId, $result->provider ) );
 		}
 
 		$intent = $this->intentOf( $envelope->gatewayId, '' === $result->intentUuid ? null : $result->intentUuid, $result->providerIntentId );
 
-		if ( null === $intent || $intent->gatewayId !== $envelope->gatewayId ) {
-			return ReceiptDecision::ignored( ReceiptDecision::UNKNOWN_INTENT );
+		if ( ! $intent instanceof IntentRef || $intent->gatewayId !== $envelope->gatewayId ) {
+			return array( ReceiptDecision::ignored( ReceiptDecision::UNKNOWN_INTENT ), false === $intent );
 		}
 
+		return array( $this->decideAbout( $envelope, $result, $intent, $refundUuid ), false );
+	}
+
+	/**
+	 * Decides what a result reports about the store's intent of the address's gateway: ignored when the intent is of the other mode, and otherwise applied.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException What the money path refuses, but an intent gone since it was read.
+	 *
+	 * @param WebhookEnvelope $envelope   The delivery.
+	 * @param GatewayResult   $result     The result it reports.
+	 * @param IntentRef       $intent     The intent it names, as read.
+	 * @param string|null     $refundUuid For a refund, the uuid the provider echoed; null otherwise.
+	 * @return ReceiptDecision The decision.
+	 */
+	private function decideAbout( WebhookEnvelope $envelope, GatewayResult $result, IntentRef $intent, ?string $refundUuid ): ReceiptDecision {
 		if ( $intent->mode !== $envelope->mode ) {
 			return ReceiptDecision::ignored( ReceiptDecision::MODE_MISMATCH, $intent->uuid );
 		}
@@ -446,21 +480,43 @@ final class ReceiveWebhook {
 	}
 
 	/**
-	 * Reads the intent a delivery names: by the store's uuid when it carries one, or else by the provider's reference, each constrained before.
+	 * Reads the intent a delivery names: by the store's uuid when it carries one, or else by the provider's reference, each constrained before; false when the two disagree.
+	 *
+	 * A delivery that carries both names one payment only when the intent of the uuid holds that
+	 * reference, or holds none yet and no other intent of the gateway holds it: the provider's first
+	 * word about the intent may come by webhook, before its answer to the store's call is applied.
+	 * Otherwise the two ids name two payments: a provider's error, or one payment's event addressed
+	 * with another's id, and nothing of it is the store's to apply. The intent's reference is read
+	 * with the intent, so an intent that holds one costs no statement more; one that holds none
+	 * costs the lookup of the reference, on the gateway's unique key of them.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param string      $gatewayId        The address's gateway.
 	 * @param string|null $intentUuid       The store's uuid of the intent, as the provider echoed it.
 	 * @param string|null $providerIntentId The provider's reference to the intent.
-	 * @return IntentRef|null The intent, or null when it names none of the store's.
+	 * @return IntentRef|false|null The intent; false when the delivery's reference is not the one the intent of the
+	 *                              uuid holds, or is another intent's; null when it names none of the store's.
 	 */
-	private function intentOf( string $gatewayId, ?string $intentUuid, ?string $providerIntentId ): ?IntentRef {
-		if ( null !== $intentUuid ) {
-			return $this->payments->intentRef( $intentUuid );
+	private function intentOf( string $gatewayId, ?string $intentUuid, ?string $providerIntentId ): IntentRef|false|null {
+		if ( null === $intentUuid ) {
+			return null === $providerIntentId ? null : $this->payments->intentByProvider( $gatewayId, $providerIntentId );
 		}
 
-		return null === $providerIntentId ? null : $this->payments->intentByProvider( $gatewayId, $providerIntentId );
+		$intent = $this->payments->intentRef( $intentUuid );
+
+		if ( null === $intent || null === $providerIntentId ) {
+			return $intent;
+		}
+
+		if ( null !== $intent->providerIntentId ) {
+			return $intent->providerIntentId === $providerIntentId ? $intent : false;
+		}
+
+		// The intent holds no reference yet: the reference is its own unless another intent holds it.
+		$holder = $this->payments->intentByProvider( $gatewayId, $providerIntentId );
+
+		return null === $holder || $holder->uuid === $intent->uuid ? $intent : false;
 	}
 
 	/**
@@ -479,7 +535,7 @@ final class ReceiveWebhook {
 
 		$intent = $this->intentOf( $envelope->gatewayId, $reading->intentUuid, $reading->providerIntentId );
 
-		return null !== $intent && $intent->gatewayId === $envelope->gatewayId && $intent->mode === $envelope->mode ? $intent : null;
+		return $intent instanceof IntentRef && $intent->gatewayId === $envelope->gatewayId && $intent->mode === $envelope->mode ? $intent : null;
 	}
 
 	/**
@@ -545,15 +601,16 @@ final class ReceiveWebhook {
 	}
 
 	/**
-	 * Logs what was decided about a result.
+	 * Logs what was decided about a result: at warning, and without either id, for a result ignored because its two ids disagree.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param WebhookEnvelope $envelope The delivery.
-	 * @param WebhookReading  $reading  The gateway's reading: a result.
-	 * @param ReceiptDecision $decision What was decided.
+	 * @param WebhookEnvelope $envelope  The delivery.
+	 * @param WebhookReading  $reading   The gateway's reading: a result.
+	 * @param ReceiptDecision $decision  What was decided.
+	 * @param bool            $disagreed Whether the result was ignored because its two ids disagree.
 	 */
-	private function logDecided( WebhookEnvelope $envelope, WebhookReading $reading, ReceiptDecision $decision ): void {
+	private function logDecided( WebhookEnvelope $envelope, WebhookReading $reading, ReceiptDecision $decision, bool $disagreed ): void {
 		$ignored = ReceiptResult::Ignored === $decision->result;
 		$context = self::context( $envelope, $reading ) + array(
 			'result'         => $decision->result->value,
@@ -561,6 +618,12 @@ final class ReceiveWebhook {
 			'intent_uuid'    => $decision->intentUuid,
 			'transaction_id' => $decision->transactionId,
 		);
+
+		if ( $disagreed ) {
+			$this->log->warning( 'payment.webhook_ignored', 'A webhook delivery named one of the store\'s payments by its id and a provider payment that payment does not hold: the two ids disagree, so nothing was applied.', $context + array( 'reason' => self::IDS_DISAGREE ) );
+
+			return;
+		}
 
 		if ( $ignored ) {
 			$this->log->info( 'payment.webhook_ignored', 'A webhook delivery reported a payment that is not one of this address\'s: nothing was applied.', $context );

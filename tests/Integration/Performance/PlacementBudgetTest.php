@@ -164,13 +164,13 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	);
 
 	/**
-	 * The statements a delivered approval costs beyond the second unit of work it runs: the receipt read, the receipt claimed, the intent read, the receipt settled and the line logged, and the savepoint pair of the second unit, which runs in the receiver's transaction.
+	 * The statements a delivered approval costs beyond the second unit of work it runs: the receipt read, the receipt claimed, the intent read, the lookup of the provider's reference the intent does not hold yet, the receipt settled and the line logged, and the savepoint pair of the second unit, which runs in the receiver's transaction.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var int
 	 */
-	private const WEBHOOK_EXTRA = 7;
+	private const WEBHOOK_EXTRA = 8;
 
 	/**
 	 * The most statements a placement of Cart B in a presentment currency may send beyond one in the base currency.
