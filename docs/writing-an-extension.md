@@ -492,13 +492,15 @@ Before a tape is written, it is scrubbed and scanned:
    shape, a header that carries credentials, a card number wherever it is, and a field named for
    a card's verification code or its full number (`cvc`, `cvv`, `cvv2`, `cvc2`, `csc`,
    `security_code`, `number`, `card_number` or `account_number`) whatever its value; a field's
-   name is read for all of these but the opaque token. A card's `last4`, `exp_month`, `exp_year`,
-   `brand`, `funding` and `country` are kept: PCI-DSS lets a merchant store them, every receipt
-   shows them, and a provider's decline answer carries them.
-   Then the raw text of each body and query, as it is written, is read for an opaque token or a
-   card number that none of its decoded fields holds, such as the first of a field sent twice
-   or a number too long to read as one. A hit fails the recording, names the part, the field
-   and what it found but never the value, and nothing is written.
+   name is read for all of these but the opaque token, unless it is shaped like a URL, which is
+   read as the URL it is, or is a key of a URL's query, which is read as a value is. A card's
+   `last4`, `exp_month`, `exp_year`, `brand`, `funding` and `country` are kept: PCI-DSS lets a
+   merchant store them, every receipt shows them, and a provider's decline answer carries them.
+   Then the raw text of each body and query, as it is written, is read for an opaque token that
+   none of its decoded fields holds, such as the first of a field sent twice or a number too long
+   to read as one, and for any card number at all, which no field may hold. A hit fails the
+   recording, names the part, the field and what it found but never the value, and nothing is
+   written.
 
 An opaque token passes only in a public shape: a UUID, as the store's own references are; one of
 the provider's enumerated codes, as an exact string the test names in `publicCodes()`, such as a

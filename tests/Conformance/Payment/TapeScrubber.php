@@ -32,12 +32,13 @@ use SEOCart\Platform\Logging\CardNumbers;
  * 4. what is about to be written is read field by field (each header; each field of a JSON or form
  *    body, of a URL's query and of a URL held in a field; each setting), and the recording refused,
  *    the part and the field named and nothing written, when a value holds a credential of the run,
- *    a value shaped like a provider's secret (SECRET_SHAPES), a card number, or an opaque token: a
+ *    a value shaped like a provider's secret (SECRET_SHAPES), a card number (read as it is, and
+ *    with each escape, such as `%20`, the character it encodes and each `+` a space), or an opaque token: a
  *    run of TOKEN_LENGTH or more letters, digits, `_` and `-`, in any case; or when a field is
  *    named for a card's verification code or its full number (CARD_FIELDS), whatever its value;
- *    then the raw text of each body, query and tape file, for an opaque token or a card number that
- *    none of its decoded fields holds (scanUnread()), as decoding drops the first of a field sent
- *    twice and the digits of a number too long to read as one.
+ *    then the raw text of each body, query and tape file, for an opaque token none of its decoded
+ *    fields holds, and for any card number at all (scanUnread()), as decoding drops the first of a
+ *    field sent twice and the digits of a number too long to read as one.
  *
  * An opaque token passes only in a public shape: a UUID; a value the test declares as one of the
  * provider's enumerated codes (GatewayConformanceCase::publicCodes(), exact strings, such as a long
@@ -48,7 +49,9 @@ use SEOCart\Platform\Logging\CardNumbers;
  * header. No public shape passes for a token with a secret's prefix (SECRET_PREFIX), in a field
  * named like a credential (CREDENTIAL_FIELD), or in the query of a redirect's `location`. A field's
  * name is the structure's, not a value: it is checked for a credential, a secret's shape and a card
- * field, and is not held to the token rule.
+ * field, and is not held to the token rule, unless it is shaped like a URL: such a name is read as
+ * the URL it is, its query field by field (scanName()). A key of a URL's query is held to the
+ * token rule as a value is: it is the URL's text, not a name a provider declares.
  *
  * A `{{secret:<name>}}` placeholder passes only when this scrubber wrote it: a scan of a scrubbed
  * exchange or delivery lets through the placeholders its scrub wrote, none that was already in what
@@ -137,7 +140,7 @@ final class TapeScrubber {
 	 *
 	 * @var string
 	 */
-	public const LIMIT = 'Rule 14 reads a recording value by value for an opaque token of ' . self::TOKEN_LENGTH . ' characters or more: a secret shorter than that, or one split across values, is beyond that reading, so every credential of the run is a secret setting the gateway declares, replaced in every form it is sent in, and every secret the provider issues is named in its test\'s `providerSecrets()`. A field\'s name is not held to the token rule, as providers name fields with ' . self::TOKEN_LENGTH . ' characters and more, so a secret sent as a field\'s name is beyond it. A form-encoded copy of a placeholder the scrub itself wrote passes as that placeholder, which names a declared setting and carries no value: the tape keeps the placeholder\'s text, and a replay has that text where the provider sent the encoded copy. A card number is refused wherever it is, and a card\'s verification code or full number by the name of its field, `cvc`, `cvv`, `cvv2`, `cvc2`, `csc`, `security_code`, `number`, `card_number` or `account_number`, whatever its value: a verification code under any other name is beyond the reading, as three or four digits read as any number. A card\'s `last4`, `exp_month`, `exp_year`, `brand`, `funding` and `country` are kept.';
+	public const LIMIT = 'Rule 14 reads a recording value by value for an opaque token of ' . self::TOKEN_LENGTH . ' characters or more: a secret shorter than that, or one split across values, is beyond that reading, so every credential of the run is a secret setting the gateway declares, replaced in every form it is sent in, and every secret the provider issues is named in its test\'s `providerSecrets()`. A field\'s name is not held to the token rule, as providers name fields with ' . self::TOKEN_LENGTH . ' characters and more, so a secret sent as a field\'s name is beyond it, unless the name is shaped like a URL, which is read as the URL it is, or is a key of a URL\'s query, which is read as a value is. A form-encoded copy of a placeholder the scrub itself wrote passes as that placeholder, which names a declared setting and carries no value: the tape keeps the placeholder\'s text, and a replay has that text where the provider sent the encoded copy. A card number is refused wherever it is, and a card\'s verification code or full number by the name of its field, `cvc`, `cvv`, `cvv2`, `cvc2`, `csc`, `security_code`, `number`, `card_number` or `account_number`, whatever its value: a verification code under any other name is beyond the reading, as three or four digits read as any number. A card\'s `last4`, `exp_month`, `exp_year`, `brand`, `funding` and `country` are kept. A card number encoded twice, such as with `%2520` between its digits, is not read as one, and digits split between a field\'s name and its value, or across two header values, are separate runs.';
 
 	/**
 	 * The prefix or infix of a secret: a token that has one passes in no public shape.
@@ -178,14 +181,42 @@ final class TapeScrubber {
 	 */
 	private const PLACEHOLDER = '/\{\{secret:[A-Za-z0-9_.\-]+\}\}/';
 
+
 	/**
-	 * A run of 13 to 19 digits, with a space or a dash between any two, that the card rule reads: one in the raw text of a part that no field holds is refused.
+	 * An escape in a part's text, which the reading of its raw text takes for a break between words: a JSON escape (`\u00e9`, `\/`, `\"`) or a percent-encoded byte (`%3D`).
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
-	private const CARD_CANDIDATE = '/(?<![0-9])[0-9](?:[ \-]?[0-9]){12,18}(?![0-9])/';
+	private const ESCAPE = '/' . self::ESCAPED . '/s';
+
+	/**
+	 * The escapes of ESCAPE, without the pattern's delimiters, so the card rule's breaks add `+` to the same list.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const ESCAPED = '\\\\(?:u[0-9a-fA-F]{4}|.)|%[0-9a-fA-F]{2}';
+
+	/**
+	 * An escape the card rule reads as the character it encodes: a run of percent-encoded bytes, a JSON `\u` escape (a pair of them for a character beyond the first plane), or any other JSON escape.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const CARD_ESCAPE = '/(?:%[0-9a-fA-F]{2})++|\\\\u[dD][89abAB][0-9a-fA-F]{2}\\\\u[dD][c-fC-F][0-9a-fA-F]{2}|\\\\u[0-9a-fA-F]{4}|\\\\./s';
+
+	/**
+	 * The beginning of a URL, as a value or a name is read as one: `//`, after a scheme or not, as a browser reads `//host/path` as a URL of the page's own scheme.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const URL = '#^(?:[a-z][a-z0-9+.\-]*:)?//#i';
 
 	/**
 	 * A 64-hex digest, public only in a field the test declares, such as a delivery's signature.
@@ -552,7 +583,54 @@ final class TapeScrubber {
 		}
 
 		$this->scanFields( $rest, $file . ', its field', '', true );
-		self::scanUnread( $text, $decoded, $file );
+		self::scanUnread( $text, $decoded, $file, array(), self::partsOf( $decoded ) );
+	}
+
+	/**
+	 * Returns the texts of a tape file that are parts the scan reads on their own, each with its escapes still in: an exchange's URL, headers and bodies, or a delivery's headers and body, and any URL a field holds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<mixed> $decoded The file, decoded.
+	 * @return list<string> The parts' texts.
+	 */
+	private static function partsOf( array $decoded ): array {
+		$parts = self::urlsIn( $decoded );
+
+		if ( is_array( $decoded['request'] ?? null ) && is_array( $decoded['response'] ?? null ) ) {
+			$exchange = Exchange::fromTape( $decoded );
+			$parts    = array_merge( $parts, array( $exchange->url, (string) $exchange->body, $exchange->responseBody ), array_values( $exchange->headers ), array_values( $exchange->responseHeaders ) );
+		} elseif ( is_array( $decoded['headers'] ?? null ) && isset( $decoded['body'] ) ) {
+			$parts = array_merge( $parts, array( (string) $decoded['body'] ), array_map( static fn( mixed $value ): string => is_scalar( $value ) ? (string) $value : '', array_values( $decoded['headers'] ) ) );
+		}
+
+		return $parts;
+	}
+
+	/**
+	 * Returns the keys and the values among decoded fields that are URLs, nested ones included: those scanFields() reads as URLs, a key through scanName().
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<mixed> $decoded The fields.
+	 * @return list<string> The URLs.
+	 */
+	private static function urlsIn( array $decoded ): array {
+		$urls = array();
+
+		foreach ( $decoded as $key => $value ) {
+			if ( is_string( $key ) && 1 === preg_match( self::URL, $key ) ) {
+				$urls[] = $key;
+			}
+
+			if ( is_array( $value ) ) {
+				$urls = array_merge( $urls, self::urlsIn( $value ) );
+			} elseif ( is_string( $value ) && 1 === preg_match( self::URL, $value ) ) {
+				$urls[] = $value;
+			}
+		}
+
+		return $urls;
 	}
 
 	/**
@@ -582,7 +660,7 @@ final class TapeScrubber {
 	}
 
 	/**
-	 * Refuses an exchange's parts, each by its name, with the placeholders the current scan lets through.
+	 * Refuses an exchange's parts, each by its name, with the placeholders the current scan lets through, and a request URL that carries a fragment or a user and a password, which a tape, holding the host and the path with its query, would drop unread.
 	 *
 	 * @since 0.2.0
 	 *
@@ -593,6 +671,14 @@ final class TapeScrubber {
 	 */
 	private function scanExchangeParts( Exchange $clean, string $where ): void {
 		$forbidden = array_merge( self::DROPPED_REQUEST_HEADERS, self::DROPPED_RESPONSE_HEADERS );
+
+		if ( null !== wp_parse_url( $clean->url, PHP_URL_FRAGMENT ) ) {
+			throw new TapeRefused( sprintf( '%s, its URL carries a fragment, which a client never sends to a server and a tape never keeps: the gateway built the request wrongly.', $where ) );
+		}
+
+		if ( null !== wp_parse_url( $clean->url, PHP_URL_USER ) || null !== wp_parse_url( $clean->url, PHP_URL_PASS ) ) {
+			throw new TapeRefused( sprintf( '%s, its URL carries a user or a password before its host, which a tape, holding the host and the path with its query, never keeps: a credential travels in a header, never in the URL.', $where ) );
+		}
 
 		$this->scanUrl( $clean->url, '', $where . ', its URL', true, true );
 		$this->scanHeaders( $clean->headers, $where . ', its request header', $forbidden );
@@ -652,7 +738,7 @@ final class TapeScrubber {
 	 * @param bool   $exemptable Whether a public shape may pass in it.
 	 */
 	private function scanValue( string $value, string $field, string $where, bool $exemptable ): void {
-		if ( 1 === preg_match( '#^[a-z][a-z0-9+.\-]*://#i', $value ) ) {
+		if ( 1 === preg_match( self::URL, $value ) ) {
 			$this->scanUrl( $value, $field, $where, $exemptable, $exemptable );
 			return;
 		}
@@ -686,7 +772,7 @@ final class TapeScrubber {
 			}
 		}
 
-		if ( CardNumbers::contains( $text ) ) {
+		if ( CardNumbers::contains( $text ) || CardNumbers::contains( self::asCardsRead( $text ) ) ) {
 			throw new TapeRefused( sprintf( '%s holds a card number: an adapter never asks for card details, and a tape never keeps them.', $where ) );
 		}
 
@@ -805,8 +891,8 @@ final class TapeScrubber {
 		if ( '' !== $query ) {
 			$fields = array();
 			parse_str( $query, $fields );
-			$this->scanFields( $fields, $where . ' query field', '', $queryExemptable && 1 !== preg_match( self::CREDENTIAL_FIELD, $field ) );
-			self::scanUnread( $query, $fields, $where . ' query', self::formNames( $query ) );
+			$this->scanFields( $fields, $where . ' query field', '', $queryExemptable && 1 !== preg_match( self::CREDENTIAL_FIELD, $field ), '', true );
+			self::scanUnread( $query, $fields, $where . ' query', self::formNames( $query ), self::urlsIn( $fields ) );
 		}
 	}
 
@@ -855,7 +941,7 @@ final class TapeScrubber {
 
 		if ( is_array( $decoded ) ) {
 			$this->scanFields( $decoded, $where . ' field', '', true );
-			self::scanUnread( $body, $decoded, $where, $names );
+			self::scanUnread( $body, $decoded, $where, $names, self::urlsIn( $decoded ) );
 			return;
 		}
 
@@ -863,19 +949,34 @@ final class TapeScrubber {
 	}
 
 	/**
-	 * Refuses what the raw text of a part holds outside the fields it was read as: an opaque token, or a card number, that no key or value of them holds.
+	 * Refuses what the raw text of a part holds outside the fields it was read as: an opaque token that no key or value of them holds, or a card number, which none may hold.
 	 *
 	 * Decoding keeps the last of a field sent twice, and reads a number too long for an integer as
 	 * a float, so the reading field by field never sees the first value or the digits; the raw
 	 * text, as it is written, still holds them. Its escapes (`\u00e9`, `\/`, `%3D`) are read as
-	 * breaks, so what is left between them is text a decoded key or value holds as it is. A token
-	 * in it passes only when it is a whole token of one, in any case: one a sentence holds as a
-	 * word passes, one inside a longer token, such as a public id, does not. A card number passes
-	 * only when its digits are the digits of one, whatever stands between them: a timestamp whose
-	 * escaped separators read as breaks is its field's, and a card number inside a longer number
-	 * is not. A form's or a query's field names, as
-	 * written, hold their tokens too, as decoding rewrites a `.` in a name; a field's name is not
-	 * held to the token rule in any case.
+	 * breaks (ESCAPE), so what is left between them is text a decoded key or value holds as it
+	 * is. A token in it passes only when it is a whole token of one, in any case: one a sentence
+	 * holds as a word passes, one inside a longer token, such as a public id, does not. No field
+	 * may hold a card number, so none can vouch for one decoding dropped: the whole raw text, read
+	 * as the card rule reads it (asCardsRead(): each escape the character it encodes, each `+` a
+	 * space), is read by CardNumbers as it reads a log line, digits inside an identifier and all,
+	 * and a card number found there refuses the part. Where that reading differs from a decoded
+	 * value's, it is the stricter (a `+` reads as a space in JSON too; a byte that is not UTF-8
+	 * reads as `?` in its own stretch only, where CardNumbers reads every byte above 127 of a
+	 * whole invalid value as `?`), or the page states the limit: a card number encoded twice, such
+	 * as with `%2520` between its digits, and digits split between two fields, or between a key
+	 * and its value. A form's or a query's field names, as written, hold their tokens
+	 * too, as decoding rewrites a `.` in a name; a field's name is not held to the token rule
+	 * unless it is shaped like a URL, which is read as one, or is a key of a URL's query.
+	 *
+	 * A decoded value that is itself a part the scan reads on its own, with its own escapes still
+	 * in (a URL a field holds; in a tape file, the exchange's URL, headers and bodies), is held as
+	 * that part's raw text is read, its escapes as breaks, for its words. So a token that is one word in the raw text, beside an escape, is held
+	 * as that word, and the scan of a part and the scan of the file it is written in give one
+	 * verdict. That holds nothing unread: the part's own scan reads each of its values for a card
+	 * number with its escapes read as breaks too (scanText()), reads a token next to an escape as
+	 * one longer token, which the token rule refuses, and reads a query's or a body's raw text
+	 * against its own fields.
 	 *
 	 * @since 0.2.0
 	 *
@@ -885,28 +986,24 @@ final class TapeScrubber {
 	 * @param array<mixed> $decoded Its fields, decoded.
 	 * @param string       $where   The part, for the message.
 	 * @param string[]     $names   Optional. A form's or a query's field names, as written, URL-decoded. Default none.
+	 * @param string[]     $parts   Optional. The decoded values that are parts the scan reads on their own, their escapes still in. Default none.
 	 *
 	 * @phpstan-param list<string> $names
+	 * @phpstan-param list<string> $parts
 	 */
-	private static function scanUnread( string $raw, array $decoded, string $where, array $names = array() ): void {
+	private static function scanUnread( string $raw, array $decoded, string $where, array $names = array(), array $parts = array() ): void {
 		$fields = self::keysAndValues( $decoded );
 		$held   = array();
-		$digits = array();
-		$raw    = (string) preg_replace( '/\\\\(?:u[0-9a-fA-F]{4}|.)|%[0-9a-fA-F]{2}/s', ' ', $raw );
 
-		foreach ( $names as $name ) {
-			preg_match_all( '/[A-Za-z0-9_\-]+/', strtolower( $name ), $words );
-			$held += array_fill_keys( $words[0], true );
+		foreach ( array_merge( $names, $fields ) as $text ) {
+			$held += self::wordsOf( $text );
 		}
 
-		foreach ( $fields as $text ) {
-			preg_match_all( '/[A-Za-z0-9_\-]+/', strtolower( $text ), $words );
-			$held += array_fill_keys( $words[0], true );
-
-			$digits[ (string) preg_replace( '/[^0-9]+/', '', $text ) ] = true;
+		foreach ( $parts as $part ) {
+			$held += self::wordsOf( self::withEscapesAsBreaks( $part ) );
 		}
 
-		preg_match_all( '/[A-Za-z0-9_\-]{' . self::TOKEN_LENGTH . ',}/', $raw, $tokens );
+		preg_match_all( '/[A-Za-z0-9_\-]{' . self::TOKEN_LENGTH . ',}/', self::withEscapesAsBreaks( $raw ), $tokens );
 
 		foreach ( $tokens[0] as $token ) {
 			if ( ! isset( $held[ strtolower( $token ) ] ) ) {
@@ -914,13 +1011,96 @@ final class TapeScrubber {
 			}
 		}
 
-		preg_match_all( self::CARD_CANDIDATE, $raw, $candidates );
-
-		foreach ( $candidates[0] as $candidate ) {
-			if ( CardNumbers::contains( $candidate ) && ! isset( $digits[ (string) preg_replace( '/[^0-9]+/', '', $candidate ) ] ) ) {
-				throw new TapeRefused( sprintf( '%s holds, outside every field it was read as, a card number: an adapter never asks for card details, and a tape never keeps them.', $where ) );
-			}
+		if ( CardNumbers::contains( self::asCardsRead( $raw ) ) ) {
+			throw new TapeRefused( sprintf( '%s holds, outside every field it was read as, a card number: an adapter never asks for card details, and a tape never keeps them.', $where ) );
 		}
+	}
+
+	/**
+	 * Returns a text with each of its escapes read as a break between words.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $text The text.
+	 * @return string The text, each escape a space.
+	 */
+	private static function withEscapesAsBreaks( string $text ): string {
+		return (string) preg_replace( self::ESCAPE, ' ', $text );
+	}
+
+	/**
+	 * Returns a text as the card rule reads it beside the text as it is: each escape the character it encodes, and each `+`, which a query or a form decodes as a space, a space.
+	 *
+	 * A run of percent-encoded bytes reads as the characters its bytes encode and a JSON escape as
+	 * its character, so a separator written as an escape counts once, as it does in the decoded
+	 * value; bytes that are not UTF-8 read as `?`, as CardNumbers reads them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $text The text.
+	 * @return string The text as the card rule reads it, valid UTF-8.
+	 */
+	private static function asCardsRead( string $text ): string {
+		$reading = '';
+		$at      = 0;
+
+		preg_match_all( self::CARD_ESCAPE, $text, $escapes, PREG_OFFSET_CAPTURE );
+
+		foreach ( $escapes[0] as list( $escape, $offset ) ) {
+			$reading .= self::readable( substr( $text, $at, $offset - $at ) ) . self::decodedEscape( $escape );
+			$at       = $offset + strlen( $escape );
+		}
+
+		return strtr( $reading . self::readable( substr( $text, $at ) ), '+', ' ' );
+	}
+
+	/**
+	 * Returns what an escape encodes, as the card rule reads it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $escape A run of percent-encoded bytes, or a JSON escape.
+	 * @return string What it encodes; `?` for what is not UTF-8, such as half a surrogate pair.
+	 */
+	private static function decodedEscape( string $escape ): string {
+		if ( '%' === $escape[0] ) {
+			return self::readable( rawurldecode( $escape ) );
+		}
+
+		$decoded = json_decode( '"' . $escape . '"' );
+
+		if ( is_string( $decoded ) ) {
+			return self::readable( $decoded );
+		}
+
+		// A backslash before a character JSON does not escape stands for that character.
+		return 2 === strlen( $escape ) ? self::readable( $escape[1] ) : '?';
+	}
+
+	/**
+	 * Returns bytes as CardNumbers reads them: as they are when they are UTF-8, and each byte above 127 a `?` when they are not.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $bytes The bytes.
+	 * @return string The bytes, valid UTF-8.
+	 */
+	private static function readable( string $bytes ): string {
+		return 1 === preg_match( '//u', $bytes ) ? $bytes : (string) preg_replace( '/[\x80-\xFF]/', '?', $bytes );
+	}
+
+	/**
+	 * Returns the words of a text, in lower case: its runs of letters, digits, `_` and `-`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $text The text.
+	 * @return array<int|string, true> The words, as keys: a word of digits alone is an integer key, as PHP makes it.
+	 */
+	private static function wordsOf( string $text ): array {
+		preg_match_all( '/[A-Za-z0-9_\-]+/', strtolower( $text ), $words );
+
+		return array_fill_keys( $words[0], true );
 	}
 
 	/**
@@ -959,8 +1139,9 @@ final class TapeScrubber {
 	 * @param string       $path       The path of the field they sit in, dotted; empty at the top.
 	 * @param bool         $exemptable Whether a public shape may pass in them.
 	 * @param string       $enclosing  The name of the field they sit in, for a list's items; empty at the top.
+	 * @param bool         $keyed      Optional. Whether their names are held to the token rule as values are, as a URL query's are. Default false.
 	 */
-	private function scanFields( array $fields, string $where, string $path, bool $exemptable, string $enclosing = '' ): void {
+	private function scanFields( array $fields, string $where, string $path, bool $exemptable, string $enclosing = '', bool $keyed = false ): void {
 		foreach ( $fields as $key => $value ) {
 			$field = is_string( $key ) ? $key : $enclosing;
 			$named = '' === $path ? (string) $key : $path . '.' . $key;
@@ -970,15 +1151,42 @@ final class TapeScrubber {
 			}
 
 			if ( is_string( $key ) ) {
-				$this->scanText( $key, '', $where . ' name at ' . ( '' === $path ? 'the top' : $path ), true, false );
+				$this->scanName( $key, $where . ' name at ' . ( '' === $path ? 'the top' : $path ), $exemptable, $keyed );
 			}
 
 			if ( is_array( $value ) ) {
-				$this->scanFields( $value, $where, $named, $exemptable, $field );
+				$this->scanFields( $value, $where, $named, $exemptable, $field, $keyed );
 			} elseif ( is_scalar( $value ) ) {
 				$this->scanValue( (string) $value, $field, $where . ' ' . $named, $exemptable );
 			}
 		}
+	}
+
+	/**
+	 * Refuses a field's or a header's name a tape may not hold: one shaped like a URL is read as the URL it is, any other as a name.
+	 *
+	 * A name is the structure's, so it is checked for a credential, a secret's shape and a card
+	 * number, and is not held to the token rule, as providers name fields with TOKEN_LENGTH
+	 * characters and more. A name shaped like a URL is not a provider's word but text that could
+	 * carry anything a value can, so it is read as a URL is: what is not its query under the token
+	 * rule, and each field of its query as a value.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws TapeRefused When it is refused, naming where.
+	 *
+	 * @param string $name       The name.
+	 * @param string $where      Where it is, for the message.
+	 * @param bool   $exemptable Whether a public shape may pass in it, when it is read as a URL or a value.
+	 * @param bool   $keyed      Optional. Whether it is a key of a URL's query, held to the token rule as a value is: the URL's text, not a name a provider declares. Default false.
+	 */
+	private function scanName( string $name, string $where, bool $exemptable, bool $keyed = false ): void {
+		if ( 1 === preg_match( self::URL, $name ) ) {
+			$this->scanUrl( $name, '', $where, $exemptable, $exemptable );
+			return;
+		}
+
+		$this->scanText( $name, '', $where, $keyed ? $exemptable : true, $keyed );
 	}
 
 	/**
@@ -1002,7 +1210,7 @@ final class TapeScrubber {
 				throw new TapeRefused( sprintf( '%1$s %2$s carries credentials, and a tape never keeps it.', $where, $name ) );
 			}
 
-			$this->scanText( $name, '', $where . ' name', true, false );
+			$this->scanName( $name, $where . ' name', true );
 
 			if ( 'location' === $name ) {
 				$this->scanUrl( (string) $value, $name, $where . ' ' . $name, true, false );

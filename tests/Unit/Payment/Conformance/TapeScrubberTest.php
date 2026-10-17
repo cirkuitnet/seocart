@@ -15,6 +15,7 @@ use Brain\Monkey;
 use Brain\Monkey\Functions;
 use PHPUnit\Framework\TestCase;
 use SEOCart\Tests\Conformance\Payment\Exchange;
+use SEOCart\Tests\Conformance\Payment\Tape;
 use SEOCart\Tests\Conformance\Payment\TapeRefused;
 use SEOCart\Tests\Conformance\Payment\TapeScrubber;
 
@@ -763,7 +764,6 @@ final class TapeScrubberTest extends TestCase {
 			'a number too long to read' => array( 'responseBody', '{"n":735192846027384950617283}', 'its response body', 'an opaque token', '735192846027384950617283' ),
 			'a card number sent twice'  => array( 'responseBody', '{"pan":"4242424242424242","pan":"x"}', 'its response body', 'a card number', '4242424242424242' ),
 			'a form card number twice'  => array( 'body', 'pan=4242424242424242&pan=x', 'its request body', 'a card number', '4242424242424242' ),
-			'a timestamp sent twice'    => array( 'body', 'when=' . self::ESCAPED_TIME . '&when=x', 'its request body', 'a card number', '20260601120005' ),
 			'a dotted name sent twice'  => array( 'body', 'metadata.note=' . $token . '&metadata.note=x', 'its request body', 'an opaque token', $token ),
 		);
 	}
@@ -784,18 +784,293 @@ final class TapeScrubberTest extends TestCase {
 	}
 
 	/**
-	 * Tests that a form's and a query's field names, as written, hold their tokens: decoding rewrites a `.` in a name as `_`, and the name is still the field's.
+	 * Tests that a form's and a query's field names, as written, hold their tokens: decoding rewrites a `.` in a name as `_`, and the name is still the field's; a query's key of 20 characters and more, held to the token rule as a value is, passes as the test declares it, read with its `.` as `_`.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @group conformance
 	 */
 	public function test_a_dotted_field_name_is_written(): void {
-		$scrubber = self::scrubber();
-		$clean    = $scrubber->exchange( new Exchange( 'POST', 'https://api.example.com/v1/charges?metadata.order_reference_number=1', array(), 'metadata.order_reference_number=1&amount=2000', 200, array(), '{}' ) );
+		$scrubber = new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), array(), array(), array( 'metadata_order_reference_number' ) );
+		$sent     = new Exchange( 'POST', 'https://api.example.com/v1/charges?metadata.order_reference_number=1', array(), 'metadata.order_reference_number=1&amount=2000', 200, array(), '{}' );
+		$clean    = $scrubber->exchange( $sent );
 
 		$scrubber->scanExchange( $clean, self::WHERE );
 		$this->assertSame( 'metadata.order_reference_number=1&amount=2000', $clean->body );
+		$this->assertRefused( self::WHERE . ', its URL query field name at the top holds an opaque token', 'metadata', fn() => self::scrubber()->scanExchange( self::scrubber()->exchange( $sent ), self::WHERE ) );
+	}
+
+	/**
+	 * Returns exchanges whose raw text holds a token next to an escape, each with whether a tape may hold it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{0: Exchange, 1: bool, 2?: string}> The exchange as sent, whether both scans accept it, and what each refusal says, if it matters.
+	 */
+	public function escaped(): array {
+		$uuid   = '019b76da-a800-7325-8718-1c4f7d1ef27f';
+		$token  = 'abcdefghijklmnopqrstuvwxyz01';
+		$answer = array( 'content-type' => 'application/json' );
+		$named  = rawurlencode( 'https://x.example/?n=' . rawurlencode( '"' . $token ) ) . '=ok';
+		$card   = '4242%204242%204242%204242';
+		$runOf  = static fn( string $between, string $group = '4242' ): string => implode( $between, array( $group, $group, $group, $group ) );
+		$nbsp   = mb_chr( 0xA0, 'UTF-8' );
+		$beside = 'its response body holds, outside every field it was read as, a card number';
+		$dup    = static fn( string $note ): Exchange => self::exchangeWith( 'responseBody', '{"note":"' . $note . '","note":"x"}' );
+
+		return array(
+			'a uuid after %22 in a search query'           => array( new Exchange( 'GET', 'https://api.example.com/v1/payment_intents/search?query=' . rawurlencode( 'metadata["intent_uuid"]:"' . $uuid . '"' ), array(), null, 200, $answer, '{"data":[]}' ), true ),
+			'a uuid after a quote in a JSON body'          => array( self::exchangeWith( 'body', '{"query":"metadata[\"intent_uuid\"]:\"' . $uuid . '\""}' ), true ),
+			'a URL with \/ and %22 in a JSON body'         => array( self::exchangeWith( 'responseBody', '{"next":"https:\/\/pay.example.com\/act?q=%22' . $uuid . '%22"}' ), true ),
+			'an escaped timestamp in a URL query'          => array( new Exchange( 'GET', 'https://api.example.com/v1/charges?created=' . self::ESCAPED_TIME, array(), null, 200, $answer, '{"data":[]}' ), true ),
+			'a token after %22 no field holds'             => array( new Exchange( 'GET', 'https://api.example.com/v1/search?q=%22' . $token . '%22&q=x', array(), null, 200, $answer, '{"data":[]}' ), false ),
+			'a token after \u0022 no field holds'          => array( self::exchangeWith( 'responseBody', '{"note":"\u0022' . $token . '","note":"x"}' ), false ),
+			'a token joined to an escape in its value'     => array( self::exchangeWith( 'responseBody', '{"note":"%22' . $token . '"}' ), false ),
+			'a card number split by escapes in a value'    => array( self::exchangeWith( 'responseBody', '{"note":"4242%204242%204242%204242"}' ), false ),
+			'a card number in a URL-shaped key'            => array( self::exchangeWith( 'responseBody', '{"https://x.example/?n=4242%204242%204242%204242":"ok"}' ), false, 'its response body field name at the top query field n holds a card number' ),
+			'a token in a URL-shaped key'                  => array( self::exchangeWith( 'responseBody', '{"https://x.example/?n=%22' . $token . '":"ok"}' ), false, 'its response body field name at the top query field n holds an opaque token' ),
+			'a token in a URL-shaped query name'           => array( new Exchange( 'GET', 'https://api.example.com/search?' . $named, array(), null, 200, $answer, '{"data":[]}' ), false, 'its URL query field name at the top query field n holds an opaque token' ),
+			'a token in a URL-shaped form field name'      => array( self::exchangeWith( 'body', $named ), false, 'its request body field name at the top query field n holds an opaque token' ),
+			'a token in a URL-shaped header name'          => array( self::exchangeWith( 'headers', array( 'https://x.example/?n=' . $token => '1' ) ), false, 'its request header name query field n holds an opaque token' ),
+			'a card number split by %20 in the path of a URL in a body' => array( self::exchangeWith( 'responseBody', '{"u":"https://h.example/p/' . $card . '"}' ), false, 'its response body field u holds a card number' ),
+			'a card number split by %20 in the fragment of a URL in a body' => array( self::exchangeWith( 'responseBody', '{"u":"https://h.example/p#' . $card . '"}' ), false, 'its response body field u holds a card number' ),
+			'a card number split by %2D in the path of a URL in a body' => array( self::exchangeWith( 'responseBody', '{"u":"https://h.example/p/4242%2D4242%2D4242%2D4242"}' ), false, 'its response body field u holds a card number' ),
+			'a card number in the path of a URL-shaped key' => array( self::exchangeWith( 'responseBody', '{"https://x.example/p/' . $card . '":"ok"}' ), false, 'its response body field name at the top holds a card number' ),
+			'a card number in the fragment of a URL-shaped key' => array( self::exchangeWith( 'responseBody', '{"https://x.example/p#' . $card . '":"ok"}' ), false, 'its response body field name at the top holds a card number' ),
+			'a card number in the path of a request URL'   => array( new Exchange( 'GET', 'https://api.example.com/v1/x/' . $card, array(), null, 200, $answer, '{"data":[]}' ), false, 'its URL holds a card number' ),
+			'a card number in a request header value'      => array( self::exchangeWith( 'headers', $card ), false, 'its request header x-signing holds a card number' ),
+			'a card number in the path of a URL a header holds' => array( self::exchangeWith( 'headers', 'https://h.example/p/' . $card ), false, 'its request header x-signing holds a card number' ),
+			'a card number in a declared response header'  => array( self::exchangeWith( 'responseHeaders', 'n=' . $card ), false, 'its response header x-signing holds a card number' ),
+			'a card number in the path of a URL-shaped header name' => array( self::exchangeWith( 'headers', array( 'https://x.example/p/' . $card => '1' ) ), false, 'its request header name holds a card number' ),
+			'a token in a scheme-less URL-shaped query name' => array( new Exchange( 'GET', 'https://api.example.com/s?' . rawurlencode( '//x.example/?n=%22' . $token ) . '=ok', array(), null, 200, $answer, '{"data":[]}' ), false, 'its URL query field name at the top query field n holds an opaque token' ),
+			'a card number split by %2B in a query'        => array( new Exchange( 'GET', 'https://api.example.com/pay?q=4242%2B4242%2B4242%2B4242', array(), null, 200, $answer, '{"data":[]}' ), false, 'its URL query field q holds a card number' ),
+			'a card number split by %2B in a form body'    => array( self::exchangeWith( 'body', 'q=4242%2B4242%2B4242%2B4242' ), false, 'its request body field q holds a card number' ),
+			'a token as the query key of a scheme-less URL in a body' => array( self::exchangeWith( 'responseBody', '{"next":"//h.example/?' . $token . '=ok"}' ), false, 'its response body field next query field name at the top holds an opaque token' ),
+			'a token as the query key of a URL in a body'  => array( self::exchangeWith( 'responseBody', '{"next":"https://h.example/?' . $token . '=ok"}' ), false, 'its response body field next query field name at the top holds an opaque token' ),
+			'a token as a query key of the request URL'    => array( new Exchange( 'GET', 'https://api.example.com/pay?' . $token . '=ok', array(), null, 200, $answer, '{"data":[]}' ), false, 'its URL query field name at the top holds an opaque token' ),
+			'a form field name of 20 characters and more'  => array( self::exchangeWith( 'body', 'payment_method_options[card][request_three_d_secure]=any' ), true ),
+			'a dropped card number beside a dotted decoy in JSON' => array( self::exchangeWith( 'responseBody', '{"note":"4242 4242 4242 4242","note":"x","ref":"4242.4242.4242.4242"}' ), false, 'its response body holds, outside every field it was read as, a card number' ),
+			'a dropped card number beside a slashed decoy in JSON' => array( self::exchangeWith( 'responseBody', '{"note":"4242-4242-4242-4242","note":"x","ref":"4242/4242/4242/4242"}' ), false, 'its response body holds, outside every field it was read as, a card number' ),
+			'a dropped card number beside a dotted decoy in a query' => array( new Exchange( 'GET', 'https://api.example.com/v1/s?b=4242%204242%204242%204242&b=x&a=4242.4242.4242.4242', array(), null, 200, $answer, '{"data":[]}' ), false, 'its URL query holds, outside every field it was read as, a card number' ),
+			'a dropped card number beside a dotted decoy in a form body' => array( self::exchangeWith( 'body', 'b=4242+4242+4242+4242&b=x&a=4242.4242.4242.4242' ), false, 'its request body holds, outside every field it was read as, a card number' ),
+			'a dropped card number split by + in JSON'     => array( self::exchangeWith( 'responseBody', '{"note":"4242+4242+4242+4242","note":"x"}' ), false, 'its response body holds, outside every field it was read as, a card number' ),
+			'a dropped card number split by + in a query'  => array( new Exchange( 'GET', 'https://api.example.com/v1/s?b=4242+4242+4242+4242&b=x', array(), null, 200, $answer, '{"data":[]}' ), false, 'its URL query holds, outside every field it was read as, a card number' ),
+			'a dropped card number split by + in a form body' => array( self::exchangeWith( 'body', 'b=4242+4242+4242+4242&b=x' ), false, 'its request body holds, outside every field it was read as, a card number' ),
+			'a dropped card number split by + in a URL in a body' => array( self::exchangeWith( 'responseBody', '{"u":"https://h.example/s?b=4242+4242+4242+4242&b=x"}' ), false, 'its response body field u query holds, outside every field it was read as, a card number' ),
+			'a dropped card number split by a no-break space in JSON' => array( $dup( $runOf( $nbsp ) ), false, $beside ),
+			'a dropped card number split by %C2%A0 in a query' => array( new Exchange( 'GET', 'https://api.example.com/v1/s?b=' . $runOf( '%C2%A0' ) . '&b=x', array(), null, 200, $answer, '{"data":[]}' ), false, 'its URL query holds, outside every field it was read as, a card number' ),
+			'a dropped card number split by %C2%A0 in a form body' => array( self::exchangeWith( 'body', 'b=' . $runOf( '%C2%A0' ) . '&b=x' ), false, 'its request body holds, outside every field it was read as, a card number' ),
+			'a dropped card number split by an en space'   => array( $dup( $runOf( mb_chr( 0x2002, 'UTF-8' ) ) ), false, $beside ),
+			'a dropped card number split by a line separator' => array( $dup( $runOf( mb_chr( 0x2028, 'UTF-8' ) ) ), false, $beside ),
+			'a dropped card number split by an en dash'    => array( $dup( $runOf( mb_chr( 0x2013, 'UTF-8' ) ) ), false, $beside ),
+			'a dropped card number split by a minus sign'  => array( $dup( $runOf( mb_chr( 0x2212, 'UTF-8' ) ) ), false, $beside ),
+			'a dropped card number split by a zero-width space' => array( $dup( $runOf( mb_chr( 0x200B, 'UTF-8' ) ) ), false, $beside ),
+			'a dropped card number split by a soft hyphen' => array( $dup( $runOf( mb_chr( 0xAD, 'UTF-8' ) ) ), false, $beside ),
+			'a dropped card number split by two spaces'    => array( $dup( $runOf( '  ' ) ), false, $beside ),
+			'a dropped card number split by a space and a dash' => array( $dup( $runOf( ' - ' ) ), false, $beside ),
+			'a dropped card number in Arabic-Indic digits' => array( $dup( $runOf( ' ', mb_chr( 0x0664, 'UTF-8' ) . mb_chr( 0x0662, 'UTF-8' ) . mb_chr( 0x0664, 'UTF-8' ) . mb_chr( 0x0662, 'UTF-8' ) ) ), false, $beside ),
+			'a dropped card number split by five %C2%A0 in a query' => array( new Exchange( 'GET', 'https://api.example.com/v1/s?b=' . $runOf( str_repeat( '%C2%A0', 5 ) ) . '&b=x', array(), null, 200, $answer, '{"data":[]}' ), false, 'its URL query holds, outside every field it was read as, a card number' ),
+			'a dropped card number split by five %C2%A0 in a form body' => array( self::exchangeWith( 'body', 'b=' . $runOf( str_repeat( '%C2%A0', 5 ) ) . '&b=x' ), false, 'its request body holds, outside every field it was read as, a card number' ),
+			'a dropped card number split by five escaped no-break spaces in JSON' => array( $dup( $runOf( str_repeat( chr( 92 ) . 'u00a0', 5 ) ) ), false, $beside ),
+			'a dropped card number split by eight %C2%A0, the most the card rule joins' => array( new Exchange( 'GET', 'https://api.example.com/v1/s?b=' . $runOf( str_repeat( '%C2%A0', 8 ) ) . '&b=x', array(), null, 200, $answer, '{"data":[]}' ), false, 'its URL query holds, outside every field it was read as, a card number' ),
+			'a timestamp sent twice, its escapes decoded, is no card number' => array( self::exchangeWith( 'body', 'when=' . self::ESCAPED_TIME . '&when=x' ), true ),
+			'digits split by nine %C2%A0, more than the card rule joins' => array( new Exchange( 'GET', 'https://api.example.com/v1/s?b=' . $runOf( str_repeat( '%C2%A0', 9 ) ) . '&b=x', array(), null, 200, $answer, '{"data":[]}' ), true ),
+			'a dropped card number beside a key that is an identifier holding its digits' => array( self::exchangeWith( 'responseBody', '{"note":"4242424242424242","note":"x","a4242424242424242bbbbbbbbbbbbbbb":"ok"}' ), false ),
+			'the same, the key\'s first digit escaped'     => array( self::exchangeWith( 'responseBody', '{"note":"4242424242424242","note":"x","a' . chr( 92 ) . 'u0034242424242424242bbbbbbbbbbbbbbb":"ok"}' ), false ),
+			'the same, in a query whose key holds a percent escape' => array( new Exchange( 'GET', 'https://api.example.com/v1/s?b=4242424242424242&b=x&a%34242424242424242bbbbbbbbbbbbbbb=ok', array(), null, 200, $answer, '{"data":[]}' ), false ),
+			'the same, beside a header named like the identifier' => array( self::exchangeWith( 'headers', array( 'a4242424242424242bbbbbbbbbbbbbbb' => 'ok' ) )->with( array( 'responseBody' => '{"note":"4242424242424242","note":"x"}' ) ), false ),
+			'the same, beside a second value with an escape' => array( self::exchangeWith( 'responseBody', '{"note":"4242424242424242","note":"x","ref":"a' . chr( 92 ) . 'u0034242424242424242bbbbbbbbbbbbbbb"}' ), false ),
+			'a dropped dashed card number beside a UUID that holds its digits' => array( self::exchangeWith( 'responseBody', '{"note":"4242-4242-4242-4242","note":"x","ref":"aaaa4242-4242-4242-4242-424242424242"}' ), false, $beside ),
+			'a dropped dashed card number beside a UUID key that holds its digits' => array( self::exchangeWith( 'responseBody', '{"note":"4242-4242-4242-4242","note":"x","aaaa4242-4242-4242-4242-424242424242":"ok"}' ), false, $beside ),
+			'a dropped dashed card number in a query beside a UUID that holds its digits' => array( new Exchange( 'GET', 'https://api.example.com/v1/s?b=4242-4242-4242-4242&b=x&ref=aaaa4242-4242-4242-4242-424242424242', array(), null, 200, $answer, '{"data":[]}' ), false, 'its URL query holds, outside every field it was read as, a card number' ),
+			'a UUID whose groups are a card number\'s digits, which CardNumbers leaves alone' => array( self::exchangeWith( 'responseBody', '{"ref":"aaaa4242-4242-4242-4242-424242424242"}' ), true ),
+			'a token in a scheme-less URL-shaped key'      => array( self::exchangeWith( 'responseBody', '{"//x.example/?n=%22' . $token . '%22":"ok"}' ), false, 'its response body field name at the top query field n holds an opaque token' ),
+		);
+	}
+
+	/**
+	 * Tests that the recorder's scan of an exchange and rule 14's scan of the tape file written from it give one verdict, a token next to an escape included: a token that is one word in the raw text is held as that word, in the part and in the file, and one that no field holds is refused by both.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider escaped
+	 * @group conformance
+	 *
+	 * @param Exchange $sent     The exchange as sent and answered.
+	 * @param bool     $accepted Whether both scans accept it.
+	 * @param string   $because  Optional. What each refusal says, after the part's name. Default anything.
+	 */
+	public function test_the_recording_and_its_written_tape_get_one_verdict( Exchange $sent, bool $accepted, string $because = '' ): void {
+		$scrubber   = self::scrubber();
+		$clean      = $scrubber->exchange( $sent );
+		$verdicts   = array();
+		$this->file = (string) tempnam( sys_get_temp_dir(), 'seocart-tape-' );
+
+		file_put_contents( $this->file, Tape::encode( $clean->toTape() ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- A scratch file of the test, written as a recording writes it.
+
+		foreach ( array(
+			'the recorder\'s scan'        => fn() => $scrubber->scanExchange( $clean, self::WHERE ),
+			'rule 14\'s scan of the file' => fn() => $scrubber->scanFile( $this->file ),
+		) as $scan => $run ) {
+			try {
+				$run();
+				$verdicts[ $scan ] = 'accepted';
+			} catch ( TapeRefused $refused ) {
+				$verdicts[ $scan ] = 'refused: ' . $refused->getMessage();
+			}
+		}
+
+		$this->assertSame(
+			array(
+				'the recorder\'s scan'        => $accepted,
+				'rule 14\'s scan of the file' => $accepted,
+			),
+			array_map( static fn( string $verdict ): bool => 'accepted' === $verdict, $verdicts ),
+			implode( ' / ', $verdicts )
+		);
+
+		foreach ( '' === $because ? array() : $verdicts as $verdict ) {
+			$this->assertStringContainsString( ', ' . $because, $verdict );
+		}
+	}
+
+	/**
+	 * Tests that a settings file whose key is shaped like a URL reads the key as the URL it is: a card number in its query, split by escapes, is refused by the key's name.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_url_shaped_key_of_a_settings_file_is_read_as_a_url(): void {
+		$this->file = (string) tempnam( sys_get_temp_dir(), 'seocart-tape-' );
+
+		file_put_contents( $this->file, Tape::encode( array( 'https://x.example/?n=4242%204242%204242%204242' => 'ok' ) ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- A scratch file of the test.
+
+		$this->assertRefused( $this->file . ', its field name at the top query field n holds a card number', '4242', fn() => self::scrubber()->scanFile( $this->file ) );
+	}
+
+	/**
+	 * Tests that a delivery's header named like a URL is read as the URL it is, when it is recorded and when its tape is scanned: an opaque token in its query is refused by the header's name.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_url_shaped_header_name_of_a_delivery_is_read_as_a_url(): void {
+		$token      = 'abcdefghijklmnopqrstuvwxyz01';
+		$scrubber   = self::scrubber();
+		$sent       = array(
+			'mode'      => 'test',
+			'signed_at' => '2026-06-01T12:00:00+00:00',
+			'headers'   => array( 'https://x.example/?n=' . $token => '1' ),
+			'body'      => '{"id":"evt_1"}',
+		);
+		$this->file = (string) tempnam( sys_get_temp_dir(), 'seocart-tape-' );
+
+		$this->assertRefused( 'The delivery authorized, its header name query field n holds an opaque token', $token, fn() => $scrubber->scanDelivery( $scrubber->delivery( $sent, static fn( array $headers ): array => $headers ), 'The delivery authorized' ) );
+
+		file_put_contents( $this->file, Tape::encode( $sent ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- A scratch file of the test.
+
+		$this->assertRefused( $this->file . ', its header name query field n holds an opaque token', $token, fn() => $scrubber->scanFile( $this->file ) );
+	}
+
+	/**
+	 * Tests that a card number split by escapes in the path of a URL a delivery's body holds is refused when the delivery is recorded and when its tape is scanned.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_card_number_in_a_url_a_delivery_holds_is_refused(): void {
+		$scrubber   = self::scrubber();
+		$sent       = array(
+			'mode'      => 'test',
+			'signed_at' => '2026-06-01T12:00:00+00:00',
+			'headers'   => array( 'content-type' => 'application/json' ),
+			'body'      => '{"data":{"receipt":"https://h.example/r/4242%204242%204242%204242"}}',
+		);
+		$this->file = (string) tempnam( sys_get_temp_dir(), 'seocart-tape-' );
+
+		$this->assertRefused( 'The delivery authorized, its body field data.receipt holds a card number', '4242', fn() => $scrubber->scanDelivery( $scrubber->delivery( $sent, static fn( array $headers ): array => $headers ), 'The delivery authorized' ) );
+
+		file_put_contents( $this->file, Tape::encode( $sent ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- A scratch file of the test.
+
+		$this->assertRefused( $this->file . ', its body field data.receipt holds a card number', '4242', fn() => $scrubber->scanFile( $this->file ) );
+	}
+
+	/**
+	 * Tests that a delivery's body that sends a field twice, its first a card number, is refused when the delivery is recorded and when its tape is scanned: beside a field with the same digits and other separators, and split by `+`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_dropped_card_number_in_a_delivery_is_refused(): void {
+		$scrubber   = self::scrubber();
+		$this->file = (string) tempnam( sys_get_temp_dir(), 'seocart-tape-' );
+
+		foreach ( array( '{"data":{"note":"4242 4242 4242 4242","note":"x","ref":"4242.4242.4242.4242"}}', '{"data":{"note":"4242+4242+4242+4242","note":"x"}}' ) as $body ) {
+			$sent = array(
+				'mode'      => 'test',
+				'signed_at' => '2026-06-01T12:00:00+00:00',
+				'headers'   => array( 'content-type' => 'application/json' ),
+				'body'      => $body,
+			);
+
+			$this->assertRefused( 'The delivery authorized, its body holds, outside every field it was read as, a card number', '4242', fn() => $scrubber->scanDelivery( $scrubber->delivery( $sent, static fn( array $headers ): array => $headers ), 'The delivery authorized' ) );
+
+			file_put_contents( $this->file, Tape::encode( $sent ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- A scratch file of the test.
+
+			$this->assertRefused( $this->file . ', its body holds, outside every field it was read as, a card number', '4242', fn() => $scrubber->scanFile( $this->file ) );
+		}
+	}
+
+	/**
+	 * Tests that a card number split by escapes in the path of a URL setting is refused when the settings are written and when their file is scanned.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_card_number_in_a_url_setting_is_refused(): void {
+		$settings   = array( 'return_url' => 'https://shop.example/r/4242%204242%204242%204242' );
+		$this->file = (string) tempnam( sys_get_temp_dir(), 'seocart-tape-' );
+
+		$this->assertRefused( 'settings.json, the setting return_url holds a card number', '4242', fn() => self::scrubber()->scanSettings( $settings, 'settings.json' ) );
+
+		file_put_contents( $this->file, Tape::encode( $settings ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- A scratch file of the test.
+
+		$this->assertRefused( $this->file . ', its field return_url holds a card number', '4242', fn() => self::scrubber()->scanFile( $this->file ) );
+	}
+
+	/**
+	 * Tests that a request URL that carries a fragment is refused before anything is written, the URL named and the fragment not: a client never sends one, and a tape, holding the host and the path with its query, would drop it unread.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_request_url_with_a_fragment_is_refused(): void {
+		$secret = 'sk_test_' . str_repeat( 'Ab1', 8 );
+
+		foreach ( array( '#' . $secret, '#top' ) as $fragment ) {
+			$this->assertRefused( self::WHERE . ', its URL carries a fragment, which a client never sends', $fragment, fn() => self::scrubber()->scanExchange( self::scrubber()->exchange( self::exchangeWith( 'url', 'https://api.example.com/v1/pay' . $fragment ) ), self::WHERE ) );
+		}
+	}
+
+	/**
+	 * Tests that a request URL that carries a user or a password before its host is refused before anything is written, the URL named and the userinfo not: a tape holds the host and the path with its query, and would drop it unread.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_request_url_with_userinfo_is_refused(): void {
+		$password = 'Zx81Qw7Er6Ty5Ui4Op3As2Df';
+
+		foreach ( array( 'https://merchant:' . $password . '@api.example.com/v1/pay', 'https://merchant@api.example.com/v1/pay' ) as $url ) {
+			$this->assertRefused( self::WHERE . ', its URL carries a user or a password before its host', 'merchant', fn() => self::scrubber()->scanExchange( self::scrubber()->exchange( self::exchangeWith( 'url', $url ) ), self::WHERE ) );
+		}
 	}
 
 	/**
