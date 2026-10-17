@@ -1,0 +1,50 @@
+<?php
+/**
+ * Tests the gateway against SEOCart's payment gateway conformance suite
+ *
+ * @package {{namespace}}
+ * @since   0.1.0
+ * @license GPL-3.0-or-later
+ */
+
+declare( strict_types=1 );
+
+namespace {{namespace}}\Tests\Integration;
+
+use {{namespace}}\Gateway;
+use SEOCart\Tests\Conformance\Payment\GatewayConformanceCase;
+
+/**
+ * Holds the gateway this plugin registers to every rule of SEOCart's payment gateway conformance suite, replaying its provider's answers from tests/tapes.
+ *
+ * `sh ../seocart/bin/ci/extension.sh conformance . payments` runs it; a plain run of the
+ * integration suite leaves it out. A rule that places a payment needs a payment token of each
+ * scenario it places (tokens()); while the capability matrix declares nothing, those rules are
+ * skipped and say so.
+ *
+ * @since 0.1.0
+ */
+final class ConformanceTest extends GatewayConformanceCase {
+
+	/**
+	 * Returns the id the plugin registers the gateway under.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string The gateway's id.
+	 */
+	protected function gatewayId(): string {
+		return Gateway::ID;
+	}
+
+	/**
+	 * Returns the directory of the provider's recorded answers.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string The directory.
+	 */
+	protected function tapes(): string {
+		return dirname( __DIR__ ) . '/tapes';
+	}
+}

@@ -106,7 +106,7 @@ final readonly class OutboundHost {
 		}
 
 		if ( 1 !== preg_match( self::ENDPOINT, $endpoint, $matches ) ) {
-			throw new \InvalidArgumentException( "Outbound host \"{$id}\": \"endpoint\" must be an https:// URL on one lower-case host, with no port, credentials, query or fragment." );
+			throw new \InvalidArgumentException( 'An outbound host\'s "endpoint" must be an https:// URL on one lower-case host, with no port, credentials, query or fragment.' );
 		}
 
 		$this->host = $matches['host'];
@@ -114,7 +114,7 @@ final readonly class OutboundHost {
 		// Every text field, so one added later is checked too.
 		foreach ( get_object_vars( $this ) as $field => $value ) {
 			if ( is_string( $value ) && ( '' === trim( $value ) || 1 === preg_match( '/[\r\n]/', $value ) ) ) {
-				throw new \InvalidArgumentException( "Outbound host \"{$id}\": \"{$field}\" must be a non-empty, single-line text." );
+				throw new \InvalidArgumentException( "An outbound host's \"{$field}\" must be a non-empty, single-line text." );
 			}
 		}
 
@@ -125,12 +125,12 @@ final readonly class OutboundHost {
 
 		foreach ( $links as $field => $link ) {
 			if ( ! str_starts_with( $link, 'https://' ) ) {
-				throw new \InvalidArgumentException( "Outbound host \"{$id}\": \"{$field}\" must be an https:// link." );
+				throw new \InvalidArgumentException( "An outbound host's \"{$field}\" must be an https:// link." );
 			}
 		}
 
 		if ( $timeoutSeconds < 1 ) {
-			throw new \InvalidArgumentException( "Outbound host \"{$id}\": \"timeoutSeconds\" must be at least 1." );
+			throw new \InvalidArgumentException( 'An outbound host\'s "timeoutSeconds" must be at least 1.' );
 		}
 	}
 }

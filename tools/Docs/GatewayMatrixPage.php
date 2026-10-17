@@ -1,0 +1,421 @@
+<?php
+/**
+ * GatewayMatrixPage: generates the page of what payment gateways declare
+ *
+ * @package SEOCart
+ * @since   0.2.0
+ * @license GPL-3.0-or-later
+ */
+
+declare( strict_types=1 );
+
+namespace SEOCart\Tools\Docs;
+
+use SEOCart\Contracts\Payment\GatewayDescriptor;
+use SEOCart\Contracts\Payment\MatrixRow;
+use SEOCart\Contracts\Payment\Operations;
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
+use SEOCart\Support\Schema\FieldSpec;
+use SEOCart\Support\Schema\Privacy;
+use SEOCart\Tests\Conformance\Payment\NetworkCalls;
+use SEOCart\Tests\Conformance\Payment\Rule;
+use SEOCart\Tests\Conformance\Payment\StandInLimits;
+use SEOCart\Tests\Conformance\Payment\TapeScrubber;
+use SEOCart\Tests\Support\Doubles\AssertingLogger;
+
+/**
+ * Writes the page of payment gateways' declarations: SEOCart's own, docs/reference/gateways.md, with the conformance rules; and an extension's, docs/capabilities.md.
+ *
+ * Owns one fact: how a gateway's declaration reads as a page. Everything on it comes from the
+ * gateway's describe() (its id, label, contract version, modes, settings, capability matrix,
+ * idempotency profile and hosts) and, on SEOCart's page, from the conformance suite's own list of
+ * rules (Rule). No other table of what a gateway can do exists: the plugin refuses an operation,
+ * and the suite drives one, from the same matrix. Tables are padded as Prettier pads them, so
+ * the generated file passes `prettier --check` unchanged.
+ *
+ * @since 0.2.0
+ */
+final class GatewayMatrixPage implements Generator {
+
+	/**
+	 * SEOCart's page.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CORE_TARGET = 'docs/reference/gateways.md';
+
+	/**
+	 * An extension's page, relative to its root.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const PLUGIN_TARGET = 'docs/capabilities.md';
+
+	/**
+	 * The gateways the page shows.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<PaymentGateway>
+	 */
+	private array $gateways;
+
+	/**
+	 * The page's path, relative to the root it is written in.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private string $target;
+
+	/**
+	 * Whether the page lists the conformance rules: SEOCart's does.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var bool
+	 */
+	private bool $core;
+
+	/**
+	 * Keeps what the page shows.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array  $gateways The gateways.
+	 * @param string $target   The page's path.
+	 * @param bool   $core     Whether it is SEOCart's own page.
+	 *
+	 * @phpstan-param list<PaymentGateway> $gateways
+	 */
+	private function __construct( array $gateways, string $target, bool $core ) {
+		$this->gateways = $gateways;
+		$this->target   = $target;
+		$this->core     = $core;
+	}
+
+	/**
+	 * Returns SEOCart's page: the stand-in gateway, and the conformance rules.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return self The generator.
+	 */
+	public static function forCore(): self {
+		return new self( array( new StubGateway() ), self::CORE_TARGET, true );
+	}
+
+	/**
+	 * Returns an extension's page, of the gateways it registers.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $gateways The gateways.
+	 * @return self The generator.
+	 *
+	 * @phpstan-param list<PaymentGateway> $gateways
+	 */
+	public static function forPlugin( array $gateways ): self {
+		return new self( $gateways, self::PLUGIN_TARGET, false );
+	}
+
+	/**
+	 * Returns the generator's id.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return string The id.
+	 */
+	public function id(): string {
+		return 'gateways';
+	}
+
+	/**
+	 * Returns the page's path.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return string The path, relative to the root.
+	 */
+	public function target(): string {
+		return $this->target;
+	}
+
+	/**
+	 * Generates the page.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $current The page as it is; not read.
+	 * @return GenerationResult The page.
+	 */
+	public function generate( string $current ): GenerationResult {
+		unset( $current );
+
+		return new GenerationResult( $this->render() );
+	}
+
+	/**
+	 * Returns what the generator may skip: nothing.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> None.
+	 */
+	public function expectedSkips(): array {
+		return array();
+	}
+
+	/**
+	 * Renders the page.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return string The Markdown.
+	 */
+	public function render(): string {
+		$blocks = $this->core ? self::coreIntroduction() : self::pluginIntroduction();
+
+		foreach ( $this->gateways as $gateway ) {
+			$blocks = array_merge( $blocks, self::gatewaySection( $gateway->describe() ) );
+		}
+
+		if ( $this->core ) {
+			$blocks = array_merge( $blocks, self::standInSkips(), self::rulesSection() );
+		}
+
+		return implode( "\n\n", $blocks ) . "\n";
+	}
+
+	/**
+	 * Returns the opening of SEOCart's page.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> The blocks.
+	 */
+	private static function coreIntroduction(): array {
+		return array(
+			'# Payment gateways',
+			'<!-- Generated by `composer docs:generate` from each gateway\'s describe() and the conformance suite\'s rules. Do not edit this file: change the declaration and regenerate. -->',
+			'A payment gateway declares, in its `describe()`, what it can do: the operations it supports in each currency, for a provider account of each country, how its provider keeps idempotency keys, and the external services it calls. SEOCart refuses an operation the gateway\'s matrix does not declare before any request reaches the provider, and offers the gateway at checkout only where its matrix declares `authorize`. A gateway plugin publishes the same page of its own gateway as `docs/capabilities.md`, generated with `php ../seocart/bin/generate-docs.php --plugin=.` from its root.',
+			'SEOCart itself registers one gateway, the stand-in, on a site that is not in production.',
+		);
+	}
+
+	/**
+	 * Returns the opening of an extension's page.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> The blocks.
+	 */
+	private static function pluginIntroduction(): array {
+		return array(
+			'# Payment gateway capabilities',
+			'<!-- Generated by `php ../seocart/bin/generate-docs.php --plugin=.` from the gateway\'s describe(). Do not edit this file: change the declaration and regenerate. -->',
+			'What this plugin\'s payment gateway declares to SEOCart: the operations it supports in each currency, for a provider account of each country, how its provider keeps idempotency keys, and the external services it calls. SEOCart refuses an operation the matrix does not declare before any request reaches the provider, and offers the gateway at checkout only where its matrix declares `authorize`.',
+		);
+	}
+
+	/**
+	 * Returns one gateway's section.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayDescriptor $descriptor The gateway's declaration.
+	 * @return list<string> The blocks.
+	 */
+	private static function gatewaySection( GatewayDescriptor $descriptor ): array {
+		$blocks = array(
+			sprintf( '## %1$s (`%2$s`)', $descriptor->label(), $descriptor->id ),
+			implode(
+				"\n",
+				array(
+					sprintf( '- Written against the payment contract %s.', $descriptor->contract ),
+					sprintf( '- Modes: %s.', implode( ', ', array_map( static fn( $mode ): string => $mode->value, $descriptor->modes ) ) ),
+					'- Settings: ' . self::settingsOf( $descriptor ) . '.',
+					'- External services: ' . self::hostsOf( $descriptor ) . '.',
+				)
+			),
+			'### Capability matrix',
+		);
+
+		$blocks[] = array() === $descriptor->matrix->rows
+			? 'This gateway declares nothing yet: SEOCart never offers it, and refuses every operation of it before any request.'
+			: self::matrixTable( $descriptor->matrix->rows );
+
+		$profile  = $descriptor->idempotency;
+		$blocks[] = '### Idempotency';
+		$blocks[] = self::table(
+			array( 'Key retention', 'Searchable by the store\'s references', 'Search delay' ),
+			array(
+				array(
+					null === $profile->keyRetentionSeconds ? 'no key' : $profile->keyRetentionSeconds . ' seconds',
+					$profile->searchable ? 'yes' : 'no',
+					$profile->searchDelaySeconds . ' seconds',
+				),
+			)
+		);
+
+		return $blocks;
+	}
+
+	/**
+	 * Describes a gateway's settings.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayDescriptor $descriptor The declaration.
+	 * @return string Each setting's name, secret ones marked; "none" when there is none.
+	 */
+	private static function settingsOf( GatewayDescriptor $descriptor ): string {
+		if ( array() === $descriptor->settings ) {
+			return 'none';
+		}
+
+		return implode( ', ', array_map( static fn( FieldSpec $field ): string => '`' . $field->name() . '`' . ( Privacy::Secret === $field->privacy() ? ' (secret)' : '' ), $descriptor->settings ) );
+	}
+
+	/**
+	 * Describes a gateway's hosts.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayDescriptor $descriptor The declaration.
+	 * @return string Each service and its endpoint; "none" when it calls none.
+	 */
+	private static function hostsOf( GatewayDescriptor $descriptor ): string {
+		if ( array() === $descriptor->hosts ) {
+			return 'none: it calls no external service';
+		}
+
+		$hosts = array();
+
+		foreach ( $descriptor->hosts as $host ) {
+			$hosts[] = sprintf( '%1$s at `%2$s`', $host->service, $host->endpoint );
+		}
+
+		return implode( '; ', $hosts );
+	}
+
+	/**
+	 * Renders a capability matrix: a row per currency and account country, a column per operation.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $rows The matrix's rows.
+	 * @return string The table.
+	 *
+	 * @phpstan-param list<MatrixRow> $rows
+	 */
+	private static function matrixTable( array $rows ): string {
+		usort( $rows, static fn( MatrixRow $one, MatrixRow $other ): int => array( $one->currency->code(), $one->accountCountry ) <=> array( $other->currency->code(), $other->accountCountry ) );
+
+		$cells = array();
+
+		foreach ( $rows as $row ) {
+			$cells[] = array_merge(
+				array( $row->currency->code(), MatrixRow::ANY_COUNTRY === $row->accountCountry ? 'any' : $row->accountCountry ),
+				array_map( static fn( string $operation ): string => $row->supports( $operation ) ? 'yes' : 'no', Operations::ALL )
+			);
+		}
+
+		return self::table( array_merge( array( 'Currency', 'Account country' ), array_map( static fn( string $operation ): string => '`' . $operation . '`', Operations::ALL ) ), $cells );
+	}
+
+	/**
+	 * Returns the section of the conformance rules.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> The blocks.
+	 */
+	private static function rulesSection(): array {
+		$rows = array();
+
+		foreach ( Rule::cases() as $rule ) {
+			$plants = array_map( static fn( string $plant ): string => '`' . substr( (string) strrchr( $plant, '\\' ), 1 ) . '`', $rule->plants() );
+			$rows[] = array(
+				(string) $rule->value,
+				self::shownTitle( $rule->title() ),
+				$rule->asserts(),
+				$rule->proof(),
+				array() === $plants ? 'the kit\'s own' : implode( ', ', $plants ),
+			);
+		}
+
+		return array(
+			'## Conformance rules',
+			'SEOCart\'s payment gateway conformance suite holds every gateway to these rules, the stand-in included. A gateway plugin\'s test extends `SEOCart\Tests\Conformance\Payment\GatewayConformanceCase` and runs with `sh ../seocart/bin/ci/extension.sh conformance . payments` (`docs/writing-an-extension.md` shows how). The plant of a rule is a gateway, in `tests/Conformance/Payment/Plants/`, that breaks it and that the suite must fail.',
+			self::table( array( '#', 'Rule', 'The suite asserts', 'Proof', 'Plant' ), $rows ),
+			NetworkCalls::LIMIT,
+			AssertingLogger::LIMIT,
+			TapeScrubber::LIMIT,
+		);
+	}
+
+	/**
+	 * Returns what the conformance suite knowingly skips for the stand-in, from its one declaration.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> The blocks.
+	 */
+	private static function standInSkips(): array {
+		return array(
+			'### What the conformance suite skips for it',
+			'The stand-in is stateless by design: it answers from the references it issues. A check that needs a memory of what it did is skipped for it, with the reason the suite prints; every real adapter is held to it.',
+			'- ' . StandInLimits::REFUNDS,
+		);
+	}
+
+	/**
+	 * Returns a rule's title as the page shows it: capitalised, or, when it begins with code such as `describe()`, with the code marked as code.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $title The title, in lower case.
+	 * @return string The title.
+	 */
+	private static function shownTitle( string $title ): string {
+		return 1 === preg_match( '/^([a-z_]+\(\))(.*)$/', $title, $code ) ? '`' . $code[1] . '`' . $code[2] : ucfirst( $title );
+	}
+
+	/**
+	 * Renders a Markdown table with its columns padded as Prettier pads them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $header The header's cells.
+	 * @param array $rows   The rows' cells.
+	 * @return string The table.
+	 *
+	 * @phpstan-param list<string> $header
+	 * @phpstan-param list<list<string>> $rows
+	 */
+	private static function table( array $header, array $rows ): string {
+		$widths = array();
+
+		foreach ( array_merge( array( $header ), $rows ) as $cells ) {
+			foreach ( $cells as $index => $cell ) {
+				$widths[ $index ] = max( $widths[ $index ] ?? 3, strlen( $cell ) );
+			}
+		}
+
+		$line  = static fn( array $cells ): string => '| ' . implode( ' | ', array_map( static fn( string $cell, int $width ): string => str_pad( $cell, $width ), $cells, $widths ) ) . ' |';
+		$lines = array( $line( $header ), '| ' . implode( ' | ', array_map( static fn( int $width ): string => str_repeat( '-', $width ), $widths ) ) . ' |' );
+
+		foreach ( $rows as $cells ) {
+			$lines[] = $line( $cells );
+		}
+
+		return implode( "\n", $lines );
+	}
+}

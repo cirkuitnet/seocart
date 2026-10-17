@@ -60,7 +60,7 @@ final readonly class MatrixRow {
 		public array $operations
 	) {
 		if ( self::ANY_COUNTRY !== $accountCountry && 1 !== preg_match( '/^[A-Z]{2}\z/', $accountCountry ) ) {
-			throw new \InvalidArgumentException( sprintf( 'A capability row\'s account country is two upper-case letters or *, not "%s".', $accountCountry ) );
+			throw new \InvalidArgumentException( 'A capability row\'s account country is two upper-case letters or *, and the country given is not.' );
 		}
 
 		if ( count( array_unique( $operations ) ) !== count( $operations ) || array() !== array_diff( $operations, Operations::ALL ) ) {

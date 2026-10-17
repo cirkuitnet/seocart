@@ -1,0 +1,9 @@
+{
+	"body": "{\"id\":\"evt_2\",\"type\":\"account.updated\",\"created\":1780315200,\"data\":{\"object\":{\"id\":\"acct_1\",\"country\":\"US\"}}}",
+	"headers": {
+		"content-type": "application/json",
+		"reference-signature": "t=1780315200,v1=e848db5b74c54579d9aa388946556ddf4e1391e504d8f33ffe89562fc0e6950c"
+	},
+	"mode": "test",
+	"signed_at": "2026-06-01T12:00:00+00:00"
+}

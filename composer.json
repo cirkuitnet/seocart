@@ -127,6 +127,10 @@
 			"@test:integration --group international --fail-on-empty-test-suite"
 		],
 		"test:multilingual-conformance": "@test:integration --group multilingual-conformance --fail-on-empty-test-suite",
+		"test:conformance:payment": [
+			"@test:unit --group conformance --fail-on-empty-test-suite",
+			"@php tests/Conformance/Payment/integration.php"
+		],
 		"docs:generate": "@php bin/generate-docs.php",
 		"docs:check": "@php bin/generate-docs.php --check",
 		"wporg:check": "@php bin/check-wporg.php",
@@ -158,6 +162,7 @@
 		"wporg:check": "Runs the WordPress.org directory checks that do not need a built zip.",
 		"licenses:check": "Fails when a runtime dependency is not on the GPLv3-compatible licence allow-list.",
 		"gates": "Runs every gate that does not need a database or a browser.",
-		"scope-vendor": "Copies runtime dependencies into vendor-scoped/ with Strauss."
+		"scope-vendor": "Copies runtime dependencies into vendor-scoped/ with Strauss.",
+		"test:conformance:payment": "Runs the payment gateway conformance suite: its unit group, then its integration group, SEOCart's own or, when SEOCART_EXTENSION_PATH names an extension, that extension's test; fails when a group selects no test."
 	}
 }

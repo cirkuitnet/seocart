@@ -113,7 +113,7 @@ final class GatewayRegistrationTest extends DatabaseTestCase {
 			array_map( static fn( array $report ): array => array( $report['code'], $report['context']['reason'] ?? null ), $this->reports )
 		);
 		$this->assertSame( array( '9.0.0', '0.2.0' ), array( $this->reports[1]['context']['written_against'], $this->reports[1]['context']['contract'] ) );
-		$this->assertSame( 'Its descriptor could not be built: describe(), or the settings it declares, threw InvalidArgumentException.', $this->reports[3]['context']['detail'], 'A gateway whose hosts are not each declared once is refused, and what it threw is named by its class.' );
+		$this->assertSame( 'Its descriptor could not be built: SEOCart refused it (InvalidArgumentException): A gateway declares each host once, and two of its hosts have the same id.', $this->reports[3]['context']['detail'], 'A gateway whose hosts are not each declared once is refused, and SEOCart\'s own validation text is quoted.' );
 
 		foreach ( array( 'future', 'latecomer', 'doubled' ) as $refused ) {
 			try {

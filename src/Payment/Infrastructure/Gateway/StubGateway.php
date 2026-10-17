@@ -91,7 +91,9 @@ defined( 'ABSPATH' ) || exit;
  * authorized with `stub:refund_decline`. So it answers a refund it was never actually asked for,
  * whose request died before reaching it, as made. That is acceptable only because the stub moves
  * no money: a real adapter answers from what its provider made, and says not-found or that it
- * cannot say when it does not know.
+ * cannot say when it does not know. It is a known limitation: the payment conformance suite
+ * skips rule 8's refund half for the stand-in, printing why (StandInLimits in the suite), and the
+ * reference page lists it.
  *
  * @since 0.1.0
  */

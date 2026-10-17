@@ -61,6 +61,15 @@ final class DocsRunner {
 	private $output;
 
 	/**
+	 * The command a drifted document is regenerated with.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private string $regenerate;
+
+	/**
 	 * Constructor.
 	 *
 	 * @since 0.1.0
@@ -68,11 +77,13 @@ final class DocsRunner {
 	 * @param Generator[]            $generators The generators to run, in order.
 	 * @param string                 $root       Absolute path of the repository root.
 	 * @param callable(string): void $output     Receives each line of output.
+	 * @param string                 $regenerate The command a drifted document is regenerated with; an extension's differs.
 	 */
-	public function __construct( array $generators, string $root, callable $output ) {
+	public function __construct( array $generators, string $root, callable $output, string $regenerate = self::REGENERATE_COMMAND ) {
 		$this->generators = $generators;
 		$this->root       = rtrim( $root, '/' );
 		$this->output     = $output;
+		$this->regenerate = $regenerate;
 	}
 
 	/**
@@ -161,7 +172,7 @@ final class DocsRunner {
 			( $this->output )( '' );
 			( $this->output )( 'A generated document no longer matches its source. Do not edit it by hand; regenerate it with:' );
 			( $this->output )( '' );
-			( $this->output )( '    ' . self::REGENERATE_COMMAND );
+			( $this->output )( '    ' . $this->regenerate );
 			( $this->output )( '' );
 		}
 

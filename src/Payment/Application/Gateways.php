@@ -15,10 +15,13 @@ namespace SEOCart\Payment\Application;
 defined( 'ABSPATH' ) || exit;
 
 use SEOCart\Contracts\ExtensionContext;
+use SEOCart\Contracts\OutboundHost;
 use SEOCart\Contracts\Payment\AvailabilityContext;
+use SEOCart\Contracts\Payment\CapabilityMatrix;
 use SEOCart\Contracts\Payment\CredentialUnavailable;
 use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Contracts\Payment\GatewayRegistry;
+use SEOCart\Contracts\Payment\MatrixRow;
 use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Contracts\Payment\ProvisionsWebhooks;
@@ -80,6 +83,24 @@ final class Gateways implements GatewayRegistry {
 	 * @var string
 	 */
 	public const INCOMPATIBLE = 'payment.gateway_incompatible';
+
+	/**
+	 * The longest validation text a refusal quotes.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const VALIDATION_TEXT_LENGTH = 300;
+
+	/**
+	 * The declaration classes whose validation text a refusal quotes: each names the field it checks and the rule, never the value.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<class-string>
+	 */
+	private const QUOTED_VALIDATIONS = array( GatewayDescriptor::class, CapabilityMatrix::class, MatrixRow::class, OutboundHost::class );
 
 	/**
 	 * The stand-in gateway, registered first where the site allows it; null where it does not.
@@ -305,7 +326,7 @@ final class Gateways implements GatewayRegistry {
 			$descriptor = $gateway->describe();
 			$settings   = GatewaySettingsDeclaration::of( $descriptor, $gateway instanceof ProvisionsWebhooks );
 		} catch ( \Throwable $invalid ) {
-			$this->refuse( get_class( $gateway ), $plugin, 'invalid_descriptor', sprintf( 'Its descriptor could not be built: describe(), or the settings it declares, threw %s.', get_class( $invalid ) ) );
+			$this->refuse( get_class( $gateway ), $plugin, 'invalid_descriptor', self::descriptorRefusal( $invalid ) );
 
 			return;
 		}
@@ -884,7 +905,52 @@ final class Gateways implements GatewayRegistry {
 	private function registered( string $gatewayId ): PaymentGateway {
 		$this->build();
 
-		return $this->gateways[ $gatewayId ] ?? CodedException::raise( PaymentError::GatewayUnavailable, self::reason( $gatewayId, 'not_registered' ) );
+		return $this->gateways[ $gatewayId ] ?? $this->notRegistered( $gatewayId );
+	}
+
+	/**
+	 * Refuses a gateway that is not registered, with the cause a developer needs.
+	 *
+	 * The error is the same whatever the cause: `payment.gateway_unavailable`, reason
+	 * `not_registered`. Its previous exception says what happened in this request: the
+	 * registrations refused, with their details, or that nothing registered the id. Where the log
+	 * cannot be written, as in an extension's test run before the plugin's tables exist, that cause
+	 * is how a refusal still reaches the developer: a test runner prints it under the failure.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException Always.
+	 *
+	 * @param string $gatewayId The gateway's id.
+	 * @return never
+	 */
+	private function notRegistered( string $gatewayId ): never {
+		throw CodedException::because( PaymentError::GatewayUnavailable, self::reason( $gatewayId, 'not_registered' ), new \LogicException( $this->whyNotRegistered( $gatewayId ) ) );
+	}
+
+	/**
+	 * Says why a gateway id is not registered in this request.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $gatewayId The gateway's id.
+	 * @return string One sentence, or the refusals one after another.
+	 */
+	private function whyNotRegistered( string $gatewayId ): string {
+		if ( array() !== $this->refused ) {
+			$refusals = array_map(
+				static fn( RefusedRegistration $refused ): string => sprintf( '%1$s (%2$s): %3$s', $refused->plugin ?? $refused->gateway, $refused->reason, $refused->detail ),
+				$this->refused
+			);
+
+			return sprintf( 'No gateway "%1$s" is registered. SEOCart refused these registrations in this request: %2$s', $gatewayId, implode( ' ', $refusals ) );
+		}
+
+		if ( false === has_action( GatewayRegistry::ACTION ) ) {
+			return sprintf( 'No gateway "%1$s" is registered, and nothing listens to %2$s: is the plugin that provides it active, and is the action\'s name in its main file spelled so?', $gatewayId, GatewayRegistry::ACTION );
+		}
+
+		return sprintf( 'No gateway "%1$s" is registered: the listeners of %2$s ran, none registered that id, and no registration was refused.', $gatewayId, GatewayRegistry::ACTION );
 	}
 
 	/**
@@ -922,7 +988,9 @@ final class Gateways implements GatewayRegistry {
 	 *
 	 * The detail is the registry's own sentence, for the log line and the refusal kept alike: an
 	 * exception a plugin threw is named by its class, never by its message, which may quote a
-	 * credential. What else it names (a contract version, a setting's name) the descriptor checked.
+	 * credential. What else it names (a contract version, a setting's name) the descriptor checked;
+	 * a declaration one of SEOCart's declaration classes refused is quoted with its text, which
+	 * names the field and the rule (descriptorRefusal()).
 	 *
 	 * @since 0.2.0
 	 *
@@ -942,6 +1010,34 @@ final class Gateways implements GatewayRegistry {
 		);
 
 		$this->refused[] = new RefusedRegistration( $what, $plugin, $reason, $detail );
+	}
+
+	/**
+	 * Says why a descriptor could not be built, quoting SEOCart's own validation text when one of its declaration classes refused it.
+	 *
+	 * An exception one of QUOTED_VALIDATIONS raised, where a declaration is checked (an id, a
+	 * setting, a matrix row, a host), says which field broke which rule and never quotes the value.
+	 * Any other exception, one raised elsewhere in SEOCart's own source included, is named by its
+	 * class alone, as its message may hold anything.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param \Throwable $invalid What describe(), or the settings' declaration, threw.
+	 * @return string The detail.
+	 */
+	private static function descriptorRefusal( \Throwable $invalid ): string {
+		$text      = trim( (string) preg_replace( '/\s+/', ' ', $invalid->getMessage() ) );
+		$validated = array_map( static fn( string $declaration ): string => wp_normalize_path( (string) ( new \ReflectionClass( $declaration ) )->getFileName() ), self::QUOTED_VALIDATIONS );
+
+		if ( ! $invalid instanceof \InvalidArgumentException || ! in_array( wp_normalize_path( $invalid->getFile() ), $validated, true ) || '' === $text ) {
+			return sprintf( 'Its descriptor could not be built: describe(), or the settings it declares, threw %s.', get_class( $invalid ) );
+		}
+
+		if ( strlen( $text ) > self::VALIDATION_TEXT_LENGTH ) {
+			$text = substr( $text, 0, self::VALIDATION_TEXT_LENGTH - 3 ) . '...';
+		}
+
+		return sprintf( 'Its descriptor could not be built: SEOCart refused it (%1$s): %2$s', get_class( $invalid ), $text );
 	}
 
 	/**

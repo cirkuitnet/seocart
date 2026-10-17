@@ -11,3 +11,5 @@ playwright-report
 composer.lock
 package-lock.json
 docs/openapi.json
+# Conformance recordings: the payment conformance suite writes them (tests/**/tapes); they are data, not source.
+**/tapes/**

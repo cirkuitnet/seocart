@@ -24,8 +24,9 @@ only copy. Vulnerability reports follow [SECURITY.md](../SECURITY.md).
 ## Generated reference
 
 `docs/openapi.json` and the files under `docs/reference/` — abilities, CLI commands, error
-codes and hooks — are **generated** by `composer docs:generate` from the operation registry,
-the error catalogs, the event catalog and the filter declarations, and checked for drift by
+codes, hooks and payment gateways — are **generated** by `composer docs:generate` from the
+operation registry, the error catalogs, the event catalog, the filter declarations and the
+gateways' own declarations, and checked for drift by
 `composer docs:check`, which prints the command to run when a file is out of date. Do not edit
 them by hand: change the declaration and regenerate.
 [adding-an-operation.md](adding-an-operation.md) shows the whole cycle. The same command also

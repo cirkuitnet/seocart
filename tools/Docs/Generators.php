@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tools\Docs;
 
 use SEOCart\Application\Operations\Operations;
+use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Platform\Hooks\ActionDeclarations;
 use SEOCart\Platform\Hooks\FilterDeclarations;
 use SEOCart\Platform\Http\OutboundEndpoints;
@@ -48,6 +49,21 @@ final class Generators {
 			new CliReference( $operations, $errors ),
 			new ErrorsReference( $errors ),
 			new HooksReference( Modules::EVENT_CLASSES, FilterDeclarations::ALL, ActionDeclarations::ALL ),
+			GatewayMatrixPage::forCore(),
 		);
+	}
+
+	/**
+	 * Returns the generators of a SEOCart extension's own documents: the page of the payment gateways it registers.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $gateways The gateways the extension registers.
+	 * @return list<Generator> The generators, in the order they run.
+	 *
+	 * @phpstan-param list<PaymentGateway> $gateways
+	 */
+	public static function forPlugin( array $gateways ): array {
+		return array( GatewayMatrixPage::forPlugin( $gateways ) );
 	}
 }

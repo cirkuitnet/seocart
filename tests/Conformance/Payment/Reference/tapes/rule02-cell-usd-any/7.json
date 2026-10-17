@@ -1,0 +1,20 @@
+{
+	"request": {
+		"body": "amount=3000&currency=usd&token=ref_approve&intent_uuid=019b76da-a800-7e33-b109-adf204ee9157&order_number=000002&capture=manual&return_url=http%3A%2F%2Fexample.org%2F%3Fseocart_payment%3D019b76da-a800-7e33-b109-adf204ee9157",
+		"headers": {
+			"content-type": "application/x-www-form-urlencoded",
+			"idempotency-key": "019b76da-a800-7e33-b109-adf204ee9157"
+		},
+		"host": "api.reference.example",
+		"method": "POST",
+		"path": "/v1/intents"
+	},
+	"response": {
+		"body": "{\"id\":\"ri_12\",\"status\":\"requires_capture\",\"amount\":3000,\"amount_captured\":0,\"amount_refunded\":0,\"currency\":\"usd\",\"intent_uuid\":\"019b76da-a800-7e33-b109-adf204ee9157\",\"order_number\":\"000002\",\"charge\":\"rch_13\",\"capture\":null,\"decline_code\":null,\"decline_message\":null,\"next_action\":null,\"cancellation_reason\":null}",
+		"headers": {
+			"content-type": "application/json",
+			"request-id": "req_14"
+		},
+		"status": 200
+	}
+}

@@ -191,8 +191,8 @@ final class Skeleton {
 
 		if ( StubGateway::ID === $gateway_id ) {
 			throw new InvalidArgumentException(
-				( null === $gatewayId ? "The label \"{$label}\" gives the gateway id \"{$gateway_id}\"" : "The gateway id \"{$gateway_id}\"" )
-				. ', which is the stand-in gateway\'s id: SEOCart registers that gateway itself, and a second one of the id would be refused. Name another with --gateway-id=<id>.'
+				( null === $gatewayId ? "The label \"{$label}\" gives the gateway id \"{$gateway_id}\", which is" : "The gateway id \"{$gateway_id}\" is" )
+				. ' the stand-in gateway\'s id: SEOCart registers that gateway itself and would refuse a second gateway of that id. Name another with --gateway-id=<id>.'
 			);
 		}
 
@@ -202,6 +202,7 @@ final class Skeleton {
 		$core_main   = (string) file_get_contents( $this->core . '/' . PluginPackage::MAIN_FILE );
 		$core_readme = (string) file_get_contents( $this->core . '/readme.txt' );
 
+		// A type adds placeholders of its own; it never redefines one every type has.
 		$this->values = array(
 			'slug'                => $slug,
 			'name'                => $name,
@@ -216,7 +217,7 @@ final class Skeleton {
 			'tested_wp'           => self::required( PluginPackage::header( $core_readme, 'Tested up to' ), 'Tested up to', 'readme.txt' ),
 			'registration_action' => $type->registrationAction(),
 			'contract_version'    => $type->contractVersion(),
-		);
+		) + $type->templateValues();
 	}
 
 	/**
@@ -320,6 +321,8 @@ final class Skeleton {
 		foreach ( self::COPIED_FROM_CORE as $file ) {
 			$files[ $file ] = (string) file_get_contents( $this->core . '/' . $file );
 		}
+
+		$files = array_merge( $files, $this->type->documents( $this->core, $files ) );
 
 		ksort( $files, SORT_STRING );
 

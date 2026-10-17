@@ -59,7 +59,7 @@ final readonly class CapabilityMatrix {
 			$cell = $row->currency->code() . '/' . $row->accountCountry;
 
 			if ( isset( $cells[ $cell ] ) ) {
-				throw new \InvalidArgumentException( sprintf( 'A capability matrix declares the cell %s twice.', $cell ) );
+				throw new \InvalidArgumentException( 'A capability matrix declares each cell once, and two of its rows have the same currency and account country.' );
 			}
 
 			$cells[ $cell ] = true;

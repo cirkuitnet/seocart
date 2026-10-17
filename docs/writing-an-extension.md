@@ -52,7 +52,7 @@ checkout, `~/dev/seocart`:
 
 ```text
 $ sh bin/dev/new-extension.sh seocart-gateway-for-example --type=payments --label=Example
-new-extension: wrote ~/dev/seocart-gateway-for-example (24 files, staged in a new git repository, nothing committed):
+new-extension: wrote ~/dev/seocart-gateway-for-example (26 files, staged in a new git repository, nothing committed):
   .distignore
   .editorconfig
   .gitattributes
@@ -65,6 +65,7 @@ new-extension: wrote ~/dev/seocart-gateway-for-example (24 files, staged in a ne
   SECURITY.md
   bin/dev/bump-core.sh
   composer.json
+  docs/capabilities.md
   phpcs.xml.dist
   phpstan.neon.dist
   phpunit.xml.dist
@@ -72,12 +73,13 @@ new-extension: wrote ~/dev/seocart-gateway-for-example (24 files, staged in a ne
   seocart-core.env
   seocart-gateway-for-example.php
   src/Gateway.php
+  tests/Integration/ConformanceTest.php
   tests/Integration/LoadsBesideSEOCartTest.php
   tests/Integration/RegistersWithSEOCartTest.php
   tests/Unit/PrivateReferencesTest.php
   tests/Unit/RegistrationTest.php
   tests/bootstrap.php
-new-extension: pinned to SEOCart ce5102bcda8763073232f16f53400acff3610143 (seocart-core.env and .github/workflows).
+new-extension: pinned to SEOCart 7d4c6a0e966d44c2ecd6edbacfa23621772d5938 (seocart-core.env and .github/workflows).
 new-extension: seocart-gateway-for-example.php hooks seocart_register_payment_gateways to register the gateway "example", written against contract 0.2.0; src/Gateway.php declares no capability yet.
 new-extension: next: commit the files, then run the gates: sh ../seocart/bin/ci/extension.sh all . (from ~/dev/seocart-gateway-for-example).
 ```
@@ -97,7 +99,7 @@ The label "2Checkout" gives the gateway id "2checkout", which is not one: lower-
 
 ```text
 $ sh bin/dev/new-extension.sh seocart-gateway-for-stub --type=payments --label=Stub
-The label "Stub" gives the gateway id "stub", which is the stand-in gateway's id: SEOCart registers that gateway itself, and a second one of the id would be refused. Name another with --gateway-id=<id>.
+The label "Stub" gives the gateway id "stub", which is the stand-in gateway's id: SEOCart registers that gateway itself and would refuse a second gateway of that id. Name another with --gateway-id=<id>.
 ```
 
 The files, staged in a new git repository and not yet committed:
@@ -116,6 +118,7 @@ A  LICENSE
 A  SECURITY.md
 A  bin/dev/bump-core.sh
 A  composer.json
+A  docs/capabilities.md
 A  phpcs.xml.dist
 A  phpstan.neon.dist
 A  phpunit.xml.dist
@@ -123,6 +126,7 @@ A  readme.txt
 A  seocart-core.env
 A  seocart-gateway-for-example.php
 A  src/Gateway.php
+A  tests/Integration/ConformanceTest.php
 A  tests/Integration/LoadsBesideSEOCartTest.php
 A  tests/Integration/RegistersWithSEOCartTest.php
 A  tests/Unit/PrivateReferencesTest.php
@@ -136,11 +140,13 @@ A  tests/bootstrap.php
 | `src/Gateway.php`                                              | The gateway: a skeleton of the adapter that SEOCart accepts and never calls (below)                                                                              |
 | `seocart-core.env`                                             | The pin                                                                                                                                                          |
 | `phpcs.xml.dist`, `phpstan.neon.dist`                          | SEOCart's shared rules, included from `../seocart/tools/`, with the extension's own text domain, prefixes and paths                                              |
-| `phpunit.xml.dist`, `tests/bootstrap.php`                      | The `unit` and `integration` suites, on SEOCart's bootstraps                                                                                                     |
+| `phpunit.xml.dist`, `tests/bootstrap.php`                      | The `unit` and `integration` suites, on SEOCart's bootstraps; a plain run leaves the `conformance` group out                                                     |
 | `tests/Unit/PrivateReferencesTest.php`                         | SEOCart's private-reference check, over this repository                                                                                                          |
 | `tests/Unit/RegistrationTest.php`                              | The main file's action string is the one SEOCart declares, and the gateway declares nothing it can do yet                                                        |
 | `tests/Integration/LoadsBesideSEOCartTest.php`                 | The extension loads beside SEOCart without a PHP error                                                                                                           |
 | `tests/Integration/RegistersWithSEOCartTest.php`               | SEOCart's own registry accepts the gateway, written against a contract version it supports, and does not offer it                                                |
+| `tests/Integration/ConformanceTest.php`                        | SEOCart's payment gateway conformance suite on the gateway, which the `conformance` gate runs (below)                                                            |
+| `docs/capabilities.md`                                         | What the gateway declares, generated from its `describe()` and checked by the `conformance` gate (below)                                                         |
 | `.github/workflows/`                                           | `ci.yml`, `nightly.yml` and `release.yml`: a few lines each, calling SEOCart's workflows at the pin                                                              |
 | `bin/dev/bump-core.sh`                                         | Moves the pin (below)                                                                                                                                            |
 | `readme.txt`, `CHANGELOG.md`, `SECURITY.md`                    | The WordPress.org readme, the changelog and the security policy                                                                                                  |
@@ -220,22 +226,22 @@ $ sh ../seocart/bin/ci/extension.sh all .
 
 extension: php ~/dev/seocart/vendor/bin/parallel-lint --exclude ~/dev/seocart-gateway-for-example/.git --exclude ~/dev/seocart-gateway-for-example/dist --exclude ~/dev/seocart-gateway-for-example/vendor --exclude ~/dev/seocart-gateway-for-example/node_modules ~/dev/seocart-gateway-for-example
 PHP 8.4.23 | 10 parallel jobs
-.......                                                      7/7 (100%)
+........                                                     8/8 (100%)
 
 
-Checked 7 files in 0 seconds
+Checked 8 files in 0.1 seconds
 No syntax error found
 
 extension: php ~/dev/seocart/vendor/bin/phpcs
-....... 7 / 7 (100%)
+........ 8 / 8 (100%)
 
 
-Time: 617ms; Memory: 20MB
+Time: 1.01 secs; Memory: 20MB
 
 
 extension: php ~/dev/seocart/vendor/bin/phpstan analyse --memory-limit=1536M
 Note: Using configuration file ~/dev/seocart-gateway-for-example/phpstan.neon.dist.
-  7/7 [▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓] 100%
+  8/8 [▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓] 100%
 
 
  [OK] No errors
@@ -246,7 +252,7 @@ PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
 
 ....                                                                4 / 4 (100%)
 
-Time: 00:00.054, Memory: 8.00 MB
+Time: 00:00.033, Memory: 8.00 MB
 
 OK (4 tests, 120 assertions)
 
@@ -261,11 +267,11 @@ OK (1 test, 1 assertion)
 
 extension: php ~/dev/seocart/bin/build-zip.php --plugin=~/dev/seocart-gateway-for-example
 build-zip: wrote ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip
-           6 files, 17582 bytes (0.02 MiB)
-           sha256 a94e5bc87a53475c3bab2145cb4a576d314f748dbe8e54fcc5a130e2ccd9a4a8
+           6 files, 17699 bytes (0.02 MiB)
+           sha256 9e4aa9d02b75def20ea490b27c3c8adeea72a0b1f1f6eef83ba1c9ffa5e0da4f
 
 extension: php ~/dev/seocart/bin/check-zip.php --plugin=~/dev/seocart-gateway-for-example ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip
-check-zip: OK ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip, 17582 bytes (budget 5242880, limit 10485760)
+check-zip: OK ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip, 17699 bytes (budget 5242880, limit 10485760)
 
 extension: every gate that needs no database passed for ~/dev/seocart-gateway-for-example.
 ```
@@ -280,7 +286,7 @@ extension: every gate that needs no database passed for ~/dev/seocart-gateway-fo
 | `zip`                | Builds the release zip into `dist/` and checks it, with SEOCart's `bin/build-zip.php --plugin=.` and `bin/check-zip.php --plugin=.` |
 | `integration`        | The `integration` suite, on SEOCart's integration bootstrap, with the extension and then SEOCart loaded                             |
 | `idle`               | SEOCart's idle-request probe with and without the extension: its share is at most one file, one hook registration and no query      |
-| `conformance <type>` | SEOCart's conformance suite for the extension's type, once SEOCart has one                                                          |
+| `conformance <type>` | SEOCart's conformance suite for the extension's type: its unit group, then the extension's conformance test                         |
 | `version <tag>`      | The main file's `Version` and the readme's `Stable tag` equal the tag                                                               |
 | `all`                | `lint`, `cs`, `stan`, `unit`, `references` and `zip`                                                                                |
 
@@ -299,7 +305,7 @@ PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
 
 ..                                                                  2 / 2 (100%)
 
-Time: 00:00.090, Memory: 56.50 MB
+Time: 00:00.120, Memory: 58.50 MB
 
 OK (2 tests, 10 assertions)
 ```
@@ -317,18 +323,223 @@ PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
 
 .                                                                   1 / 1 (100%)
 
-Time: 00:02.537, Memory: 80.50 MB
+Time: 00:02.812, Memory: 88.50 MB
 
 OK (1 test, 8 assertions)
 ```
 
 ```text
 $ sh ../seocart/bin/ci/extension.sh conformance . payments
-extension: SEOCart at ce5102bcda8763073232f16f53400acff3610143 has no conformance suite for payments extensions yet, so there is nothing to run. This step runs it once SEOCart names one (tools/Extension/ExtensionType.php).
+
+extension: composer test:conformance:payment
+PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
+
+.................................................                 49 / 49 (100%)
+
+Time: 00:00.877, Memory: 54.00 MB
+
+OK (49 tests, 134 assertions)
+Installing...
+Running as single site... To run multisite, use -c tests/phpunit/multisite.xml
+Not running ajax tests. To execute these, use --group ajax.
+Not running ms-files tests. To execute these, use --group ms-files.
+Not running external-http tests. To execute these, use --group external-http.
+PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
+
+Runtime:       PHP 8.4.23
+Configuration: ~/dev/seocart-gateway-for-example/phpunit.xml.dist
+
+S..SSSSSSSSSSSSS.                                                 17 / 17 (100%)
+
+Time: 00:36.821, Memory: 70.50 MB
+
+There were 14 skipped tests:
+
+1) SEOCart\GatewayForExample\Tests\Integration\ConformanceTest::test_rule_01_ledger_shape
+Conformance rule 1 (ledger shape): skipped: the gateway declares nothing yet; its capability matrix has no rows.
+
+[… one entry for each rule the skeleton skips, each saying why …]
+
+OK, but incomplete, skipped, or risky tests!
+Tests: 17, Assertions: 70, Skipped: 14.
 ```
 
 When the SEOCart checkout is not at the pinned commit, each gate says so first and runs anyway;
 CI always checks out the pin.
+
+## Hold the gateway to the conformance suite
+
+SEOCart publishes a conformance suite for payment gateways: the rules every gateway is held to,
+from the ledger an authorization, a capture and its refunds leave to a webhook delivery
+verified before it is read. [docs/reference/gateways.md](reference/gateways.md) in SEOCart lists
+them, with the proof of each. The generated `tests/Integration/ConformanceTest.php` is the
+extension's test; without its docblocks it is five lines:
+
+```php
+final class ConformanceTest extends GatewayConformanceCase {
+	protected function gatewayId(): string { return Gateway::ID; }
+	protected function tapes(): string { return dirname( __DIR__ ) . '/tapes'; }
+}
+```
+
+`gatewayId()` names the gateway the plugin registers: the suite builds SEOCart as it runs on a
+site, lets the plugin's own listener register the gateway, and checks the gateway SEOCart's
+payment service resolves. `tapes()` is the directory of the provider's recorded answers. The
+conformance step runs it, and runs what the suite checks without WordPress (rules 4 and 15, and
+rule 12's reading of `src/` for network calls that bypass the plugin's client) on the gateways the
+main file registers; a plain integration run leaves the test out. An extension without the test
+is skipped, and says so where it cannot be missed: a line that begins `conformance: SKIPPED` and,
+under GitHub Actions, a warning, each naming the file to add. Rule 18, the idle budget, is the
+`idle` gate. The conformance step in [Run the gates](#run-the-gates) shows it on
+the skeleton: rules 2 and 3 and the page's check run, and every other rule is skipped and says
+why.
+
+While the capability matrix declares nothing, every rule that places a payment is skipped and
+says so. Once it declares a cell, those rules place payments in it, so the test names a payment
+token for each scenario they place, and a gateway that declares `webhooks` signs deliveries the
+way its provider does:
+
+```php
+protected function tokens(): array {
+	return array(
+		Scenario::Approve->value                 => 'tok_example_approve',
+		Scenario::Decline->value                 => 'tok_example_decline',
+		Scenario::RequiresAction->value          => 'tok_example_3ds',
+		Scenario::RequiresActionCompleted->value => new NotProducible( 'Completing the bank\'s page needs a browser.' ),
+		Scenario::Expires->value                 => new NotProducible( 'The provider cannot be made to cancel a waiting payment in test mode.' ),
+		Scenario::Pending->value                 => 'tok_example_async',
+	);
+}
+
+protected function signDelivery( array $headers, string $body, string $secret, \DateTimeImmutable $at ): array {
+	// The provider's own scheme, for example an HMAC of the timestamp and the body.
+}
+```
+
+A scenario named `NotProducible` skips the rules that need it, with the reason; a scenario not
+named at all fails them. Among the deliveries a gateway that declares `webhooks` records, one is
+an event it applies, which it reads as its result, and one an event it does not apply, which it
+reads as ignored: rule 10 reads both, through the gateway's `readWebhook()` and through the store's
+webhook route, whose decision must match the gateway's reading. The tokens above are made up: name
+the provider's own test tokens. The
+scenarios are `approve`, `decline`, `requires_action`, `requires_action_completed` (the customer
+acts before the store's wait for them ends), `expires` (the payment waits, and the provider
+cancels it once the wait has ended) and `pending` (the provider takes the payment and decides
+later), which rule 8 asks about when the test names it.
+
+### Tapes: replay and record
+
+The suite never reaches the provider on a pull request. It replays the provider's answers from
+`tests/tapes/`, one directory per scenario, one file per request (`1.json`, `2.json`, …), each
+holding the request as sent (method, host, path with its query, headers, body) and the answer
+(status, headers, body); `tests/tapes/settings.json` holds the non-secret settings of the
+recording, and `tests/tapes/webhooks/` the recorded deliveries. A replayed request must equal its
+tape in its method, its path with its query, and its body; when the adapter sends anything else,
+the test fails and names the scenario, the request's number and the part that differs.
+
+Recording calls the provider for real, in test mode, from a developer's shell: name a JSON file of
+the test mode's settings, in the format `wp seocart gateway configure --from-file` reads, readable
+by you alone, and set `SEOCART_TAPE=record`:
+
+```text
+$ SEOCART_TAPE=record SEOCART_TAPE_SETTINGS=~/dev/example-test.json sh ../seocart/bin/ci/extension.sh conformance . payments
+```
+
+On the skeleton, which declares nothing, it prints what the conformance step above prints, and
+writes no tape:
+
+```text
+$ git status --short
+```
+
+Before a tape is written, it is scrubbed and scanned:
+
+1. every value of a credential of the run becomes `{{secret:<setting>}}`, wherever it is and in
+   whatever form it was sent (as it is, URL-encoded, escaped for JSON, base64-encoded or
+   hexadecimal), and so does every secret the provider issues that the test names in
+   `providerSecrets()`, such as a client secret the customer's browser needs;
+2. the `Authorization`, `Proxy-Authorization` and `Cookie` request headers and the `Set-Cookie`
+   response header are dropped;
+3. each delivery is signed again, by the test's `signDelivery()`, with SEOCart's published test
+   secret, so the provider's signing secret never reaches the tape;
+4. everything about to be written is read field by field (the URL and each field of its query,
+   each header, each field of a JSON or form body and of a URL a field holds, each delivery,
+   each setting) for a credential of the run, a value shaped like a provider's secret (`sk_`,
+   `rk_` or `pk_` then `test_` or `live_`, `whsec_`, `cs_test_` or `cs_live_`, or `_secret_`), an
+   opaque token (a run of 20 or more letters, digits, `_` and `-`, in any case) in no public
+   shape, a header that carries credentials, a card number, and the card fields `exp_month`,
+   `exp_year`, `last4` and `cvc`; a field's name is read for all of these but the opaque token.
+   Then the raw text of each body and query, as it is written, is read for an opaque token or a
+   card number that none of its decoded fields holds, such as the first of a field sent twice
+   or a number too long to read as one. A hit fails the recording, names the part, the field
+   and what it found but never the value, and nothing is written.
+
+An opaque token passes only in a public shape: a UUID, as the store's own references are; one of
+the provider's enumerated codes, as an exact string the test names in `publicCodes()`, such as a
+long status; an id of exactly a shape the test names in `publicIdShapes()`, a prefix with the
+number of letters and digits after it (`'pi_' => 24`) or the least and the most
+(`'cus_' => array( 14, 24 )`); a
+64-character hexadecimal digest in a field the test names in `publicDigestFields()`, such as a
+delivery's signature header; and the media type of a `Content-Type` or `Accept` header. No public
+shape passes for a token with a secret's prefix (`sk_`, `rk_`, `pk_`, `whsec_`, `cs_`, `secret_`,
+`private_`, `token_`, `key_`, `pass_` or `password_`, or `_live_`, `_test_`, `_secret_`,
+`_private_`, `_token_` or `_key_` inside it), in a field named like a credential (`key`, or a name
+holding `secret`, `token`, `password`, `passphrase`, `authorization`, `cookie` or `credential`, or
+ending in `api_key`, `client_key`, `signing_key` and the like), or in the query of a redirect's
+`Location`. A secret the provider issues is named in `providerSecrets()`, by a name for its
+placeholder:
+
+```php
+protected function providerSecrets(): array {
+	return array( 'client_secret' => '/\bpi_[A-Za-z0-9]+_secret_[A-Za-z0-9]+\b/' );
+}
+
+protected function publicIdShapes(): array {
+	return array(
+		'pi_' => 24,
+		'ch_' => 24,
+		're_' => 24,
+	);
+}
+
+protected function publicDigestFields(): array {
+	return array( 'example-signature' );
+}
+
+protected function publicCodes(): array {
+	return array( 'requires_payment_method' );
+}
+```
+
+The same `publicCodes()` is rule 13's list of the provider's words a log line may carry: a gateway
+that logs a status from the provider's answer, such as `succeeded`, declares it there. Any other
+text of the answers the gateway was served, an error's message above all, fails rule 13 when a
+line it logs holds it, found however the line encodes it, writes it in another case or splits it
+across its values.
+
+A tape's JSON keeps its keys sorted, so a new recording's diff shows only what changed. The
+suite writes the files, so they are left out of formatting: SEOCart's `.prettierignore` names
+`**/tapes/**`, and an extension that formats with Prettier leaves `tests/tapes/` out the same way.
+
+Commit the tapes through a pull request, so a change in the provider's answers is a reviewed diff.
+SEOCart's own reference gateway, `tests/Conformance/Payment/Reference/ReferenceGateway.php`, is a
+worked example of an adapter the suite passes, with its tapes beside it.
+
+### The capabilities page
+
+`docs/capabilities.md` is generated from the gateway's `describe()`: the matrix, the idempotency
+profile and the external services. The conformance step fails when it no longer matches.
+Regenerate it, or check it, from the extension's root; on the skeleton both find it current:
+
+```text
+$ php ../seocart/bin/generate-docs.php --plugin=.
+ok     docs/capabilities.md (gateways)
+```
+
+```text
+$ php ../seocart/bin/generate-docs.php --plugin=. --check
+ok     docs/capabilities.md (gateways)
+```
 
 ## Continuous integration
 
@@ -462,9 +673,9 @@ It changes `seocart-core.env` and every call of SEOCart's workflows together, an
 commit the SEOCart checkout does not have:
 
 ```text
-$ sh bin/dev/bump-core.sh 29eb9cb41167e7f14d0503b57cf69c746e3287d7
-bump-core: ~/dev/seocart-gateway-for-example now pins SEOCart 29eb9cb41167e7f14d0503b57cf69c746e3287d7 (was ce5102bcda8763073232f16f53400acff3610143): seocart-core.env and 3 workflow call(s).
-bump-core: next: git -C ~/dev/seocart checkout 29eb9cb41167e7f14d0503b57cf69c746e3287d7, run the gates (sh ~/dev/seocart/bin/ci/extension.sh all ~/dev/seocart-gateway-for-example), then commit.
+$ sh bin/dev/bump-core.sh 29c123dc5f1a6ec2a00ef430ad4e2f16cbc42dd3
+bump-core: ~/dev/seocart-gateway-for-example now pins SEOCart 29c123dc5f1a6ec2a00ef430ad4e2f16cbc42dd3 (was 7d4c6a0e966d44c2ecd6edbacfa23621772d5938): seocart-core.env and 3 workflow call(s).
+bump-core: next: git -C ~/dev/seocart checkout 29c123dc5f1a6ec2a00ef430ad4e2f16cbc42dd3, run the gates (sh ~/dev/seocart/bin/ci/extension.sh all ~/dev/seocart-gateway-for-example), then commit.
 ```
 
 ```text
@@ -506,11 +717,11 @@ $ sh ../seocart/bin/ci/extension.sh zip .
 
 extension: php ~/dev/seocart/bin/build-zip.php --plugin=~/dev/seocart-gateway-for-example
 build-zip: wrote ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip
-           6 files, 17582 bytes (0.02 MiB)
-           sha256 a94e5bc87a53475c3bab2145cb4a576d314f748dbe8e54fcc5a130e2ccd9a4a8
+           6 files, 17699 bytes (0.02 MiB)
+           sha256 9e4aa9d02b75def20ea490b27c3c8adeea72a0b1f1f6eef83ba1c9ffa5e0da4f
 
 extension: php ~/dev/seocart/bin/check-zip.php --plugin=~/dev/seocart-gateway-for-example ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip
-check-zip: OK ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip, 17582 bytes (budget 5242880, limit 10485760)
+check-zip: OK ~/dev/seocart-gateway-for-example/dist/seocart-gateway-for-example-0.1.0.zip, 17699 bytes (budget 5242880, limit 10485760)
 ```
 
 Pushing the tag starts `release.yml`, which calls SEOCart's `extension-release.yml` at the pin.

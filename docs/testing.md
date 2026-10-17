@@ -57,8 +57,8 @@ From many, fast and cheap to few, slow and high in value:
   in `tests/Support/Factories/`, never through raw SQL, so that a test exercises the write
   path that production uses.
 - Select specialised sets with PHPUnit groups: `concurrency`, `migration`, `performance`,
-  `contract`, `reference-fixture`, `international`, `multilingual-conformance` and `soak`. The
-  commands below map to those groups.
+  `contract`, `reference-fixture`, `international`, `multilingual-conformance`, `soak` and
+  `conformance`. The commands below map to those groups.
 - Never trust the return value of `dbDelta()`. A migration test inspects
   `information_schema` after the migration runs.
 - Never assume that a persistent object cache is present. A cache miss must still return
@@ -131,6 +131,7 @@ the source of truth. Run `composer list` or `npm run` to see them with their des
 | `composer test:reference-fixtures`       | Group `reference-fixture` in both suites: hand-authored input and expected-output scenarios                     |
 | `composer test:international`            | Group `international` in both suites: tax-inclusive pricing, multi-currency and multilingual scenarios          |
 | `composer test:multilingual-conformance` | The integration suite, group `multilingual-conformance`, on a disposable site with a real multilingual plugin   |
+| `composer test:conformance:payment`      | Group `conformance` in both suites: the payment gateway conformance suite, SEOCart's or an extension's          |
 | `composer docs:generate`                 | Regenerates every committed, generated document                                                                 |
 | `composer docs:check`                    | The same generators in check mode. Fails on drift or on an unexpected skip, and prints the regeneration command |
 | `composer wporg:check`                   | The WordPress.org directory checks that do not need a built zip                                                 |
@@ -279,6 +280,13 @@ rule, a drift test, a budget, a packaging check, a CI job — prove that it can 
 Where the check has self-tests, keep the planted violation as a permanent fixture, so that
 the proof runs on every build. The sniff fixtures under `tools/` are violations on purpose,
 which is why the main PHP_CodeSniffer and PHPStan runs exclude them.
+
+The payment gateway conformance suite keeps its plants the same way: each is a gateway, in
+`tests/Conformance/Payment/Plants/`, that breaks one rule, and its test passes only when the
+suite fails on it with that rule's message and the detail the plant names (`FAILS_WITH`), so a
+plant that fails for another reason does not count. A rule may have several, each breaking it
+another way; one that breaks it in its source (`Plants\SourcePlant`, such as a cURL call) is read by
+the suite's unit tests and never run.
 
 The same rule applies to generators: a generator that skips something must fail. Skips are an
 asserted set, not a line in a log.

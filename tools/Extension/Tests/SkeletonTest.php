@@ -18,6 +18,7 @@ use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Contracts\Payment\GatewayRegistry;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
+use SEOCart\Tests\Conformance\Payment\Rule;
 use SEOCart\Tools\Extension\ExtensionType;
 use SEOCart\Tools\Extension\Skeleton;
 use SEOCart\Tools\Packaging\PluginPackage;
@@ -55,6 +56,7 @@ final class SkeletonTest extends TestCase {
 		'SECURITY.md',
 		'bin/dev/bump-core.sh',
 		'composer.json',
+		'docs/capabilities.md',
 		'phpcs.xml.dist',
 		'phpstan.neon.dist',
 		'phpunit.xml.dist',
@@ -62,6 +64,7 @@ final class SkeletonTest extends TestCase {
 		'seocart-core.env',
 		'seocart-gateway-for-example.php',
 		'src/Gateway.php',
+		'tests/Integration/ConformanceTest.php',
 		'tests/Integration/LoadsBesideSEOCartTest.php',
 		'tests/Integration/RegistersWithSEOCartTest.php',
 		'tests/Unit/PrivateReferencesTest.php',
@@ -259,6 +262,18 @@ final class SkeletonTest extends TestCase {
 	}
 
 	/**
+	 * Tests that the gateway's void() states conformance rule 19 in the words of the rule's own declaration.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_gateways_void_states_rule_19_from_its_declaration(): void {
+		$gateway = self::skeleton()->files()['src/Gateway.php'];
+
+		$this->assertSame( 1, preg_match( '#/\*\*((?:(?!\*/).)*)\*/\s*public function void\(#s', $gateway, $docblock ), 'The gateway has a void() with a docblock.' );
+		$this->assertStringContainsString( Rule::VoidReportsTheAmount->asserts(), (string) preg_replace( '/\s*\n\t \* /', ' ', $docblock[1] ) );
+	}
+
+	/**
 	 * Tests the id the gateway registers with, which the label gives and an option overrides.
 	 *
 	 * @since 0.2.0
@@ -314,8 +329,8 @@ final class SkeletonTest extends TestCase {
 			'id of 33 characters'                 => array( 'Example', $too_long, "\"{$too_long}\" is not a gateway id" ),
 			'empty id'                            => array( 'Example', '', '"" is not a gateway id' ),
 			'id with a trailing newline'          => array( 'Example', "example\n", 'is not a gateway id' ),
-			'label that gives the stand-in\'s id' => array( 'Stub', null, 'The label "Stub" gives the gateway id "' . StubGateway::ID . '", which is the stand-in gateway\'s id' ),
-			'the stand-in\'s id asked for'        => array( 'Example', StubGateway::ID, 'The gateway id "' . StubGateway::ID . '", which is the stand-in gateway\'s id' ),
+			'label that gives the stand-in\'s id' => array( 'Stub', null, 'The label "Stub" gives the gateway id "' . StubGateway::ID . '", which is the stand-in gateway\'s id: SEOCart registers that gateway itself and would refuse a second gateway of that id.' ),
+			'the stand-in\'s id asked for'        => array( 'Example', StubGateway::ID, 'The gateway id "' . StubGateway::ID . '" is the stand-in gateway\'s id: SEOCart registers that gateway itself and would refuse a second gateway of that id.' ),
 		);
 	}
 

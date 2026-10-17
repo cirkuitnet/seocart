@@ -1,0 +1,17 @@
+{
+	"request": {
+		"body": null,
+		"headers": [],
+		"host": "api.reference.example",
+		"method": "GET",
+		"path": "/v1/refunds?intent=ri_8"
+	},
+	"response": {
+		"body": "{\"data\":[]}",
+		"headers": {
+			"content-type": "application/json",
+			"request-id": "req_13"
+		},
+		"status": 200
+	}
+}

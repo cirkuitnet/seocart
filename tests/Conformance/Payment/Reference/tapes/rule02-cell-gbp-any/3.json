@@ -1,0 +1,20 @@
+{
+	"request": {
+		"body": "amount=2872",
+		"headers": {
+			"content-type": "application/x-www-form-urlencoded",
+			"idempotency-key": "019b76da-a800-736d-b9c4-0724cb2d9efb:capture"
+		},
+		"host": "api.reference.example",
+		"method": "POST",
+		"path": "/v1/intents/ri_47/capture"
+	},
+	"response": {
+		"body": "{\"id\":\"ri_47\",\"status\":\"captured\",\"amount\":2872,\"amount_captured\":2872,\"amount_refunded\":0,\"currency\":\"gbp\",\"intent_uuid\":\"019b76da-a800-736d-b9c4-0724cb2d9efb\",\"order_number\":\"000009\",\"charge\":\"rch_48\",\"capture\":\"rcp_51\",\"decline_code\":null,\"decline_message\":null,\"next_action\":null,\"cancellation_reason\":null}",
+		"headers": {
+			"content-type": "application/json",
+			"request-id": "req_52"
+		},
+		"status": 200
+	}
+}

@@ -174,7 +174,7 @@ final readonly class GatewayDescriptor {
 		public array $hosts
 	) {
 		if ( strlen( $id ) > self::ID_MAX_LENGTH || 1 !== preg_match( self::ID_PATTERN, $id ) ) {
-			throw new \InvalidArgumentException( sprintf( 'A gateway id is lower-case snake_case of at most %1$d characters, not "%2$s".', self::ID_MAX_LENGTH, $id ) );
+			throw new \InvalidArgumentException( sprintf( 'A gateway\'s id is lower-case snake_case of at most %d characters, and the id given is not.', self::ID_MAX_LENGTH ) );
 		}
 
 		if ( 1 !== preg_match( self::ID_PATTERN, $type ) ) {
@@ -255,7 +255,7 @@ final readonly class GatewayDescriptor {
 			}
 
 			if ( isset( $ids[ $host->id ] ) ) {
-				throw new \InvalidArgumentException( sprintf( 'A gateway declares each host once: %s.', $host->id ) );
+				throw new \InvalidArgumentException( 'A gateway declares each host once, and two of its hosts have the same id.' );
 			}
 
 			$ids[ $host->id ] = true;

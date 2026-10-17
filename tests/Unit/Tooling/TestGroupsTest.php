@@ -39,6 +39,7 @@ final class TestGroupsTest extends TestCase {
 	 */
 	private const DECLARED_GROUPS = array(
 		'concurrency',
+		'conformance',
 		'contract',
 		// Selected by bin/ci/extension.sh idle rather than a Composer script: it measures an extension.
 		'extension-idle',

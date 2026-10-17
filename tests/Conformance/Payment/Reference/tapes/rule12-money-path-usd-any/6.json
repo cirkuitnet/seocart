@@ -1,0 +1,20 @@
+{
+	"request": {
+		"body": "reason=customer_request",
+		"headers": {
+			"content-type": "application/x-www-form-urlencoded",
+			"idempotency-key": "019b76da-a800-7392-bb38-4610ee39280d:void"
+		},
+		"host": "api.reference.example",
+		"method": "POST",
+		"path": "/v1/intents/ri_10/cancel"
+	},
+	"response": {
+		"body": "{\"id\":\"ri_10\",\"status\":\"canceled\",\"amount\":3000,\"amount_captured\":0,\"amount_refunded\":0,\"currency\":\"usd\",\"intent_uuid\":\"019b76da-a800-7392-bb38-4610ee39280d\",\"order_number\":\"000002\",\"charge\":\"rch_11\",\"capture\":null,\"decline_code\":null,\"decline_message\":null,\"next_action\":null,\"cancellation_reason\":\"requested\"}",
+		"headers": {
+			"content-type": "application/json",
+			"request-id": "req_13"
+		},
+		"status": 200
+	}
+}

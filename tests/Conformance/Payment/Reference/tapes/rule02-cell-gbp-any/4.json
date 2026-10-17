@@ -1,0 +1,21 @@
+{
+	"answer_lost": true,
+	"request": {
+		"body": "intent=ri_47&amount=1200&refund_uuid=5d63eec1-b110-5504-a104-48120f07e45a",
+		"headers": {
+			"content-type": "application/x-www-form-urlencoded",
+			"idempotency-key": "5d63eec1-b110-5504-a104-48120f07e45a"
+		},
+		"host": "api.reference.example",
+		"method": "POST",
+		"path": "/v1/refunds"
+	},
+	"response": {
+		"body": "{\"id\":\"rre_53\",\"status\":\"succeeded\",\"intent\":\"ri_47\",\"intent_uuid\":\"019b76da-a800-736d-b9c4-0724cb2d9efb\",\"amount\":1200,\"currency\":\"gbp\",\"refund_uuid\":\"5d63eec1-b110-5504-a104-48120f07e45a\"}",
+		"headers": {
+			"content-type": "application/json",
+			"request-id": "req_54"
+		},
+		"status": 200
+	}
+}

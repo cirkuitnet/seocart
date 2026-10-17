@@ -1,0 +1,9 @@
+{
+	"body": "{\"id\":\"evt_1\",\"type\":\"intent.authorized\",\"created\":1780315200,\"data\":{\"object\":{\"id\":\"ri_webhook\",\"status\":\"requires_capture\",\"amount\":2000,\"currency\":\"usd\",\"intent_uuid\":\"01942f00-0000-7000-8000-00000000a001\",\"order_number\":\"1\",\"charge\":\"rch_webhook\"}}}",
+	"headers": {
+		"content-type": "application/json",
+		"reference-signature": "t=1780315200,v1=a86bcc0a587be2adc292c7b762ab25053371d2c2eecb20494f59005e7169aee1"
+	},
+	"mode": "test",
+	"signed_at": "2026-06-01T12:00:00+00:00"
+}
