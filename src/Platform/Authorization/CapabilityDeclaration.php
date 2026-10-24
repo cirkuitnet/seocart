@@ -113,33 +113,35 @@ final class CapabilityDeclaration {
 	/**
 	 * The plugin's primitives beyond the product post type's, each with its group.
 	 *
+	 * The catalog's own is named by ProductCapabilities, whose term capabilities map onto it.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @var array<string, string>
 	 */
 	private const PRIMITIVES = array(
-		'seocart_manage_catalog'       => self::GROUP_CATALOG,
-		'seocart_manage_inventory'     => self::GROUP_CATALOG,
-		'seocart_view_orders'          => self::GROUP_ORDERS,
-		'seocart_edit_orders'          => self::GROUP_ORDERS,
-		'seocart_create_orders'        => self::GROUP_ORDERS,
-		'seocart_delete_orders'        => self::GROUP_ORDERS,
-		'seocart_manage_fulfillment'   => self::GROUP_ORDERS,
-		'seocart_capture_payments'     => self::GROUP_MONEY,
-		'seocart_void_payments'        => self::GROUP_MONEY,
-		'seocart_refund_orders'        => self::GROUP_MONEY,
-		'seocart_manage_stored_value'  => self::GROUP_MONEY,
-		'seocart_override_money_state' => self::GROUP_MONEY,
-		'seocart_view_customer_pii'    => self::GROUP_SENSITIVITY,
-		'seocart_view_payment_details' => self::GROUP_SENSITIVITY,
-		'seocart_export_customers'     => self::GROUP_SENSITIVITY,
-		'seocart_export_orders'        => self::GROUP_SENSITIVITY,
-		'seocart_manage_marketing'     => self::GROUP_STORE,
-		'seocart_manage_settings'      => self::GROUP_STORE,
-		'seocart_manage_secrets'       => self::GROUP_STORE,
-		'seocart_manage_appearance'    => self::GROUP_STORE,
-		'seocart_view_reports'         => self::GROUP_STORE,
-		'seocart_manage_integrations'  => self::GROUP_STORE,
+		ProductCapabilities::MANAGE_CATALOG => self::GROUP_CATALOG,
+		'seocart_manage_inventory'          => self::GROUP_CATALOG,
+		'seocart_view_orders'               => self::GROUP_ORDERS,
+		'seocart_edit_orders'               => self::GROUP_ORDERS,
+		'seocart_create_orders'             => self::GROUP_ORDERS,
+		'seocart_delete_orders'             => self::GROUP_ORDERS,
+		'seocart_manage_fulfillment'        => self::GROUP_ORDERS,
+		'seocart_capture_payments'          => self::GROUP_MONEY,
+		'seocart_void_payments'             => self::GROUP_MONEY,
+		'seocart_refund_orders'             => self::GROUP_MONEY,
+		'seocart_manage_stored_value'       => self::GROUP_MONEY,
+		'seocart_override_money_state'      => self::GROUP_MONEY,
+		'seocart_view_customer_pii'         => self::GROUP_SENSITIVITY,
+		'seocart_view_payment_details'      => self::GROUP_SENSITIVITY,
+		'seocart_export_customers'          => self::GROUP_SENSITIVITY,
+		'seocart_export_orders'             => self::GROUP_SENSITIVITY,
+		'seocart_manage_marketing'          => self::GROUP_STORE,
+		'seocart_manage_settings'           => self::GROUP_STORE,
+		'seocart_manage_secrets'            => self::GROUP_STORE,
+		'seocart_manage_appearance'         => self::GROUP_STORE,
+		'seocart_view_reports'              => self::GROUP_STORE,
+		'seocart_manage_integrations'       => self::GROUP_STORE,
 	);
 
 	/**

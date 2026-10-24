@@ -16,7 +16,7 @@ use WP_UnitTestCase;
 
 /**
  * The kernel's wiring, as a request really boots it: on an idle front-end request the plugin adds
- * exactly the hooks listed here and loads six files, and the hooks of the admin, WP-CLI, cron and
+ * exactly the hooks listed here and loads seven files, and the hooks of the admin, WP-CLI, cron and
  * a network appear in their own kind of request only. The idle request's hooks are the kernel's
  * own four, the REST routes', the two of the abilities, the job runner's, the product post
  * type's and the product lifecycle's three: twelve, and fifteen on a network. Every one of them
@@ -51,20 +51,21 @@ final class KernelWiringTest extends WP_UnitTestCase {
 	private const MODULES = 'closure at src/Platform/Kernel/Modules.php';
 
 	/**
-	 * Tests the idle front-end request: exactly the kernel's hooks, and its six files.
+	 * Tests the idle front-end request: exactly the kernel's hooks, and its seven files.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The product taxonomies' registration is the seventh file.
 	 */
-	public function test_an_idle_request_costs_the_listed_hooks_and_six_files(): void {
+	public function test_an_idle_request_costs_the_listed_hooks_and_seven_files(): void {
 		$report = ChildProcessProbe::run( dirname( __DIR__, 2 ) . '/Support/idle-request-probe.php', array( 'with-plugin' ) );
 
 		$this->assertTrue( $report['plugin_loaded'], 'The probe did not load SEOCart, so the lists prove nothing.' );
 		$this->assertSame( array(), preg_grep( '/^deleted_post /', self::describe( $report['hooks'] ) ), 'An idle request hooked `deleted_post`, which is added only once a delete of a product post goes on.' );
 		$this->assertSame( self::expectedHooks( 'front' ), self::describe( $report['hooks'] ) );
 		$this->assertSame(
-			array( 'seocart.php', 'src/Catalog/Infrastructure/ProductPostType.php', 'src/Platform/Authorization/ProductCapabilities.php', 'src/Platform/Kernel/Container.php', 'src/Platform/Kernel/Kernel.php', 'src/Platform/Kernel/Modules.php' ),
+			array( 'seocart.php', 'src/Catalog/Infrastructure/ProductPostType.php', 'src/Catalog/Infrastructure/ProductTaxonomies.php', 'src/Platform/Authorization/ProductCapabilities.php', 'src/Platform/Kernel/Container.php', 'src/Platform/Kernel/Kernel.php', 'src/Platform/Kernel/Modules.php' ),
 			array_keys( $report['files'] ),
-			'An idle request loads the main file, the kernel, the container, the module wiring and the product post type\'s registration with its capability map, and nothing else.'
+			'An idle request loads the main file, the kernel, the container, the module wiring, and the product post type\'s registration with its taxonomies\' and their capability map, and nothing else.'
 		);
 	}
 

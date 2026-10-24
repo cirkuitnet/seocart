@@ -44,10 +44,12 @@ defined( 'ABSPATH' ) || exit;
  * past its length. When all nine are taken, the copy fails with `catalog.sku_taken`. A try that
  * fails rolls back whole, its post included. A product without a variant is copied without one.
  *
- * Like the editor's save, it fires `wp_after_insert_post` for the new post once the copy is
- * durable.
+ * Like the editor's save, it gives the new post the original's categories, brands and tags once
+ * the copy is durable, outside its transaction, as the product endpoint writes terms; then it
+ * fires `wp_after_insert_post` for the new post.
  *
  * @since 0.1.0
+ * @since 0.2.0 The copy keeps the original's categories, brands and tags.
  */
 final class DuplicateProduct {
 
@@ -141,7 +143,7 @@ final class DuplicateProduct {
 		$postId   = $original?->sourcePostId();
 		$fields   = null === $postId ? null : $this->posts->contentOf( $postId );
 
-		if ( null === $original || null === $fields ) {
+		if ( null === $original || null === $postId || null === $fields ) {
 			CodedException::raise( CatalogError::ProductNotFound, array( 'product_id' => $productId ) );
 		}
 
@@ -156,14 +158,14 @@ final class DuplicateProduct {
 		$locale  = null !== $locale && $this->locales->publishesIn( $locale ) ? $locale : null;
 
 		if ( null === $variant ) {
-			return $this->saved( new ProductSave( null, $fields, null, $actor, null, $locale ) );
+			return $this->saved( new ProductSave( null, $fields, null, $actor, null, $locale ), $postId );
 		}
 
 		$sku = '';
 
 		foreach ( self::skus( $variant->sku() ) as $sku ) {
 			try {
-				return $this->saved( new ProductSave( null, $fields, self::commerce( $variant, $sku ), $actor, null, $locale ) );
+				return $this->saved( new ProductSave( null, $fields, self::commerce( $variant, $sku ), $actor, null, $locale ), $postId );
 			} catch ( CodedException $refused ) {
 				if ( CatalogError::SkuTaken !== $refused->errorCode() ) {
 					throw $refused;
@@ -175,16 +177,19 @@ final class DuplicateProduct {
 	}
 
 	/**
-	 * Saves the copy, and fires the after-insert hook for its new post.
+	 * Saves the copy, gives its new post the original's terms, and fires the after-insert hook for it.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Copies the original's terms.
 	 *
-	 * @param ProductSave $command The copy's save.
+	 * @param ProductSave $command        The copy's save.
+	 * @param int         $originalPostId The original's source post, whose terms the copy takes.
 	 * @return SaveResult The copy.
 	 */
-	private function saved( ProductSave $command ): SaveResult {
+	private function saved( ProductSave $command, int $originalPostId ): SaveResult {
 		$result = $this->save->save( $command );
 
+		$this->posts->copyTerms( $originalPostId, $result->postId );
 		$this->posts->fireAfterInsert( $result->postId, false, null );
 
 		return $result;

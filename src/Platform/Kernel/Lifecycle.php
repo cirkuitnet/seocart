@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Platform\Kernel;
 
 use SEOCart\Catalog\Infrastructure\ProductPostType;
+use SEOCart\Catalog\Infrastructure\ProductTaxonomies;
 use SEOCart\Platform\Authorization\CapabilityInstaller;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Database;
@@ -536,22 +537,24 @@ final class Lifecycle {
 	}
 
 	/**
-	 * Rebuilds the site's rewrite rules, so the product post type's permalinks and archive resolve.
+	 * Rebuilds the site's rewrite rules, so the product post type's permalinks and archive, and the archives of its categories, brands and tags, resolve.
 	 *
 	 * The request that activates the plugin passed `init` before the plugin was loaded, so the
-	 * post type is registered here when it is not yet. Inside switch_to_blog() nothing is flushed:
-	 * WordPress's rewrite object still holds the first site's permalink settings there, and
-	 * WordPress rebuilds a new site's rules itself, with every registered post type, while it
-	 * creates the site.
+	 * post type and its taxonomies are registered here when they are not yet. A site installed
+	 * by an earlier version gets the rules of whatever a later one registers when that version's
+	 * install runs again. Inside switch_to_blog() nothing is flushed: WordPress's rewrite object
+	 * still holds the first site's permalink settings there, and WordPress rebuilds a new site's
+	 * rules itself, with every registered post type and taxonomy, while it creates the site.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Registers and flushes the product taxonomies' rules too.
 	 */
 	private function flushRewriteRules(): void {
 		if ( is_multisite() && ms_is_switched() ) {
 			return;
 		}
 
-		if ( ! post_type_exists( ProductCapabilities::POST_TYPE ) ) {
+		if ( ! post_type_exists( ProductCapabilities::POST_TYPE ) || ! ProductTaxonomies::registered() ) {
 			ProductPostType::register();
 		}
 
@@ -559,19 +562,23 @@ final class Lifecycle {
 	}
 
 	/**
-	 * Rebuilds the site's rewrite rules without the product post type's. Runs at deactivation.
+	 * Rebuilds the site's rewrite rules without the product post type's and its taxonomies'. Runs at deactivation.
 	 *
 	 * The plugin is still loaded in the request that deactivates it, and its `init` registered
-	 * the post type, whose rules would be written again by any flush while it is registered; so
-	 * it is unregistered first. Inside switch_to_blog() nothing is flushed, for the reason
+	 * the post type and its taxonomies, whose rules would be written again by any flush while they
+	 * are registered; so they are unregistered first, the taxonomies by name, since unregistering
+	 * the post type only detaches them. Inside switch_to_blog() nothing is flushed, for the reason
 	 * flushRewriteRules() gives.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Unregisters the product taxonomies too.
 	 */
 	private function flushRewriteRulesWithoutProducts(): void {
 		if ( is_multisite() && ms_is_switched() ) {
 			return;
 		}
+
+		ProductTaxonomies::unregister();
 
 		if ( post_type_exists( ProductCapabilities::POST_TYPE ) ) {
 			unregister_post_type( ProductCapabilities::POST_TYPE );

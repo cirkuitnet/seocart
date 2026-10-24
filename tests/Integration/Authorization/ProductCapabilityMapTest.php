@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Authorization;
 
+use SEOCart\Catalog\Infrastructure\ProductTaxonomies;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Authorization\CapabilityInstaller;
 use SEOCart\Platform\Authorization\CapabilityMapper;
@@ -156,6 +157,66 @@ final class ProductCapabilityMapTest extends WP_UnitTestCase {
 			$this->assertSame( $expected, user_can( $user, 'delete_post', $published ), "{$role}: delete someone else's published product." );
 			$this->assertSame( $expected, user_can( $user, 'read_post', $private ), "{$role}: read someone else's private product." );
 			$this->assertTrue( user_can( $user, 'read_post', $published ), "{$role}: read a published product." );
+		}
+	}
+
+	/**
+	 * Tests that the product taxonomies' map names every key core's taxonomy registration reads, and that each taxonomy holds it as it is.
+	 *
+	 * Planted violation: delete the `'assign_terms'` line from ProductCapabilities::termCapabilities():
+	 * core falls back to `edit_posts`, the posts' capability.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_term_map_covers_every_key_core_produces(): void {
+		$core = new \WP_Taxonomy( 'seocart_map_probe', 'post', array() );
+
+		if ( ! ProductTaxonomies::registered() ) {
+			ProductTaxonomies::register();
+		}
+
+		$this->assertSame( array_keys( (array) $core->cap ), array_keys( ProductCapabilities::termCapabilities() ), 'The term map does not name exactly the keys core produces.' );
+
+		foreach ( ProductTaxonomies::names() as $taxonomy ) {
+			$this->assertSame( ProductCapabilities::termCapabilities(), (array) get_taxonomy( $taxonomy )->cap, "{$taxonomy}: core holds a capability the map does not declare." );
+		}
+
+		$this->assertSame( ProductCapabilities::map()['edit_posts'], ProductCapabilities::termCapabilities()['assign_terms'], 'Assigning a term is not editing products.' );
+	}
+
+	/**
+	 * Tests that the installed roles get from the term map exactly what the security model promises: the catalog's roles manage and assign terms, nobody else does.
+	 *
+	 * Planted violation: map `assign_terms` to `read` in ProductCapabilities::termCapabilities(): the
+	 * order agent, the reporter and the customer may assign a category.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_installed_roles_get_what_the_model_promises_for_terms(): void {
+		( new CapabilityInstaller( new CapabilityDeclaration(), new InMemoryGrantLedger() ) )->install();
+
+		if ( ! ProductTaxonomies::registered() ) {
+			ProductTaxonomies::register();
+		}
+
+		$terms = array();
+
+		foreach ( ProductTaxonomies::names() as $taxonomy ) {
+			$terms[ $taxonomy ] = self::factory()->term->create( array( 'taxonomy' => $taxonomy ) );
+		}
+
+		$may_manage = array( 'administrator', 'seocart_manager', 'seocart_catalog_editor' );
+
+		foreach ( array( 'administrator', 'seocart_manager', 'seocart_catalog_editor', 'seocart_order_agent', 'seocart_reporter', 'seocart_customer' ) as $role ) {
+			$user     = self::factory()->user->create( array( 'role' => $role ) );
+			$expected = in_array( $role, $may_manage, true );
+
+			foreach ( $terms as $taxonomy => $term ) {
+				$this->assertSame( $expected, user_can( $user, get_taxonomy( $taxonomy )->cap->manage_terms ), "{$role}: manage {$taxonomy}." );
+				$this->assertSame( $expected, user_can( $user, 'edit_term', $term ), "{$role}: edit a term of {$taxonomy}." );
+				$this->assertSame( $expected, user_can( $user, 'delete_term', $term ), "{$role}: delete a term of {$taxonomy}." );
+				$this->assertSame( $expected, user_can( $user, 'assign_term', $term ), "{$role}: assign a term of {$taxonomy}." );
+			}
 		}
 	}
 

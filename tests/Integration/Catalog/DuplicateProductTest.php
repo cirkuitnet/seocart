@@ -19,10 +19,12 @@ use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Domain\Sku;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
+use SEOCart\Catalog\Infrastructure\ProductTaxonomies;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Tests\Support\Catalog\CreatesTerms;
 use SEOCart\Tests\Support\Catalog\ProductWrites;
 use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
 
@@ -41,10 +43,15 @@ use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
  *   first test fails.
  * - In PostLifecycle::postWritten(), stop leaving the plugin's own writes alone: the copy is
  *   reported as another path's write, and the first test fails.
+ * - In DuplicateProduct::saved(), drop the copyTerms() call: the copy has no categories, brand or
+ *   tags, and test_a_copy_keeps_the_originals_categories_brands_and_tags fails.
  *
  * @since 0.1.0
+ * @since 0.2.0 A copy keeps its original's terms.
  */
 final class DuplicateProductTest extends ProductWriteTestCase {
+
+	use CreatesTerms;
 
 	/**
 	 * Hooks the product lifecycle in the kernel's place, reporting as under WP_DEBUG.
@@ -58,6 +65,65 @@ final class DuplicateProductTest extends ProductWriteTestCase {
 		$this->service  = $this->services->save;
 
 		$this->services->attach();
+	}
+
+	/**
+	 * Deletes the terms the test created, and WordPress's cache of the category tree.
+	 *
+	 * @since 0.2.0
+	 */
+	public function tear_down(): void {
+		$this->deleteCreatedTerms();
+
+		parent::tear_down();
+	}
+
+	/**
+	 * Tests that a copy has its original's categories, brand and tags once its after-insert hook fires, and that the original keeps them.
+	 *
+	 * The copy is a draft, so WordPress counts it in none of them.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_copy_keeps_the_originals_categories_brands_and_tags(): void {
+		$terms    = array(
+			ProductTaxonomies::CATEGORY => array( $this->term( ProductTaxonomies::CATEGORY, 'Coffee' ), $this->term( ProductTaxonomies::CATEGORY, 'Single origin' ) ),
+			ProductTaxonomies::BRAND    => array( $this->term( ProductTaxonomies::BRAND, 'Fernwood' ) ),
+			ProductTaxonomies::TAG      => array( $this->term( ProductTaxonomies::TAG, 'Washed' ), $this->term( ProductTaxonomies::TAG, 'Light roast' ) ),
+		);
+		$original = $this->save(
+			null,
+			array(
+				'post_title'  => 'Original',
+				'post_status' => 'publish',
+			),
+			array( 'sku' => 'T' )
+		);
+
+		foreach ( $terms as $taxonomy => $ids ) {
+			wp_set_object_terms( $original->postId, $ids, $taxonomy );
+		}
+
+		$seen  = array();
+		$heard = static function ( $postId ) use ( &$seen ): void {
+			$seen[ (int) $postId ] = wp_get_object_terms( (int) $postId, ProductTaxonomies::names(), array( 'fields' => 'ids' ) );
+		};
+
+		add_action( 'wp_after_insert_post', $heard, 5 );
+
+		try {
+			$copy = $this->copy( $original );
+		} finally {
+			remove_action( 'wp_after_insert_post', $heard, 5 );
+		}
+
+		foreach ( $terms as $taxonomy => $ids ) {
+			$this->assertEqualsCanonicalizing( $ids, wp_get_object_terms( $copy->postId, $taxonomy, array( 'fields' => 'ids' ) ), "The copy's {$taxonomy} terms." );
+			$this->assertEqualsCanonicalizing( $ids, wp_get_object_terms( $original->postId, $taxonomy, array( 'fields' => 'ids' ) ), "The original's {$taxonomy} terms." );
+		}
+
+		$this->assertEqualsCanonicalizing( array_merge( ...array_values( $terms ) ), $seen[ $copy->postId ] ?? null, 'The copy had not its terms when its after-insert hook fired.' );
+		$this->assertSame( 1, (int) get_term( $terms[ ProductTaxonomies::BRAND ][0], ProductTaxonomies::BRAND )->count, 'WordPress counts the draft copy in its brand.' );
 	}
 
 	/**

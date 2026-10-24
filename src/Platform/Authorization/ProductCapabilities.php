@@ -34,9 +34,18 @@ defined( 'ABSPATH' ) || exit;
  * be read by anyone who may read a published post. Core maps them through the type of whichever
  * post the check names, so the Authorizer checks them only on a post of POST_TYPE.
  *
+ * The product's taxonomies (categories, brands and tags) take their capabilities from here too,
+ * through termCapabilities(): managing, editing and deleting their terms is the catalog's
+ * capability, and assigning a term to a product is editing products. Both are primitives the
+ * vocabulary already has, so the taxonomies add none, and core maps `edit_term`, `delete_term`
+ * and `assign_term` onto them per term. In the flat brands and tags, WordPress lets whoever may
+ * assign a term create one: its terms controller and a post's `tax_input` create a flat term on
+ * `assign_terms`, so editing products is enough to add a brand or a tag.
+ *
  * Nothing here calls WordPress, so the whole map is built and tested without it.
  *
  * @since 0.1.0
+ * @since 0.2.0 Maps the product taxonomies' capabilities.
  */
 final class ProductCapabilities {
 
@@ -99,6 +108,38 @@ final class ProductCapabilities {
 	 * @var string
 	 */
 	public const CORE_READ = 'read';
+
+	/**
+	 * The catalog's primitive: categories, brands, tags and the rest of the catalog's organisation.
+	 *
+	 * CapabilityDeclaration declares it in the catalog group; the product taxonomies map their
+	 * term management onto it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const MANAGE_CATALOG = 'seocart_manage_catalog';
+
+	/**
+	 * Returns the capabilities of the product taxonomies, for register_taxonomy(): core's taxonomy capability key => capability.
+	 *
+	 * The map names every key core's taxonomy registration reads. Assigning a term is editing
+	 * products, the post type's `edit_posts` primitive, as core's own taxonomies make it editing
+	 * posts; everything else is the catalog's.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array{manage_terms: string, edit_terms: string, delete_terms: string, assign_terms: string} The map.
+	 */
+	public static function termCapabilities(): array {
+		return array(
+			'manage_terms' => self::MANAGE_CATALOG,
+			'edit_terms'   => self::MANAGE_CATALOG,
+			'delete_terms' => self::MANAGE_CATALOG,
+			'assign_terms' => self::map()['edit_posts'],
+		);
+	}
 
 	/**
 	 * Returns the capability arguments for register_post_type(), to be merged into the others.

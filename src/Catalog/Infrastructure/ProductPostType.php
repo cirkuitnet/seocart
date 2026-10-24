@@ -29,9 +29,10 @@ defined( 'ABSPATH' ) || exit;
  * would carry the post without its variants, prices and stock; and deleting a user deletes none
  * of it.
  *
- * register() runs on every request's `init`: it only fills WordPress's in-memory registry, and
- * loads this file and ProductCapabilities. Rewrite rules are flushed when the plugin is installed
- * on a site, never here.
+ * register() runs on every request's `init`: it only fills WordPress's in-memory registry, with
+ * the post type and the product taxonomies (ProductTaxonomies), and loads this file,
+ * ProductTaxonomies and ProductCapabilities. Rewrite rules are flushed when the plugin is
+ * installed on a site, never here.
  *
  * @since 0.1.0
  */
@@ -56,12 +57,14 @@ final class ProductPostType {
 	public const SUPPORTS = array( 'title', 'editor', 'excerpt', 'thumbnail', 'revisions', 'author' );
 
 	/**
-	 * Registers the post type. Hooked to `init`.
+	 * Registers the post type, then its taxonomies. Hooked to `init`.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Registers the product categories, brands and tags too.
 	 */
 	public static function register(): void {
 		register_post_type( ProductCapabilities::POST_TYPE, self::arguments() );
+		ProductTaxonomies::register();
 	}
 
 	/**

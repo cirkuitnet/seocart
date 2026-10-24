@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Performance;
 
+use SEOCart\Catalog\Infrastructure\ProductTaxonomies;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Tests\Support\BootstrapProbes;
 use SEOCart\Tests\Support\ChildProcessProbe;
@@ -45,7 +46,10 @@ use WP_UnitTestCase;
  * also loads the library and its hooks. G3 and G4 state that share apart from the plugin's own,
  * with budgets of its own (LibraryShare decides which is which); G1 covers both. Registering the
  * product post type makes WordPress itself add a hook for it, which is neither the plugin's
- * registration nor the library's, so G4 states that share apart too. The library
+ * registration nor the library's, so G4 states that share apart too, and so it does for the
+ * product categories, brands and tags: WordPress adds a hook of its own for every taxonomy it
+ * registers, and the three must be registered on every request, or their archive URLs would
+ * not parse. The library
  * finishes a one-time setup of its data store on its first queue run, and until then every
  * request reads that setup's state: the integration suite reinstalls WordPress and never runs
  * the queue, so tests/Support/library-prime-probe.php runs that setup once, as WP-Cron would,
@@ -90,12 +94,14 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	private const G1_PLUGIN_QUERIES = 0;
 
 	/**
-	 * G3: files of the plugin's own code an idle request may load. Six are loaded, with a margin
-	 * of two:
+	 * G3: files of the plugin's own code an idle request may load. Seven are loaded, with a margin
+	 * of one:
 	 *
 	 * - the main file and the kernel's three: the kernel, its container and the module wiring;
-	 * - the product post type's registration, which runs on `init`, and the capability map it
-	 *   merges into its arguments: src/Catalog/Infrastructure/ProductPostType.php and
+	 * - the product post type's registration, which runs on `init`, the product taxonomies'
+	 *   registration it makes in the same call, and the capability map both merge into their
+	 *   arguments: src/Catalog/Infrastructure/ProductPostType.php,
+	 *   src/Catalog/Infrastructure/ProductTaxonomies.php and
 	 *   src/Platform/Authorization/ProductCapabilities.php.
 	 *
 	 * Every other hook's callback loads what it needs when it fires.
@@ -161,6 +167,21 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 * @var int
 	 */
 	private const G4_MAX_POST_TYPE_HOOKS = 1;
+
+	/**
+	 * G4, the product taxonomies' share: hook registrations WordPress adds when the plugin registers
+	 * the product categories, brands and tags. There is one per taxonomy, on
+	 * `wp_ajax_add-<taxonomy>` with `_wp_ajax_add_hierarchical_term`, which serves the classic
+	 * editor's "add new term" box; WordPress adds it for every taxonomy, and the three are
+	 * registered on every request because their archive URLs parse only while they are. Written
+	 * as a number, not as the count of the taxonomies, so a fourth taxonomy comes back to this
+	 * budget.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const G4_MAX_TAXONOMY_HOOKS = 3;
 
 	/**
 	 * G3, the bundled Action Scheduler's share: library PHP files an idle request may load.
@@ -274,7 +295,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 * Planted violation for the plugin's share: create three files `src/Planted/P01.php` to
 	 * `src/Planted/P03.php`, each holding only `<?php`, and plant
 	 * `foreach ( glob( dirname( __DIR__, 2 ) . '/Planted/P*.php' ) as $planted ) { require $planted; }`.
-	 * With the six stated files that makes nine.
+	 * With the seven stated files that makes ten.
 	 *
 	 * Planted violation for the byte count: create `src/Planted/Big.php` holding `<?php //`
 	 * followed by 260,000 characters on the same line, and plant
@@ -412,25 +433,52 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Returns the idle request's hook registrations, split into the plugin's own, WordPress's for the product post type, and the bundled library's.
+	 * Tests G4's taxonomies' share: registering the product categories, brands and tags makes WordPress add the one hook per taxonomy it was measured to add.
+	 *
+	 * Planted violation, in Kernel::boot(): `add_filter( 'wp_ajax_add-seocart_brand', '__return_null' );`.
+	 * The callback is WordPress's, and the hook is named after a product taxonomy, so it counts
+	 * here, which makes four. The failure must list them.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_g4_registering_the_product_taxonomies_adds_the_measured_share_of_wordpress_hooks(): void {
+		$hooks  = self::hookShares()['taxonomies'];
+		$report = "\n  " . implode( "\n  ", $hooks ) . "\n";
+
+		$this->assertNotSame( array(), $hooks, 'The probe saw no hook WordPress adds for the product taxonomies, so a small count would prove nothing.' );
+
+		$this->assertLessThanOrEqual(
+			self::G4_MAX_TAXONOMY_HOOKS,
+			count( $hooks ),
+			'G4, hook registrations WordPress added for the product taxonomies on an idle request:' . $report
+		);
+	}
+
+	/**
+	 * Returns the idle request's hook registrations, split into the plugin's own, WordPress's for the product post type, WordPress's for the product taxonomies, and the bundled library's.
 	 *
 	 * What loading the plugin added and is not the plugin's own is the library's, except the
 	 * registrations on a hook WordPress names after the product post type, such as
-	 * `future_seocart_product`: those are the post type's.
+	 * `future_seocart_product`, which are the post type's, and those on a hook WordPress names
+	 * after a product taxonomy, such as `wp_ajax_add-seocart_category`, which are the taxonomies'.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The taxonomies' share.
 	 *
-	 * @return array{plugin: list<string>, library: list<string>, post_type: list<string>} One line per registration.
+	 * @return array{plugin: list<string>, library: list<string>, post_type: list<string>, taxonomies: list<string>} One line per registration.
 	 */
 	private static function hookShares(): array {
 		$measurements = self::measurements();
 		$shares       = LibraryShare::splitHooks( $measurements['with_plugin']['hooks'], $measurements['with_plugin']['all_hooks'], $measurements['without_plugin']['all_hooks'] );
-		$pattern      = '/^[a-z_]+_' . preg_quote( ProductCapabilities::POST_TYPE, '/' ) . ' @/';
+		$post_type    = '/^[a-z_]+_' . preg_quote( ProductCapabilities::POST_TYPE, '/' ) . ' @/';
+		$taxonomies   = '/^[a-z_]+-(?:' . implode( '|', array_map( static fn( string $name ): string => preg_quote( $name, '/' ), ProductTaxonomies::names() ) ) . ') @/';
+		$wordpress    = static fn( string $line ): bool => 1 === preg_match( $post_type, $line ) || 1 === preg_match( $taxonomies, $line );
 
 		return array(
-			'plugin'    => $shares['plugin'],
-			'library'   => array_values( array_filter( $shares['library'], static fn( string $line ): bool => 1 !== preg_match( $pattern, $line ) ) ),
-			'post_type' => array_values( array_filter( $shares['library'], static fn( string $line ): bool => 1 === preg_match( $pattern, $line ) ) ),
+			'plugin'     => $shares['plugin'],
+			'library'    => array_values( array_filter( $shares['library'], static fn( string $line ): bool => ! $wordpress( $line ) ) ),
+			'post_type'  => array_values( array_filter( $shares['library'], static fn( string $line ): bool => 1 === preg_match( $post_type, $line ) ) ),
+			'taxonomies' => array_values( array_filter( $shares['library'], static fn( string $line ): bool => 1 === preg_match( $taxonomies, $line ) ) ),
 		);
 	}
 

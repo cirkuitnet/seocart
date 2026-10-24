@@ -11,9 +11,12 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Kernel;
 
+use SEOCart\Catalog\Infrastructure\ProductPostType;
+use SEOCart\Catalog\Infrastructure\ProductTaxonomies;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Authorization\CapabilityInstaller;
 use SEOCart\Platform\Authorization\GrantLedger;
+use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Migrations\PlatformBootstrapMigration;
 use SEOCart\Platform\Database\Migrator;
@@ -31,6 +34,7 @@ use SEOCart\Platform\Jobs\Handlers\MigrationAttempt;
 use SEOCart\Platform\Jobs\JobHandlers;
 use SEOCart\Platform\Jobs\RunnerTriggers;
 use SEOCart\Platform\Secrets\SecretsCanary;
+use SEOCart\Tests\Support\Catalog\CreatesTerms;
 use SEOCart\Tests\Support\Jobs\PluginActions;
 use SEOCart\Tests\Support\Migrations\MarksRowsInBatches;
 use SEOCart\Tests\Support\KernelContainer;
@@ -50,6 +54,9 @@ use SEOCart\Tests\Support\Migrations\CreatesTestTable;
  * - In Lifecycle::deactivate(), plant `delete_option( 'seocart_boot' );`:
  *   test_deactivation_and_uninstallation_remove_nothing loses the identity and fails.
  * - In uninstall.php, after the guard, plant `remove_role( 'seocart_manager' );`: the same test fails.
+ * - In uninstall.php, after the guard, plant
+ *   `$GLOBALS['wpdb']->query( "DELETE FROM {$GLOBALS['wpdb']->term_taxonomy} WHERE taxonomy = 'seocart_brand'" );`:
+ *   the planted brand is gone after uninstalling, and the same test fails.
  * - In OptionGrantLedger::record(), plant `return;` as the first line:
  *   test_a_capability_the_merchant_removed_is_never_granted_again sees it come back and fails.
  * - In BootRecord::fromJson(), refuse every shape version but its own, as it once did:
@@ -77,6 +84,17 @@ use SEOCart\Tests\Support\Migrations\CreatesTestTable;
  * @group migration
  */
 final class LifecycleTest extends KernelTestCase {
+
+	use CreatesTerms;
+
+	/**
+	 * The product posts a test planted, deleted after it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<int>
+	 */
+	private array $plantedPosts = array();
 
 	/**
 	 * The id of the fixture migration a newer version brings.
@@ -481,17 +499,26 @@ final class LifecycleTest extends KernelTestCase {
 	}
 
 	/**
-	 * Tests that deactivation, and then the uninstall file, leave the tables, the boot record and the roles as they were.
+	 * Tests that deactivation, and then the uninstall file, leave the tables, the boot record, the roles and the product's terms as they were.
+	 *
+	 * A term is planted in each product taxonomy and given to a product, and the category is given
+	 * a term meta value: the rows of all four term tables are the same after uninstalling, as the
+	 * products are.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The product's categories, brands and tags.
 	 */
 	public function test_deactivation_and_uninstallation_remove_nothing(): void {
 		$lifecycle = $this->container()->get( Lifecycle::class );
 		$lifecycle->activate();
 
-		$record = $this->storedRecord();
-		$roles  = $this->storedOption( $this->rolesOptionName() );
-		$tables = $this->pluginTables();
+		$planted = $this->plantedTerms();
+		$record  = $this->storedRecord();
+		$roles   = $this->storedOption( $this->rolesOptionName() );
+		$tables  = $this->pluginTables();
+		$rows    = $this->termRows( $planted );
+
+		$this->assertSame( array( 3, 3, 1, 3 ), array_map( 'count', array_values( $rows ) ), 'The planted terms are not all in the term tables, so their staying would prove nothing.' );
 
 		$lifecycle->deactivate();
 
@@ -510,6 +537,99 @@ final class LifecycleTest extends KernelTestCase {
 		$this->assertSame( $record, $this->storedRecord(), 'Uninstalling removed or changed the boot record.' );
 		$this->assertSame( $roles, $this->storedOption( $this->rolesOptionName() ), 'Uninstalling changed the roles.' );
 		$this->assertEqualsCanonicalizing( $tables, $this->pluginTables(), 'Uninstalling dropped a table.' );
+		$this->assertSame( $rows, $this->termRows( $planted ), 'Uninstalling removed or changed a product term, its taxonomy, its meta or its product.' );
+	}
+
+	/**
+	 * Deletes the product post and the terms a test planted, once their post type and taxonomies are registered again.
+	 *
+	 * @since 0.2.0
+	 */
+	public function tear_down(): void {
+		if ( ! post_type_exists( ProductCapabilities::POST_TYPE ) || ! ProductTaxonomies::registered() ) {
+			ProductPostType::register();
+		}
+
+		foreach ( $this->plantedPosts as $postId ) {
+			wp_delete_post( $postId, true );
+		}
+
+		$this->plantedPosts = array();
+
+		$this->deleteCreatedTerms();
+
+		parent::tear_down();
+	}
+
+	/**
+	 * Plants a category with a term meta value, a brand and a tag, all given to one product post.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array{terms: list<int>, post: int} The terms' ids, in the order of the taxonomies, and the product post's.
+	 */
+	private function plantedTerms(): array {
+		$terms  = array(
+			$this->term( ProductTaxonomies::CATEGORY, 'Kept category' ),
+			$this->term( ProductTaxonomies::BRAND, 'Kept brand' ),
+			$this->term( ProductTaxonomies::TAG, 'Kept tag' ),
+		);
+		$postId = wp_insert_post(
+			array(
+				'post_type'   => ProductCapabilities::POST_TYPE,
+				'post_status' => 'publish',
+				'post_title'  => 'A product with terms',
+			),
+			true
+		);
+
+		$this->assertIsInt( $postId, 'The product post could not be created.' );
+
+		$this->plantedPosts[] = $postId;
+
+		foreach ( ProductTaxonomies::names() as $index => $taxonomy ) {
+			wp_set_object_terms( $postId, array( $terms[ $index ] ), $taxonomy );
+		}
+
+		add_term_meta( $terms[0], 'seocart_kept_meta', 'kept' );
+
+		return array(
+			'terms' => $terms,
+			'post'  => $postId,
+		);
+	}
+
+	/**
+	 * Reads the rows the planted terms have in the four term tables, as the database holds them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array{terms: list<int>, post: int} $planted What plantedTerms() returned.
+	 * @return array<string, list<array<string, mixed>>> The rows of the terms, term_taxonomy, termmeta and term_relationships tables, in that order.
+	 */
+	private function termRows( array $planted ): array {
+		global $wpdb;
+
+		$rows = array(
+			'terms'              => array(),
+			'term_taxonomy'      => array(),
+			'termmeta'           => array(),
+			'term_relationships' => array(),
+		);
+
+		foreach ( $planted['terms'] as $termId ) {
+			foreach ( array(
+				'terms'         => $wpdb->terms,
+				'term_taxonomy' => $wpdb->term_taxonomy,
+				'termmeta'      => $wpdb->termmeta,
+			) as $key => $table ) {
+				$rows[ $key ] = array_merge( $rows[ $key ], (array) $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE term_id = %d', $table, $termId ), ARRAY_A ) );
+			}
+		}
+
+		$rows['term_relationships'] = (array) $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE object_id = %d ORDER BY term_taxonomy_id', $wpdb->term_relationships, $planted['post'] ), ARRAY_A );
+
+		return $rows;
 	}
 
 	/**

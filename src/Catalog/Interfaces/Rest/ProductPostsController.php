@@ -52,6 +52,13 @@ defined( 'ABSPATH' ) || exit;
  * steps is returned as core returns it, after the product is saved, as in core. A refused save
  * is the plugin's error, in its shape.
  *
+ * The terms step is core's handle_terms(), which writes the product's categories, brands and
+ * tags, the taxonomies attached to the post type, after the save has committed and outside its
+ * transaction. So the terms are not part of the product's save: no `ProductSaved` names them
+ * among its changed fields (an update that changes only terms is saved, and named, as a change
+ * of the post), and writing them changes neither the product's generation marker nor its
+ * `updated_at`. WordPress keeps the term counts.
+ *
  * A response is core's, with the `seocart` object added among the REST fields, before core's
  * context filter and `rest_prepare_seocart_product`: the commerce data, the post's locale among
  * the product's posts and the product's source post when it is another, the verdict on the

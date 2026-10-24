@@ -176,6 +176,21 @@ final class ScriptedPostGateway implements PostGateway {
 	}
 
 	/**
+	 * Not used by the product write.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $fromPostId Unused.
+	 * @param int $toPostId   Unused.
+	 * @return never
+	 */
+	public function copyTerms( int $fromPostId, int $toPostId ): never {
+		throw new \LogicException( 'The product write copies no terms.' );
+	}
+
+	/**
 	 * Returns `publish` for a post that exists.
 	 *
 	 * @since 0.1.0

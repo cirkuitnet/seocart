@@ -59,8 +59,8 @@ use SEOCart\Tests\Support\Localization\MultilingualFixtures;
  *   REST API does not;
  * - k: a product with no post in a locale is `not_translated` there.
  *
- * Rows out of scope at this stage, each a skipped test saying why: h (the catalog has no
- * taxonomy yet), j (there is no import yet), l (there is no search index yet), m (notification
+ * Rows out of scope at this stage, each a skipped test saying why: h (translated product
+ * categories, brands and tags are not covered yet), j (there is no import yet), l (there is no search index yet), m (notification
  * templates come later) and n (there are no orders yet).
  *
  * Planted violations, each confirmed to fail its row against Polylang:
@@ -377,7 +377,7 @@ final class MultilingualConformanceTest extends ProductRestTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_row_h_translated_taxonomies(): void {
-		$this->markTestSkipped( 'Out of scope: the catalog has no product taxonomy yet.' );
+		$this->markTestSkipped( 'Out of scope: translated product categories, brands and tags, and their old slugs, are not covered yet.' );
 	}
 
 	/**

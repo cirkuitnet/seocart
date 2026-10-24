@@ -20,7 +20,7 @@ Every directory under `src/` is one of these.
 | `src/Application/` | The operation mechanism: `OperationDefinition`, the lazy `OperationRegistry`, and `Operations::registry()`, the one list of every operation the plugin exposes.                                                                                    |
 | `src/Interfaces/`  | The adapters that turn an operation into a REST route, an Ability and a WP-CLI command, and the one `OperationInvoker` they share.                                                                                                                 |
 | `src/Platform/`    | What every module stands on: the kernel and its module wiring, the database layer, the data registry, events and the outbox, background jobs, logging, authorization, rate limiting, secrets, settings, localization and the doctor command.       |
-| `src/Catalog/`     | Products and their variants and prices, the product post type that gives each product its editorial face, the rule that decides whether a variant can be sold, and the product REST controller and editor panel.                                   |
+| `src/Catalog/`     | Products and their variants and prices, the product post type that gives each product its editorial face, its categories, brands and tags, the rule that decides whether a variant can be sold, and the product REST controller and editor panel.  |
 | `src/Inventory/`   | Stock per variant: the items, an append-only ledger, expiring checkout holds, durable order allocations, and the stock adjustment operation.                                                                                                       |
 | `src/Pricing/`     | Price resolution, exchange rates and the currencies a store sells in, and the pure, two-phase calculation that turns a cart into totals.                                                                                                           |
 | `src/Tax/`         | The vocabulary of tax: the cross-zone policy, the effective rate and the rounding mode. The calculation in Pricing applies them.                                                                                                                   |
@@ -268,6 +268,14 @@ its payload.
   revisions and the block editor all come from WordPress. The post type serves REST at
   `wp/v2/seocart-products`, through a controller that saves the post and the product's commerce
   data in one request.
+- **Categories, brands and tags are WordPress taxonomies** on that post type, `seocart_category`
+  (a tree), `seocart_brand` and `seocart_tag` (`src/Catalog/Infrastructure/ProductTaxonomies.php`).
+  WordPress keeps their terms, their term counts and their term screens under the Products menu,
+  serves them at `wp/v2/seocart-categories`, `wp/v2/seocart-brands` and `wp/v2/seocart-tags`, and
+  gives each term an archive the theme renders, at `product-category/<path>/`,
+  `product-brand/<slug>/` and `product-tag/<slug>/`. Managing terms takes `seocart_manage_catalog`;
+  assigning them to a product takes the capability to edit products. In the flat brands and tags,
+  WordPress lets whoever may assign a term create one too, as it does for post tags.
 - **Commerce data lives in the plugin's own InnoDB tables**, named `{prefix}seocart_{name}`:
   products, variants and prices, stock and its ledger, carts, checkout sessions, orders and their
   snapshots, payments and refunds, promotions, exchange rates, the outbox, logs and the

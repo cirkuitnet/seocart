@@ -52,7 +52,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * While fireAfterInsert() fires `wp_after_insert_post` for a post, isFiringAfterInsert() says so,
  * which tells the post lifecycle that the write reaching the hook is the plugin's own. The
- * reads, contentOf() among them, are plain WordPress reads.
+ * reads, contentOf() among them, are plain WordPress reads, and copyTerms() is a plain WordPress
+ * write of a copy's terms, made after the copy's transaction has committed.
  *
  * @since 0.1.0
  */
@@ -405,6 +406,40 @@ final class WordPressPostGateway implements PostGateway {
 		}
 
 		return $fields;
+	}
+
+	/**
+	 * Gives a post the terms another post has in the product taxonomies: its categories, brands and tags.
+	 *
+	 * The terms of all three are read in one query, and each taxonomy the original has terms in is
+	 * written with wp_set_object_terms(), appending, so WordPress keeps its term counts. Nothing is
+	 * read or written while a product taxonomy is not registered.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $fromPostId The post whose terms are copied.
+	 * @param int $toPostId   The post that gets them, in addition to any it has.
+	 */
+	public function copyTerms( int $fromPostId, int $toPostId ): void {
+		if ( ! ProductTaxonomies::registered() ) {
+			return;
+		}
+
+		$terms = wp_get_object_terms( $fromPostId, ProductTaxonomies::names() );
+
+		if ( ! is_array( $terms ) ) {
+			return;
+		}
+
+		$byTaxonomy = array();
+
+		foreach ( $terms as $term ) {
+			$byTaxonomy[ $term->taxonomy ][] = (int) $term->term_id;
+		}
+
+		foreach ( $byTaxonomy as $taxonomy => $ids ) {
+			wp_set_object_terms( $toPostId, $ids, $taxonomy, true );
+		}
 	}
 
 	/**

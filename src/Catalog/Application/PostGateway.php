@@ -75,6 +75,19 @@ interface PostGateway {
 	public function contentOf( int $postId ): ?array;
 
 	/**
+	 * Gives a post the terms another post has in the product taxonomies: its categories, brands and tags.
+	 *
+	 * Called outside any transaction, as the product endpoint writes a product's terms after its
+	 * save has committed.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $fromPostId The post whose terms are copied.
+	 * @param int $toPostId   The post that gets them, in addition to any it has.
+	 */
+	public function copyTerms( int $fromPostId, int $toPostId ): void;
+
+	/**
 	 * Returns a post's status.
 	 *
 	 * @since 0.1.0

@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Integration\Authorization;
 
 use SEOCart\Application\Operations\Operations;
 use SEOCart\Catalog\Infrastructure\ProductPostType;
+use SEOCart\Catalog\Infrastructure\ProductTaxonomies;
 use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
 use SEOCart\Interfaces\Operations\RestAdapter;
 use SEOCart\Platform\Authorization\PermissionCallback;
@@ -25,6 +26,7 @@ use SEOCart\Platform\Authorization\PermissionKind;
 use SEOCart\Platform\Authorization\RequestPolicy;
 use SEOCart\Platform\Kernel\Kernel;
 use SEOCart\Tests\Support\Doubles\SubclassedAutosavesController;
+use SEOCart\Tests\Support\Doubles\SubclassedTermsController;
 use SEOCart\Tests\Support\KernelHooks;
 use SEOCart\Tests\Support\RoutePermissionWalker;
 use WP_REST_Request;
@@ -33,7 +35,7 @@ use WP_REST_Server;
 use WP_UnitTestCase;
 
 /**
- * The route walker: one real walk over the plugin's own routes, one over the product post type's `wp/v2` base, and their self-tests.
+ * The route walker: one real walk over the plugin's own routes, one over the product post type's `wp/v2` base, one over each product taxonomy's, and their self-tests.
  *
  * The real walk boots a fresh REST server exactly as a request does, so every route the plugin
  * registers on `rest_api_init` is walked. It fails, naming route, method, rule and fix, when an
@@ -55,6 +57,9 @@ use WP_UnitTestCase;
  * ProductPostsController, the other two core's own classes. The two carried plants are
  * self-tests here, the post type served by core's default controller and a `__return_true`
  * route at the base, and so are a write guarded by a read check and a foreign autosave class.
+ * The bases of the product's categories, brands and tags are walked the same way, each owned by
+ * core's own terms controller, with a `__return_true` route and a foreign controller class as
+ * their self-tests.
  *
  * @group contract
  *
@@ -503,12 +508,100 @@ final class RoutePermissionWalkTest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Registers the product post type as the kernel does on `init`, when another test has unregistered it.
+	 * Tests that every endpoint at the `wp/v2` base of each product taxonomy is guarded by core's terms controller, with the check core gives it.
+	 *
+	 * Planted violation: in ProductTaxonomies::arguments(), set `show_in_rest` to false: no term
+	 * base has a route, and the walk of each fails the route assertions.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_product_term_bases_are_served_by_cores_terms_controller(): void {
+		self::registerProductType();
+
+		$server = self::bootRestServer();
+
+		foreach ( ProductTaxonomies::names() as $taxonomy ) {
+			$walk = ( new RoutePermissionWalker() )->walkTaxonomyBase( $server, $taxonomy );
+			$base = '/wp/v2/' . ProductTaxonomies::arguments( $taxonomy )['rest_base'];
+
+			$this->assertSame( array(), $walk['violations'], "The base of {$taxonomy} breaks the ownership rule:\n" . RoutePermissionWalker::describe( $walk['violations'] ) . "\n" );
+			$this->assertSame( array( $base, $base . '/(?P<id>[\d]+)' ), $walk['routes'], "The routes at the base of {$taxonomy} were not walked." );
+		}
+	}
+
+	/**
+	 * Tests that a `__return_true` route at a product taxonomy's base is reported.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_return_true_route_at_a_term_base_is_reported(): void {
+		self::registerProductType();
+
+		$base = '/' . ProductTaxonomies::arguments( ProductTaxonomies::BRAND )['rest_base'];
+
+		add_action(
+			'rest_api_init',
+			static function () use ( $base ): void {
+				register_rest_route(
+					'wp/v2',
+					$base . '/planted',
+					array(
+						'methods'             => 'POST',
+						'callback'            => '__return_null',
+						'permission_callback' => '__return_true',
+					)
+				);
+			}
+		);
+
+		$walk = ( new RoutePermissionWalker() )->walkTaxonomyBase( self::bootRestServer(), ProductTaxonomies::BRAND );
+
+		$this->assertSame(
+			array( array( '/wp/v2' . $base . '/planted', 'POST', RoutePermissionWalker::RULE_NOT_THE_TYPES_CONTROLLER ) ),
+			array_map( static fn( array $violation ): array => array( $violation['route'], $violation['method'], $violation['rule'] ), $walk['violations'] )
+		);
+		$this->assertStringContainsString( "the function '__return_true'", $walk['violations'][0]['message'] ?? '' );
+	}
+
+	/**
+	 * Tests that a product taxonomy served by a terms controller of another class than core's is reported.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_term_base_served_by_another_controller_class_is_reported(): void {
+		$subclassed = static function ( array $args, string $name ): array {
+			if ( ProductTaxonomies::TAG === $name ) {
+				$args['rest_controller_class'] = SubclassedTermsController::class;
+			}
+
+			return $args;
+		};
+
+		add_filter( 'register_taxonomy_args', $subclassed, 10, 2 );
+		ProductPostType::register();
+
+		try {
+			$walk = ( new RoutePermissionWalker() )->walkTaxonomyBase( self::bootRestServer(), ProductTaxonomies::TAG );
+		} finally {
+			remove_filter( 'register_taxonomy_args', $subclassed, 10 );
+			ProductPostType::register();
+		}
+
+		$this->assertSame(
+			array( array( '/wp/v2/' . ProductTaxonomies::arguments( ProductTaxonomies::TAG )['rest_base'], '*', RoutePermissionWalker::RULE_FOREIGN_CONTROLLER ) ),
+			array_map( static fn( array $violation ): array => array( $violation['route'], $violation['method'], $violation['rule'] ), $walk['violations'] )
+		);
+		$this->assertStringContainsString( SubclassedTermsController::class, $walk['violations'][0]['message'] ?? '' );
+	}
+
+	/**
+	 * Registers the product post type and its taxonomies as the kernel does on `init`, when another test has unregistered them.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The taxonomies too.
 	 */
 	private static function registerProductType(): void {
-		if ( ! post_type_exists( ProductCapabilities::POST_TYPE ) ) {
+		if ( ! post_type_exists( ProductCapabilities::POST_TYPE ) || ! ProductTaxonomies::registered() ) {
 			ProductPostType::register();
 		}
 	}
