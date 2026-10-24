@@ -42,7 +42,11 @@ use SEOCart\Tests\Support\Payment\StubWebhooks;
  *   it holds with the delivery's: the capture is then applied to the payment of the uuid;
  * - in ReceiveWebhook::intentOf(), return the intent of the uuid that holds no reference without
  *   looking up whether another intent holds the delivery's: B, which waits for its gateway's
- *   answer, is then voided and its order cancelled on a delivery naming A's reference.
+ *   answer, is then voided and its order cancelled on a delivery naming A's reference;
+ * - in ReceiveWebhook::intentOf(), return the intent of the uuid that holds no reference only
+ *   when no intent holds the delivery's, so that the lookup finding the intent itself refuses
+ *   it (`null === $holder ? $intent : false`): the delivery B's own reference came with is then
+ *   ignored, though B took that reference between its read and the lookup.
  *
  * @since 0.2.0
  */
@@ -192,6 +196,51 @@ final class MisaddressedResultTest extends WebhookTestCase {
 		$this->assertSame( ReceiptResult::Applied, $this->deliver( $firstWord ) );
 		$this->assertSame( array( 'authorized', 'stub-pi-approve-' . $b['intent_uuid'] ), array( $this->intentRow( $b['intent_uuid'] )['status'], $this->intentRow( $b['intent_uuid'] )['provider_intent_id'] ), 'B takes the reference of its first word.' );
 		$this->assertSame( $standingOfA, $this->standing( $a['intent_uuid'] ), 'A did not move.' );
+	}
+
+	/**
+	 * Tests that a delivery naming, by its uuid, a payment that held no provider reference when it was read, and a reference the payment itself takes before the lookup of the reference runs, is applied to that payment, once: its receipt says applied, and a redelivery is answered from the receipt.
+	 *
+	 * The reference lookup finds the payment of the uuid holding the reference: the same payment, so not another's.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_delivery_whose_reference_the_payment_takes_before_the_lookup_is_applied_once(): void {
+		$b = $this->placed( StubGateway::THROW, 'attempt-b' );
+
+		$this->assertNull( $b['provider_intent_id'], 'B holds no reference when the delivery reads it.' );
+
+		$approval  = StubWebhooks::of( $this->approvalOf( $b ) );
+		$reference = 'stub-pi-approve-' . $b['intent_uuid'];
+		$takes     = function ( $query ) use ( $b, $reference, &$takes ) {
+			// One shot, on the lookup of the reference: B takes it between the read of B and the lookup.
+			if ( is_string( $query ) && str_contains( $query, 'provider_intent_id = \'' . $reference . '\'' ) ) {
+				remove_filter( 'query', $takes );
+
+				$this->db->execute( 'UPDATE %i SET provider_intent_id = %s WHERE uuid = %s', $this->table( PaymentTables::INTENTS ), $reference, $b['intent_uuid'] );
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $takes );
+
+		try {
+			$decided = $this->deliver( $approval );
+		} finally {
+			remove_filter( 'query', $takes );
+		}
+
+		$this->assertSame( ReceiptResult::Applied, $decided );
+		$this->assertSame( array( 'authorized', $reference ), array( $this->intentRow( $b['intent_uuid'] )['status'], $this->intentRow( $b['intent_uuid'] )['provider_intent_id'] ), 'B is authorized under its own reference.' );
+		$this->assertCount( 1, $this->ledgerOf( $b['order_id'] ), 'The ledger holds the one result.' );
+		$this->assertSame( array( 'applied', $b['intent_uuid'] ), array( $this->receiptOf( $approval->eventId() )['result'] ?? null, $this->receiptOf( $approval->eventId() )['intent_uuid'] ?? null ), 'The receipt says applied, for B.' );
+
+		$standing = $this->standing( $b['intent_uuid'] );
+
+		$this->assertSame( ReceiptResult::Applied, $this->deliver( $approval ), 'A redelivery is answered from its receipt.' );
+		$this->assertSame( $standing, $this->standing( $b['intent_uuid'] ), 'Nothing moved.' );
+		$this->assertSame( 1, $this->receiptCount() );
 	}
 
 	/**
