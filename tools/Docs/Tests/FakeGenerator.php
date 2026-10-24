@@ -49,6 +49,15 @@ final class FakeGenerator implements Generator {
 	private array $expected;
 
 	/**
+	 * The target file, relative to the test's temporary root.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private string $target;
+
+	/**
 	 * Constructor.
 	 *
 	 * @since 0.1.0
@@ -56,11 +65,13 @@ final class FakeGenerator implements Generator {
 	 * @param string|null $content  The content to generate, or null to fail with an exception.
 	 * @param string[]    $skipped  Optional. The items to report as skipped. Default none.
 	 * @param string[]    $expected Optional. The items to declare as expected skips. Default none.
+	 * @param string      $target   Optional. The target file, relative to the root. Default `generated.txt`.
 	 */
-	public function __construct( ?string $content, array $skipped = array(), array $expected = array() ) {
+	public function __construct( ?string $content, array $skipped = array(), array $expected = array(), string $target = 'generated.txt' ) {
 		$this->content  = $content;
 		$this->skipped  = $skipped;
 		$this->expected = $expected;
+		$this->target   = $target;
 	}
 
 	/**
@@ -82,7 +93,7 @@ final class FakeGenerator implements Generator {
 	 * @return string Path relative to the test's temporary root.
 	 */
 	public function target(): string {
-		return 'generated.txt';
+		return $this->target;
 	}
 
 	/**

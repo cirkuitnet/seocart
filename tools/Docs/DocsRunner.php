@@ -159,7 +159,7 @@ final class DocsRunner {
 				continue;
 			}
 
-			if ( false === file_put_contents( $path, $result->content ) ) {
+			if ( ! $this->ensureDirectory( $generator->target() ) || false === file_put_contents( $path, $result->content ) ) {
 				( $this->output )( "FAIL   {$label}: the file could not be written." );
 				$failed = true;
 				continue;
@@ -177,6 +177,28 @@ final class DocsRunner {
 		}
 
 		return ( $failed || $drifted ) ? 1 : 0;
+	}
+
+	/**
+	 * Makes the directory a target is written into, so the first run of a root without `docs/` can write.
+	 *
+	 * Only write mode calls this, so a check creates nothing. A target that climbs out of the root
+	 * with a `..` segment, or that holds a backslash (a separator on Windows, so `docs\..\x` would
+	 * climb there), is refused, which keeps every directory made inside the root.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $target The target: a path relative to the root, with `/` separators.
+	 * @return bool True when the directory exists afterwards.
+	 */
+	private function ensureDirectory( string $target ): bool {
+		if ( str_contains( $target, '\\' ) || in_array( '..', explode( '/', $target ), true ) ) {
+			return false;
+		}
+
+		$directory = dirname( $this->root . '/' . $target );
+
+		return is_dir( $directory ) || mkdir( $directory, 0777, true ) || is_dir( $directory );
 	}
 
 	/**

@@ -216,6 +216,64 @@ final class DocsRunnerTest extends TestCase {
 	}
 
 	/**
+	 * Tests that write mode makes the directory of a nested target and that check mode does not.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_generate_makes_the_directory_of_a_nested_target_and_check_does_not(): void {
+		$runner = $this->runner( new FakeGenerator( "generated\n", array(), array(), 'docs/generated.txt' ) );
+
+		try {
+			$this->assertSame( 1, $runner->run( true ) );
+			$this->assertDirectoryDoesNotExist( $this->root . '/docs' );
+
+			$this->assertSame( 0, $runner->run( false ) );
+			$this->assertSame( "generated\n", file_get_contents( $this->root . '/docs/generated.txt' ) );
+		} finally {
+			if ( is_file( $this->root . '/docs/generated.txt' ) ) {
+				unlink( $this->root . '/docs/generated.txt' );
+			}
+
+			if ( is_dir( $this->root . '/docs' ) ) {
+				rmdir( $this->root . '/docs' );
+			}
+		}
+	}
+
+	/**
+	 * Tests that a target climbing out of the root is refused and nothing is written beside the root.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_target_outside_the_root_is_refused(): void {
+		$outside = basename( $this->root ) . '-outside';
+		$runner  = $this->runner( new FakeGenerator( "generated\n", array(), array(), '../' . $outside . '/generated.txt' ) );
+
+		$this->assertSame( 1, $runner->run( false ) );
+		$this->assertDirectoryDoesNotExist( $this->root . '/../' . $outside );
+		$this->assertStringContainsString( 'the file could not be written.', implode( "\n", $this->lines ) );
+	}
+
+	/**
+	 * Tests that a target with a backslash, which climbs out of the root on Windows, is refused in write mode and creates nothing.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_target_with_a_backslash_is_refused_and_creates_nothing(): void {
+		$runner = $this->runner( new FakeGenerator( "generated\n", array(), array(), 'docs\..\..\x' ) );
+
+		try {
+			$this->assertSame( 1, $runner->run( false ) );
+			$this->assertSame( array(), glob( $this->root . '/*' ), 'Nothing was created in the root.' );
+			$this->assertStringContainsString( 'the file could not be written.', implode( "\n", $this->lines ) );
+		} finally {
+			foreach ( (array) glob( $this->root . '/*' ) as $stray ) {
+				unlink( $stray );
+			}
+		}
+	}
+
+	/**
 	 * Tests that `--check` selects check mode and that an unknown argument is an error.
 	 *
 	 * @since 0.1.0
