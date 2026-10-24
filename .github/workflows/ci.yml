@@ -22,13 +22,13 @@
 # Required checks for branch protection on main: lint-php, workflow-lint, static-analysis,
 # dry-gates, docs-drift, wporg-gates, every unit-tests cell, the "WordPress 7.1"
 # integration-tests cells, integration-tests-multisite, integration-tests-mariadb, query-plans,
-# js-lint-test, and the
-# package jobs. The WordPress nightly cells are informational. multilingual-conformance must
-# pass like any other job (it is not allow-failure), but it is not a required check either,
-# because it downloads Polylang from wordpress.org at test time; the merge script still refuses
-# any merge whose checks did not all pass. smoke-suite is not a required check either: it
-# reports what the jobs above did as the one list "all 17 smoke tests are green". Nor is
-# extension-kit, which runs a generated extension's gates against this commit.
+# js-lint-test, smoke-suite, and the package jobs (build, packaging-validate, plugin-check and
+# both install-smoke cells). The WordPress nightly cells are informational.
+# multilingual-conformance must pass like any other job (it is not allow-failure), but it is
+# not a required check, because it downloads Polylang from wordpress.org at test time. Nor is
+# extension-kit, which runs a generated extension's gates against this commit. The merge
+# script still refuses any merge whose checks did not all pass. smoke-suite is required: it
+# reports what the jobs above did as the one list "all 17 smoke tests are green".
 #
 # The local setup action owns the development PHP version and Composer installation.
 # bin/ci/check-workflows.sh keeps these steps in the action and checks action pins.
@@ -371,7 +371,7 @@ jobs:
     # `package / install-smoke` uploaded; it runs only the cheap, filtered PHPUnit checks
     # itself, and reads check 15 from the end-to-end workflow's run for this commit, when
     # there is one. It reports whatever the jobs ended with, so it runs after a failure too. It
-    # stays out of the required checks until the maintainer decides it should be one.
+    # is a required check.
     smoke-suite:
         needs:
             - lint-php
