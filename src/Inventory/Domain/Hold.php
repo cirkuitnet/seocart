@@ -17,8 +17,8 @@ defined( 'ABSPATH' ) || exit;
  * What a successful hold took: its id, its expiry, the lines held and the lines that needed no hold.
  *
  * Owns one fact: the outcome of one hold. Every tracked line was held in full, one row per
- * variant, all expiring at the same instant; an untracked variant is always available, so it
- * got no row and is listed apart. The hold group is what releases it again.
+ * variant and location, all expiring at the same instant; an untracked variant is always
+ * available, so it got no row and is listed apart. The hold group is what releases it again.
  *
  * @since 0.1.0
  */
@@ -43,7 +43,7 @@ final readonly class Hold {
 	public \DateTimeImmutable $expiresAt;
 
 	/**
-	 * The tracked lines, one per variant, in ascending variant order.
+	 * The tracked lines, one per variant and location, ascending by variant then location, each naming its location.
 	 *
 	 * @since 0.1.0
 	 *

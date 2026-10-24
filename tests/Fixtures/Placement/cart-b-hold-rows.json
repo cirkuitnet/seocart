@@ -1,6 +1,7 @@
 [
 	{
 		"variant_id": "variant 0",
+		"location_id": "default location",
 		"cart_id": "cart",
 		"order_id": null,
 		"hold_group": "hold",
@@ -9,6 +10,7 @@
 	},
 	{
 		"variant_id": "variant 1",
+		"location_id": "default location",
 		"cart_id": "cart",
 		"order_id": null,
 		"hold_group": "hold",
@@ -17,6 +19,7 @@
 	},
 	{
 		"variant_id": "variant 2",
+		"location_id": "default location",
 		"cart_id": "cart",
 		"order_id": null,
 		"hold_group": "hold",
@@ -25,6 +28,7 @@
 	},
 	{
 		"variant_id": "variant 3",
+		"location_id": "default location",
 		"cart_id": "cart",
 		"order_id": null,
 		"hold_group": "hold",
@@ -33,6 +37,7 @@
 	},
 	{
 		"variant_id": "variant 4",
+		"location_id": "default location",
 		"cart_id": "cart",
 		"order_id": null,
 		"hold_group": "hold",
@@ -41,6 +46,7 @@
 	},
 	{
 		"variant_id": "variant 5",
+		"location_id": "default location",
 		"cart_id": "cart",
 		"order_id": null,
 		"hold_group": "hold",
@@ -49,6 +55,7 @@
 	},
 	{
 		"variant_id": "variant 6",
+		"location_id": "default location",
 		"cart_id": "cart",
 		"order_id": null,
 		"hold_group": "hold",
@@ -57,6 +64,7 @@
 	},
 	{
 		"variant_id": "variant 7",
+		"location_id": "default location",
 		"cart_id": "cart",
 		"order_id": null,
 		"hold_group": "hold",
@@ -65,6 +73,7 @@
 	},
 	{
 		"variant_id": "variant 8",
+		"location_id": "default location",
 		"cart_id": "cart",
 		"order_id": null,
 		"hold_group": "hold",
@@ -73,6 +82,7 @@
 	},
 	{
 		"variant_id": "variant 9",
+		"location_id": "default location",
 		"cart_id": "cart",
 		"order_id": null,
 		"hold_group": "hold",

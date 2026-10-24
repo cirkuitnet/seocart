@@ -37,7 +37,9 @@
 #      migration since is recorded once, as applied, none of the earlier ones ran again, and the
 #      product, its stock, the order and every value of every data table are as they were:
 #      each column a table had before reads the same, so a column the upgrade adds is allowed
-#      and a value it changed or lost shows;
+#      and a value it changed or lost shows. The stock items are the one exception: the upgrade
+#      keys them by location and moves their policy columns to a table of their own, so they
+#      are compared by what they count, at the default location the upgrade gives the store;
 #   3. a guest buys the product through the Store API with the stub gateway and reads the
 #      order back, with the earlier zip when there is one (the new tables are written and read);
 #   4. deactivate and reactivate;
@@ -551,6 +553,9 @@ assert_the_store_has_its_rows() {
 	price=$(db_rows "SELECT price_minor FROM {px}seocart_variant_prices WHERE variant_id = $variant_id")
 	[ "$price" = 1999 ] || fail "the variant's price row is missing or changed: \"$price\" instead of 1999."
 
+	items=$(db_rows "SELECT COUNT(*) FROM {px}seocart_stock_items WHERE variant_id = $variant_id")
+	[ "$items" = 1 ] || fail "the variant has \"$items\" stock rows, not the one."
+
 	stock=$(db_rows "SELECT on_hand, allocated FROM {px}seocart_stock_items WHERE variant_id = $variant_id")
 
 	if [ "${1:-}" = ordered ]; then
@@ -562,6 +567,13 @@ assert_the_store_has_its_rows() {
 	fi
 }
 
+# Fails unless the variant's one stock row is at the store's default location, counting what it
+# counted before the upgrade: 5 on hand, 1 allocated to the order, none held.
+assert_the_stock_is_at_the_default_location() {
+	stock=$(db_rows "SELECT i.variant_id, i.on_hand, i.allocated, i.held FROM {px}seocart_stock_items i JOIN {px}seocart_locations l ON l.id = i.location_id AND l.is_default = 1 WHERE i.variant_id = $variant_id")
+	[ "$stock" = "$(printf '%s\t5\t1\t0' "$variant_id")" ] || fail "the stock at the default location is \"$stock\", expected variant $variant_id with 5 on hand, 1 allocated and none held."
+}
+
 # Prints what the store holds about the product: what a client reads, and the rows of the
 # variant, its prices and its stock, as the database holds them. Two prints are equal when
 # nothing about the product changed.
@@ -571,7 +583,7 @@ product_snapshot() {
 	answer title/raw status seocart/sku seocart/price_minor
 	db_rows "SELECT * FROM {px}seocart_variants WHERE id = $variant_id"
 	db_rows "SELECT * FROM {px}seocart_variant_prices WHERE variant_id = $variant_id"
-	db_rows "SELECT variant_id, on_hand, allocated, held, track FROM {px}seocart_stock_items WHERE variant_id = $variant_id"
+	db_rows "SELECT variant_id, on_hand, allocated, held FROM {px}seocart_stock_items WHERE variant_id = $variant_id"
 	db_rows "SELECT delta, on_hand_after, reason FROM {px}seocart_stock_ledger WHERE variant_id = $variant_id ORDER BY id"
 }
 
@@ -685,6 +697,10 @@ plugin_options() {
 # upgrade.
 operational_tables='migrations|locks|outbox|logs|rate_counters'
 
+# The tables the upgrade comparison leaves to a comparison of their own: the operational ones, and
+# the stock items, which the upgrade keys by location (assert_the_stock_is_at_the_default_location).
+upgrade_skipped="$operational_tables|stock_items"
+
 # Fails unless every table of $1 (table_checksums output taken before) reads the same in $2
 # (taken after): the same rows, down to every value. $3 says what happened in between.
 same_tables() {
@@ -724,7 +740,7 @@ if [ -n "$old_zip" ]; then
 	assert_the_store_has_its_rows
 	buy_and_check
 	product_before=$(product_snapshot)
-	data_before=$(table_checksums "$operational_tables")
+	data_before=$(table_checksums "$upgrade_skipped")
 	migrations_before=$(migration_rows)
 	printf '%s\n' "$product_before"
 	printf '%s\n' "$data_before"
@@ -744,6 +760,7 @@ if [ -n "$old_zip" ]; then
 	step 'checking the upgrade'
 	prove_the_upgrade "$migrations_before"
 	assert_the_store_has_its_rows ordered
+	assert_the_stock_is_at_the_default_location
 	product_after=$(product_snapshot)
 	[ "$product_after" = "$product_before" ] || fail "the product, its prices or its stock changed in the upgrade. Before:
 $product_before
@@ -754,8 +771,8 @@ $product_after"
 $order_before
 After:
 $order_after"
-	same_tables "$data_before" "$(table_checksums "$operational_tables" "$data_before")" 'in the upgrade'
-	printf 'The product, its prices, its stock and the order read back unchanged, and so does every one of the %s data tables.\n' "$(count_lines "$data_before")"
+	same_tables "$data_before" "$(table_checksums "$upgrade_skipped" "$data_before")" 'in the upgrade'
+	printf 'The product, its prices, its stock at the default location and the order read back unchanged, and so does every one of the %s other data tables.\n' "$(count_lines "$data_before")"
 	prove upgrade
 else
 	step "installing $(basename -- "$zip")"

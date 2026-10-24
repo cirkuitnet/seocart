@@ -21,15 +21,15 @@ use SEOCart\Inventory\Domain\Event\StockReserved;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Platform\Authorization\Actor;
-use SEOCart\Platform\Authorization\Authorizer;
-use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Tests\Support\Doubles\FakeLocationRepository;
 use SEOCart\Tests\Support\Doubles\FakeStockRepository;
 use SEOCart\Tests\Support\Doubles\FakeTransactionManager;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
+use SEOCart\Tests\Support\Inventory\StockServices;
 
 /**
  * The service's own decisions: the order of statements, when it reclaims and retries, which error
@@ -87,7 +87,7 @@ final class StockServiceTest extends TestCase {
 		$this->tx      = new FakeTransactionManager();
 		$this->stock   = new FakeStockRepository( $this->tx );
 		$this->events  = new RecordingEventPublisher( $this->tx );
-		$this->service = new StockService( $this->stock, $this->tx, $this->events, new SequentialIdGenerator(), FrozenClock::at( '2026-09-24 12:00:00' ), new CorrelationId( new SequentialIdGenerator( 9000 ) ), new Authorizer( new CapabilityDeclaration() ) );
+		$this->service = StockServices::of( $this->stock, new FakeLocationRepository(), $this->tx, $this->events, new SequentialIdGenerator(), FrozenClock::at( '2026-09-24 12:00:00' ), new CorrelationId( new SequentialIdGenerator( 9000 ) ) );
 	}
 
 	/**
@@ -101,8 +101,8 @@ final class StockServiceTest extends TestCase {
 
 		$hold = $this->service->hold( array( new HoldLine( 9, 1 ), new HoldLine( 4, 2 ), new HoldLine( 9, 2 ) ), 600 );
 
-		$this->assertSame( array( 'configuration:4,9', 'claim:4:2', 'claim:9:3', 'insertHolds:4:2,9:3' ), $this->stock->calls() );
-		$this->assertEquals( array( new HoldLine( 4, 2 ), new HoldLine( 9, 3 ) ), $hold->lines );
+		$this->assertSame( array( 'configuration:4,9', 'claim:4@1:2', 'claim:9@1:3', 'insertHolds:4@1:2,9@1:3' ), $this->stock->calls() );
+		$this->assertEquals( array( new HoldLine( 4, 2, FakeStockRepository::LOCATION ), new HoldLine( 9, 3, FakeStockRepository::LOCATION ) ), $hold->lines );
 		$this->assertSame( 1, $this->tx->attempts() );
 
 		$reserved = $this->events->publishedOf( StockReserved::class );
@@ -111,6 +111,10 @@ final class StockServiceTest extends TestCase {
 		$this->assertSame( array( 4, 9 ), $reserved[0]->variantIds );
 		$this->assertSame( array( 2, 3 ), $reserved[0]->quantities );
 		$this->assertSame( $hold->holdGroup, $reserved[0]->holdId );
+		$this->assertSame(
+			array( array( 4, 9 ), array( FakeStockRepository::LOCATION, FakeStockRepository::LOCATION ), array( 2, 3 ) ),
+			array( $reserved[0]->locationVariantIds, $reserved[0]->locationIds, $reserved[0]->locationQuantities )
+		);
 	}
 
 	/**
@@ -124,7 +128,7 @@ final class StockServiceTest extends TestCase {
 
 		$this->service->hold( array( new HoldLine( 4, 1 ) ), 600 );
 
-		$this->assertSame( array( 'configuration:4', 'claim:4:1', 'reclaimExpired:4', 'lockItem:4', 'claim:4:1', 'insertHolds:4:1' ), $this->stock->calls() );
+		$this->assertSame( array( 'configuration:4', 'claim:4@1:1', 'reclaimExpired:4@1', 'lockItem:4@1', 'claim:4@1:1', 'insertHolds:4@1:1' ), $this->stock->calls() );
 		$this->assertCount( 1, $this->events->publishedOf( StockHoldExpired::class ) );
 		$this->assertCount( 1, $this->events->publishedOf( StockReserved::class ) );
 	}
@@ -168,7 +172,7 @@ final class StockServiceTest extends TestCase {
 		$hold = $this->service->hold( array( new HoldLine( 4, 3 ), new HoldLine( 5, 1 ) ), 600 );
 
 		$this->assertSame( array( 4 ), $hold->untracked );
-		$this->assertSame( array( 'configuration:4,5', 'claim:5:1', 'insertHolds:5:1' ), $this->stock->calls() );
+		$this->assertSame( array( 'configuration:4,5', 'claim:5@1:1', 'insertHolds:5@1:1' ), $this->stock->calls() );
 	}
 
 	/**
@@ -225,7 +229,7 @@ final class StockServiceTest extends TestCase {
 	 */
 	public function test_a_zero_adjustment_is_refused_before_any_transaction(): void {
 		try {
-			$this->service->adjust( 4, 0, LedgerReason::Recount, Actor::user( 1 ) );
+			$this->service->adjust( 4, FakeStockRepository::LOCATION, 0, LedgerReason::Recount, Actor::user( 1 ) );
 			$this->fail( 'A zero adjustment was accepted.' );
 		} catch ( CodedException $refused ) {
 			$this->assertSame( InventoryError::ZeroDelta, $refused->errorCode() );
@@ -242,7 +246,7 @@ final class StockServiceTest extends TestCase {
 	public function test_a_system_reason_is_not_an_adjustment(): void {
 		$this->expectException( \InvalidArgumentException::class );
 
-		$this->service->adjust( 4, 1, LedgerReason::VariantDeleted, Actor::user( 1 ) );
+		$this->service->adjust( 4, FakeStockRepository::LOCATION, 1, LedgerReason::VariantDeleted, Actor::user( 1 ) );
 	}
 
 	/**
@@ -281,7 +285,7 @@ final class StockServiceTest extends TestCase {
 
 		foreach ( $cases as $case ) {
 			try {
-				$this->service->adjust( $case[0], $case[1], LedgerReason::Recount, Actor::user( 1 ), $case[2] );
+				$this->service->adjust( $case[0], FakeStockRepository::LOCATION, $case[1], LedgerReason::Recount, Actor::user( 1 ), $case[2] );
 				$this->fail( 'A refused adjustment was reported as applied.' );
 			} catch ( CodedException $refused ) {
 				$this->assertSame( $case[3], $refused->errorCode() );
@@ -301,11 +305,11 @@ final class StockServiceTest extends TestCase {
 	public function test_an_adjustment_records_the_level_after_it(): void {
 		$this->stock->plantItem( 4, 2, 0, 3 );
 
-		$adjustment = $this->service->adjust( 4, 5, LedgerReason::Received, Actor::system( 'cli', 7 ) );
+		$adjustment = $this->service->adjust( 4, FakeStockRepository::LOCATION, 5, LedgerReason::Received, Actor::system( 'cli', 7 ) );
 
 		$this->assertSame( 7, $adjustment->level->onHand );
 		$this->assertSame( 4, $adjustment->level->available() );
-		$this->assertSame( array( 'adjust:4:5', 'lockedLevel:4', 'appendLedger:4:5' ), $this->stock->calls() );
+		$this->assertSame( array( 'lockAdjustable:4@1', 'createItemAt:4@1', 'adjust:4@1:5', 'lockedLevel:4@1', 'appendLedger:4@1:5' ), $this->stock->calls() );
 		$this->assertSame( 'system', $this->stock->ledger()[0]['actor_type'] );
 		$this->assertSame( 7, $this->stock->ledger()[0]['actor_id'] );
 		$this->assertSame( SequentialIdGenerator::nth( 9000 ), $this->stock->ledger()[0]['correlation_id'] );
@@ -347,7 +351,7 @@ final class StockServiceTest extends TestCase {
 		);
 
 		$this->assertSame(
-			array( 'lockItem:4', 'hasOpenAllocation:4', 'reclaimVariant:4', 'lockItem:4', 'lockedLevel:4', 'adjust:4:-3', 'lockedLevel:4', 'appendLedger:4:-3', 'deleteItem:4' ),
+			array( 'lockPolicy:4', 'lockItemsOf:4', 'hasOpenAllocation:4', 'reclaimItem:4@1', 'lockItem:4@1', 'lockedLevel:4@1', 'adjust:4@1:-3', 'lockedLevel:4@1', 'appendLedger:4@1:-3', 'deleteItem:4@1', 'deletePolicy:4' ),
 			$this->stock->calls()
 		);
 
@@ -374,7 +378,7 @@ final class StockServiceTest extends TestCase {
 			$this->assertSame( InventoryError::DeleteBlocked, $refused->errorCode() );
 		}
 
-		$this->assertSame( array( 'lockItem:4', 'hasOpenAllocation:4' ), $this->stock->calls() );
+		$this->assertSame( array( 'lockPolicy:4', 'lockItemsOf:4', 'hasOpenAllocation:4' ), $this->stock->calls() );
 	}
 
 	/**
@@ -397,7 +401,7 @@ final class StockServiceTest extends TestCase {
 		$this->assertCount( 1, $released );
 		$this->assertSame( array( 4, 9 ), $released[0]->variantIds );
 		$this->assertSame( array( 1, 2 ), $released[0]->quantities );
-		$this->assertCount( 1, $this->stock->holdRows(), 'The other hold is untouched.' );
+		$this->assertCount( 1, $this->stock->holdRowsLeft(), 'The other hold is untouched.' );
 	}
 
 	/**
@@ -419,7 +423,7 @@ final class StockServiceTest extends TestCase {
 		$this->assertCount( 2, $released );
 		$this->assertSame( array( 'group-a', array( 4, 9 ), array( 1, 1 ) ), array( $released[0]->holdId, $released[0]->variantIds, $released[0]->quantities ) );
 		$this->assertSame( array( 'group-b', array( 4 ), array( 2 ) ), array( $released[1]->holdId, $released[1]->variantIds, $released[1]->quantities ) );
-		$this->assertSame( array(), $this->stock->holdRows() );
+		$this->assertSame( array(), $this->stock->holdRowsLeft() );
 		$this->assertSame( 0, $this->service->levels( array( 4 ) )[4]->held );
 		$this->assertSame( array(), $this->stock->ledger(), 'Releasing holds moves no stock.' );
 	}
@@ -437,7 +441,7 @@ final class StockServiceTest extends TestCase {
 		$this->stock->plantItem( 4, 1, 0, 1 );
 
 		try {
-			$this->service->reclaimExpired( 4 );
+			$this->service->reclaimExpired( 4, FakeStockRepository::LOCATION );
 			$this->fail( 'A reclaim gave back more than was held.' );
 		} catch ( CodedException $refused ) {
 			$this->assertSame( InventoryError::ProjectionCorrupt, $refused->errorCode() );

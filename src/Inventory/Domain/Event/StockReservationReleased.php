@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Inventory\Domain\Event;
 
+use SEOCart\Inventory\Domain\StockLines;
 use SEOCart\Support\Events\DeliveryMode;
 use SEOCart\Support\Events\DomainEvent;
 
@@ -22,9 +23,15 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: what a listener learns about one release. A release gives back the hold's rows
  * that were still there: a row already reclaimed after its expiry is not released twice, so the
  * lists may name fewer variants than the hold had. A deleted or trashed product releases every
- * hold of its variants, one event per hold. The lines are two parallel lists in ascending
- * variant order. Delivered in the same request right after the commit. Its aggregate id is the
- * lowest variant id released. Each payload key is its property's name in snake_case.
+ * hold of its variants, one event per hold. An event's payload holds only scalars and flat lists
+ * of scalars, so its lines are two sets of parallel lists (StockLines). `variant_ids` and
+ * `quantities` name each variant given back once, in ascending order, with all the units given
+ * back of it at every location. `location_variant_ids`, `location_ids` and `location_quantities`
+ * name each item given back to, a variant at a location, in ascending order of the variant then
+ * the location, with the units given back there; the units of a variant's items add up to the
+ * variant's. A release recorded before stock was kept per location has none of the three item
+ * lists, and each is empty. Delivered in the same request right after the commit. Its aggregate
+ * id is the lowest variant id released. Each payload key is its property's name in snake_case.
  *
  * @since 0.1.0
  */
@@ -44,26 +51,35 @@ final readonly class StockReservationReleased implements DomainEvent {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \InvalidArgumentException When no variant is listed, or the two lists differ in length.
+	 * @throws \InvalidArgumentException When the lines do not agree (StockLines::agree()).
 	 *
-	 * @param string             $holdId     The id of the hold released.
-	 * @param string             $reason     Why it was released, for example `payment_declined` or `variant_deleted`.
-	 * @param int[]              $variantIds The variants given back, ascending.
-	 * @param int[]              $quantities The units given back of each, in the same order.
-	 * @param \DateTimeImmutable $occurredAt When it was released.
+	 * @param string             $holdId             The id of the hold released.
+	 * @param string             $reason             Why it was released, for example `payment_declined` or `variant_deleted`.
+	 * @param int[]              $variantIds         The variants given back, ascending, each once.
+	 * @param int[]              $quantities         The units given back of each, at every location, in the same order.
+	 * @param int[]              $locationVariantIds The variant of each item given back to, ascending by variant then location; empty for a release recorded before locations.
+	 * @param int[]              $locationIds        The location of each item given back to, in the same order; empty for a release recorded before locations.
+	 * @param int[]              $locationQuantities The units given back to each item, in the same order; empty for a release recorded before locations.
+	 * @param \DateTimeImmutable $occurredAt         When it was released.
 	 *
 	 * @phpstan-param list<int> $variantIds
 	 * @phpstan-param list<int> $quantities
+	 * @phpstan-param list<int> $locationVariantIds
+	 * @phpstan-param list<int> $locationIds
+	 * @phpstan-param list<int> $locationQuantities
 	 */
 	public function __construct(
 		public string $holdId,
 		public string $reason,
 		public array $variantIds,
 		public array $quantities,
+		public array $locationVariantIds,
+		public array $locationIds,
+		public array $locationQuantities,
 		public \DateTimeImmutable $occurredAt
 	) {
-		if ( array() === $variantIds || count( $variantIds ) !== count( $quantities ) ) {
-			throw new \InvalidArgumentException( 'A release lists at least one variant, and one quantity per variant.' );
+		if ( ! StockLines::agree( $variantIds, $quantities, $locationVariantIds, $locationIds, $locationQuantities ) ) {
+			throw new \InvalidArgumentException( 'A release lists at least one variant once with its units, and, unless recorded before locations, each of its items with units adding up to the variant\'s.' );
 		}
 	}
 
@@ -116,6 +132,9 @@ final readonly class StockReservationReleased implements DomainEvent {
 			(string) $payload['reason'],
 			array_values( array_map( 'intval', (array) $payload['variant_ids'] ) ),
 			array_values( array_map( 'intval', (array) $payload['quantities'] ) ),
+			array_values( array_map( 'intval', (array) ( $payload['location_variant_ids'] ?? array() ) ) ),
+			array_values( array_map( 'intval', (array) ( $payload['location_ids'] ?? array() ) ) ),
+			array_values( array_map( 'intval', (array) ( $payload['location_quantities'] ?? array() ) ) ),
 			$occurredAt
 		);
 	}
@@ -162,10 +181,13 @@ final readonly class StockReservationReleased implements DomainEvent {
 	 */
 	public function toPayload(): array {
 		return array(
-			'hold_id'     => $this->holdId,
-			'reason'      => $this->reason,
-			'variant_ids' => $this->variantIds,
-			'quantities'  => $this->quantities,
+			'hold_id'              => $this->holdId,
+			'reason'               => $this->reason,
+			'variant_ids'          => $this->variantIds,
+			'quantities'           => $this->quantities,
+			'location_variant_ids' => $this->locationVariantIds,
+			'location_ids'         => $this->locationIds,
+			'location_quantities'  => $this->locationQuantities,
 		);
 	}
 }

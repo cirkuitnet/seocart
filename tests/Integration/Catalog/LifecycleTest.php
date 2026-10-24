@@ -23,7 +23,6 @@ use SEOCart\Catalog\Infrastructure\Migrations\CreateCatalogTables;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
-use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Database;
@@ -39,6 +38,7 @@ use SEOCart\Platform\Kernel\Container;
 use SEOCart\Platform\Logging\LogsTable;
 use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
 use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
+use SEOCart\Tests\Support\Inventory\StockTables;
 use SEOCart\Tests\Support\KernelContainer;
 use SEOCart\Tests\Support\SecondConnection;
 
@@ -166,7 +166,7 @@ final class LifecycleTest extends ProductWriteTestCase {
 		$next  = $this->variantElsewhere( $b, $saved, 'SKU-2', 1 );
 
 		$this->db->transaction( fn() => $this->services->stock->createItems( array( $next ) ) );
-		$this->services->stock->adjust( $next, 4, LedgerReason::Received, Actor::user( 1 ) );
+		$this->services->stock->adjust( $next, $this->defaultLocation, 4, LedgerReason::Received, Actor::user( 1 ) );
 		$this->services->stock->hold(
 			array(
 				new HoldLine( $first, 1 ),
@@ -398,7 +398,7 @@ final class LifecycleTest extends ProductWriteTestCase {
 			'delete_post',
 			function ( $postId ) use ( $b, $saved ): void {
 				if ( $saved->postId === (int) $postId ) {
-					$b->query( sprintf( "INSERT INTO `%s` ( variant_id, order_id, order_line_id, quantity, state, created_at ) VALUES ( %d, 1, 1, 1, 'open', UTC_TIMESTAMP(6) )", $this->db->table( InventoryTables::ALLOCATIONS ), (int) $saved->variantId ) );
+					$b->query( sprintf( "INSERT INTO `%s` ( variant_id, location_id, order_id, order_line_id, quantity, state, created_at ) VALUES ( %d, %d, 1, 1, 1, 'open', UTC_TIMESTAMP(6) )", $this->db->table( InventoryTables::ALLOCATIONS ), (int) $saved->variantId, $this->defaultLocation ) );
 				}
 			}
 		);
@@ -546,7 +546,7 @@ final class LifecycleTest extends ProductWriteTestCase {
 
 			( new CreateCatalogTables() )->up( $operations );
 			( new CreateOutboxMigration() )->up( $operations );
-			( new CreateStockTablesMigration() )->up( $operations );
+			StockTables::create( $this->db );
 
 			$other = wp_insert_post(
 				array(
@@ -699,7 +699,7 @@ final class LifecycleTest extends ProductWriteTestCase {
 		$this->assertFalse( wp_delete_post( $first->postId, true ) );
 		remove_filter( 'pre_delete_post', '__return_false' );
 
-		$b->query( sprintf( "INSERT INTO `%s` ( variant_id, order_id, order_line_id, quantity, state, created_at ) VALUES ( %d, 1, 1, 1, 'open', UTC_TIMESTAMP(6) )", $this->db->table( InventoryTables::ALLOCATIONS ), (int) $first->variantId ) );
+		$b->query( sprintf( "INSERT INTO `%s` ( variant_id, location_id, order_id, order_line_id, quantity, state, created_at ) VALUES ( %d, %d, 1, 1, 1, 'open', UTC_TIMESTAMP(6) )", $this->db->table( InventoryTables::ALLOCATIONS ), (int) $first->variantId, $this->defaultLocation ) );
 		$this->assertFalse( wp_delete_post( $first->postId, true ) );
 		$b->query( sprintf( 'DELETE FROM `%s` WHERE variant_id = %d', $this->db->table( InventoryTables::ALLOCATIONS ), (int) $first->variantId ) );
 
@@ -724,7 +724,7 @@ final class LifecycleTest extends ProductWriteTestCase {
 		$b     = $this->secondConnection();
 		$saved = $this->stocked( 3 );
 
-		$b->query( sprintf( "INSERT INTO `%s` ( variant_id, order_id, order_line_id, quantity, state, created_at ) VALUES ( %d, 1, 1, 1, 'open', UTC_TIMESTAMP(6) )", $this->db->table( InventoryTables::ALLOCATIONS ), (int) $saved->variantId ) );
+		$b->query( sprintf( "INSERT INTO `%s` ( variant_id, location_id, order_id, order_line_id, quantity, state, created_at ) VALUES ( %d, %d, 1, 1, 1, 'open', UTC_TIMESTAMP(6) )", $this->db->table( InventoryTables::ALLOCATIONS ), (int) $saved->variantId, $this->defaultLocation ) );
 
 		$before = $this->everything( $b, $saved );
 
@@ -829,7 +829,7 @@ final class LifecycleTest extends ProductWriteTestCase {
 	private function stocked( int $onHand ): SaveResult {
 		$saved = $this->savedProduct();
 
-		$this->services->stock->adjust( (int) $saved->variantId, $onHand, LedgerReason::Received, Actor::user( 1 ) );
+		$this->services->stock->adjust( (int) $saved->variantId, $this->defaultLocation, $onHand, LedgerReason::Received, Actor::user( 1 ) );
 
 		return $saved;
 	}
@@ -850,7 +850,8 @@ final class LifecycleTest extends ProductWriteTestCase {
 		$next = $this->variantElsewhere( $b, $saved, 'SKU-NEXT', 2 );
 
 		$b->query( sprintf( "INSERT INTO `%s` ( variant_id, currency, amount_basis, price_minor, created_at, updated_at ) VALUES ( %d, '%s', 'net', 2999, UTC_TIMESTAMP(), UTC_TIMESTAMP() )", $this->catalogTable( CatalogTables::VARIANT_PRICES ), $next, self::BASE_CURRENCY ) );
-		$b->query( sprintf( 'INSERT INTO `%s` ( variant_id, on_hand, updated_at ) VALUES ( %d, 0, UTC_TIMESTAMP(6) )', $this->db->table( InventoryTables::ITEMS ), $next ) );
+		$b->query( sprintf( 'INSERT INTO `%s` ( variant_id, updated_at ) VALUES ( %d, UTC_TIMESTAMP(6) )', $this->db->table( InventoryTables::POLICIES ), $next ) );
+		$b->query( sprintf( 'INSERT INTO `%s` ( variant_id, location_id, on_hand, updated_at ) VALUES ( %d, %d, 0, UTC_TIMESTAMP(6) )', $this->db->table( InventoryTables::ITEMS ), $next, $this->defaultLocation ) );
 
 		return $next;
 	}

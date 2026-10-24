@@ -63,7 +63,7 @@ final class ReferenceSeedTest extends DatabaseTestCase {
 	 *
 	 * @var string
 	 */
-	private const SMALL_DIGEST = '545ef5617fb82e87f8467b5c5209778d953fd0f73ce32eccb6b1dbc9af75582e';
+	private const SMALL_DIGEST = '6c5f74af115b5430c78314854c98a7dfc02dd0a27a3383664c06429c85bdced0';
 
 	/**
 	 * The seed of the test, once it wrote.
@@ -172,7 +172,7 @@ final class ReferenceSeedTest extends DatabaseTestCase {
 		$currency = (string) Kernel::container()->get( SettingsStore::class )->value( InternationalSettings::BASE_CURRENCY );
 		$rows     = $this->write( $currency )['rows'];
 
-		$this->assertSame( array( 200, 300, 300, 200, 200, 200 ), array( $rows['products'], $rows['posts'], $rows['product_posts'], $rows['variants'], $rows['variant_prices'], $rows['stock_items'] ) );
+		$this->assertSame( array( 200, 300, 300, 200, 200, 200, 200 ), array( $rows['products'], $rows['posts'], $rows['product_posts'], $rows['variants'], $rows['variant_prices'], $rows['stock_policies'], $rows['stock_items'] ) );
 		$this->assertGreaterThan( 200, $rows['stock_ledger'] );
 		$this->assertGreaterThan( 0, $rows['stock_holds'] );
 		$this->assertSame( Dataset::Small->carts(), $rows['carts'] );

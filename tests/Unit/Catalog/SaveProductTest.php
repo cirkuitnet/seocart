@@ -26,7 +26,6 @@ use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Catalog\Domain\Sku;
 use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Catalog\Domain\VariantPrice;
-use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
@@ -43,12 +42,14 @@ use SEOCart\Tests\Support\Catalog\LoggedTransactions;
 use SEOCart\Tests\Support\Catalog\ScriptedPostGateway;
 use SEOCart\Tests\Support\Catalog\ScriptedProductRepository;
 use SEOCart\Tests\Support\Catalog\StepLog;
+use SEOCart\Tests\Support\Doubles\FakeLocationRepository;
 use SEOCart\Tests\Support\Doubles\FakeStockRepository;
 use SEOCart\Tests\Support\Doubles\FakeTransactionManager;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
 use SEOCart\Tests\Support\Doubles\OneLocale;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
+use SEOCart\Tests\Support\Inventory\StockServices;
 
 /**
  * The service's steps, in the order the design gives them, with every collaborator a double.
@@ -495,7 +496,7 @@ final class SaveProductTest extends TestCase {
 		return new SaveProduct(
 			$this->products,
 			$this->posts,
-			new StockService( $this->stock, $this->tx, $this->events, $ids, $clock, new CorrelationId( new SequentialIdGenerator( 9000 ) ), new Authorizer( new CapabilityDeclaration() ) ),
+			StockServices::of( $this->stock, new FakeLocationRepository(), $this->tx, $this->events, $ids, $clock, new CorrelationId( new SequentialIdGenerator( 9000 ) ) ),
 			$this->tx,
 			function ( string $name, int $ttlSeconds, int $waitSeconds, callable $work ): mixed {
 				if ( 0 !== $this->tx->depth() ) {

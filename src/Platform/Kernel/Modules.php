@@ -71,16 +71,22 @@ use SEOCart\Interfaces\Operations\ErrorTranslator;
 use SEOCart\Interfaces\Operations\OperationInvoker;
 use SEOCart\Interfaces\Operations\PublicWrites;
 use SEOCart\Interfaces\Operations\RestAdapter;
+use SEOCart\Inventory\Application\Availability;
+use SEOCart\Inventory\Application\FulfilmentRouting;
 use SEOCart\Inventory\Application\InventoryError;
+use SEOCart\Inventory\Application\InventorySettings;
+use SEOCart\Inventory\Application\LocationDirectory;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Domain\Event\StockAdjusted;
 use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Domain\Event\StockHoldExpired;
 use SEOCart\Inventory\Domain\Event\StockReservationReleased;
 use SEOCart\Inventory\Domain\Event\StockReserved;
+use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Inventory\Domain\StockRepository;
 use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
 use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
+use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Order\Application\ActorCustomers;
 use SEOCart\Order\Application\NoCustomers;
@@ -1138,8 +1144,14 @@ final class Modules {
 	 * @param Container $container The container.
 	 */
 	private static function inventoryRegister( Container $container ): void {
+		$mode = static fn( Container $c ): \Closure => static fn(): FulfilmentMode => FulfilmentMode::from( (string) $c->get( SettingsStore::class )->value( InventorySettings::MULTI_LOCATION_FULFILMENT ) );
+
 		$container->bind( MysqlStockRepository::class, static fn( Container $c ): MysqlStockRepository => new MysqlStockRepository( $c->get( Database::class ) ) );
 		$container->bind( StockRepository::class, static fn( Container $c ): StockRepository => $c->get( MysqlStockRepository::class ) );
+		$container->bind( MysqlLocationRepository::class, static fn( Container $c ): MysqlLocationRepository => new MysqlLocationRepository( $c->get( Database::class ) ) );
+		$container->bind( LocationDirectory::class, static fn( Container $c ): LocationDirectory => new LocationDirectory( $c->get( MysqlLocationRepository::class ) ) );
+		$container->bind( FulfilmentRouting::class, static fn( Container $c ): FulfilmentRouting => new FulfilmentRouting( $c->get( LocationDirectory::class ), $c->get( StockRepository::class ), $mode( $c ) ) );
+		$container->bind( Availability::class, static fn( Container $c ): Availability => new Availability( $c->get( LocationDirectory::class ), $c->get( StockRepository::class ), $mode( $c ) ) );
 		$container->bind(
 			StockService::class,
 			static fn( Container $c ): StockService => new StockService(
@@ -1149,11 +1161,22 @@ final class Modules {
 				$c->get( IdGenerator::class ),
 				$c->get( Clock::class ),
 				$c->get( CorrelationId::class ),
-				$c->get( Authorizer::class )
+				$c->get( Authorizer::class ),
+				$c->get( LocationDirectory::class ),
+				$c->get( FulfilmentRouting::class )
 			)
 		);
 		$container->bind( SweepHolds::class, static fn( Container $c ): SweepHolds => new SweepHolds( $c->get( StockService::class ) ) );
-		$container->bind( StockProjectionCheck::class, static fn( Container $c ): StockProjectionCheck => new StockProjectionCheck( $c->get( MysqlStockRepository::class ) ) );
+		$container->bind(
+			StockProjectionCheck::class,
+			static fn( Container $c ): StockProjectionCheck => new StockProjectionCheck(
+				$c->get( MysqlStockRepository::class ),
+				$c->get( MysqlLocationRepository::class ),
+				$c->get( LocationDirectory::class ),
+				$c->get( StockService::class ),
+				$c->get( TransactionManager::class )
+			)
+		);
 	}
 
 	/**

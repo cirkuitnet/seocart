@@ -48,18 +48,21 @@ use WP_UnitTestCase;
 final class SettingsSurfacesTest extends WP_UnitTestCase {
 
 	/**
-	 * The settings after the base currency, the tax rules and the refund caps, as a site that never saved them reads them.
+	 * The settings after the base currency, the tax rules, the refund caps and the fulfilment from several locations, as a site that never saved them reads them.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The refund caps.
+	 * @since 0.2.0 The refund caps, and the fulfilment from several locations.
 	 *
-	 * @var array<string, string>
+	 * @var array<string, string|int>
 	 */
 	private const OTHER_DEFAULTS = array(
-		'cross_zone_policy'     => 'fixed_net',
-		'tax_rounding_mode'     => 'per_line',
-		'order_agent_per_order' => '250.00',
-		'order_agent_per_day'   => '1000.00',
+		'cross_zone_policy'         => 'fixed_net',
+		'tax_rounding_mode'         => 'per_line',
+		'order_agent_per_order'     => '250.00',
+		'order_agent_per_day'       => '1000.00',
+		'multi_location_fulfilment' => 'split',
+		'transfer_lead_days'        => 3,
+		'transfer_warning_days'     => 3,
 	);
 
 	/**
@@ -252,11 +255,14 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 		$this->assertSame( 'per_subtotal', self::stored( 'seocart_international_tax_rounding_mode' ) );
 
 		$expected = array(
-			'base_currency'         => 'USD',
-			'cross_zone_policy'     => 'fixed_net',
-			'tax_rounding_mode'     => 'per_subtotal',
-			'order_agent_per_order' => '250.00',
-			'order_agent_per_day'   => '1000.00',
+			'base_currency'             => 'USD',
+			'cross_zone_policy'         => 'fixed_net',
+			'tax_rounding_mode'         => 'per_subtotal',
+			'order_agent_per_order'     => '250.00',
+			'order_agent_per_day'       => '1000.00',
+			'multi_location_fulfilment' => 'split',
+			'transfer_lead_days'        => 3,
+			'transfer_warning_days'     => 3,
 		);
 
 		$this->assertSame( $expected, $this->service->update( array( 'cross_zone_policy' => 'fixed_net' ), self::actor() ) );
@@ -337,7 +343,7 @@ final class SettingsSurfacesTest extends WP_UnitTestCase {
 
 		$this->assertSame( array( 'GET', 'PATCH' ), $data['methods'] ?? null );
 		$this->assertSame( 'Settings', $data['schema']['title'] ?? null );
-		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode', 'order_agent_per_order', 'order_agent_per_day' ), array_keys( $data['schema']['properties'] ?? array() ) );
+		$this->assertSame( array( 'base_currency', 'cross_zone_policy', 'tax_rounding_mode', 'order_agent_per_order', 'order_agent_per_day', 'multi_location_fulfilment', 'transfer_lead_days', 'transfer_warning_days' ), array_keys( $data['schema']['properties'] ?? array() ) );
 		$this->assertSame( array( 'fixed_net', 'fixed_gross' ), $data['schema']['properties']['cross_zone_policy']['enum'] ?? null );
 		$this->assertSame( array( 'per_line', 'per_subtotal' ), $data['schema']['properties']['tax_rounding_mode']['enum'] ?? null );
 	}

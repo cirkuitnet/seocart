@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Settings;
 
+use SEOCart\Inventory\Application\InventorySettings;
 use SEOCart\Payment\Application\RefundCapSettings;
 use SEOCart\Platform\Authorization\OptionGrantLedger;
 use SEOCart\Platform\Secrets\SecretKeys;
@@ -53,7 +54,8 @@ final class Settings {
 				InternationalSettings::settings(),
 				OptionGrantLedger::settings(),
 				SecretKeys::settings(),
-				RefundCapSettings::settings()
+				RefundCapSettings::settings(),
+				InventorySettings::settings()
 			),
 			array(
 				OptionGrantLedger::GROUP => OptionGrantLedger::PURPOSE,

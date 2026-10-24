@@ -44,13 +44,15 @@ use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
  * of a statement is the first placement step its caller passed through; a transaction's own
  * control statements are counted apart. The session is read once, before the transaction; a
  * cart's hold rows are one insert, and so are its allocation rows and the outbox rows of one
- * publish.
+ * publish; the allocation reads the hold's rows, item by item, once.
  *
  * Planted violations: in PlaceOrder::placeInside(), read the session again before storing its
  * quotes: the first unit's count grows by one, and the step is named; and in
  * StockService::allocateInside(), read the items' configuration twice: the second unit's count
- * grows by one, under the allocation; and in PlaceOrder::priced(), price the cart without the
- * session just read: the part before the transaction grows by one, under the calculation.
+ * grows by one, under the allocation; in StockService::allocateInside(), read the hold's rows
+ * twice: the second unit's count grows by one, under the allocation; and in PlaceOrder::priced(),
+ * price the cart without the session just read: the part before the transaction grows by one,
+ * under the calculation.
  *
  * @group performance
  *
@@ -104,7 +106,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		'before'  => 7,
 		'first'   => 31,
 		'between' => 1,
-		'second'  => 33,
+		'second'  => 34,
 	);
 
 	/**
@@ -118,7 +120,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		'before'  => 8,
 		'first'   => 44,
 		'between' => 1,
-		'second'  => 51,
+		'second'  => 52,
 	);
 
 	/**
@@ -132,7 +134,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		'before'  => 9,
 		'first'   => 44,
 		'between' => 1,
-		'second'  => 51,
+		'second'  => 52,
 	);
 
 	/**
@@ -146,7 +148,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		'before'  => 8,
 		'first'   => 33,
 		'between' => 0,
-		'second'  => 29,
+		'second'  => 30,
 	);
 
 	/**

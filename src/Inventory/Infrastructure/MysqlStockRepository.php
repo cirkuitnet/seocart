@@ -17,6 +17,7 @@ use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Domain\ReclaimedRows;
 use SEOCart\Inventory\Domain\StockLevel;
+use SEOCart\Inventory\Domain\StockPolicy;
 use SEOCart\Inventory\Domain\StockRepository;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\ModuleStatements;
@@ -26,25 +27,25 @@ defined( 'ABSPATH' ) || exit;
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- These exceptions report a caller's programming error to the developer; they are never HTML.
 
 /**
- * The stock repository on MySQL: the one class that sends SQL to the inventory tables.
+ * The stock repository on MySQL: the one class that sends SQL to the stock tables.
  *
  * Owns one fact: the text of every stock statement. Each is a public constant, so a
  * concurrency test sends exactly the statement this class sends. A statement names its tables
- * as `{stock_items}`, `{stock_holds}`, `{stock_ledger}` and `{stock_allocations}`, and an IN
+ * as tokens of the inventory tables, such as `{stock_items}` and `{stock_policies}`, and an IN
  * list as `{list}`; expand() turns them into wpdb placeholders and arguments. An insert of
  * several rows is its one-row constant with the VALUES tuple repeated once per row
  * (ModuleStatements::forRows(), through insertRows()). Written that way, a test can read from the
  * constants alone that no statement updates or deletes the ledger.
  *
  * It keeps the one-lock rule StockRepository states: the claims, of a hold and of an allocation,
- * the conversion of a hold into an allocation and the item lock are the only statements that
- * take an item's row lock, and every reclaim begins with the item lock, so its hold rows are
- * claimed, given back and deleted by the item's lock holder alone; a conversion deletes its hold
- * row only once its own statement holds the lock. Every
- * conditional update of an item sets `updated_at` from the database clock, and the item lock
- * moves it forward by at least a microsecond, so one affected row always means the WHERE clause
- * matched. Reads made under a lock are locking reads, so they see the latest committed row and
- * never an older snapshot of the transaction.
+ * the conversion of a hold into an allocation, the upsert CREATE_ITEM_AT, which an adjustment
+ * sends first, and the item lock are the statements that take an item's row lock, and every
+ * reclaim begins with the item lock, so its hold rows are claimed, given back and deleted by the
+ * item's lock holder alone; a conversion deletes or reduces its hold row only once its own
+ * statement holds the lock. Every conditional update of an item sets `updated_at` from the database clock, and
+ * the item lock moves it forward by at least a microsecond, so one affected row always means the
+ * WHERE clause matched. Reads made under a lock are locking reads, so they see the latest
+ * committed row and never an older snapshot of the transaction.
  *
  * The reads for `doctor` live here too, because they are stock SQL; they are not part of the
  * port the service sees.
@@ -54,22 +55,22 @@ defined( 'ABSPATH' ) || exit;
 final class MysqlStockRepository implements StockRepository {
 
 	/**
-	 * Which items exist and are tracked, and the database's time plus a TTL: the one read before any lock.
+	 * Each variant's policy, the default location, and the database's time plus a TTL: the one read before any lock.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const CONFIGURATION = 'SELECT variant_id, track, UTC_TIMESTAMP() + INTERVAL %d SECOND AS expires_at FROM {stock_items} WHERE variant_id IN ({list})';
+	public const CONFIGURATION = 'SELECT p.variant_id, p.track, p.backorder_policy, p.low_stock_threshold, ( SELECT l.id FROM {locations} l WHERE l.is_default = 1 ) AS default_location_id, UTC_TIMESTAMP() + INTERVAL %d SECOND AS expires_at FROM {stock_policies} p WHERE p.variant_id IN ({list})';
 
 	/**
-	 * The claim: adds to `held` only when the item is tracked and that many units are available.
+	 * The claim: adds to an item's `held` only when that many units are available there.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const CLAIM = 'UPDATE {stock_items} SET held = held + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND track = 1 AND ( on_hand - allocated - held ) >= %d';
+	public const CLAIM = 'UPDATE {stock_items} SET held = held + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND location_id = %d AND ( on_hand - allocated - held ) >= %d';
 
 	/**
 	 * A hold row, inserted once every line of the hold was claimed, the hold's rows together; 0 stands for no cart or no order.
@@ -78,7 +79,16 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const INSERT_HOLD = 'INSERT INTO {stock_holds} ( variant_id, cart_id, order_id, hold_group, quantity, expires_at, created_at ) VALUES ( %d, NULLIF( %d, 0 ), NULLIF( %d, 0 ), %s, %d, %s, UTC_TIMESTAMP(6) )';
+	public const INSERT_HOLD = 'INSERT INTO {stock_holds} ( variant_id, location_id, cart_id, order_id, hold_group, quantity, expires_at, created_at ) VALUES ( %d, %d, NULLIF( %d, 0 ), NULLIF( %d, 0 ), %s, %d, %s, UTC_TIMESTAMP(6) )';
+
+	/**
+	 * The units of each item one hold has rows of, ascending: what an allocation converts, and a release gives back.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const HOLD_ROWS = 'SELECT variant_id, location_id, SUM( quantity ) AS quantity FROM {stock_holds} WHERE hold_group = %s GROUP BY variant_id, location_id ORDER BY variant_id, location_id';
 
 	/**
 	 * The conversion of held units into allocated ones: only when `held` covers them, which the hold's own row does.
@@ -87,7 +97,7 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const CONVERT_HOLD = 'UPDATE {stock_items} SET held = held - %d, allocated = allocated + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND held >= %d';
+	public const CONVERT_HOLD = 'UPDATE {stock_items} SET held = held - %d, allocated = allocated + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND location_id = %d AND held >= %d';
 
 	/**
 	 * The proof that converted units were the hold's: its row of the item, of exactly those units, deleted under the item's lock.
@@ -96,7 +106,16 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const DELETE_HOLD_ROW = 'DELETE FROM {stock_holds} WHERE hold_group = %s AND variant_id = %d AND quantity = %d AND reclaim_token IS NULL';
+	public const DELETE_HOLD_ROW = 'DELETE FROM {stock_holds} WHERE hold_group = %s AND variant_id = %d AND location_id = %d AND quantity = %d AND reclaim_token IS NULL';
+
+	/**
+	 * The same proof when part of the row converted: the row, of exactly the units read, keeps the rest, under the item's lock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const REDUCE_HOLD_ROW = 'UPDATE {stock_holds} SET quantity = quantity - %d WHERE hold_group = %s AND variant_id = %d AND location_id = %d AND quantity = %d AND reclaim_token IS NULL';
 
 	/**
 	 * Undoes a conversion whose hold row was gone, in the same transaction and under the same lock.
@@ -105,16 +124,16 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const UNDO_CONVERT = 'UPDATE {stock_items} SET held = held + %d, allocated = allocated - %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d';
+	public const UNDO_CONVERT = 'UPDATE {stock_items} SET held = held + %d, allocated = allocated - %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND location_id = %d';
 
 	/**
-	 * The claim of an allocation without a hold: adds to `allocated` only when the item is tracked and that many units are available.
+	 * The claim of an allocation without a hold: adds to an item's `allocated` only when that many units are available there.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const CLAIM_ALLOCATION = 'UPDATE {stock_items} SET allocated = allocated + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND track = 1 AND ( on_hand - allocated - held ) >= %d';
+	public const CLAIM_ALLOCATION = 'UPDATE {stock_items} SET allocated = allocated + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND location_id = %d AND ( on_hand - allocated - held ) >= %d';
 
 	/**
 	 * An open allocation row, inserted once every line of the order had its units added to `allocated`; the rows of one order go in together.
@@ -123,7 +142,7 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const INSERT_ALLOCATION = "INSERT INTO {stock_allocations} ( variant_id, order_id, order_line_id, quantity, posted_quantity, state, created_at ) VALUES ( %d, %d, %d, %d, 0, 'open', UTC_TIMESTAMP(6) )";
+	public const INSERT_ALLOCATION = "INSERT INTO {stock_allocations} ( variant_id, location_id, order_id, order_line_id, quantity, posted_quantity, state, created_at ) VALUES ( %d, %d, %d, %d, %d, 0, 'open', UTC_TIMESTAMP(6) )";
 
 	/**
 	 * The most rows one insert of hold or allocation rows writes, so that a hold or an order of any size sends statements of a few kilobytes each.
@@ -135,13 +154,22 @@ final class MysqlStockRepository implements StockRepository {
 	public const ROWS_PER_INSERT = 100;
 
 	/**
-	 * The item lock: the first statement of every reclaim, and of the delete. Moves `updated_at` forward, so it always changes the row.
+	 * The item lock: the first statement of every reclaim. Moves `updated_at` forward, so it always changes the row.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const LOCK_ITEM = 'UPDATE {stock_items} SET updated_at = GREATEST( UTC_TIMESTAMP(6), updated_at + INTERVAL 1 MICROSECOND ) WHERE variant_id = %d';
+	public const LOCK_ITEM = 'UPDATE {stock_items} SET updated_at = GREATEST( UTC_TIMESTAMP(6), updated_at + INTERVAL 1 MICROSECOND ) WHERE variant_id = %d AND location_id = %d';
+
+	/**
+	 * Every item of a variant, locked in ascending location order: the first lock of a variant's delete.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCK_ITEMS_OF = 'SELECT location_id FROM {stock_items} WHERE variant_id = %d ORDER BY location_id FOR UPDATE';
 
 	/**
 	 * Claims the item's expired hold rows no other reclaim has claimed, by token.
@@ -150,7 +178,7 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const CLAIM_EXPIRED = 'UPDATE {stock_holds} SET reclaim_token = %s WHERE variant_id = %d AND expires_at <= UTC_TIMESTAMP() AND reclaim_token IS NULL';
+	public const CLAIM_EXPIRED = 'UPDATE {stock_holds} SET reclaim_token = %s WHERE variant_id = %d AND location_id = %d AND expires_at <= UTC_TIMESTAMP() AND reclaim_token IS NULL';
 
 	/**
 	 * Claims the item's rows of one hold, expired or not, that no other reclaim has claimed.
@@ -159,16 +187,16 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const CLAIM_GROUP = 'UPDATE {stock_holds} SET reclaim_token = %s WHERE hold_group = %s AND variant_id = %d AND reclaim_token IS NULL';
+	public const CLAIM_GROUP = 'UPDATE {stock_holds} SET reclaim_token = %s WHERE hold_group = %s AND variant_id = %d AND location_id = %d AND reclaim_token IS NULL';
 
 	/**
 	 * Claims every hold row of the item that no other reclaim has claimed.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
-	public const CLAIM_VARIANT = 'UPDATE {stock_holds} SET reclaim_token = %s WHERE variant_id = %d AND reclaim_token IS NULL';
+	public const CLAIM_ITEM = 'UPDATE {stock_holds} SET reclaim_token = %s WHERE variant_id = %d AND location_id = %d AND reclaim_token IS NULL';
 
 	/**
 	 * Gives the claimed quantity back to the item, only when `held` covers it.
@@ -177,7 +205,7 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const GIVE_BACK = 'UPDATE {stock_items} SET held = held - ( SELECT COALESCE( SUM( h.quantity ), 0 ) FROM {stock_holds} h WHERE h.reclaim_token = %s ), updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND held >= ( SELECT COALESCE( SUM( c.quantity ), 0 ) FROM {stock_holds} c WHERE c.reclaim_token = %s )';
+	public const GIVE_BACK = 'UPDATE {stock_items} SET held = held - ( SELECT COALESCE( SUM( h.quantity ), 0 ) FROM {stock_holds} h WHERE h.reclaim_token = %s ), updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND location_id = %d AND held >= ( SELECT COALESCE( SUM( c.quantity ), 0 ) FROM {stock_holds} c WHERE c.reclaim_token = %s )';
 
 	/**
 	 * The claimed rows, for the events: read after they were given back, before they are deleted.
@@ -198,31 +226,31 @@ final class MysqlStockRepository implements StockRepository {
 	public const DELETE_CLAIMED = 'DELETE FROM {stock_holds} WHERE reclaim_token = %s';
 
 	/**
-	 * The items one hold has rows for, ascending.
+	 * The locations each of some variants has an item at, ascending.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
-	public const GROUP_VARIANTS = 'SELECT variant_id FROM {stock_holds} WHERE hold_group = %s GROUP BY variant_id ORDER BY variant_id';
+	public const ITEM_LOCATIONS = 'SELECT variant_id, location_id FROM {stock_items} WHERE variant_id IN ({list}) ORDER BY variant_id, location_id';
 
 	/**
-	 * A page of items with expired, unclaimed hold rows, ascending from a variant id.
+	 * A page of items with expired, unclaimed hold rows, ascending from an item.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
-	public const EXPIRED_VARIANTS = 'SELECT DISTINCT variant_id FROM {stock_holds} WHERE expires_at <= UTC_TIMESTAMP() AND reclaim_token IS NULL AND variant_id > %d ORDER BY variant_id LIMIT %d';
+	public const EXPIRED_ITEMS = 'SELECT DISTINCT variant_id, location_id FROM {stock_holds} WHERE expires_at <= UTC_TIMESTAMP() AND reclaim_token IS NULL AND ( variant_id > %d OR ( variant_id = %d AND location_id > %d ) ) ORDER BY variant_id, location_id LIMIT %d';
 
 	/**
-	 * A page of variant ids that have a stock item, ascending from a variant id above a cursor.
+	 * A page of variant ids that have a stock policy, ascending from a variant id above a cursor.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const ITEM_VARIANT_IDS = 'SELECT variant_id FROM {stock_items} WHERE variant_id > %d ORDER BY variant_id LIMIT %d';
+	public const ITEM_VARIANT_IDS = 'SELECT variant_id FROM {stock_policies} WHERE variant_id > %d ORDER BY variant_id LIMIT %d';
 
 	/**
 	 * The same page, from the very first variant id.
@@ -236,16 +264,52 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const ITEM_VARIANT_IDS_FROM_START = 'SELECT variant_id FROM {stock_items} ORDER BY variant_id LIMIT %d';
+	public const ITEM_VARIANT_IDS_FROM_START = 'SELECT variant_id FROM {stock_policies} ORDER BY variant_id LIMIT %d';
 
 	/**
-	 * The adjustment: adds to on_hand only when the result is not negative.
+	 * Whether a variant has a policy and a location exists, both locked in share mode until the commit: an adjustment's first statement.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCK_ADJUSTABLE = 'SELECT p.variant_id, l.id AS location_id FROM {stock_policies} p LEFT JOIN {locations} l ON l.id = %d WHERE p.variant_id = %d LOCK IN SHARE MODE';
+
+	/**
+	 * Creates an item at zero, or leaves it as it is: either way the statement holds the row's lock until the commit.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CREATE_ITEM_AT = 'INSERT INTO {stock_items} ( variant_id, location_id, updated_at ) VALUES ( %d, %d, UTC_TIMESTAMP(6) ) ON DUPLICATE KEY UPDATE variant_id = variant_id';
+
+	/**
+	 * Creates a variant's policy at the declared defaults, or leaves it as it is; one affected row means it was created.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CREATE_POLICY = 'INSERT INTO {stock_policies} ( variant_id, updated_at ) VALUES ( %d, UTC_TIMESTAMP(6) ) ON DUPLICATE KEY UPDATE variant_id = variant_id';
+
+	/**
+	 * Sets a recreated item's `held` to the sum of its hold rows, under the lock its creation took.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const RESTORE_HELD = 'UPDATE {stock_items} SET held = ( SELECT COALESCE( SUM( h.quantity ), 0 ) FROM {stock_holds} h WHERE h.variant_id = %d AND h.location_id = %d ), updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND location_id = %d';
+
+	/**
+	 * The adjustment: adds to an item's on_hand only when the result is not negative.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const ADJUST = 'UPDATE {stock_items} SET on_hand = on_hand + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND on_hand + %d >= 0';
+	public const ADJUST = 'UPDATE {stock_items} SET on_hand = on_hand + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND location_id = %d AND on_hand + %d >= 0';
 
 	/**
 	 * The adjustment with a precondition: also only when on_hand is what the caller read.
@@ -254,7 +318,7 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const ADJUST_EXPECTING = 'UPDATE {stock_items} SET on_hand = on_hand + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND on_hand + %d >= 0 AND on_hand = %d';
+	public const ADJUST_EXPECTING = 'UPDATE {stock_items} SET on_hand = on_hand + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND location_id = %d AND on_hand + %d >= 0 AND on_hand = %d';
 
 	/**
 	 * A ledger entry; 0 stands for no actor, and an empty string for no correlation id.
@@ -263,37 +327,60 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const APPEND_LEDGER = "INSERT INTO {stock_ledger} ( variant_id, delta, on_hand_after, reason, actor_type, actor_id, correlation_id, created_at ) VALUES ( %d, %d, %d, %s, %s, NULLIF( %d, 0 ), NULLIF( %s, '' ), UTC_TIMESTAMP(6) )";
+	public const APPEND_LEDGER = "INSERT INTO {stock_ledger} ( variant_id, location_id, delta, on_hand_after, reason, actor_type, actor_id, correlation_id, created_at ) VALUES ( %d, %d, %d, %d, %s, %s, NULLIF( %d, 0 ), NULLIF( %s, '' ), UTC_TIMESTAMP(6) )";
 
 	/**
-	 * Items' levels, a plain read.
+	 * Variants' levels at the default location, with their policies, a plain read.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const LEVELS = 'SELECT variant_id, on_hand, allocated, held, track, backorder_policy FROM {stock_items} WHERE variant_id IN ({list}) ORDER BY variant_id';
+	public const LEVELS = 'SELECT i.variant_id, i.location_id, i.on_hand, i.allocated, i.held, p.track, p.backorder_policy FROM {stock_policies} p JOIN {stock_items} i ON i.variant_id = p.variant_id AND i.location_id = ( SELECT l.id FROM {locations} l WHERE l.is_default = 1 ) WHERE p.variant_id IN ({list}) ORDER BY p.variant_id';
 
 	/**
-	 * One item's level, a locking read.
+	 * Variants' levels at every location they have an item at, with their policies, a plain read.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
-	public const LOCKED_LEVEL = 'SELECT variant_id, on_hand, allocated, held, track, backorder_policy FROM {stock_items} WHERE variant_id = %d FOR UPDATE';
+	public const LEVELS_AT = 'SELECT i.variant_id, i.location_id, i.on_hand, i.allocated, i.held, p.track, p.backorder_policy FROM {stock_policies} p JOIN {stock_items} i ON i.variant_id = p.variant_id WHERE p.variant_id IN ({list}) ORDER BY p.variant_id, i.location_id';
 
 	/**
-	 * Creates an item with the declared defaults, or leaves it as it is.
+	 * What some locations have of some variants, row by row, with each variant's policy: routing's one read of stock. A variant with no row at a location reads as no units there.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
-	public const CREATE_ITEM = 'INSERT INTO {stock_items} ( variant_id, updated_at ) VALUES ( %d, UTC_TIMESTAMP(6) ) ON DUPLICATE KEY UPDATE variant_id = variant_id';
+	public const AVAILABILITY = 'SELECT p.variant_id, p.track, p.backorder_policy, p.low_stock_threshold, i.location_id, ( i.on_hand - i.allocated - i.held ) AS available FROM {stock_policies} p LEFT JOIN {stock_items} i ON i.variant_id = p.variant_id AND i.location_id IN ({list}) WHERE p.variant_id IN ({list}) ORDER BY p.variant_id, i.location_id';
 
 	/**
-	 * One open allocation of the item, a locking read.
+	 * Each variant's units available over some locations, summed and at the one that has most, each location at no fewer than zero: the figure a shopper is shown.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const SALE_FIGURES = 'SELECT p.variant_id, p.track, p.backorder_policy, p.low_stock_threshold, COALESCE( SUM( GREATEST( i.on_hand - i.allocated - i.held, 0 ) ), 0 ) AS total, COALESCE( MAX( GREATEST( i.on_hand - i.allocated - i.held, 0 ) ), 0 ) AS largest FROM {stock_policies} p LEFT JOIN {stock_items} i ON i.variant_id = p.variant_id AND i.location_id IN ({list}) WHERE p.variant_id IN ({list}) GROUP BY p.variant_id, p.track, p.backorder_policy, p.low_stock_threshold ORDER BY p.variant_id';
+
+	/**
+	 * One item's level, a locking read of the item; its policy and its variant's totals at every location are read with it, by subqueries that lock nothing.
+	 *
+	 * A locking read locks the rows of its own FROM clause only, not those its subqueries read, so
+	 * the variant's other items are read as last committed and stay free for their own holders:
+	 * an item is never locked out of the lock order by another item's read.
+	 *
+	 * @since 0.1.0
+	 * @since 0.2.0 The variant's totals.
+	 *
+	 * @var string
+	 */
+	public const LOCKED_LEVEL = 'SELECT i.variant_id, i.location_id, i.on_hand, i.allocated, i.held, ( SELECT p.track FROM {stock_policies} p WHERE p.variant_id = i.variant_id ) AS track, ( SELECT b.backorder_policy FROM {stock_policies} b WHERE b.variant_id = i.variant_id ) AS backorder_policy, ( SELECT SUM( t.on_hand ) FROM {stock_items} t WHERE t.variant_id = i.variant_id ) AS variant_on_hand, ( SELECT SUM( a.on_hand - a.allocated - a.held ) FROM {stock_items} a WHERE a.variant_id = i.variant_id ) AS variant_available FROM {stock_items} i WHERE i.variant_id = %d AND i.location_id = %d FOR UPDATE';
+
+	/**
+	 * One open allocation of a variant, at any location, a locking read.
 	 *
 	 * @since 0.1.0
 	 *
@@ -302,13 +389,31 @@ final class MysqlStockRepository implements StockRepository {
 	public const OPEN_ALLOCATION = "SELECT id FROM {stock_allocations} WHERE variant_id = %d AND state = 'open' LIMIT 1 FOR UPDATE";
 
 	/**
+	 * A variant's policy, locked: the first lock of a variant's delete.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCK_POLICY = 'SELECT variant_id FROM {stock_policies} WHERE variant_id = %d FOR UPDATE';
+
+	/**
 	 * Deletes an item.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const DELETE_ITEM = 'DELETE FROM {stock_items} WHERE variant_id = %d';
+	public const DELETE_ITEM = 'DELETE FROM {stock_items} WHERE variant_id = %d AND location_id = %d';
+
+	/**
+	 * Deletes a variant's policy.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DELETE_POLICY = 'DELETE FROM {stock_policies} WHERE variant_id = %d';
 
 	/**
 	 * Items whose `held` is not the sum of their hold rows, expired rows included.
@@ -317,7 +422,7 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const HELD_DRIFT = 'SELECT i.variant_id, i.held, COALESCE( SUM( h.quantity ), 0 ) AS rows_sum FROM {stock_items} i LEFT JOIN {stock_holds} h ON h.variant_id = i.variant_id GROUP BY i.variant_id, i.held HAVING i.held <> rows_sum ORDER BY i.variant_id LIMIT %d';
+	public const HELD_DRIFT = 'SELECT i.variant_id, i.location_id, i.held, COALESCE( SUM( h.quantity ), 0 ) AS rows_sum FROM {stock_items} i LEFT JOIN {stock_holds} h ON h.variant_id = i.variant_id AND h.location_id = i.location_id GROUP BY i.variant_id, i.location_id, i.held HAVING i.held <> rows_sum ORDER BY i.variant_id, i.location_id LIMIT %d';
 
 	/**
 	 * Items whose on_hand is not the sum of their ledger, or not their newest entry's on_hand_after.
@@ -326,16 +431,16 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const ON_HAND_DRIFT = 'SELECT i.variant_id, i.on_hand, COALESCE( SUM( l.delta ), 0 ) AS ledger_sum, ( SELECT n.on_hand_after FROM {stock_ledger} n WHERE n.variant_id = i.variant_id ORDER BY n.id DESC LIMIT 1 ) AS newest FROM {stock_items} i LEFT JOIN {stock_ledger} l ON l.variant_id = i.variant_id GROUP BY i.variant_id, i.on_hand HAVING ledger_sum <> i.on_hand OR ( newest IS NOT NULL AND newest <> i.on_hand ) ORDER BY i.variant_id LIMIT %d';
+	public const ON_HAND_DRIFT = 'SELECT i.variant_id, i.location_id, i.on_hand, COALESCE( SUM( l.delta ), 0 ) AS ledger_sum, ( SELECT n.on_hand_after FROM {stock_ledger} n WHERE n.variant_id = i.variant_id AND n.location_id = i.location_id ORDER BY n.id DESC LIMIT 1 ) AS newest FROM {stock_items} i LEFT JOIN {stock_ledger} l ON l.variant_id = i.variant_id AND l.location_id = i.location_id GROUP BY i.variant_id, i.location_id, i.on_hand HAVING ledger_sum <> i.on_hand OR ( newest IS NOT NULL AND newest <> i.on_hand ) ORDER BY i.variant_id, i.location_id LIMIT %d';
 
 	/**
-	 * Items whose `allocated` is not the unposted sum of their open allocations.
+	 * Items whose `allocated` is not the unposted sum of their open allocations; an allocation in transit counts at no item.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const ALLOCATED_DRIFT = "SELECT i.variant_id, i.allocated, COALESCE( SUM( a.quantity - a.posted_quantity ), 0 ) AS open_sum FROM {stock_items} i LEFT JOIN {stock_allocations} a ON a.variant_id = i.variant_id AND a.state = 'open' GROUP BY i.variant_id, i.allocated HAVING i.allocated <> open_sum ORDER BY i.variant_id LIMIT %d";
+	public const ALLOCATED_DRIFT = "SELECT i.variant_id, i.location_id, i.allocated, COALESCE( SUM( a.quantity - a.posted_quantity ), 0 ) AS open_sum FROM {stock_items} i LEFT JOIN {stock_allocations} a ON a.variant_id = i.variant_id AND a.location_id = i.location_id AND a.state = 'open' GROUP BY i.variant_id, i.location_id, i.allocated HAVING i.allocated <> open_sum ORDER BY i.variant_id, i.location_id LIMIT %d";
 
 	/**
 	 * Items with hold rows that expired longer ago than a tolerance and were never reclaimed.
@@ -344,7 +449,7 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const STALE_HOLDS = 'SELECT variant_id, COUNT(*) AS stale_rows, TIMESTAMPDIFF( SECOND, MIN( expires_at ), UTC_TIMESTAMP() ) AS oldest_seconds FROM {stock_holds} WHERE expires_at < UTC_TIMESTAMP() - INTERVAL %d SECOND GROUP BY variant_id ORDER BY variant_id LIMIT %d';
+	public const STALE_HOLDS = 'SELECT variant_id, location_id, COUNT(*) AS stale_rows, TIMESTAMPDIFF( SECOND, MIN( expires_at ), UTC_TIMESTAMP() ) AS oldest_seconds FROM {stock_holds} WHERE expires_at < UTC_TIMESTAMP() - INTERVAL %d SECOND GROUP BY variant_id, location_id ORDER BY variant_id, location_id LIMIT %d';
 
 	/**
 	 * Items with committed hold rows that still carry a reclaim token, which only a reclaim inside its own transaction may.
@@ -353,7 +458,7 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const TOKENED_HOLDS = 'SELECT variant_id, COUNT(*) AS tokened_rows FROM {stock_holds} WHERE reclaim_token IS NOT NULL GROUP BY variant_id ORDER BY variant_id LIMIT %d';
+	public const TOKENED_HOLDS = 'SELECT variant_id, location_id, COUNT(*) AS tokened_rows FROM {stock_holds} WHERE reclaim_token IS NOT NULL GROUP BY variant_id, location_id ORDER BY variant_id, location_id LIMIT %d';
 
 	/**
 	 * Open allocations whose item is gone.
@@ -362,7 +467,61 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @var string
 	 */
-	public const ORPHAN_ALLOCATIONS = "SELECT a.id, a.variant_id, a.order_id FROM {stock_allocations} a LEFT JOIN {stock_items} i ON i.variant_id = a.variant_id WHERE a.state = 'open' AND i.variant_id IS NULL ORDER BY a.id LIMIT %d";
+	public const ORPHAN_ALLOCATIONS = "SELECT a.id, a.variant_id, a.location_id, a.order_id FROM {stock_allocations} a LEFT JOIN {stock_items} i ON i.variant_id = a.variant_id AND i.location_id = a.location_id WHERE a.state = 'open' AND i.variant_id IS NULL ORDER BY a.id LIMIT %d";
+
+	/**
+	 * The units each hold holds at an item that is gone, which no reclaim can give back.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ORPHAN_HOLDS = 'SELECT h.variant_id, h.location_id, h.hold_group, SUM( h.quantity ) AS quantity FROM {stock_holds} h LEFT JOIN {stock_items} i ON i.variant_id = h.variant_id AND i.location_id = h.location_id WHERE i.variant_id IS NULL GROUP BY h.variant_id, h.location_id, h.hold_group ORDER BY h.variant_id, h.location_id, h.hold_group LIMIT %d';
+
+	/**
+	 * Open allocations at a location that is gone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ALLOCATIONS_AT_LOST_LOCATIONS = "SELECT a.id, a.variant_id, a.location_id, a.order_id FROM {stock_allocations} a LEFT JOIN {locations} l ON l.id = a.location_id WHERE a.state = 'open' AND l.id IS NULL ORDER BY a.id LIMIT %d";
+
+	/**
+	 * Items at a location that is gone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ITEMS_AT_LOST_LOCATIONS = 'SELECT i.variant_id, i.location_id FROM {stock_items} i LEFT JOIN {locations} l ON l.id = i.location_id WHERE l.id IS NULL ORDER BY i.variant_id, i.location_id LIMIT %d';
+
+	/**
+	 * Variants with an item but no policy.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ITEMS_WITHOUT_POLICY = 'SELECT DISTINCT i.variant_id FROM {stock_items} i LEFT JOIN {stock_policies} p ON p.variant_id = i.variant_id WHERE p.variant_id IS NULL ORDER BY i.variant_id LIMIT %d';
+
+	/**
+	 * Variants with a policy but no item at the default location.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const POLICIES_WITHOUT_DEFAULT_ITEM = 'SELECT p.variant_id FROM {stock_policies} p LEFT JOIN {stock_items} i ON i.variant_id = p.variant_id AND i.location_id = ( SELECT l.id FROM {locations} l WHERE l.is_default = 1 ) WHERE i.variant_id IS NULL ORDER BY p.variant_id LIMIT %d';
+
+	/**
+	 * The units available at each of some locations, each item at no fewer than zero: a location's total, for the deactivated ones doctor watches.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCATION_UNITS = 'SELECT location_id, SUM( GREATEST( on_hand - allocated - held, 0 ) ) AS available FROM {stock_items} WHERE location_id IN ({list}) GROUP BY location_id ORDER BY location_id';
 
 	/**
 	 * The connection.
@@ -405,46 +564,50 @@ final class MysqlStockRepository implements StockRepository {
 	 * @phpstan-param callable(string): string $tableName
 	 */
 	public static function expand( string $statement, array $values, callable $tableName ): array {
-		return ModuleStatements::expand( $statement, $values, array( InventoryTables::ITEMS, InventoryTables::LEDGER, InventoryTables::HOLDS, InventoryTables::ALLOCATIONS ), $tableName, 'inventory' );
+		return ModuleStatements::expand( $statement, $values, InventoryTables::names(), $tableName, 'inventory' );
 	}
 
 	/**
-	 * Reads whether each item is tracked, and computes the expiry of a hold taken now. Locks nothing.
+	 * Reads each variant's policy and the default location, and computes the expiry of a hold taken now. Locks nothing.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int[] $variantIds The items.
+	 * @param int[] $variantIds The variants.
 	 * @param int   $ttlSeconds How long the hold lasts.
-	 * @return array{track: array<int, bool>, expires_at: string|null} Tracking by variant id, and the expiry.
+	 * @return array{policies: array<int, StockPolicy>, default_location_id: int|null, expires_at: string|null} The policies, the default location and the expiry.
 	 */
 	public function configuration( array $variantIds, int $ttlSeconds ): array {
-		$track     = array();
+		$policies  = array();
+		$default   = null;
 		$expiresAt = null;
 
 		foreach ( $this->rows( self::CONFIGURATION, $ttlSeconds, array_values( $variantIds ) ) as $row ) {
-			$track[ (int) $row['variant_id'] ] = '1' === (string) $row['track'];
-			$expiresAt                         = (string) $row['expires_at'];
+			$policies[ (int) $row['variant_id'] ] = self::policy( $row );
+			$default                              = null === $row['default_location_id'] ? null : (int) $row['default_location_id'];
+			$expiresAt                            = (string) $row['expires_at'];
 		}
 
 		return array(
-			'track'      => $track,
-			'expires_at' => $expiresAt,
+			'policies'            => $policies,
+			'default_location_id' => $default,
+			'expires_at'          => $expiresAt,
 		);
 	}
 
 	/**
-	 * Adds a quantity to a tracked item's `held`, if that many units are available.
+	 * Adds a quantity to an item's `held`, if that many units are available there.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int $variantId The item.
-	 * @param int $quantity  The units.
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
+	 * @param int $quantity   The units.
 	 * @return bool True when the claim matched.
 	 */
-	public function claim( int $variantId, int $quantity ): bool {
+	public function claim( int $variantId, int $locationId, int $quantity ): bool {
 		$this->requireTransaction( __FUNCTION__ );
 
-		return 1 === $this->write( self::CLAIM, $quantity, $variantId, $quantity );
+		return 1 === $this->write( self::CLAIM, $quantity, $variantId, $locationId, $quantity );
 	}
 
 	/**
@@ -452,7 +615,7 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param HoldLine[] $lines     The lines claimed, one per item; none sends nothing.
+	 * @param HoldLine[] $lines     The lines claimed, one per item, each naming its location; none sends nothing.
 	 * @param string     $holdGroup The hold's id.
 	 * @param string     $expiresAt The expiry, UTC.
 	 * @param int|null   $cartId    The cart, or null.
@@ -465,50 +628,83 @@ final class MysqlStockRepository implements StockRepository {
 
 		$this->insertRows(
 			self::INSERT_HOLD,
-			array_map( static fn( HoldLine $line ): array => array( $line->variantId, $cartId ?? 0, $orderId ?? 0, $holdGroup, $line->quantity, $expiresAt ), $lines )
+			array_map( static fn( HoldLine $line ): array => array( $line->variantId, self::located( $line->locationId ), $cartId ?? 0, $orderId ?? 0, $holdGroup, $line->quantity, $expiresAt ), $lines )
 		);
 	}
 
 	/**
-	 * Turns a hold's units of one item into allocated units, when the hold still has its row of the item.
+	 * Reads one hold's rows, item by item.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
 	 * @param string $holdGroup The hold.
-	 * @param int    $variantId The item.
-	 * @param int    $quantity  The units the hold's row holds.
-	 * @return bool True when the units are allocated and the row is gone; false when nothing changed.
+	 * @return list<array{variant_id: int, location_id: int, quantity: int}> The units of each item, ascending.
 	 */
-	public function convertHold( string $holdGroup, int $variantId, int $quantity ): bool {
+	public function holdRows( string $holdGroup ): array {
+		return array_map(
+			static fn( array $row ): array => array(
+				'variant_id'  => (int) $row['variant_id'],
+				'location_id' => (int) $row['location_id'],
+				'quantity'    => (int) $row['quantity'],
+			),
+			$this->rows( self::HOLD_ROWS, $holdGroup )
+		);
+	}
+
+	/**
+	 * Turns some or all of a hold's units of one item into allocated units, when the hold still has its row of the item.
+	 *
+	 * @since 0.1.0
+	 * @since 0.2.0 The part of a row.
+	 *
+	 * @throws \LogicException When the units are not from 1 to the row's: a caller's bug, before any statement.
+	 *
+	 * @param string $holdGroup   The hold.
+	 * @param int    $variantId   The item's variant.
+	 * @param int    $locationId  The item's location.
+	 * @param int    $quantity    The units to convert.
+	 * @param int    $rowQuantity The units the hold's row holds, as read.
+	 * @return bool True when the units are allocated and the row is gone or holds only the rest; false when nothing changed.
+	 */
+	public function convertHold( string $holdGroup, int $variantId, int $locationId, int $quantity, int $rowQuantity ): bool {
 		$this->requireTransaction( __FUNCTION__ );
 
-		if ( 1 !== $this->write( self::CONVERT_HOLD, $quantity, $quantity, $variantId, $quantity ) ) {
+		if ( $quantity < 1 || $quantity > $rowQuantity ) {
+			throw new \LogicException( sprintf( 'A conversion takes from 1 to the %d units of the hold\'s row; %d were asked for.', $rowQuantity, $quantity ) );
+		}
+
+		if ( 1 !== $this->write( self::CONVERT_HOLD, $quantity, $quantity, $variantId, $locationId, $quantity ) ) {
 			return false;
 		}
 
-		if ( 1 === $this->write( self::DELETE_HOLD_ROW, $holdGroup, $variantId, $quantity ) ) {
+		$proof = $quantity === $rowQuantity
+			? $this->write( self::DELETE_HOLD_ROW, $holdGroup, $variantId, $locationId, $rowQuantity )
+			: $this->write( self::REDUCE_HOLD_ROW, $quantity, $holdGroup, $variantId, $locationId, $rowQuantity );
+
+		if ( 1 === $proof ) {
 			return true;
 		}
 
 		// The hold's row is gone, so the units converted were another hold's: give them back.
-		$this->write( self::UNDO_CONVERT, $quantity, $quantity, $variantId );
+		$this->write( self::UNDO_CONVERT, $quantity, $quantity, $variantId, $locationId );
 
 		return false;
 	}
 
 	/**
-	 * Adds a quantity to a tracked item's `allocated`, if that many units are available.
+	 * Adds a quantity to an item's `allocated`, if that many units are available there.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int $variantId The item.
-	 * @param int $quantity  The units.
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
+	 * @param int $quantity   The units.
 	 * @return bool True when the claim matched.
 	 */
-	public function claimAllocation( int $variantId, int $quantity ): bool {
+	public function claimAllocation( int $variantId, int $locationId, int $quantity ): bool {
 		$this->requireTransaction( __FUNCTION__ );
 
-		return 1 === $this->write( self::CLAIM_ALLOCATION, $quantity, $variantId, $quantity );
+		return 1 === $this->write( self::CLAIM_ALLOCATION, $quantity, $variantId, $locationId, $quantity );
 	}
 
 	/**
@@ -517,7 +713,7 @@ final class MysqlStockRepository implements StockRepository {
 	 * @since 0.1.0
 	 *
 	 * @param int          $orderId     The order.
-	 * @param Allocation[] $allocations The order lines, each with its variant and units; none sends nothing.
+	 * @param Allocation[] $allocations The order lines, each with its variant, location and units; none sends nothing.
 	 *
 	 * @phpstan-param list<Allocation> $allocations
 	 */
@@ -526,7 +722,7 @@ final class MysqlStockRepository implements StockRepository {
 
 		$this->insertRows(
 			self::INSERT_ALLOCATION,
-			array_map( static fn( Allocation $allocation ): array => array( $allocation->variantId, $orderId, $allocation->orderLineId, $allocation->quantity ), $allocations )
+			array_map( static fn( Allocation $allocation ): array => array( $allocation->variantId, self::located( $allocation->locationId ), $orderId, $allocation->orderLineId, $allocation->quantity ), $allocations )
 		);
 	}
 
@@ -535,13 +731,14 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int $variantId The item.
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
 	 * @return bool True when the item exists and is now locked.
 	 */
-	public function lockItem( int $variantId ): bool {
+	public function lockItem( int $variantId, int $locationId ): bool {
 		$this->requireTransaction( __FUNCTION__ );
 
-		return 1 === $this->write( self::LOCK_ITEM, $variantId );
+		return 1 === $this->write( self::LOCK_ITEM, $variantId, $locationId );
 	}
 
 	/**
@@ -549,12 +746,13 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int    $variantId The item.
-	 * @param string $token     A fresh token.
+	 * @param int    $variantId  The item's variant.
+	 * @param int    $locationId The item's location.
+	 * @param string $token      A fresh token.
 	 * @return ReclaimedRows What was given back.
 	 */
-	public function reclaimExpired( int $variantId, string $token ): ReclaimedRows {
-		return $this->reclaim( $variantId, $token, self::CLAIM_EXPIRED, array( $token, $variantId ) );
+	public function reclaimExpired( int $variantId, int $locationId, string $token ): ReclaimedRows {
+		return $this->reclaim( $variantId, $locationId, $token, self::CLAIM_EXPIRED, array( $token, $variantId, $locationId ) );
 	}
 
 	/**
@@ -562,60 +760,87 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int    $variantId The item.
-	 * @param string $holdGroup The hold.
-	 * @param string $token     A fresh token.
+	 * @param int    $variantId  The item's variant.
+	 * @param int    $locationId The item's location.
+	 * @param string $holdGroup  The hold.
+	 * @param string $token      A fresh token.
 	 * @return ReclaimedRows What was given back.
 	 */
-	public function reclaimGroup( int $variantId, string $holdGroup, string $token ): ReclaimedRows {
-		return $this->reclaim( $variantId, $token, self::CLAIM_GROUP, array( $token, $holdGroup, $variantId ) );
+	public function reclaimGroup( int $variantId, int $locationId, string $holdGroup, string $token ): ReclaimedRows {
+		return $this->reclaim( $variantId, $locationId, $token, self::CLAIM_GROUP, array( $token, $holdGroup, $variantId, $locationId ) );
 	}
 
 	/**
 	 * Gives back every hold row of the item.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
-	 * @param int    $variantId The item.
-	 * @param string $token     A fresh token.
+	 * @param int    $variantId  The item's variant.
+	 * @param int    $locationId The item's location.
+	 * @param string $token      A fresh token.
 	 * @return ReclaimedRows What was given back.
 	 */
-	public function reclaimVariant( int $variantId, string $token ): ReclaimedRows {
-		return $this->reclaim( $variantId, $token, self::CLAIM_VARIANT, array( $token, $variantId ) );
+	public function reclaimItem( int $variantId, int $locationId, string $token ): ReclaimedRows {
+		return $this->reclaim( $variantId, $locationId, $token, self::CLAIM_ITEM, array( $token, $variantId, $locationId ) );
 	}
 
 	/**
-	 * Lists the items one hold has rows for.
+	 * Lists the locations each of some variants has an item at.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
-	 * @param string $holdGroup The hold.
-	 * @return list<int> The variant ids, ascending.
+	 * @param int[] $variantIds The variants.
+	 * @return array<int, list<int>> The locations by variant, both ascending.
 	 */
-	public function groupVariants( string $holdGroup ): array {
-		return array_map( static fn( array $row ): int => (int) $row['variant_id'], $this->rows( self::GROUP_VARIANTS, $holdGroup ) );
+	public function itemLocations( array $variantIds ): array {
+		$locations = array();
+
+		if ( array() === $variantIds ) {
+			return $locations;
+		}
+
+		foreach ( $this->rows( self::ITEM_LOCATIONS, array_values( $variantIds ) ) as $row ) {
+			$locations[ (int) $row['variant_id'] ][] = (int) $row['location_id'];
+		}
+
+		return $locations;
+	}
+
+	/**
+	 * Locks every item of a variant, ascending, and lists their locations.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId The variant.
+	 * @return list<int> The locations, ascending.
+	 */
+	public function lockItemsOf( int $variantId ): array {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return array_map( static fn( array $row ): int => (int) $row['location_id'], $this->rows( self::LOCK_ITEMS_OF, $variantId ) );
 	}
 
 	/**
 	 * Lists items with expired, unclaimed hold rows.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
-	 * @param int $after Only items above this variant id.
-	 * @param int $limit The most items.
-	 * @return list<int> The variant ids, ascending.
+	 * @param int $afterVariantId  Only items after this variant and location.
+	 * @param int $afterLocationId See $afterVariantId.
+	 * @param int $limit           The most items.
+	 * @return list<array{0: int, 1: int}> Each item's variant and location, ascending.
 	 */
-	public function expiredVariants( int $after, int $limit ): array {
-		return array_map( static fn( array $row ): int => (int) $row['variant_id'], $this->rows( self::EXPIRED_VARIANTS, $after, $limit ) );
+	public function expiredItems( int $afterVariantId, int $afterLocationId, int $limit ): array {
+		return array_map( static fn( array $row ): array => array( (int) $row['variant_id'], (int) $row['location_id'] ), $this->rows( self::EXPIRED_ITEMS, $afterVariantId, $afterVariantId, $afterLocationId, $limit ) );
 	}
 
 	/**
-	 * Lists the variant ids that have a stock item, whatever its counters.
+	 * Lists the variant ids that have a stock policy.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int $after Only items with a higher variant id.
-	 * @param int $limit The most items to list.
+	 * @param int $after Only variants with a higher id.
+	 * @param int $limit The most variants to list.
 	 * @return list<int> The variant ids, ascending.
 	 */
 	public function itemVariantIds( int $after, int $limit ): array {
@@ -627,23 +852,80 @@ final class MysqlStockRepository implements StockRepository {
 	}
 
 	/**
+	 * Tells whether a variant has a policy and a location exists, with a shared lock on both.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId  The variant.
+	 * @param int $locationId The location.
+	 * @return array{policy: bool, location: bool} Whether each exists.
+	 */
+	public function lockAdjustable( int $variantId, int $locationId ): array {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$row = $this->rows( self::LOCK_ADJUSTABLE, $locationId, $variantId )[0] ?? null;
+
+		return array(
+			'policy'   => null !== $row,
+			'location' => null !== $row && null !== $row['location_id'],
+		);
+	}
+
+	/**
+	 * Creates an item at zero when it does not exist, and takes its lock either way.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
+	 */
+	public function createItemAt( int $variantId, int $locationId ): void {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$this->write( self::CREATE_ITEM_AT, $variantId, $locationId );
+	}
+
+	/**
+	 * Recreates an item its hold rows outlived, when it does not exist: at zero, then `held` from its rows, under its lock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
+	 * @return bool True when the item was created; false when it existed, and was left as it is.
+	 */
+	public function restoreItem( int $variantId, int $locationId ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		// An upsert affects one row when it inserted, and none when the row was there.
+		if ( 1 !== $this->write( self::CREATE_ITEM_AT, $variantId, $locationId ) ) {
+			return false;
+		}
+
+		$this->write( self::RESTORE_HELD, $variantId, $locationId, $variantId, $locationId );
+
+		return true;
+	}
+
+	/**
 	 * Adds a delta to an item's on_hand, if the result is not negative and on_hand is what the caller read.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int      $variantId      The item.
+	 * @param int      $variantId      The item's variant.
+	 * @param int      $locationId     The item's location.
 	 * @param int      $delta          The change.
 	 * @param int|null $expectedOnHand The on_hand the caller read, or null.
 	 * @return bool True when the update matched.
 	 */
-	public function adjust( int $variantId, int $delta, ?int $expectedOnHand ): bool {
+	public function adjust( int $variantId, int $locationId, int $delta, ?int $expectedOnHand ): bool {
 		$this->requireTransaction( __FUNCTION__ );
 
 		if ( null === $expectedOnHand ) {
-			return 1 === $this->write( self::ADJUST, $delta, $variantId, $delta );
+			return 1 === $this->write( self::ADJUST, $delta, $variantId, $locationId, $delta );
 		}
 
-		return 1 === $this->write( self::ADJUST_EXPECTING, $delta, $variantId, $delta, $expectedOnHand );
+		return 1 === $this->write( self::ADJUST_EXPECTING, $delta, $variantId, $locationId, $delta, $expectedOnHand );
 	}
 
 	/**
@@ -651,7 +933,8 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int          $variantId     The item.
+	 * @param int          $variantId     The item's variant.
+	 * @param int          $locationId    The item's location.
 	 * @param int          $delta         The change.
 	 * @param int          $onHandAfter   on_hand after it.
 	 * @param LedgerReason $reason        Why.
@@ -660,21 +943,21 @@ final class MysqlStockRepository implements StockRepository {
 	 * @param string|null  $correlationId The correlation id, or null.
 	 * @return int The entry's id.
 	 */
-	public function appendLedger( int $variantId, int $delta, int $onHandAfter, LedgerReason $reason, string $actorType, ?int $actorId, ?string $correlationId ): int {
+	public function appendLedger( int $variantId, int $locationId, int $delta, int $onHandAfter, LedgerReason $reason, string $actorType, ?int $actorId, ?string $correlationId ): int {
 		$this->requireTransaction( __FUNCTION__ );
 
-		$this->write( self::APPEND_LEDGER, $variantId, $delta, $onHandAfter, $reason->value, $actorType, $actorId ?? 0, $correlationId ?? '' );
+		$this->write( self::APPEND_LEDGER, $variantId, $locationId, $delta, $onHandAfter, $reason->value, $actorType, $actorId ?? 0, $correlationId ?? '' );
 
 		return $this->db->lastInsertId();
 	}
 
 	/**
-	 * Reads items' levels, a plain read.
+	 * Reads variants' levels at the default location, a plain read.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int[] $variantIds The items.
-	 * @return array<int, StockLevel> The levels of the items that exist, by variant id.
+	 * @param int[] $variantIds The variants.
+	 * @return array<int, StockLevel> The levels, by variant id.
 	 */
 	public function levels( array $variantIds ): array {
 		if ( array() === $variantIds ) {
@@ -692,42 +975,142 @@ final class MysqlStockRepository implements StockRepository {
 	}
 
 	/**
+	 * Reads variants' levels at every location, a plain read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $variantIds The variants.
+	 * @return array<int, list<StockLevel>> The levels by variant id, ascending by location.
+	 */
+	public function levelsAt( array $variantIds ): array {
+		if ( array() === $variantIds ) {
+			return array();
+		}
+
+		$levels = array();
+
+		foreach ( $this->rows( self::LEVELS_AT, array_values( $variantIds ) ) as $row ) {
+			$level                         = self::level( $row );
+			$levels[ $level->variantId ][] = $level;
+		}
+
+		return $levels;
+	}
+
+	/**
+	 * Reads what some locations have of some variants, with each variant's policy. A plain read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $variantIds  The variants.
+	 * @param int[] $locationIds The locations.
+	 * @return array{policies: array<int, StockPolicy>, available: array<int, array<int, int>>} The policies by variant, and the units by location then variant.
+	 */
+	public function availability( array $variantIds, array $locationIds ): array {
+		$policies  = array();
+		$available = array();
+
+		if ( array() === $variantIds ) {
+			return array(
+				'policies'  => $policies,
+				'available' => $available,
+			);
+		}
+
+		foreach ( $this->rows( self::AVAILABILITY, array_values( $locationIds ), array_values( $variantIds ) ) as $row ) {
+			$policies[ (int) $row['variant_id'] ] = self::policy( $row );
+
+			if ( null !== $row['location_id'] ) {
+				$available[ (int) $row['location_id'] ][ (int) $row['variant_id'] ] = (int) $row['available'];
+			}
+		}
+
+		return array(
+			'policies'  => $policies,
+			'available' => $available,
+		);
+	}
+
+	/**
+	 * Reads each variant's units available over some locations, summed and at the one that has most. A plain read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $variantIds  The variants.
+	 * @param int[] $locationIds The locations.
+	 * @return array<int, array{policy: StockPolicy, total: int, largest: int}> The figures, by variant id.
+	 */
+	public function saleFigures( array $variantIds, array $locationIds ): array {
+		$figures = array();
+
+		if ( array() === $variantIds ) {
+			return $figures;
+		}
+
+		foreach ( $this->rows( self::SALE_FIGURES, array_values( $locationIds ), array_values( $variantIds ) ) as $row ) {
+			$figures[ (int) $row['variant_id'] ] = array(
+				'policy'  => self::policy( $row ),
+				'total'   => (int) $row['total'],
+				'largest' => (int) $row['largest'],
+			);
+		}
+
+		return $figures;
+	}
+
+	/**
 	 * Reads one item's level with a locking read.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int $variantId The item.
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
 	 * @return StockLevel|null The level, or null when the item does not exist.
 	 */
-	public function lockedLevel( int $variantId ): ?StockLevel {
+	public function lockedLevel( int $variantId, int $locationId ): ?StockLevel {
 		$this->requireTransaction( __FUNCTION__ );
 
-		$row = $this->rows( self::LOCKED_LEVEL, $variantId )[0] ?? null;
+		$row = $this->rows( self::LOCKED_LEVEL, $variantId, $locationId )[0] ?? null;
 
 		return null === $row ? null : self::level( $row );
 	}
 
 	/**
-	 * Creates items at zero, leaving any that exist unchanged: one statement per item, ascending.
+	 * Gives variants their policy and their item at a location, at zero, leaving any that exist unchanged: two statements per variant, ascending.
+	 *
+	 * A variant is reported when either upsert inserted its row; one whose two rows were both there
+	 * already, whoever wrote them, is not.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int[] $variantIds The items.
+	 * @param int[] $variantIds The variants.
+	 * @param int   $locationId The location of the items.
+	 * @return list<int> The variants whose policy row or row at the location this call inserted, ascending.
 	 */
-	public function createItems( array $variantIds ): void {
+	public function createItems( array $variantIds, int $locationId ): array {
 		$this->requireTransaction( __FUNCTION__ );
 
+		$created = array();
+
 		foreach ( $variantIds as $variantId ) {
-			$this->write( self::CREATE_ITEM, (int) $variantId );
+			// An upsert affects one row when it inserted, and none when the row was there: the answer is the inserts' own.
+			$policy = $this->write( self::CREATE_POLICY, (int) $variantId );
+			$item   = $this->write( self::CREATE_ITEM_AT, (int) $variantId, $locationId );
+
+			if ( 1 === $policy || 1 === $item ) {
+				$created[] = (int) $variantId;
+			}
 		}
+
+		return $created;
 	}
 
 	/**
-	 * Tells whether an item has an open allocation, with a locking read.
+	 * Tells whether a variant has an open allocation at any location, with a locking read.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int $variantId The item.
+	 * @param int $variantId The variant.
 	 * @return bool True when one is open.
 	 */
 	public function hasOpenAllocation( int $variantId ): bool {
@@ -737,17 +1120,46 @@ final class MysqlStockRepository implements StockRepository {
 	}
 
 	/**
+	 * Takes the lock of a variant's policy.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId The variant.
+	 * @return bool True when it has one.
+	 */
+	public function lockPolicy( int $variantId ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return array() !== $this->rows( self::LOCK_POLICY, $variantId );
+	}
+
+	/**
 	 * Deletes an item.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int $variantId The item.
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
 	 * @return bool True when the row was deleted.
 	 */
-	public function deleteItem( int $variantId ): bool {
+	public function deleteItem( int $variantId, int $locationId ): bool {
 		$this->requireTransaction( __FUNCTION__ );
 
-		return 1 === $this->write( self::DELETE_ITEM, $variantId );
+		return 1 === $this->write( self::DELETE_ITEM, $variantId, $locationId );
+	}
+
+	/**
+	 * Deletes a variant's policy.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId The variant.
+	 * @return bool True when the row was deleted.
+	 */
+	public function deletePolicy( int $variantId ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->write( self::DELETE_POLICY, $variantId );
 	}
 
 	/**
@@ -756,14 +1168,15 @@ final class MysqlStockRepository implements StockRepository {
 	 * @since 0.1.0
 	 *
 	 * @param int $limit The most items to list.
-	 * @return list<array{variant_id: int, held: int, rows_sum: int}> The items, ascending.
+	 * @return list<array{variant_id: int, location_id: int, held: int, rows_sum: int}> The items, ascending.
 	 */
 	public function heldDrift( int $limit ): array {
 		return array_map(
 			static fn( array $row ): array => array(
-				'variant_id' => (int) $row['variant_id'],
-				'held'       => (int) $row['held'],
-				'rows_sum'   => (int) $row['rows_sum'],
+				'variant_id'  => (int) $row['variant_id'],
+				'location_id' => (int) $row['location_id'],
+				'held'        => (int) $row['held'],
+				'rows_sum'    => (int) $row['rows_sum'],
 			),
 			$this->rows( self::HELD_DRIFT, $limit )
 		);
@@ -775,15 +1188,16 @@ final class MysqlStockRepository implements StockRepository {
 	 * @since 0.1.0
 	 *
 	 * @param int $limit The most items to list.
-	 * @return list<array{variant_id: int, on_hand: int, ledger_sum: int, newest: int|null}> The items, ascending.
+	 * @return list<array{variant_id: int, location_id: int, on_hand: int, ledger_sum: int, newest: int|null}> The items, ascending.
 	 */
 	public function onHandDrift( int $limit ): array {
 		return array_map(
 			static fn( array $row ): array => array(
-				'variant_id' => (int) $row['variant_id'],
-				'on_hand'    => (int) $row['on_hand'],
-				'ledger_sum' => (int) $row['ledger_sum'],
-				'newest'     => null === $row['newest'] ? null : (int) $row['newest'],
+				'variant_id'  => (int) $row['variant_id'],
+				'location_id' => (int) $row['location_id'],
+				'on_hand'     => (int) $row['on_hand'],
+				'ledger_sum'  => (int) $row['ledger_sum'],
+				'newest'      => null === $row['newest'] ? null : (int) $row['newest'],
 			),
 			$this->rows( self::ON_HAND_DRIFT, $limit )
 		);
@@ -795,14 +1209,15 @@ final class MysqlStockRepository implements StockRepository {
 	 * @since 0.1.0
 	 *
 	 * @param int $limit The most items to list.
-	 * @return list<array{variant_id: int, allocated: int, open_sum: int}> The items, ascending.
+	 * @return list<array{variant_id: int, location_id: int, allocated: int, open_sum: int}> The items, ascending.
 	 */
 	public function allocatedDrift( int $limit ): array {
 		return array_map(
 			static fn( array $row ): array => array(
-				'variant_id' => (int) $row['variant_id'],
-				'allocated'  => (int) $row['allocated'],
-				'open_sum'   => (int) $row['open_sum'],
+				'variant_id'  => (int) $row['variant_id'],
+				'location_id' => (int) $row['location_id'],
+				'allocated'   => (int) $row['allocated'],
+				'open_sum'    => (int) $row['open_sum'],
 			),
 			$this->rows( self::ALLOCATED_DRIFT, $limit )
 		);
@@ -815,12 +1230,13 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @param int $toleranceSeconds How long after its expiry a row may still be there.
 	 * @param int $limit            The most items to list.
-	 * @return list<array{variant_id: int, stale_rows: int, oldest_seconds: int}> The items, ascending.
+	 * @return list<array{variant_id: int, location_id: int, stale_rows: int, oldest_seconds: int}> The items, ascending.
 	 */
 	public function staleHolds( int $toleranceSeconds, int $limit ): array {
 		return array_map(
 			static fn( array $row ): array => array(
 				'variant_id'     => (int) $row['variant_id'],
+				'location_id'    => (int) $row['location_id'],
 				'stale_rows'     => (int) $row['stale_rows'],
 				'oldest_seconds' => (int) $row['oldest_seconds'],
 			),
@@ -834,12 +1250,13 @@ final class MysqlStockRepository implements StockRepository {
 	 * @since 0.1.0
 	 *
 	 * @param int $limit The most items to list.
-	 * @return list<array{variant_id: int, tokened_rows: int}> The items, ascending.
+	 * @return list<array{variant_id: int, location_id: int, tokened_rows: int}> The items, ascending.
 	 */
 	public function tokenedHolds( int $limit ): array {
 		return array_map(
 			static fn( array $row ): array => array(
 				'variant_id'   => (int) $row['variant_id'],
+				'location_id'  => (int) $row['location_id'],
 				'tokened_rows' => (int) $row['tokened_rows'],
 			),
 			$this->rows( self::TOKENED_HOLDS, $limit )
@@ -852,17 +1269,100 @@ final class MysqlStockRepository implements StockRepository {
 	 * @since 0.1.0
 	 *
 	 * @param int $limit The most allocations to list.
-	 * @return list<array{id: int, variant_id: int, order_id: int}> The allocations, by id.
+	 * @return list<array{id: int, variant_id: int, location_id: int, order_id: int}> The allocations, by id.
 	 */
 	public function orphanAllocations( int $limit ): array {
+		return self::allocationRows( $this->rows( self::ORPHAN_ALLOCATIONS, $limit ) );
+	}
+
+	/**
+	 * Lists the units each hold holds at an item that is gone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit The most holds to list.
+	 * @return list<array{variant_id: int, location_id: int, hold_group: string, quantity: int}> Each hold's units at each such item, ascending by item.
+	 */
+	public function orphanHolds( int $limit ): array {
 		return array_map(
 			static fn( array $row ): array => array(
-				'id'         => (int) $row['id'],
-				'variant_id' => (int) $row['variant_id'],
-				'order_id'   => (int) $row['order_id'],
+				'variant_id'  => (int) $row['variant_id'],
+				'location_id' => (int) $row['location_id'],
+				'hold_group'  => (string) $row['hold_group'],
+				'quantity'    => (int) $row['quantity'],
 			),
-			$this->rows( self::ORPHAN_ALLOCATIONS, $limit )
+			$this->rows( self::ORPHAN_HOLDS, $limit )
 		);
+	}
+
+	/**
+	 * Lists open allocations at a location that is gone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit The most allocations to list.
+	 * @return list<array{id: int, variant_id: int, location_id: int, order_id: int}> The allocations, by id.
+	 */
+	public function allocationsAtLostLocations( int $limit ): array {
+		return self::allocationRows( $this->rows( self::ALLOCATIONS_AT_LOST_LOCATIONS, $limit ) );
+	}
+
+	/**
+	 * Lists items at a location that is gone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit The most items to list.
+	 * @return list<array{0: int, 1: int}> Each item's variant and location, ascending.
+	 */
+	public function itemsAtLostLocations( int $limit ): array {
+		return array_map( static fn( array $row ): array => array( (int) $row['variant_id'], (int) $row['location_id'] ), $this->rows( self::ITEMS_AT_LOST_LOCATIONS, $limit ) );
+	}
+
+	/**
+	 * Lists variants with an item but no policy.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit The most variants to list.
+	 * @return list<int> The variant ids, ascending.
+	 */
+	public function itemsWithoutPolicy( int $limit ): array {
+		return array_map( static fn( array $row ): int => (int) $row['variant_id'], $this->rows( self::ITEMS_WITHOUT_POLICY, $limit ) );
+	}
+
+	/**
+	 * Lists variants with a policy but no item at the default location.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit The most variants to list.
+	 * @return list<int> The variant ids, ascending.
+	 */
+	public function policiesWithoutDefaultItem( int $limit ): array {
+		return array_map( static fn( array $row ): int => (int) $row['variant_id'], $this->rows( self::POLICIES_WITHOUT_DEFAULT_ITEM, $limit ) );
+	}
+
+	/**
+	 * Reads the units available at each of some locations.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $locationIds The locations; none reads nothing.
+	 * @return array<int, int> The units of each location that has items, by location id.
+	 */
+	public function locationUnits( array $locationIds ): array {
+		$units = array();
+
+		if ( array() === $locationIds ) {
+			return $units;
+		}
+
+		foreach ( $this->rows( self::LOCATION_UNITS, array_values( $locationIds ) ) as $row ) {
+			$units[ (int) $row['location_id'] ] = (int) $row['available'];
+		}
+
+		return $units;
 	}
 
 	/**
@@ -875,25 +1375,26 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int    $variantId The item.
-	 * @param string $token     A fresh token.
-	 * @param string $claim     The claim statement: CLAIM_EXPIRED, CLAIM_GROUP or CLAIM_VARIANT.
-	 * @param array  $values    The claim statement's values.
+	 * @param int    $variantId  The item's variant.
+	 * @param int    $locationId The item's location.
+	 * @param string $token      A fresh token.
+	 * @param string $claim      The claim statement: CLAIM_EXPIRED, CLAIM_GROUP or CLAIM_ITEM.
+	 * @param array  $values     The claim statement's values.
 	 * @return ReclaimedRows What was given back.
 	 *
 	 * @phpstan-param list<mixed> $values
 	 */
-	private function reclaim( int $variantId, string $token, string $claim, array $values ): ReclaimedRows {
-		if ( ! $this->lockItem( $variantId ) ) {
-			return ReclaimedRows::itemMissing( $variantId );
+	private function reclaim( int $variantId, int $locationId, string $token, string $claim, array $values ): ReclaimedRows {
+		if ( ! $this->lockItem( $variantId, $locationId ) ) {
+			return ReclaimedRows::itemMissing( $variantId, $locationId );
 		}
 
 		if ( 0 === $this->write( $claim, ...$values ) ) {
-			return ReclaimedRows::of( $variantId, array() );
+			return ReclaimedRows::of( $variantId, $locationId, array() );
 		}
 
-		if ( 1 !== $this->write( self::GIVE_BACK, $token, $variantId, $token ) ) {
-			return ReclaimedRows::corrupt( $variantId );
+		if ( 1 !== $this->write( self::GIVE_BACK, $token, $variantId, $locationId, $token ) ) {
+			return ReclaimedRows::corrupt( $variantId, $locationId );
 		}
 
 		$rows = array_map(
@@ -908,7 +1409,7 @@ final class MysqlStockRepository implements StockRepository {
 
 		$this->write( self::DELETE_CLAIMED, $token );
 
-		return ReclaimedRows::of( $variantId, $rows );
+		return ReclaimedRows::of( $variantId, $locationId, $rows );
 	}
 
 	/**
@@ -973,9 +1474,72 @@ final class MysqlStockRepository implements StockRepository {
 	}
 
 	/**
+	 * Returns the location a row is written at, refusing one with none.
+	 *
+	 * A multi-row insert would store a missing location as 0 on a server that is not strict, so
+	 * the service resolves every row's location before it reaches here.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When the location is null: a caller's bug.
+	 *
+	 * @param int|null $locationId The location.
+	 * @return int The location.
+	 */
+	private static function located( ?int $locationId ): int {
+		if ( null === $locationId ) {
+			throw new \LogicException( 'A stock row is written at a location; resolve the default location before writing it.' );
+		}
+
+		return $locationId;
+	}
+
+	/**
+	 * Builds the allocation rows doctor reports.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param list<array<string, mixed>> $rows The rows.
+	 * @return list<array{id: int, variant_id: int, location_id: int, order_id: int}> The allocations.
+	 */
+	private static function allocationRows( array $rows ): array {
+		return array_map(
+			static fn( array $row ): array => array(
+				'id'          => (int) $row['id'],
+				'variant_id'  => (int) $row['variant_id'],
+				'location_id' => (int) $row['location_id'],
+				'order_id'    => (int) $row['order_id'],
+			),
+			$rows
+		);
+	}
+
+	/**
+	 * Builds a variant's policy from a row that has its columns.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, mixed> $row The row.
+	 * @return StockPolicy The policy.
+	 */
+	private static function policy( array $row ): StockPolicy {
+		return new StockPolicy(
+			(int) $row['variant_id'],
+			'1' === (string) $row['track'],
+			BackorderPolicy::from( (string) $row['backorder_policy'] ),
+			null === $row['low_stock_threshold'] ? null : (int) $row['low_stock_threshold']
+		);
+	}
+
+	/**
 	 * Builds a level from a row.
 	 *
+	 * An item without a policy row, which doctor reports, reads as tracked with no backorders, so
+	 * it never passes for a variant whose stock is not counted. The variant's totals are there only
+	 * when the read asked for them, as LOCKED_LEVEL does.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The variant's totals.
 	 *
 	 * @param array<string, mixed> $row The row.
 	 * @return StockLevel The level.
@@ -983,11 +1547,14 @@ final class MysqlStockRepository implements StockRepository {
 	private static function level( array $row ): StockLevel {
 		return new StockLevel(
 			(int) $row['variant_id'],
+			(int) $row['location_id'],
 			(int) $row['on_hand'],
 			(int) $row['allocated'],
 			(int) $row['held'],
-			'1' === (string) $row['track'],
-			BackorderPolicy::from( (string) $row['backorder_policy'] )
+			null === $row['track'] || '1' === (string) $row['track'],
+			BackorderPolicy::tryFrom( (string) $row['backorder_policy'] ) ?? BackorderPolicy::No,
+			isset( $row['variant_on_hand'] ) ? (int) $row['variant_on_hand'] : null,
+			isset( $row['variant_available'] ) ? (int) $row['variant_available'] : null
 		);
 	}
 }

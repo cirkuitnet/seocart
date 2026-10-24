@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Integration\Checkout;
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Inventory\Domain\Event\StockReserved;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
+use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
@@ -67,17 +68,20 @@ final class PlacementRowsTest extends PlacementTestCase {
 	 * @var array<string, string>
 	 */
 	private const KINDS = array(
-		'order_id'       => 'order',
-		'order_uuid'     => 'order',
-		'order_number'   => 'order',
-		'order_line_id'  => 'line',
-		'variant_id'     => 'variant',
-		'variant_ids'    => 'variant',
-		'intent_id'      => 'intent',
-		'intent_uuid'    => 'intent',
-		'transaction_id' => 'transaction',
-		'cart_id'        => 'cart',
-		'hold_group'     => 'hold',
+		'order_id'             => 'order',
+		'order_uuid'           => 'order',
+		'order_number'         => 'order',
+		'order_line_id'        => 'line',
+		'variant_id'           => 'variant',
+		'variant_ids'          => 'variant',
+		'location_variant_ids' => 'variant',
+		'location_id'          => 'location',
+		'location_ids'         => 'location',
+		'intent_id'            => 'intent',
+		'intent_uuid'          => 'intent',
+		'transaction_id'       => 'transaction',
+		'cart_id'              => 'cart',
+		'hold_group'           => 'hold',
 	);
 
 	/**
@@ -194,6 +198,7 @@ final class PlacementRowsTest extends PlacementTestCase {
 			'transaction' => array(),
 			'cart'        => array(),
 			'hold'        => array( (string) $order['hold_group'] => 'hold' ),
+			'location'    => array( (string) ( new MysqlLocationRepository( $this->db ) )->defaultId() => 'default location' ),
 		);
 
 		foreach ( $this->db->fetchAll( 'SELECT id FROM %i WHERE order_id = %d', $this->table( CartTables::CARTS ), $order['id'] ) as $cart ) {
@@ -231,9 +236,10 @@ final class PlacementRowsTest extends PlacementTestCase {
 	private function allocations( array $names ): array {
 		$rows = array();
 
-		foreach ( $this->db->fetchAll( 'SELECT variant_id, order_id, order_line_id, quantity, posted_quantity, state FROM %i WHERE order_id = %d ORDER BY id', $this->table( InventoryTables::ALLOCATIONS ), array_search( 'order', $names['order'], true ) ) as $row ) {
+		foreach ( $this->db->fetchAll( 'SELECT variant_id, location_id, order_id, order_line_id, quantity, posted_quantity, state FROM %i WHERE order_id = %d ORDER BY id', $this->table( InventoryTables::ALLOCATIONS ), array_search( 'order', $names['order'], true ) ) as $row ) {
 			$rows[] = array(
 				'variant_id'      => self::named( $names, 'variant_id', $row['variant_id'] ),
+				'location_id'     => self::named( $names, 'location_id', $row['location_id'] ),
 				'order_id'        => self::named( $names, 'order_id', $row['order_id'] ),
 				'order_line_id'   => self::named( $names, 'order_line_id', $row['order_line_id'] ),
 				'quantity'        => (int) $row['quantity'],
@@ -256,9 +262,10 @@ final class PlacementRowsTest extends PlacementTestCase {
 	private function holds( array $names ): array {
 		$rows = array();
 
-		foreach ( $this->db->fetchAll( 'SELECT variant_id, cart_id, order_id, hold_group, quantity, reclaim_token FROM %i ORDER BY id', $this->table( InventoryTables::HOLDS ) ) as $row ) {
+		foreach ( $this->db->fetchAll( 'SELECT variant_id, location_id, cart_id, order_id, hold_group, quantity, reclaim_token FROM %i ORDER BY id', $this->table( InventoryTables::HOLDS ) ) as $row ) {
 			$rows[] = array(
 				'variant_id'    => self::named( $names, 'variant_id', $row['variant_id'] ),
+				'location_id'   => self::named( $names, 'location_id', $row['location_id'] ),
 				'cart_id'       => self::named( $names, 'cart_id', $row['cart_id'] ),
 				'order_id'      => self::named( $names, 'order_id', $row['order_id'] ),
 				'hold_group'    => self::named( $names, 'hold_group', $row['hold_group'] ),

@@ -246,6 +246,23 @@ final class DdlGeneratorTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a column's definition for an ALTER is written as its CREATE TABLE line is: its type as declared, its collation, its nullability, its default and its auto-increment.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_column_is_written_as_its_create_table_line(): void {
+		$generator = new DdlGenerator();
+
+		$this->assertSame( '`location_id` bigint unsigned NULL', $generator->columnLine( new ColumnSpec( 'location_id', 'bigint unsigned', Classification::Public, 'A location.', nullable: true ) ) );
+		$this->assertSame( "`state` varchar(12) COLLATE ascii_bin NOT NULL DEFAULT 'open'", $generator->columnLine( new ColumnSpec( 'state', 'varchar(12)', Classification::Public, 'A state.', defaultValue: 'open', collation: 'ascii_bin' ) ) );
+		$this->assertSame( '`id` bigint unsigned NOT NULL AUTO_INCREMENT', $generator->columnLine( new ColumnSpec( 'id', 'bigint unsigned', Classification::Public, 'Key.', autoIncrement: true ) ) );
+
+		foreach ( self::widgets()->columns() as $column ) {
+			$this->assertStringContainsString( "\t" . $generator->columnLine( $column ) . ",\n", $generator->createTable( self::widgets(), 'wp_seocart_widgets', self::CHARSET ), $column->name() );
+		}
+	}
+
+	/**
 	 * Declares a fixture table that uses every rule the generator applies.
 	 *
 	 * @since 0.1.0

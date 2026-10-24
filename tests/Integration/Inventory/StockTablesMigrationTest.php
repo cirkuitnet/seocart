@@ -32,7 +32,7 @@ use SEOCart\Tests\Support\Doubles\FrozenClock;
 /**
  * The stock tables are created exactly as declared, after the platform's, and a second run changes nothing.
  *
- * Planted violation: at the end of CreateStockTablesMigration::up(), drop the `variant_expires`
+ * Planted violation: at the end of CreateStockTablesMigration::up(), drop the `item_expires`
  * index of `stock_holds` directly, so the table no longer has an index its declaration names.
  * The migrator's post-condition then fails the migration.
  *
@@ -68,11 +68,11 @@ final class StockTablesMigrationTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Tests the migration's place and what it declares: four tables, their patterns, retention and money columns.
+	 * Tests the migration's place and what it declares: the ten inventory tables, their patterns, retention and money columns.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_migration_declares_the_four_tables(): void {
+	public function test_the_migration_declares_the_inventory_tables(): void {
 		$migration = new CreateStockTablesMigration();
 
 		$this->assertGreaterThan( CreateOutboxMigration::ID, $migration->id() );
@@ -95,10 +95,16 @@ final class StockTablesMigrationTest extends DatabaseTestCase {
 
 		$this->assertSame(
 			array(
-				'stock_items'       => array( MutationPattern::MutableTransactional, 'entity_lifetime', array( 'on_hand', 'allocated', 'held' ) ),
-				'stock_ledger'      => array( MutationPattern::AppendOnly, 'permanent', array( 'delta', 'on_hand_after' ) ),
-				'stock_holds'       => array( MutationPattern::MutableTransactional, 'stock_holds', array() ),
-				'stock_allocations' => array( MutationPattern::MutableTransactional, 'entity_lifetime', array( 'quantity', 'posted_quantity' ) ),
+				'stock_items'           => array( MutationPattern::MutableTransactional, 'entity_lifetime', array( 'on_hand', 'allocated', 'held' ) ),
+				'stock_ledger'          => array( MutationPattern::AppendOnly, 'permanent', array( 'delta', 'on_hand_after' ) ),
+				'stock_holds'           => array( MutationPattern::MutableTransactional, 'stock_holds', array() ),
+				'stock_allocations'     => array( MutationPattern::MutableTransactional, 'entity_lifetime', array( 'quantity', 'posted_quantity' ) ),
+				'stock_policies'        => array( MutationPattern::MutableTransactional, 'entity_lifetime', array() ),
+				'locations'             => array( MutationPattern::Config, 'permanent', array() ),
+				'location_markets'      => array( MutationPattern::Config, 'permanent', array() ),
+				'location_pickup_hours' => array( MutationPattern::Config, 'permanent', array() ),
+				'stock_transfers'       => array( MutationPattern::MutableTransactional, 'financial', array() ),
+				'stock_transfer_lines'  => array( MutationPattern::MutableTransactional, 'financial', array( 'quantity', 'received_quantity', 'lost_quantity' ) ),
 			),
 			$shape
 		);

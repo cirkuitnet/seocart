@@ -22,9 +22,6 @@ use SEOCart\Catalog\Infrastructure\Doctor\CatalogChecks;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Checkout\Infrastructure\Doctor\CheckoutChecks;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
-use SEOCart\Inventory\Application\StockService;
-use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
-use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Order\Infrastructure\MysqlOrderRepository;
 use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Payment\Application\GatewayStatuses;
@@ -64,6 +61,7 @@ use SEOCart\Support\Currency;
 use SEOCart\Support\SystemClock;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
+use SEOCart\Tests\Support\Inventory\StockServices;
 use SEOCart\Tests\Support\Payment\TestGateways;
 
 /**
@@ -151,15 +149,7 @@ final class SeedVerifier {
 	 */
 	public static function doctor( Database $db, callable $report, string $baseCurrency = 'USD' ): Doctor {
 		$products   = new MysqlProductRepository( $db, static fn(): Currency => Currency::of( $baseCurrency ) );
-		$stock      = new StockService(
-			new MysqlStockRepository( $db ),
-			$db,
-			new RecordingEventPublisher( $db ),
-			new SequentialIdGenerator( 950000 ),
-			new SystemClock(),
-			new CorrelationId( new SequentialIdGenerator( 960000 ) ),
-			new Authorizer( new CapabilityDeclaration() )
-		);
+		$stock      = StockServices::over( $db, new RecordingEventPublisher( $db ), new SequentialIdGenerator( 950000 ), new SystemClock(), new CorrelationId( new SequentialIdGenerator( 960000 ) ) );
 		$locales    = new SiteLocale();
 		$reconciler = new Reconciler( $products, $db, $locales, new SystemClock(), new SequentialIdGenerator( 970000 ) );
 		$settler    = new ProductSettler( $products, $stock, $db, array( new LockService( $db, LockMode::GetLock ), 'withLock' ) );
@@ -177,7 +167,7 @@ final class SeedVerifier {
 			new Outbox( $db ),
 			new ActionSchedulerQueue( $db, new LockService( $db, LockMode::Table ), new JobHandlers( JobHandlers::PRODUCTION, 'strval' ), new CorrelationId( new SequentialIdGenerator() ), $report ),
 			new CheckoutChecks( new MysqlIdempotencyKeys( $db ), $db, $payments, new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 960000 ) ), $gateways ),
-			new StockProjectionCheck( new MysqlStockRepository( $db ) ),
+			StockServices::check( $db, $stock ),
 			new PaymentLedgerCheck( new MysqlPaymentRepository( $db, new SequentialIdGenerator( 980000 ) ), new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 990000 ) ) ),
 			new GatewaysCheck( new GatewayStatuses( $gateways, $payments ), $gateways ),
 			new RateVersionCheck(

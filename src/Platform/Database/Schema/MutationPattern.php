@@ -40,6 +40,11 @@ enum MutationPattern: string {
 	/**
 	 * A ledger or audit trail: INSERT only; retention deletes by age in batches.
 	 *
+	 * One exception, declared on the migration that makes it: a data migration may set a column the
+	 * same chain added, on rows it never otherwise reads, leaving every previously recorded column
+	 * unchanged. The stock ledger's location, filled in when stock came to be kept per location, is
+	 * such a column.
+	 *
 	 * @since 0.1.0
 	 */
 	case AppendOnly = 'append-only';

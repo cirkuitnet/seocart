@@ -21,7 +21,8 @@ defined( 'ABSPATH' ) || exit;
  * Reclaims expired checkout holds every five minutes, one item per transaction.
  *
  * Owns one fact: the bounds of the sweep. It pages through the items with expired, unclaimed
- * holds in ascending variant order, a page at a time, and reclaims each item's expired holds
+ * holds in ascending order of the variant, then the location, a page at a time, the page after
+ * the last item swept, and reclaims each item's expired holds
  * in a transaction of its own with the same statements a checkout runs when it needs the
  * units; so a lock is held for one item at a time, and it changes nothing a checkout would
  * not have changed. It stops when the pages run out or BUDGET_SECONDS is spent; the rest is
@@ -166,18 +167,18 @@ final class SweepHolds implements JobHandler {
 	 */
 	public function handle( array $payload ): ?int {
 		$deadline = ( $this->clock )() + $this->budgetSeconds * self::NANOSECONDS;
-		$after    = 0;
+		$after    = array( 0, 0 );
 		$failure  = null;
 
 		do {
-			$variantIds = $this->stock->expiredVariants( $after, $this->page );
-			$fullPage   = count( $variantIds ) === $this->page;
+			$items    = $this->stock->expiredItems( $after[0], $after[1], $this->page );
+			$fullPage = count( $items ) === $this->page;
 
-			foreach ( $variantIds as $variantId ) {
-				$after = $variantId;
+			foreach ( $items as $item ) {
+				$after = $item;
 
 				try {
-					$this->stock->reclaimExpired( $variantId );
+					$this->stock->reclaimExpired( $item[0], $item[1] );
 				} catch ( CodedException $failed ) {
 					$failure ??= $failed;
 				}

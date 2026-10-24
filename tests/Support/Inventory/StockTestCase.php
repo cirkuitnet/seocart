@@ -12,16 +12,16 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Support\Inventory;
 
 use SEOCart\Inventory\Application\StockService;
+use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Domain\Event\StockReservationReleased;
 use SEOCart\Inventory\Domain\Event\StockReserved;
 use SEOCart\Inventory\Domain\LedgerReason;
+use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
-use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
+use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Authorization\Actor;
-use SEOCart\Platform\Authorization\Authorizer;
-use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Cli\Doctor\CheckResult;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
@@ -84,6 +84,33 @@ abstract class StockTestCase extends DatabaseTestCase {
 	 * @var int
 	 */
 	private static int $lastVariant = 100;
+
+	/**
+	 * The last location number handed out, for the names of planted locations.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private static int $lastLocation = 0;
+
+	/**
+	 * The store's choice for orders no one location can ship whole, which the routing of every service of the test reads.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var FulfilmentMode
+	 */
+	protected FulfilmentMode $mode = FulfilmentMode::Split;
+
+	/**
+	 * The store's default location, which set_up() creates as the upgrade does.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	protected int $defaultLocation;
 
 	/**
 	 * The repository over `$this->db`.
@@ -159,7 +186,8 @@ abstract class StockTestCase extends DatabaseTestCase {
 		$operations = new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) );
 
 		( new CreateOutboxMigration() )->up( $operations );
-		( new CreateStockTablesMigration() )->up( $operations );
+
+		$this->defaultLocation = StockTables::create( $this->db );
 
 		$this->afterCommit = array();
 		$this->correlation = new CorrelationId( new SequentialIdGenerator( 900000 ) );
@@ -205,7 +233,7 @@ abstract class StockTestCase extends DatabaseTestCase {
 	protected function serviceOver( Database $db, IdGenerator $ids ): StockService {
 		$publisher = new Publisher( $db, new Outbox( $db ), $this->bridge, new EventCatalog( Modules::EVENT_CLASSES ), $this->correlation, new RecordingWake() );
 
-		return new StockService( new MysqlStockRepository( $db ), $db, $publisher, $ids, FrozenClock::at( self::NOW ), $this->correlation, new Authorizer( new CapabilityDeclaration() ) );
+		return StockServices::over( $db, $publisher, $ids, FrozenClock::at( self::NOW ), $this->correlation, fn(): FulfilmentMode => $this->mode );
 	}
 
 	/**
@@ -234,25 +262,75 @@ abstract class StockTestCase extends DatabaseTestCase {
 	}
 
 	/**
-	 * Plants an item row directly, with no ledger entry.
+	 * Plants a location beside the default one, and returns its id.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int  $priority      Optional. Its routing priority. Default 1, after the default location.
+	 * @param bool $active        Optional. Whether it is active. Default true.
+	 * @param bool $fulfilsOnline Optional. Whether it ships online orders. Default true.
+	 * @param bool $offersPickup  Optional. Whether it offers pickup. Default false.
+	 * @return int The location's id.
+	 */
+	protected function plantLocation( int $priority = 1, bool $active = true, bool $fulfilsOnline = true, bool $offersPickup = false ): int {
+		$this->db->execute(
+			'INSERT INTO %i ( uuid, name, active, fulfils_online, offers_pickup, priority, created_at, updated_at ) VALUES ( %s, %s, %d, %d, %d, %d, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6) )',
+			$this->table( InventoryTables::LOCATIONS ),
+			wp_generate_uuid4(),
+			'Location ' . ( ++self::$lastLocation ),
+			$active ? 1 : 0,
+			$fulfilsOnline ? 1 : 0,
+			$offersPickup ? 1 : 0,
+			$priority
+		);
+
+		wp_cache_delete( MysqlLocationRepository::CACHE_KEY, MysqlLocationRepository::CACHE_GROUP );
+
+		return $this->db->lastInsertId();
+	}
+
+	/**
+	 * Plants an item row directly, with its variant's policy row when the variant has none yet, and no ledger entry.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The location, and the policy row.
 	 *
-	 * @param int  $variantId The variant.
-	 * @param int  $onHand    Optional. Units on hand. Default 0.
-	 * @param int  $allocated Optional. Units allocated. Default 0.
-	 * @param int  $held      Optional. Units held, without rows. Default 0.
-	 * @param bool $track     Optional. Whether stock is counted. Default true.
+	 * @param int      $variantId  The variant.
+	 * @param int      $onHand     Optional. Units on hand. Default 0.
+	 * @param int      $allocated  Optional. Units allocated. Default 0.
+	 * @param int      $held       Optional. Units held, without rows. Default 0.
+	 * @param bool     $track      Optional. Whether stock is counted, when the policy row is planted. Default true.
+	 * @param int|null $locationId Optional. The location. Default null, the default location.
 	 */
-	protected function plantItem( int $variantId, int $onHand = 0, int $allocated = 0, int $held = 0, bool $track = true ): void {
+	protected function plantItem( int $variantId, int $onHand = 0, int $allocated = 0, int $held = 0, bool $track = true, ?int $locationId = null ): void {
+		$this->plantPolicy( $variantId, $track );
 		$this->db->execute(
-			'INSERT INTO %i ( variant_id, on_hand, allocated, held, track, updated_at ) VALUES ( %d, %d, %d, %d, %d, UTC_TIMESTAMP(6) )',
+			'INSERT INTO %i ( variant_id, location_id, on_hand, allocated, held, updated_at ) VALUES ( %d, %d, %d, %d, %d, UTC_TIMESTAMP(6) )',
 			$this->table( InventoryTables::ITEMS ),
 			$variantId,
+			$locationId ?? $this->defaultLocation,
 			$onHand,
 			$allocated,
-			$held,
-			$track ? 1 : 0
+			$held
+		);
+	}
+
+	/**
+	 * Plants a variant's policy row, unless it has one.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int    $variantId The variant.
+	 * @param bool   $track     Optional. Whether stock is counted. Default true.
+	 * @param string $backorder Optional. The backorder policy. Default `no`.
+	 */
+	protected function plantPolicy( int $variantId, bool $track = true, string $backorder = 'no' ): void {
+		$this->db->execute(
+			'INSERT INTO %i ( variant_id, track, backorder_policy, updated_at ) VALUES ( %d, %d, %s, UTC_TIMESTAMP(6) ) ON DUPLICATE KEY UPDATE variant_id = variant_id',
+			$this->table( InventoryTables::POLICIES ),
+			$variantId,
+			$track ? 1 : 0,
+			$backorder
 		);
 	}
 
@@ -260,11 +338,13 @@ abstract class StockTestCase extends DatabaseTestCase {
 	 * Creates an item through the service and gives it units through an adjustment, so its ledger agrees.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The location.
 	 *
-	 * @param int $variantId The variant.
-	 * @param int $onHand    The units on hand.
+	 * @param int      $variantId  The variant.
+	 * @param int      $onHand     The units on hand.
+	 * @param int|null $locationId Optional. The location. Default null, the default location, where createItems() puts it.
 	 */
-	protected function stockItem( int $variantId, int $onHand ): void {
+	protected function stockItem( int $variantId, int $onHand, ?int $locationId = null ): void {
 		$this->db->transaction(
 			function () use ( $variantId ): void {
 				$this->service->createItems( array( $variantId ) );
@@ -272,7 +352,7 @@ abstract class StockTestCase extends DatabaseTestCase {
 		);
 
 		if ( 0 !== $onHand ) {
-			$this->service->adjust( $variantId, $onHand, LedgerReason::Received, Actor::user( 1 ) );
+			$this->service->adjust( $variantId, $locationId ?? $this->defaultLocation, $onHand, LedgerReason::Received, Actor::user( 1 ) );
 		}
 	}
 
@@ -285,20 +365,23 @@ abstract class StockTestCase extends DatabaseTestCase {
 	 * @param int         $quantity         The units.
 	 * @param int         $expiresInSeconds Seconds from now on the database clock; negative is expired.
 	 * @param string|null $holdGroup        Optional. The hold's id. Default a fresh one.
+	 * @param int|null    $locationId       Optional. The location of the item it holds. Default null, the default location.
 	 * @return string The hold's id.
 	 */
-	protected function plantHold( int $variantId, int $quantity, int $expiresInSeconds, ?string $holdGroup = null ): string {
-		$holdGroup ??= SequentialIdGenerator::nth( 700000 + self::variant() );
+	protected function plantHold( int $variantId, int $quantity, int $expiresInSeconds, ?string $holdGroup = null, ?int $locationId = null ): string {
+		$holdGroup  ??= SequentialIdGenerator::nth( 700000 + self::variant() );
+		$locationId ??= $this->defaultLocation;
 
 		$this->db->execute(
-			'INSERT INTO %i ( variant_id, hold_group, quantity, expires_at, created_at ) VALUES ( %d, %s, %d, UTC_TIMESTAMP() + INTERVAL %d SECOND, UTC_TIMESTAMP(6) )',
+			'INSERT INTO %i ( variant_id, location_id, hold_group, quantity, expires_at, created_at ) VALUES ( %d, %d, %s, %d, UTC_TIMESTAMP() + INTERVAL %d SECOND, UTC_TIMESTAMP(6) )',
 			$this->table( InventoryTables::HOLDS ),
 			$variantId,
+			$locationId,
 			$holdGroup,
 			$quantity,
 			$expiresInSeconds
 		);
-		$this->db->execute( 'UPDATE %i SET held = held + %d WHERE variant_id = %d', $this->table( InventoryTables::ITEMS ), $quantity, $variantId );
+		$this->db->execute( 'UPDATE %i SET held = held + %d WHERE variant_id = %d AND location_id = %d', $this->table( InventoryTables::ITEMS ), $quantity, $variantId, $locationId );
 
 		return $holdGroup;
 	}
@@ -308,14 +391,15 @@ abstract class StockTestCase extends DatabaseTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param SecondConnection $b         Connection B.
-	 * @param int              $variantId The variant.
+	 * @param SecondConnection $b          Connection B.
+	 * @param int              $variantId  The variant.
+	 * @param int|null         $locationId Optional. The location. Default null, the default location.
 	 * @return array{on_hand: int, allocated: int, held: int}|null The counters, or null when there is no item.
 	 *
 	 * @phpstan-impure
 	 */
-	protected function committedItem( SecondConnection $b, int $variantId ): ?array {
-		$row = $b->fetchRow( sprintf( 'SELECT on_hand, allocated, held FROM `%s` WHERE variant_id = %d', $this->table( InventoryTables::ITEMS ), $variantId ) );
+	protected function committedItem( SecondConnection $b, int $variantId, ?int $locationId = null ): ?array {
+		$row = $b->fetchRow( sprintf( 'SELECT on_hand, allocated, held FROM `%s` WHERE variant_id = %d AND location_id = %d', $this->table( InventoryTables::ITEMS ), $variantId, $locationId ?? $this->defaultLocation ) );
 
 		return null === $row ? null : array(
 			'on_hand'   => (int) $row['on_hand'],
@@ -354,6 +438,37 @@ abstract class StockTestCase extends DatabaseTestCase {
 	 */
 	protected function committedEvents( SecondConnection $b, string $eventName ): int {
 		return (int) $b->fetchValue( sprintf( "SELECT COUNT(*) FROM `%s` WHERE event_name = '%s'", $this->table( OutboxTable::NAME ), $eventName ) );
+	}
+
+	/**
+	 * Reads the newest committed outbox row of one event, as connection B sees it, and returns its payload's fields.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param SecondConnection $b         Connection B.
+	 * @param string           $eventName The event's name.
+	 * @return array<string, mixed> The fields, as a listener's event would be rebuilt from them.
+	 *
+	 * @phpstan-impure
+	 */
+	protected function committedPayload( SecondConnection $b, string $eventName ): array {
+		return (array) Outbox::decode( (string) $b->fetchValue( sprintf( "SELECT payload_json FROM `%s` WHERE event_name = '%s' ORDER BY id DESC LIMIT 1", $this->table( OutboxTable::NAME ), $eventName ) ) )['p'];
+	}
+
+	/**
+	 * Returns the lines of a stock event that names several items: each variant once with its units, then each item's variant, location and units.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param DomainEvent $event The event: a reservation, a release or an allocation; any other fails the test.
+	 * @return array{0: list<int>, 1: list<int>, 2: list<int>, 3: list<int>, 4: list<int>} The five lists, in that order.
+	 */
+	protected static function lines( DomainEvent $event ): array {
+		if ( ! $event instanceof StockReserved && ! $event instanceof StockReservationReleased && ! $event instanceof StockAllocated ) {
+			self::fail( sprintf( 'A %s names no items.', get_class( $event ) ) );
+		}
+
+		return array( $event->variantIds, $event->quantities, $event->locationVariantIds, $event->locationIds, $event->locationQuantities );
 	}
 
 	/**
@@ -482,14 +597,14 @@ abstract class StockTestCase extends DatabaseTestCase {
 		}
 
 		$b     = $this->secondConnection();
-		$waits = $this->raw( MysqlStockRepository::LOCK_ITEM, $first );
+		$waits = $this->raw( MysqlStockRepository::LOCK_ITEM, $first, $this->defaultLocation );
 
 		$b->query( 'START TRANSACTION' );
 		$b->query( sprintf( "UPDATE `%s` SET value = 'b' WHERE id IN (1, 2, 3)", $this->rowsTable() ) );
-		$b->query( $this->raw( MysqlStockRepository::LOCK_ITEM, $second ) );
+		$b->query( $this->raw( MysqlStockRepository::LOCK_ITEM, $second, $this->defaultLocation ) );
 
 		$this->beforeStatement(
-			'/^' . preg_quote( $this->raw( MysqlStockRepository::CLAIM, 1, $second, 1 ), '/' ) . '$/',
+			'/^' . preg_quote( $this->raw( MysqlStockRepository::CLAIM, 1, $second, $this->defaultLocation, 1 ), '/' ) . '$/',
 			function () use ( $b, $waits ): void {
 				$b->queryAsync( $waits );
 				$this->awaitWaiting( $b, $waits, 'updating' );
@@ -514,7 +629,18 @@ abstract class StockTestCase extends DatabaseTestCase {
 	 * @return CheckResult Its result.
 	 */
 	protected function projectionCheck(): CheckResult {
-		return ( new StockProjectionCheck( $this->repository ) )->run();
+		return $this->stockCheck()->run();
+	}
+
+	/**
+	 * Builds the stock check of doctor over the test's connection.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return StockProjectionCheck The check.
+	 */
+	protected function stockCheck(): StockProjectionCheck {
+		return StockServices::check( $this->db, $this->service );
 	}
 
 	/**

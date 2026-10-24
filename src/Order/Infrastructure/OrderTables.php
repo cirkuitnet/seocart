@@ -240,6 +240,7 @@ final class OrderTables {
 					new ColumnSpec( 'conversion_context_id', 'bigint unsigned', Classification::Public, 'The frozen exchange rate the order was placed at; a refund and a report convert at it, never at today\'s rate.' ),
 					self::locale( 'locale', 'The WordPress locale the order was placed in, which its snapshots and messages are written in.' ),
 					new ColumnSpec( 'market_id', 'bigint unsigned', Classification::Public, 'The market the order was placed in; NULL when the store has none.', nullable: true ),
+					new ColumnSpec( 'fulfilment_location_id', 'bigint unsigned', Classification::Public, 'The one location the order is fulfilled from: where it ships from, or where it is collected; NULL when none was recorded.', nullable: true ),
 					new ColumnSpec( 'tax_display_mode_snapshot', 'varchar(8)', Classification::Public, 'Whether prices were shown with or without tax when the order was placed; NULL when not recorded.', nullable: true, collation: 'ascii_bin' ),
 					new ColumnSpec( 'cross_zone_policy_snapshot', 'varchar(12)', Classification::Public, 'The cross-zone tax policy the totals were calculated under.', collation: 'ascii_bin' ),
 					new ColumnSpec( 'tax_rounding_mode_snapshot', 'varchar(16)', Classification::Public, 'The tax rounding mode the totals were calculated under.', collation: 'ascii_bin' ),

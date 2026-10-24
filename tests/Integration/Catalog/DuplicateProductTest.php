@@ -148,7 +148,7 @@ final class DuplicateProductTest extends ProductWriteTestCase {
 			)
 		);
 
-		$this->services->stock->adjust( (int) $original->variantId, 7, LedgerReason::Received, Actor::user( 1 ) );
+		$this->services->stock->adjust( (int) $original->variantId, $this->defaultLocation, 7, LedgerReason::Received, Actor::user( 1 ) );
 
 		$before = $this->committedProduct( $b, $original );
 		$copy   = $this->copy( $original );

@@ -19,6 +19,7 @@ use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
+use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Payment\Infrastructure\RefundClaimTables;
@@ -44,10 +45,11 @@ use SEOCart\Promotion\Infrastructure\PromotionTables;
  * - the product, complete, bound to its posts;
  * - its default variant, enabled, in the generation the product publishes, with a price in the
  *   base currency;
- * - its stock item, with a ledger of one to five merchant movements whose sum is the item's
- *   on_hand, and one hold row, or two for about one item in five, each of one unit: half of them
- *   live, half expired within the period the sweep is allowed. An item with fewer than two units
- *   on hand holds none, so no item holds more than it has.
+ * - its stock policy, tracked, and its stock item at the store's default location, with a ledger
+ *   of one to five merchant movements whose sum is the item's on_hand, and one hold row, or two
+ *   for about one item in five, each of one unit: half of them live, half expired within the
+ *   period the sweep is allowed. An item with fewer than two units on hand holds none, so no item
+ *   holds more than it has. The default location is the one the schema's install creates.
  *
  * Then the Dataset's carts, drawn after every product, so the product rows do not depend on
  * them: each in the base currency and the site's locale, with one to five lines of distinct
@@ -71,7 +73,8 @@ use SEOCart\Promotion\Infrastructure\PromotionTables;
  * each row is written as they write it, and a seeded store is then checked by what checks a real
  * one, doctor and the sellability query (SeedVerifier), rather than trusted.
  *
- * It refuses a store that already has products, stock or posts in its id range. It is test
+ * It refuses a store that already has products, stock or posts in its id range, or no default
+ * location. It is test
  * infrastructure and never ships: the release zip leaves tests/ out.
  *
  * @since 0.1.0
@@ -109,6 +112,7 @@ final class ReferenceSeed {
 		CatalogTables::PRODUCT_POSTS,
 		CatalogTables::VARIANTS,
 		CatalogTables::VARIANT_PRICES,
+		InventoryTables::POLICIES,
 		InventoryTables::ITEMS,
 		InventoryTables::LEDGER,
 		InventoryTables::HOLDS,
@@ -223,9 +227,9 @@ final class ReferenceSeed {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \RuntimeException When the store already holds rows the dataset would collide with.
+	 * @throws \RuntimeException When the store already holds rows the dataset would collide with, or has no default location.
 	 *
-	 * @param Database $db The connection, on the site to seed.
+	 * @param Database $db The connection, on the site to seed, with the plugin's schema installed.
 	 * @return array{rows: array<string, int>, seconds: float} The rows written per table, and how long writing took.
 	 */
 	public function write( Database $db ): array {
@@ -233,12 +237,13 @@ final class ReferenceSeed {
 
 		$this->refuseAnOccupiedStore( $db );
 
-		$now    = new \DateTimeImmutable( (string) $db->fetchValue( 'SELECT UTC_TIMESTAMP()' ), new \DateTimeZone( 'UTC' ) );
-		$counts = array_fill_keys( self::TABLES, 0 );
+		$location = ( new MysqlLocationRepository( $db ) )->defaultId() ?? throw new \RuntimeException( 'The store has no default location: install the plugin\'s schema before seeding it.' );
+		$now      = new \DateTimeImmutable( (string) $db->fetchValue( 'SELECT UTC_TIMESTAMP()' ), new \DateTimeZone( 'UTC' ) );
+		$counts   = array_fill_keys( self::TABLES, 0 );
 
 		$db->transaction(
-			function () use ( $db, $now, &$counts ): void {
-				foreach ( $this->rows( $now ) as list( $table, $rows ) ) {
+			function () use ( $db, $now, $location, &$counts ): void {
+				foreach ( $this->rows( $now, $location ) as list( $table, $rows ) ) {
 					self::insert( $db, self::tableName( $db, $table ), $rows );
 
 					$counts[ $table ] += count( $rows );
@@ -273,6 +278,8 @@ final class ReferenceSeed {
 	/**
 	 * Returns a digest of every row, for a given anchor: equal digests mean byte-identical datasets.
 	 *
+	 * The stock is at location 1, the id the default location of a fresh install has.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @param \DateTimeImmutable $now The anchor instant, UTC.
@@ -281,7 +288,7 @@ final class ReferenceSeed {
 	public function digest( \DateTimeImmutable $now ): string {
 		$hash = hash_init( 'sha256' );
 
-		foreach ( $this->rows( $now ) as list( $table, $rows ) ) {
+		foreach ( $this->rows( $now, 1 ) as list( $table, $rows ) ) {
 			hash_update( $hash, $table . "\n" . (string) wp_json_encode( $rows ) . "\n" );
 		}
 
@@ -306,6 +313,11 @@ final class ReferenceSeed {
 			SecretKeysTable::NAME                => 'A secret is never seeded.',
 			LogsTable::NAME                      => 'It holds diagnostics, not store data.',
 			InventoryTables::ALLOCATIONS         => 'Only an order allocates stock, and there are no orders yet.',
+			InventoryTables::LOCATIONS           => 'The schema\'s install creates the store\'s one location, its default, where the seeded stock is.',
+			InventoryTables::LOCATION_MARKETS    => 'The store\'s one location serves every market, which takes no row.',
+			InventoryTables::PICKUP_HOURS        => 'The store\'s one location offers no pickup, so it has no pickup hours.',
+			InventoryTables::TRANSFERS           => 'A store with one location moves no stock between locations.',
+			InventoryTables::TRANSFER_LINES      => 'A store with one location moves no stock between locations.',
 			RateCountersTable::NAME              => 'It counts the requests of clients in their current windows; a store at rest has none, and a counter is read by its primary key only.',
 			CheckoutTables::SESSIONS             => 'A session exists only for a cart a shopper is checking out, and it is read by its cart, through its unique key.',
 			CheckoutTables::IDEMPOTENCY_KEYS     => 'Only an order placement claims a key, and there are no orders yet. A claim finds a key by its unique key, but doctor\'s search for stranded keys reads the whole table, so the query-plan run writes keys of its own to judge it.',
@@ -350,11 +362,13 @@ final class ReferenceSeed {
 	 * the chunks end.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The location of the stock.
 	 *
-	 * @param \DateTimeImmutable $now The anchor instant, UTC.
+	 * @param \DateTimeImmutable $now        The anchor instant, UTC.
+	 * @param int                $locationId The store's default location, where the stock is.
 	 * @return \Generator<int, array{0: string, 1: list<array<string, int|string|null>>}> Each chunk: the table's key in TABLES, and its rows.
 	 */
-	public function rows( \DateTimeImmutable $now ): \Generator {
+	public function rows( \DateTimeImmutable $now, int $locationId ): \Generator {
 		$random   = new \Random\Randomizer( new \Random\Engine\Mt19937( $this->rngSeed ) );
 		$products = $this->dataset->products();
 		$anchor   = $now->getTimestamp();
@@ -431,6 +445,7 @@ final class ReferenceSeed {
 				$buffers[ InventoryTables::LEDGER ][] = array(
 					'id'             => ++$ledgerId,
 					'variant_id'     => $product,
+					'location_id'    => $locationId,
 					'delta'          => $delta,
 					'on_hand_after'  => $onHand,
 					'reason'         => $reason->value,
@@ -450,6 +465,7 @@ final class ReferenceSeed {
 				$buffers[ InventoryTables::HOLDS ][] = array(
 					'id'            => ++$holdId,
 					'variant_id'    => $product,
+					'location_id'   => $locationId,
 					'cart_id'       => $random->getInt( 1, 1000000 ),
 					'order_id'      => null,
 					'hold_group'    => self::uuid( $random ),
@@ -460,15 +476,21 @@ final class ReferenceSeed {
 				);
 			}
 
-			$buffers[ InventoryTables::ITEMS ][] = array(
+			$buffers[ InventoryTables::POLICIES ][] = array(
 				'variant_id'          => $product,
-				'on_hand'             => $onHand,
-				'allocated'           => 0,
-				'held'                => $held,
 				'track'               => 1,
 				'backorder_policy'    => 'no',
 				'low_stock_threshold' => 0 === $random->getInt( 0, 2 ) ? $random->getInt( 1, 10 ) : null,
 				'updated_at'          => $created . '.000000',
+			);
+
+			$buffers[ InventoryTables::ITEMS ][] = array(
+				'variant_id'  => $product,
+				'location_id' => $locationId,
+				'on_hand'     => $onHand,
+				'allocated'   => 0,
+				'held'        => $held,
+				'updated_at'  => $created . '.000000',
 			);
 
 			foreach ( $buffers as $table => $rows ) {

@@ -639,12 +639,31 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 409
 - Message: Variant {variant_id}: {requested} asked for, but only {available} available.
 - Values: `variant_id`, `requested`, `available`
+- Details: `location_id`, beside the values
 
 ## `stock.item_missing`
 
 - HTTP status: 404
 - Message: Variant {variant_id} has no stock item.
 - Values: `variant_id`
+
+## `stock.location_inactive`
+
+- HTTP status: 409
+- Message: Location {location_id} is deactivated.
+- Values: `location_id`
+
+## `stock.location_missing`
+
+- HTTP status: 404
+- Message: Location {location_id} does not exist.
+- Values: `location_id`
+
+## `stock.no_fulfilling_location`
+
+- HTTP status: 409
+- Message: No location ships online orders at the moment, so nothing can be sold.
+- Values: none
 
 ## `stock.on_hand_conflict`
 
@@ -658,6 +677,13 @@ An internal error carries a generic message and empty details: it is a code mark
 - Internal: a client receives the code, the status, a generic message and the correlation id. This message and its values go to the site's error log only.
 - Message: The held quantity of variant {variant_id} is lower than its holds add up to, so they cannot be given back. Run `wp seocart doctor` for the figures.
 - Values: `variant_id`
+
+## `stock.routing_refused`
+
+- HTTP status: 409
+- Message: These items cannot be sent together in the quantities asked for.
+- Values: none
+- Details: `reason`, `variant_ids`, `available`, beside the values
 
 ## `stock.zero_delta`
 

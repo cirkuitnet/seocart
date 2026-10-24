@@ -58,7 +58,7 @@ final class HoldConcurrencyTest extends StockTestCase {
 	public function test_two_holders_of_the_last_unit_leave_exactly_one_hold(): void {
 		$variant = self::variant();
 		$b       = $this->secondConnection();
-		$claim   = $this->raw( MysqlStockRepository::CLAIM, 1, $variant, 1 );
+		$claim   = $this->raw( MysqlStockRepository::CLAIM, 1, $variant, $this->defaultLocation, 1 );
 
 		$this->stockItem( $variant, 1 );
 
@@ -116,7 +116,7 @@ final class HoldConcurrencyTest extends StockTestCase {
 
 		$variant = self::variant();
 		$b       = $this->secondConnection();
-		$lock    = $this->raw( MysqlStockRepository::LOCK_ITEM, $variant );
+		$lock    = $this->raw( MysqlStockRepository::LOCK_ITEM, $variant, $this->defaultLocation );
 
 		$this->stockItem( $variant, 1 );
 		$this->plantHold( $variant, 1, -60 );
@@ -138,7 +138,7 @@ final class HoldConcurrencyTest extends StockTestCase {
 			$this->assertTrue( $raced->fired );
 			$this->assertSame( 1, $b->reap() );
 
-			$b->query( $this->raw( MysqlStockRepository::CLAIM_EXPIRED, SequentialIdGenerator::nth( 800001 ), $variant ) );
+			$b->query( $this->raw( MysqlStockRepository::CLAIM_EXPIRED, SequentialIdGenerator::nth( 800001 ), $variant, $this->defaultLocation ) );
 
 			$this->assertSame( 0, $b->affectedRows(), 'The expired row was already reclaimed.' );
 		} finally {
@@ -163,13 +163,13 @@ final class HoldConcurrencyTest extends StockTestCase {
 		$first   = $this->secondConnection();
 		$second  = $this->secondConnection();
 		$token   = SequentialIdGenerator::nth( 800001 );
-		$other   = $this->raw( MysqlStockRepository::CLAIM_EXPIRED, SequentialIdGenerator::nth( 800002 ), $variant );
+		$other   = $this->raw( MysqlStockRepository::CLAIM_EXPIRED, SequentialIdGenerator::nth( 800002 ), $variant, $this->defaultLocation );
 
 		$this->stockItem( $variant, 1 );
 		$this->plantHold( $variant, 1, -60 );
 
 		$first->query( 'START TRANSACTION' );
-		$first->query( $this->raw( MysqlStockRepository::CLAIM_EXPIRED, $token, $variant ) );
+		$first->query( $this->raw( MysqlStockRepository::CLAIM_EXPIRED, $token, $variant, $this->defaultLocation ) );
 
 		$this->assertSame( 1, $first->affectedRows() );
 
@@ -180,7 +180,7 @@ final class HoldConcurrencyTest extends StockTestCase {
 
 		$this->assertSame( 0, $second->reap(), 'The second reclaim claimed a row the first had claimed.' );
 
-		$first->query( $this->raw( MysqlStockRepository::GIVE_BACK, $token, $variant, $token ) );
+		$first->query( $this->raw( MysqlStockRepository::GIVE_BACK, $token, $variant, $this->defaultLocation, $token ) );
 
 		$this->assertSame( 1, $first->affectedRows() );
 
@@ -206,7 +206,7 @@ final class HoldConcurrencyTest extends StockTestCase {
 	public function test_a_holder_waits_for_the_sweep_and_gets_the_unit_back(): void {
 		$variant = self::variant();
 		$b       = $this->secondConnection();
-		$claim   = $this->raw( MysqlStockRepository::CLAIM, 1, $variant, 1 );
+		$claim   = $this->raw( MysqlStockRepository::CLAIM, 1, $variant, $this->defaultLocation, 1 );
 
 		$this->stockItem( $variant, 1 );
 		$this->plantHold( $variant, 1, -60 );
@@ -226,7 +226,7 @@ final class HoldConcurrencyTest extends StockTestCase {
 
 		$group = SequentialIdGenerator::nth( 800003 );
 
-		$b->query( $this->raw( MysqlStockRepository::INSERT_HOLD, $variant, 0, 0, $group, 1, '2099-01-01 00:00:00' ) );
+		$b->query( $this->raw( MysqlStockRepository::INSERT_HOLD, $variant, $this->defaultLocation, 0, 0, $group, 1, '2099-01-01 00:00:00' ) );
 
 		$this->assertSame( 1, $this->committedItem( $b, $variant )['held'] ?? null );
 		$this->assertSame( array( $group . ':1' ), $this->committedHolds( $b, $variant ) );
@@ -244,7 +244,7 @@ final class HoldConcurrencyTest extends StockTestCase {
 	public function test_a_holder_waits_for_an_adjustment_that_removes_the_last_unit(): void {
 		$variant = self::variant();
 		$b       = $this->secondConnection();
-		$claim   = $this->raw( MysqlStockRepository::CLAIM, 1, $variant, 1 );
+		$claim   = $this->raw( MysqlStockRepository::CLAIM, 1, $variant, $this->defaultLocation, 1 );
 
 		$this->stockItem( $variant, 1 );
 
@@ -256,7 +256,7 @@ final class HoldConcurrencyTest extends StockTestCase {
 			}
 		);
 
-		$this->service->adjust( $variant, -1, LedgerReason::Damaged, Actor::user( 1 ) );
+		$this->service->adjust( $variant, $this->defaultLocation, -1, LedgerReason::Damaged, Actor::user( 1 ) );
 
 		$this->assertTrue( $raced->fired );
 		$this->assertSame( 0, $b->reap(), 'B held a unit the adjustment had removed.' );
@@ -282,7 +282,7 @@ final class HoldConcurrencyTest extends StockTestCase {
 	public function test_an_adjustment_waits_for_a_hold_and_may_leave_a_shortfall(): void {
 		$variant = self::variant();
 		$b       = $this->secondConnection();
-		$adjust  = $this->raw( MysqlStockRepository::ADJUST, -1, $variant, -1 );
+		$adjust  = $this->raw( MysqlStockRepository::ADJUST, -1, $variant, $this->defaultLocation, -1 );
 
 		$this->stockItem( $variant, 1 );
 
@@ -301,7 +301,7 @@ final class HoldConcurrencyTest extends StockTestCase {
 		$this->assertTrue( $raced->fired );
 		$this->assertSame( 1, $b->reap(), 'The adjustment records the count although a unit is held.' );
 
-		$b->query( $this->raw( MysqlStockRepository::APPEND_LEDGER, $variant, -1, 0, 'recount', 'user', 1, '' ) );
+		$b->query( $this->raw( MysqlStockRepository::APPEND_LEDGER, $variant, $this->defaultLocation, -1, 0, 'recount', 'user', 1, '' ) );
 		$b->query( 'COMMIT' );
 
 		$this->assertSame(
@@ -334,8 +334,8 @@ final class HoldConcurrencyTest extends StockTestCase {
 		$lower  = self::variant();
 		$higher = self::variant();
 		$b      = $this->secondConnection();
-		$first  = $this->raw( MysqlStockRepository::CLAIM, 1, $lower, 1 );
-		$then   = $this->raw( MysqlStockRepository::CLAIM, 1, $higher, 1 );
+		$first  = $this->raw( MysqlStockRepository::CLAIM, 1, $lower, $this->defaultLocation, 1 );
+		$then   = $this->raw( MysqlStockRepository::CLAIM, 1, $higher, $this->defaultLocation, 1 );
 
 		$this->stockItem( $lower, 2 );
 		$this->stockItem( $higher, 2 );
@@ -388,6 +388,136 @@ final class HoldConcurrencyTest extends StockTestCase {
 		$b->query( 'COMMIT' );
 
 		$this->assertSame( 2, $this->committedItem( $b, $lower )['held'] ?? null );
+		$this->assertSame( 2, $this->committedItem( $b, $higher )['held'] ?? null );
+	}
+
+	/**
+	 * Tests that two holders of the last unit at one location leave exactly one hold there, and the variant's item at another location is untouched.
+	 *
+	 * The variant has one unit at a second location and five at the default one. A holds the unit
+	 * at the second location; just before A's hold row is written, B sends the same claim, and the
+	 * server shows it waiting for A's lock on that item only. Once A commits, B's claim finds
+	 * nothing available there. Then B runs the whole service for that location and is told
+	 * `stock.insufficient`, naming it; the default location's item never moved.
+	 *
+	 * Planted violation: in MysqlStockRepository::CLAIM, replace `( on_hand - allocated - held ) >= %d`
+	 * with `%d > 0`: B's claim takes a unit that is not there, and the second location's `held` is 2
+	 * on one unit.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_two_holders_of_the_last_unit_at_a_location_leave_one_hold_there(): void {
+		$variant = self::variant();
+		$second  = $this->plantLocation();
+		$b       = $this->secondConnection();
+		$claim   = $this->raw( MysqlStockRepository::CLAIM, 1, $variant, $second, 1 );
+
+		$this->stockItem( $variant, 5 );
+		$this->service->adjust( $variant, $second, 1, LedgerReason::Received, Actor::user( 1 ) );
+
+		$raced = $this->beforeStatement(
+			self::shapeOf( MysqlStockRepository::INSERT_HOLD ),
+			function () use ( $b, $claim ): void {
+				$b->queryAsync( $claim );
+				$this->awaitWaiting( $b, $claim, 'updating' );
+			}
+		);
+
+		$hold = $this->service->hold( array( new HoldLine( $variant, 1, $second ) ), 600 );
+
+		$this->assertTrue( $raced->fired, 'B never raced A.' );
+		$this->assertSame( 0, $b->reap(), 'B claimed the unit A had just held.' );
+
+		try {
+			$this->secondService()->hold( array( new HoldLine( $variant, 1, $second ) ), 600 );
+			$this->fail( 'A second holder was given the last unit at the location.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( InventoryError::Insufficient, $refused->errorCode() );
+			$this->assertSame( array( $variant, 1, 0, $second ), array( $refused->context()['variant_id'], $refused->context()['requested'], $refused->context()['available'], $refused->details()['location_id'] ?? null ) );
+		}
+
+		$this->assertSame( 1, $this->committedItem( $b, $variant, $second )['held'] ?? null );
+		$this->assertSame( array( 5, 0, 0 ), array_values( (array) $this->committedItem( $b, $variant ) ), 'The default location\'s item is untouched.' );
+		$this->assertSame( array( $hold->holdGroup . ':1' ), $this->committedHolds( $b, $variant ) );
+		$this->assertTrue( $this->projectionCheck()->passed, implode( "\n", $this->projectionCheck()->findings ) );
+	}
+
+	/**
+	 * Tests that a hold of two items at two locations, given out of order, takes them in ascending order of the variant, then the location, so it never deadlocks with another taking them so.
+	 *
+	 * A holds the higher variant at the default location and the lower variant at a second
+	 * location, given in that order; they are held lower variant first. Just before A's second
+	 * claim, B, heavier in its own transaction, claims the lower variant's item: A holds it already,
+	 * so B waits; A finishes, and B then holds both. No pause, no deadlock.
+	 *
+	 * Planted violation: in StockService::merged(), sort the lines by location first: A then holds
+	 * the higher variant at the default location when B arrives, B takes the lower variant at the
+	 * second location and waits for the other, A's claim closes the cycle and InnoDB rolls A back;
+	 * the sleeper runs, which this test forbids.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_opposite_order_holds_across_locations_never_deadlock(): void {
+		$lower  = self::variant();
+		$higher = self::variant();
+		$second = $this->plantLocation();
+		$b      = $this->secondConnection();
+		$first  = $this->raw( MysqlStockRepository::CLAIM, 1, $lower, $second, 1 );
+		$then   = $this->raw( MysqlStockRepository::CLAIM, 1, $higher, $this->defaultLocation, 1 );
+
+		$this->stockItem( $lower, 0 );
+		$this->service->adjust( $lower, $second, 2, LedgerReason::Received, Actor::user( 1 ) );
+		$this->stockItem( $higher, 2 );
+
+		foreach ( array( 1, 2, 3 ) as $id ) {
+			$this->insertRow( $id, 'seed' );
+		}
+
+		$b->query( 'START TRANSACTION' );
+		$b->query( sprintf( "UPDATE `%s` SET value = 'b' WHERE id IN (1, 2, 3)", $this->rowsTable() ) );
+
+		$waited = null;
+
+		$this->beforeStatement(
+			self::shapeOf( MysqlStockRepository::CLAIM ),
+			function () use ( $b, $first, $then, &$waited ): void {
+				$b->queryAsync( $first );
+
+				$waited = $this->waitsOrAnswers( $b, $first, 'updating' );
+
+				if ( ! $waited ) {
+					// A did not hold the lower variant's item: B holds it now, and asks for the other, which A holds.
+					$this->assertSame( 1, $b->reap() );
+
+					$b->queryAsync( $then );
+					$this->awaitWaiting( $b, $then, 'updating' );
+				}
+			},
+			2
+		);
+
+		$this->onSleep = function () use ( $b ): void {
+			if ( $b->isReady( 5000 ) ) {
+				$b->reap();
+			}
+
+			$b->query( 'COMMIT' );
+		};
+
+		$hold = $this->service->hold( array( new HoldLine( $higher, 1 ), new HoldLine( $lower, 1, $second ) ), 600 );
+
+		$this->assertSame( array(), $this->sleeps, 'A deadlock happened where the lock order forbids one.' );
+		$this->assertTrue( $waited, 'B was not blocked on the lower variant\'s item, so A did not take it first.' );
+		$this->assertSame( array( array( $lower, $second ), array( $higher, $this->defaultLocation ) ), array_map( static fn( HoldLine $line ): array => array( $line->variantId, $line->locationId ), $hold->lines ), 'Held ascending by variant, then location.' );
+		$this->assertSame( 1, $b->reap(), 'B saw no deadlock, and held the lower variant\'s item once A committed.' );
+
+		$b->query( $then );
+
+		$this->assertSame( 1, $b->affectedRows() );
+
+		$b->query( 'COMMIT' );
+
+		$this->assertSame( 2, $this->committedItem( $b, $lower, $second )['held'] ?? null );
 		$this->assertSame( 2, $this->committedItem( $b, $higher )['held'] ?? null );
 	}
 
@@ -465,14 +595,14 @@ final class HoldConcurrencyTest extends StockTestCase {
 		$b->query( sprintf( "UPDATE `%s` SET value = 'b' WHERE id <= 10", $this->rowsTable() ) );
 
 		$raced = $this->beforeStatement(
-			'/^' . preg_quote( $this->raw( MysqlStockRepository::CLAIM, 1, $second, 1 ), '/' ) . '$/',
+			'/^' . preg_quote( $this->raw( MysqlStockRepository::CLAIM, 1, $second, $this->defaultLocation, 1 ), '/' ) . '$/',
 			function () use ( $b, $groups, &$waited ): void {
 				foreach ( $groups as $variant => $group ) {
-					$b->query( $this->raw( MysqlStockRepository::CLAIM, 1, $variant, 1 ) );
+					$b->query( $this->raw( MysqlStockRepository::CLAIM, 1, $variant, $this->defaultLocation, 1 ) );
 
 					$this->assertSame( 1, $b->affectedRows(), 'B could not claim an item A had not locked.' );
 
-					$insert = $this->raw( MysqlStockRepository::INSERT_HOLD, $variant, 0, 0, $group, 1, '2099-01-01 00:00:00' );
+					$insert = $this->raw( MysqlStockRepository::INSERT_HOLD, $variant, $this->defaultLocation, 0, 0, $group, 1, '2099-01-01 00:00:00' );
 
 					$b->queryAsync( $insert );
 

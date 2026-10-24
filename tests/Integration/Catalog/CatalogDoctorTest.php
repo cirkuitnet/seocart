@@ -36,8 +36,6 @@ use SEOCart\Catalog\Infrastructure\Doctor\TranslationGroupCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\UnboundPostCheck;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
-use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
-use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Authorization\ProductCapabilities;
@@ -57,6 +55,8 @@ use SEOCart\Tests\Support\Doubles\FrozenClock;
 use SEOCart\Tests\Support\Doubles\OneLocale;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
+use SEOCart\Tests\Support\Inventory\StockServices;
+use SEOCart\Tests\Support\Inventory\StockTables;
 use SEOCart\Tests\Support\Doubles\SeveralLocales;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- Plants a violation of each row directly, as a crash, a foreign write or a refused delete would leave it, and reads checksums back.
@@ -70,15 +70,6 @@ use SEOCart\Tests\Support\Doubles\SeveralLocales;
  * @since 0.1.0
  */
 final class CatalogDoctorTest extends CatalogTestCase {
-
-	/**
-	 * The stock repository over `$this->db`.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var MysqlStockRepository
-	 */
-	private MysqlStockRepository $stockRepository;
 
 	/**
 	 * The stock service over `$this->db`.
@@ -118,18 +109,9 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		$operations = new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) );
 
 		( new CreateOutboxMigration() )->up( $operations );
-		( new CreateStockTablesMigration() )->up( $operations );
+		StockTables::create( $this->db );
 
-		$this->stockRepository = new MysqlStockRepository( $this->db );
-		$this->stock           = new StockService(
-			$this->stockRepository,
-			$this->db,
-			new RecordingEventPublisher( $this->db ),
-			new SequentialIdGenerator( 500000 ),
-			new FrozenClock( $this->databaseNow() ),
-			new CorrelationId( new SequentialIdGenerator( 600000 ) ),
-			new Authorizer( new CapabilityDeclaration() )
-		);
+		$this->stock = StockServices::over( $this->db, new RecordingEventPublisher( $this->db ), new SequentialIdGenerator( 500000 ), new FrozenClock( $this->databaseNow() ), new CorrelationId( new SequentialIdGenerator( 600000 ) ) );
 
 		$this->withLock = array( new LockService( $this->db, LockMode::GetLock ), 'withLock' );
 
@@ -658,15 +640,17 @@ final class CatalogDoctorTest extends CatalogTestCase {
 	/**
 	 * Tests row 6's repair against a stock item another writer creates after the re-check read the levels: that item is kept, on both servers.
 	 *
-	 * The other writer commits the item, with 7 units, from a second connection just before the
-	 * repair's insert leaves. MySQL's insert finds the item and leaves it as it is. MariaDB refuses
-	 * the insert of a row committed after the repair's snapshot (error 1020) and rolls the
-	 * transaction back; the repair runs again, once, reads the levels again, and creates nothing.
-	 * MySQL's change line still says it created the item, which the insert's answer cannot tell
-	 * apart; only MariaDB's is asserted.
+	 * The other writer commits the variant's stock policy and its item, with 7 units, from a second
+	 * connection just before the repair's first insert leaves, as a product save would create them:
+	 * the policy first, since no writer creates an item without it. MySQL's inserts find both rows
+	 * and leave them as they are. MariaDB refuses the insert of a row committed after the repair's
+	 * snapshot (error 1020) and rolls the transaction back; the repair runs again, once, reads the
+	 * levels again, and creates nothing. On both, the repair reports no change.
 	 *
-	 * Planted violation: in MissingStockItemCheck::createUnderLock(), run the transaction with no
-	 * retry policy: on MariaDB the repair fails with `database.transaction_retryable`.
+	 * Planted violations: in MissingStockItemCheck::createUnderLock(), run the transaction with no
+	 * retry policy: on MariaDB the repair fails with `database.transaction_retryable`; and report
+	 * the variants the re-check found missing in place of those createItems() created: on MySQL
+	 * the repair reports the item the other writer created.
 	 *
 	 * @since 0.2.0
 	 *
@@ -679,12 +663,15 @@ final class CatalogDoctorTest extends CatalogTestCase {
 
 		$this->assertFalse( $check->run()->passed );
 
-		$items = $this->db->table( InventoryTables::ITEMS );
-		$b     = $this->secondConnection();
-		$raced = $this->beforeStatement(
-			'/^INSERT INTO `' . preg_quote( $items, '/' ) . '`/',
-			static function () use ( $b, $items, $variantId ): void {
-				$b->query( "INSERT INTO `$items` ( variant_id, on_hand, updated_at ) VALUES ( $variantId, 7, UTC_TIMESTAMP(6) )" );
+		$items    = $this->db->table( InventoryTables::ITEMS );
+		$policies = $this->db->table( InventoryTables::POLICIES );
+		$location = StockTables::defaultLocation( $this->db );
+		$b        = $this->secondConnection();
+		$raced    = $this->beforeStatement(
+			'/^INSERT INTO `' . preg_quote( $policies, '/' ) . '`/',
+			static function () use ( $b, $items, $policies, $location, $variantId ): void {
+				$b->query( "INSERT INTO `$policies` ( variant_id, updated_at ) VALUES ( $variantId, UTC_TIMESTAMP(6) )" );
+				$b->query( "INSERT INTO `$items` ( variant_id, location_id, on_hand, updated_at ) VALUES ( $variantId, $location, 7, UTC_TIMESTAMP(6) )" );
 			}
 		);
 
@@ -701,6 +688,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		}
 
 		$this->assertSame( array(), $this->sleeps, 'MySQL ran the repair again: nothing but a deadlock could make it.' );
+		$this->assertSame( array(), $repair->changes, 'The repair reported an item the other writer created.' );
 	}
 
 	/**

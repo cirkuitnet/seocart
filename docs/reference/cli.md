@@ -25,7 +25,7 @@ wp seocart settings get [--format=<format>]
 Changes the store settings the request names, checking every value before saving any, and returns every store setting.
 
 ```sh
-wp seocart settings update [--base_currency=<base_currency>] [--cross_zone_policy=<cross_zone_policy>] [--tax_rounding_mode=<tax_rounding_mode>] [--order_agent_per_order=<order_agent_per_order>] [--order_agent_per_day=<order_agent_per_day>] [--format=<format>]
+wp seocart settings update [--base_currency=<base_currency>] [--cross_zone_policy=<cross_zone_policy>] [--tax_rounding_mode=<tax_rounding_mode>] [--order_agent_per_order=<order_agent_per_order>] [--order_agent_per_day=<order_agent_per_day>] [--multi_location_fulfilment=<multi_location_fulfilment>] [--transfer_lead_days=<transfer_lead_days>] [--transfer_warning_days=<transfer_warning_days>] [--format=<format>]
 ```
 
 - Operation: `settings.update_settings`
@@ -39,6 +39,9 @@ wp seocart settings update [--base_currency=<base_currency>] [--cross_zone_polic
 - `[--tax_rounding_mode=<tax_rounding_mode>]`: Where tax is rounded: per_line rounds each line's tax, per_subtotal rounds the tax of the lines of one tax class once and shares it out to them. One of `per_line`, `per_subtotal`.
 - `[--order_agent_per_order=<order_agent_per_order>]`: The most an order agent may give back of one order, all of its refunds together, as an amount of the base currency in major units, such as 250.00; empty for no cap. Text of at most 22 characters.
 - `[--order_agent_per_day=<order_agent_per_day>]`: The most an order agent may ask the payment gateway to give back in any 24 hours, of any orders, as an amount of the base currency in major units, such as 1000.00; empty for no cap. Text of at most 22 characters.
+- `[--multi_location_fulfilment=<multi_location_fulfilment>]`: What happens when no one location can ship a whole order: split ships it from several locations, transfer accepts it and brings its units to one location before it ships, refuse refuses it at checkout. One of `split`, `transfer`, `refuse`.
+- `[--transfer_lead_days=<transfer_lead_days>]`: The days a shopper is told an order adds when its units must first be brought to one location. An integer from 0 to 365.
+- `[--transfer_warning_days=<transfer_warning_days>]`: The days a transfer an order waits for may stay requested before it is flagged. An integer from 1 to 365.
 - `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
 
 ## `wp seocart stock adjust`
