@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- These exceptions report a caller's programming error to the developer; they are never HTML.
 
 /**
- * The second unit of work of an order placement: the gateway's answer to the order's authorization, applied and settled.
+ * The second unit of work of an order placement: the gateway's answer about the order's payment, applied and settled.
  *
  * Owns one fact: what a placement's settlement does with each answer. Every path that learns the
  * gateway's answer comes here: the placement itself, a webhook, the reconciliation job. One
@@ -53,13 +53,15 @@ defined( 'ABSPATH' ) || exit;
  * order, the promotions, and the cart last. The payment path applies the answer, with the money and
  * the order's status; by what it came to, this settles the rest in the same transaction:
  *
- * - approved: the order's held units are allocated to it, its promotions' uses committed and its
+ * - approved, the authorization or the capture of a payment the gateway authorized and captured
+ *   at once: the order's held units are allocated to it, its promotions' uses committed and its
  *   cart converted. When its units are gone, because its hold expired and was taken, the order
  *   goes on hold for a person, with its uses committed and its cart converted: the payment stands;
  * - declined: its hold released, its uses given back and its cart opened again;
- * - an amount or a currency the order does not have: the order is on hold already, by the payment
- *   path, and nothing is ever captured; its units are allocated to it while a person looks, its uses
- *   committed and its cart converted;
+ * - an amount or a currency the order does not have, or a capture or a refund the payment's state
+ *   cannot take, such as one made in the provider's dashboard while the shopper was asked to act:
+ *   the order is on hold already, by the payment path, and nothing is ever captured; its units are
+ *   allocated to it while a person looks, its uses committed and its cart converted;
  * - an approval that came after the placement ended without it, its intent failed: the payment path
  *   keeps it unapplied and flags the order; the units, the uses and the cart it gave back stay so;
  * - the shopper must act, or the gateway is still deciding: nothing more; the order keeps its hold
@@ -69,8 +71,10 @@ defined( 'ABSPATH' ) || exit;
  *   the order. A void that lands after the approval did releases nothing: the payment path parked
  *   the order for a person, with what it holds. A gateway that answers the void with the
  *   authorization's approval, the shopper having finished just before, is settled as an approval;
- * - an answer applied before, or a stale one, about a state the intent has left, or a void kept
- *   for a person: nothing.
+ * - an answer applied before, or a stale one, about a state the intent has left; a void kept for a
+ *   person; a refund the payment path did not keep for a person, which never ends a placement's
+ *   wait; a capture or a refund of a payment its authorization settled before (settlesNothing()):
+ *   nothing.
  *
  * An order placed with nothing to pay has no answer to wait for: settleNothingDue() runs the
  * same unit of work with the payment path recording it paid instead of applying an answer, the
@@ -130,14 +134,16 @@ final class SettlePlacement {
 	}
 
 	/**
-	 * Applies the gateway's answer to an order's authorization, or to its void, and settles the order's stock, promotion uses and cart, in one transaction.
+	 * Applies the gateway's answer about an order's payment and settles the order's stock, promotion uses and cart, in one transaction.
+	 *
+	 * The answer is the one to the order's authorization or to its void, or whatever the provider
+	 * reports when asked where the payment stands, a capture or a refund included: the payment path
+	 * decides each, and the settlement follows what it did.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 Settles the void of a payment whose shopper never acted.
+	 * @since 0.2.0 Settles the void of a payment whose shopper never acted, and a capture or a refund the provider reports.
 	 *
-	 * @throws CodedException|\InvalidArgumentException What the payment path refuses: nothing is changed. An
-	 *         \InvalidArgumentException when the answer is not about the order's authorization or its void: a
-	 *         placement settles nothing else.
+	 * @throws CodedException|\LogicException What the payment path refuses: nothing is changed.
 	 *
 	 * @param GatewayResult   $result     The gateway's answer.
 	 * @param Actor           $actor      On whose authority: the shopper, or the system for a job.
@@ -148,10 +154,6 @@ final class SettlePlacement {
 	 * @return SettledPlacement What the settlement came to, with what the payment path did.
 	 */
 	public function apply( GatewayResult $result, Actor $actor, ?VoidReason $voidReason = null, ?string $keptAction = null ): SettledPlacement {
-		if ( ! in_array( $result->operation, array( Operation::Authorize, Operation::Void ), true ) ) {
-			throw new \InvalidArgumentException( 'A placement is settled by the answer to its authorization, or to the void of it.' );
-		}
-
 		return $this->tx->transaction(
 			function () use ( $result, $actor, $voidReason, $keptAction ): SettledPlacement {
 				$applied = $this->payments->applyGatewayResult( $result, $actor, null, $voidReason );
@@ -268,6 +270,11 @@ final class SettlePlacement {
 			return new SettledPlacement( PlacementOutcome::Duplicate, $applied->orderId, $applied->orderStatusTo, $applied->paymentTo );
 		}
 
+		if ( self::settlesNothing( $applied ) ) {
+			// A refund that ends no wait, or an answer about a placement settled before: the payment path did all there is to do.
+			return new SettledPlacement( PlacementOutcome::Duplicate, $applied->orderId, $applied->orderStatusTo, $applied->paymentTo );
+		}
+
 		switch ( $applied->kind ) {
 			case ApplicationKind::Applied:
 				return $this->accept( $applied->orderId, self::holdGroup( $applied->orderId, $applied->holdGroup ), $applied->orderStatusTo, $applied->paymentTo, $actor );
@@ -313,6 +320,36 @@ final class SettlePlacement {
 		}
 
 		return $this->answered( $applied->orderId, $outcome, $applied->orderStatusTo, $applied->paymentTo, $keptAction );
+	}
+
+	/**
+	 * Tells whether the payment path's application of a capture or a refund leaves the placement as it stands.
+	 *
+	 * A placement asks for an authorization and for the void of one, but a provider asked where a
+	 * payment stands may report another operation, such as a capture or a refund made in its
+	 * dashboard. A capture settles the placement as any answer does: the sale of an intent the
+	 * gateway authorized and captured at once as an approval, its decline as a decline, and one the
+	 * payment's state cannot take as a mismatch, kept for a person. A refund settles it only when
+	 * kept for a person: one the payment path recorded otherwise, such as a decline, leaves the
+	 * payment as it was. Neither moves anything of a placement its authorization settled before,
+	 * whose order was accepted with its units: an intent that was authorized, captured or refunded.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Application $applied What the payment path did with an answer that is not about a void.
+	 * @return bool True when the settlement has nothing to do; false for an authorization's answer, and for a capture's
+	 *              or a refund's that settles the placement.
+	 */
+	private static function settlesNothing( Application $applied ): bool {
+		if ( Operation::Authorize === $applied->operation ) {
+			return false;
+		}
+
+		if ( Operation::Refund === $applied->operation && ApplicationKind::Mismatch !== $applied->kind ) {
+			return true;
+		}
+
+		return in_array( $applied->intentFrom, array( IntentStatus::Authorized, IntentStatus::Captured, IntentStatus::PartiallyRefunded, IntentStatus::Refunded ), true );
 	}
 
 	/**

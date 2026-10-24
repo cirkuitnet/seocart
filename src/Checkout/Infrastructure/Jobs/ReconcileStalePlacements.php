@@ -55,8 +55,10 @@ defined( 'ABSPATH' ) || exit;
  *
  * Applying the same answer twice, or settling an order with nothing due twice, is a no-op, so two
  * runners at once, the schedule and a command, settle each placement once. A failure is reported
- * with the intent or the order and the run goes on; the job is never retried, the next run is the
- * retry.
+ * with the intent or the order and the run goes on, whatever was thrown: one that is neither the
+ * gateway's missing answer nor a coded refusal, such as an adapter's or the store's own
+ * programming error, is reported as UNEXPECTED with the class of what was thrown, never its
+ * message, which could carry a value. The job is never retried; the next run is the retry.
  *
  * @since 0.1.0
  */
@@ -97,6 +99,15 @@ final class ReconcileStalePlacements implements JobHandler {
 	 * @var string
 	 */
 	public const DEFERRED = 'checkout.reconcile_deferred';
+
+	/**
+	 * The reason an intent or an order is reported deferred with when its settlement threw something that is neither the gateway's missing answer nor a coded refusal.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const UNEXPECTED = 'unexpected_exception';
 
 	/**
 	 * Nanoseconds in a second.
@@ -229,6 +240,14 @@ final class ReconcileStalePlacements implements JobHandler {
 							'cause'       => $deferred instanceof CodedException ? ( $deferred->context()['reason'] ?? null ) : null,
 						)
 					);
+				} catch ( \Throwable $failure ) {
+					$this->reportUnexpected(
+						array(
+							'intent_uuid' => $intent->uuid,
+							'gateway_id'  => $intent->gatewayId,
+						),
+						$failure
+					);
 				}
 			}
 
@@ -285,10 +304,33 @@ final class ReconcileStalePlacements implements JobHandler {
 							'reason'   => (string) $deferred->errorCode()->value,
 						)
 					);
+				} catch ( \Throwable $failure ) {
+					$this->reportUnexpected( array( 'order_id' => $orderId ), $failure );
 				}
 			}
 
 			$full = count( $page ) >= self::PAGE;
 		} while ( $full && ( $this->clock )() < $deadline );
+	}
+
+	/**
+	 * Reports an intent or an order deferred because its settlement threw something unexpected: what it is, and the class of what was thrown, never its message.
+	 *
+	 * Whatever its settlement wrote was rolled back with its transaction, and the next run tries
+	 * again; the line is what a person acts on.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, int|string> $about   What was being settled: the intent and its gateway, or the order.
+	 * @param \Throwable                $failure What its settlement threw.
+	 */
+	private function reportUnexpected( array $about, \Throwable $failure ): void {
+		( $this->report )(
+			self::DEFERRED,
+			$about + array(
+				'reason'    => self::UNEXPECTED,
+				'exception' => get_class( $failure ),
+			)
+		);
 	}
 }
