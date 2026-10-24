@@ -19,7 +19,8 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: the reasons stock may move, and which of them a merchant may give. A merchant
  * adjusts stock with one of merchant()'s reasons; the adjust-stock operation builds its allowed
  * values from that list and from nowhere else. The other reasons are written by the system: a
- * deleted variant's last entry says `variant_deleted`.
+ * deleted variant's last entry at each location says `variant_deleted`, and the two ends of a
+ * transfer say `transfer_out` and `transfer_in`.
  *
  * @since 0.1.0
  */
@@ -66,6 +67,20 @@ enum LedgerReason: string {
 	 * @since 0.1.0
 	 */
 	case VariantDeleted = 'variant_deleted';
+
+	/**
+	 * Units left the location for another, on a transfer.
+	 *
+	 * @since 0.2.0
+	 */
+	case TransferOut = 'transfer_out';
+
+	/**
+	 * Units arrived at the location from another, on a transfer.
+	 *
+	 * @since 0.2.0
+	 */
+	case TransferIn = 'transfer_in';
 
 	/**
 	 * Returns the reasons a merchant may give for an adjustment.

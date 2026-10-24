@@ -26,6 +26,8 @@ use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
+use SEOCart\Inventory\Infrastructure\Migrations\SeedDefaultLocation;
+use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\DataRegistry\OwnedData;
@@ -96,8 +98,8 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  *   scan of the whole source_post_id index);
  * - in tests/query-plan-allow-list.json, empty the reason of an entry: the list is refused;
  * - add an entry for a query the run does not send: the run names the stale entry;
- * - in exercise(), leave out the sweep's search, expiredVariants(): the run names the stock
- *   repository's EXPIRED_VARIANTS statement as a read it did not send;
+ * - in exercise(), leave out the sweep's search, expiredItems(): the run names the stock
+ *   repository's EXPIRED_ITEMS statement as a read it did not send;
  * - in exercise(), leave out the rolled-back save: the run names the catalog's reads of the
  *   write path, the SKU check among them, as reads it did not send;
  * - in exercise(), leave out one of the catalog's cursor calls, unboundPostIds( $latePost, 20 ): the run
@@ -180,6 +182,15 @@ final class QueryPlanTest extends DatabaseTestCase {
 	private static string $baseCurrency = 'USD';
 
 	/**
+	 * The seeded store's second location, active, with a few hundred items at zero.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private static int $secondLocation = 0;
+
+	/**
 	 * Installs the schema and seeds `medium`, once for the class, and prints how long seeding took.
 	 *
 	 * @since 0.1.0
@@ -200,6 +211,8 @@ final class QueryPlanTest extends DatabaseTestCase {
 		self::$written      = self::$seed->write( $db );
 
 		self::writeKeys( $db );
+
+		self::$secondLocation = self::writeSecondLocation( $db );
 
 		$counts = array();
 
@@ -364,6 +377,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		$products = new MysqlProductRepository( $db, static fn(): Currency => Currency::of( self::$baseCurrency ) );
 		$stock    = new MysqlStockRepository( $db );
+		$location = (int) ( new MysqlLocationRepository( $db ) )->defaultId();
 		$page     = range( 4001, 4024 );
 		$holds    = $this->db->table( InventoryTables::HOLDS );
 		$group    = (string) $wpdb->get_var( $wpdb->prepare( 'SELECT hold_group FROM %i ORDER BY id LIMIT 1', $holds ) );
@@ -388,9 +402,27 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		$stock->levels( $page );
 		$stock->levels( array( 5000 ) );
+		$stock->levelsAt( $page );
+		$stock->itemLocations( $page );
 		$stock->configuration( $page, 900 );
-		$stock->groupVariants( $group );
-		$stock->expiredVariants( 0, 100 );
+		$stock->holdRows( $group );
+		$stock->expiredItems( 0, 0, 100 );
+
+		// Routing's one read of what each location has, and the figure shown for sale, over both locations.
+		$stock->availability( $page, array( $location, self::$secondLocation ) );
+		$stock->saleFigures( $page, array( $location, self::$secondLocation ) );
+
+		// Doctor's total of the units at deactivated locations, which a seeded store has none of.
+		$stock->locationUnits( array( self::$secondLocation ) );
+
+		// The list of locations, read past the object cache, and the location reads of doctor and of the upgrade.
+		$locations = new MysqlLocationRepository( $db );
+
+		wp_cache_delete( MysqlLocationRepository::CACHE_KEY, MysqlLocationRepository::CACHE_GROUP );
+
+		$this->assertCount( 2, $locations->all() );
+		$this->assertTrue( $locations->any() );
+		$locations->defaultWithoutAddress();
 
 		// A cursor near the end of the table: doctor's own reverse check pages from 0, so this is
 		// the only place a real cursor reaches MysqlStockRepository::ITEM_VARIANT_IDS.
@@ -472,16 +504,34 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		try {
 			$db->transaction(
-				function () use ( $db, $products, $stock, $promotions, $expired, $carts, $someCart, $keys, $rollBack ): void {
-					$stock->lockedLevel( $expired );
+				function () use ( $db, $products, $stock, $locations, $promotions, $expired, $location, $carts, $someCart, $keys, $rollBack ): void {
+					$stock->lockedLevel( $expired, $location );
 					$stock->hasOpenAllocation( $expired );
+
+					// A delete's locks of the variant's policy and items, and an adjustment's lock of its policy and location.
+					$stock->lockPolicy( $expired );
+					$stock->lockItemsOf( $expired );
+					$stock->lockAdjustable( $expired, self::$secondLocation );
+
+					// Doctor's repair of a store without a default: this store has one, so it marks nothing.
+					$this->assertNull( $locations->markLowestActiveDefault() );
+
+					// The upgrade's pages of the earlier rows, each from a cursor near the end of its table.
+					foreach ( array(
+						InventoryTables::ITEMS       => Dataset::Medium->products() - 1000,
+						InventoryTables::HOLDS       => self::lastId( InventoryTables::HOLDS ) - 1000,
+						InventoryTables::ALLOCATIONS => 0,
+						InventoryTables::LEDGER      => self::lastId( InventoryTables::LEDGER ) - 1000,
+					) as $table => $after ) {
+						( new SeedDefaultLocation() )->runBatch( $table . ':' . max( 0, $after ), $db );
+					}
 
 					// The locking read that classifies a refused cart write, and the sweep's search
 					// and deletes, rolled back with the rest.
 					$this->assertNotNull( $carts->diagnose( $someCart ) );
 					$this->assertGreaterThan( 0, $carts->deleteExpired( 100 ) );
 					$carts->settleOrder( 1, CartStatus::Converted );
-					$stock->reclaimExpired( $expired, '00000000-0000-4000-8000-000000000000' );
+					$stock->reclaimExpired( $expired, $location, '00000000-0000-4000-8000-000000000000' );
 
 					// A key's claim, and a second claim of it, whose duplicate is read by the key's unique key.
 					$keyHash = IdempotencyClaim::keyHash( hash( 'sha256', 'a query-plan cart' ), 'attempt-1' );
@@ -623,6 +673,47 @@ final class QueryPlanTest extends DatabaseTestCase {
 	 */
 	private static function switchedOn(): bool {
 		return '1' === getenv( self::SWITCH );
+	}
+
+	/**
+	 * Gives the seeded store a second active location, with an item at zero there for one variant in thirty: what a second location has before stock is moved to it.
+	 *
+	 * The items have no ledger, as an item at zero created by a first adjustment has none until
+	 * it counts a unit, so doctor stays clean.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Database $db The connection.
+	 * @return int The location's id.
+	 */
+	private static function writeSecondLocation( Database $db ): int {
+		$db->execute(
+			'INSERT INTO %i ( uuid, name, active, fulfils_online, offers_pickup, priority, created_at, updated_at ) VALUES ( %s, %s, 1, 1, 0, 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6) )',
+			$db->table( InventoryTables::LOCATIONS ),
+			'018f4e2a-7b3c-7d1e-9a2b-00000000000b',
+			'Second location'
+		);
+
+		$location = $db->lastInsertId();
+		$items    = $db->table( InventoryTables::ITEMS );
+
+		$db->execute( 'INSERT INTO %i ( variant_id, location_id, on_hand, allocated, held, updated_at ) SELECT variant_id, %d, 0, 0, 0, updated_at FROM %i WHERE MOD( variant_id, 30 ) = 0', $items, $location, $items );
+		$db->execute( 'ANALYZE TABLE %i', $items );
+		wp_cache_delete( MysqlLocationRepository::CACHE_KEY, MysqlLocationRepository::CACHE_GROUP );
+
+		return $location;
+	}
+
+	/**
+	 * Returns the highest id of a seeded stock table.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $table The unprefixed name.
+	 * @return int The id.
+	 */
+	private static function lastId( string $table ): int {
+		return (int) self::plainDatabase()->fetchValue( 'SELECT MAX( id ) FROM %i', self::plainDatabase()->table( $table ) );
 	}
 
 	/**

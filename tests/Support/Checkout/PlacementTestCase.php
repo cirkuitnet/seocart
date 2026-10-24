@@ -41,6 +41,7 @@ use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\Doubles\FakeCartTokens;
 use SEOCart\Tests\Support\Doubles\RecordingGateway;
 use SEOCart\Tests\Support\Doubles\RecordingWake;
+use SEOCart\Tests\Support\Inventory\StockTables;
 use SEOCart\Tests\Support\Performance\ReferenceCarts;
 use SEOCart\Tests\Support\Pricing\Inputs;
 use SEOCart\Tests\Support\RunningProbe;
@@ -307,6 +308,7 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 	 * binding in the carts' locale; its id is the id of its first variant.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Its stock policy, and its item at the store's default location, which it creates when there is none.
 	 *
 	 * @param int    $onHand     Optional. The units on hand. Default 5.
 	 * @param int    $priceMinor Optional. The net price, in minor units. Default 1000.
@@ -334,10 +336,12 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 			hash( 'sha256', 'variant ' . $variant )
 		);
 		$this->price( array( $variant => $priceMinor ) );
+		$this->db->execute( 'INSERT INTO %i ( variant_id, updated_at ) VALUES ( %d, UTC_TIMESTAMP(6) )', $this->table( InventoryTables::POLICIES ), $variant );
 		$this->db->execute(
-			'INSERT INTO %i ( variant_id, on_hand, updated_at ) VALUES ( %d, %d, UTC_TIMESTAMP(6) )',
+			'INSERT INTO %i ( variant_id, location_id, on_hand, updated_at ) VALUES ( %d, %d, %d, UTC_TIMESTAMP(6) )',
 			$this->table( InventoryTables::ITEMS ),
 			$variant,
+			StockTables::defaultLocation( $this->db ),
 			$onHand
 		);
 

@@ -11,16 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Inventory;
 
-use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
-use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
-use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
-use SEOCart\Platform\Authorization\Authorizer;
-use SEOCart\Platform\Authorization\CapabilityDeclaration;
-use SEOCart\Platform\Database\Schema\DdlGenerator;
-use SEOCart\Platform\Database\Schema\SchemaVerifier;
-use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\Events\EventCatalog;
 use SEOCart\Platform\Events\HookBridge;
 use SEOCart\Platform\Events\Publisher;
@@ -30,6 +22,8 @@ use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
 use SEOCart\Tests\Support\Doubles\RecordingWake;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
+use SEOCart\Tests\Support\Inventory\StockServices;
+use SEOCart\Tests\Support\Inventory\StockTables;
 use SEOCart\Tests\Support\Jobs\JobsTestCase;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- The test plants a stock item and an expired hold directly.
@@ -54,7 +48,7 @@ final class SweepHoldsJobTest extends JobsTestCase {
 	public function set_up(): void {
 		parent::set_up();
 
-		( new CreateStockTablesMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+		StockTables::create( $this->db );
 	}
 
 	/**
@@ -77,14 +71,12 @@ final class SweepHoldsJobTest extends JobsTestCase {
 	 * @throws \LogicException When the queue asks for a handler other than the sweep, which it must not.
 	 */
 	public function test_the_queue_schedules_the_sweep_and_a_due_run_reclaims(): void {
-		$service = new StockService(
-			new MysqlStockRepository( $this->db ),
+		$service = StockServices::over(
 			$this->db,
 			new Publisher( $this->db, $this->outbox, new HookBridge( $this->reporter() ), new EventCatalog( Modules::EVENT_CLASSES ), $this->correlation, new RecordingWake() ),
 			new SequentialIdGenerator( 1 ),
 			FrozenClock::at( '2026-09-24 12:00:00' ),
-			$this->correlation,
-			new Authorizer( new CapabilityDeclaration() )
+			$this->correlation
 		);
 
 		$this->wire( array( SweepHolds::class ), static fn( string $handlerClass ): JobHandler => SweepHolds::class === $handlerClass ? new SweepHolds( $service ) : throw new \LogicException( $handlerClass . ' is not the sweep.' ) );
@@ -95,10 +87,12 @@ final class SweepHoldsJobTest extends JobsTestCase {
 
 		$this->assertSame( array( '[{"h":"stock.sweep_holds","r":300}]' ), array_column( $actions, 'args' ) );
 
-		$variant = 4242;
+		$variant  = 4242;
+		$location = StockTables::defaultLocation( $this->db );
 
-		$this->db->execute( 'INSERT INTO %i ( variant_id, on_hand, held, updated_at ) VALUES ( %d, 1, 1, UTC_TIMESTAMP(6) )', $this->db->table( InventoryTables::ITEMS ), $variant );
-		$this->db->execute( "INSERT INTO %i ( variant_id, hold_group, quantity, expires_at, created_at ) VALUES ( %d, '00000000-0000-7000-8000-000000000001', 1, UTC_TIMESTAMP() - INTERVAL 60 SECOND, UTC_TIMESTAMP(6) )", $this->db->table( InventoryTables::HOLDS ), $variant );
+		$this->db->execute( 'INSERT INTO %i ( variant_id, updated_at ) VALUES ( %d, UTC_TIMESTAMP(6) )', $this->db->table( InventoryTables::POLICIES ), $variant );
+		$this->db->execute( 'INSERT INTO %i ( variant_id, location_id, on_hand, held, updated_at ) VALUES ( %d, %d, 1, 1, UTC_TIMESTAMP(6) )', $this->db->table( InventoryTables::ITEMS ), $variant, $location );
+		$this->db->execute( "INSERT INTO %i ( variant_id, location_id, hold_group, quantity, expires_at, created_at ) VALUES ( %d, %d, '00000000-0000-7000-8000-000000000001', 1, UTC_TIMESTAMP() - INTERVAL 60 SECOND, UTC_TIMESTAMP(6) )", $this->db->table( InventoryTables::HOLDS ), $variant, $location );
 
 		$this->makeDue( $actions[0]['id'] );
 		$this->runner->runDue( 30, 'test' );

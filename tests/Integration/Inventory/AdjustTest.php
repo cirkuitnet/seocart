@@ -13,10 +13,14 @@ namespace SEOCart\Tests\Integration\Inventory;
 
 use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Inventory\Domain\Event\StockAdjusted;
+use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
+use SEOCart\Inventory\Domain\StockLevel;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Database\Isolation;
+use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\Schema\MutationPattern;
 use SEOCart\Platform\Events\Outbox;
 use SEOCart\Platform\Events\OutboxTable;
@@ -49,7 +53,7 @@ final class AdjustTest extends StockTestCase {
 
 		$this->stockItem( $variant, 0 );
 
-		$adjustment = $this->service->adjust( $variant, 5, LedgerReason::Received, Actor::user( 3 ) );
+		$adjustment = $this->service->adjust( $variant, $this->defaultLocation, 5, LedgerReason::Received, Actor::user( 3 ) );
 
 		$this->assertSame( array( 5, 0, 0, 5 ), array( $adjustment->level->onHand, $adjustment->level->allocated, $adjustment->level->held, $adjustment->level->available() ) );
 		$this->assertSame(
@@ -81,14 +85,17 @@ final class AdjustTest extends StockTestCase {
 
 		$this->assertSame(
 			array(
-				'variant_id'      => $variant,
-				'delta'           => 5,
-				'on_hand'         => 5,
-				'available'       => 5,
-				'reason'          => 'received',
-				'actor_type'      => 'user',
-				'actor_id'        => 3,
-				'ledger_entry_id' => $adjustment->ledgerEntryId,
+				'variant_id'         => $variant,
+				'location_id'        => $this->defaultLocation,
+				'delta'              => 5,
+				'on_hand'            => 5,
+				'available'          => 5,
+				'location_on_hand'   => 5,
+				'location_available' => 5,
+				'reason'             => 'received',
+				'actor_type'         => 'user',
+				'actor_id'           => 3,
+				'ledger_entry_id'    => $adjustment->ledgerEntryId,
 			),
 			$stored['p']
 		);
@@ -108,7 +115,7 @@ final class AdjustTest extends StockTestCase {
 		$this->stockItem( $variant, 5 );
 
 		try {
-			$this->service->adjust( $variant, -6, LedgerReason::Damaged, Actor::user( 3 ) );
+			$this->service->adjust( $variant, $this->defaultLocation, -6, LedgerReason::Damaged, Actor::user( 3 ) );
 			$this->fail( 'An adjustment took on_hand below zero.' );
 		} catch ( CodedException $refused ) {
 			$this->assertSame( InventoryError::AdjustmentBelowZero, $refused->errorCode() );
@@ -141,7 +148,7 @@ final class AdjustTest extends StockTestCase {
 		$log = $this->captureQueries(
 			function () use ( $variant ): void {
 				try {
-					$this->service->adjust( $variant, 0, LedgerReason::Recount, Actor::user( 3 ) );
+					$this->service->adjust( $variant, $this->defaultLocation, 0, LedgerReason::Recount, Actor::user( 3 ) );
 					$this->fail( 'A zero adjustment was accepted.' );
 				} catch ( CodedException $refused ) {
 					$this->assertSame( InventoryError::ZeroDelta, $refused->errorCode() );
@@ -164,7 +171,7 @@ final class AdjustTest extends StockTestCase {
 		$this->stockItem( $variant, 5 );
 
 		try {
-			$this->service->adjust( $variant, 2, LedgerReason::Received, Actor::user( 3 ), 4 );
+			$this->service->adjust( $variant, $this->defaultLocation, 2, LedgerReason::Received, Actor::user( 3 ), 4 );
 			$this->fail( 'An adjustment applied although on_hand was not what the caller read.' );
 		} catch ( CodedException $refused ) {
 			$this->assertSame( InventoryError::OnHandConflict, $refused->errorCode() );
@@ -178,7 +185,7 @@ final class AdjustTest extends StockTestCase {
 			);
 		}
 
-		$adjustment = $this->service->adjust( $variant, 2, LedgerReason::Received, Actor::user( 3 ), 5 );
+		$adjustment = $this->service->adjust( $variant, $this->defaultLocation, 2, LedgerReason::Received, Actor::user( 3 ), 5 );
 
 		$this->assertSame( 7, $adjustment->level->onHand, 'With the on_hand it read, the caller\'s adjustment applies.' );
 		$this->assertSame( 7, $this->committedItem( $b, $variant )['on_hand'] ?? null );
@@ -193,12 +200,186 @@ final class AdjustTest extends StockTestCase {
 		$variant = self::variant();
 
 		try {
-			$this->service->adjust( $variant, 1, LedgerReason::Received, Actor::user( 3 ) );
+			$this->service->adjust( $variant, $this->defaultLocation, 1, LedgerReason::Received, Actor::user( 3 ) );
 			$this->fail( 'An item that does not exist was adjusted.' );
 		} catch ( CodedException $refused ) {
 			$this->assertSame( InventoryError::ItemMissing, $refused->errorCode() );
 			$this->assertSame( array( 'variant_id' => $variant ), $refused->context() );
 		}
+	}
+
+	/**
+	 * Tests that the first adjustment at a second location creates the variant's item there, at zero, then counts it, with its ledger entry there; the default location's item is untouched.
+	 *
+	 * Planted violation: in StockService::adjust(), send the repository's adjust() before
+	 * createItemAt(): the update finds no item at the second location, and the adjustment is
+	 * `stock.item_missing`.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_first_adjustment_at_a_location_creates_its_item_and_ledger_entry(): void {
+		$variant = self::variant();
+		$second  = $this->plantLocation();
+		$b       = $this->secondConnection();
+
+		$this->stockItem( $variant, 2 );
+
+		$adjustment = $this->service->adjust( $variant, $second, 3, LedgerReason::Received, Actor::user( 3 ) );
+
+		$this->assertSame( array( $second, 3 ), array( $adjustment->level->locationId, $adjustment->level->onHand ) );
+		$this->assertSame( 3, $this->committedItem( $b, $variant, $second )['on_hand'] ?? null );
+		$this->assertSame( 2, $this->committedItem( $b, $variant )['on_hand'] ?? null, 'The default location\'s item is untouched.' );
+		$this->assertSame( array( $this->defaultLocation . ':2:2', $second . ':3:3' ), $this->locatedLedger( $variant ) );
+		$this->assertTrue( $this->projectionCheck()->passed, implode( "\n", $this->projectionCheck()->findings ) );
+	}
+
+	/**
+	 * Tests that an adjustment's event names the variant's on_hand and available over every location, as one item's were before locations, and the item's own beside them.
+	 *
+	 * Planted violation: in StockService::record(), give the item's figures as the variant's: a
+	 * reader of `on_hand` sees the three units at the second location where the variant has five.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_adjustment_names_the_variants_totals_and_the_items_own(): void {
+		$variant = self::variant();
+		$second  = $this->plantLocation();
+		$b       = $this->secondConnection();
+
+		$this->stockItem( $variant, 2 );
+		$this->service->hold( array( new HoldLine( $variant, 1 ) ), 600 );
+		$this->service->adjust( $variant, $second, 3, LedgerReason::Received, Actor::user( 3 ) );
+
+		$payload = $this->committedPayload( $b, StockAdjusted::eventName() );
+
+		$this->assertSame(
+			array( $second, 3, 5, 4, 3, 3 ),
+			array( $payload['location_id'], $payload['delta'], $payload['on_hand'], $payload['available'], $payload['location_on_hand'], $payload['location_available'] ),
+			'Five on hand and four available over both locations; three of each at the second.'
+		);
+	}
+
+	/**
+	 * Tests that reading an item's level under its lock, with the variant's totals over every location, locks no other item of the variant.
+	 *
+	 * A holds the default location's item under the lock the adjustment takes and has read the
+	 * variant's totals, which read the second location's item too; B then locks the second
+	 * location's item, as its own adjustment or claim there would, and answers at once.
+	 *
+	 * Planted violation: in MysqlStockRepository::LOCKED_LEVEL, end the total's subquery with
+	 * `FOR UPDATE`: the second location's item is locked by A's read, and B waits for A's commit.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group concurrency
+	 */
+	public function test_the_variants_totals_lock_no_other_item(): void {
+		$variant = self::variant();
+		$second  = $this->plantLocation();
+		$b       = $this->secondConnection();
+		$lock    = $this->raw( MysqlStockRepository::LOCK_ITEM, $variant, $second );
+		$waited  = null;
+
+		$this->stockItem( $variant, 2 );
+		$this->service->adjust( $variant, $second, 3, LedgerReason::Received, Actor::user( 3 ) );
+
+		$level = $this->db->transaction(
+			function () use ( $b, $variant, $lock, &$waited ): ?StockLevel {
+				$level = $this->repository->lockedLevel( $variant, $this->defaultLocation );
+
+				$b->queryAsync( $lock );
+
+				$waited = $this->waitsOrAnswers( $b, $lock, 'updating' );
+
+				return $level;
+			},
+			RetryPolicy::none(),
+			Isolation::ReadCommitted
+		);
+
+		$this->assertSame( 1, $b->reap(), 'B locked the second location\'s item.' );
+		$this->assertFalse( $waited, 'Reading the variant\'s totals locked another location\'s item.' );
+		$this->assertSame( array( 2, 5, 5 ), array( $level?->onHand, $level?->variantOnHand, $level?->variantAvailable ) );
+	}
+
+	/**
+	 * Tests that an adjustment at a location that does not exist is `stock.location_missing`, and creates nothing.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_adjustment_at_a_location_that_does_not_exist_is_refused(): void {
+		$variant = self::variant();
+		$b       = $this->secondConnection();
+
+		$this->stockItem( $variant, 2 );
+
+		try {
+			$this->service->adjust( $variant, 999999, 1, LedgerReason::Received, Actor::user( 3 ) );
+			$this->fail( 'Stock was counted at a location that does not exist.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( InventoryError::LocationMissing, $refused->errorCode() );
+			$this->assertSame( array( 'location_id' => 999999 ), $refused->context() );
+		}
+
+		$this->assertNull( $this->committedItem( $b, $variant, 999999 ) );
+	}
+
+	/**
+	 * Tests that two adjustments creating the same new item leave one item and two ledger entries: the second waits for the first, and adds to it.
+	 *
+	 * Just before A's update of the new item, B, in its own transaction, sends the same upsert of the
+	 * item; the server shows it waiting for A's insert. Once A commits, B's upsert finds the item and
+	 * changes nothing, and B's whole adjustment then adds its units to A's.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group concurrency
+	 */
+	public function test_two_adjustments_creating_one_item_leave_one_item_and_two_entries(): void {
+		$variant = self::variant();
+		$second  = $this->plantLocation();
+		$b       = $this->secondConnection();
+		$create  = $this->raw( MysqlStockRepository::CREATE_ITEM_AT, $variant, $second );
+
+		$this->stockItem( $variant, 0 );
+
+		$raced = $this->beforeStatement(
+			self::shapeOf( MysqlStockRepository::ADJUST ),
+			function () use ( $b, $create ): void {
+				$b->query( 'START TRANSACTION' );
+				$b->queryAsync( $create );
+				$this->awaitWaiting( $b, $create, 'update' );
+			}
+		);
+
+		$this->service->adjust( $variant, $second, 1, LedgerReason::Received, Actor::user( 3 ) );
+
+		$this->assertTrue( $raced->fired, 'B never raced A.' );
+		$this->assertSame( 0, $b->reap(), 'B\'s upsert found the item A created, and changed nothing.' );
+
+		$b->query( 'COMMIT' );
+
+		$this->secondService()->adjust( $variant, $second, 2, LedgerReason::Received, Actor::user( 4 ) );
+
+		$this->assertSame( 3, $this->committedItem( $b, $variant, $second )['on_hand'] ?? null );
+		$this->assertSame( '1', $b->fetchValue( sprintf( 'SELECT COUNT(*) FROM `%s` WHERE variant_id = %d AND location_id = %d', $this->table( InventoryTables::ITEMS ), $variant, $second ) ) );
+		$this->assertSame( array( $second . ':1:1', $second . ':2:3' ), $this->locatedLedger( $variant ) );
+		$this->assertTrue( $this->projectionCheck()->passed, implode( "\n", $this->projectionCheck()->findings ) );
+	}
+
+	/**
+	 * Reads a variant's ledger with its locations.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId The variant.
+	 * @return list<string> Each entry as `location:delta:on_hand_after`, by id.
+	 */
+	private function locatedLedger( int $variantId ): array {
+		return array_map(
+			static fn( array $row ): string => $row['location_id'] . ':' . $row['delta'] . ':' . $row['on_hand_after'],
+			$this->db->fetchAll( 'SELECT location_id, delta, on_hand_after FROM %i WHERE variant_id = %d ORDER BY id', $this->table( InventoryTables::LEDGER ), $variantId )
+		);
 	}
 
 	/**
@@ -212,14 +393,14 @@ final class AdjustTest extends StockTestCase {
 		$this->stockItem( $variant, 5 );
 		$this->plantHold( $variant, 3, 600 );
 
-		$adjustment = $this->service->adjust( $variant, -4, LedgerReason::Recount, Actor::system( 'cli', 3 ) );
+		$adjustment = $this->service->adjust( $variant, $this->defaultLocation, -4, LedgerReason::Recount, Actor::system( 'cli', 3 ) );
 
 		$this->assertSame( 1, $adjustment->level->onHand );
 		$this->assertSame( -2, $adjustment->level->available() );
 		$this->assertTrue( $this->projectionCheck()->passed, 'A shortfall is a fact, not a corrupt projection.' );
 
 		try {
-			$this->service->adjust( $variant, -2, LedgerReason::Recount, Actor::user( 3 ) );
+			$this->service->adjust( $variant, $this->defaultLocation, -2, LedgerReason::Recount, Actor::user( 3 ) );
 			$this->fail( 'on_hand went below zero.' );
 		} catch ( CodedException $refused ) {
 			$this->assertSame( InventoryError::AdjustmentBelowZero, $refused->errorCode() );
@@ -305,7 +486,7 @@ final class AdjustTest extends StockTestCase {
 				}
 			}
 
-			preg_match_all( '/\$this->reclaim\(\s*[^,]+,\s*[^,]+,\s*([^,]+),/', $body, $claims );
+			preg_match_all( '/\$this->reclaim\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*([^,]+),/', $body, $claims );
 
 			foreach ( $claims[1] as $claim ) {
 				if ( 1 !== preg_match( '/^self::CLAIM_[A-Z_]+$/', trim( $claim ) ) ) {
@@ -329,9 +510,10 @@ final class AdjustTest extends StockTestCase {
 	}
 
 	/**
-	 * Tests that the repository is the only code under src/ that names a stock table in a statement.
+	 * Tests that the repository is the only code under src/ that names a stock table in a statement, with the upgrade's batch that gives the store's stock its default location.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The upgrade's batch.
 	 */
 	public function test_the_repository_is_the_only_class_with_stock_sql(): void {
 		$found = array();
@@ -342,6 +524,8 @@ final class AdjustTest extends StockTestCase {
 			}
 		}
 
-		$this->assertSame( array( 'src/Inventory/Infrastructure/MysqlStockRepository.php' ), $found );
+		sort( $found );
+
+		$this->assertSame( array( 'src/Inventory/Infrastructure/Migrations/SeedDefaultLocation.php', 'src/Inventory/Infrastructure/MysqlStockRepository.php' ), $found );
 	}
 }

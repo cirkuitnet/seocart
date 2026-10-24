@@ -43,7 +43,7 @@ final class AllowListTest extends TestCase {
 
 		sort( $only );
 
-		$this->assertSame( array( '471508706270', 'ce2eaf888e63' ), $only, 'The MariaDB-only entries are not exactly the hold sweep\'s page and doctor\'s variant ids.' );
+		$this->assertSame( array( '471508706270', 'e17d9305aac4' ), $only, 'The MariaDB-only entries are not exactly the hold sweep\'s page and doctor\'s variant ids.' );
 		$this->assertSame( array(), array_keys( array_diff_key( $mysql, $mariadb ) ), 'An entry holds on MySQL alone.' );
 
 		foreach ( $only as $id ) {

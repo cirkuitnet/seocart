@@ -290,9 +290,12 @@ Fires after a stock adjustment is committed: a merchant's change of on_hand, or 
 ### Event properties
 
 - `variantId` (int): The variant whose stock moved.
+- `locationId` (int|null): The location where it moved; null for an entry recorded before locations.
 - `delta` (int): The change of on_hand, positive or negative; 0 on a deleted variant's final entry.
-- `onHand` (int): The units on hand after the change.
-- `available` (int): on_hand − allocated − held after the change; may be negative.
+- `onHand` (int): The variant's units on hand after the change, at every location.
+- `available` (int): The variant's on_hand − allocated − held after the change, at every location; may be negative.
+- `locationOnHand` (int|null): The units on hand where it moved, after the change; null for an entry recorded before locations.
+- `locationAvailable` (int|null): on_hand − allocated − held where it moved, after the change; may be negative; null for an entry recorded before locations.
 - `reason` (string): Why the stock moved, for example `received` or `variant_deleted`.
 - `actorType` (string): `user` for a person acting in person, `system` for a process acting on a user's authority.
 - `actorId` (int|null): The WordPress user on whose authority it moved, or null for none.
@@ -311,8 +314,11 @@ Fires in the transaction that allocates an order's units, naming every variant a
 ### Event properties
 
 - `orderId` (int): The order the units are allocated to.
-- `variantIds` (int[]): The variants allocated, ascending.
-- `quantities` (int[]): The units allocated of each, in the same order.
+- `variantIds` (int[]): The variants allocated, ascending, each once.
+- `quantities` (int[]): The units allocated of each, at every location, in the same order.
+- `locationVariantIds` (int[]): The variant of each item allocated from, ascending by variant then location; empty for an allocation recorded before locations.
+- `locationIds` (int[]): The location of each item allocated from, in the same order; empty for an allocation recorded before locations.
+- `locationQuantities` (int[]): The units allocated from each item, in the same order; empty for an allocation recorded before locations.
 
 ## `seocart_stock_hold_expired`
 
@@ -328,6 +334,7 @@ Fires after an expired checkout hold of one variant was reclaimed and its units 
 
 - `holdId` (string): The id of the hold the row belonged to.
 - `variantId` (int): The variant whose units were held.
+- `locationId` (int|null): The location whose units were held; null for a row reclaimed before locations.
 - `quantity` (int): The units given back.
 - `expiredAt` (string): When the hold expired, UTC, `Y-m-d H:i:s`.
 
@@ -345,8 +352,11 @@ Fires after the rows of a checkout hold are released, naming the variants given 
 
 - `holdId` (string): The id of the hold released.
 - `reason` (string): Why it was released, for example `payment_declined` or `variant_deleted`.
-- `variantIds` (int[]): The variants given back, ascending.
-- `quantities` (int[]): The units given back of each, in the same order.
+- `variantIds` (int[]): The variants given back, ascending, each once.
+- `quantities` (int[]): The units given back of each, at every location, in the same order.
+- `locationVariantIds` (int[]): The variant of each item given back to, ascending by variant then location; empty for a release recorded before locations.
+- `locationIds` (int[]): The location of each item given back to, in the same order; empty for a release recorded before locations.
+- `locationQuantities` (int[]): The units given back to each item, in the same order; empty for a release recorded before locations.
 
 ## `seocart_stock_reserved`
 
@@ -363,6 +373,9 @@ Fires after a checkout hold is committed, naming every variant it holds and the 
 - `holdId` (string): The hold's id, which releases it again.
 - `cartId` (int|null): The cart the hold was taken for, or null.
 - `orderId` (int|null): The order the hold was taken for, or null.
-- `variantIds` (int[]): The variants held, ascending.
-- `quantities` (int[]): The units held of each, in the same order.
+- `variantIds` (int[]): The variants held, ascending, each once.
+- `quantities` (int[]): The units held of each, at every location, in the same order.
+- `locationVariantIds` (int[]): The variant of each item held, ascending by variant then location; empty for a hold recorded before locations.
+- `locationIds` (int[]): The location of each item held, in the same order; empty for a hold recorded before locations.
+- `locationQuantities` (int[]): The units held of each item, in the same order; empty for a hold recorded before locations.
 - `expiresAt` (string): When the hold expires, UTC, `Y-m-d H:i:s`.

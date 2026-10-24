@@ -2,19 +2,24 @@
 	"about": "Plugin SELECTs whose plans may break the query-plan rule, each with the reason its plan is accepted. Copy an entry's id and statement from the report of `composer test:query-plans`. That run fails on an entry whose query it no longer sends, or whose query keeps the rule. An entry with `servers` (`mysql`, `mariadb`) holds only on those servers: it is judged, and judged stale, only on a run of one of them.",
 	"entries": [
 		{
-			"id": "ec63742afd5e",
-			"statement": "SELECT i.variant_id, i.held, COALESCE( SUM( h.quantity ), ? ) AS rows_sum FROM {prefix}seocart_stock_items i LEFT JOIN {prefix}seocart_stock_holds h ON h.variant_id = i.variant_id GROUP BY i.variant_id, i.held HAVING i.held <> rows_sum ORDER BY i.variant_id LIMIT ?",
-			"reason": "Doctor's stock check compares every item's held with the sum of its hold rows, so it reads every stock item by design; each item's holds are read by the variant_expires index. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+			"id": "9ef06f3455ff",
+			"statement": "SELECT i.variant_id, i.location_id, i.held, COALESCE( SUM( h.quantity ), ? ) AS rows_sum FROM {prefix}seocart_stock_items i LEFT JOIN {prefix}seocart_stock_holds h ON h.variant_id = i.variant_id AND h.location_id = i.location_id GROUP BY i.variant_id, i.location_id, i.held HAVING i.held <> rows_sum ORDER BY i.variant_id, i.location_id LIMIT ?",
+			"reason": "Doctor's stock check compares every item's held, at every location, with the sum of its hold rows, so it reads every stock item by design; each item's holds are read by the item_expires index. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
 		},
 		{
-			"id": "10e1377f068f",
-			"statement": "SELECT i.variant_id, i.on_hand, COALESCE( SUM( l.delta ), ? ) AS ledger_sum, ( SELECT n.on_hand_after FROM {prefix}seocart_stock_ledger n WHERE n.variant_id = i.variant_id ORDER BY n.id DESC LIMIT ? ) AS newest FROM {prefix}seocart_stock_items i LEFT JOIN {prefix}seocart_stock_ledger l ON l.variant_id = i.variant_id GROUP BY i.variant_id, i.on_hand HAVING ledger_sum <> i.on_hand OR ( newest IS NOT NULL AND newest <> i.on_hand ) ORDER BY i.variant_id LIMIT ?",
-			"reason": "Doctor's stock check compares every item's on_hand with the sum of its ledger and with its newest entry, so it reads every stock item by design; each item's ledger rows are read by the variant_created index. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+			"id": "3c9d4dcd2e93",
+			"statement": "SELECT i.variant_id, i.location_id, i.on_hand, COALESCE( SUM( l.delta ), ? ) AS ledger_sum, ( SELECT n.on_hand_after FROM {prefix}seocart_stock_ledger n WHERE n.variant_id = i.variant_id AND n.location_id = i.location_id ORDER BY n.id DESC LIMIT ? ) AS newest FROM {prefix}seocart_stock_items i LEFT JOIN {prefix}seocart_stock_ledger l ON l.variant_id = i.variant_id AND l.location_id = i.location_id GROUP BY i.variant_id, i.location_id, i.on_hand HAVING ledger_sum <> i.on_hand OR ( newest IS NOT NULL AND newest <> i.on_hand ) ORDER BY i.variant_id, i.location_id LIMIT ?",
+			"reason": "Doctor's stock check compares every item's on_hand, at every location, with the sum of its ledger there and with its newest entry there, so it reads every stock item by design; each item's ledger rows are read by the item_created index. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
 		},
 		{
-			"id": "6bdef5970bc2",
-			"statement": "SELECT i.variant_id, i.allocated, COALESCE( SUM( a.quantity - a.posted_quantity ), ? ) AS open_sum FROM {prefix}seocart_stock_items i LEFT JOIN {prefix}seocart_stock_allocations a ON a.variant_id = i.variant_id AND a.state = ? GROUP BY i.variant_id, i.allocated HAVING i.allocated <> open_sum ORDER BY i.variant_id LIMIT ?",
-			"reason": "Doctor's stock check compares every item's allocated with its open allocations, so it reads every stock item by design; each item's allocations are read by the variant_state index. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+			"id": "d7cf304ae39a",
+			"statement": "SELECT i.variant_id, i.location_id, i.allocated, COALESCE( SUM( a.quantity - a.posted_quantity ), ? ) AS open_sum FROM {prefix}seocart_stock_items i LEFT JOIN {prefix}seocart_stock_allocations a ON a.variant_id = i.variant_id AND a.location_id = i.location_id AND a.state = ? GROUP BY i.variant_id, i.location_id, i.allocated HAVING i.allocated <> open_sum ORDER BY i.variant_id, i.location_id LIMIT ?",
+			"reason": "Doctor's stock check compares every item's allocated, at every location, with its open allocations there, so it reads every stock item by design; each item's allocations are read by the item_state index. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+		},
+		{
+			"id": "5f80054f3522",
+			"statement": "SELECT h.variant_id, h.location_id, h.hold_group, SUM( h.quantity ) AS quantity FROM {prefix}seocart_stock_holds h LEFT JOIN {prefix}seocart_stock_items i ON i.variant_id = h.variant_id AND i.location_id = h.location_id WHERE i.variant_id IS NULL GROUP BY h.variant_id, h.location_id, h.hold_group ORDER BY h.variant_id, h.location_id, h.hold_group LIMIT ?",
+			"reason": "Doctor's stock check looks for hold rows whose stock item is gone, which no reclaim can give back, so it reads every hold row by design; each row's item is found by its primary key. The table holds only live checkout holds and expired ones the sweep has yet to reclaim. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
 		},
 		{
 			"id": "ce19c78854a4",
@@ -32,10 +37,10 @@
 			"reason": "Doctor's check for idempotency keys stranded in `claimed` reads the whole key table, oldest first: a stranded key is rare, and the table holds only the keys of the retention period, which the retention job keeps to that. An index on (state, created_at) would be written by every claim and every completion of an order placement for doctor alone. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
 		},
 		{
-			"id": "ce2eaf888e63",
-			"statement": "SELECT DISTINCT variant_id FROM {prefix}seocart_stock_holds WHERE expires_at <= UTC_TIMESTAMP() AND reclaim_token IS NULL AND variant_id > ? ORDER BY variant_id LIMIT ?",
+			"id": "e17d9305aac4",
+			"statement": "SELECT DISTINCT variant_id, location_id FROM {prefix}seocart_stock_holds WHERE expires_at <= UTC_TIMESTAMP() AND reclaim_token IS NULL AND ( variant_id > ? OR ( variant_id = ? AND location_id > ? ) ) ORDER BY variant_id, location_id LIMIT ?",
 			"servers": [ "mariadb" ],
-			"reason": "MariaDB only. The hold sweep's page of items with expired holds walks the variant_expires index from its cursor and stops at its LIMIT. MariaDB estimates the whole range past the cursor without the LIMIT (11707 of 11949 rows on the medium dataset); MySQL plans the same walk at 240 rows and keeps the rule."
+			"reason": "MariaDB only. The hold sweep's page of items with expired holds walks the item_expires index from its cursor, an item at a location, and stops at its LIMIT. MariaDB estimates the whole range past the cursor without the LIMIT (11952 of 11949 rows on the medium dataset); MySQL plans the same walk at 240 rows and keeps the rule."
 		},
 		{
 			"id": "471508706270",

@@ -17,7 +17,7 @@ use SEOCart\Support\Error\ErrorDefinition;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * The errors holding, adjusting or deleting stock can end in.
+ * The errors holding, adjusting, routing or deleting stock, and changing a location, can end in.
  *
  * Owns one fact: how a refused stock change is reported. Each refusal happened in the database,
  * in the conditional statement's WHERE clause; the values in a message come from one read
@@ -78,6 +78,34 @@ enum InventoryError: string implements ErrorCode {
 	case ProjectionCorrupt = 'stock.projection_corrupt';
 
 	/**
+	 * The location named does not exist.
+	 *
+	 * @since 0.2.0
+	 */
+	case LocationMissing = 'stock.location_missing';
+
+	/**
+	 * The location named is deactivated, and cannot serve what was asked of it.
+	 *
+	 * @since 0.2.0
+	 */
+	case LocationInactive = 'stock.location_inactive';
+
+	/**
+	 * No active location fulfils online orders, so nothing can be routed.
+	 *
+	 * @since 0.2.0
+	 */
+	case NoFulfillingLocation = 'stock.no_fulfilling_location';
+
+	/**
+	 * The order cannot be routed under the store's choice for orders no one location can ship whole.
+	 *
+	 * @since 0.2.0
+	 */
+	case RoutingRefused = 'stock.routing_refused';
+
+	/**
 	 * Returns the catalog's rows.
 	 *
 	 * @since 0.1.0
@@ -100,7 +128,8 @@ enum InventoryError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: The id of a product variant. %2$s: Units asked for. %3$s: Units available. */
 					__( 'Variant %1$s: %2$s asked for, but only %3$s available.', 'seocart' ),
-				array( 'variant_id', 'requested', 'available' )
+				array( 'variant_id', 'requested', 'available' ),
+				details: array( 'location_id' )
 			),
 			new ErrorDefinition(
 				self::ZeroDelta,
@@ -139,6 +168,33 @@ enum InventoryError: string implements ErrorCode {
 					__( 'The held quantity of variant %1$s is lower than its holds add up to, so they cannot be given back. Run `wp seocart doctor` for the figures.', 'seocart' ),
 				array( 'variant_id' ),
 				internal: true
+			),
+			new ErrorDefinition(
+				self::LocationMissing,
+				404,
+				static fn(): string =>
+					/* translators: %1$s: The id of a stock location. */
+					__( 'Location %1$s does not exist.', 'seocart' ),
+				array( 'location_id' )
+			),
+			new ErrorDefinition(
+				self::LocationInactive,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: The id of a stock location. */
+					__( 'Location %1$s is deactivated.', 'seocart' ),
+				array( 'location_id' )
+			),
+			new ErrorDefinition(
+				self::NoFulfillingLocation,
+				409,
+				static fn(): string => __( 'No location ships online orders at the moment, so nothing can be sold.', 'seocart' )
+			),
+			new ErrorDefinition(
+				self::RoutingRefused,
+				409,
+				static fn(): string => __( 'These items cannot be sent together in the quantities asked for.', 'seocart' ),
+				details: array( 'reason', 'variant_ids', 'available' )
 			),
 		);
 	}

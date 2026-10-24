@@ -20,8 +20,12 @@ defined( 'ABSPATH' ) || exit;
  * Fires after an expired checkout hold of one variant was reclaimed and its units given back.
  *
  * Owns one fact: what a listener learns about one reclaimed hold row. Reclamation works one
- * item at a time, so the event names one variant; a hold of several variants expires as one
- * event per variant, all with the same hold id. It fires whoever reclaimed the row: a checkout
+ * item, a variant at a location, at a time, and the event names the one row reclaimed: its
+ * variant, its location and its units, so `quantity` is that row's, as it always was. A hold of
+ * several items expires as one event per item, all with the same hold id; a hold of one variant
+ * at two locations so expires as two events naming the same variant, each with its own location
+ * and units, which together are the variant's. A row reclaimed before stock was kept per location
+ * has no `location_id`, and it is null. It fires whoever reclaimed the row: a checkout
  * that needed the units, or the sweep. Delivered through the outbox. Each payload key is its
  * property's name in snake_case.
  *
@@ -45,6 +49,7 @@ final readonly class StockHoldExpired implements DomainEvent {
 	 *
 	 * @param string             $holdId     The id of the hold the row belonged to.
 	 * @param int                $variantId  The variant whose units were held.
+	 * @param int|null           $locationId The location whose units were held; null for a row reclaimed before locations.
 	 * @param int                $quantity   The units given back.
 	 * @param string             $expiredAt  When the hold expired, UTC, `Y-m-d H:i:s`.
 	 * @param \DateTimeImmutable $occurredAt When the row was reclaimed.
@@ -52,6 +57,7 @@ final readonly class StockHoldExpired implements DomainEvent {
 	public function __construct(
 		public string $holdId,
 		public int $variantId,
+		public ?int $locationId,
 		public int $quantity,
 		public string $expiredAt,
 		public \DateTimeImmutable $occurredAt
@@ -102,7 +108,7 @@ final readonly class StockHoldExpired implements DomainEvent {
 	 * @return self The event.
 	 */
 	public static function fromPayload( array $payload, \DateTimeImmutable $occurredAt, int $version ): self {
-		return new self( (string) $payload['hold_id'], (int) $payload['variant_id'], (int) $payload['quantity'], (string) $payload['expired_at'], $occurredAt );
+		return new self( (string) $payload['hold_id'], (int) $payload['variant_id'], isset( $payload['location_id'] ) ? (int) $payload['location_id'] : null, (int) $payload['quantity'], (string) $payload['expired_at'], $occurredAt );
 	}
 
 	/**
@@ -147,10 +153,11 @@ final readonly class StockHoldExpired implements DomainEvent {
 	 */
 	public function toPayload(): array {
 		return array(
-			'hold_id'    => $this->holdId,
-			'variant_id' => $this->variantId,
-			'quantity'   => $this->quantity,
-			'expired_at' => $this->expiredAt,
+			'hold_id'     => $this->holdId,
+			'variant_id'  => $this->variantId,
+			'location_id' => $this->locationId,
+			'quantity'    => $this->quantity,
+			'expired_at'  => $this->expiredAt,
 		);
 	}
 }

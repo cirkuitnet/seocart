@@ -13,8 +13,11 @@ namespace SEOCart\Tests\Integration\Inventory;
 
 use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Inventory\Domain\Event\StockHoldExpired;
+use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
+use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Inventory\StockTestCase;
 
@@ -108,7 +111,7 @@ final class SweepHoldsTest extends StockTestCase {
 			$this->plantHold( $variant, 1, -60 );
 		}
 
-		$pages = $this->beforeStatement( '/^SELECT DISTINCT variant_id FROM /', static fn() => null, PHP_INT_MAX );
+		$pages = $this->beforeStatement( '/^SELECT DISTINCT variant_id, location_id FROM /', static fn() => null, PHP_INT_MAX );
 
 		( new SweepHolds( $this->service, SweepHolds::BUDGET_SECONDS, 2 ) )->handle( array() );
 
@@ -117,6 +120,44 @@ final class SweepHoldsTest extends StockTestCase {
 		}
 
 		$this->assertSame( 2, $pages->seen, 'A full page of two, then a short page of one.' );
+	}
+
+	/**
+	 * Tests that the sweep reclaims a variant's expired holds at each location it has them, item by item, a page of one item at a time, and leaves its live hold.
+	 *
+	 * The variant has an expired hold at the default location and one at a second location, and a
+	 * live hold at the second; with pages of one item, the second page starts after the first item,
+	 * which is the same variant.
+	 *
+	 * Planted violation: in SweepHolds::handle(), carry only the variant of a page's last item
+	 * into the next page (`$after = array( $item[0], PHP_INT_MAX )`): the second page skips the
+	 * variant's item at the second location, whose expired hold is still held.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_sweep_reclaims_each_location_of_a_variant(): void {
+		$variant = self::variant();
+		$second  = $this->plantLocation();
+		$b       = $this->secondConnection();
+
+		$this->stockItem( $variant, 2 );
+		$this->service->adjust( $variant, $second, 3, LedgerReason::Received, Actor::user( 1 ) );
+		$this->plantHold( $variant, 1, -60 );
+		$this->plantHold( $variant, 2, -60, null, $second );
+
+		$live = $this->plantHold( $variant, 1, 600, null, $second );
+
+		( new SweepHolds( $this->service, SweepHolds::BUDGET_SECONDS, 1 ) )->handle( array() );
+
+		$this->assertSame( 0, $this->committedItem( $b, $variant )['held'] ?? null );
+		$this->assertSame( 1, $this->committedItem( $b, $variant, $second )['held'] ?? null, 'Only the live hold is still held at the second location.' );
+		$this->assertSame( array( $live . ':1' ), $this->committedHolds( $b, $variant ) );
+		$this->assertSame(
+			array( (string) $this->defaultLocation, (string) $second ),
+			array_map( static fn( array $row ): string => (string) ( json_decode( (string) $row['payload_json'], true )['p']['location_id'] ?? '' ), $this->db->fetchAll( 'SELECT payload_json FROM %i WHERE event_name = %s ORDER BY id', $this->table( OutboxTable::NAME ), StockHoldExpired::eventName() ) ),
+			'One expiry per reclaimed row, naming its location.'
+		);
+		$this->assertTrue( $this->projectionCheck()->passed, implode( "\n", $this->projectionCheck()->findings ) );
 	}
 
 	/**

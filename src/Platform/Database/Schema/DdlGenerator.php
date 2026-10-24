@@ -1,6 +1,6 @@
 <?php
 /**
- * DdlGenerator: writes the CREATE TABLE statement for a table declaration, in the form dbDelta parses, and the ALTER that gives an existing unique key its declared columns
+ * DdlGenerator: writes the CREATE TABLE statement for a table declaration, in the form dbDelta parses, the ALTER that gives an existing unique key its declared columns, and a column's definition
  *
  * @package SEOCart
  * @since   0.1.0
@@ -118,6 +118,18 @@ final class DdlGenerator {
 		}
 
 		return 'ALTER TABLE `' . $tableName . '` DROP INDEX `' . $key->name() . '`, ADD UNIQUE KEY `' . $key->name() . '` (' . self::columnList( $key->columns() ) . ')';
+	}
+
+	/**
+	 * Writes one column's definition as a CREATE TABLE line writes it, for an ALTER TABLE that adds the column.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param ColumnSpec $column The column.
+	 * @return string For example "`location_id` bigint unsigned NULL".
+	 */
+	public function columnLine( ColumnSpec $column ): string {
+		return self::column( $column, false );
 	}
 
 	/**

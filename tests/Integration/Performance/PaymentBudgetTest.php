@@ -39,6 +39,9 @@ use SEOCart\Tests\Support\QueryLog;
  * - A resume that settles the provider's approval: the cart and the intent read, then the
  *   placement's settlement of the approval.
  *
+ * Planted violation: in StockService::allocateInside(), read the hold's rows twice: a resume
+ * sends one statement more than its budget.
+ *
  * @group performance
  *
  * @since 0.2.0
@@ -82,7 +85,7 @@ final class PaymentBudgetTest extends PlacementTestCase {
 	 *
 	 * @var int
 	 */
-	private const RESUME = 35;
+	private const RESUME = 36;
 
 	/**
 	 * Tests the capture and the void, each of an accepted order.

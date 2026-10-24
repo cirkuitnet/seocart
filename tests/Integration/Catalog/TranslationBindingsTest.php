@@ -1270,7 +1270,7 @@ final class TranslationBindingsTest extends ProductRestTestCase {
 	private function stocked(): SaveResult {
 		$saved = $this->savedProduct();
 
-		$this->services->stock->adjust( (int) $saved->variantId, 5, LedgerReason::Received, Actor::user( 1 ) );
+		$this->services->stock->adjust( (int) $saved->variantId, $this->defaultLocation, 5, LedgerReason::Received, Actor::user( 1 ) );
 
 		return $saved;
 	}

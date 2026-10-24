@@ -20,7 +20,6 @@ use SEOCart\Catalog\Domain\Event\ProductSaved;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
-use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
@@ -30,6 +29,7 @@ use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Tests\Support\ChildProcessProbe;
+use SEOCart\Tests\Support\Inventory\StockTables;
 use SEOCart\Tests\Support\RunningProbe;
 use SEOCart\Tests\Support\SecondConnection;
 
@@ -73,6 +73,15 @@ abstract class ProductWriteTestCase extends CatalogTestCase {
 	protected CatalogServices $services;
 
 	/**
+	 * The store's default location, where a new variant's stock is.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	protected int $defaultLocation;
+
+	/**
 	 * Creates the outbox and stock tables, and builds the services.
 	 *
 	 * @since 0.1.0
@@ -83,7 +92,8 @@ abstract class ProductWriteTestCase extends CatalogTestCase {
 		$operations = new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) );
 
 		( new CreateOutboxMigration() )->up( $operations );
-		( new CreateStockTablesMigration() )->up( $operations );
+
+		$this->defaultLocation = StockTables::create( $this->db );
 
 		$this->services = ProductWrites::services( $this->db, $this->reporter(), false, null, $this->locales() );
 		$this->service  = $this->services->save;

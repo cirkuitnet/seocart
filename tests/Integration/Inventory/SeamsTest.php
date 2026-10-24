@@ -15,6 +15,7 @@ use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Inventory\Domain\Event\StockAdjusted;
 use SEOCart\Inventory\Domain\Event\StockReservationReleased;
 use SEOCart\Inventory\Domain\HoldLine;
+use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Authorization\Actor;
@@ -36,7 +37,7 @@ use SEOCart\Tests\Support\SecondConnection;
  * after it waits for the delete and then finds the item gone.
  *
  * Planted violations: in StockService::deleteVariants(), check for an open allocation before
- * taking the item's lock (move the hasOpenAllocation() test above lockItem()): at READ COMMITTED
+ * taking the items' locks (move the hasOpenAllocation() test above lockItemsOf()): at READ COMMITTED
  * the allocation B commits at the moment of the lock is missed and the item deleted (at
  * REPEATABLE READ the early check's gap lock makes B wait until its lock-wait timeout). In
  * MysqlStockRepository::OPEN_ALLOCATION, drop `FOR UPDATE`: at REPEATABLE READ the check reads
@@ -97,6 +98,60 @@ final class SeamsTest extends StockTestCase {
 	}
 
 	/**
+	 * Tests that createItems() reports the variants it created: each once, and none another writer created first.
+	 *
+	 * The second part races a repair against a product save: the repair reads that the variant has
+	 * no stock item, and just before its upsert another connection creates the policy and the item
+	 * and commits. The repair's createItems() then reports nothing, as its upsert affected nothing.
+	 * The unit runs with the deadlock retry policy, as the repair does: on MariaDB at REPEATABLE READ
+	 * the upsert meets a row committed after the repair's snapshot, the unit runs again, and its
+	 * second read finds the item.
+	 *
+	 * Planted violation: in MysqlStockRepository::createItems(), list every variant asked for as
+	 * created: the repair reports the item the other writer created.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_created_items_are_reported_once_and_never_for_another_writer(): void {
+		$variant = self::variant();
+
+		$this->assertSame( array( $variant ), $this->db->transaction( fn(): array => $this->service->createItems( array( $variant ) ) ) );
+		$this->assertSame( array(), $this->db->transaction( fn(): array => $this->service->createItems( array( $variant ) ) ), 'A second call creates nothing.' );
+
+		$this->db->execute( 'DELETE FROM %i WHERE variant_id = %d', $this->table( InventoryTables::ITEMS ), $variant );
+
+		$this->assertSame( array( $variant ), $this->db->transaction( fn(): array => $this->service->createItems( array( $variant ) ) ), 'A variant with its policy but not its item is given the item, and reported.' );
+
+		$racing = self::variant();
+		$b      = $this->secondConnection();
+		$runs   = 0;
+		$raced  = $this->beforeStatement(
+			self::shapeOf( MysqlStockRepository::CREATE_POLICY ),
+			function () use ( $b, $racing ): void {
+				$b->query( 'START TRANSACTION' );
+				$b->query( $this->raw( MysqlStockRepository::CREATE_POLICY, $racing ) );
+				$b->query( $this->raw( MysqlStockRepository::CREATE_ITEM_AT, $racing, $this->defaultLocation ) );
+				$b->query( 'COMMIT' );
+			}
+		);
+
+		$reported = $this->db->transaction(
+			function () use ( $racing, &$runs ): array {
+				if ( 1 === ++$runs ) {
+					$this->assertSame( array(), $this->service->levels( array( $racing ) ), 'The repair read no stock item.' );
+				}
+
+				return $this->service->createItems( array( $racing ) );
+			},
+			RetryPolicy::deadlocks()
+		);
+
+		$this->assertTrue( $raced->fired, 'The other writer never raced the repair.' );
+		$this->assertSame( array(), $reported, 'The other writer created the item; the repair reports nothing created.' );
+		$this->assertSame( array( 0, 0, 0 ), array_values( (array) $this->committedItem( $b, $racing ) ) );
+	}
+
+	/**
 	 * Tests that deleting a variant releases its holds, writes off its stock with a final entry, removes the item and keeps the ledger.
 	 *
 	 * @since 0.1.0
@@ -130,6 +185,40 @@ final class SeamsTest extends StockTestCase {
 		$this->assertInstanceOf( StockReservationReleased::class, $this->afterCommit[0] );
 		$this->assertSame( array( $hold->holdGroup, 'variant_deleted', array( $variant ), array( 1 ) ), array( $this->afterCommit[0]->holdId, $this->afterCommit[0]->reason, $this->afterCommit[0]->variantIds, $this->afterCommit[0]->quantities ) );
 		$this->assertTrue( $this->projectionCheck()->passed, 'The kept ledger of a deleted variant is normal.' );
+	}
+
+	/**
+	 * Tests that deleting a variant with stock at two locations releases and writes off each, removes every item, then its policy, and releases the variants' holds one event per hold.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_deleting_a_variant_removes_its_stock_at_every_location_then_its_policy(): void {
+		$variant = self::variant();
+		$second  = $this->plantLocation();
+		$b       = $this->secondConnection();
+
+		$this->stockItem( $variant, 3 );
+		$this->service->adjust( $variant, $second, 2, LedgerReason::Received, Actor::user( 1 ) );
+		$this->service->hold( array( new HoldLine( $variant, 1 ), new HoldLine( $variant, 1, $second ) ), 600 );
+
+		$this->afterCommit = array();
+
+		$this->db->transaction(
+			function () use ( $variant ): void {
+				$this->service->deleteVariants( array( $variant ), Actor::user( 4 ) );
+			}
+		);
+
+		$this->assertNull( $this->committedItem( $b, $variant ) );
+		$this->assertNull( $this->committedItem( $b, $variant, $second ) );
+		$this->assertSame( '0', $b->fetchValue( sprintf( 'SELECT COUNT(*) FROM `%s` WHERE variant_id = %d', $this->table( InventoryTables::POLICIES ), $variant ) ), 'The policy went last.' );
+		$this->assertSame(
+			array( array( $this->defaultLocation, '-3' ), array( $second, '-2' ) ),
+			array_map( static fn( array $row ): array => array( (int) $row['location_id'], (string) $row['delta'] ), $this->db->fetchAll( 'SELECT location_id, delta FROM %i WHERE variant_id = %d AND reason = %s ORDER BY id', $this->table( InventoryTables::LEDGER ), $variant, 'variant_deleted' ) ),
+			'One write-off per location, ascending.'
+		);
+		$this->assertSame( array( array( $variant ), array( 2 ), array( $variant, $variant ), array( $this->defaultLocation, $second ), array( 1, 1 ) ), self::lines( $this->afterCommit[0] ), 'One release of the hold, naming the variant once and both its items.' );
+		$this->assertTrue( $this->projectionCheck()->passed, implode( "\n", $this->projectionCheck()->findings ) );
 	}
 
 	/**
@@ -207,15 +296,16 @@ final class SeamsTest extends StockTestCase {
 	 * Tests that an allocation committed at the moment of the delete's lock is seen, although the caller read stock earlier.
 	 *
 	 * B plays order placement converting a hold: it updates the item, inserts an open allocation
-	 * and commits, just before the delete's item lock leaves. The race runs at both isolation
+	 * and commits, just before the delete's lock of the variant's items leaves, after its lock of
+	 * the variant's policy, which a conversion does not take. The race runs at both isolation
 	 * levels a site may use, on both connections. At REPEATABLE READ the caller's transaction read
 	 * the item before B committed, so a plain read would still see no allocation. At READ COMMITTED
 	 * there are no gap locks, so a check made before the item lock does not stop B's allocation, and
 	 * misses it; at REPEATABLE READ such a check's own gap lock would make B wait instead.
 	 *
-	 * The item lock is an UPDATE of a row B changed after that snapshot. MySQL's reads the newest
-	 * row, sees the allocation and refuses the delete in the first run. MariaDB refuses the UPDATE
-	 * at REPEATABLE READ (error 1020) and rolls the transaction back; the caller's unit of work, run
+	 * The items' lock is a locking read of a row B changed after that snapshot. MySQL's reads the
+	 * newest row, sees the allocation and refuses the delete in the first run. MariaDB refuses the
+	 * locking read at REPEATABLE READ (error 1020) and rolls the transaction back; the caller's unit of work, run
 	 * again with a new snapshot, refuses the delete there. What both guarantee: the item and its
 	 * allocation stand, the refusal is `stock.delete_blocked`, and a second run only follows a
 	 * rollback.
@@ -241,7 +331,7 @@ final class SeamsTest extends StockTestCase {
 		$wpdb->query( 'SET SESSION TRANSACTION ISOLATION LEVEL ' . $isolation ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery -- one of two literal levels, restored below.
 
 		$converted = $this->beforeStatement(
-			self::shapeOf( MysqlStockRepository::LOCK_ITEM ),
+			self::shapeOf( MysqlStockRepository::LOCK_ITEMS_OF ),
 			function () use ( $b, $variant ): void {
 				// A conversion: the item first, then the hold row gives way to the allocation.
 				$b->query( 'START TRANSACTION' );
@@ -387,6 +477,6 @@ final class SeamsTest extends StockTestCase {
 	 * @param int              $variantId The variant.
 	 */
 	private function plantAllocation( SecondConnection $b, int $variantId ): void {
-		$b->query( sprintf( "INSERT INTO `%s` ( variant_id, order_id, order_line_id, quantity, state, created_at ) VALUES ( %d, 1, %d, 1, 'open', UTC_TIMESTAMP(6) )", $this->table( InventoryTables::ALLOCATIONS ), $variantId, $variantId ) );
+		$b->query( sprintf( "INSERT INTO `%s` ( variant_id, location_id, order_id, order_line_id, quantity, state, created_at ) VALUES ( %d, %d, 1, %d, 1, 'open', UTC_TIMESTAMP(6) )", $this->table( InventoryTables::ALLOCATIONS ), $variantId, $this->defaultLocation, $variantId ) );
 	}
 }

@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Platform\Settings;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Inventory\Application\InventorySettings;
 use SEOCart\Payment\Application\RefundCapSettings;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Authorization\OptionGrantLedger;
@@ -61,11 +62,14 @@ final class SettingsRegistryTest extends TestCase {
 				'seocart_data_keys'                       => array( SecretKeys::ACTIVE, SecretKeys::RETIRING, SecretKeys::CANARY ),
 				'seocart_refund_caps_order_agent_per_order' => array( RefundCapSettings::ORDER_AGENT_PER_ORDER ),
 				'seocart_refund_caps_order_agent_per_day' => array( RefundCapSettings::ORDER_AGENT_PER_DAY ),
+				'seocart_inventory_multi_location_fulfilment' => array( InventorySettings::MULTI_LOCATION_FULFILMENT ),
+				'seocart_inventory_transfer_lead_days'    => array( InventorySettings::TRANSFER_LEAD_DAYS ),
+				'seocart_inventory_transfer_warning_days' => array( InventorySettings::TRANSFER_WARNING_DAYS ),
 			),
 			$options
 		);
 
-		$this->assertSame( array( InternationalSettings::BASE_CURRENCY, InternationalSettings::CROSS_ZONE_POLICY, InternationalSettings::TAX_ROUNDING_MODE, RefundCapSettings::ORDER_AGENT_PER_ORDER, RefundCapSettings::ORDER_AGENT_PER_DAY ), array_map( static fn( Setting $setting ): string => $setting->name(), $registry->exposed() ) );
+		$this->assertSame( array( InternationalSettings::BASE_CURRENCY, InternationalSettings::CROSS_ZONE_POLICY, InternationalSettings::TAX_ROUNDING_MODE, RefundCapSettings::ORDER_AGENT_PER_ORDER, RefundCapSettings::ORDER_AGENT_PER_DAY, InventorySettings::MULTI_LOCATION_FULFILMENT, InventorySettings::TRANSFER_LEAD_DAYS, InventorySettings::TRANSFER_WARNING_DAYS ), array_map( static fn( Setting $setting ): string => $setting->name(), $registry->exposed() ) );
 		$this->assertSame( 'USD', $registry->setting( InternationalSettings::BASE_CURRENCY )->field()->defaultValue() );
 		$this->assertSame( array( SupportError::UnknownCurrency ), $registry->setting( InternationalSettings::BASE_CURRENCY )->errors() );
 
@@ -166,6 +170,9 @@ final class SettingsRegistryTest extends TestCase {
 				'seocart_data_keys'                       => array( 'Settings', SecretKeys::PURPOSE, false, Classification::Secret ),
 				'seocart_refund_caps_order_agent_per_order' => array( 'Settings', RefundCapSettings::settings()[0]->field()->description(), false, Classification::Public ),
 				'seocart_refund_caps_order_agent_per_day' => array( 'Settings', RefundCapSettings::settings()[1]->field()->description(), false, Classification::Public ),
+				'seocart_inventory_multi_location_fulfilment' => array( 'Settings', InventorySettings::settings()[0]->field()->description(), false, Classification::Public ),
+				'seocart_inventory_transfer_lead_days'    => array( 'Settings', InventorySettings::settings()[1]->field()->description(), false, Classification::Public ),
+				'seocart_inventory_transfer_warning_days' => array( 'Settings', InventorySettings::settings()[2]->field()->description(), false, Classification::Public ),
 			),
 			self::described( Settings::registry()->optionDefinitions() )
 		);

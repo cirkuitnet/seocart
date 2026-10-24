@@ -15,7 +15,11 @@ use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Inventory\Domain\Event\StockHoldExpired;
 use SEOCart\Inventory\Domain\Event\StockReserved;
 use SEOCart\Inventory\Domain\HoldLine;
+use SEOCart\Inventory\Domain\LedgerReason;
+use SEOCart\Inventory\Infrastructure\InventoryTables;
+use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
+use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Exception\TransactionIntegrityLost;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Support\Error\CodedException;
@@ -345,10 +349,164 @@ final class HoldTest extends StockTestCase {
 
 		$this->assertNotNull( $hold );
 		$this->assertSame( array( $untracked ), $hold->untracked );
-		$this->assertEquals( array( new HoldLine( $tracked, 1 ) ), $hold->lines );
+		$this->assertEquals( array( new HoldLine( $tracked, 1, $this->defaultLocation ) ), $hold->lines );
 		$this->assertQueryCount( 0, $log->ofType( 'UPDATE', 'INSERT', 'DELETE' )->matching( '/variant_id = ' . $untracked . '\b|\( ' . $untracked . ',/' ), 'Writes naming the untracked item' );
 		$this->assertSame( array(), $this->committedHolds( $b, $untracked ) );
 		$this->assertSame( array( $tracked ), $this->afterCommit[0]->variantIds ?? null );
+	}
+
+	/**
+	 * Tests that a line naming no location is held at the store's default location, though another location has a lower id, and adds up with a line naming the default location.
+	 *
+	 * The default location is moved to a location created after the first, so it is not the active
+	 * location with the lowest id.
+	 *
+	 * Planted violation: in MysqlStockRepository::CONFIGURATION, resolve the default location as the
+	 * active one with the lowest id (`SELECT MIN( l.id ) FROM {locations} l WHERE l.active = 1`): the
+	 * lines are held at the first location, whose item has no units, and the hold is refused.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_line_with_no_location_is_held_at_the_default_location(): void {
+		$variant = self::variant();
+		$first   = $this->defaultLocation;
+		$default = $this->plantLocation();
+		$b       = $this->secondConnection();
+
+		$this->moveDefaultTo( $default );
+		$this->stockItem( $variant, 0 );
+		$this->service->adjust( $variant, $default, 3, LedgerReason::Received, Actor::user( 1 ) );
+		$this->plantItem( $variant, 0, 0, 0, true, $first );
+
+		$hold = $this->service->hold( array( new HoldLine( $variant, 1 ), new HoldLine( $variant, 1, $default ) ), 600 );
+
+		$this->assertEquals( array( new HoldLine( $variant, 2, $default ) ), $hold->lines, 'Both lines are one line at the default location.' );
+		$this->assertSame( 2, $this->committedItem( $b, $variant, $default )['held'] ?? null );
+		$this->assertSame( 0, $this->committedItem( $b, $variant, $first )['held'] ?? null );
+		$this->assertSame( array( array( $variant ), array( 2 ), array( $variant ), array( $default ), array( 2 ) ), self::lines( $this->afterCommit[0] ) );
+	}
+
+	/**
+	 * Tests that a hold split across two locations names each variant once with all its units, and each item with its own, so a reader of the variants alone sees each variant's units as before.
+	 *
+	 * Planted violation: in StockLines::of(), list each item in `variant_ids` and `quantities`
+	 * too, as the item lists do: the reservation refuses lines that name a variant twice, and the
+	 * hold is undone.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_split_hold_names_each_variant_once_and_each_item_with_its_units(): void {
+		$variant = self::variant();
+		$other   = self::variant();
+		$second  = $this->plantLocation();
+
+		$this->stockItem( $variant, 4 );
+		$this->stockItem( $other, 1 );
+		$this->service->adjust( $variant, $second, 4, LedgerReason::Received, Actor::user( 1 ) );
+
+		$this->service->hold( array( new HoldLine( $other, 1 ), new HoldLine( $variant, 3, $second ), new HoldLine( $variant, 2 ) ), 600 );
+
+		$this->assertInstanceOf( StockReserved::class, $this->afterCommit[0] ?? null );
+		$this->assertSame(
+			array( array( $variant, $other ), array( 5, 1 ), array( $variant, $variant, $other ), array( $this->defaultLocation, $second, $this->defaultLocation ), array( 2, 3, 1 ) ),
+			self::lines( $this->afterCommit[0] )
+		);
+
+		$payload = $this->afterCommit[0]->toPayload();
+
+		$this->assertSame(
+			array(
+				$variant => 5,
+				$other   => 1,
+			),
+			array_combine( $payload['variant_ids'], $payload['quantities'] ),
+			'A reader of the variants alone sees each variant once, with all its units.'
+		);
+	}
+
+	/**
+	 * Tests that a line naming no location is refused when the default location has too few units, naming it, though another location has them.
+	 *
+	 * Nothing routes a line that names no location: it is the default location's, as every line
+	 * of a store with one location is.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_line_with_no_location_is_refused_at_the_default_location_though_another_has_units(): void {
+		$variant = self::variant();
+		$second  = $this->plantLocation();
+
+		$this->stockItem( $variant, 0 );
+		$this->service->adjust( $variant, $second, 5, LedgerReason::Received, Actor::user( 1 ) );
+
+		try {
+			$this->service->hold( array( new HoldLine( $variant, 1 ) ), 600 );
+			$this->fail( 'A line with no location was held elsewhere than the default location.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( InventoryError::Insufficient, $refused->errorCode() );
+			$this->assertSame( array( $variant, 1, 0, $this->defaultLocation ), array( $refused->context()['variant_id'], $refused->context()['requested'], $refused->context()['available'], $refused->details()['location_id'] ?? null ) );
+		}
+	}
+
+	/**
+	 * Tests that a line at a location the variant has no item at is no units there: `stock.insufficient`, not a missing item, and no row is created.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_line_at_a_location_without_an_item_is_refused_as_insufficient(): void {
+		$variant = self::variant();
+		$second  = $this->plantLocation();
+		$b       = $this->secondConnection();
+
+		$this->stockItem( $variant, 4 );
+
+		try {
+			$this->service->hold( array( new HoldLine( $variant, 1, $second ) ), 600 );
+			$this->fail( 'A line was held at a location with no item.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( InventoryError::Insufficient, $refused->errorCode() );
+			$this->assertSame( array( 0, $second ), array( $refused->context()['available'], $refused->details()['location_id'] ?? null ) );
+		}
+
+		$this->assertNull( $this->committedItem( $b, $variant, $second ), 'A claim never creates an item.' );
+	}
+
+	/**
+	 * Tests that a hold of a line naming no location, in a store with no default location, is `stock.no_fulfilling_location` before any write.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_line_with_no_location_in_a_store_without_a_default_is_refused(): void {
+		$variant = self::variant();
+
+		$this->stockItem( $variant, 4 );
+		$this->db->execute( 'UPDATE %i SET is_default = NULL', $this->table( InventoryTables::LOCATIONS ) );
+
+		$log = $this->captureQueries(
+			function () use ( $variant ): void {
+				try {
+					$this->service->hold( array( new HoldLine( $variant, 1 ) ), 600 );
+					$this->fail( 'A line with no location was held in a store with no default location.' );
+				} catch ( CodedException $refused ) {
+					$this->assertSame( InventoryError::NoFulfillingLocation, $refused->errorCode() );
+				}
+			}
+		);
+
+		$this->assertQueryCount( 0, $log->ofType( 'UPDATE', 'INSERT', 'DELETE' ), 'Writes of a hold with nowhere to be' );
+	}
+
+	/**
+	 * Makes another location the store's default.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId The location.
+	 */
+	private function moveDefaultTo( int $locationId ): void {
+		$this->db->execute( 'UPDATE %i SET is_default = NULL WHERE is_default = 1', $this->table( InventoryTables::LOCATIONS ) );
+		$this->db->execute( 'UPDATE %i SET is_default = 1 WHERE id = %d', $this->table( InventoryTables::LOCATIONS ), $locationId );
+		wp_cache_delete( MysqlLocationRepository::CACHE_KEY, MysqlLocationRepository::CACHE_GROUP );
 	}
 
 	/**

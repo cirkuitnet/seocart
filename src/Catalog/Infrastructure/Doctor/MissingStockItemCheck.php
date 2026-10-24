@@ -272,13 +272,12 @@ final class MissingStockItemCheck implements Repairable {
 
 							foreach ( $variantIds as $variantId ) {
 								if ( in_array( $variantId, $stillThere, true ) && ! array_key_exists( $variantId, $hasItem ) ) {
-									$create[]  = $variantId;
-									$changes[] = sprintf( 'created a stock item at zero for variant %d.', $variantId );
+									$create[] = $variantId;
 								}
 							}
 
 							if ( array() !== $create ) {
-								$this->stock->createItems( $create );
+								$changes = array_map( static fn( int $created ): string => sprintf( 'created a stock item at zero for variant %d.', $created ), $this->stock->createItems( $create ) );
 							}
 
 							return $changes;

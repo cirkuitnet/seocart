@@ -21,7 +21,11 @@ use SEOCart\Catalog\Infrastructure\Migrations\CreateCatalogTables;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\Migrations\CreateCheckoutTables;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
+use SEOCart\Inventory\Infrastructure\Migrations\AddLocations;
 use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
+use SEOCart\Inventory\Infrastructure\Migrations\RekeyStockByLocation;
+use SEOCart\Inventory\Infrastructure\Migrations\SeedDefaultLocation;
+use SEOCart\Order\Infrastructure\Migrations\AddFulfilmentLocation;
 use SEOCart\Order\Infrastructure\Migrations\AddMoneyReconciliation;
 use SEOCart\Order\Infrastructure\Migrations\AddOrderEventReference;
 use SEOCart\Order\Infrastructure\Migrations\AddOrderStatusIndex;
@@ -100,9 +104,9 @@ final class OwnedData {
 			new Contribution( tables: array( LogsTable::definition() ), migrations: array( new CreateLogsMigration() ) ),
 			new Contribution( tables: CatalogTables::all(), migrations: array( new CreateCatalogTables() ) ),
 			new Contribution( jobGroups: array( JobQueue::GROUP => 'Jobs' ) ),
-			new Contribution( tables: InventoryTables::all(), migrations: array( new CreateStockTablesMigration() ) ),
+			new Contribution( tables: InventoryTables::all(), migrations: array( new CreateStockTablesMigration(), new AddLocations(), new SeedDefaultLocation(), new RekeyStockByLocation() ) ),
 			new Contribution( tables: array( RateCountersTable::definition() ), migrations: array( new CreateRateCountersMigration() ) ),
-			new Contribution( tables: OrderTables::all(), migrations: array( new CreateOrderTables(), new AddOrderStatusIndex(), new AddOrderEventReference(), new AddMoneyReconciliation() ) ),
+			new Contribution( tables: OrderTables::all(), migrations: array( new CreateOrderTables(), new AddOrderStatusIndex(), new AddOrderEventReference(), new AddMoneyReconciliation(), new AddFulfilmentLocation() ) ),
 			new Contribution( tables: CartTables::all(), migrations: array( new CreateCartTables() ) ),
 			new Contribution( tables: PaymentTables::all(), migrations: array( new CreatePaymentTables(), new AddIntentMode(), new KeyLedgerByOutcome() ) ),
 			new Contribution( tables: WebhookReceiptTables::all(), migrations: array( new CreateWebhookReceipts(), new CanonicalizeProviderReferences() ) ),

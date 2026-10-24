@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Inventory\Domain\Event;
 
+use SEOCart\Inventory\Domain\StockLines;
 use SEOCart\Support\Events\DeliveryMode;
 use SEOCart\Support\Events\DomainEvent;
 
@@ -19,12 +20,17 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Fires after a checkout hold is committed, naming every variant it holds and the units of each.
  *
- * Owns one fact: what a listener learns about one hold. The lines are two parallel lists,
- * `variant_ids` and `quantities`, the same length and in ascending variant order, because an
- * event's payload holds only scalars and flat lists of scalars. Untracked variants need no hold
- * and are not listed. Delivered in the same request right after the commit; its loss is
- * tolerable, because the hold rows themselves are the record. Its aggregate id is the lowest
- * variant id of the hold. Each payload key is its property's name in snake_case.
+ * Owns one fact: what a listener learns about one hold. An event's payload holds only scalars and
+ * flat lists of scalars, so its lines are two sets of parallel lists (StockLines). `variant_ids`
+ * and `quantities` name each variant held once, in ascending order, with all the units held of it
+ * at every location. `location_variant_ids`, `location_ids` and `location_quantities` name each
+ * item held, a variant at a location, in ascending order of the variant then the location, with
+ * the units held there; the units of a variant's items add up to the variant's. A hold recorded
+ * before stock was kept per location has none of the three item lists, and each is empty.
+ * Untracked variants need no hold and are not listed. Delivered in the same request right after
+ * the commit; its loss is tolerable, because the hold rows themselves are the record. Its
+ * aggregate id is the lowest variant id of the hold. Each payload key is its property's name in
+ * snake_case.
  *
  * @since 0.1.0
  */
@@ -44,18 +50,24 @@ final readonly class StockReserved implements DomainEvent {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \InvalidArgumentException When no variant is listed, or the two lists differ in length.
+	 * @throws \InvalidArgumentException When the lines do not agree (StockLines::agree()).
 	 *
-	 * @param string             $holdId     The hold's id, which releases it again.
-	 * @param int|null           $cartId     The cart the hold was taken for, or null.
-	 * @param int|null           $orderId    The order the hold was taken for, or null.
-	 * @param int[]              $variantIds The variants held, ascending.
-	 * @param int[]              $quantities The units held of each, in the same order.
-	 * @param string             $expiresAt  When the hold expires, UTC, `Y-m-d H:i:s`.
-	 * @param \DateTimeImmutable $occurredAt When the hold was taken.
+	 * @param string             $holdId             The hold's id, which releases it again.
+	 * @param int|null           $cartId             The cart the hold was taken for, or null.
+	 * @param int|null           $orderId            The order the hold was taken for, or null.
+	 * @param int[]              $variantIds         The variants held, ascending, each once.
+	 * @param int[]              $quantities         The units held of each, at every location, in the same order.
+	 * @param int[]              $locationVariantIds The variant of each item held, ascending by variant then location; empty for a hold recorded before locations.
+	 * @param int[]              $locationIds        The location of each item held, in the same order; empty for a hold recorded before locations.
+	 * @param int[]              $locationQuantities The units held of each item, in the same order; empty for a hold recorded before locations.
+	 * @param string             $expiresAt          When the hold expires, UTC, `Y-m-d H:i:s`.
+	 * @param \DateTimeImmutable $occurredAt         When the hold was taken.
 	 *
 	 * @phpstan-param list<int> $variantIds
 	 * @phpstan-param list<int> $quantities
+	 * @phpstan-param list<int> $locationVariantIds
+	 * @phpstan-param list<int> $locationIds
+	 * @phpstan-param list<int> $locationQuantities
 	 */
 	public function __construct(
 		public string $holdId,
@@ -63,11 +75,14 @@ final readonly class StockReserved implements DomainEvent {
 		public ?int $orderId,
 		public array $variantIds,
 		public array $quantities,
+		public array $locationVariantIds,
+		public array $locationIds,
+		public array $locationQuantities,
 		public string $expiresAt,
 		public \DateTimeImmutable $occurredAt
 	) {
-		if ( array() === $variantIds || count( $variantIds ) !== count( $quantities ) ) {
-			throw new \InvalidArgumentException( 'A reservation lists at least one variant, and one quantity per variant.' );
+		if ( ! StockLines::agree( $variantIds, $quantities, $locationVariantIds, $locationIds, $locationQuantities ) ) {
+			throw new \InvalidArgumentException( 'A reservation lists at least one variant once with its units, and, unless recorded before locations, each of its items with units adding up to the variant\'s.' );
 		}
 	}
 
@@ -121,6 +136,9 @@ final readonly class StockReserved implements DomainEvent {
 			null === $payload['order_id'] ? null : (int) $payload['order_id'],
 			array_values( array_map( 'intval', (array) $payload['variant_ids'] ) ),
 			array_values( array_map( 'intval', (array) $payload['quantities'] ) ),
+			array_values( array_map( 'intval', (array) ( $payload['location_variant_ids'] ?? array() ) ) ),
+			array_values( array_map( 'intval', (array) ( $payload['location_ids'] ?? array() ) ) ),
+			array_values( array_map( 'intval', (array) ( $payload['location_quantities'] ?? array() ) ) ),
 			(string) $payload['expires_at'],
 			$occurredAt
 		);
@@ -168,12 +186,15 @@ final readonly class StockReserved implements DomainEvent {
 	 */
 	public function toPayload(): array {
 		return array(
-			'hold_id'     => $this->holdId,
-			'cart_id'     => $this->cartId,
-			'order_id'    => $this->orderId,
-			'variant_ids' => $this->variantIds,
-			'quantities'  => $this->quantities,
-			'expires_at'  => $this->expiresAt,
+			'hold_id'              => $this->holdId,
+			'cart_id'              => $this->cartId,
+			'order_id'             => $this->orderId,
+			'variant_ids'          => $this->variantIds,
+			'quantities'           => $this->quantities,
+			'location_variant_ids' => $this->locationVariantIds,
+			'location_ids'         => $this->locationIds,
+			'location_quantities'  => $this->locationQuantities,
+			'expires_at'           => $this->expiresAt,
 		);
 	}
 }

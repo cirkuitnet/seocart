@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Inventory\Domain\Event;
 
+use SEOCart\Inventory\Domain\StockLines;
 use SEOCart\Support\Events\DeliveryMode;
 use SEOCart\Support\Events\DomainEvent;
 
@@ -19,12 +20,17 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Fires in the transaction that allocates an order's units, naming every variant allocated and the units of each.
  *
- * Owns one fact: what a listener learns about one order's allocation. The lines are two parallel
- * lists, `variant_ids` and `quantities`, the same length and in ascending variant order, because
- * an event's payload holds only scalars and flat lists of scalars; a variant two lines of the
- * order sell is listed once per line. Untracked variants are not allocated and not listed. It
- * travels through the outbox, so it survives a crash between the commit and its delivery. Its
- * aggregate is the order. Each payload key is its property's name in snake_case.
+ * Owns one fact: what a listener learns about one order's allocation. An event's payload holds
+ * only scalars and flat lists of scalars, so its lines are two sets of parallel lists
+ * (StockLines). `variant_ids` and `quantities` name each variant allocated once, in ascending
+ * order, with all the units allocated of it at every location. `location_variant_ids`,
+ * `location_ids` and `location_quantities` name each item allocated from, a variant at a
+ * location, in ascending order of the variant then the location, with the units allocated there;
+ * the units of a variant's items add up to the variant's. An allocation recorded before stock was
+ * kept per location has none of the three item lists, and each is empty. Untracked variants are
+ * not allocated and not listed. It travels through the outbox, so it survives a crash between the
+ * commit and its delivery. Its aggregate is the order. Each payload key is its property's name in
+ * snake_case.
  *
  * @since 0.1.0
  */
@@ -44,24 +50,33 @@ final readonly class StockAllocated implements DomainEvent {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \InvalidArgumentException When no variant is listed, or the two lists differ in length.
+	 * @throws \InvalidArgumentException When the lines do not agree (StockLines::agree()).
 	 *
-	 * @param int                $orderId    The order the units are allocated to.
-	 * @param int[]              $variantIds The variants allocated, ascending.
-	 * @param int[]              $quantities The units allocated of each, in the same order.
-	 * @param \DateTimeImmutable $occurredAt When the units were allocated.
+	 * @param int                $orderId            The order the units are allocated to.
+	 * @param int[]              $variantIds         The variants allocated, ascending, each once.
+	 * @param int[]              $quantities         The units allocated of each, at every location, in the same order.
+	 * @param int[]              $locationVariantIds The variant of each item allocated from, ascending by variant then location; empty for an allocation recorded before locations.
+	 * @param int[]              $locationIds        The location of each item allocated from, in the same order; empty for an allocation recorded before locations.
+	 * @param int[]              $locationQuantities The units allocated from each item, in the same order; empty for an allocation recorded before locations.
+	 * @param \DateTimeImmutable $occurredAt         When the units were allocated.
 	 *
 	 * @phpstan-param list<int> $variantIds
 	 * @phpstan-param list<int> $quantities
+	 * @phpstan-param list<int> $locationVariantIds
+	 * @phpstan-param list<int> $locationIds
+	 * @phpstan-param list<int> $locationQuantities
 	 */
 	public function __construct(
 		public int $orderId,
 		public array $variantIds,
 		public array $quantities,
+		public array $locationVariantIds,
+		public array $locationIds,
+		public array $locationQuantities,
 		public \DateTimeImmutable $occurredAt
 	) {
-		if ( array() === $variantIds || count( $variantIds ) !== count( $quantities ) ) {
-			throw new \InvalidArgumentException( 'An allocation lists at least one variant, and one quantity per variant.' );
+		if ( ! StockLines::agree( $variantIds, $quantities, $locationVariantIds, $locationIds, $locationQuantities ) ) {
+			throw new \InvalidArgumentException( 'An allocation lists at least one variant once with its units, and, unless recorded before locations, each of its items with units adding up to the variant\'s.' );
 		}
 	}
 
@@ -113,6 +128,9 @@ final readonly class StockAllocated implements DomainEvent {
 			(int) $payload['order_id'],
 			array_values( array_map( 'intval', (array) $payload['variant_ids'] ) ),
 			array_values( array_map( 'intval', (array) $payload['quantities'] ) ),
+			array_values( array_map( 'intval', (array) ( $payload['location_variant_ids'] ?? array() ) ) ),
+			array_values( array_map( 'intval', (array) ( $payload['location_ids'] ?? array() ) ) ),
+			array_values( array_map( 'intval', (array) ( $payload['location_quantities'] ?? array() ) ) ),
 			$occurredAt
 		);
 	}
@@ -159,9 +177,12 @@ final readonly class StockAllocated implements DomainEvent {
 	 */
 	public function toPayload(): array {
 		return array(
-			'order_id'    => $this->orderId,
-			'variant_ids' => $this->variantIds,
-			'quantities'  => $this->quantities,
+			'order_id'             => $this->orderId,
+			'variant_ids'          => $this->variantIds,
+			'quantities'           => $this->quantities,
+			'location_variant_ids' => $this->locationVariantIds,
+			'location_ids'         => $this->locationIds,
+			'location_quantities'  => $this->locationQuantities,
 		);
 	}
 }
