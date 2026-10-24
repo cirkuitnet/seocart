@@ -11,8 +11,12 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
+use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\Operation;
+use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Order\Domain\NewOrder;
 use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\RefundClaimTables;
 use SEOCart\Tests\Support\Doubles\RememberingGateway;
 use SEOCart\Tests\Support\Payment\RefundOrders;
@@ -185,10 +189,11 @@ final class RefundRecoveryTest extends RefundTestCase {
 	}
 
 	/**
-	 * Has the provider make the refund the killed process's gateway made, from the call log that process wrote: a real provider keeps it, whichever process asks.
+	 * Has the provider keep the refund the killed process's gateway made, as the call log that process wrote names it: a real provider keeps it, whichever process asks.
 	 *
-	 * The provider in this process never saw that refund, so it is handed the request the claim
-	 * made, and the refund it makes is checked to be the one the call log names.
+	 * The provider in this process never saw that refund. It is handed the result the log names,
+	 * built from the request the claim made, and not asked for the refund again: a second call
+	 * would be a refund call outside the gateway the test counts.
 	 *
 	 * @since 0.2.0
 	 *
@@ -197,7 +202,9 @@ final class RefundRecoveryTest extends RefundTestCase {
 	 * @param string             $refundObject The refund object the killed process's gateway answered, from the call log.
 	 */
 	private function rememberKilledRefund( RememberingGateway $provider, string $key, string $refundObject ): void {
-		$this->assertSame( $refundObject, $provider->refund( $this->claimedRefund( $key ) )->providerObjectId, 'The provider made the refund the call log names.' );
+		$request = $this->claimedRefund( $key );
+
+		$provider->made[ $key ][] = new GatewayResult( StubGateway::ID, Operation::Refund, Outcome::Approved, $request->intentUuid, $request->amount, $refundObject, $request->providerIntentId );
 	}
 
 	/**

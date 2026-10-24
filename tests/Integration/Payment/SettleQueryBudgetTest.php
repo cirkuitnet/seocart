@@ -11,8 +11,6 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
-use SEOCart\Contracts\Payment\GatewayRefund;
-use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Payment\Application\ClaimStatement;
 use SEOCart\Payment\Application\RefundService;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
@@ -137,15 +135,15 @@ final class SettleQueryBudgetTest extends RefundTestCase {
 	 * @return \SEOCart\Tests\Support\QueryLog The settlement's statements.
 	 */
 	private function settlementOf( RefundService $service, RememberingGateway $provider, string $path ): \SEOCart\Tests\Support\QueryLog {
-		list( $order, $intent ) = $this->placePaid( self::order() );
-		list( $tee )            = $this->lineUuids( $order->id );
-		$uuid                   = $this->openClaim( $order->uuid, $tee, $provider, $service );
-		$claimed                = Money::of( (int) $this->db->fetchValue( 'SELECT amount_minor FROM %i WHERE uuid = %s', $this->table( RefundClaimTables::CLAIMS ), $uuid ), Currency::of( 'EUR' ) );
-		$statement              = 'refunded' === $path ? new ClaimStatement( true, 'Made.', 'manual-re-' . $uuid, $claimed->minorUnits() ) : new ClaimStatement( false, 'Not made.' );
-		$manager                = $this->manager();
+		list( $order ) = $this->placePaid( self::order() );
+		list( $tee )   = $this->lineUuids( $order->id );
+		$uuid          = $this->openClaim( $order->uuid, $tee, $provider, $service );
+		$claimed       = Money::of( (int) $this->db->fetchValue( 'SELECT amount_minor FROM %i WHERE uuid = %s', $this->table( RefundClaimTables::CLAIMS ), $uuid ), Currency::of( 'EUR' ) );
+		$statement     = 'refunded' === $path ? new ClaimStatement( true, 'Made.', 'manual-re-' . $uuid, $claimed->minorUnits() ) : new ClaimStatement( false, 'Not made.' );
+		$manager       = $this->manager();
 
 		if ( 'gateway' === $path ) {
-			$provider->made[ $uuid ][] = ( new StubGateway() )->refund( new GatewayRefund( $intent->uuid, (string) $this->intentRow( $intent->uuid )['provider_intent_id'], $claimed, $uuid, Mode::Test ) );
+			$provider->made[ $uuid ][] = ( new StubGateway() )->refund( $this->claimedRefund( $uuid ) );
 		}
 
 		return $this->captureQueries( fn() => $service->settleClaim( $uuid, $statement, $manager ) )->matching( self::STATEMENTS );
