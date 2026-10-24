@@ -449,8 +449,9 @@ the adapter sends anything else, the test fails and names the scenario, the requ
 the part that differs.
 
 Recording calls the provider for real, in test mode, from a developer's shell: name a JSON file of
-the test mode's settings, in the format `wp seocart gateway configure --from-file` reads, readable
-by you alone, and set `SEOCART_TAPE=record`:
+the test mode's settings, in the format `wp seocart gateway configure --from-file` reads (see
+[Saving a mode's settings](#saving-a-modes-settings)) and that no one but you can read or write
+(`chmod 600`), and set `SEOCART_TAPE=record`:
 
 ```text
 $ SEOCART_TAPE=record SEOCART_TAPE_SETTINGS=~/dev/example-test.json sh ../seocart/bin/ci/extension.sh conformance . payments
@@ -590,6 +591,106 @@ ok     docs/capabilities.md (gateways)
 $ php ../seocart/bin/generate-docs.php --plugin=. --check
 ok     docs/capabilities.md (gateways)
 ```
+
+## What running a gateway asks of its adapter
+
+A merchant sets a gateway up, switches it off and keeps it out of live mode through SEOCart, and
+each of those reaches the adapter. This section says how.
+
+### Webhook endpoints
+
+A gateway whose provider can create webhook endpoints through its API implements
+`SEOCart\Contracts\Payment\ProvisionsWebhooks` as well as `PaymentGateway`. Any other gateway has
+its endpoint set up by the merchant, who saves the signing secret with the credentials.
+
+- `webhookEvents()` returns the event types the endpoint subscribes to, the ones `readWebhook()`
+  reads, at least one. SEOCart asks once, when the gateway registers.
+- The gateway also declares the credential `webhook_secret` (`GatewayDescriptor::WEBHOOK_SECRET`).
+  Without it, or without an event type, SEOCart refuses the registration with the reason
+  `webhooks_undeclared`.
+- `provisionWebhooks( WebhookTarget $target )` is called when `wp seocart gateway configure` saves
+  a mode's settings, outside any transaction, unless the merchant gives `--no-webhooks`. The
+  gateway calls its provider through `ExtensionContext::http()` only.
+- The `WebhookTarget` carries the URL SEOCart's route has for the gateway and the mode, the mode,
+  the site's install uuid, the events, and `$secretHeld`. When SEOCart holds the signing secret of
+  an endpoint it set up for the mode, `$secretHeld` is true and `$endpointId` names that endpoint;
+  otherwise `$endpointId` is null.
+- An endpoint is this site's only when the provider's record of it carries the install uuid and the
+  mode as metadata and its URL is the target's URL. A copied site keeps the install uuid but serves
+  another URL, so the URL is part of the test. The gateway never lists, changes or deletes an
+  endpoint tagged with another install uuid or mode, or one of this site and mode at another URL,
+  which it counts in `WebhookProvisioning::$elsewhere`.
+- An endpoint is reused only when `WebhookTarget::$endpointId` names it. Any other endpoint of this
+  site for the mode is deleted and a new one created, because a provider shows a signing secret
+  only when the endpoint is created and SEOCart does not hold this one's.
+- The answer is a `WebhookProvisioning`: `REUSED` carries no signing secret, `REPLACED` and
+  `CREATED` carry the new one, and the constructor refuses any other pairing. It also lists the
+  endpoint ids deleted. An endpoint id is one line of at most
+  `WebhookProvisioning::ENDPOINT_ID_MAX_LENGTH` bytes.
+- SEOCart stores the signing secret sealed under `webhook_secret` and the endpoint id beside it
+  under `webhook_endpoint`. It reports a `REUSED` answer that names any endpoint other than
+  `$endpointId` as a failed webhook step, since that endpoint's secret is not held.
+- When the provider cannot be asked or refuses, the gateway throws `GatewayUnavailable`. SEOCart
+  keeps the settings it saved, reports the webhook step failed by the exception's class and never
+  its message, which may quote a credential, and `configure` exits 2.
+- A gateway that provisions its endpoints takes no payment in a mode until that mode's
+  `webhook_secret` is saved.
+
+### Setting names SEOCart reserves
+
+A gateway declares no setting named `mode` (`GatewayDescriptor::RESERVED_SETTING`) or
+`webhook_endpoint` (`GatewayDescriptor::WEBHOOK_ENDPOINT`): SEOCart keeps the gateway's mode under
+the first, when the gateway has more than one, and the endpoint id under the second. A descriptor
+that declares either, or one name twice, is refused when the gateway registers, with a line in
+SEOCart's log and the reason `invalid_descriptor`. Two names are SEOCart's to give meaning to:
+`webhook_secret` is the signing secret above, and `account_country` selects the row of the
+capability matrix and must be plain text. A name that reads as card data, such as `card_number`, is
+refused too.
+
+### The kill switch and Safe Mode
+
+An operator switches a gateway off with `wp seocart gateway disable <gateway>`. A gateway switched
+off takes no new payment, and checkout does not offer it. The payments it already holds go on
+through the adapter: `capture()`, `void()`, `refund()`, `queryRefund()` and `query()` are called as
+before, and its webhook deliveries are still read. The switch is for stopping money coming in, so
+an adapter keeps answering about money already moving.
+
+Safe Mode (`wp seocart safe-mode on`, which SEOCart also turns on for a site it finds copied)
+keeps the site off live money:
+
+- SEOCart makes no call about a live payment: it refuses `payment.gateway_unavailable` with the
+  reason `safe_mode` before the adapter is asked, so the adapter never sees a live call.
+- A live delivery to the webhook route is answered `payment.gateway_unavailable` before any secret
+  is opened, so the provider retries later.
+- `wp seocart gateway configure` for a live mode is refused for every gateway, whether or not it
+  sets up its own endpoints, unless the merchant gives `--no-webhooks`, so `provisionWebhooks()` is
+  not called.
+- A gateway set to live takes new payments in its test mode, or none when it has no test mode or is
+  not configured for it. Payments created live keep their mode and wait until Safe Mode ends.
+
+SEOCart opens every credential the gateway declares for a payment's mode before it calls the
+adapter, and refuses the call, with the reason `credentials_missing` or `credentials_unreadable`,
+when one cannot be used. Both the switch and Safe Mode are read from a record each request loads
+once, so a change takes effect for the requests that start after it and stops none already running.
+
+### Saving a mode's settings
+
+`wp seocart gateway configure <gateway> --mode=<test|live> --from-file=<path> --user=<login>`
+saves a mode's settings; the user needs `seocart_manage_secrets`. The settings never travel on the
+command line, which other users of the server can see, so the file has these rules:
+
+- It is one JSON object of the gateway's settings for the mode, by the names `describe()` declares.
+  It names every setting that has no default, but `webhook_secret`. A gateway that sets up its own
+  endpoints has that secret set up by the webhook step, and the file gives it only with
+  `--no-webhooks`. A name the gateway does not declare is refused, `mode` included, since the mode
+  is the option's.
+- It is a regular file, not a symbolic link, and no user but its owner can read or write it
+  (`chmod 600`). A file of more than `GatewayCommand::MAX_FILE_BYTES` (65536) bytes is refused.
+  The file opened must be the file checked. No message quotes its content.
+- The capability, the gateway and Safe Mode are checked before the file is opened.
+
+The command exits 0 when done, 1 when it refused and saved nothing, and 2 when the settings were
+saved and the webhook step failed.
 
 ## Continuous integration
 
