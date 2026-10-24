@@ -352,7 +352,7 @@ An internal error carries a generic message and empty details: it is a code mark
 ## `payment.not_voidable`
 
 - HTTP status: 409
-- Message: A payment that is {status} cannot be voided; only an authorized payment can, and a captured one is given back by a refund.
+- Message: This void was not made: the payment is {status}. A void releases only an authorization the gateway still holds, and a captured payment is given back by a refund.
 - Values: `status`
 
 ## `payment.operation_declined`

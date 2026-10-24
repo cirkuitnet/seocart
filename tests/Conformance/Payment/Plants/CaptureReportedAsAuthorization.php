@@ -19,7 +19,9 @@ use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGateway;
 /**
  * Captures as the reference gateway does, and reports the capture as an authorization.
  *
- * The plant of rule 1: the conformance suite must fail on it with that rule's message.
+ * The plant of rule 1: the conformance suite must fail on it with that rule's message. SEOCart
+ * refuses the answer as the gateway's error before anything of it is recorded, so the rule fails
+ * on that refusal, before it reads the ledger.
  *
  * @since 0.2.0
  */
@@ -32,7 +34,7 @@ final class CaptureReportedAsAuthorization extends ReferenceGateway {
 	 *
 	 * @var string
 	 */
-	public const FAILS_WITH = 'after the capture, the payment ledger is not the one an authorization and a capture of the whole amount make';
+	public const FAILS_WITH = 'answered a call to capture with the result of another operation';
 
 	/**
 	 * Captures, and answers with the wrong operation.

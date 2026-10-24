@@ -209,6 +209,16 @@ To build the adapter, declare what the provider can do in `describe()` (its sett
 its capability matrix and its idempotency profile), then replace the placeholders. A gateway with
 settings, or with a second mode, gets a settings document in SEOCart.
 
+Every `GatewayResult` an operation returns answers the request it was given: it carries the
+request's `intentUuid`, the gateway's own id (the one `describe()` declares) as its `provider`, and
+the operation asked: `authorize()` answers an authorization, `capture()` a capture, `refund()` and
+`queryRefund()` a refund. The one exception is a void the provider did not make because the
+authorization still stands: `void()` then answers with that authorization's approval. `query()`
+answers with the operation the provider's state maps to. SEOCart refuses any other answer as the
+gateway's error, as it treats a call the gateway did not answer: nothing of it is recorded, a
+placement waits for the reconciliation run, a capture or a void asked again sends the same
+idempotency key, and a refund stays claimed.
+
 ## Run the gates
 
 Commit the files first: the private-reference check reads what git tracks, and the zip takes its

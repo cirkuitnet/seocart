@@ -1,6 +1,6 @@
 <?php
 /**
- * MisaddressingGateway: answers the store's calls with the wrapped gateway's answers addressed to another intent, or given as another provider
+ * MisaddressingGateway: answers the store's calls with the wrapped gateway's answers addressed to another intent, given as another provider, or named as another operation
  *
  * @package SEOCart
  * @since   0.2.0
@@ -14,18 +14,20 @@ namespace SEOCart\Tests\Support\Doubles;
 use SEOCart\Contracts\Payment\CaptureRequest;
 use SEOCart\Contracts\Payment\GatewayRefund;
 use SEOCart\Contracts\Payment\GatewayResult;
+use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Contracts\Payment\PaymentQuery;
 use SEOCart\Contracts\Payment\PaymentRequest;
 use SEOCart\Contracts\Payment\VoidRequest;
 
 /**
- * A gateway that makes what the store asks of it, as the gateway it wraps makes it, and answers for another intent than the one asked about, or as another provider: what a misbehaving or buggy adapter can hand the store.
+ * A gateway that makes what the store asks of it, as the gateway it wraps makes it, and answers for another intent than the one asked about, as another provider, or as another operation: what a misbehaving or buggy adapter can hand the store.
  *
- * Owns one fact: the wrong address on an answer. Until answerFor() or answerAs() is called, every
- * answer is the wrapped gateway's; after, every answer to authorize, capture, void, refund,
- * queryRefund and query keeps all the wrapped gateway said, its amount and provider objects
- * included, and names the intent or the provider given instead. No answer stays no answer.
+ * Owns one fact: the wrong address on an answer. Until answerFor(), answerAs() or answerWith() is
+ * called, every answer is the wrapped gateway's; after, every answer to authorize, capture, void,
+ * refund, queryRefund and query keeps all the wrapped gateway said, its amount and provider
+ * objects included, and names the intent, the provider or the operation given instead. No answer
+ * stays no answer.
  *
  * @since 0.2.0
  */
@@ -50,6 +52,15 @@ final class MisaddressingGateway implements PaymentGateway {
 	 * @var string|null
 	 */
 	private ?string $provider = null;
+
+	/**
+	 * The operation every answer names; null to keep the one the wrapped gateway named.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var Operation|null
+	 */
+	private ?Operation $operation = null;
 
 	/**
 	 * Wraps a gateway.
@@ -81,6 +92,17 @@ final class MisaddressingGateway implements PaymentGateway {
 	 */
 	public function answerAs( string $provider ): void {
 		$this->provider = $provider;
+	}
+
+	/**
+	 * From now on, answers every call as the result of an operation, whichever was asked.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Operation $operation The operation the answers name.
+	 */
+	public function answerWith( Operation $operation ): void {
+		$this->operation = $operation;
 	}
 
 	/**
@@ -160,7 +182,7 @@ final class MisaddressingGateway implements PaymentGateway {
 	}
 
 	/**
-	 * Returns an answer of the wrapped gateway, naming the intent and the provider set, and keeping everything else.
+	 * Returns an answer of the wrapped gateway, naming the intent, the provider and the operation set, and keeping everything else.
 	 *
 	 * @since 0.2.0
 	 *
@@ -168,6 +190,6 @@ final class MisaddressingGateway implements PaymentGateway {
 	 * @return GatewayResult The answer, as this gateway gives it.
 	 */
 	private function misaddressed( GatewayResult $answer ): GatewayResult {
-		return new GatewayResult( $this->provider ?? $answer->provider, $answer->operation, $answer->outcome, $this->intentUuid ?? $answer->intentUuid, $answer->amount, $answer->providerObjectId, $answer->providerIntentId, $answer->errorCode, $answer->settlement, $answer->nextAction );
+		return new GatewayResult( $this->provider ?? $answer->provider, $this->operation ?? $answer->operation, $answer->outcome, $this->intentUuid ?? $answer->intentUuid, $answer->amount, $answer->providerObjectId, $answer->providerIntentId, $answer->errorCode, $answer->settlement, $answer->nextAction );
 	}
 }

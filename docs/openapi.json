@@ -2075,7 +2075,7 @@
                         }
                     },
                     "409": {
-                        "description": "`payment.not_voidable`: A payment that is {status} cannot be voided; only an authorized payment can, and a captured one is given back by a refund.\n\n`payment.unreconciled`: The payment has a result that could not be recorded against its order; a person must reconcile it before anything else is done with the payment.\n\n`payment.operation_unsupported`: The payment gateway {gateway_id} does not support {operation} for this payment; nothing was sent to it.",
+                        "description": "`payment.not_voidable`: This void was not made: the payment is {status}. A void releases only an authorization the gateway still holds, and a captured payment is given back by a refund.\n\n`payment.unreconciled`: The payment has a result that could not be recorded against its order; a person must reconcile it before anything else is done with the payment.\n\n`payment.operation_unsupported`: The payment gateway {gateway_id} does not support {operation} for this payment; nothing was sent to it.",
                         "content": {
                             "application/json": {
                                 "schema": {

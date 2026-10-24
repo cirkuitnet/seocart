@@ -29,6 +29,13 @@ defined( 'ABSPATH' ) || exit;
  * capture or a refund, never the long-lived provider intent: the plugin applies each result once
  * by the provider, that object and the operation.
  *
+ * A result answers the request it was given: it names the request's intent uuid, the gateway's
+ * own id (its descriptor's) as the provider, and the operation asked, a refund's query a refund.
+ * The one exception is a void the provider did not make because the authorization still stands,
+ * answered with that authorization's approval; a status query names the operation the provider's
+ * state maps to. The plugin refuses any other answer as the gateway's error, as it treats a call
+ * the gateway did not answer, and applies nothing of it.
+ *
  * Every request carries the mode of the intent it is about, and the gateway reads the credentials
  * of that mode (ExtensionContext::settings()), never of the mode the store is set to now: a live
  * intent stays live after the merchant switches to test.
@@ -90,7 +97,9 @@ interface PaymentGateway {
 	/**
 	 * Asks the provider to authorize an intent's amount.
 	 *
-	 * The request's idempotency key is the intent's uuid (PaymentRequest::idempotencyKey()).
+	 * The request's idempotency key is the intent's uuid (PaymentRequest::idempotencyKey()). The
+	 * answer is an authorization (Operation::Authorize) of the request's intent, given as the
+	 * gateway's own id.
 	 *
 	 * @since 0.1.0
 	 *
@@ -104,7 +113,9 @@ interface PaymentGateway {
 	/**
 	 * Asks the provider to capture an authorized intent.
 	 *
-	 * A provider that captured already answers that capture, the same object, never an error.
+	 * A provider that captured already answers that capture, the same object, never an error. The
+	 * answer is a capture (Operation::Capture) of the request's intent, given as the gateway's own
+	 * id.
 	 *
 	 * @since 0.1.0
 	 *
@@ -118,9 +129,11 @@ interface PaymentGateway {
 	/**
 	 * Asks the provider to cancel an authorization without taking its amount.
 	 *
+	 * The answer is a void (Operation::Void) of the request's intent, given as the gateway's own id.
 	 * A provider that says the authorization had already succeeded answers the authorization's
-	 * approval instead, which the plugin applies as an ordinary authorization. An approved void
-	 * reports the request's amount as the amount it moved: what the cancellation released.
+	 * approval instead (Operation::Authorize), which the plugin applies as an ordinary
+	 * authorization: the only answer to a void that names another operation. An approved
+	 * void reports the request's amount as the amount it moved: what the cancellation released.
 	 *
 	 * @since 0.2.0
 	 *
@@ -133,6 +146,9 @@ interface PaymentGateway {
 
 	/**
 	 * Asks the provider to give back part or all of what an intent captured.
+	 *
+	 * The answer is a refund (Operation::Refund) of the request's intent, given as the gateway's own
+	 * id.
 	 *
 	 * @since 0.1.0
 	 *
@@ -154,7 +170,8 @@ interface PaymentGateway {
 	 * An adapter must be able to find a refund by the refund's uuid alone. It sends the uuid as the
 	 * provider's idempotency key with every refund, and also in a field of the refund the provider
 	 * can be searched by, such as its metadata or its reference, because an idempotency key is not
-	 * a lookup: some providers forget it within a day, and some have none. It answers:
+	 * a lookup: some providers forget it within a day, and some have none. It answers, each answer a
+	 * refund (Operation::Refund) of the request's intent given as the gateway's own id:
 	 *
 	 * - the refund's result, approved or declined, naming the same provider refund object refund()
 	 *   named, so the ledger records it once whichever answer arrives;
@@ -180,6 +197,9 @@ interface PaymentGateway {
 
 	/**
 	 * Asks the provider where an intent stands now, for an intent whose result never arrived.
+	 *
+	 * The answer names the request's intent and the gateway's own id, and the operation the
+	 * provider's state maps to, whichever it is.
 	 *
 	 * "The provider has no record of this intent" is an answer, and a final one: the authorization
 	 * never reached it, so nothing can be charged, and it is answered as a declined authorization

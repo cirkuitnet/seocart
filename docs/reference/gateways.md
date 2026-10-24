@@ -4,7 +4,7 @@
 
 A payment gateway declares, in its `describe()`, what it can do: the operations it supports in each currency, for a provider account of each country, how its provider keeps idempotency keys, and the external services it calls. SEOCart refuses an operation the gateway's matrix does not declare before any request reaches the provider, and offers the gateway at checkout only where its matrix declares `authorize`. A gateway plugin publishes the same page of its own gateway as `docs/capabilities.md`, generated with `php ../seocart/bin/generate-docs.php --plugin=.` from its root.
 
-SEOCart itself registers one gateway, the stand-in, on a site that is not in production.
+SEOCart itself registers one gateway, the stand-in, on a site that is not in production, or on one whose `wp-config.php` defines `SEOCART_STUB_GATEWAY` as `true`.
 
 ## Stand-in gateway (`stub`)
 

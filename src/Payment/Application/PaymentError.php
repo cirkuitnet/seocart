@@ -338,7 +338,7 @@ enum PaymentError: string implements ErrorCode {
 				409,
 				static fn(): string =>
 					/* translators: %1$s: The payment's status, for example captured. */
-					__( 'A payment that is %1$s cannot be voided; only an authorized payment can, and a captured one is given back by a refund.', 'seocart' ),
+					__( 'This void was not made: the payment is %1$s. A void releases only an authorization the gateway still holds, and a captured payment is given back by a refund.', 'seocart' ),
 				array( 'status' )
 			),
 			new ErrorDefinition(
