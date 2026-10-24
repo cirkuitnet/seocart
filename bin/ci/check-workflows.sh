@@ -19,7 +19,12 @@
 #      in workflows and composite actions needs a full commit SHA and a version comment.
 #      Repeated pins, the PHP matrix development version, PHP_FLOOR, the actionlint version
 #      and checksum, and service images must agree; Node.js setup reads .nvmrc (SEOCart's,
-#      also as seocart/.nvmrc from an extension's CI).
+#      also as seocart/.nvmrc from an extension's CI). A call of SEOCart's workflows
+#      (cirkuitnet/seocart/.github/workflows/<file>@<commit>) may pass `core-ref` in its `with:`
+#      only from a workflow that runs on none of pull_request, pull_request_target, push and
+#      merge_group, such as an extension's nightly: a workflow that can be a required check tests
+#      the commit seocart-core.env pins. A workflow_call wrapper is not followed; the reusable
+#      workflow's own step refuses core-ref on those events at run time.
 #
 # A SEOCart extension's checkout, which holds seocart-core.env, is checked the same way, as
 # its CI does (`sh seocart/bin/ci/check-workflows.sh ext`), with these differences: check 2
@@ -116,6 +121,65 @@ awk -v core_pin="$core_pin" '
 		return text
 	}
 
+	# Returns the number of leading white-space characters of a line.
+	function indent_of( text ) {
+		match( text, /^[ \t]*/ )
+		return RLENGTH
+	}
+
+	# Remembers the events of an `on:` block that can make a run a required check.
+	function note_events( text,   words, count, i ) {
+		sub( /(^|[ \t]+)#.*$/, "", text )
+		count = split( text, words, /[^a-z_]+/ )
+		for ( i = 1; i <= count; i++ ) {
+			if ( required_event == "" && words[ i ] ~ /^(push|pull_request|pull_request_target|merge_group)$/ ) {
+				required_event = words[ i ]
+			}
+		}
+	}
+
+	# Notes the line number when text, a line of the `with:` mapping of a job or what follows `with:` on its own
+	# line, has the key core-ref: at the start (a block mapping) or after { or , (a flow mapping), bare or quoted.
+	function core_ref_in( text ) {
+		if ( core_ref_at == "" && text ~ /(^|[{,])[ \t]*["\047]?core-ref["\047]?[ \t]*:/ ) {
+			core_ref_at = FNR
+		}
+	}
+
+	# Ends the job being read: a call of SEOCart workflows that passes core-ref is kept for end_file().
+	function end_job() {
+		if ( calls_core && core_ref_at != "" ) {
+			pending_count++
+			pending_at[ pending_count ] = core_ref_at
+		}
+		calls_core = 0
+		core_ref_at = ""
+	}
+
+	# Ends the file being read. A core-ref passed from a workflow that a pull request, a push or a merge queue starts
+	# would let an extension pass its required checks against a SEOCart other than its pin; only the
+	# nightly (schedule, workflow_dispatch) may pass it, and the reusable workflow refuses it elsewhere.
+	function end_file(   i ) {
+		end_job()
+		for ( i = 1; required_event != "" && i <= pending_count; i++ ) {
+			printf "%s:%d: passes core-ref to a call of a SEOCart workflow, but runs on %s: only a workflow started by schedule or workflow_dispatch (the nightly) may name a commit other than the pin\n", current_file, pending_at[ i ], required_event
+			bad = 1
+		}
+		pending_count  = 0
+		required_event = ""
+		in_on          = 0
+		in_jobs        = 0
+		on_indent      = -1
+		job_indent     = -1
+		body_indent    = -1
+		in_with        = 0
+	}
+
+	FNR == 1 {
+		end_file()
+		current_file = FILENAME
+	}
+
 	{
 		line = $0
 		sub( /^[ \t]*(-[ \t]+)?/, "", line )
@@ -132,6 +196,60 @@ awk -v core_pin="$core_pin" '
 		}
 		if ( outside_setup && line ~ /^uses:[ \t]+actions\/cache(\/restore|\/save)?@/ ) {
 			cache_at = FILENAME ":" FNR
+		}
+	}
+
+	# Follows the `on:` block and the jobs of a workflow, for the core-ref rule (see end_file()).
+	# A top-level key, with no indentation, ends the block before it; comments and blank lines say nothing.
+	$0 !~ /^[ \t]*(#|$)/ {
+		width = indent_of( $0 )
+
+		if ( width == 0 ) {
+			end_job()
+			in_on      = ( $0 ~ /^("on"|\047on\047|on):/ )
+			in_jobs    = ( $0 ~ /^jobs:/ )
+			on_indent   = -1
+			job_indent  = -1
+			body_indent = -1
+			in_with     = 0
+			if ( in_on ) {
+				note_events( after_colon( $0 ) )
+			}
+		} else if ( in_on ) {
+			# The events stand at the first indentation of the block: deeper lines are their settings.
+			if ( on_indent < 0 ) {
+				on_indent = width
+			}
+			if ( width == on_indent ) {
+				item = line
+				sub( /[ \t]*(:.*)?$/, "", item )
+				note_events( item )
+			}
+		} else if ( in_jobs ) {
+			if ( job_indent < 0 ) {
+				job_indent = width
+			}
+			if ( width == job_indent ) {
+				end_job()
+				body_indent = -1
+				in_with     = 0
+			} else if ( body_indent < 0 ) {
+				body_indent = width
+			}
+
+			if ( width == body_indent ) {
+				# A key of the job itself: its call of a SEOCart workflow, and its `with:` mapping.
+				in_with = ( line ~ /^["\047]?with["\047]?[ \t]*:/ )
+				if ( line ~ /^uses:[ \t]+cirkuitnet\/seocart\/\.github\/workflows\// ) {
+					calls_core = 1
+				}
+				if ( in_with ) {
+					core_ref_in( after_colon( line ) )
+				}
+			} else if ( in_with && width > body_indent ) {
+				# An input of a block `with:`, or a line of a flow one that spans lines.
+				core_ref_in( line )
+			}
 		}
 	}
 
@@ -230,6 +348,8 @@ awk -v core_pin="$core_pin" '
 	}
 
 	END {
+		end_file()
+
 		# An extension has no setup action and no PHP matrix of its own: it uses those of SEOCart.
 		if ( core_pin != "" ) {
 			exit bad

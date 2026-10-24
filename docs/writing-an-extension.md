@@ -607,7 +607,9 @@ is not the pinned commit. The action installs the plugins that header names from
 itself, so a must-use plugin on that site answers its lookup for `seocart` with the installed
 copy, which WP-CLI reports as already installed and activates. `nightly.yml` runs the same
 workflow every night against SEOCart's `main` branch instead of the pin, so a change in SEOCart
-that breaks the extension shows there before the next bump.
+that breaks the extension shows there before the next bump. That is the one place that may pass
+`core-ref`: on a pull request or a push the workflow fails when a caller passes it, and
+`check-workflows.sh` reports the call, so a required check always tests the pin.
 
 The `gates` job lints the extension's workflows the way SEOCart lints its own. It needs
 `actionlint` and `shellcheck`; with both on `PATH`, the same check runs locally (this run was on

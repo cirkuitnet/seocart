@@ -503,7 +503,7 @@ expect_absent "$extension_dir" "new-extension: a refused command writes nothing"
 
 expect_exit 0 "new-extension: writes the skeleton" run_script new-extension seocart-gateway-for-example --type=payments --label=Example --dir="$extension_dir"
 expect_output "pinned to SEOCart $(git -C "$core_root" rev-parse HEAD)" "new-extension: pins the commit SEOCart is at"
-expect_equal 22 "$(git -C "$extension_dir" ls-files | wc -l | tr -d ' ')" "new-extension: stages the 22 files it wrote"
+expect_equal "$(find "$extension_dir" -path "$extension_dir/.git" -prune -o -type f -print | wc -l | tr -d ' ')" "$(git -C "$extension_dir" ls-files | wc -l | tr -d ' ')" "new-extension: stages every file it wrote"
 expect_equal '' "$(grep -rlE '\{\{[a-z_]+\}\}' "$extension_dir" --exclude-dir=.git || true)" "new-extension: no placeholder is left"
 expect_exit 1 "new-extension: refuses a directory that exists" run_script new-extension seocart-gateway-for-example --type=payments --label=Example --dir="$extension_dir"
 expect_output 'exists already' "new-extension: says the directory exists"

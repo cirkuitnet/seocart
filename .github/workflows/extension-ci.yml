@@ -9,7 +9,9 @@
 #
 # The commit after `@` must be the one the extension's seocart-core.env pins: the gates job
 # checks that with bin/ci/check-workflows.sh, so moving an extension to a newer SEOCart is one
-# change, which its bin/dev/bump-core.sh makes. Its nightly caller passes `core-ref: main`.
+# change, which its bin/dev/bump-core.sh makes. Only a scheduled or manually started run may
+# pass `core-ref` (its nightly caller passes `main`): on any other event the step that chooses
+# the commit fails, so a required check always tests the commit the extension pins.
 #
 # Every job checks the extension out into ext/ and SEOCart into seocart/ beside it, sets PHP up
 # with SEOCart's own action and runs SEOCart's scripts against the extension, through
@@ -42,7 +44,7 @@ on:
                 required: true
                 type: string
             core-ref:
-                description: 'The SEOCart commit to test against. Left out: the one seocart-core.env pins. The nightly caller passes "main".'
+                description: 'The SEOCart commit to test against. Left out: the one seocart-core.env pins. Only a schedule or workflow_dispatch run may pass it (the nightly caller passes "main"); any other event fails.'
                 required: false
                 type: string
                 default: ''
@@ -90,10 +92,20 @@ jobs:
 
             # SEOCart is not checked out yet, so none of its scripts can read the pin: this reads
             # the one line SEOCART_CORE_REF=<40 hex>, the format bin/ci/check-workflows.sh checks.
+            # GITHUB_EVENT_NAME is the caller's event, not this workflow's.
             - &choose-core
               name: Choose the SEOCart commit
               id: core
               run: |
+                  if [ -n "$CORE_REF" ]; then
+                      case $GITHUB_EVENT_NAME in
+                          schedule | workflow_dispatch) ;;
+                          *)
+                              echo "::error::core-ref is refused on a $GITHUB_EVENT_NAME run: a required check tests the commit ext/seocart-core.env pins, which bin/dev/bump-core.sh moves. Only a schedule or workflow_dispatch run (the nightly) may pass core-ref."
+                              exit 1
+                              ;;
+                      esac
+                  fi
                   ref=${CORE_REF:-$(sed -n 's/^SEOCART_CORE_REF=\([0-9a-f]\{40\}\)$/\1/p' ext/seocart-core.env)}
                   case $ref in
                       main) ;;
