@@ -145,10 +145,18 @@ final class AbilitiesReference implements Generator {
 					$lines[] = '- `' . $field->name() . '`' . ( $field->isRequired() ? ' (required)' : '' ) . ': ' . $field->description() . ' ' . FieldDocs::describe( $field, false );
 				}
 
+				if ( array() === $definition->input() ) {
+					$lines[] = 'This ability takes no input.';
+				}
+
 				array_push( $lines, '', '### Output', '' );
 
 				foreach ( $definition->output()->serializedFields() as $field ) {
 					$lines[] = '- `' . $field->name() . '`' . ( $field->isRequired() ? ' (always)' : '' ) . ': ' . $field->description() . ' ' . FieldDocs::describe( $field, true );
+				}
+
+				if ( array() === $definition->output()->serializedFields() ) {
+					$lines[] = 'This ability returns no fields.';
 				}
 
 				++$count;

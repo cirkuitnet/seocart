@@ -44,6 +44,7 @@ Lists every location of the store, active or not, in the order orders are routed
 
 ### Input
 
+This ability takes no input.
 
 ### Output
 
