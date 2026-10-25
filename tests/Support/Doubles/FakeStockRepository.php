@@ -980,4 +980,22 @@ final class FakeStockRepository implements StockRepository {
 
 		$this->calls[] = $call;
 	}
+
+	/**
+	 * Tells whether the fake recorded an allocation of an order.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId The order.
+	 * @return bool True when insertAllocations() recorded one.
+	 */
+	public function hasAllocationsFor( int $orderId ): bool {
+		foreach ( $this->calls as $call ) {
+			if ( str_starts_with( $call, 'insertAllocations:' . $orderId . ':' ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
 }

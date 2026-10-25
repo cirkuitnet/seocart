@@ -12,12 +12,17 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Support\Checkout;
 
 use SEOCart\Checkout\Application\ReceiveWebhook;
+use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Interfaces\Rest\WebhookRoute;
 use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Application\RefundService;
+use SEOCart\Payment\Domain\Refund\RefundLineRequest;
+use SEOCart\Payment\Domain\Refund\RefundRequest;
 use SEOCart\Payment\Domain\Webhook\ReceiptResult;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
@@ -38,7 +43,7 @@ use WP_REST_Response;
  * A GatewayPlacementTestCase with the receiver as the kernel wires it, its route on request, and the stand-in gateway's deliveries.
  *
  * Owns one fact: how a webhook test places an order, delivers the stand-in's event about its
- * payment, and reads back the receipt, the ledger and the order.
+ * payment, and reads back the receipt, the ledger, the order and what its placement's key keeps.
  *
  * @since 0.2.0
  */
@@ -223,14 +228,20 @@ abstract class WebhookTestCase extends GatewayPlacementTestCase {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string $token The payment token.
-	 * @param string $key   Optional. The idempotency key. Default `attempt-1`.
+	 * @param string      $token The payment token.
+	 * @param string      $key   Optional. The idempotency key. Default `attempt-1`.
+	 * @param string|null $code  Optional. A promotion code, planted and applied before the order is placed, so the
+	 *                           order holds one use of it. Default none.
 	 * @return array{order_uuid: string, order_id: int, intent_uuid: string, status: string, provider_intent_id: string|null, variant: int} The order and its intent.
 	 */
-	protected function placed( string $token, string $key = 'attempt-1' ): array {
+	protected function placed( string $token, string $key = 'attempt-1', ?string $code = null ): array {
 		$variant = $this->sellable();
 
-		$this->readyCart( array( $variant => 1 ) );
+		if ( null !== $code ) {
+			$this->plantPromotion( $code );
+		}
+
+		$this->readyCart( array( $variant => 1 ), null === $code ? array() : array( $code ) );
 
 		try {
 			$this->placement->place( $this->placeInput( $key, $token ), self::guest() );
@@ -240,6 +251,36 @@ abstract class WebhookTestCase extends GatewayPlacementTestCase {
 		}
 
 		return $this->latestPlaced() + array( 'variant' => $variant );
+	}
+
+	/**
+	 * Places an order the stand-in approves, with a promotion code, and takes its payment on to a state its authorization settled: authorized as placed, captured, partly refunded or refunded.
+	 *
+	 * A capture takes the whole amount, as a person with the capability asks; a partial refund gives
+	 * back the order's one unit and keeps its shipping, and a whole one gives back both.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $state One of `authorized`, `captured`, `partially_refunded` and `refunded`.
+	 * @param string $key   Optional. The idempotency key, which names the promotion code too. Default `attempt-settled`.
+	 * @return array{order_uuid: string, order_id: int, intent_uuid: string, status: string, provider_intent_id: string|null, variant: int} What placed() returned.
+	 */
+	protected function placedAndSettledAs( string $state, string $key = 'attempt-settled' ): array {
+		$placed = $this->placed( StubGateway::APPROVE, $key, strtoupper( 'save-' . $key ) );
+
+		if ( 'authorized' !== $state ) {
+			$this->kernel->get( PaymentService::class )->capture( $placed['intent_uuid'], $this->capturer() );
+		}
+
+		if ( in_array( $state, array( 'partially_refunded', 'refunded' ), true ) ) {
+			$line = (string) $this->db->fetchValue( 'SELECT line_uuid FROM %i WHERE order_id = %d ORDER BY sort_order LIMIT 1', $this->table( OrderTables::LINES ), $placed['order_id'] );
+
+			$this->kernel->get( RefundService::class )->refund( new RefundRequest( $placed['order_uuid'], array( new RefundLineRequest( $line, 1 ) ), 'refunded' === $state, 'customer_return' ), $this->userGranted( RefundService::CAPABILITY ) );
+		}
+
+		$this->assertSame( $state, $this->intentRow( $placed['intent_uuid'] )['status'] );
+
+		return $placed;
 	}
 
 	/**
@@ -354,6 +395,18 @@ abstract class WebhookTestCase extends GatewayPlacementTestCase {
 	}
 
 	/**
+	 * Reads the amount an order's intent was created for, which a result about its whole amount carries.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array{intent_uuid: string} $placed What placed() returned.
+	 * @return int The amount, in minor units.
+	 */
+	protected function amountOf( array $placed ): int {
+		return (int) $this->intentRow( $placed['intent_uuid'] )['amount_minor'];
+	}
+
+	/**
 	 * Reads an order's status, payment status and flag.
 	 *
 	 * @since 0.2.0
@@ -369,6 +422,20 @@ abstract class WebhookTestCase extends GatewayPlacementTestCase {
 			'payment_status'         => (string) $row['payment_status'],
 			'has_unreconciled_money' => (string) $row['has_unreconciled_money'],
 		);
+	}
+
+	/**
+	 * Reads the outcome the key of an order's placement keeps: what a retry of the placement is told.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId The order.
+	 * @return string|null The outcome, or null when the key keeps none.
+	 */
+	protected function keptOutcome( int $orderId ): ?string {
+		$kept = json_decode( (string) $this->db->fetchValue( 'SELECT response_json FROM %i WHERE order_id = %d', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ), $orderId ), true );
+
+		return is_array( $kept ) && is_string( $kept['outcome'] ?? null ) ? $kept['outcome'] : null;
 	}
 
 	/**

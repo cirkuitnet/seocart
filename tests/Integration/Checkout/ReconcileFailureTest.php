@@ -111,8 +111,8 @@ final class ReconcileFailureTest extends WebhookTestCase {
 		);
 		$this->assertChanges(
 			self::merged(
-				array( PaymentTables::INTENTS => self::change( array( 'healthy requires_action' ), array( 'healthy authorized' ) ) ),
-				self::authorized( 'healthy' )
+				array( PaymentTables::INTENTS => self::change( array( 'healthy requires_action 0' ), array( 'healthy authorized 0' ) ) ),
+				self::authorized( 'healthy', $this->amountOf( $healthy ) )
 			),
 			$before,
 			array(

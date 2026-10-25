@@ -407,6 +407,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$stock->configuration( $page, 900 );
 		$stock->holdRows( $group );
 		$stock->expiredItems( 0, 0, 100 );
+		$stock->hasAllocationsFor( 1 );
 
 		// Routing's one read of what each location has, and the figure shown for sale, over both locations.
 		$stock->availability( $page, array( $location, self::$secondLocation ) );

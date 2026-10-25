@@ -1523,4 +1523,23 @@ final class StockService {
 			throw new \InvalidArgumentException( 'A release reason is a lowercase snake_case word of at most 32 characters, such as payment_declined.' );
 		}
 	}
+
+	/**
+	 * Tells whether an order holds an allocation of stock, in any state: its lines were allocated once already.
+	 *
+	 * For the settlement of a placement whose units may have been allocated before while its
+	 * payment still waits, as when the payment path keeps for a person a capture the provider made
+	 * while the shopper was still asked to act: allocating them a second time would fail on an order
+	 * line's unique key, or promise the units twice where routing now puts them elsewhere. One plain
+	 * read on the allocations' order key. Every allocation of an order is made under the order's
+	 * lock, so a caller that holds it reads them all.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId The order.
+	 * @return bool True when it holds one.
+	 */
+	public function hasAllocationsFor( int $orderId ): bool {
+		return $this->stock->hasAllocationsFor( $orderId );
+	}
 }

@@ -18,6 +18,8 @@ use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Contracts\Payment\PaymentQuery;
 use SEOCart\Contracts\Payment\PaymentRequest;
 use SEOCart\Contracts\Payment\VoidRequest;
+use SEOCart\Contracts\Payment\WebhookEnvelope;
+use SEOCart\Contracts\Payment\WebhookReading;
 use SEOCart\Platform\Database\TransactionManager;
 
 /**
@@ -27,7 +29,8 @@ use SEOCart\Platform\Database\TransactionManager;
  * any transaction: which calls were made, and at what depth. A test can also give it a call to
  * make inside each call, as a real adapter's HTTP request would be made, and an answer of its own
  * to every capture (`$captures`) or void (`$voids`), as a provider that declines, refuses to cancel,
- * had already approved or never answers gives.
+ * had already approved or never answers gives; and a reading of its own of every webhook delivery
+ * (`$readings`), as an adapter reads a result the stand-in never delivers.
  *
  * @since 0.1.0
  */
@@ -88,6 +91,15 @@ final class RecordingGateway implements PaymentGateway {
 	 * @var (\Closure(PaymentQuery): ?GatewayResult)|null
 	 */
 	public ?\Closure $queries = null;
+
+	/**
+	 * What every webhook delivery reads as, given the delivery, instead of the wrapped gateway's reading; null to read it as it does.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var (\Closure(WebhookEnvelope): WebhookReading)|null
+	 */
+	public ?\Closure $readings = null;
 
 	/**
 	 * The gateway that answers.
@@ -233,6 +245,18 @@ final class RecordingGateway implements PaymentGateway {
 		$this->record( __FUNCTION__ );
 
 		return $this->inner->queryRefund( $request );
+	}
+
+	/**
+	 * Reads a webhook delivery as scripted, or as the wrapped gateway reads it; a reading is no call to the provider, so it is not recorded.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param WebhookEnvelope $envelope The delivery.
+	 * @return WebhookReading What it reads as.
+	 */
+	public function readWebhook( WebhookEnvelope $envelope ): WebhookReading {
+		return null === $this->readings ? $this->inner->readWebhook( $envelope ) : ( $this->readings )( $envelope );
 	}
 
 	/**

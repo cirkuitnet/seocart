@@ -73,8 +73,11 @@ defined( 'ABSPATH' ) || exit;
  *   authorization's approval, the shopper having finished just before, is settled as an approval;
  * - an answer applied before, or a stale one, about a state the intent has left; a void kept for a
  *   person; a refund the payment path did not keep for a person, which never ends a placement's
- *   wait; a capture or a refund of a payment its authorization settled before (settlesNothing()):
- *   nothing.
+ *   wait; any answer about a payment its authorization settled before, such as a second
+ *   authorization the payment path keeps for a person (settlesNothing()); and any answer about a
+ *   payment still waiting whose units an earlier settlement allocated, such as the authorization
+ *   that lands after a capture kept for a person (allocatedBefore()): nothing more than the
+ *   payment path did.
  *
  * An order placed with nothing to pay has no answer to wait for: settleNothingDue() runs the
  * same unit of work with the payment path recording it paid instead of applying an answer, the
@@ -117,7 +120,7 @@ final class SettlePlacement {
 	 * @param TransactionManager $tx       The unit of work.
 	 * @param PaymentService     $payments The one money path.
 	 * @param Orders             $orders   The order's lines, and its status when its units are gone.
-	 * @param StockService       $stock    The order's hold: allocated, or released.
+	 * @param StockService       $stock    The order's hold: allocated, or released; and whether its units were allocated before.
 	 * @param PromotionUsage     $usage    The order's promotion uses: committed, or given back.
 	 * @param CartService        $carts    The cart that placed the order: converted, or opened again.
 	 * @param IdempotencyKeys    $keys     The answer the placement's key keeps: rewritten to the outcome.
@@ -270,8 +273,8 @@ final class SettlePlacement {
 			return new SettledPlacement( PlacementOutcome::Duplicate, $applied->orderId, $applied->orderStatusTo, $applied->paymentTo );
 		}
 
-		if ( self::settlesNothing( $applied ) ) {
-			// A refund that ends no wait, or an answer about a placement settled before: the payment path did all there is to do.
+		if ( self::settlesNothing( $applied ) || $this->allocatedBefore( $applied ) ) {
+			// A refund that ends no wait, or an answer about a placement settled before or whose units are allocated: the payment path did all there is to do.
 			return new SettledPlacement( PlacementOutcome::Duplicate, $applied->orderId, $applied->orderStatusTo, $applied->paymentTo );
 		}
 
@@ -323,33 +326,63 @@ final class SettlePlacement {
 	}
 
 	/**
-	 * Tells whether the payment path's application of a capture or a refund leaves the placement as it stands.
+	 * Tells, from the answer and the intent's state alone, whether the payment path's application of an answer leaves the placement as it stands.
 	 *
 	 * A placement asks for an authorization and for the void of one, but a provider asked where a
-	 * payment stands may report another operation, such as a capture or a refund made in its
-	 * dashboard. A capture settles the placement as any answer does: the sale of an intent the
-	 * gateway authorized and captured at once as an approval, its decline as a decline, and one the
-	 * payment's state cannot take as a mismatch, kept for a person. A refund settles it only when
-	 * kept for a person: one the payment path recorded otherwise, such as a decline, leaves the
-	 * payment as it was. Neither moves anything of a placement its authorization settled before,
-	 * whose order was accepted with its units: an intent that was authorized, captured or refunded.
+	 * payment stands, or reporting on its own, may report another operation, such as a capture or a
+	 * refund made in its dashboard. A capture settles the placement as any answer does: the sale of
+	 * an intent the gateway authorized and captured at once as an approval, its decline as a decline,
+	 * and one the payment's state cannot take as a mismatch, kept for a person. A refund settles it
+	 * only when kept for a person: one the payment path recorded otherwise, such as a decline, leaves
+	 * the payment as it was. No answer, an authorization included, moves anything of a placement its
+	 * authorization settled before, whose order was accepted with its units or put on hold without
+	 * them: an intent that was authorized, captured or refunded. A provider's second authorization of
+	 * such a payment, under an object of its own, is kept for a person by the payment path, and its
+	 * units are not allocated a second time.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param Application $applied What the payment path did with an answer that is not about a void.
-	 * @return bool True when the settlement has nothing to do; false for an authorization's answer, and for a capture's
-	 *              or a refund's that settles the placement.
+	 * @return bool True when the settlement has nothing to do; false for an answer that may settle the placement.
 	 */
 	private static function settlesNothing( Application $applied ): bool {
-		if ( Operation::Authorize === $applied->operation ) {
-			return false;
-		}
-
 		if ( Operation::Refund === $applied->operation && ApplicationKind::Mismatch !== $applied->kind ) {
 			return true;
 		}
 
 		return in_array( $applied->intentFrom, array( IntentStatus::Authorized, IntentStatus::Captured, IntentStatus::PartiallyRefunded, IntentStatus::Refunded ), true );
+	}
+
+	/**
+	 * Tells whether an earlier settlement allocated the units of a placement whose payment still waits, which this one must leave as they are.
+	 *
+	 * A capture, a refund or an authorization the payment path keeps for a person allocates the
+	 * order's units while the payment waits (the mismatch branch of settle()), so a later answer
+	 * finds them allocated: the authorization a provider delivers after the capture it made at once,
+	 * say, in whichever order its two deliveries arrive. Allocating them again would fail on an
+	 * order line's unique key, or, claimed afresh where routing now puts them, promise the units
+	 * twice. Only Inventory knows, so the settlement asks it, and on one path only: an answer that
+	 * would move stock, about a payment still waiting, whose application by the payment path changed
+	 * no status of the order. The payment path accepts, parks or fails an order still pending
+	 * payment, so a first settlement always changes its status and costs no read. An order that had
+	 * left pending payment while its payment waits was settled before, its units allocated, or was
+	 * parked by a refund no claim of the store's accounted for (RefundService::recordProviderRefund()),
+	 * which allocated nothing, and whose units this settlement must still allocate.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Application $applied What the payment path did with an answer that is not about a void.
+	 * @return bool True when the order holds an allocation already, read from Inventory; false when it does not, and
+	 *              without a read when the application could not follow an earlier settlement's.
+	 */
+	private function allocatedBefore( Application $applied ): bool {
+		$movesStock = in_array( $applied->kind, array( ApplicationKind::Applied, ApplicationKind::Mismatch, ApplicationKind::Declined ), true );
+
+		if ( ! $movesStock || null !== $applied->orderStatusTo || ! in_array( $applied->intentFrom, IntentStatus::awaitingResult(), true ) ) {
+			return false;
+		}
+
+		return $this->stock->hasAllocationsFor( $applied->orderId );
 	}
 
 	/**

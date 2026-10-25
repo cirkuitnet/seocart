@@ -49,18 +49,20 @@ final class WebhookBudgetTest extends WebhookTestCase {
 	 * @var array<string, int>
 	 */
 	private const BUDGETS = array(
-		'a capture of an accepted order'            => 20,
-		'a void of an accepted order'               => 24,
-		'a duplicate by the ledger'                 => 18,
-		'a stale decline'                           => 17,
-		'an event of a type the stand-in ignores'   => 9,
-		'a dispute about a payment of the store\'s' => 11,
-		'a result about no intent of the store\'s'  => 10,
-		'a delivery of an event decided before'     => 1,
-		'a rejected delivery'                       => 3,
-		'a rejected delivery past the bound'        => 1,
-		'a refund recorded through its open claim'  => 40,
-		'a refund no claim accounts for'            => 21,
+		'a capture of an accepted order'                  => 20,
+		'a void of an accepted order'                     => 24,
+		'a capture of a payment the gateway was deciding' => 41,
+		'a capture kept for a person of a payment still waiting' => 33,
+		'a duplicate by the ledger'                       => 18,
+		'a stale decline'                                 => 17,
+		'an event of a type the stand-in ignores'         => 9,
+		'a dispute about a payment of the store\'s'       => 11,
+		'a result about no intent of the store\'s'        => 10,
+		'a delivery of an event decided before'           => 1,
+		'a rejected delivery'                             => 3,
+		'a rejected delivery past the bound'              => 1,
+		'a refund recorded through its open claim'        => 40,
+		'a refund no claim accounts for'                  => 21,
 	);
 
 	/**
@@ -92,6 +94,29 @@ final class WebhookBudgetTest extends WebhookTestCase {
 
 		$this->assertBudget( 'a capture of an accepted order', StubWebhooks::of( $this->captureOf( $captured ) ), ReceiptResult::Applied );
 		$this->assertBudget( 'a void of an accepted order', StubWebhooks::of( $this->voidOf( $voided ) ), ReceiptResult::Applied );
+	}
+
+	/**
+	 * Tests that a capture delivered for a payment still waiting for its answer, which is settled with its placement, stays within its budget: the sale of a payment the gateway was deciding, and a capture kept for a person of a payment waiting on its shopper.
+	 *
+	 * Each costs what the capture applied by the money path alone costs, and 14 statements more for
+	 * the placement's settlement: the savepoint pair of its unit of work, which runs in the
+	 * receiver's transaction; the read of the order's stock lines; the allocation of its held unit,
+	 * 8 (its savepoint pair, the stock item read, the hold's rows read, the item updated, the hold
+	 * removed, the allocation written and its event); the promotion uses committed; the cart
+	 * converted; and the answer the placement's key keeps rewritten. The sale is 27 and 14: the
+	 * receipt read and claimed, the intent read, the capture applied with the order's acceptance,
+	 * the receipt settled, the commit and the line logged. The kept capture is 19 and 14: the same,
+	 * with the capture kept unapplied and the order flagged and parked instead.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_capture_of_a_waiting_payment_delivered(): void {
+		$deciding = $this->placed( StubGateway::PENDING, 'deciding' );
+		$waiting  = $this->placed( StubGateway::REQUIRES_ACTION, 'waiting' );
+
+		$this->assertBudget( 'a capture of a payment the gateway was deciding', StubWebhooks::of( $this->captureOf( $deciding ) ), ReceiptResult::Applied );
+		$this->assertBudget( 'a capture kept for a person of a payment still waiting', StubWebhooks::of( $this->captureOf( $waiting ) ), ReceiptResult::Unapplied );
 	}
 
 	/**

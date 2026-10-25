@@ -542,4 +542,14 @@ interface StockRepository {
 	 * @phpstan-impure
 	 */
 	public function deletePolicy( int $variantId ): bool;
+
+	/**
+	 * Tells whether an order holds an allocation, in any state: one read on the allocations' order key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId The order.
+	 * @return bool True when it holds one.
+	 */
+	public function hasAllocationsFor( int $orderId ): bool;
 }

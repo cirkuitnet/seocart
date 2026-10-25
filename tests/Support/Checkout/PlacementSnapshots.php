@@ -26,9 +26,12 @@ use SEOCart\Promotion\Infrastructure\PromotionTables;
  * holds, allocations and movements, the promotion uses and the carts. changesSince() compares a
  * take with the rows as they are now: each row that is gone and each that is new, a changed row
  * being both, is described by the name of the payment it belongs to, so assertChanges() asserts
- * the whole difference at once and any other change fails it. The builders of expected changes
- * are for a placement of one unit of a variant stocked with five, as WebhookTestCase::placed()
- * makes one, whose payment waits for its answer.
+ * the whole difference at once and any other change fails it. A ledger row is described with its
+ * amount and the provider's object, and an intent with what it captured, so money recorded wrong
+ * shows too; a payment's intent uuid inside an object is written `{name}`. The builders of
+ * expected changes are for a placement of one unit of a variant stocked with five, as
+ * WebhookTestCase::placed() makes one, whose payment waits for its answer, each given the amount
+ * of its intent; used() is for one placed with a promotion code.
  *
  * @since 0.2.0
  */
@@ -64,14 +67,17 @@ trait PlacementSnapshots {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string $name      The payment.
-	 * @param string $operation The operation kept.
+	 * @param string $name          The payment.
+	 * @param string $operation     The operation kept.
+	 * @param int    $amount        The approval's amount, in minor units.
+	 * @param string $paymentStatus Optional. The order's payment status, which keeping the approval leaves: `unpaid` for
+	 *                              a payment the gateway never answered. Default `pending`, for one waiting on its shopper.
 	 * @return array<string, array{gone: list<string>, new: list<string>}> The changes.
 	 */
-	protected static function keptForAPerson( string $name, string $operation ): array {
+	protected static function keptForAPerson( string $name, string $operation, int $amount, string $paymentStatus = 'pending' ): array {
 		return array(
-			PaymentTables::TRANSACTIONS => self::change( array(), array( $name . ' ' . $operation . ':approved:0' ) ),
-			OrderTables::ORDERS         => self::change( array( $name . ' pending_payment/pending/0' ), array( $name . ' on_hold/pending/1' ) ),
+			PaymentTables::TRANSACTIONS => self::change( array(), array( self::ledgerRow( $name, $operation . ':approved:0', $amount ) ) ),
+			OrderTables::ORDERS         => self::change( array( $name . ' pending_payment/' . $paymentStatus . '/0' ), array( $name . ' on_hold/' . $paymentStatus . '/1' ) ),
 			OrderTables::EVENTS         => self::change( array(), array( $name . ' order:pending_payment>on_hold:unexpected_result' ) ),
 			OutboxTable::NAME           => self::change( array(), array( $name . ' order_status_changed', $name . ' stock_allocated' ) ),
 		) + self::allocated( $name );
@@ -82,16 +88,49 @@ trait PlacementSnapshots {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string $name The payment.
+	 * @param string $name   The payment.
+	 * @param int    $amount The amount authorized, in minor units.
 	 * @return array<string, array{gone: list<string>, new: list<string>}> The changes.
 	 */
-	protected static function authorized( string $name ): array {
+	protected static function authorized( string $name, int $amount ): array {
 		return array(
-			PaymentTables::TRANSACTIONS => self::change( array(), array( $name . ' authorize:approved:1' ) ),
+			PaymentTables::TRANSACTIONS => self::change( array(), array( self::ledgerRow( $name, 'authorize:approved:1', $amount ) ) ),
 			OrderTables::ORDERS         => self::change( array( $name . ' pending_payment/pending/0' ), array( $name . ' processing/authorized/0' ) ),
 			OrderTables::EVENTS         => self::change( array(), array( $name . ' order:pending_payment>processing:payment_approved', $name . ' payment:pending>authorized:payment_authorized' ) ),
 			OutboxTable::NAME           => self::change( array(), array( $name . ' order_placed', $name . ' order_status_changed', $name . ' payment_authorized', $name . ' payment_status_changed', $name . ' stock_allocated' ) ),
 		) + self::allocated( $name );
+	}
+
+	/**
+	 * Returns what the sale of a payment the gateway was still deciding changes, its whole amount captured at once: the intent captured, the applied row, the order accepted and paid, its units allocated and its cart converted.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $name   The payment.
+	 * @param int    $amount The intent's amount, captured whole, in minor units.
+	 * @return array<string, array{gone: list<string>, new: list<string>}> The changes.
+	 */
+	protected static function sold( string $name, int $amount ): array {
+		return array(
+			PaymentTables::INTENTS      => self::change( array( $name . ' processing 0' ), array( $name . ' captured ' . $amount ) ),
+			PaymentTables::TRANSACTIONS => self::change( array(), array( self::ledgerRow( $name, 'capture:approved:1', $amount ) ) ),
+			OrderTables::ORDERS         => self::change( array( $name . ' pending_payment/pending/0' ), array( $name . ' processing/paid/0' ) ),
+			OrderTables::EVENTS         => self::change( array(), array( $name . ' order:pending_payment>processing:payment_approved', $name . ' payment:pending>paid:payment_captured' ) ),
+			OutboxTable::NAME           => self::change( array(), array( $name . ' order_placed', $name . ' order_status_changed', $name . ' payment_captured', $name . ' payment_status_changed', $name . ' stock_allocated' ) ),
+		) + self::allocated( $name );
+	}
+
+	/**
+	 * Returns what settling the one promotion use a payment's order reserved changes: the use committed, or released.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $name  The payment.
+	 * @param string $state What the use becomes: `committed` or `released`.
+	 * @return array<string, array{gone: list<string>, new: list<string>}> The change.
+	 */
+	protected static function used( string $name, string $state ): array {
+		return array( PromotionTables::USAGE => self::change( array( $name . ' reserved' ), array( $name . ' ' . $state ) ) );
 	}
 
 	/**
@@ -128,6 +167,30 @@ trait PlacementSnapshots {
 			'gone' => $gone,
 			'new'  => $made,
 		);
+	}
+
+	/**
+	 * Describes a ledger row of a payment as changesSince() does: what it records, its amount, and the provider's object, the payment's intent uuid in it written `{name}`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string      $name           The payment.
+	 * @param string      $entry          The row's operation, result and applied flag, such as `capture:approved:1`.
+	 * @param int         $amount         Its amount, in minor units.
+	 * @param string|null $providerObject Optional. The provider's object, `{name}` standing for the payment's intent uuid.
+	 *                                    Default the object the stand-in names a result of the row's operation about the
+	 *                                    payment by: `stub-ch-`, `stub-cap-`, `stub-void-` or `stub-re-`, then `{name}`.
+	 * @return string The description.
+	 */
+	protected static function ledgerRow( string $name, string $entry, int $amount, ?string $providerObject = null ): string {
+		$prefix = match ( strstr( $entry, ':', true ) ) {
+			'authorize' => 'stub-ch-',
+			'capture'   => 'stub-cap-',
+			'void'      => 'stub-void-',
+			default     => 'stub-re-',
+		};
+
+		return $name . ' ' . $entry . ' ' . $amount . ' ' . ( $providerObject ?? $prefix . '{' . $name . '}' );
 	}
 
 	/**
@@ -281,10 +344,10 @@ trait PlacementSnapshots {
 
 		switch ( $table ) {
 			case PaymentTables::INTENTS:
-				return ( $names['intent'][ (string) $row['uuid'] ] ?? 'intent#' . (string) $row['id'] ) . ' ' . $row['status'];
+				return ( $names['intent'][ (string) $row['uuid'] ] ?? 'intent#' . (string) $row['id'] ) . ' ' . $row['status'] . ' ' . $row['captured_minor'];
 
 			case PaymentTables::TRANSACTIONS:
-				return $order( $row['order_id'] ) . ' ' . $row['operation'] . ':' . $row['result'] . ':' . $row['applied'];
+				return $order( $row['order_id'] ) . ' ' . $row['operation'] . ':' . $row['result'] . ':' . $row['applied'] . ' ' . $row['amount_minor'] . ' ' . self::named( (string) $row['provider_object_id'], $names['intent'] );
 
 			case OrderTables::ORDERS:
 				return $order( $row['id'] ) . ' ' . $row['status'] . '/' . $row['payment_status'] . '/' . $row['has_unreconciled_money'];
@@ -320,5 +383,24 @@ trait PlacementSnapshots {
 			default:
 				return $order( $row['order_id'] ) . ' ' . $row['status'];
 		}
+	}
+
+	/**
+	 * Writes each named payment's intent uuid inside a provider's object as `{name}`, so a description holds nothing a run makes up.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string                $providerObject The provider's object.
+	 * @param array<string, string> $intents        The payments' names, by intent uuid and by intent id.
+	 * @return string The object, its intent uuids named.
+	 */
+	private static function named( string $providerObject, array $intents ): string {
+		foreach ( $intents as $key => $name ) {
+			if ( str_contains( (string) $key, '-' ) ) {
+				$providerObject = str_replace( (string) $key, '{' . $name . '}', $providerObject );
+			}
+		}
+
+		return $providerObject;
 	}
 }

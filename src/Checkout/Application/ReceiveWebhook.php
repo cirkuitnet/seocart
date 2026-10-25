@@ -150,7 +150,7 @@ final class ReceiveWebhook {
 	 *
 	 * @param Gateways           $gateways    The gateways, which read their own deliveries.
 	 * @param WebhookReceipts    $receipts    The receipts, claimed and settled in the transaction that applies the event.
-	 * @param SettlePlacement    $settlement  The placement's settlement: an authorization, or the void of a placement.
+	 * @param SettlePlacement    $settlement  The placement's settlement: an authorization, or a capture or a void of a placement still waiting.
 	 * @param PaymentService     $payments    The one money path: the intent's read, and a capture or a void of its own.
 	 * @param RefundService      $refunds     A refund's result, recorded through the refund's claim.
 	 * @param Orders             $orders      The order a dispute is about.
@@ -386,12 +386,18 @@ final class ReceiveWebhook {
 	/**
 	 * Applies a result through the one money path, as the store, and writes down what it came to.
 	 *
-	 * An authorization is settled with its placement. A void of a placement still waiting for its
-	 * answer is settled with the placement too, which releases what it holds; a void of an accepted
-	 * order, and a capture, are applied in a transaction of their own. A void reported this way was
-	 * asked by nobody of the store: an accepted order is parked for a person. A refund is recorded
-	 * through the claim of the refund the provider echoed, or kept for a person when no open claim
-	 * accounts for it (RefundService::recordProviderRefund()).
+	 * An authorization is settled with its placement. A capture or a void of a placement still
+	 * waiting for its answer is settled with the placement too, so it ends as the reconciliation
+	 * run's query of the same result ends it, whichever reaches the store first: the capture of a
+	 * payment the gateway was still deciding is the sale, which allocates the order's units, commits
+	 * its promotion uses and converts its cart; a capture the payment's state cannot take, such as
+	 * one made while the shopper was asked to act, is kept for a person with the units allocated; a
+	 * void releases what the placement holds. The state is the intent's as read, before its lock: a
+	 * placement settled since is one the settlement moves nothing of. A capture or a void of any
+	 * other intent is applied through the money path alone (PaymentService::applyDelivered()). A
+	 * void reported this way was asked by nobody of the store: an accepted order is parked for a
+	 * person. A refund is recorded through the claim of the refund the provider echoed, or kept for
+	 * a person when no open claim accounts for it (RefundService::recordProviderRefund()).
 	 *
 	 * @since 0.2.0
 	 *
@@ -407,21 +413,38 @@ final class ReceiveWebhook {
 
 		switch ( $result->operation ) {
 			case Operation::Authorize:
-				return ReceiptDecision::ofApplication( $this->settlement->apply( $result, $actor )->application ?? throw new \LogicException( 'A settled authorization carries what the payment path did.' ) );
-
-			case Operation::Void:
-				if ( in_array( $intent->status, IntentStatus::awaitingResult(), true ) ) {
-					return ReceiptDecision::ofApplication( $this->settlement->apply( $result, $actor, VoidReason::VoidedExternally )->application ?? throw new \LogicException( 'A settled void carries what the payment path did.' ) );
-				}
-
-				return ReceiptDecision::ofApplication( $this->payments->applyDelivered( $result, $actor, VoidReason::VoidedExternally ) );
+				return $this->settledWithPlacement( $result, $actor );
 
 			case Operation::Capture:
-				return ReceiptDecision::ofApplication( $this->payments->applyDelivered( $result, $actor ) );
+			case Operation::Void:
+				$voidReason = Operation::Void === $result->operation ? VoidReason::VoidedExternally : null;
+
+				if ( in_array( $intent->status, IntentStatus::awaitingResult(), true ) ) {
+					return $this->settledWithPlacement( $result, $actor, $voidReason );
+				}
+
+				return ReceiptDecision::ofApplication( $this->payments->applyDelivered( $result, $actor, $voidReason ) );
 
 			default:
 				return ReceiptDecision::ofRefund( $this->refunds->recordProviderRefund( $refundUuid, $result, $actor ), $intent->uuid );
 		}
+	}
+
+	/**
+	 * Settles a result with the placement of the order it is about, and writes down what the payment path did.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When the settlement carries no application, which it always does.
+	 *
+	 * @param GatewayResult   $result     The result: an authorization, or a capture or a void of a placement still waiting
+	 *                                    for its answer.
+	 * @param Actor           $actor      The store, on no user's authority.
+	 * @param VoidReason|null $voidReason Optional. Why the void was asked for; null for anything but a void. Default null.
+	 * @return ReceiptDecision The decision.
+	 */
+	private function settledWithPlacement( GatewayResult $result, Actor $actor, ?VoidReason $voidReason = null ): ReceiptDecision {
+		return ReceiptDecision::ofApplication( $this->settlement->apply( $result, $actor, $voidReason )->application ?? throw new \LogicException( 'A settled placement carries what the payment path did.' ) );
 	}
 
 	/**

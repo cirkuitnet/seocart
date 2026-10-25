@@ -1557,4 +1557,25 @@ final class MysqlStockRepository implements StockRepository {
 			isset( $row['variant_available'] ) ? (int) $row['variant_available'] : null
 		);
 	}
+
+	/**
+	 * One allocation of an order, in any state, on the allocations' order key: whether its lines were allocated.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ORDER_ALLOCATION = 'SELECT id FROM {stock_allocations} WHERE order_id = %d LIMIT 1';
+
+	/**
+	 * Tells whether an order holds an allocation, in any state: one read on the allocations' order key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId The order.
+	 * @return bool True when it holds one.
+	 */
+	public function hasAllocationsFor( int $orderId ): bool {
+		return array() !== $this->rows( self::ORDER_ALLOCATION, $orderId );
+	}
 }
