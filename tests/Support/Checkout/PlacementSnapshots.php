@@ -63,7 +63,7 @@ trait PlacementSnapshots {
 	}
 
 	/**
-	 * Returns what keeping an approval for a person changes for a payment waiting on its shopper: the unapplied row, the order flagged and on hold, its units allocated and its cart converted; the intent, nothing.
+	 * Returns what keeping an approval for a person changes for a payment still waiting for its answer: the unapplied row, the order flagged and on hold, its units allocated and its cart converted; the intent, nothing.
 	 *
 	 * @since 0.2.0
 	 *
@@ -71,14 +71,17 @@ trait PlacementSnapshots {
 	 * @param string $operation     The operation kept.
 	 * @param int    $amount        The approval's amount, in minor units.
 	 * @param string $paymentStatus Optional. The order's payment status, which keeping the approval leaves: `unpaid` for
-	 *                              a payment the gateway never answered. Default `pending`, for one waiting on its shopper.
+	 *                              a payment the gateway never answered. Default `pending`, for one waiting on its shopper
+	 *                              or on the gateway.
+	 * @param string $reason        Optional. Why the order is on hold: `amount_mismatch` for an approval of an amount the
+	 *                              payment does not have. Default `unexpected_result`, for one its state cannot take.
 	 * @return array<string, array{gone: list<string>, new: list<string>}> The changes.
 	 */
-	protected static function keptForAPerson( string $name, string $operation, int $amount, string $paymentStatus = 'pending' ): array {
+	protected static function keptForAPerson( string $name, string $operation, int $amount, string $paymentStatus = 'pending', string $reason = 'unexpected_result' ): array {
 		return array(
 			PaymentTables::TRANSACTIONS => self::change( array(), array( self::ledgerRow( $name, $operation . ':approved:0', $amount ) ) ),
 			OrderTables::ORDERS         => self::change( array( $name . ' pending_payment/' . $paymentStatus . '/0' ), array( $name . ' on_hold/' . $paymentStatus . '/1' ) ),
-			OrderTables::EVENTS         => self::change( array(), array( $name . ' order:pending_payment>on_hold:unexpected_result' ) ),
+			OrderTables::EVENTS         => self::change( array(), array( $name . ' order:pending_payment>on_hold:' . $reason ) ),
 			OutboxTable::NAME           => self::change( array(), array( $name . ' order_status_changed', $name . ' stock_allocated' ) ),
 		) + self::allocated( $name );
 	}

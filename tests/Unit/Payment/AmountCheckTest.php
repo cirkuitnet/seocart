@@ -27,14 +27,16 @@ use SEOCart\Support\Currency;
 use SEOCart\Support\Money;
 
 /**
- * An authorization matches when it is for the intent's frozen amount, a capture when it takes more than nothing and at most what the intent may capture, a void when it releases the intent's amount; each in the order's and the intent's currency, keeping what the order tendered within its grand total.
+ * An authorization matches when it is for the intent's frozen amount, a capture of an authorized intent when it takes more than nothing and at most what was authorized, a capture of an intent still processing when it is for its whole frozen amount, a void when it releases the intent's amount; each in the order's and the intent's currency, keeping what the order tendered within its grand total.
  *
  * The table is the specification: an EUR order of 3080 with an EUR intent of 3080, unless a row
  * says otherwise.
  *
  * Planted violations, each shown red and removed: in AmountCheck::accepts(), compare the currency
  * with the intent's only: the approval in the intent's currency but not the order's matches; take
- * a capture only for exactly the intent's amount, as before: the capture of part does not match.
+ * a capture only for exactly the intent's amount, as before: the capture of part of what was
+ * authorized does not match; let an intent still processing capture up to its amount: the capture
+ * of part of it matches.
  *
  * @since 0.1.0
  */
@@ -98,18 +100,18 @@ final class AmountCheckTest extends TestCase {
 	}
 
 	/**
-	 * Tests that an intent the gateway authorized and captured at once, still processing, may capture up to its frozen amount, though it authorized nothing.
+	 * Tests that an intent the gateway authorized and captured at once, still processing, captures its whole frozen amount and nothing else, though it authorized nothing: a capture of part of it, or of more, does not match.
 	 *
 	 * @since 0.2.0
 	 */
-	public function test_an_intent_still_processing_captures_up_to_its_amount(): void {
+	public function test_an_intent_still_processing_captures_its_whole_amount_only(): void {
 		$eur     = static fn( int $amount ): Money => Money::of( $amount, Currency::of( 'EUR' ) );
 		$usd     = static fn( int $amount ): Money => Money::of( $amount, Currency::of( 'USD' ) );
 		$order   = new LockedOrder( 7, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8b', '000007', OrderChannel::Storefront, OrderStatus::PendingPayment, PaymentStatus::Pending, $eur( 3080 ), $eur( 0 ), $eur( 0 ), $eur( 0 ), $eur( 3080 ), $usd( 2464 ), $usd( 0 ), $usd( 0 ), $usd( 0 ), null, 'user', null, null );
 		$intent  = new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', Mode::Test, IntentStatus::Processing, $eur( 3080 ), $usd( 2464 ), 1, $eur( 0 ), $eur( 0 ), $eur( 0 ), null );
 		$accepts = static fn( int $minor ): bool => AmountCheck::accepts( new GatewayResult( 'stub', Operation::Capture, Outcome::Approved, $intent->uuid, $eur( $minor ), 'stub-x' ), $intent, $order );
 
-		$this->assertSame( array( true, true, false ), array( $accepts( 3080 ), $accepts( 3000 ), $accepts( 3081 ) ) );
+		$this->assertSame( array( true, false, false ), array( $accepts( 3080 ), $accepts( 3000 ), $accepts( 3081 ) ) );
 	}
 
 	/**

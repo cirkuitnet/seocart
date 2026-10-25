@@ -56,7 +56,9 @@ defined( 'ABSPATH' ) || exit;
  * - approved, the authorization or the capture of a payment the gateway authorized and captured
  *   at once: the order's held units are allocated to it, its promotions' uses committed and its
  *   cart converted. When its units are gone, because its hold expired and was taken, the order
- *   goes on hold for a person, with its uses committed and its cart converted: the payment stands;
+ *   goes on hold for a person, with its uses committed and its cart converted: the payment stands.
+ *   An order on hold already, as one whose capture the payment path kept for a person before the
+ *   authorization landed, stays on hold as it is;
  * - declined: its hold released, its uses given back and its cart opened again;
  * - an amount or a currency the order does not have, or a capture or a refund the payment's state
  *   cannot take, such as one made in the provider's dashboard while the shopper was asked to act:
@@ -428,9 +430,16 @@ final class SettlePlacement {
 	/**
 	 * Settles an order whose payment stands: its units allocated, or the order on hold when they are gone; its uses committed and its cart converted.
 	 *
-	 * @since 0.1.0
+	 * When the units are gone, an order the payment path moved, which it accepted, goes on hold. One
+	 * whose status it did not change had left pending payment before and may be on hold already,
+	 * parked for a person by a capture or a refund kept before this answer: it stays as it is, since
+	 * on hold cannot follow itself. Only then is its status read, once, and the read is current: this
+	 * transaction holds the order's lock.
 	 *
-	 * @param int              $orderId       The order, accepted by the payment path.
+	 * @since 0.1.0
+	 * @since 0.2.0 Leaves an order already on hold as it is when its units are gone.
+	 *
+	 * @param int              $orderId       The order, accepted by the payment path, or left in its status by it.
 	 * @param string           $holdGroup     Its stock hold.
 	 * @param OrderStatus|null $orderStatus   Its status after the payment path, or null when that did not change it.
 	 * @param PaymentStatus    $paymentStatus Its payment status after the payment path.
@@ -441,8 +450,12 @@ final class SettlePlacement {
 		$outcome = PlacementOutcome::Approved;
 
 		if ( ! $this->allocate( $orderId, $holdGroup ) ) {
-			$outcome     = PlacementOutcome::StockUnavailable;
-			$orderStatus = $this->orders->transition( $orderId, OrderStatus::OnHold, self::STOCK_UNAVAILABLE, $actor )->to;
+			$outcome = PlacementOutcome::StockUnavailable;
+			$onHold  = null === $orderStatus && OrderStatus::OnHold === ( $this->orders->statusOf( $orderId )['status'] ?? null );
+
+			if ( ! $onHold ) {
+				$orderStatus = $this->orders->transition( $orderId, OrderStatus::OnHold, self::STOCK_UNAVAILABLE, $actor )->to;
+			}
 		}
 
 		$this->close( $orderId, true );

@@ -388,10 +388,11 @@ final class ReceiveWebhook {
 	 *
 	 * An authorization is settled with its placement. A capture or a void of a placement still
 	 * waiting for its answer is settled with the placement too, so it ends as the reconciliation
-	 * run's query of the same result ends it, whichever reaches the store first: the capture of a
-	 * payment the gateway was still deciding is the sale, which allocates the order's units, commits
-	 * its promotion uses and converts its cart; a capture the payment's state cannot take, such as
-	 * one made while the shopper was asked to act, is kept for a person with the units allocated; a
+	 * run's query of the same result ends it, whichever reaches the store first: the capture of the
+	 * whole amount of a payment the gateway was still deciding is the sale, which allocates the
+	 * order's units, commits its promotion uses and converts its cart; a capture the payment's state
+	 * or amount cannot take, such as one made while the shopper was asked to act or one of part of
+	 * the amount, is kept for a person with the units allocated; a
 	 * void releases what the placement holds. The state is the intent's as read, before its lock: a
 	 * placement settled since is one the settlement moves nothing of. A capture or a void of any
 	 * other intent is applied through the money path alone (PaymentService::applyDelivered()). A

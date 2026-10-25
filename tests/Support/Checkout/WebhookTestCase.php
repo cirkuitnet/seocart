@@ -364,7 +364,7 @@ abstract class WebhookTestCase extends GatewayPlacementTestCase {
 	}
 
 	/**
-	 * Builds the stand-in's result about an order's intent, for the intent's whole amount in its currency.
+	 * Builds the stand-in's result about an order's intent, in the intent's currency: for its whole amount, or for another amount given.
 	 *
 	 * @since 0.2.0
 	 *
@@ -374,12 +374,13 @@ abstract class WebhookTestCase extends GatewayPlacementTestCase {
 	 * @param string|null                $objectId         The provider's object; null for an answer that moves no money.
 	 * @param string|null                $errorCode        Optional. A decline's code. Default null.
 	 * @param string|null                $providerIntentId Optional. The provider's reference to the intent. Default the one the intent holds.
+	 * @param int|null                   $minor            Optional. The amount, in minor units. Default null: the intent's whole amount.
 	 * @return GatewayResult The result.
 	 */
-	protected function resultAbout( array $placed, Operation $operation, Outcome $outcome, ?string $objectId, ?string $errorCode = null, ?string $providerIntentId = null ): GatewayResult {
+	protected function resultAbout( array $placed, Operation $operation, Outcome $outcome, ?string $objectId, ?string $errorCode = null, ?string $providerIntentId = null, ?int $minor = null ): GatewayResult {
 		$intent = $this->intentRow( $placed['intent_uuid'] );
 
-		return self::stubResult( $placed['intent_uuid'], $operation, $outcome, (int) $intent['amount_minor'], (string) $intent['currency'], $objectId, $providerIntentId ?? ( null === $intent['provider_intent_id'] ? null : (string) $intent['provider_intent_id'] ), $errorCode );
+		return self::stubResult( $placed['intent_uuid'], $operation, $outcome, $minor ?? (int) $intent['amount_minor'], (string) $intent['currency'], $objectId, $providerIntentId ?? ( null === $intent['provider_intent_id'] ? null : (string) $intent['provider_intent_id'] ), $errorCode );
 	}
 
 	/**

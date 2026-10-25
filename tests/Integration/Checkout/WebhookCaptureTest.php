@@ -12,6 +12,8 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Checkout;
 
 use SEOCart\Cart\Infrastructure\CartTables;
+use SEOCart\Checkout\Application\SettlePlacement;
+use SEOCart\Checkout\Domain\PlacementOutcome;
 use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
 use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\Operation;
@@ -20,6 +22,8 @@ use SEOCart\Contracts\Payment\WebhookEnvelope;
 use SEOCart\Contracts\Payment\WebhookReading;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Domain\ApplicationKind;
 use SEOCart\Payment\Domain\Webhook\ReceiptResult;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
@@ -32,9 +36,12 @@ use SEOCart\Tests\Support\Payment\StubWebhooks;
 /**
  * A provider may capture a payment and say so by webhook while the store still waits for the answer to its authorization: the gateway was still deciding, the shopper was asked to act, or the gateway never answered. The delivery is settled with the placement, as the reconciliation run settles the same capture when it asks, so the order ends the same whichever reaches the store first.
  *
- * - The capture of a payment the gateway was still deciding is a sale: the intent captured, the
- *   order accepted and paid, its units allocated from its hold, its promotion use committed and
- *   its cart converted.
+ * - The capture of the whole of a payment the gateway was still deciding is a sale: the intent
+ *   captured, the order accepted and paid, its units allocated from its hold, its promotion use
+ *   committed and its cart converted.
+ * - A capture of part of it is an amount the payment does not have, whose rest could never be
+ *   captured from it: kept for a person, the order flagged and on hold, nothing captured; its
+ *   units are allocated while a person looks, its use committed and its cart converted.
  * - A capture of a payment waiting on its shopper, or never answered, is one the payment's state
  *   cannot take: kept for a person, the order flagged and on hold, nothing captured; its units
  *   are allocated while a person looks, its use committed and its cart converted.
@@ -43,16 +50,25 @@ use SEOCart\Tests\Support\Payment\StubWebhooks;
  *   payment waiting on its shopper is about an attempt the payment has left, and changes nothing.
  * - The delivery and the run's query of one capture end in the same rows whichever lands first,
  *   and the delivery is acknowledged either way.
- * - A capture delivered for a payment already authorized moves only the money, as it always did.
+ * - A capture delivered for a payment already authorized moves only the money, as it always did,
+ *   a capture of part of it included; so does one the settlement is given as it applies the run's
+ *   answers.
  *
- * Each case settles two payments alike, one by the delivery and one by the run's query, and
- * compares every row a settlement writes before and after (PlacementSnapshots).
+ * Each case settles two payments alike, one by the delivery and one by the run's query, or for an
+ * authorized payment one given to the settlement, and compares every row a settlement writes
+ * before and after (PlacementSnapshots).
  *
- * Planted violation, shown red and removed: in ReceiveWebhook::apply(), apply every delivered
- * capture with PaymentService::applyDelivered(), whatever the intent's state: the delivered sale
- * and the delivered decline leave the hold, the use and the cart as they were, the kept captures
- * leave them too, and of two payments captured alike the one the delivery reached first keeps its
- * hold while the one the run asked first is allocated.
+ * Planted violations, each shown red and removed, one at a time:
+ * - in ReceiveWebhook::apply(), apply every delivered capture with
+ *   PaymentService::applyDelivered(), whatever the intent's state: the delivered sale and the
+ *   delivered decline leave the hold, the use and the cart as they were, the kept captures leave
+ *   them too, and of two payments captured alike the one the delivery reached first keeps its hold
+ *   while the one the run asked first is allocated;
+ * - in AmountCheck::capturable(), let an intent still processing capture up to its amount, as it
+ *   once could: a capture of part of a payment the gateway was deciding is a sale, its order
+ *   accepted with the rest due, by the delivery and by the query alike;
+ * - in AmountCheck::capturable(), take only the whole amount of an authorized intent too: the
+ *   capture of part of an authorized payment is kept for a person, delivered or given alike.
  *
  * @since 0.2.0
  */
@@ -73,6 +89,42 @@ final class WebhookCaptureTest extends WebhookTestCase {
 		$this->assertSame( ReceiptResult::Applied, $receipt );
 		$this->assertChanges( $this->alike( $payments, static fn( string $name, int $amount ): array => self::merged( self::sold( $name, $amount ), self::used( $name, 'committed' ) ) ), $before, $payments );
 		$this->assertSame( array( 'approved', 'approved' ), $this->keptOutcomes( $payments ), 'A retry of either placement is told it was accepted.' );
+	}
+
+	/**
+	 * Tests that a capture of part of a payment the gateway was still deciding, delivered, is kept for a person as the run's query of it keeps it: nothing is captured, and the order is held for a person, not accepted with the rest due.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider data_parts
+	 *
+	 * @param \Closure $part What the capture takes, given the intent's amount.
+	 *
+	 * @phpstan-param \Closure(int): int $part
+	 */
+	public function test_a_capture_of_part_of_a_payment_the_gateway_was_deciding_is_kept_for_a_person( \Closure $part ): void {
+		list( $receipt, $payments, $before ) = $this->settledBothWays( StubGateway::PENDING, Outcome::Approved, $part );
+
+		$this->assertSame( 'processing', $payments['delivered']['status'] );
+		$this->assertChanges( $this->alike( $payments, static fn( string $name, int $amount ): array => self::merged( self::keptForAPerson( $name, 'capture', $part( $amount ), 'pending', PaymentService::AMOUNT_MISMATCH ), self::used( $name, 'committed' ) ) ), $before, $payments );
+		$this->assertSame( ReceiptResult::Unapplied, $receipt );
+		$this->assertSame( array( 'amount_mismatch', 'amount_mismatch' ), $this->keptOutcomes( $payments ), 'A retry of either placement is told its payment does not match.' );
+	}
+
+	/**
+	 * Returns captures of part of a payment, each as what it takes of the intent's amount.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{0: \Closure}> The cases.
+	 *
+	 * @phpstan-return array<string, array{0: \Closure(int): int}>
+	 */
+	public static function data_parts(): array {
+		return array(
+			'three fifths of it'           => array( static fn( int $amount ): int => self::threeFifthsOf( $amount ) ),
+			'all of it but one minor unit' => array( static fn( int $amount ): int => $amount - 1 ),
+		);
 	}
 
 	/**
@@ -211,24 +263,51 @@ final class WebhookCaptureTest extends WebhookTestCase {
 	}
 
 	/**
+	 * Tests that a capture of part of a payment already authorized moves that part alone, as it always did, whether the provider delivers it or the settlement is given it as it applies the run's answers.
+	 *
+	 * The run itself never asks about an authorized payment: the capture is given to the settlement
+	 * as the run gives it an answer, and the placement, which the authorization settled, settles
+	 * nothing more.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_capture_of_part_of_an_authorized_payment_moves_only_that_part(): void {
+		$payments = array(
+			'delivered' => $this->placed( StubGateway::APPROVE, 'attempt-delivered', 'SAVE-DELIVERED' ),
+			'given'     => $this->placed( StubGateway::APPROVE, 'attempt-given', 'SAVE-GIVEN' ),
+		);
+		$part     = fn( array $placed ): GatewayResult => $this->resultAbout( $placed, Operation::Capture, Outcome::Approved, 'stub-cap-' . $placed['intent_uuid'], null, null, self::threeFifthsOf( $this->amountOf( $placed ) ) );
+		$before   = $this->takeSnapshot();
+		$receipt  = $this->deliver( StubWebhooks::of( $part( $payments['delivered'] ) ) );
+		$given    = $this->kernel->get( SettlePlacement::class )->apply( $part( $payments['given'] ), SettlePlacement::store() );
+
+		$this->assertChanges( $this->alike( $payments, static fn( string $name, int $amount ): array => self::capturedInPart( $name, self::threeFifthsOf( $amount ) ) ), $before, $payments );
+		$this->assertSame( ReceiptResult::Applied, $receipt );
+		$this->assertSame( array( PlacementOutcome::Duplicate, ApplicationKind::Applied ), array( $given->outcome, $given->application?->kind ), 'The payment path applied the capture, and the placement settled nothing more.' );
+		$this->assertSame( array( 'approved', 'approved' ), $this->keptOutcomes( $payments ), 'A retry of either placement is told it was accepted.' );
+	}
+
+	/**
 	 * Places two payments paid with one token, each with a promotion code, and settles a capture of each with one outcome: the first by its delivery, the second by the reconciliation run's query, which finds that payment alone waiting long enough to ask about.
 	 *
 	 * The snapshot is taken once both are placed, before either is settled.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string  $token   The payment token both placements are paid with.
-	 * @param Outcome $outcome The capture's outcome.
+	 * @param string        $token   The payment token both placements are paid with.
+	 * @param Outcome       $outcome The capture's outcome.
+	 * @param \Closure|null $part    Optional. What the capture takes, given the intent's amount. Default null: all of it.
 	 * @return array{0: ReceiptResult, 1: array<string, array<string, mixed>>, 2: array<string, list<array<string, mixed>>>} What the delivery came to, the two payments by name, and the snapshot.
 	 *
+	 * @phpstan-param (\Closure(int): int)|null $part
 	 * @phpstan-return array{0: ReceiptResult, 1: array<string, array{order_uuid: string, order_id: int, intent_uuid: string, status: string, provider_intent_id: string|null, variant: int}>, 2: array<string, list<array<string, mixed>>>}
 	 */
-	private function settledBothWays( string $token, Outcome $outcome ): array {
+	private function settledBothWays( string $token, Outcome $outcome, ?\Closure $part = null ): array {
 		$payments = array(
 			'delivered' => $this->placed( $token, 'attempt-delivered', 'SAVE-DELIVERED' ),
 			'queried'   => $this->placed( $token, 'attempt-queried', 'SAVE-QUERIED' ),
 		);
-		$capture  = fn( array $placed ): GatewayResult => $this->resultAbout( $placed, Operation::Capture, $outcome, 'stub-cap-' . $placed['intent_uuid'], Outcome::Declined === $outcome ? StubGateway::CARD_DECLINED : null );
+		$capture  = fn( array $placed ): GatewayResult => $this->resultAbout( $placed, Operation::Capture, $outcome, 'stub-cap-' . $placed['intent_uuid'], Outcome::Declined === $outcome ? StubGateway::CARD_DECLINED : null, null, null === $part ? null : $part( $this->amountOf( $placed ) ) );
 
 		$this->answerQueries( array( $payments['queried']['intent_uuid'] => $capture( $payments['queried'] ) ), true );
 
@@ -321,5 +400,36 @@ final class WebhookCaptureTest extends WebhookTestCase {
 			InventoryTables::HOLDS      => self::change( array( $name . ' held 1' ), array() ),
 			CartTables::CARTS           => self::change( array( $name . ' placing' ), array( $name . ' open' ) ),
 		) + self::used( $name, 'released' );
+	}
+
+	/**
+	 * Returns what a capture of part of an authorized payment changes: the intent captured for that part, the applied row, and the order's payment status partly paid; nothing of its placement.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $name The payment.
+	 * @param int    $part The capture's amount, in minor units.
+	 * @return array<string, array{gone: list<string>, new: list<string>}> The changes.
+	 */
+	private static function capturedInPart( string $name, int $part ): array {
+		return array(
+			PaymentTables::INTENTS      => self::change( array( $name . ' authorized 0' ), array( $name . ' captured ' . $part ) ),
+			PaymentTables::TRANSACTIONS => self::change( array(), array( self::ledgerRow( $name, 'capture:approved:1', $part ) ) ),
+			OrderTables::ORDERS         => self::change( array( $name . ' processing/authorized/0' ), array( $name . ' processing/partially_paid/0' ) ),
+			OrderTables::EVENTS         => self::change( array(), array( $name . ' payment:authorized>partially_paid:payment_captured' ) ),
+			OutboxTable::NAME           => self::change( array(), array( $name . ' payment_captured', $name . ' payment_status_changed' ) ),
+		);
+	}
+
+	/**
+	 * Returns three fifths of an amount, rounded down: the part of a payment a provider captures in these tests.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $amount The amount, in minor units.
+	 * @return int The part, in minor units.
+	 */
+	private static function threeFifthsOf( int $amount ): int {
+		return intdiv( $amount * 3, 5 );
 	}
 }
