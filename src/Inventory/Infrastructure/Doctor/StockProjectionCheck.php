@@ -41,8 +41,8 @@ defined( 'ABSPATH' ) || exit;
  * committed hold row that carries a reclaim token is a warning too: a reclaim claims rows only
  * inside its own transaction, so such a row was written some other way and is stuck until a
  * person clears it. An open allocation whose item is gone, a hold whose item is gone, an open
- * allocation or an item at a location that is gone, and a store with no active location that
- * ships online orders are critical. A negative available is not a finding: an adjustment may count
+ * allocation, an item or a ledger entry at a location that is gone, and a store with no active
+ * location that ships online orders are critical. A negative available is not a finding: an adjustment may count
  * fewer units than are promised.
  *
  * Three critical findings are structural, and `--repair` fixes them: a variant with stock but no
@@ -351,6 +351,10 @@ final class StockProjectionCheck implements Repairable {
 
 		foreach ( $this->stock->itemsAtLostLocations( self::LIMIT ) as $item ) {
 			$findings[] = sprintf( 'Critical: variant %1$d has a stock item at location %2$d, which no longer exists.', $item[0], $item[1] );
+		}
+
+		foreach ( $this->stock->ledgerAtLostLocations( self::LIMIT ) as $locationId ) {
+			$findings[] = sprintf( 'Critical: the stock ledger has entries at location %d, which no longer exists, so the history of those units names nowhere.', $locationId );
 		}
 
 		foreach ( $this->stock->itemsWithoutPolicy( self::LIMIT ) as $variantId ) {

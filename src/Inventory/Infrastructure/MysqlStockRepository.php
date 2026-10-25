@@ -15,6 +15,7 @@ use SEOCart\Inventory\Domain\Allocation;
 use SEOCart\Inventory\Domain\BackorderPolicy;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
+use SEOCart\Inventory\Domain\LocationInUse;
 use SEOCart\Inventory\Domain\ReclaimedRows;
 use SEOCart\Inventory\Domain\StockLevel;
 use SEOCart\Inventory\Domain\StockPolicy;
@@ -348,6 +349,15 @@ final class MysqlStockRepository implements StockRepository {
 	public const LEVELS_AT = 'SELECT i.variant_id, i.location_id, i.on_hand, i.allocated, i.held, p.track, p.backorder_policy FROM {stock_policies} p JOIN {stock_items} i ON i.variant_id = p.variant_id WHERE p.variant_id IN ({list}) ORDER BY p.variant_id, i.location_id';
 
 	/**
+	 * Variants' policies, each with its items at every location it has one at, a plain read: the stock list. A variant with a policy and no item reads as one row with no location.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const STOCK_LIST = 'SELECT p.variant_id, p.track, p.backorder_policy, p.low_stock_threshold, i.location_id, i.on_hand, i.allocated, i.held FROM {stock_policies} p LEFT JOIN {stock_items} i ON i.variant_id = p.variant_id WHERE p.variant_id IN ({list}) ORDER BY p.variant_id, i.location_id';
+
+	/**
 	 * What some locations have of some variants, row by row, with each variant's policy: routing's one read of stock. A variant with no row at a location reads as no units there.
 	 *
 	 * @since 0.2.0
@@ -497,6 +507,15 @@ final class MysqlStockRepository implements StockRepository {
 	public const ITEMS_AT_LOST_LOCATIONS = 'SELECT i.variant_id, i.location_id FROM {stock_items} i LEFT JOIN {locations} l ON l.id = i.location_id WHERE l.id IS NULL ORDER BY i.variant_id, i.location_id LIMIT %d';
 
 	/**
+	 * The locations the stock ledger names that no longer exist, read one ledger entry per location from the location_created index.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LEDGER_AT_LOST_LOCATIONS = 'SELECT d.location_id FROM ( SELECT DISTINCT location_id FROM {stock_ledger} ) d LEFT JOIN {locations} l ON l.id = d.location_id WHERE l.id IS NULL ORDER BY d.location_id LIMIT %d';
+
+	/**
 	 * Variants with an item but no policy.
 	 *
 	 * @since 0.2.0
@@ -522,6 +541,45 @@ final class MysqlStockRepository implements StockRepository {
 	 * @var string
 	 */
 	public const LOCATION_UNITS = 'SELECT location_id, SUM( GREATEST( on_hand - allocated - held, 0 ) ) AS available FROM {stock_items} WHERE location_id IN ({list}) GROUP BY location_id ORDER BY location_id';
+
+	/**
+	 * The units on hand at each of some locations, from the location_on_hand index alone: the list of locations shows them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCATION_ON_HAND = 'SELECT location_id, SUM( on_hand ) AS on_hand FROM {stock_items} WHERE location_id IN ({list}) GROUP BY location_id ORDER BY location_id';
+
+	/**
+	 * The open allocations at each of some locations, from the location_state index alone: the list of locations shows them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCATION_OPEN_ALLOCATIONS = "SELECT location_id, COUNT(*) AS open_allocations FROM {stock_allocations} WHERE location_id IN ({list}) AND state = 'open' GROUP BY location_id ORDER BY location_id";
+
+	/**
+	 * What refers to one location, one EXISTS per kind of record: its ledger, its items with any units, the holds of its items, its allocations, and its transfers out and in. A plain read.
+	 *
+	 * The holds are found through the location's items, by the item_expires index: a hold whose
+	 * item is gone is a doctor finding, not a use.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCATION_USE = 'SELECT EXISTS ( SELECT 1 FROM {stock_ledger} WHERE location_id = %d ) AS ledger, EXISTS ( SELECT 1 FROM {stock_items} WHERE location_id = %d AND ( on_hand <> 0 OR allocated <> 0 OR held <> 0 ) ) AS stock, EXISTS ( SELECT 1 FROM {stock_items} i JOIN {stock_holds} h ON h.variant_id = i.variant_id AND h.location_id = i.location_id WHERE i.location_id = %d ) AS holds, EXISTS ( SELECT 1 FROM {stock_allocations} WHERE location_id = %d ) AS allocations, EXISTS ( SELECT 1 FROM {stock_transfers} WHERE source_location_id = %d ) AS transfers_out, EXISTS ( SELECT 1 FROM {stock_transfers} WHERE destination_location_id = %d ) AS transfers_in';
+
+	/**
+	 * Deletes a location's items that count nothing: no unit on hand, allocated or held.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DELETE_EMPTY_ITEMS_AT = 'DELETE FROM {stock_items} WHERE location_id = %d AND on_hand = 0 AND allocated = 0 AND held = 0';
 
 	/**
 	 * The connection.
@@ -998,6 +1056,37 @@ final class MysqlStockRepository implements StockRepository {
 	}
 
 	/**
+	 * Reads variants' policies, each with its levels at every location it has an item at. A plain read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $variantIds The variants.
+	 * @return array<int, array{policy: StockPolicy, levels: list<StockLevel>}> Each variant that has a policy, ascending, by variant id; its levels ascending by location.
+	 */
+	public function stockList( array $variantIds ): array {
+		if ( array() === $variantIds ) {
+			return array();
+		}
+
+		$stock = array();
+
+		foreach ( $this->rows( self::STOCK_LIST, array_values( $variantIds ) ) as $row ) {
+			$variantId = (int) $row['variant_id'];
+
+			$stock[ $variantId ] ??= array(
+				'policy' => self::policy( $row ),
+				'levels' => array(),
+			);
+
+			if ( null !== $row['location_id'] ) {
+				$stock[ $variantId ]['levels'][] = self::level( $row );
+			}
+		}
+
+		return $stock;
+	}
+
+	/**
 	 * Reads what some locations have of some variants, with each variant's policy. A plain read.
 	 *
 	 * @since 0.2.0
@@ -1320,6 +1409,18 @@ final class MysqlStockRepository implements StockRepository {
 	}
 
 	/**
+	 * Lists the locations the stock ledger names that are gone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit The most locations to list.
+	 * @return list<int> The location ids, ascending.
+	 */
+	public function ledgerAtLostLocations( int $limit ): array {
+		return array_map( static fn( array $row ): int => (int) $row['location_id'], $this->rows( self::LEDGER_AT_LOST_LOCATIONS, $limit ) );
+	}
+
+	/**
 	 * Lists variants with an item but no policy.
 	 *
 	 * @since 0.2.0
@@ -1363,6 +1464,81 @@ final class MysqlStockRepository implements StockRepository {
 		}
 
 		return $units;
+	}
+
+	/**
+	 * Reads the units on hand and the open allocations at each of some locations: two grouped reads.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $locationIds The locations; none reads nothing.
+	 * @return array<int, array{on_hand: int, open_allocations: int}> Each location's figures, by location id; zeros for one with neither.
+	 */
+	public function locationTotals( array $locationIds ): array {
+		$totals = array();
+
+		if ( array() === $locationIds ) {
+			return $totals;
+		}
+
+		foreach ( $locationIds as $locationId ) {
+			$totals[ (int) $locationId ] = array(
+				'on_hand'          => 0,
+				'open_allocations' => 0,
+			);
+		}
+
+		foreach ( $this->rows( self::LOCATION_ON_HAND, array_values( $locationIds ) ) as $row ) {
+			$totals[ (int) $row['location_id'] ]['on_hand'] = (int) $row['on_hand'];
+		}
+
+		foreach ( $this->rows( self::LOCATION_OPEN_ALLOCATIONS, array_values( $locationIds ) ) as $row ) {
+			$totals[ (int) $row['location_id'] ]['open_allocations'] = (int) $row['open_allocations'];
+		}
+
+		return $totals;
+	}
+
+	/**
+	 * Says what refers to a location, in the order a refused deletion names it: its ledger, its units, its holds, its allocations, its transfers.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId The location.
+	 * @return LocationInUse|null The first use found, or null when nothing refers to the location.
+	 */
+	public function locationUse( int $locationId ): ?LocationInUse {
+		$row = $this->rows( self::LOCATION_USE, $locationId, $locationId, $locationId, $locationId, $locationId, $locationId )[0] ?? array();
+		$use = array(
+			'ledger'        => LocationInUse::Ledger,
+			'stock'         => LocationInUse::Stock,
+			'holds'         => LocationInUse::Holds,
+			'allocations'   => LocationInUse::Allocations,
+			'transfers_out' => LocationInUse::Transfers,
+			'transfers_in'  => LocationInUse::Transfers,
+		);
+
+		foreach ( $use as $column => $reason ) {
+			if ( '1' === (string) ( $row[ $column ] ?? '0' ) ) {
+				return $reason;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Deletes a location's items that count nothing.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId The location.
+	 * @return int How many items were deleted.
+	 */
+	public function deleteEmptyItemsAt( int $locationId ): int {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return $this->write( self::DELETE_EMPTY_ITEMS_AT, $locationId );
 	}
 
 	/**

@@ -1413,6 +1413,735 @@
                 }
             }
         },
+        "/locations": {
+            "get": {
+                "operationId": "inventory.list_locations",
+                "summary": "Lists every location of the store, active or not, in the order orders are routed to them, each with its record, its units on hand and its open allocations.",
+                "description": "Requires the capability `seocart_manage_inventory`.",
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the LocationList resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/LocationList"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_inventory`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_inventory`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "operationId": "inventory.create_location",
+                "summary": "Creates an active location with its name and, optionally, its address, phone, what it does, its priority and its pickup hours; the store's first location becomes its default.",
+                "description": "Requires the capability `seocart_manage_settings`.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {
+                                        "type": "string",
+                                        "maxLength": 100,
+                                        "description": "The name the merchant gives the location, such as Main warehouse; not blank.",
+                                        "examples": [
+                                            "Main warehouse"
+                                        ]
+                                    },
+                                    "address": {
+                                        "type": "object",
+                                        "properties": {
+                                            "country": {
+                                                "type": "string",
+                                                "maxLength": 2,
+                                                "description": "The ISO 3166-1 alpha-2 country code, two capital letters, such as GB. It appears on customer-facing documents."
+                                            },
+                                            "line1": {
+                                                "type": "string",
+                                                "maxLength": 255,
+                                                "description": "The first address line. It appears on customer-facing documents."
+                                            },
+                                            "line2": {
+                                                "type": "string",
+                                                "maxLength": 255,
+                                                "description": "The second address line, empty when there is none. It appears on customer-facing documents."
+                                            },
+                                            "city": {
+                                                "type": "string",
+                                                "maxLength": 100,
+                                                "description": "The city or town. It appears on customer-facing documents."
+                                            },
+                                            "region": {
+                                                "type": "string",
+                                                "maxLength": 64,
+                                                "description": "The state, province, county or other subdivision, empty when there is none. It appears on customer-facing documents."
+                                            },
+                                            "postcode": {
+                                                "type": "string",
+                                                "maxLength": 32,
+                                                "description": "The postal code. It appears on customer-facing documents."
+                                            }
+                                        },
+                                        "required": [
+                                            "country"
+                                        ],
+                                        "additionalProperties": false,
+                                        "description": "Where the location is; given, it replaces the whole address. It is public: it appears on customer-facing documents, such as pickup confirmations, packing slips and shipping labels.",
+                                        "examples": [
+                                            {
+                                                "country": "GB",
+                                                "line1": "12 Market Street",
+                                                "line2": "Unit 4",
+                                                "city": "Leeds",
+                                                "region": "West Yorkshire",
+                                                "postcode": "LS1 6AB"
+                                            }
+                                        ]
+                                    },
+                                    "phone": {
+                                        "type": "string",
+                                        "maxLength": 32,
+                                        "description": "The location's phone number for the merchant's staff; on a change, an empty text removes it. It is personal data, shown only to a user who may see personal data.",
+                                        "examples": [
+                                            "+44 113 496 0000"
+                                        ]
+                                    },
+                                    "fulfils_online": {
+                                        "type": "boolean",
+                                        "description": "Whether the location ships online orders; a new location does unless told otherwise.",
+                                        "examples": [
+                                            true
+                                        ]
+                                    },
+                                    "offers_pickup": {
+                                        "type": "boolean",
+                                        "description": "Whether shoppers may collect orders at the location; a new location does not unless told otherwise.",
+                                        "examples": [
+                                            true
+                                        ]
+                                    },
+                                    "pickup_ready_in": {
+                                        "type": "string",
+                                        "enum": [
+                                            "1h",
+                                            "2h",
+                                            "next_business_day",
+                                            "2_4_days"
+                                        ],
+                                        "description": "How soon a pickup order is usually ready: one of 1h, 2h, next_business_day, 2_4_days.",
+                                        "examples": [
+                                            "1h"
+                                        ]
+                                    },
+                                    "pickup_instructions": {
+                                        "type": "string",
+                                        "maxLength": 1000,
+                                        "description": "What a shopper collecting an order is told, such as where to go; it may run over several lines, and on a change an empty text removes it.",
+                                        "examples": [
+                                            "Ring the bell at the side door."
+                                        ]
+                                    },
+                                    "priority": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 1000000,
+                                        "description": "Where the location stands when an order is routed: the lowest number is tried first, and locations of the same number in the order they were created; a new location has 0 unless told otherwise.",
+                                        "examples": [
+                                            1
+                                        ]
+                                    },
+                                    "hours": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "weekday": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 6,
+                                                    "description": "The day of the week, 0 for Sunday to 6 for Saturday."
+                                                },
+                                                "opens_at": {
+                                                    "type": "string",
+                                                    "maxLength": 5,
+                                                    "description": "When the location opens that day, local time, written HH:MM on a 24-hour clock."
+                                                },
+                                                "closes_at": {
+                                                    "type": "string",
+                                                    "maxLength": 5,
+                                                    "description": "When it closes that day, local time, written HH:MM, later than it opens."
+                                                }
+                                            },
+                                            "required": [
+                                                "weekday",
+                                                "opens_at",
+                                                "closes_at"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        "maxItems": 7,
+                                        "description": "The days the location is open for pickup, each day once; given, they replace the location's hours, and a day not listed is closed.",
+                                        "examples": [
+                                            [
+                                                {
+                                                    "weekday": 1,
+                                                    "opens_at": "09:00",
+                                                    "closes_at": "17:30"
+                                                }
+                                            ]
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "name"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the Location resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Location"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`stock.location_invalid`: The location field {field} is not valid. A name is not blank, a country is two capital letters such as GB, a line of text holds no line breaks, and pickup hours give each day once, opening before closing, at times written HH:MM.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_settings`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_settings`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/locations/{location_uuid}": {
+            "patch": {
+                "operationId": "inventory.update_location",
+                "summary": "Changes the fields of a location the request gives and keeps the others: it can also deactivate or activate the location, make it the store's default, or replace its pickup hours.",
+                "description": "Requires the capability `seocart_manage_settings`.",
+                "parameters": [
+                    {
+                        "name": "location_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The location to change.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": false,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {
+                                        "type": "string",
+                                        "maxLength": 100,
+                                        "description": "The name the merchant gives the location, such as Main warehouse; not blank.",
+                                        "examples": [
+                                            "Main warehouse"
+                                        ]
+                                    },
+                                    "active": {
+                                        "type": "boolean",
+                                        "description": "Whether orders may be routed to the location. Turning it off deactivates it, as the deactivation does; the default location stays active.",
+                                        "examples": [
+                                            true
+                                        ]
+                                    },
+                                    "is_default": {
+                                        "type": "boolean",
+                                        "description": "True makes the location the store's default, the one an adjustment or an order that names no location uses, in place of the location that is the default now; only an active location can become it, and the default stops being it only when another location becomes it.",
+                                        "examples": [
+                                            true
+                                        ]
+                                    },
+                                    "address": {
+                                        "type": "object",
+                                        "properties": {
+                                            "country": {
+                                                "type": "string",
+                                                "maxLength": 2,
+                                                "description": "The ISO 3166-1 alpha-2 country code, two capital letters, such as GB. It appears on customer-facing documents."
+                                            },
+                                            "line1": {
+                                                "type": "string",
+                                                "maxLength": 255,
+                                                "description": "The first address line. It appears on customer-facing documents."
+                                            },
+                                            "line2": {
+                                                "type": "string",
+                                                "maxLength": 255,
+                                                "description": "The second address line, empty when there is none. It appears on customer-facing documents."
+                                            },
+                                            "city": {
+                                                "type": "string",
+                                                "maxLength": 100,
+                                                "description": "The city or town. It appears on customer-facing documents."
+                                            },
+                                            "region": {
+                                                "type": "string",
+                                                "maxLength": 64,
+                                                "description": "The state, province, county or other subdivision, empty when there is none. It appears on customer-facing documents."
+                                            },
+                                            "postcode": {
+                                                "type": "string",
+                                                "maxLength": 32,
+                                                "description": "The postal code. It appears on customer-facing documents."
+                                            }
+                                        },
+                                        "required": [
+                                            "country"
+                                        ],
+                                        "additionalProperties": false,
+                                        "description": "Where the location is; given, it replaces the whole address. It is public: it appears on customer-facing documents, such as pickup confirmations, packing slips and shipping labels.",
+                                        "examples": [
+                                            {
+                                                "country": "GB",
+                                                "line1": "12 Market Street",
+                                                "line2": "Unit 4",
+                                                "city": "Leeds",
+                                                "region": "West Yorkshire",
+                                                "postcode": "LS1 6AB"
+                                            }
+                                        ]
+                                    },
+                                    "phone": {
+                                        "type": "string",
+                                        "maxLength": 32,
+                                        "description": "The location's phone number for the merchant's staff; on a change, an empty text removes it. It is personal data, shown only to a user who may see personal data.",
+                                        "examples": [
+                                            "+44 113 496 0000"
+                                        ]
+                                    },
+                                    "fulfils_online": {
+                                        "type": "boolean",
+                                        "description": "Whether the location ships online orders; a new location does unless told otherwise.",
+                                        "examples": [
+                                            true
+                                        ]
+                                    },
+                                    "offers_pickup": {
+                                        "type": "boolean",
+                                        "description": "Whether shoppers may collect orders at the location; a new location does not unless told otherwise.",
+                                        "examples": [
+                                            true
+                                        ]
+                                    },
+                                    "pickup_ready_in": {
+                                        "type": "string",
+                                        "enum": [
+                                            "1h",
+                                            "2h",
+                                            "next_business_day",
+                                            "2_4_days"
+                                        ],
+                                        "description": "How soon a pickup order is usually ready: one of 1h, 2h, next_business_day, 2_4_days.",
+                                        "examples": [
+                                            "1h"
+                                        ]
+                                    },
+                                    "pickup_instructions": {
+                                        "type": "string",
+                                        "maxLength": 1000,
+                                        "description": "What a shopper collecting an order is told, such as where to go; it may run over several lines, and on a change an empty text removes it.",
+                                        "examples": [
+                                            "Ring the bell at the side door."
+                                        ]
+                                    },
+                                    "priority": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 1000000,
+                                        "description": "Where the location stands when an order is routed: the lowest number is tried first, and locations of the same number in the order they were created; a new location has 0 unless told otherwise.",
+                                        "examples": [
+                                            1
+                                        ]
+                                    },
+                                    "hours": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "weekday": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 6,
+                                                    "description": "The day of the week, 0 for Sunday to 6 for Saturday."
+                                                },
+                                                "opens_at": {
+                                                    "type": "string",
+                                                    "maxLength": 5,
+                                                    "description": "When the location opens that day, local time, written HH:MM on a 24-hour clock."
+                                                },
+                                                "closes_at": {
+                                                    "type": "string",
+                                                    "maxLength": 5,
+                                                    "description": "When it closes that day, local time, written HH:MM, later than it opens."
+                                                }
+                                            },
+                                            "required": [
+                                                "weekday",
+                                                "opens_at",
+                                                "closes_at"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        "maxItems": 7,
+                                        "description": "The days the location is open for pickup, each day once; given, they replace the location's hours, and a day not listed is closed.",
+                                        "examples": [
+                                            [
+                                                {
+                                                    "weekday": 1,
+                                                    "opens_at": "09:00",
+                                                    "closes_at": "17:30"
+                                                }
+                                            ]
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the Location resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Location"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`stock.location_invalid`: The location field {field} is not valid. A name is not blank, a country is two capital letters such as GB, a line of text holds no line breaks, and pickup hours give each day once, opening before closing, at times written HH:MM.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_settings`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_settings`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`stock.location_missing`: Location {location_id} does not exist.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`stock.location_inactive`: Location {location_id} is deactivated.\n\n`stock.location_is_default`: Location {location_id} is the default location, so it stays active and stays the default. Make another location the default first.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "operationId": "inventory.delete_location",
+                "summary": "Deletes a location nothing refers to yet, with its stock items that count nothing; a location with stock history, stock, holds, allocations or transfers is kept, and so is the default location.",
+                "description": "Requires the capability `seocart_manage_settings`.",
+                "parameters": [
+                    {
+                        "name": "location_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The location to delete.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the DeletedLocation resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DeletedLocation"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_settings`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_settings`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`stock.location_missing`: Location {location_id} does not exist.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`stock.location_in_use`: Location {location_id} cannot be deleted while its stock history, its stock, a checkout, an order or a transfer refers to it, or while it is the default location. Deactivate it instead.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/locations/{location_uuid}/deactivation": {
+            "post": {
+                "operationId": "inventory.deactivate_location",
+                "summary": "Deactivates a location: from now on no order is routed to it and its units are for sale nowhere, while its stock stays where it is; the default location cannot be deactivated.",
+                "description": "Requires the capability `seocart_manage_settings`.",
+                "parameters": [
+                    {
+                        "name": "location_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The location to deactivate.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the Location resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Location"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_settings`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_settings`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`stock.location_missing`: Location {location_id} does not exist.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`stock.location_is_default`: Location {location_id} is the default location, so it stays active and stays the default. Make another location the default first.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/orders/{order_uuid}/money-reconciliation": {
             "post": {
                 "operationId": "order.clear_unreconciled_money",
@@ -2525,10 +3254,74 @@
                 }
             }
         },
+        "/stock-items": {
+            "get": {
+                "operationId": "inventory.list_stock",
+                "summary": "Lists the stock of up to 200 variants: each one's stock policy, its units at every active location and at any inactive one that still has a stock item, and its units for sale.",
+                "description": "Requires the capability `seocart_manage_inventory`.",
+                "parameters": [
+                    {
+                        "name": "variant_ids",
+                        "in": "query",
+                        "required": true,
+                        "description": "The variants, by id: from 1 to 200 whole numbers above 0, separated by commas, such as 12,15,20. A variant with no stock is left out of the answer.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 4400,
+                            "examples": [
+                                "12,15,20"
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the StockList resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StockList"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`stock.variant_ids_invalid`: List from 1 to {most} variant ids, whole numbers above 0 separated by commas, such as 12,15,20.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_inventory`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_inventory`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/stock-items/{variant_id}/adjustments": {
             "post": {
                 "operationId": "inventory.adjust_stock",
-                "summary": "Changes the units on hand of one variant by a signed amount, records the change in the stock ledger with its reason, and returns the stock level after it.",
+                "summary": "Changes the units on hand of one variant at one location by a signed amount, records the change in the stock ledger with its reason, and returns the stock level after it.",
                 "description": "Requires the capability `seocart_manage_inventory`.",
                 "parameters": [
                     {
@@ -2552,6 +3345,14 @@
                             "schema": {
                                 "type": "object",
                                 "properties": {
+                                    "location_uuid": {
+                                        "type": "string",
+                                        "format": "uuid",
+                                        "description": "The location whose units change; the store's default location when left out. A deactivated location may still receive units.",
+                                        "examples": [
+                                            "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                                        ]
+                                    },
                                     "delta": {
                                         "type": "integer",
                                         "minimum": -1000000,
@@ -2634,7 +3435,7 @@
                         }
                     },
                     "404": {
-                        "description": "`stock.item_missing`: Variant {variant_id} has no stock item.",
+                        "description": "`stock.item_missing`: Variant {variant_id} has no stock item.\n\n`stock.location_missing`: Location {location_id} does not exist.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -2644,7 +3445,7 @@
                         }
                     },
                     "409": {
-                        "description": "`stock.on_hand_conflict`: Variant {variant_id}: you expected {expected} on hand, but there are {on_hand}, so the adjustment was not applied. Read the stock again, then repeat the adjustment if it is still needed.\n\n`stock.adjustment_below_zero`: Variant {variant_id} has {on_hand} on hand, so a change of {delta} would take it below zero.",
+                        "description": "`stock.no_fulfilling_location`: No location ships online orders at the moment, so nothing can be sold.\n\n`stock.on_hand_conflict`: Variant {variant_id}: you expected {expected} on hand, but there are {on_hand}, so the adjustment was not applied. Read the stock again, then repeat the adjustment if it is still needed.\n\n`stock.adjustment_below_zero`: Variant {variant_id} has {on_hand} on hand, so a change of {delta} would take it below zero.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -4446,6 +5247,30 @@
                     "totals"
                 ]
             },
+            "DeletedLocation": {
+                "type": "object",
+                "properties": {
+                    "location_uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The location deleted.",
+                        "examples": [
+                            "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                        ]
+                    },
+                    "stock_items_removed": {
+                        "type": "integer",
+                        "description": "How many of the location's stock items, each holding no units, were deleted with it.",
+                        "examples": [
+                            4
+                        ]
+                    }
+                },
+                "required": [
+                    "location_uuid",
+                    "stock_items_removed"
+                ]
+            },
             "Error": {
                 "type": "object",
                 "description": "An error. WordPress writes it as its code, its message and its data; the data members are the same for every error of these routes, including WordPress's own refusal of a request that does not match the input schema or of a user who lacks the capability, but not its refusal of a JSONP callback, which it sends before any route is matched.",
@@ -4488,6 +5313,419 @@
                     "code",
                     "message",
                     "data"
+                ]
+            },
+            "Location": {
+                "type": "object",
+                "properties": {
+                    "location_uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The location's public identifier.",
+                        "examples": [
+                            "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                        ]
+                    },
+                    "name": {
+                        "type": "string",
+                        "maxLength": 100,
+                        "description": "The name the merchant gives the location, such as Main warehouse; not blank.",
+                        "examples": [
+                            "Main warehouse"
+                        ]
+                    },
+                    "address": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "properties": {
+                            "country": {
+                                "type": "string",
+                                "maxLength": 2,
+                                "description": "The ISO 3166-1 alpha-2 country code, two capital letters, such as GB. It appears on customer-facing documents."
+                            },
+                            "line1": {
+                                "type": "string",
+                                "maxLength": 255,
+                                "description": "The first address line. It appears on customer-facing documents."
+                            },
+                            "line2": {
+                                "type": "string",
+                                "maxLength": 255,
+                                "description": "The second address line, empty when there is none. It appears on customer-facing documents."
+                            },
+                            "city": {
+                                "type": "string",
+                                "maxLength": 100,
+                                "description": "The city or town. It appears on customer-facing documents."
+                            },
+                            "region": {
+                                "type": "string",
+                                "maxLength": 64,
+                                "description": "The state, province, county or other subdivision, empty when there is none. It appears on customer-facing documents."
+                            },
+                            "postcode": {
+                                "type": "string",
+                                "maxLength": 32,
+                                "description": "The postal code. It appears on customer-facing documents."
+                            }
+                        },
+                        "required": [
+                            "country",
+                            "line1",
+                            "line2",
+                            "city",
+                            "region",
+                            "postcode"
+                        ],
+                        "additionalProperties": false,
+                        "description": "Where the location is, or null until an address is entered. It is public: it appears on customer-facing documents, such as pickup confirmations, packing slips and shipping labels.",
+                        "examples": [
+                            {
+                                "country": "GB",
+                                "line1": "12 Market Street",
+                                "line2": "Unit 4",
+                                "city": "Leeds",
+                                "region": "West Yorkshire",
+                                "postcode": "LS1 6AB"
+                            }
+                        ]
+                    },
+                    "phone": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "maxLength": 32,
+                        "description": "The location's phone number for the merchant's staff, or null for none. It is personal data, shown only to a user who may see personal data.",
+                        "examples": [
+                            "+44 113 496 0000"
+                        ]
+                    },
+                    "active": {
+                        "type": "boolean",
+                        "description": "Whether orders may be routed to the location; an inactive location keeps its stock, and its units are for sale nowhere.",
+                        "examples": [
+                            true
+                        ]
+                    },
+                    "is_default": {
+                        "type": "boolean",
+                        "description": "Whether the location is the store's default: the one an adjustment or an order that names no location uses.",
+                        "examples": [
+                            true
+                        ]
+                    },
+                    "fulfils_online": {
+                        "type": "boolean",
+                        "description": "Whether the location ships online orders; a new location does unless told otherwise.",
+                        "examples": [
+                            true
+                        ]
+                    },
+                    "offers_pickup": {
+                        "type": "boolean",
+                        "description": "Whether shoppers may collect orders at the location; a new location does not unless told otherwise.",
+                        "examples": [
+                            true
+                        ]
+                    },
+                    "pickup_ready_in": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "maxLength": 32,
+                        "description": "How soon a pickup order is usually ready, one of 1h, 2h, next_business_day, 2_4_days, or null when none was given.",
+                        "examples": [
+                            "1h"
+                        ]
+                    },
+                    "pickup_instructions": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "maxLength": 1000,
+                        "description": "What a shopper collecting an order is told, such as where to go, or null for nothing.",
+                        "examples": [
+                            "Ring the bell at the side door."
+                        ]
+                    },
+                    "priority": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000000,
+                        "description": "Where the location stands when an order is routed: the lowest number is tried first, and locations of the same number in the order they were created; a new location has 0 unless told otherwise.",
+                        "examples": [
+                            1
+                        ]
+                    },
+                    "hours": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "weekday": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 6,
+                                    "description": "The day of the week, 0 for Sunday to 6 for Saturday."
+                                },
+                                "opens_at": {
+                                    "type": "string",
+                                    "maxLength": 5,
+                                    "description": "When the location opens that day, local time, written HH:MM on a 24-hour clock."
+                                },
+                                "closes_at": {
+                                    "type": "string",
+                                    "maxLength": 5,
+                                    "description": "When it closes that day, local time, written HH:MM, later than it opens."
+                                }
+                            },
+                            "required": [
+                                "weekday",
+                                "opens_at",
+                                "closes_at"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "maxItems": 7,
+                        "description": "The days the location is open for pickup, by day; a day not listed is closed.",
+                        "examples": [
+                            [
+                                {
+                                    "weekday": 1,
+                                    "opens_at": "09:00",
+                                    "closes_at": "17:30"
+                                }
+                            ]
+                        ]
+                    }
+                },
+                "required": [
+                    "location_uuid",
+                    "name",
+                    "address",
+                    "active",
+                    "is_default",
+                    "fulfils_online",
+                    "offers_pickup",
+                    "pickup_ready_in",
+                    "pickup_instructions",
+                    "priority",
+                    "hours"
+                ]
+            },
+            "LocationList": {
+                "type": "object",
+                "properties": {
+                    "locations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "location_uuid": {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "description": "The location's public identifier."
+                                },
+                                "name": {
+                                    "type": "string",
+                                    "maxLength": 100,
+                                    "description": "The name the merchant gives the location, such as Main warehouse; not blank."
+                                },
+                                "address": {
+                                    "type": [
+                                        "object",
+                                        "null"
+                                    ],
+                                    "properties": {
+                                        "country": {
+                                            "type": "string",
+                                            "maxLength": 2,
+                                            "description": "The ISO 3166-1 alpha-2 country code, two capital letters, such as GB. It appears on customer-facing documents."
+                                        },
+                                        "line1": {
+                                            "type": "string",
+                                            "maxLength": 255,
+                                            "description": "The first address line. It appears on customer-facing documents."
+                                        },
+                                        "line2": {
+                                            "type": "string",
+                                            "maxLength": 255,
+                                            "description": "The second address line, empty when there is none. It appears on customer-facing documents."
+                                        },
+                                        "city": {
+                                            "type": "string",
+                                            "maxLength": 100,
+                                            "description": "The city or town. It appears on customer-facing documents."
+                                        },
+                                        "region": {
+                                            "type": "string",
+                                            "maxLength": 64,
+                                            "description": "The state, province, county or other subdivision, empty when there is none. It appears on customer-facing documents."
+                                        },
+                                        "postcode": {
+                                            "type": "string",
+                                            "maxLength": 32,
+                                            "description": "The postal code. It appears on customer-facing documents."
+                                        }
+                                    },
+                                    "required": [
+                                        "country",
+                                        "line1",
+                                        "line2",
+                                        "city",
+                                        "region",
+                                        "postcode"
+                                    ],
+                                    "additionalProperties": false,
+                                    "description": "Where the location is, or null until an address is entered. It is public: it appears on customer-facing documents, such as pickup confirmations, packing slips and shipping labels."
+                                },
+                                "phone": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "maxLength": 32,
+                                    "description": "The location's phone number for the merchant's staff, or null for none. It is personal data, shown only to a user who may see personal data."
+                                },
+                                "active": {
+                                    "type": "boolean",
+                                    "description": "Whether orders may be routed to the location; an inactive location keeps its stock, and its units are for sale nowhere."
+                                },
+                                "is_default": {
+                                    "type": "boolean",
+                                    "description": "Whether the location is the store's default: the one an adjustment or an order that names no location uses."
+                                },
+                                "fulfils_online": {
+                                    "type": "boolean",
+                                    "description": "Whether the location ships online orders; a new location does unless told otherwise."
+                                },
+                                "offers_pickup": {
+                                    "type": "boolean",
+                                    "description": "Whether shoppers may collect orders at the location; a new location does not unless told otherwise."
+                                },
+                                "pickup_ready_in": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "maxLength": 32,
+                                    "description": "How soon a pickup order is usually ready, one of 1h, 2h, next_business_day, 2_4_days, or null when none was given."
+                                },
+                                "pickup_instructions": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "maxLength": 1000,
+                                    "description": "What a shopper collecting an order is told, such as where to go, or null for nothing."
+                                },
+                                "priority": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 1000000,
+                                    "description": "Where the location stands when an order is routed: the lowest number is tried first, and locations of the same number in the order they were created; a new location has 0 unless told otherwise."
+                                },
+                                "hours": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "weekday": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 6,
+                                                "description": "The day of the week, 0 for Sunday to 6 for Saturday."
+                                            },
+                                            "opens_at": {
+                                                "type": "string",
+                                                "maxLength": 5,
+                                                "description": "When the location opens that day, local time, written HH:MM on a 24-hour clock."
+                                            },
+                                            "closes_at": {
+                                                "type": "string",
+                                                "maxLength": 5,
+                                                "description": "When it closes that day, local time, written HH:MM, later than it opens."
+                                            }
+                                        },
+                                        "required": [
+                                            "weekday",
+                                            "opens_at",
+                                            "closes_at"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    "maxItems": 7,
+                                    "description": "The days the location is open for pickup, by day; a day not listed is closed."
+                                },
+                                "units_on_hand": {
+                                    "type": "integer",
+                                    "description": "The units on hand at the location, every variant together."
+                                },
+                                "open_allocations": {
+                                    "type": "integer",
+                                    "description": "How many order lines have units allocated at the location and not yet shipped."
+                                }
+                            },
+                            "required": [
+                                "location_uuid",
+                                "name",
+                                "address",
+                                "active",
+                                "is_default",
+                                "fulfils_online",
+                                "offers_pickup",
+                                "pickup_ready_in",
+                                "pickup_instructions",
+                                "priority",
+                                "hours",
+                                "units_on_hand",
+                                "open_allocations"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "description": "The locations, in the order orders are routed to them: ascending priority, ties by the order they were created in.",
+                        "examples": [
+                            [
+                                {
+                                    "location_uuid": "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8",
+                                    "name": "Main warehouse",
+                                    "address": {
+                                        "country": "GB",
+                                        "line1": "12 Market Street",
+                                        "line2": "Unit 4",
+                                        "city": "Leeds",
+                                        "region": "West Yorkshire",
+                                        "postcode": "LS1 6AB"
+                                    },
+                                    "phone": "+44 113 496 0000",
+                                    "active": true,
+                                    "is_default": true,
+                                    "fulfils_online": true,
+                                    "offers_pickup": true,
+                                    "pickup_ready_in": "1h",
+                                    "pickup_instructions": "Ring the bell at the side door.",
+                                    "priority": 1,
+                                    "hours": [
+                                        {
+                                            "weekday": 1,
+                                            "opens_at": "09:00",
+                                            "closes_at": "17:30"
+                                        }
+                                    ],
+                                    "units_on_hand": 140,
+                                    "open_allocations": 3
+                                }
+                            ]
+                        ]
+                    }
+                },
+                "required": [
+                    "locations"
                 ]
             },
             "MoneyReconciliation": {
@@ -5112,6 +6350,14 @@
                             42
                         ]
                     },
+                    "location_uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The location whose units changed.",
+                        "examples": [
+                            "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                        ]
+                    },
                     "on_hand": {
                         "type": "integer",
                         "description": "The units physically in stock after the change.",
@@ -5150,11 +6396,127 @@
                 },
                 "required": [
                     "variant_id",
+                    "location_uuid",
                     "on_hand",
                     "allocated",
                     "held",
                     "available",
                     "ledger_entry_id"
+                ]
+            },
+            "StockList": {
+                "type": "object",
+                "properties": {
+                    "variants": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "variant_id": {
+                                    "type": "integer",
+                                    "description": "The variant."
+                                },
+                                "track": {
+                                    "type": "boolean",
+                                    "description": "Whether the variant's stock is counted; a variant whose stock is not counted is always for sale."
+                                },
+                                "backorder_policy": {
+                                    "type": "string",
+                                    "enum": [
+                                        "no",
+                                        "notify",
+                                        "allow"
+                                    ],
+                                    "description": "What a sale may do once the variant's units run out: no, notify or allow."
+                                },
+                                "low_stock_threshold": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ],
+                                    "description": "The units available at or below which the variant counts as low on stock, or null for none."
+                                },
+                                "for_sale": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ],
+                                    "description": "The units shoppers may buy now, as the storefront counts them over the locations that ship online orders; null when nothing limits a sale, because the stock is not counted or backorders are allowed."
+                                },
+                                "locations": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "location_uuid": {
+                                                "type": "string",
+                                                "format": "uuid",
+                                                "description": "The location."
+                                            },
+                                            "on_hand": {
+                                                "type": "integer",
+                                                "description": "The units physically in stock there."
+                                            },
+                                            "allocated": {
+                                                "type": "integer",
+                                                "description": "The units there promised to accepted orders."
+                                            },
+                                            "held": {
+                                                "type": "integer",
+                                                "description": "The units there held by checkouts, expired holds included until they are reclaimed."
+                                            },
+                                            "available": {
+                                                "type": "integer",
+                                                "description": "The units there that may still be promised: on hand, less allocated, less held. Negative when fewer units were counted than are promised or held."
+                                            }
+                                        },
+                                        "required": [
+                                            "location_uuid",
+                                            "on_hand",
+                                            "allocated",
+                                            "held",
+                                            "available"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    "description": "The variant's units at each active location, zeros where it has no stock item yet, and at each inactive location that still has one, in the order orders are routed to them."
+                                }
+                            },
+                            "required": [
+                                "variant_id",
+                                "track",
+                                "backorder_policy",
+                                "low_stock_threshold",
+                                "for_sale",
+                                "locations"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "description": "The variants that have stock, by ascending id.",
+                        "examples": [
+                            [
+                                {
+                                    "variant_id": 12,
+                                    "track": true,
+                                    "backorder_policy": "no",
+                                    "low_stock_threshold": 5,
+                                    "for_sale": 12,
+                                    "locations": [
+                                        {
+                                            "location_uuid": "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8",
+                                            "on_hand": 17,
+                                            "allocated": 2,
+                                            "held": 3,
+                                            "available": 12
+                                        }
+                                    ]
+                                }
+                            ]
+                        ]
+                    }
+                },
+                "required": [
+                    "variants"
                 ]
             },
             "StoreOrder": {

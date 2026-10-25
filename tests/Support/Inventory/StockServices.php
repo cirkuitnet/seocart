@@ -11,8 +11,10 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Inventory;
 
+use SEOCart\Inventory\Application\Availability;
 use SEOCart\Inventory\Application\FulfilmentRouting;
 use SEOCart\Inventory\Application\LocationDirectory;
+use SEOCart\Inventory\Application\Locations;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Domain\LocationRepository;
 use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
@@ -78,10 +80,24 @@ final class StockServices {
 	 * @phpstan-param (\Closure(): FulfilmentMode)|null $mode
 	 */
 	public static function of( StockRepository $stock, LocationRepository $locations, TransactionManager $tx, EventPublisher $events, IdGenerator $ids, Clock $clock, CorrelationId $correlation, ?\Closure $mode = null ): StockService {
+		$mode    ??= static fn(): FulfilmentMode => FulfilmentMode::Split;
 		$directory = new LocationDirectory( $locations );
-		$routing   = new FulfilmentRouting( $directory, $stock, $mode ?? static fn(): FulfilmentMode => FulfilmentMode::Split );
+		$routing   = new FulfilmentRouting( $directory, $stock, $mode );
 
-		return new StockService( $stock, $tx, $events, $ids, $clock, $correlation, new Authorizer( new CapabilityDeclaration() ), $directory, $routing );
+		return new StockService( $stock, $tx, $events, $ids, $clock, $correlation, new Authorizer( new CapabilityDeclaration() ), $directory, $routing, new Availability( $directory, $stock, $mode ) );
+	}
+
+	/**
+	 * Builds the locations service over a connection and the MySQL repositories, as the plugin wires it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Database    $db  The connection, which is also the unit of work.
+	 * @param IdGenerator $ids Mints new locations' public identifiers.
+	 * @return Locations The service.
+	 */
+	public static function locations( Database $db, IdGenerator $ids ): Locations {
+		return new Locations( new MysqlLocationRepository( $db ), new MysqlStockRepository( $db ), $db, $ids, new Authorizer( new CapabilityDeclaration() ) );
 	}
 
 	/**

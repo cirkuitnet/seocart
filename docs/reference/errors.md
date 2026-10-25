@@ -647,10 +647,29 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: Variant {variant_id} has no stock item.
 - Values: `variant_id`
 
+## `stock.location_in_use`
+
+- HTTP status: 409
+- Message: Location {location_id} cannot be deleted while its stock history, its stock, a checkout, an order or a transfer refers to it, or while it is the default location. Deactivate it instead.
+- Values: `location_id`
+- Details: `reason`, beside the values
+
 ## `stock.location_inactive`
 
 - HTTP status: 409
 - Message: Location {location_id} is deactivated.
+- Values: `location_id`
+
+## `stock.location_invalid`
+
+- HTTP status: 400
+- Message: The location field {field} is not valid. A name is not blank, a country is two capital letters such as GB, a line of text holds no line breaks, and pickup hours give each day once, opening before closing, at times written HH:MM.
+- Values: `field`
+
+## `stock.location_is_default`
+
+- HTTP status: 409
+- Message: Location {location_id} is the default location, so it stays active and stays the default. Make another location the default first.
 - Values: `location_id`
 
 ## `stock.location_missing`
@@ -684,6 +703,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: These items cannot be sent together in the quantities asked for.
 - Values: none
 - Details: `reason`, `variant_ids`, `available`, beside the values
+
+## `stock.variant_ids_invalid`
+
+- HTTP status: 400
+- Message: List from 1 to {most} variant ids, whole numbers above 0 separated by commas, such as 12,15,20.
+- Values: `most`
 
 ## `stock.zero_delta`
 

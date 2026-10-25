@@ -106,6 +106,34 @@ enum InventoryError: string implements ErrorCode {
 	case RoutingRefused = 'stock.routing_refused';
 
 	/**
+	 * The location cannot be deleted: a stock record or an order refers to it, or it is the default.
+	 *
+	 * @since 0.2.0
+	 */
+	case LocationInUse = 'stock.location_in_use';
+
+	/**
+	 * The location is the store's default, so it cannot be deactivated or stop being the default.
+	 *
+	 * @since 0.2.0
+	 */
+	case LocationIsDefault = 'stock.location_is_default';
+
+	/**
+	 * A field of a location's record is not valid: its name, its address or its pickup hours.
+	 *
+	 * @since 0.2.0
+	 */
+	case LocationInvalid = 'stock.location_invalid';
+
+	/**
+	 * The list of variant ids a stock read was asked for is not one.
+	 *
+	 * @since 0.2.0
+	 */
+	case VariantIdsInvalid = 'stock.variant_ids_invalid';
+
+	/**
 	 * Returns the catalog's rows.
 	 *
 	 * @since 0.1.0
@@ -195,6 +223,39 @@ enum InventoryError: string implements ErrorCode {
 				409,
 				static fn(): string => __( 'These items cannot be sent together in the quantities asked for.', 'seocart' ),
 				details: array( 'reason', 'variant_ids', 'available' )
+			),
+			new ErrorDefinition(
+				self::LocationInUse,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: The identifier of a stock location. */
+					__( 'Location %1$s cannot be deleted while its stock history, its stock, a checkout, an order or a transfer refers to it, or while it is the default location. Deactivate it instead.', 'seocart' ),
+				array( 'location_id' ),
+				details: array( 'reason' )
+			),
+			new ErrorDefinition(
+				self::LocationIsDefault,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: The identifier of a stock location. */
+					__( 'Location %1$s is the default location, so it stays active and stays the default. Make another location the default first.', 'seocart' ),
+				array( 'location_id' )
+			),
+			new ErrorDefinition(
+				self::LocationInvalid,
+				400,
+				static fn(): string =>
+					/* translators: %1$s: The name of a field of a location, such as address.country. */
+					__( 'The location field %1$s is not valid. A name is not blank, a country is two capital letters such as GB, a line of text holds no line breaks, and pickup hours give each day once, opening before closing, at times written HH:MM.', 'seocart' ),
+				array( 'field' )
+			),
+			new ErrorDefinition(
+				self::VariantIdsInvalid,
+				400,
+				static fn(): string =>
+					/* translators: %1$s: The most variant ids one request may list. */
+					__( 'List from 1 to %1$s variant ids, whole numbers above 0 separated by commas, such as 12,15,20.', 'seocart' ),
+				array( 'most' )
 			),
 		);
 	}

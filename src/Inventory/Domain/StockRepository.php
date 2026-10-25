@@ -420,6 +420,16 @@ interface StockRepository {
 	public function levelsAt( array $variantIds ): array;
 
 	/**
+	 * Reads variants' policies, each with its levels at every location it has an item at: the stock list. A plain read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $variantIds The variants.
+	 * @return array<int, array{policy: StockPolicy, levels: list<StockLevel>}> Each variant that has a policy, ascending, by variant id; its levels ascending by location, none for a variant with no item.
+	 */
+	public function stockList( array $variantIds ): array;
+
+	/**
 	 * Reads what each of some locations has of some variants, with each variant's policy. A plain read, which decides nothing: routing plans from it, and every claim re-decides under its row's lock.
 	 *
 	 * @since 0.2.0
@@ -442,6 +452,30 @@ interface StockRepository {
 	 * @return array<int, array{policy: StockPolicy, total: int, largest: int}> The figures of each variant that has a policy, by variant id.
 	 */
 	public function saleFigures( array $variantIds, array $locationIds ): array;
+
+	/**
+	 * Reads the units on hand and the number of open allocations at each of some locations. Plain reads.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $locationIds The locations; none reads nothing.
+	 * @return array<int, array{on_hand: int, open_allocations: int}> Each location's figures, by location id.
+	 */
+	public function locationTotals( array $locationIds ): array;
+
+	/**
+	 * Says what refers to a location: its ledger, an item with units, a hold of one of its items, an allocation or a transfer. A plain read.
+	 *
+	 * Call it under the location's lock: every stock change at a location that has no units there
+	 * yet, an adjustment, takes the location's shared lock first, so what it answers stays true
+	 * until the caller commits.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId The location.
+	 * @return LocationInUse|null The first use found, ledger first; null when nothing refers to the location.
+	 */
+	public function locationUse( int $locationId ): ?LocationInUse;
 
 	/**
 	 * Reads one item's level with a locking read: its latest committed values, with the item locked.
@@ -512,6 +546,20 @@ interface StockRepository {
 	 * @phpstan-impure
 	 */
 	public function lockPolicy( int $variantId ): bool;
+
+	/**
+	 * Deletes a location's items that count nothing: no unit on hand, allocated or held. Call it under the location's lock, once locationUse() found nothing.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $locationId The location.
+	 * @return int How many items were deleted.
+	 *
+	 * @phpstan-impure
+	 */
+	public function deleteEmptyItemsAt( int $locationId ): int;
 
 	/**
 	 * Deletes an item. Call it under the item's lock, once its holds are given back.

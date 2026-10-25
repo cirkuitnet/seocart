@@ -21,6 +21,7 @@ use SEOCart\Inventory\Domain\Event\StockReserved;
 use SEOCart\Inventory\Domain\Hold;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
+use SEOCart\Inventory\Domain\Location;
 use SEOCart\Inventory\Domain\ReclaimedRows;
 use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Inventory\Domain\StockLevel;
@@ -69,6 +70,15 @@ defined( 'ABSPATH' ) || exit;
  * @since 0.1.0
  */
 final class StockService {
+
+	/**
+	 * A list of variant ids as a client writes it: whole numbers above 0, of at most eighteen digits, separated by commas, with spaces allowed around them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const VARIANT_LIST = '/^\s*[1-9]\d{0,17}(?:\s*,\s*[1-9]\d{0,17})*\s*\z/';
 
 	/**
 	 * A release reason: a lowercase snake_case word of at most 32 characters.
@@ -170,31 +180,42 @@ final class StockService {
 	private FulfilmentRouting $routing;
 
 	/**
+	 * Says how many units of each variant are for sale, for the stock list.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var Availability
+	 */
+	private Availability $availability;
+
+	/**
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The locations and the routing.
+	 * @since 0.2.0 The locations, the routing and the availability.
 	 *
-	 * @param StockRepository    $stock       The statements.
-	 * @param TransactionManager $tx          The unit of work.
-	 * @param EventPublisher     $events      Publishes the events.
-	 * @param IdGenerator        $ids         Mints hold ids and reclaim tokens.
-	 * @param Clock              $clock       Says when an event happened.
-	 * @param CorrelationId      $correlation The request's correlation id.
-	 * @param Authorizer         $authorizer  The capability check of the operations it performs.
-	 * @param LocationDirectory  $locations   The locations, which name the default one.
-	 * @param FulfilmentRouting  $routing     Plans where units claimed afresh come from.
+	 * @param StockRepository    $stock        The statements.
+	 * @param TransactionManager $tx           The unit of work.
+	 * @param EventPublisher     $events       Publishes the events.
+	 * @param IdGenerator        $ids          Mints hold ids and reclaim tokens.
+	 * @param Clock              $clock        Says when an event happened.
+	 * @param CorrelationId      $correlation  The request's correlation id.
+	 * @param Authorizer         $authorizer   The capability check of the operations it performs.
+	 * @param LocationDirectory  $locations    The locations, which name the default one.
+	 * @param FulfilmentRouting  $routing      Plans where units claimed afresh come from.
+	 * @param Availability       $availability Says how many units of each variant are for sale.
 	 */
-	public function __construct( StockRepository $stock, TransactionManager $tx, EventPublisher $events, IdGenerator $ids, Clock $clock, CorrelationId $correlation, Authorizer $authorizer, LocationDirectory $locations, FulfilmentRouting $routing ) {
-		$this->stock       = $stock;
-		$this->tx          = $tx;
-		$this->events      = $events;
-		$this->ids         = $ids;
-		$this->clock       = $clock;
-		$this->correlation = $correlation;
-		$this->authorizer  = $authorizer;
-		$this->locations   = $locations;
-		$this->routing     = $routing;
+	public function __construct( StockRepository $stock, TransactionManager $tx, EventPublisher $events, IdGenerator $ids, Clock $clock, CorrelationId $correlation, Authorizer $authorizer, LocationDirectory $locations, FulfilmentRouting $routing, Availability $availability ) {
+		$this->stock        = $stock;
+		$this->tx           = $tx;
+		$this->events       = $events;
+		$this->ids          = $ids;
+		$this->clock        = $clock;
+		$this->correlation  = $correlation;
+		$this->authorizer   = $authorizer;
+		$this->locations    = $locations;
+		$this->routing      = $routing;
+		$this->availability = $availability;
 	}
 
 	/**
@@ -456,27 +477,31 @@ final class StockService {
 	}
 
 	/**
-	 * Performs `inventory.adjust_stock`: authorizes the actor, adjusts the default location's stock, and returns the stock level by wire name.
+	 * Performs `inventory.adjust_stock`: authorizes the actor, adjusts the stock at the location named, or at the default location, and returns the stock level by wire name.
 	 *
 	 * The operation's surfaces call this, through the operation invoker, with the input it
-	 * prepared: the variant from the URL on REST, from the input on the ability and the command.
-	 * It only translates: the check is the Authorizer's, and the adjustment is adjust()'s.
+	 * prepared: the variant from the URL on REST, from the input on the ability and the command;
+	 * the location from the input on all three, and only from there. It only translates: the check
+	 * is the Authorizer's, and the adjustment is adjust()'s.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The location.
 	 *
-	 * @throws CodedException `authorization.denied` when the actor may not manage inventory; `stock.no_fulfilling_location`
-	 *                        when the store has no default location; the codes adjust() raises.
+	 * @throws CodedException `authorization.denied` when the actor may not manage inventory; `stock.location_missing`
+	 *                        when no location has the uuid; `stock.no_fulfilling_location` when none is named and the
+	 *                        store has no default location; the codes adjust() raises.
 	 *
-	 * @param array<string, mixed> $input The prepared input: variant_id, delta, reason and, optionally, expected_on_hand.
+	 * @param array<string, mixed> $input The prepared input: variant_id, delta, reason and, optionally, location_uuid and expected_on_hand.
 	 * @param Actor                $actor Who adjusts.
-	 * @return array<string, int> The stock level after the change, keyed by wire name.
+	 * @return array<string, int|string> The stock level after the change, keyed by wire name.
 	 */
 	public function adjustStock( array $input, Actor $actor ): array {
 		$this->authorizer->authorize( $actor, InventoryOperations::CAPABILITY );
 
+		$location   = $this->adjustedLocation( isset( $input['location_uuid'] ) ? (string) $input['location_uuid'] : null );
 		$adjustment = $this->adjust(
 			(int) $input['variant_id'],
-			$this->defaultLocation(),
+			$location->id,
 			(int) $input['delta'],
 			LedgerReason::from( (string) $input['reason'] ),
 			$actor,
@@ -485,6 +510,7 @@ final class StockService {
 
 		return array(
 			'variant_id'      => $adjustment->level->variantId,
+			'location_uuid'   => $location->uuid,
 			'on_hand'         => $adjustment->level->onHand,
 			'allocated'       => $adjustment->level->allocated,
 			'held'            => $adjustment->level->held,
@@ -519,6 +545,69 @@ final class StockService {
 	 */
 	public function levelsAt( array $variantIds ): array {
 		return $this->stock->levelsAt( self::variantIds( $variantIds ) );
+	}
+
+	/**
+	 * Performs `inventory.list_stock`: each variant's policy, its units at every location a merchant manages it at, and its units for sale.
+	 *
+	 * A row for every active location, zeros where the variant has no item there yet, since an
+	 * item at a location is created by the first units moved there; and one for each inactive
+	 * location that still has an item. The figure for sale is Availability's, the one the
+	 * storefront shows. Two reads whatever the number of variants, the stock list and the figure,
+	 * and the list of locations when the object cache does not hold it. A variant with no stock
+	 * policy is left out. Never cached, and never a decision.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `authorization.denied` when the actor may not manage inventory; `stock.variant_ids_invalid`
+	 *                        when the list is not one to LocationOperations::MOST_LISTED_VARIANTS ids above 0, separated by commas.
+	 *
+	 * @param array<string, mixed> $input The prepared input: variant_ids.
+	 * @param Actor                $actor Who reads.
+	 * @return array{variants: list<array<string, mixed>>} The variants that have stock, ascending, keyed by wire name.
+	 */
+	public function listStock( array $input, Actor $actor ): array {
+		$this->authorizer->authorize( $actor, InventoryOperations::CAPABILITY );
+
+		$stock     = $this->stock->stockList( self::listedVariants( is_string( $input['variant_ids'] ?? null ) ? $input['variant_ids'] : '' ) );
+		$forSale   = $this->availability->forSale( array_keys( $stock ), null );
+		$locations = $this->locations->all();
+		$variants  = array();
+
+		foreach ( $stock as $variantId => $variant ) {
+			$levels = array();
+
+			foreach ( $variant['levels'] as $level ) {
+				$levels[ $level->locationId ] = $level;
+			}
+
+			$rows = array();
+
+			foreach ( $locations as $location ) {
+				$level = $levels[ $location->id ] ?? null;
+
+				if ( null !== $level || $location->active ) {
+					$rows[] = array(
+						'location_uuid' => $location->uuid,
+						'on_hand'       => $level->onHand ?? 0,
+						'allocated'     => $level->allocated ?? 0,
+						'held'          => $level->held ?? 0,
+						'available'     => $level?->available() ?? 0,
+					);
+				}
+			}
+
+			$variants[] = array(
+				'variant_id'          => $variantId,
+				'track'               => $variant['policy']->track,
+				'backorder_policy'    => $variant['policy']->backorderPolicy->value,
+				'low_stock_threshold' => $variant['policy']->lowStockThreshold,
+				'for_sale'            => array_key_exists( $variantId, $forSale ) ? $forSale[ $variantId ] : 0,
+				'locations'           => $rows,
+			);
+		}
+
+		return array( 'variants' => $variants );
 	}
 
 	/**
@@ -1300,6 +1389,27 @@ final class StockService {
 	}
 
 	/**
+	 * Returns the location an adjustment is at: the one named, or the store's default.
+	 *
+	 * A read of the directory, which adjust() then confirms under a lock by the location's id, so a
+	 * location deleted since the directory was read is still refused.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `stock.location_missing` when no location has the uuid; `stock.no_fulfilling_location` when none is named and the store has no default location.
+	 *
+	 * @param string|null $uuid The location's uuid, or null for the default location.
+	 * @return Location The location.
+	 */
+	private function adjustedLocation( ?string $uuid ): Location {
+		if ( null === $uuid ) {
+			return $this->locations->default() ?? CodedException::raise( InventoryError::NoFulfillingLocation );
+		}
+
+		return $this->locations->findByUuid( $uuid ) ?? CodedException::raise( InventoryError::LocationMissing, array( 'location_id' => $uuid ) );
+	}
+
+	/**
 	 * Refuses a call that must run inside the caller's transaction, before any statement.
 	 *
 	 * @since 0.1.0
@@ -1473,6 +1583,26 @@ final class StockService {
 		ksort( $unique );
 
 		return array_values( $unique );
+	}
+
+	/**
+	 * Reads the variant ids a client listed: whole numbers above 0 separated by commas, at most LocationOperations::MOST_LISTED_VARIANTS, once each.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `stock.variant_ids_invalid` when the text is not such a list, or lists more.
+	 *
+	 * @param string $text The list, such as `12,15,20`.
+	 * @return list<int> The ids, unique and ascending.
+	 */
+	private static function listedVariants( string $text ): array {
+		$ids = 1 === preg_match( self::VARIANT_LIST, $text ) ? array_map( 'intval', explode( ',', (string) preg_replace( '/\s+/', '', $text ) ) ) : array();
+
+		if ( array() === $ids || count( array_unique( $ids ) ) > LocationOperations::MOST_LISTED_VARIANTS ) {
+			CodedException::raise( InventoryError::VariantIdsInvalid, array( 'most' => LocationOperations::MOST_LISTED_VARIANTS ) );
+		}
+
+		return self::variantIds( $ids );
 	}
 
 	/**

@@ -52,6 +52,17 @@ final class LocationDirectory {
 	}
 
 	/**
+	 * Lists every location, active or not: the ones a merchant's stock list shows.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<Location> The locations, in the order they are tried.
+	 */
+	public function all(): array {
+		return $this->locations->all();
+	}
+
+	/**
 	 * Lists the active locations: those orders may be routed to and whose units count as available.
 	 *
 	 * @since 0.2.0
@@ -101,6 +112,26 @@ final class LocationDirectory {
 	public function find( int $locationId ): ?Location {
 		foreach ( $this->locations->all() as $location ) {
 			if ( $location->id === $locationId ) {
+				return $location;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Finds a location by its public identifier, active or not.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $uuid The location's uuid.
+	 * @return Location|null The location, or null when the store has none with that uuid.
+	 */
+	public function findByUuid( string $uuid ): ?Location {
+		$uuid = strtolower( $uuid );
+
+		foreach ( $this->locations->all() as $location ) {
+			if ( $location->uuid === $uuid ) {
 				return $location;
 			}
 		}

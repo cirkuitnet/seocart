@@ -47,6 +47,11 @@
 			"statement": "SELECT v.id FROM {prefix}seocart_variants v JOIN {prefix}seocart_products p ON p.id = v.product_id AND v.id > ? ORDER BY v.id LIMIT ?",
 			"servers": [ "mariadb" ],
 			"reason": "MariaDB only. Doctor's missing-stock-item check pages the variant ids by the primary key from its cursor, each product joined by its own primary key, and stops at its LIMIT. MariaDB estimates the whole range past the cursor without the LIMIT (9944 of 10000 rows on the medium dataset); MySQL keeps the rule (4937 rows)."
+		},
+		{
+			"id": "f6631d83dcb2",
+			"statement": "SELECT location_id, SUM( on_hand ) AS on_hand FROM {prefix}seocart_stock_items WHERE location_id IN ( ?+ ) GROUP BY location_id ORDER BY location_id",
+			"reason": "The list of locations shows each location's units on hand, so it adds up every stock item of the locations it lists by design: one range of the location_on_hand index, which holds both columns it reads, grouped by location (5499 of 10333 rows estimated on the medium dataset, nearly all at the default location). It is a merchant's list, read by the locations screen and `wp seocart location list`, never on a request a shopper makes."
 		}
 	]
 }

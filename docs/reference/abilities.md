@@ -6,17 +6,18 @@ SEOCart registers an ability for each operation that declares one, in the abilit
 
 ## `seocart/adjust-stock`
 
-Changes the units on hand of one variant by a signed amount, records the change in the stock ledger with its reason, and returns the stock level after it.
+Changes the units on hand of one variant at one location by a signed amount, records the change in the stock ledger with its reason, and returns the stock level after it.
 
 - Operation: `inventory.adjust_stock`
 - Capability: `seocart_manage_inventory`
-- Error codes: `stock.item_missing` (404), `stock.zero_delta` (400), `stock.on_hand_conflict` (409), `stock.adjustment_below_zero` (409), `authorization.denied` (403), `store.unavailable` (503)
+- Error codes: `stock.item_missing` (404), `stock.location_missing` (404), `stock.no_fulfilling_location` (409), `stock.zero_delta` (400), `stock.on_hand_conflict` (409), `stock.adjustment_below_zero` (409), `authorization.denied` (403), `store.unavailable` (503)
 - Annotations: readonly `false`, destructive `true`, idempotent `false`
 - Exposed to agents: no
 
 ### Input
 
 - `variant_id` (required): The id of the variant whose stock is adjusted. An integer of at least 1.
+- `location_uuid`: The location whose units change; the store's default location when left out. A deactivated location may still receive units. A uuid.
 - `delta` (required): The change of the units on hand: positive for units that arrived, negative for units that left; never 0. An integer from -1000000 to 1000000.
 - `reason` (required): Why the units on hand changed. One of `received`, `recount`, `damaged`, `returned`, `correction`.
 - `expected_on_hand`: The units on hand the client last read. When given, the change applies only while the variant still has exactly that many, so a repeated request cannot apply it twice. An integer of at least 0.
@@ -24,11 +25,172 @@ Changes the units on hand of one variant by a signed amount, records the change 
 ### Output
 
 - `variant_id` (always): The id of the variant whose stock is adjusted. An integer of at least 1.
+- `location_uuid` (always): The location whose units changed. A uuid.
 - `on_hand` (always): The units physically in stock after the change. An integer.
 - `allocated` (always): The units promised to accepted orders. An integer.
 - `held` (always): The units held by checkouts, expired holds included until they are reclaimed. An integer.
 - `available` (always): The units that may still be promised: on hand, less allocated, less held. Negative when fewer units were counted than are promised or held. An integer.
 - `ledger_entry_id` (always): The id of the stock ledger entry that records the change. An integer.
+
+## `seocart/list-locations`
+
+Lists every location of the store, active or not, in the order orders are routed to them, each with its record, its units on hand and its open allocations.
+
+- Operation: `inventory.list_locations`
+- Capability: `seocart_manage_inventory`
+- Error codes: `authorization.denied` (403)
+- Annotations: readonly `true`, destructive `false`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+
+### Output
+
+- `locations` (always): The locations, in the order orders are routed to them: ascending priority, ties by the order they were created in. A list of objects, each with `location_uuid`, `name`, `address`, `phone`, `active`, `is_default`, `fulfils_online`, `offers_pickup`, `pickup_ready_in`, `pickup_instructions`, `priority`, `hours`, `units_on_hand`, `open_allocations`. Personal data: returned only to a user who holds the capability `seocart_view_customer_pii`.
+
+## `seocart/create-location`
+
+Creates an active location with its name and, optionally, its address, phone, what it does, its priority and its pickup hours; the store's first location becomes its default.
+
+- Operation: `inventory.create_location`
+- Capability: `seocart_manage_settings`
+- Error codes: `stock.location_invalid` (400), `authorization.denied` (403), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `false`, idempotent `false`
+- Exposed to agents: no
+
+### Input
+
+- `name` (required): The name the merchant gives the location, such as Main warehouse; not blank. Text of at most 100 characters.
+- `address`: Where the location is; given, it replaces the whole address. It is public: it appears on customer-facing documents, such as pickup confirmations, packing slips and shipping labels. An object with `country`, `line1`, `line2`, `city`, `region`, `postcode`.
+- `phone`: The location's phone number for the merchant's staff; on a change, an empty text removes it. It is personal data, shown only to a user who may see personal data. Text of at most 32 characters. Personal data.
+- `fulfils_online`: Whether the location ships online orders; a new location does unless told otherwise. True or false.
+- `offers_pickup`: Whether shoppers may collect orders at the location; a new location does not unless told otherwise. True or false.
+- `pickup_ready_in`: How soon a pickup order is usually ready: one of 1h, 2h, next_business_day, 2_4_days. One of `1h`, `2h`, `next_business_day`, `2_4_days`.
+- `pickup_instructions`: What a shopper collecting an order is told, such as where to go; it may run over several lines, and on a change an empty text removes it. Text of at most 1000 characters.
+- `priority`: Where the location stands when an order is routed: the lowest number is tried first, and locations of the same number in the order they were created; a new location has 0 unless told otherwise. An integer from 0 to 1000000.
+- `hours`: The days the location is open for pickup, each day once; given, they replace the location's hours, and a day not listed is closed. A list of 0 to 7 objects, each with `weekday`, `opens_at`, `closes_at`.
+
+### Output
+
+- `location_uuid` (always): The location's public identifier. A uuid.
+- `name` (always): The name the merchant gives the location, such as Main warehouse; not blank. Text of at most 100 characters.
+- `address` (always): Where the location is, or null until an address is entered. It is public: it appears on customer-facing documents, such as pickup confirmations, packing slips and shipping labels. An object with `country`, `line1`, `line2`, `city`, `region`, `postcode`. May be null.
+- `phone`: The location's phone number for the merchant's staff, or null for none. It is personal data, shown only to a user who may see personal data. Text of at most 32 characters. May be null. Personal data: returned only to a user who holds the capability `seocart_view_customer_pii`.
+- `active` (always): Whether orders may be routed to the location; an inactive location keeps its stock, and its units are for sale nowhere. True or false.
+- `is_default` (always): Whether the location is the store's default: the one an adjustment or an order that names no location uses. True or false.
+- `fulfils_online` (always): Whether the location ships online orders; a new location does unless told otherwise. True or false.
+- `offers_pickup` (always): Whether shoppers may collect orders at the location; a new location does not unless told otherwise. True or false.
+- `pickup_ready_in` (always): How soon a pickup order is usually ready, one of 1h, 2h, next_business_day, 2_4_days, or null when none was given. Text of at most 32 characters. May be null.
+- `pickup_instructions` (always): What a shopper collecting an order is told, such as where to go, or null for nothing. Text of at most 1000 characters. May be null.
+- `priority` (always): Where the location stands when an order is routed: the lowest number is tried first, and locations of the same number in the order they were created; a new location has 0 unless told otherwise. An integer from 0 to 1000000.
+- `hours` (always): The days the location is open for pickup, by day; a day not listed is closed. A list of 0 to 7 objects, each with `weekday`, `opens_at`, `closes_at`.
+
+## `seocart/update-location`
+
+Changes the fields of a location the request gives and keeps the others: it can also deactivate or activate the location, make it the store's default, or replace its pickup hours.
+
+- Operation: `inventory.update_location`
+- Capability: `seocart_manage_settings`
+- Error codes: `stock.location_missing` (404), `stock.location_invalid` (400), `stock.location_inactive` (409), `stock.location_is_default` (409), `authorization.denied` (403), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `false`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+- `location_uuid` (required): The location to change. A uuid.
+- `name`: The name the merchant gives the location, such as Main warehouse; not blank. Text of at most 100 characters.
+- `active`: Whether orders may be routed to the location. Turning it off deactivates it, as the deactivation does; the default location stays active. True or false.
+- `is_default`: True makes the location the store's default, the one an adjustment or an order that names no location uses, in place of the location that is the default now; only an active location can become it, and the default stops being it only when another location becomes it. True or false.
+- `address`: Where the location is; given, it replaces the whole address. It is public: it appears on customer-facing documents, such as pickup confirmations, packing slips and shipping labels. An object with `country`, `line1`, `line2`, `city`, `region`, `postcode`.
+- `phone`: The location's phone number for the merchant's staff; on a change, an empty text removes it. It is personal data, shown only to a user who may see personal data. Text of at most 32 characters. Personal data.
+- `fulfils_online`: Whether the location ships online orders; a new location does unless told otherwise. True or false.
+- `offers_pickup`: Whether shoppers may collect orders at the location; a new location does not unless told otherwise. True or false.
+- `pickup_ready_in`: How soon a pickup order is usually ready: one of 1h, 2h, next_business_day, 2_4_days. One of `1h`, `2h`, `next_business_day`, `2_4_days`.
+- `pickup_instructions`: What a shopper collecting an order is told, such as where to go; it may run over several lines, and on a change an empty text removes it. Text of at most 1000 characters.
+- `priority`: Where the location stands when an order is routed: the lowest number is tried first, and locations of the same number in the order they were created; a new location has 0 unless told otherwise. An integer from 0 to 1000000.
+- `hours`: The days the location is open for pickup, each day once; given, they replace the location's hours, and a day not listed is closed. A list of 0 to 7 objects, each with `weekday`, `opens_at`, `closes_at`.
+
+### Output
+
+- `location_uuid` (always): The location's public identifier. A uuid.
+- `name` (always): The name the merchant gives the location, such as Main warehouse; not blank. Text of at most 100 characters.
+- `address` (always): Where the location is, or null until an address is entered. It is public: it appears on customer-facing documents, such as pickup confirmations, packing slips and shipping labels. An object with `country`, `line1`, `line2`, `city`, `region`, `postcode`. May be null.
+- `phone`: The location's phone number for the merchant's staff, or null for none. It is personal data, shown only to a user who may see personal data. Text of at most 32 characters. May be null. Personal data: returned only to a user who holds the capability `seocart_view_customer_pii`.
+- `active` (always): Whether orders may be routed to the location; an inactive location keeps its stock, and its units are for sale nowhere. True or false.
+- `is_default` (always): Whether the location is the store's default: the one an adjustment or an order that names no location uses. True or false.
+- `fulfils_online` (always): Whether the location ships online orders; a new location does unless told otherwise. True or false.
+- `offers_pickup` (always): Whether shoppers may collect orders at the location; a new location does not unless told otherwise. True or false.
+- `pickup_ready_in` (always): How soon a pickup order is usually ready, one of 1h, 2h, next_business_day, 2_4_days, or null when none was given. Text of at most 32 characters. May be null.
+- `pickup_instructions` (always): What a shopper collecting an order is told, such as where to go, or null for nothing. Text of at most 1000 characters. May be null.
+- `priority` (always): Where the location stands when an order is routed: the lowest number is tried first, and locations of the same number in the order they were created; a new location has 0 unless told otherwise. An integer from 0 to 1000000.
+- `hours` (always): The days the location is open for pickup, by day; a day not listed is closed. A list of 0 to 7 objects, each with `weekday`, `opens_at`, `closes_at`.
+
+## `seocart/deactivate-location`
+
+Deactivates a location: from now on no order is routed to it and its units are for sale nowhere, while its stock stays where it is; the default location cannot be deactivated.
+
+- Operation: `inventory.deactivate_location`
+- Capability: `seocart_manage_settings`
+- Error codes: `stock.location_missing` (404), `stock.location_is_default` (409), `authorization.denied` (403), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `true`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+- `location_uuid` (required): The location to deactivate. A uuid.
+
+### Output
+
+- `location_uuid` (always): The location's public identifier. A uuid.
+- `name` (always): The name the merchant gives the location, such as Main warehouse; not blank. Text of at most 100 characters.
+- `address` (always): Where the location is, or null until an address is entered. It is public: it appears on customer-facing documents, such as pickup confirmations, packing slips and shipping labels. An object with `country`, `line1`, `line2`, `city`, `region`, `postcode`. May be null.
+- `phone`: The location's phone number for the merchant's staff, or null for none. It is personal data, shown only to a user who may see personal data. Text of at most 32 characters. May be null. Personal data: returned only to a user who holds the capability `seocart_view_customer_pii`.
+- `active` (always): Whether orders may be routed to the location; an inactive location keeps its stock, and its units are for sale nowhere. True or false.
+- `is_default` (always): Whether the location is the store's default: the one an adjustment or an order that names no location uses. True or false.
+- `fulfils_online` (always): Whether the location ships online orders; a new location does unless told otherwise. True or false.
+- `offers_pickup` (always): Whether shoppers may collect orders at the location; a new location does not unless told otherwise. True or false.
+- `pickup_ready_in` (always): How soon a pickup order is usually ready, one of 1h, 2h, next_business_day, 2_4_days, or null when none was given. Text of at most 32 characters. May be null.
+- `pickup_instructions` (always): What a shopper collecting an order is told, such as where to go, or null for nothing. Text of at most 1000 characters. May be null.
+- `priority` (always): Where the location stands when an order is routed: the lowest number is tried first, and locations of the same number in the order they were created; a new location has 0 unless told otherwise. An integer from 0 to 1000000.
+- `hours` (always): The days the location is open for pickup, by day; a day not listed is closed. A list of 0 to 7 objects, each with `weekday`, `opens_at`, `closes_at`.
+
+## `seocart/delete-location`
+
+Deletes a location nothing refers to yet, with its stock items that count nothing; a location with stock history, stock, holds, allocations or transfers is kept, and so is the default location.
+
+- Operation: `inventory.delete_location`
+- Capability: `seocart_manage_settings`
+- Error codes: `stock.location_missing` (404), `stock.location_in_use` (409), `authorization.denied` (403), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `true`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+- `location_uuid` (required): The location to delete. A uuid.
+
+### Output
+
+- `location_uuid` (always): The location deleted. A uuid.
+- `stock_items_removed` (always): How many of the location's stock items, each holding no units, were deleted with it. An integer.
+
+## `seocart/list-stock`
+
+Lists the stock of up to 200 variants: each one's stock policy, its units at every active location and at any inactive one that still has a stock item, and its units for sale.
+
+- Operation: `inventory.list_stock`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.variant_ids_invalid` (400), `authorization.denied` (403)
+- Annotations: readonly `true`, destructive `false`, idempotent `true`
+- Exposed to agents: yes
+
+### Input
+
+- `variant_ids` (required): The variants, by id: from 1 to 200 whole numbers above 0, separated by commas, such as 12,15,20. A variant with no stock is left out of the answer. Text of at most 4400 characters.
+
+### Output
+
+- `variants` (always): The variants that have stock, by ascending id. A list of objects, each with `variant_id`, `track`, `backorder_policy`, `low_stock_threshold`, `for_sale`, `locations`.
 
 ## `seocart/refund-order`
 

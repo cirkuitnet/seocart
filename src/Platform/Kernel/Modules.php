@@ -76,6 +76,7 @@ use SEOCart\Inventory\Application\FulfilmentRouting;
 use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Inventory\Application\InventorySettings;
 use SEOCart\Inventory\Application\LocationDirectory;
+use SEOCart\Inventory\Application\Locations;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Domain\Event\StockAdjusted;
 use SEOCart\Inventory\Domain\Event\StockAllocated;
@@ -1163,7 +1164,18 @@ final class Modules {
 				$c->get( CorrelationId::class ),
 				$c->get( Authorizer::class ),
 				$c->get( LocationDirectory::class ),
-				$c->get( FulfilmentRouting::class )
+				$c->get( FulfilmentRouting::class ),
+				$c->get( Availability::class )
+			)
+		);
+		$container->bind(
+			Locations::class,
+			static fn( Container $c ): Locations => new Locations(
+				$c->get( MysqlLocationRepository::class ),
+				$c->get( StockRepository::class ),
+				$c->get( TransactionManager::class ),
+				$c->get( IdGenerator::class ),
+				$c->get( Authorizer::class )
 			)
 		);
 		$container->bind( SweepHolds::class, static fn( Container $c ): SweepHolds => new SweepHolds( $c->get( StockService::class ) ) );

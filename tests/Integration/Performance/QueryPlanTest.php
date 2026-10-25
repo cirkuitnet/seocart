@@ -152,6 +152,15 @@ final class QueryPlanTest extends DatabaseTestCase {
 	private const SECOND_LOCALE = 'de_DE';
 
 	/**
+	 * The public identifier of the second location the run gives the seeded store.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const SECOND_LOCATION_UUID = '018f4e2a-7b3c-7d1e-9a2b-00000000000b';
+
+	/**
 	 * The seed, while its rows are in the database.
 	 *
 	 * @since 0.1.0
@@ -425,6 +434,14 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$this->assertTrue( $locations->any() );
 		$locations->defaultWithoutAddress();
 
+		// The list of locations' reads: the records with their pickup hours, and each location's
+		// units on hand and open allocations. Then the stock list of a page, and what refers to the
+		// second location, which a deletion of it reads: the default is refused before that read.
+		$this->assertCount( 2, $locations->records() );
+		$stock->locationTotals( array( $location, self::$secondLocation ) );
+		$stock->stockList( $page );
+		$this->assertNull( $stock->locationUse( self::$secondLocation ), 'The second location\'s items are all at zero, with no history.' );
+
 		// A cursor near the end of the table: doctor's own reverse check pages from 0, so this is
 		// the only place a real cursor reaches MysqlStockRepository::ITEM_VARIANT_IDS.
 		$stock->itemVariantIds( Dataset::Medium->products() - 1000, 20 );
@@ -516,6 +533,10 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 					// Doctor's repair of a store without a default: this store has one, so it marks nothing.
 					$this->assertNull( $locations->markLowestActiveDefault() );
+
+					// A change of a location: its record under its lock, and a move of the default to it.
+					$this->assertNotNull( $locations->lockRecord( self::SECOND_LOCATION_UUID ) );
+					$this->assertTrue( $locations->moveDefault( self::$secondLocation ) );
 
 					// The upgrade's pages of the earlier rows, each from a cursor near the end of its table.
 					foreach ( array(
@@ -691,7 +712,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$db->execute(
 			'INSERT INTO %i ( uuid, name, active, fulfils_online, offers_pickup, priority, created_at, updated_at ) VALUES ( %s, %s, 1, 1, 0, 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6) )',
 			$db->table( InventoryTables::LOCATIONS ),
-			'018f4e2a-7b3c-7d1e-9a2b-00000000000b',
+			self::SECOND_LOCATION_UUID,
 			'Second location'
 		);
 

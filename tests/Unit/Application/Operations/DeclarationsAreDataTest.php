@@ -25,7 +25,9 @@ use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
  * - call no WordPress function at all, gettext included (each one is counted by name);
  * - touch `$wpdb` in no way;
  * - open no file but the class files of the declaration mechanism, the capability declaration, the
- *   stock adjustment's declaration with the two enums it reads, the cart's declarations with the
+ *   stock adjustment's declaration with the two enums it reads, the location operations'
+ *   declarations with the backorder policies, the pickup keys and the days of pickup hours they
+ *   state, the cart's declarations with the
  *   error catalogs, the two domain classes whose limits they state, the caps on refused promotion
  *   codes and on currency switches, and the declared shape of totals with the enums it lists, the
  *   checkout's declarations with their error catalog, the address document whose fields they state,
@@ -72,6 +74,10 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Inventory/Application/InventorySettings.php',
 		'src/Inventory/Domain/Routing/FulfilmentMode.php',
 		'src/Inventory/Domain/LedgerReason.php',
+		'src/Inventory/Application/LocationOperations.php',
+		'src/Inventory/Domain/BackorderPolicy.php',
+		'src/Inventory/Domain/LocationDetails.php',
+		'src/Inventory/Domain/PickupHours.php',
 		'src/Cart/Interfaces/StoreApi/StoreOperations.php',
 		'src/Cart/Interfaces/StoreApi/StoreRequestPolicy.php',
 		'src/Cart/Interfaces/StoreApi/CartOperations.php',

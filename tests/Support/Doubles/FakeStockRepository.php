@@ -15,6 +15,7 @@ use SEOCart\Inventory\Domain\Allocation;
 use SEOCart\Inventory\Domain\BackorderPolicy;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
+use SEOCart\Inventory\Domain\LocationInUse;
 use SEOCart\Inventory\Domain\ReclaimedRows;
 use SEOCart\Inventory\Domain\StockLevel;
 use SEOCart\Inventory\Domain\StockPolicy;
@@ -698,6 +699,29 @@ final class FakeStockRepository implements StockRepository {
 	}
 
 	/**
+	 * Reads the variants' policies, each with its level at the location.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $variantIds The variants.
+	 * @return array<int, array{policy: StockPolicy, levels: list<StockLevel>}> The stock, by variant id, ascending.
+	 */
+	public function stockList( array $variantIds ): array {
+		$stock = array();
+
+		foreach ( $this->levels( $variantIds ) as $variantId => $level ) {
+			$stock[ $variantId ] = array(
+				'policy' => new StockPolicy( $variantId, $level->track, $level->backorderPolicy, null ),
+				'levels' => array( $level ),
+			);
+		}
+
+		ksort( $stock );
+
+		return $stock;
+	}
+
+	/**
 	 * Reads what the location has of the variants, with their policies.
 	 *
 	 * @since 0.2.0
@@ -753,6 +777,52 @@ final class FakeStockRepository implements StockRepository {
 		}
 
 		return $figures;
+	}
+
+	/**
+	 * Reads the units on hand and the open allocations at the locations: all of them at the one location.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $locationIds The locations.
+	 * @return array<int, array{on_hand: int, open_allocations: int}> The figures, by location id.
+	 */
+	public function locationTotals( array $locationIds ): array {
+		$totals = array();
+
+		foreach ( $locationIds as $locationId ) {
+			$here                  = self::LOCATION === $locationId;
+			$totals[ $locationId ] = array(
+				'on_hand'          => $here ? (int) array_sum( array_column( $this->items, 'on_hand' ) ) : 0,
+				'open_allocations' => $here ? count( $this->openAllocations ) : 0,
+			);
+		}
+
+		return $totals;
+	}
+
+	/**
+	 * Says what refers to a location: at the one location, its ledger once it has an entry, then its units, holds and allocations.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId The location.
+	 * @return LocationInUse|null The first use, or null.
+	 */
+	public function locationUse( int $locationId ): ?LocationInUse {
+		if ( self::LOCATION !== $locationId ) {
+			return null;
+		}
+
+		$counted = array_filter( $this->items, static fn( array $item ): bool => 0 !== $item['on_hand'] || 0 !== $item['allocated'] || 0 !== $item['held'] );
+
+		return match ( true ) {
+			array() !== $this->ledger          => LocationInUse::Ledger,
+			array() !== $counted               => LocationInUse::Stock,
+			array() !== $this->holds           => LocationInUse::Holds,
+			array() !== $this->openAllocations => LocationInUse::Allocations,
+			default                            => null,
+		};
 	}
 
 	/**
@@ -821,6 +891,30 @@ final class FakeStockRepository implements StockRepository {
 		$this->write( 'lockPolicy:' . $variantId );
 
 		return isset( $this->items[ $variantId ] );
+	}
+
+	/**
+	 * Deletes the location's items that count nothing.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId The location.
+	 * @return int How many were deleted.
+	 */
+	public function deleteEmptyItemsAt( int $locationId ): int {
+		$this->write( 'deleteEmptyItemsAt:' . $locationId );
+
+		if ( self::LOCATION !== $locationId ) {
+			return 0;
+		}
+
+		$empty = array_keys( array_filter( $this->items, static fn( array $item ): bool => 0 === $item['on_hand'] && 0 === $item['allocated'] && 0 === $item['held'] ) );
+
+		foreach ( $empty as $variantId ) {
+			unset( $this->items[ $variantId ] );
+		}
+
+		return count( $empty );
 	}
 
 	/**

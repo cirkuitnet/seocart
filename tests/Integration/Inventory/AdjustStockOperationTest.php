@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Integration\Inventory;
 use SEOCart\Application\Operations\OperationRegistry;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Inventory\Application\InventoryOperations;
+use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\AuthorizationError;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
@@ -26,6 +27,7 @@ use SEOCart\Tests\Support\Doubles\InMemoryGrantLedger;
 use SEOCart\Tests\Support\Inventory\StockTestCase;
 use SEOCart\Tests\Support\OperationSurfaces;
 use SEOCart\Tests\Support\ReloadsRoles;
+use SEOCart\Tests\Support\SecondConnection;
 use WP_Error;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -54,7 +56,7 @@ final class AdjustStockOperationTest extends StockTestCase {
 	 *
 	 * @var list<string>
 	 */
-	private const STOCK_LEVEL = array( 'variant_id', 'on_hand', 'allocated', 'held', 'available', 'ledger_entry_id' );
+	private const STOCK_LEVEL = array( 'variant_id', 'location_uuid', 'on_hand', 'allocated', 'held', 'available', 'ledger_entry_id' );
 
 	/**
 	 * The three surfaces, wired for the adjustment.
@@ -149,6 +151,7 @@ final class AdjustStockOperationTest extends StockTestCase {
 
 		$this->assertSame( array( 15, 20, 25 ), array_column( $answers, 'on_hand' ), 'Each surface adjusted once, in turn.' );
 		$this->assertSame( array( 15, 20, 25 ), array_column( $answers, 'available' ) );
+		$this->assertSame( array_fill( 0, 3, $this->locationUuid( $b, $this->defaultLocation ) ), array_column( $answers, 'location_uuid' ), 'With no location named, every surface adjusts the default location and says so.' );
 
 		$ledger = $this->committedLedger( $b, $variant );
 
@@ -158,6 +161,95 @@ final class AdjustStockOperationTest extends StockTestCase {
 		$this->assertSame( array( 'user', 'user', 'system' ), array_column( array_slice( $ledger, 1 ), 'actor_type' ), 'The command acts as a system actor on the user\'s authority.' );
 		$this->assertSame( array( (string) $admin, (string) $admin, (string) $admin ), array_column( array_slice( $ledger, 1 ), 'actor_id' ) );
 		$this->assertSame( array(), $this->surfaces->reported, 'An expected outcome was reported as an unexpected failure.' );
+	}
+
+	/**
+	 * Tests that a location named in the input is the one adjusted, on every surface: the item is created there by the first adjustment, the default location's is untouched, and an inactive location still receives units.
+	 *
+	 * Planted violations, each shown red and removed, in StockService::adjustStock(): adjust the
+	 * default location whatever the input names (the other location's item never appears); and
+	 * refuse an inactive location (the second half fails).
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_named_location_is_the_one_adjusted_everywhere(): void {
+		$variant  = self::variant();
+		$other    = $this->plantLocation();
+		$inactive = $this->plantLocation( 2, false );
+		$b        = $this->secondConnection();
+
+		$this->stockItem( $variant, 10 );
+		wp_set_current_user( $this->createUser( 'administrator' ) );
+
+		$uuid     = $this->locationUuid( $b, $other );
+		$outcomes = $this->surfaces->everywhere(
+			InventoryOperations::adjustStock(),
+			array(
+				'variant_id'    => $variant,
+				'location_uuid' => $uuid,
+				'delta'         => 5,
+				'reason'        => 'received',
+			)
+		);
+
+		$this->assertSame( 200, $outcomes['rest']['result']->get_status(), $outcomes['rest']['text'] );
+		$this->assertNull( $outcomes['cli']['result']['failure'] );
+
+		$answers = array( $outcomes['rest']['result']->get_data(), $outcomes['ability']['result'], $outcomes['cli']['result']['printed']['item'] ?? array() );
+
+		$this->assertSame( array( $uuid, $uuid, $uuid ), array_column( $answers, 'location_uuid' ) );
+		$this->assertSame( array( 5, 10, 15 ), array_column( $answers, 'on_hand' ), 'The item at the location was created by the first adjustment, and each surface adjusted it once.' );
+		$this->assertSame( array( 10, 0, 0 ), array_values( (array) $this->committedItem( $b, $variant ) ), 'The default location was not touched.' );
+		$this->assertSame( array( 15, 0, 0 ), array_values( (array) $this->committedItem( $b, $variant, $other ) ) );
+		$this->assertSame( 3, (int) $b->fetchValue( sprintf( 'SELECT COUNT(*) FROM `%s` WHERE variant_id = %d AND location_id = %d', $this->table( InventoryTables::LEDGER ), $variant, $other ) ), 'One ledger entry per surface, at the location.' );
+
+		$received = $this->surfaces->rest(
+			'POST',
+			'/stock-items/' . $variant . '/adjustments',
+			array(
+				'location_uuid' => $this->locationUuid( $b, $inactive ),
+				'delta'         => 3,
+				'reason'        => 'received',
+			)
+		);
+
+		$this->assertSame( 200, $received->get_status(), 'A deactivated location may still receive units.' );
+		$this->assertSame( array( 3, 0, 0 ), array_values( (array) $this->committedItem( $b, $variant, $inactive ) ) );
+	}
+
+	/**
+	 * Tests that a location no one has is refused on every surface with the same code, and nothing is written.
+	 *
+	 * Planted violation, in StockService::adjustedLocation(): answer the default location when the
+	 * uuid is unknown (the adjustment then goes through, at the wrong location).
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_unknown_location_is_refused_everywhere(): void {
+		$variant = self::variant();
+		$b       = $this->secondConnection();
+
+		$this->stockItem( $variant, 10 );
+		wp_set_current_user( $this->createUser( 'administrator' ) );
+
+		$outcomes = $this->surfaces->everywhere(
+			InventoryOperations::adjustStock(),
+			array(
+				'variant_id'    => $variant,
+				'location_uuid' => wp_generate_uuid4(),
+				'delta'         => 5,
+				'reason'        => 'received',
+			)
+		);
+
+		$this->assertSame( 404, $outcomes['rest']['result']->get_status(), $outcomes['rest']['text'] );
+		$this->assertSame( 'stock.location_missing', $outcomes['rest']['result']->as_error()->get_error_code() );
+		$this->assertInstanceOf( WP_Error::class, $outcomes['ability']['result'], $outcomes['ability']['text'] );
+		$this->assertSame( 'stock.location_missing', $outcomes['ability']['result']->get_error_code() );
+		$this->assertStringStartsWith( 'stock.location_missing: ', (string) $outcomes['cli']['result']['failure'] );
+		$this->assertSame( array( 10, 0, 0 ), array_values( (array) $this->committedItem( $b, $variant ) ), 'A refused adjustment changed the default location.' );
+		$this->assertCount( 1, $this->committedLedger( $b, $variant ) );
+		$this->assertSame( array(), $this->surfaces->reported, 'An unknown location was reported as an unexpected failure.' );
 	}
 
 	/**
@@ -501,6 +593,19 @@ final class AdjustStockOperationTest extends StockTestCase {
 		\PHPUnit\Framework\Assert::assertSame( $code, ( (array) $details[ ErrorShape::PARAM_CODES ] )[ $param ] ?? null );
 		\PHPUnit\Framework\Assert::assertIsString( $data['correlation_id'] );
 		\PHPUnit\Framework\Assert::assertNotSame( '', $data['correlation_id'], 'The correlation id is a non-empty string.' );
+	}
+
+	/**
+	 * Reads a location's public identifier as connection B sees it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param SecondConnection $b          Connection B.
+	 * @param int              $locationId The location.
+	 * @return string The uuid.
+	 */
+	private function locationUuid( SecondConnection $b, int $locationId ): string {
+		return (string) $b->fetchValue( sprintf( 'SELECT uuid FROM `%s` WHERE id = %d', $this->table( InventoryTables::LOCATIONS ), $locationId ) );
 	}
 
 	/**

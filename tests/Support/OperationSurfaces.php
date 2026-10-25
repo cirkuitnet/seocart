@@ -51,7 +51,7 @@ use WP_REST_Server;
  * init hooks of fresh Abilities registries, which WordPress otherwise builds once per process; the
  * commands through a recorder that stands in for WP_CLI::add_command(), with recorders for the
  * printed result and the reported failure. Every application service is resolved to one object —
- * a FixtureStockService unless the test passes its own — so a test can read every call it received,
+ * a FixtureStockService unless the test passes its own, or one per service class — so a test can read every call it received,
  * and every unexpected failure the invoker reports is recorded. Errors are translated by the
  * plugin's RestErrorTranslator, with the error table of every catalog under src/ and the test
  * catalogs, and the correlation id in $correlationId; every internal failure it reports is
@@ -167,11 +167,15 @@ final class OperationSurfaces {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param OperationRegistry $registry The operations.
-	 * @param object|null       $service  Optional. The object every service resolves to. Default the
-	 *                                    FixtureStockService in $service.
+	 * @since 0.2.0 The services by class.
+	 *
+	 * @param OperationRegistry     $registry The operations.
+	 * @param object|null           $service  Optional. The object every service resolves to. Default the
+	 *                                        FixtureStockService in $service.
+	 * @param array<string, object> $services Optional. The object a service class resolves to, by
+	 *                                        class name, before $service. Default none.
 	 */
-	public function __construct( OperationRegistry $registry, ?object $service = null ) {
+	public function __construct( OperationRegistry $registry, ?object $service = null, array $services = array() ) {
 		$this->registry   = $registry;
 		$this->service    = new FixtureStockService();
 		$resolved         = $service ?? $this->service;
@@ -186,10 +190,8 @@ final class OperationSurfaces {
 			}
 		);
 		$this->invoker    = new OperationInvoker(
-			static function ( string $class_name ) use ( $resolved ): object {
-				unset( $class_name );
-
-				return $resolved;
+			static function ( string $class_name ) use ( $resolved, $services ): object {
+				return $services[ $class_name ] ?? $resolved;
 			},
 			$this->translator,
 			function ( \Throwable $failure ): void {

@@ -31,8 +31,10 @@ defined( 'ABSPATH' ) || exit;
  * route `POST seocart/v1/stock-items/{variant_id}/adjustments`, the ability
  * `seocart/adjust-stock` and the command `wp seocart stock adjust <variant_id>`; each is
  * compiled from it and none restates it. The variant is named by the URL on REST, and by the
- * input on the other two surfaces. The reasons a client may give are LedgerReason::merchant(),
- * read here and written down nowhere else.
+ * input on the other two surfaces. The location is optional input on all three: left out, the
+ * adjustment is at the store's default location, which is where a one-location store keeps all
+ * of its stock. The reasons a client may give are LedgerReason::merchant(), read here and
+ * written down nowhere else.
  *
  * An adjustment is destructive, because a negative change removes stock that could be sold, and
  * it is not idempotent: a request repeated after a timeout applies again, unless the client sends
@@ -101,9 +103,10 @@ final class InventoryOperations {
 		return new OperationDefinition(
 			id: self::ADJUST_STOCK,
 			label: static fn(): string => __( 'Adjust stock', 'seocart' ),
-			summary: 'Changes the units on hand of one variant by a signed amount, records the change in the stock ledger with its reason, and returns the stock level after it.',
+			summary: 'Changes the units on hand of one variant at one location by a signed amount, records the change in the stock ledger with its reason, and returns the stock level after it.',
 			input: array(
 				self::variantId(),
+				self::locationUuid( false, 'The location whose units change; the store\'s default location when left out. A deactivated location may still receive units.' ),
 				new FieldSpec(
 					name: 'delta',
 					type: FieldType::Integer,
@@ -136,6 +139,7 @@ final class InventoryOperations {
 				self::RESOURCE,
 				array(
 					self::variantId(),
+					self::locationUuid( true, 'The location whose units changed.' ),
 					self::count( 'on_hand', 'The units physically in stock after the change.', static fn(): string => __( 'On hand', 'seocart' ), 17 ),
 					self::count( 'allocated', 'The units promised to accepted orders.', static fn(): string => __( 'Allocated', 'seocart' ), 2 ),
 					self::count( 'held', 'The units held by checkouts, expired holds included until they are reclaimed.', static fn(): string => __( 'Held', 'seocart' ), 3 ),
@@ -147,6 +151,8 @@ final class InventoryOperations {
 			resource_field: null,
 			errors: array(
 				InventoryError::ItemMissing,
+				InventoryError::LocationMissing,
+				InventoryError::NoFulfillingLocation,
 				InventoryError::ZeroDelta,
 				InventoryError::OnHandConflict,
 				InventoryError::AdjustmentBelowZero,
@@ -176,6 +182,26 @@ final class InventoryOperations {
 			example: 42,
 			required: true,
 			minimum: 1
+		);
+	}
+
+	/**
+	 * Declares the location's public identifier: optional in the input, required in the output.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param bool   $output      True for the stock level's field, false for the input's.
+	 * @param string $description The machine description.
+	 * @return FieldSpec The field.
+	 */
+	private static function locationUuid( bool $output, string $description ): FieldSpec {
+		return new FieldSpec(
+			name: 'location_uuid',
+			type: FieldType::Uuid,
+			description: $description,
+			label: static fn(): string => __( 'Location', 'seocart' ),
+			example: '2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8',
+			required: $output
 		);
 	}
 

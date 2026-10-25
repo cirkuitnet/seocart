@@ -72,7 +72,8 @@ final class InventoryOperationsTest extends TestCase {
 	public function test_the_input_is_declared_with_its_bounds(): void {
 		$fields = self::byName( InventoryOperations::adjustStock()->input() );
 
-		$this->assertSame( array( 'variant_id', 'delta', 'reason', 'expected_on_hand' ), array_keys( $fields ) );
+		$this->assertSame( array( 'variant_id', 'location_uuid', 'delta', 'reason', 'expected_on_hand' ), array_keys( $fields ) );
+		$this->assertSame( array( FieldType::Uuid, false ), array( $fields['location_uuid']->type(), $fields['location_uuid']->isRequired() ), 'The location is optional: left out, it is the default location.' );
 		$this->assertSame( array( FieldType::Integer, true, 1, null ), array( $fields['variant_id']->type(), $fields['variant_id']->isRequired(), $fields['variant_id']->minimum(), $fields['variant_id']->maximum() ) );
 		$this->assertSame( array( FieldType::Integer, true, -1000000, 1000000 ), array( $fields['delta']->type(), $fields['delta']->isRequired(), $fields['delta']->minimum(), $fields['delta']->maximum() ) );
 		$this->assertSame( array( FieldType::String, true ), array( $fields['reason']->type(), $fields['reason']->isRequired() ) );
@@ -92,7 +93,7 @@ final class InventoryOperationsTest extends TestCase {
 	}
 
 	/**
-	 * Tests the output: the stock level, every field a required integer.
+	 * Tests the output: the stock level, every field required, the location a uuid and the rest integers.
 	 *
 	 * @since 0.1.0
 	 */
@@ -100,10 +101,10 @@ final class InventoryOperationsTest extends TestCase {
 		$output = InventoryOperations::adjustStock()->output();
 
 		$this->assertSame( 'StockLevel', $output->name() );
-		$this->assertSame( array( 'variant_id', 'on_hand', 'allocated', 'held', 'available', 'ledger_entry_id' ), array_keys( self::byName( $output->fields() ) ) );
+		$this->assertSame( array( 'variant_id', 'location_uuid', 'on_hand', 'allocated', 'held', 'available', 'ledger_entry_id' ), array_keys( self::byName( $output->fields() ) ) );
 
 		foreach ( $output->fields() as $field ) {
-			$this->assertSame( array( FieldType::Integer, true ), array( $field->type(), $field->isRequired() ), $field->name() );
+			$this->assertSame( array( 'location_uuid' === $field->name() ? FieldType::Uuid : FieldType::Integer, true ), array( $field->type(), $field->isRequired() ), $field->name() );
 		}
 	}
 
@@ -118,7 +119,7 @@ final class InventoryOperationsTest extends TestCase {
 		$this->assertSame( 'seocart_manage_inventory', $definition->capability() );
 		$this->assertNull( $definition->resourceField() );
 		$this->assertSame(
-			array( InventoryError::ItemMissing, InventoryError::ZeroDelta, InventoryError::OnHandConflict, InventoryError::AdjustmentBelowZero, AuthorizationError::Denied ),
+			array( InventoryError::ItemMissing, InventoryError::LocationMissing, InventoryError::NoFulfillingLocation, InventoryError::ZeroDelta, InventoryError::OnHandConflict, InventoryError::AdjustmentBelowZero, AuthorizationError::Denied ),
 			$definition->errors()
 		);
 		$this->assertSame(

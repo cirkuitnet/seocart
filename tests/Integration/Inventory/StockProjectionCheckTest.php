@@ -133,7 +133,10 @@ final class StockProjectionCheckTest extends StockTestCase {
 	}
 
 	/**
-	 * Tests that stock and allocations at a location that no longer exists are critical, each named, and a deactivated location with units available is a warning.
+	 * Tests that stock, allocations and ledger entries at a location that no longer exists are critical, each named, and a deactivated location with units available is a warning.
+	 *
+	 * Planted violation, shown red and removed: in StockProjectionCheck::locationFindings(), leave
+	 * out ledgerAtLostLocations(). The ledger's entries at the lost location go unreported.
 	 *
 	 * @since 0.2.0
 	 */
@@ -152,11 +155,12 @@ final class StockProjectionCheckTest extends StockTestCase {
 
 		$result = $this->projectionCheck();
 
-		$this->assertSame( '3 stock problems found.', $result->summary );
+		$this->assertSame( '4 stock problems found.', $result->summary );
 		$this->assertFindings(
 			array(
 				sprintf( '/^Critical: allocation \d+ of order 1 is open for variant %d at location %d, which no longer exists\.$/', $variant, $lost ),
 				sprintf( '/^Critical: variant %d has a stock item at location %d, which no longer exists\.$/', $variant, $lost ),
+				sprintf( '/^Critical: the stock ledger has entries at location %d, which no longer exists,/', $lost ),
 				sprintf( '/^Warning: location %d is deactivated but has 3 units available, which no order can be routed to\./', $inactive ),
 				'/^Warning: the default location, \d+, has no address yet\./',
 			),
@@ -213,14 +217,18 @@ final class StockProjectionCheckTest extends StockTestCase {
 	 * The item at the second location never existed, so its holds were given back by nothing: the
 	 * sweep's reclaim begins with the item's lock, and finds no item. After the repair the item is
 	 * at zero with no hold, each hold was released with the reason `item_missing`, the sweep runs
-	 * clean and the check passes.
+	 * clean and the check passes. A live hold of the same variant at the default location, whose
+	 * item is there, is left as it was: the repair restores the recreated item's `held` from the
+	 * hold rows at its own location only.
 	 *
-	 * Planted violations, each shown red and removed, both in
-	 * StockService::releaseHoldsOfMissingItems(): skip the reclaim after the item is recreated: the
+	 * Planted violations, each shown red and removed: in
+	 * StockService::releaseHoldsOfMissingItems(), skip the reclaim after the item is recreated: the
 	 * repair gives nothing back and the live hold stays, able to turn units the location does not
-	 * have into an allocation; and recreate the item bare, at zero, with createItemAt(), and skip the
+	 * have into an allocation; recreate the item bare, at zero, with createItemAt(), and skip the
 	 * reclaim: the sweep then finds `held` below the expired hold's row and fails with
-	 * `stock.projection_corrupt`.
+	 * `stock.projection_corrupt`; and in MysqlStockRepository::RESTORE_HELD, sum the hold rows of
+	 * the variant at every location: the recreated item keeps a unit held for the default
+	 * location's hold, which no hold row at its own location accounts for.
 	 *
 	 * @since 0.2.0
 	 */
@@ -231,6 +239,7 @@ final class StockProjectionCheckTest extends StockTestCase {
 
 		$this->stockItem( $variant, 2 );
 
+		$kept    = $this->plantHold( $variant, 1, 900 );
 		$expired = $this->plantHold( $variant, 1, -60, null, $other );
 		$live    = $this->plantHold( $variant, 2, 900, null, $other );
 
@@ -257,8 +266,8 @@ final class StockProjectionCheckTest extends StockTestCase {
 
 		$this->assertSame( array( sprintf( 'recreated the stock item of variant %1$d at location %2$d, at zero, and gave back hold %3$s (1 unit), hold %4$s (2 units).', $variant, $other, $expired, $live ) ), $changes );
 		$this->assertSame( array( 0, 0, 0 ), array_values( (array) $this->committedItem( $b, $variant, $other ) ), 'The item is back, at zero.' );
-		$this->assertSame( array(), $this->committedHolds( $b, $variant ), 'Both holds were given back.' );
-		$this->assertSame( array( 2, 0, 0 ), array_values( (array) $this->committedItem( $b, $variant ) ), 'The item at the default location is untouched.' );
+		$this->assertSame( array( $kept . ':1' ), $this->committedHolds( $b, $variant ), 'Both holds at the second location were given back, and the one at the default location was not.' );
+		$this->assertSame( array( 2, 0, 1 ), array_values( (array) $this->committedItem( $b, $variant ) ), 'The item at the default location, and the unit its hold holds, are untouched.' );
 		$this->assertSame(
 			array( array( $expired, 'item_missing', array( $variant ) ), array( $live, 'item_missing', array( $variant ) ) ),
 			array_map( static fn( StockReservationReleased $event ): array => array( $event->holdId, $event->reason, $event->variantIds ), array_values( array_filter( $this->afterCommit, static fn( $event ): bool => $event instanceof StockReservationReleased ) ) )

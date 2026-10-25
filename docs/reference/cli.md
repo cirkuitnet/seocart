@@ -46,22 +46,143 @@ wp seocart settings update [--base_currency=<base_currency>] [--cross_zone_polic
 
 ## `wp seocart stock adjust`
 
-Changes the units on hand of one variant by a signed amount, records the change in the stock ledger with its reason, and returns the stock level after it.
+Changes the units on hand of one variant at one location by a signed amount, records the change in the stock ledger with its reason, and returns the stock level after it.
 
 ```sh
-wp seocart stock adjust <variant_id> --delta=<delta> --reason=<reason> [--expected_on_hand=<expected_on_hand>] [--format=<format>]
+wp seocart stock adjust <variant_id> [--location_uuid=<location_uuid>] --delta=<delta> --reason=<reason> [--expected_on_hand=<expected_on_hand>] [--format=<format>]
 ```
 
 - Operation: `inventory.adjust_stock`
 - Capability: `seocart_manage_inventory`
-- Error codes: `stock.item_missing` (404), `stock.zero_delta` (400), `stock.on_hand_conflict` (409), `stock.adjustment_below_zero` (409), `authorization.denied` (403), `store.unavailable` (503)
+- Error codes: `stock.item_missing` (404), `stock.location_missing` (404), `stock.no_fulfilling_location` (409), `stock.zero_delta` (400), `stock.on_hand_conflict` (409), `stock.adjustment_below_zero` (409), `authorization.denied` (403), `store.unavailable` (503)
 
 ### Arguments
 
 - `<variant_id>`: The id of the variant whose stock is adjusted. An integer of at least 1.
+- `[--location_uuid=<location_uuid>]`: The location whose units change; the store's default location when left out. A deactivated location may still receive units. A uuid.
 - `--delta=<delta>`: The change of the units on hand: positive for units that arrived, negative for units that left; never 0. An integer from -1000000 to 1000000.
 - `--reason=<reason>`: Why the units on hand changed. One of `received`, `recount`, `damaged`, `returned`, `correction`.
 - `[--expected_on_hand=<expected_on_hand>]`: The units on hand the client last read. When given, the change applies only while the variant still has exactly that many, so a repeated request cannot apply it twice. An integer of at least 0.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart location list`
+
+Lists every location of the store, active or not, in the order orders are routed to them, each with its record, its units on hand and its open allocations.
+
+```sh
+wp seocart location list [--format=<format>]
+```
+
+- Operation: `inventory.list_locations`
+- Capability: `seocart_manage_inventory`
+- Error codes: `authorization.denied` (403)
+
+### Arguments
+
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart location create`
+
+Creates an active location with its name and, optionally, its address, phone, what it does, its priority and its pickup hours; the store's first location becomes its default.
+
+```sh
+wp seocart location create --name=<name> [--address=<json>] [--phone=<phone>] [--fulfils_online] [--offers_pickup] [--pickup_ready_in=<pickup_ready_in>] [--pickup_instructions=<pickup_instructions>] [--priority=<priority>] [--hours=<json>] [--format=<format>]
+```
+
+- Operation: `inventory.create_location`
+- Capability: `seocart_manage_settings`
+- Error codes: `stock.location_invalid` (400), `authorization.denied` (403), `store.unavailable` (503)
+
+### Arguments
+
+- `--name=<name>`: The name the merchant gives the location, such as Main warehouse; not blank. Text of at most 100 characters.
+- `[--address=<json>]`: Where the location is; given, it replaces the whole address. It is public: it appears on customer-facing documents, such as pickup confirmations, packing slips and shipping labels. An object with `country`, `line1`, `line2`, `city`, `region`, `postcode`.
+- `[--phone=<phone>]`: The location's phone number for the merchant's staff; on a change, an empty text removes it. It is personal data, shown only to a user who may see personal data. Text of at most 32 characters. Personal data.
+- `[--fulfils_online]`: Whether the location ships online orders; a new location does unless told otherwise. True or false.
+- `[--offers_pickup]`: Whether shoppers may collect orders at the location; a new location does not unless told otherwise. True or false.
+- `[--pickup_ready_in=<pickup_ready_in>]`: How soon a pickup order is usually ready: one of 1h, 2h, next_business_day, 2_4_days. One of `1h`, `2h`, `next_business_day`, `2_4_days`.
+- `[--pickup_instructions=<pickup_instructions>]`: What a shopper collecting an order is told, such as where to go; it may run over several lines, and on a change an empty text removes it. Text of at most 1000 characters.
+- `[--priority=<priority>]`: Where the location stands when an order is routed: the lowest number is tried first, and locations of the same number in the order they were created; a new location has 0 unless told otherwise. An integer from 0 to 1000000.
+- `[--hours=<json>]`: The days the location is open for pickup, each day once; given, they replace the location's hours, and a day not listed is closed. A list of 0 to 7 objects, each with `weekday`, `opens_at`, `closes_at`.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart location update`
+
+Changes the fields of a location the request gives and keeps the others: it can also deactivate or activate the location, make it the store's default, or replace its pickup hours.
+
+```sh
+wp seocart location update <location_uuid> [--name=<name>] [--active] [--is_default] [--address=<json>] [--phone=<phone>] [--fulfils_online] [--offers_pickup] [--pickup_ready_in=<pickup_ready_in>] [--pickup_instructions=<pickup_instructions>] [--priority=<priority>] [--hours=<json>] [--format=<format>]
+```
+
+- Operation: `inventory.update_location`
+- Capability: `seocart_manage_settings`
+- Error codes: `stock.location_missing` (404), `stock.location_invalid` (400), `stock.location_inactive` (409), `stock.location_is_default` (409), `authorization.denied` (403), `store.unavailable` (503)
+
+### Arguments
+
+- `<location_uuid>`: The location to change. A uuid.
+- `[--name=<name>]`: The name the merchant gives the location, such as Main warehouse; not blank. Text of at most 100 characters.
+- `[--active]`: Whether orders may be routed to the location. Turning it off deactivates it, as the deactivation does; the default location stays active. True or false.
+- `[--is_default]`: True makes the location the store's default, the one an adjustment or an order that names no location uses, in place of the location that is the default now; only an active location can become it, and the default stops being it only when another location becomes it. True or false.
+- `[--address=<json>]`: Where the location is; given, it replaces the whole address. It is public: it appears on customer-facing documents, such as pickup confirmations, packing slips and shipping labels. An object with `country`, `line1`, `line2`, `city`, `region`, `postcode`.
+- `[--phone=<phone>]`: The location's phone number for the merchant's staff; on a change, an empty text removes it. It is personal data, shown only to a user who may see personal data. Text of at most 32 characters. Personal data.
+- `[--fulfils_online]`: Whether the location ships online orders; a new location does unless told otherwise. True or false.
+- `[--offers_pickup]`: Whether shoppers may collect orders at the location; a new location does not unless told otherwise. True or false.
+- `[--pickup_ready_in=<pickup_ready_in>]`: How soon a pickup order is usually ready: one of 1h, 2h, next_business_day, 2_4_days. One of `1h`, `2h`, `next_business_day`, `2_4_days`.
+- `[--pickup_instructions=<pickup_instructions>]`: What a shopper collecting an order is told, such as where to go; it may run over several lines, and on a change an empty text removes it. Text of at most 1000 characters.
+- `[--priority=<priority>]`: Where the location stands when an order is routed: the lowest number is tried first, and locations of the same number in the order they were created; a new location has 0 unless told otherwise. An integer from 0 to 1000000.
+- `[--hours=<json>]`: The days the location is open for pickup, each day once; given, they replace the location's hours, and a day not listed is closed. A list of 0 to 7 objects, each with `weekday`, `opens_at`, `closes_at`.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart location deactivate`
+
+Deactivates a location: from now on no order is routed to it and its units are for sale nowhere, while its stock stays where it is; the default location cannot be deactivated.
+
+```sh
+wp seocart location deactivate <location_uuid> [--format=<format>]
+```
+
+- Operation: `inventory.deactivate_location`
+- Capability: `seocart_manage_settings`
+- Error codes: `stock.location_missing` (404), `stock.location_is_default` (409), `authorization.denied` (403), `store.unavailable` (503)
+
+### Arguments
+
+- `<location_uuid>`: The location to deactivate. A uuid.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart location delete`
+
+Deletes a location nothing refers to yet, with its stock items that count nothing; a location with stock history, stock, holds, allocations or transfers is kept, and so is the default location.
+
+```sh
+wp seocart location delete <location_uuid> [--format=<format>]
+```
+
+- Operation: `inventory.delete_location`
+- Capability: `seocart_manage_settings`
+- Error codes: `stock.location_missing` (404), `stock.location_in_use` (409), `authorization.denied` (403), `store.unavailable` (503)
+
+### Arguments
+
+- `<location_uuid>`: The location to delete. A uuid.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart stock list`
+
+Lists the stock of up to 200 variants: each one's stock policy, its units at every active location and at any inactive one that still has a stock item, and its units for sale.
+
+```sh
+wp seocart stock list --variant_ids=<variant_ids> [--format=<format>]
+```
+
+- Operation: `inventory.list_stock`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.variant_ids_invalid` (400), `authorization.denied` (403)
+
+### Arguments
+
+- `--variant_ids=<variant_ids>`: The variants, by id: from 1 to 200 whole numbers above 0, separated by commas, such as 12,15,20. A variant with no stock is left out of the answer. Text of at most 4400 characters.
 - `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
 
 ## `wp seocart order refund`
