@@ -739,6 +739,13 @@ if [ -n "$old_zip" ]; then
 	create_a_product_with_stock
 	assert_the_store_has_its_rows
 	buy_and_check
+
+	# Settle the store before its snapshot: the work the earlier version queued (its outbox, its
+	# jobs) runs under that version, so the comparison sees a store at rest on both sides. Left
+	# queued, that work would run under this version after the upgrade, and whatever this version
+	# derives from it (a summary, a projection) would read as a change the upgrade made.
+	step 'running the jobs the earlier version queued'
+	site_wp seocart jobs run
 	product_before=$(product_snapshot)
 	data_before=$(table_checksums "$upgrade_skipped")
 	migrations_before=$(migration_rows)
