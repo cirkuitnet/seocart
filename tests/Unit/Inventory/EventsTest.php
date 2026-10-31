@@ -17,6 +17,9 @@ use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Domain\Event\StockHoldExpired;
 use SEOCart\Inventory\Domain\Event\StockReservationReleased;
 use SEOCart\Inventory\Domain\Event\StockReserved;
+use SEOCart\Inventory\Domain\Event\StockTransferred;
+use SEOCart\Inventory\Domain\Event\StockTransferRequested;
+use SEOCart\Inventory\Domain\Event\StockTransferShort;
 use SEOCart\Inventory\Domain\StockLines;
 use SEOCart\Platform\Events\EventCatalog;
 use SEOCart\Platform\Kernel\Modules;
@@ -61,6 +64,10 @@ final class EventsTest extends TestCase {
 			'StockAdjusted, before locations'    => array( new StockAdjusted( 7, null, -3, 2, -1, null, null, 'damaged', 'user', 5, 41, $at ) ),
 			'StockHoldExpired, before locations' => array( new StockHoldExpired( '018f4e2a-7b3c-7d1e-9a2b-3c4d5e6f7a8b', 7, null, 2, '2026-09-24 09:55:00', $at ) ),
 			'StockReserved, before locations'    => array( new StockReserved( '018f4e2a-7b3c-7d1e-9a2b-3c4d5e6f7a8b', 3, null, array( 7, 9 ), array( 2, 1 ), array(), array(), array(), '2026-09-24 10:15:00', $at ) ),
+			'StockTransferred, sent'             => array( new StockTransferred( 12, 2, 1, StockTransferred::SENT, array( 7, 9 ), array( 3, 1 ), $at ) ),
+			'StockTransferred, received'         => array( new StockTransferred( 12, 2, 1, StockTransferred::RECEIVED, array( 7 ), array( 2 ), $at ) ),
+			'StockTransferRequested'             => array( new StockTransferRequested( 13, 31, 2, 1, array( 7 ), array( 3 ), $at ) ),
+			'StockTransferShort'                 => array( new StockTransferShort( 31, 12, 120, 7, 1, $at ) ),
 		);
 	}
 
@@ -90,7 +97,13 @@ final class EventsTest extends TestCase {
 		$at = new \DateTimeImmutable( '2026-09-24 10:00:00', new \DateTimeZone( 'UTC' ) );
 
 		foreach ( self::events() as $name => $example ) {
-			$event   = $example[0];
+			$event = $example[0];
+
+			// A transfer's events name their locations from the first, so no earlier payload of them exists.
+			if ( in_array( get_class( $event ), array( StockTransferred::class, StockTransferRequested::class, StockTransferShort::class ), true ) ) {
+				continue;
+			}
+
 			$earlier = array_diff_key( $event->toPayload(), array_flip( self::locationKeys() ) );
 			$read    = $event::fromPayload( $earlier, $at, 1 );
 			$named   = array_values( array_intersect_key( $read->toPayload(), array_flip( self::locationKeys() ) ) );
@@ -260,7 +273,7 @@ final class EventsTest extends TestCase {
 		$this->assertSame( 1, $event::payloadVersion() );
 		$this->assertTrue( $class->hasConstant( 'AGGREGATE' ) );
 		$this->assertSame( $class->getConstant( 'AGGREGATE' ), $event->aggregateType() );
-		$this->assertContains( $event->aggregateType(), array( 'variant', 'order' ), 'A stock event happens to an item, or to the order it allocates to.' );
+		$this->assertContains( $event->aggregateType(), array( 'variant', 'order', 'transfer' ), 'A stock event happens to an item, to the order it allocates to, or to a transfer.' );
 		$this->assertStringContainsString( 'Fires ', (string) $class->getDocComment() );
 	}
 
@@ -272,7 +285,7 @@ final class EventsTest extends TestCase {
 	public function test_the_catalog_lists_them_and_the_publisher_accepts_them(): void {
 		$catalog = new EventCatalog( Modules::EVENT_CLASSES );
 
-		foreach ( array( StockAdjusted::class, StockAllocated::class, StockHoldExpired::class, StockReserved::class, StockReservationReleased::class ) as $class ) {
+		foreach ( array( StockAdjusted::class, StockAllocated::class, StockHoldExpired::class, StockReserved::class, StockReservationReleased::class, StockTransferred::class, StockTransferRequested::class, StockTransferShort::class ) as $class ) {
 			$this->assertSame( $class::eventName(), $catalog->nameOf( $class ) );
 		}
 
@@ -287,6 +300,33 @@ final class EventsTest extends TestCase {
 		);
 
 		$this->assertCount( count( $events ), $publisher->published() );
+	}
+
+	/**
+	 * Tests that a transfer's events refuse what they cannot mean: a phase other than sent or received, no variant, a variant twice, and a shortage of no unit.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_transfer_events_refuse_what_they_cannot_mean(): void {
+		$at      = new \DateTimeImmutable( '2026-10-25 10:00:00', new \DateTimeZone( 'UTC' ) );
+		$refused = 0;
+
+		foreach (
+			array(
+				static fn(): object => new StockTransferred( 1, 2, 3, 'lost', array( 7 ), array( 1 ), $at ),
+				static fn(): object => new StockTransferred( 1, 2, 3, StockTransferred::SENT, array(), array(), $at ),
+				static fn(): object => new StockTransferRequested( 1, 4, 2, 3, array( 7, 7 ), array( 1, 1 ), $at ),
+				static fn(): object => new StockTransferShort( 4, 1, 5, 7, 0, $at ),
+			) as $build
+		) {
+			try {
+				$build();
+			} catch ( \InvalidArgumentException ) {
+				++$refused;
+			}
+		}
+
+		$this->assertSame( 4, $refused );
 	}
 
 	/**

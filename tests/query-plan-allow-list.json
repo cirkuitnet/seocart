@@ -52,6 +52,26 @@
 			"id": "f6631d83dcb2",
 			"statement": "SELECT location_id, SUM( on_hand ) AS on_hand FROM {prefix}seocart_stock_items WHERE location_id IN ( ?+ ) GROUP BY location_id ORDER BY location_id",
 			"reason": "The list of locations shows each location's units on hand, so it adds up every stock item of the locations it lists by design: one range of the location_on_hand index, which holds both columns it reads, grouped by location (5499 of 10333 rows estimated on the medium dataset, nearly all at the default location). It is a merchant's list, read by the locations screen and `wp seocart location list`, never on a request a shopper makes."
+		},
+		{
+			"id": "471782b5128e",
+			"statement": "SELECT t.id, ( SELECT COALESCE( SUM( l.quantity - l.received_quantity - l.lost_quantity ), ? ) FROM {prefix}seocart_stock_transfer_lines l WHERE l.transfer_id = t.id ) AS on_the_way, ( SELECT COALESCE( SUM( m.lost_quantity ), ? ) FROM {prefix}seocart_stock_transfer_lines m WHERE m.transfer_id = t.id ) AS lost, COALESCE( g.total, ? ) AS moved FROM {prefix}seocart_stock_transfers t LEFT JOIN ( SELECT transfer_id, SUM( - delta ) AS total FROM {prefix}seocart_stock_ledger WHERE transfer_id IS NOT NULL AND reason IN ( ?+ ) GROUP BY transfer_id ) g ON g.transfer_id = t.id WHERE t.state IN ( ?+ ) HAVING on_the_way <> moved - lost ORDER BY t.id LIMIT ?",
+			"reason": "Doctor's transit check compares every sent transfer's units on the way, by its lines, with what its ledger entries moved less what was lost, so it reads every transfer in transit or received by design: MySQL by the state_created index (7206 of 12000 rows estimated on the plan run, most of whose transfers are received), MariaDB by the primary key (12012). Each transfer's lines are read by the transfer_id index, and the ledger entries that name a transfer are totalled once, by the ledger's transfer_id index. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+		},
+		{
+			"id": "573a4451a915",
+			"statement": "SELECT t.id, t.order_id FROM {prefix}seocart_stock_transfers t WHERE t.state = ? AND t.kind = ? AND EXISTS ( SELECT ? FROM {prefix}seocart_stock_transfer_lines l WHERE l.transfer_id = t.id AND l.lost_quantity > ? AND l.allocation_id IS NOT NULL ) ORDER BY t.id DESC LIMIT ?",
+			"reason": "Doctor's shortage check looks through the received transfers an order waited for, newest first, for a line that lost the order's units, so it reads them by design: MySQL starts from the received transfers, by the state_created index (6006 of 12000 rows estimated on the plan run, most of whose transfers are received), and reads each one's lines by the transfer_id index; MariaDB walks the transfers by the primary key, newest first, and reads the lines that carry an allocation by the allocation_id index (11894 of 12000 rows estimated). It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+		},
+		{
+			"id": "5a38f7e8cb65",
+			"statement": "SELECT variant_id FROM {prefix}seocart_stock_items WHERE location_id = ? AND variant_id > ? AND on_hand - allocated - held > ? ORDER BY variant_id LIMIT ?",
+			"reason": "A deactivation's move of a location's available stock finds, a page at a time from its cursor, the location's items with units to move, so each page reads the location's items by design: MySQL by the location_on_hand index (5166 of 10333 rows estimated on the medium dataset), MariaDB by the primary key from the cursor (10333). It runs in the move's background job after a merchant deactivates a location that holds stock, never on a request a shopper makes."
+		},
+		{
+			"id": "a079bbee4367",
+			"statement": "SELECT EXISTS ( SELECT ? FROM {prefix}seocart_stock_ledger WHERE location_id = ? ) AS ledger, EXISTS ( SELECT ? FROM {prefix}seocart_stock_items WHERE location_id = ? AND ( on_hand <> ? OR allocated <> ? OR held <> ? ) ) AS stock, EXISTS ( SELECT ? FROM {prefix}seocart_stock_items i JOIN {prefix}seocart_stock_holds h ON h.variant_id = i.variant_id AND h.location_id = i.location_id WHERE i.location_id = ? ) AS holds, EXISTS ( SELECT ? FROM {prefix}seocart_stock_allocations WHERE location_id = ? ) AS allocations, EXISTS ( SELECT ? FROM {prefix}seocart_stock_transfers WHERE source_location_id = ? ) AS transfers_out, EXISTS ( SELECT ? FROM {prefix}seocart_stock_transfers WHERE destination_location_id = ? ) AS transfers_in",
+			"reason": "Before a location is deleted, this check asks whether anything still names it, and each EXISTS stops at the first index entry for the location. The two over transfers are read by the source_state and destination_state indexes, whose estimate counts every transfer from or to the location (on the plan run, whose transfers are all between its two locations, 6006 of 12000 rows on MySQL and up to 10004 on MariaDB), not the one entry read. It runs when a merchant deletes a location, never on a request a shopper makes."
 		}
 	]
 }

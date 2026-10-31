@@ -12,7 +12,9 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Platform\Kernel;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Inventory\Domain\Event\StockTransferShort;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
+use SEOCart\Platform\Events\EventEnvelope;
 use SEOCart\Platform\Jobs\JobRunner;
 use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Support\Error\ErrorTable;
@@ -37,6 +39,7 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * - Call `Kernel::container()` from any other file under src/: the entry-point rule fails.
  * - Change Modules::CAPABILITY_PREFIX: it no longer equals the declaration's.
  * - Change Modules::JOB_HOOK: it no longer equals the runner's hook.
+ * - Change Modules::TRANSFER_SHORT_HOOK: it no longer equals the shortage event's action.
  *
  * @since 0.1.0
  *
@@ -93,6 +96,15 @@ final class KernelListsTest extends TestCase {
 	 */
 	public function test_the_job_hook_is_the_runners(): void {
 		$this->assertSame( JobRunner::HOOK, Modules::JOB_HOOK );
+	}
+
+	/**
+	 * Tests that the hook the kernel's listener of a transfer's shortage is added to is the action the event fires.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_shortage_listeners_hook_is_the_events_action(): void {
+		$this->assertSame( EventEnvelope::hookFor( StockTransferShort::eventName() ), Modules::TRANSFER_SHORT_HOOK );
 	}
 
 	/**

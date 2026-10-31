@@ -379,3 +379,59 @@ Fires after a checkout hold is committed, naming every variant it holds and the 
 - `locationIds` (int[]): The location of each item held, in the same order; empty for a hold recorded before locations.
 - `locationQuantities` (int[]): The units held of each item, in the same order; empty for a hold recorded before locations.
 - `expiresAt` (string): When the hold expires, UTC, `Y-m-d H:i:s`.
+
+## `seocart_stock_transfer_fell_short`
+
+Fires in the transaction of a receipt that writes off units an order's allocation travelled with, naming the order, the transfer, the line and the units lost.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `order`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_stock_transfer_fell_short', $callback, 10, 2 )`; the first argument is a `SEOCart\Inventory\Domain\Event\StockTransferShort`.
+
+### Event properties
+
+- `orderId` (int): The order left short.
+- `transferId` (int): The transfer the units were lost from.
+- `lineId` (int): The transfer's line.
+- `variantId` (int): The variant.
+- `quantity` (int): The units lost, 1 or more.
+
+## `seocart_stock_transfer_requested`
+
+Fires in the transaction that requests a transfer for an order whose units are at another location, naming every variant it is to bring and its units.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `transfer`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_stock_transfer_requested', $callback, 10, 2 )`; the first argument is a `SEOCart\Inventory\Domain\Event\StockTransferRequested`.
+
+### Event properties
+
+- `transferId` (int): The transfer requested.
+- `orderId` (int): The order that waits for it.
+- `sourceLocationId` (int): The location its units are to leave.
+- `destinationLocationId` (int): The order's location, where they are to arrive.
+- `variantIds` (int[]): The variants, ascending, each once.
+- `quantities` (int[]): The units of each, in the same order.
+
+## `seocart_stock_transferred`
+
+Fires in the transaction that sends a transfer, or receives units of it, naming every variant moved and its units.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `transfer`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_stock_transferred', $callback, 10, 2 )`; the first argument is a `SEOCart\Inventory\Domain\Event\StockTransferred`.
+
+### Event properties
+
+- `transferId` (int): The transfer.
+- `sourceLocationId` (int): The location the units left.
+- `destinationLocationId` (int): The location they go to.
+- `phase` (string): SENT or RECEIVED.
+- `variantIds` (int[]): The variants moved, ascending, each once.
+- `quantities` (int[]): The units of each, in the same order.

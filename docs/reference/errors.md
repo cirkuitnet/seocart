@@ -631,7 +631,7 @@ An internal error carries a generic message and empty details: it is a code mark
 ## `stock.delete_blocked`
 
 - HTTP status: 409
-- Message: Variant {variant_id} cannot be deleted while an order still has units of it allocated.
+- Message: Variant {variant_id} cannot be deleted while an order still has units of it allocated, or units of it are on a transfer not yet received.
 - Values: `variant_id`
 
 ## `stock.insufficient`
@@ -703,6 +703,45 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: These items cannot be sent together in the quantities asked for.
 - Values: none
 - Details: `reason`, `variant_ids`, `available`, beside the values
+
+## `stock.transfer_invalid`
+
+- HTTP status: 400
+- Message: The transfer field {field} is not valid. A note holds no control characters; a transfer has from 1 to 500 lines; a receipt names each line once and receives or loses at least one unit of it, no more than it has on the way.
+- Values: `field`
+
+## `stock.transfer_not_found`
+
+- HTTP status: 404
+- Message: Transfer {transfer_id} does not exist, or has no line of the id given.
+- Values: `transfer_id`
+- Details: `line_id`, beside the values
+
+## `stock.transfer_receipt_conflict`
+
+- HTTP status: 409
+- Message: Line {line_id}: you expected {expected} received and {expected_lost} lost so far, but it has {received_quantity} received and {lost_quantity} lost, so the receipt was not recorded. Read the transfer again, then receive what is still on the way.
+- Values: `line_id`, `expected`, `expected_lost`, `received_quantity`, `lost_quantity`
+
+## `stock.transfer_refused`
+
+- HTTP status: 409
+- Message: The transfer cannot be sent: variant {variant_id} needs {requested} units at its source, which can send {available}. Lower the line, or wait for the units.
+- Values: `variant_id`, `requested`, `available`
+- Details: `location_id`, beside the values
+
+## `stock.transfer_same_location`
+
+- HTTP status: 400
+- Message: Location {location_id} cannot be both where the units leave and where they arrive.
+- Values: `location_id`
+
+## `stock.transfer_state`
+
+- HTTP status: 409
+- Message: Transfer {transfer_id} is {state}, so it cannot be changed that way.
+- Values: `transfer_id`, `state`
+- Details: `reason`, beside the values
 
 ## `stock.variant_ids_invalid`
 

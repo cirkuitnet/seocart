@@ -70,6 +70,18 @@ final class FakeLocationRepository implements LocationRepository {
 	}
 
 	/**
+	 * Reads the one location, when a uuid is its own.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string[] $uuids The uuids.
+	 * @return array<string, Location> The location, by uuid, or nothing.
+	 */
+	public function lockShared( array $uuids ): array {
+		return in_array( self::UUID, array_map( 'strtolower', $uuids ), true ) ? array( self::UUID => $this->all()[0] ) : array();
+	}
+
+	/**
 	 * Reads the one location's record, when the uuid is its own.
 	 *
 	 * @since 0.2.0

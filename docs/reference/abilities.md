@@ -129,17 +129,18 @@ Changes the fields of a location the request gives and keeps the others: it can 
 
 ## `seocart/deactivate-location`
 
-Deactivates a location: from now on no order is routed to it and its units are for sale nowhere, while its stock stays where it is; the default location cannot be deactivated.
+Deactivates a location: from now on no order is routed to it and its units are for sale nowhere, while its stock stays where it is, or its available units move to another location as one transfer; the default location cannot be deactivated.
 
 - Operation: `inventory.deactivate_location`
 - Capability: `seocart_manage_settings`
-- Error codes: `stock.location_missing` (404), `stock.location_is_default` (409), `authorization.denied` (403), `store.unavailable` (503)
+- Error codes: `stock.location_missing` (404), `stock.location_is_default` (409), `stock.location_inactive` (409), `stock.transfer_same_location` (400), `stock.transfer_state` (409), `authorization.denied` (403), `store.unavailable` (503)
 - Annotations: readonly `false`, destructive `true`, idempotent `true`
 - Exposed to agents: no
 
 ### Input
 
 - `location_uuid` (required): The location to deactivate. A uuid.
+- `move_stock_to`: An active location to move the deactivated location's available units to, as one transfer worked in the background; units promised to orders or held by checkouts stay. Moving stock also needs the capability that manages inventory. Repeated with the same location, the deactivation answers the same transfer. Turning the location on again ends the move, the units moved so far staying where they arrived. A uuid.
 
 ### Output
 
@@ -155,6 +156,7 @@ Deactivates a location: from now on no order is routed to it and its units are f
 - `pickup_instructions` (always): What a shopper collecting an order is told, such as where to go, or null for nothing. Text of at most 1000 characters. May be null.
 - `priority` (always): Where the location stands when an order is routed: the lowest number is tried first, and locations of the same number in the order they were created; a new location has 0 unless told otherwise. An integer from 0 to 1000000.
 - `hours` (always): The days the location is open for pickup, by day; a day not listed is closed. A list of 0 to 7 objects, each with `weekday`, `opens_at`, `closes_at`.
+- `move_transfer_uuid` (always): The transfer that moves the location's available units, or null when no move was asked for. A uuid. May be null.
 
 ## `seocart/delete-location`
 
@@ -192,6 +194,206 @@ Lists the stock of up to 200 variants: each one's stock policy, its units at eve
 ### Output
 
 - `variants` (always): The variants that have stock, by ascending id. A list of objects, each with `variant_id`, `track`, `backorder_policy`, `low_stock_threshold`, `for_sale`, `locations`.
+
+## `seocart/list-transfers`
+
+Lists a page of stock transfers, newest first, each with its lines summed up, filtered by state, by a location they leave or arrive at, or by the order they serve.
+
+- Operation: `inventory.list_transfers`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.location_missing` (404), `authorization.denied` (403)
+- Annotations: readonly `true`, destructive `false`, idempotent `true`
+- Exposed to agents: yes
+
+### Input
+
+- `state`: Only transfers in this state. One of `draft`, `requested`, `in_transit`, `received`, `cancelled`.
+- `location_uuid`: Only transfers that leave this location or arrive at it. A uuid.
+- `order_id`: Only transfers this order waits for. An integer of at least 1.
+- `page`: Which page of the list, from 1 to 1000000. An integer from 1 to 1000000. Default `1`.
+- `per_page`: How many transfers a page holds, from 1 to 100. An integer from 1 to 100. Default `20`.
+
+### Output
+
+- `transfers` (always): The page of transfers, newest first. A list of objects, each with `transfer_uuid`, `kind`, `state`, `source_location_uuid`, `destination_location_uuid`, `order_id`, `note`, `created_at`, `sent_at`, `received_at`, `lines`, `sent`, `received`, `lost`.
+- `page` (always): The page answered. An integer.
+- `per_page` (always): How many transfers a page holds. An integer.
+- `has_more` (always): Whether a next page has transfers; no total is counted. True or false.
+
+## `seocart/get-transfer`
+
+Returns one stock transfer with its lines: what each sends, what was received and lost, what is on the way, and whether it carries an order's units.
+
+- Operation: `inventory.get_transfer`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.transfer_not_found` (404), `authorization.denied` (403)
+- Annotations: readonly `true`, destructive `false`, idempotent `true`
+- Exposed to agents: yes
+
+### Input
+
+- `transfer_uuid` (required): The transfer. A uuid.
+
+### Output
+
+- `transfer_uuid` (always): The transfer's public identifier. A uuid.
+- `kind` (always): Who started the transfer: manual for a merchant's, order for one an order waits for, deactivation for the move of a deactivated location's stock. One of `manual`, `order`, `deactivation`.
+- `state` (always): Where the transfer stands: draft, requested, in_transit, received or cancelled. One of `draft`, `requested`, `in_transit`, `received`, `cancelled`.
+- `source_location_uuid` (always): The location the units leave, or null when it no longer exists. A uuid. May be null.
+- `destination_location_uuid` (always): The location the units arrive at, or null when it no longer exists. A uuid. May be null.
+- `order_id` (always): The order the transfer brings units to, for one of kind order; null otherwise. An integer. May be null.
+- `note` (always): The merchant's note on the transfer, such as a tracking number, or null for none. Text of at most 1000 characters. May be null.
+- `created_at` (always): When the transfer was created, UTC, in ISO 8601 to the microsecond, by the database clock. Text.
+- `sent_at` (always): When its units left the source, UTC, in ISO 8601 to the microsecond; null until it is sent. Text. May be null.
+- `received_at` (always): When its last units were received or written off, UTC, in ISO 8601 to the microsecond; null until then. Text. May be null.
+- `lines` (always): The transfer's lines, by ascending variant. A list of objects, each with `line_id`, `variant_id`, `quantity`, `received_quantity`, `lost_quantity`, `in_transit`, `allocated`.
+
+## `seocart/create-transfer`
+
+Creates a draft transfer of units from one location to another: it promises nothing, may name more units than the source has, and claims them only when it is sent.
+
+- Operation: `inventory.create_transfer`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.transfer_same_location` (400), `stock.location_missing` (404), `stock.location_inactive` (409), `stock.item_missing` (404), `stock.transfer_invalid` (400), `authorization.denied` (403), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `false`, idempotent `false`
+- Exposed to agents: no
+
+### Input
+
+- `source_location_uuid` (required): The location the units leave; it may be deactivated, so its stock can be moved away. A uuid.
+- `destination_location_uuid` (required): The active location the units arrive at, not the source. A uuid.
+- `lines` (required): The units to send of each variant, from 1 to 500 lines; lines of one variant are added together. A list of 1 to 500 objects, each with `variant_id`, `quantity`.
+- `note`: A note on the transfer, such as why it is made; it may run over several lines. Text of at most 1000 characters.
+
+### Output
+
+- `transfer_uuid` (always): The transfer's public identifier. A uuid.
+- `kind` (always): Who started the transfer: manual for a merchant's, order for one an order waits for, deactivation for the move of a deactivated location's stock. One of `manual`, `order`, `deactivation`.
+- `state` (always): Where the transfer stands: draft, requested, in_transit, received or cancelled. One of `draft`, `requested`, `in_transit`, `received`, `cancelled`.
+- `source_location_uuid` (always): The location the units leave, or null when it no longer exists. A uuid. May be null.
+- `destination_location_uuid` (always): The location the units arrive at, or null when it no longer exists. A uuid. May be null.
+- `order_id` (always): The order the transfer brings units to, for one of kind order; null otherwise. An integer. May be null.
+- `note` (always): The merchant's note on the transfer, such as a tracking number, or null for none. Text of at most 1000 characters. May be null.
+- `created_at` (always): When the transfer was created, UTC, in ISO 8601 to the microsecond, by the database clock. Text.
+- `sent_at` (always): When its units left the source, UTC, in ISO 8601 to the microsecond; null until it is sent. Text. May be null.
+- `received_at` (always): When its last units were received or written off, UTC, in ISO 8601 to the microsecond; null until then. Text. May be null.
+- `lines` (always): The transfer's lines, by ascending variant. A list of objects, each with `line_id`, `variant_id`, `quantity`, `received_quantity`, `lost_quantity`, `in_transit`, `allocated`.
+
+## `seocart/update-transfer`
+
+Changes the note or the lines of a draft or requested transfer, the fields the request gives only: lines given replace the lines that carry no order's units, which are kept as they are.
+
+- Operation: `inventory.update_transfer`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.transfer_not_found` (404), `stock.transfer_state` (409), `stock.item_missing` (404), `stock.transfer_invalid` (400), `authorization.denied` (403), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `false`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+- `transfer_uuid` (required): The transfer to change. A uuid.
+- `lines`: The units to send of each variant; given, they replace the lines that carry no order's units, and the transfer keeps from 1 to 500 lines. A list of 0 to 500 objects, each with `variant_id`, `quantity`.
+- `note`: The note on the transfer; an empty text removes it. Text of at most 1000 characters.
+
+### Output
+
+- `transfer_uuid` (always): The transfer's public identifier. A uuid.
+- `kind` (always): Who started the transfer: manual for a merchant's, order for one an order waits for, deactivation for the move of a deactivated location's stock. One of `manual`, `order`, `deactivation`.
+- `state` (always): Where the transfer stands: draft, requested, in_transit, received or cancelled. One of `draft`, `requested`, `in_transit`, `received`, `cancelled`.
+- `source_location_uuid` (always): The location the units leave, or null when it no longer exists. A uuid. May be null.
+- `destination_location_uuid` (always): The location the units arrive at, or null when it no longer exists. A uuid. May be null.
+- `order_id` (always): The order the transfer brings units to, for one of kind order; null otherwise. An integer. May be null.
+- `note` (always): The merchant's note on the transfer, such as a tracking number, or null for none. Text of at most 1000 characters. May be null.
+- `created_at` (always): When the transfer was created, UTC, in ISO 8601 to the microsecond, by the database clock. Text.
+- `sent_at` (always): When its units left the source, UTC, in ISO 8601 to the microsecond; null until it is sent. Text. May be null.
+- `received_at` (always): When its last units were received or written off, UTC, in ISO 8601 to the microsecond; null until then. Text. May be null.
+- `lines` (always): The transfer's lines, by ascending variant. A list of objects, each with `line_id`, `variant_id`, `quantity`, `received_quantity`, `lost_quantity`, `in_transit`, `allocated`.
+
+## `seocart/send-transfer`
+
+Sends a draft or requested transfer: every line's units leave the source at once, or, when one line's are not there, none do; until they are received they are on the way, in no location's stock.
+
+- Operation: `inventory.send_transfer`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.transfer_not_found` (404), `stock.transfer_state` (409), `stock.transfer_refused` (409), `stock.transfer_invalid` (400), `authorization.denied` (403), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `true`, idempotent `false`
+- Exposed to agents: no
+
+### Input
+
+- `transfer_uuid` (required): The transfer to send. A uuid.
+- `note`: A note to keep with the parcel, such as its tracking number; given, it replaces the transfer's note. Text of at most 1000 characters.
+
+### Output
+
+- `transfer_uuid` (always): The transfer's public identifier. A uuid.
+- `kind` (always): Who started the transfer: manual for a merchant's, order for one an order waits for, deactivation for the move of a deactivated location's stock. One of `manual`, `order`, `deactivation`.
+- `state` (always): Where the transfer stands: draft, requested, in_transit, received or cancelled. One of `draft`, `requested`, `in_transit`, `received`, `cancelled`.
+- `source_location_uuid` (always): The location the units leave, or null when it no longer exists. A uuid. May be null.
+- `destination_location_uuid` (always): The location the units arrive at, or null when it no longer exists. A uuid. May be null.
+- `order_id` (always): The order the transfer brings units to, for one of kind order; null otherwise. An integer. May be null.
+- `note` (always): The merchant's note on the transfer, such as a tracking number, or null for none. Text of at most 1000 characters. May be null.
+- `created_at` (always): When the transfer was created, UTC, in ISO 8601 to the microsecond, by the database clock. Text.
+- `sent_at` (always): When its units left the source, UTC, in ISO 8601 to the microsecond; null until it is sent. Text. May be null.
+- `received_at` (always): When its last units were received or written off, UTC, in ISO 8601 to the microsecond; null until then. Text. May be null.
+- `lines` (always): The transfer's lines, by ascending variant. A list of objects, each with `line_id`, `variant_id`, `quantity`, `received_quantity`, `lost_quantity`, `in_transit`, `allocated`.
+
+## `seocart/receive-transfer`
+
+Receives units of a transfer in transit at its destination, line by line, and writes off units lost on the way; the transfer is received once every line's units are received or lost.
+
+- Operation: `inventory.receive_transfer`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.transfer_not_found` (404), `stock.transfer_state` (409), `stock.transfer_receipt_conflict` (409), `stock.transfer_invalid` (400), `stock.item_missing` (404), `stock.location_missing` (404), `authorization.denied` (403), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `true`, idempotent `false`
+- Exposed to agents: no
+
+### Input
+
+- `transfer_uuid` (required): The transfer received. A uuid.
+- `lines` (required): What arrived of each line, each line once: the units received and lost now, at least one of them, and the units the client last read as received and as lost, so a receipt repeated after a lost answer is refused rather than recorded twice. A list of 1 to 500 objects, each with `line_id`, `received`, `lost`, `expected_received_quantity`, `expected_lost_quantity`.
+
+### Output
+
+- `transfer_uuid` (always): The transfer's public identifier. A uuid.
+- `kind` (always): Who started the transfer: manual for a merchant's, order for one an order waits for, deactivation for the move of a deactivated location's stock. One of `manual`, `order`, `deactivation`.
+- `state` (always): Where the transfer stands: draft, requested, in_transit, received or cancelled. One of `draft`, `requested`, `in_transit`, `received`, `cancelled`.
+- `source_location_uuid` (always): The location the units leave, or null when it no longer exists. A uuid. May be null.
+- `destination_location_uuid` (always): The location the units arrive at, or null when it no longer exists. A uuid. May be null.
+- `order_id` (always): The order the transfer brings units to, for one of kind order; null otherwise. An integer. May be null.
+- `note` (always): The merchant's note on the transfer, such as a tracking number, or null for none. Text of at most 1000 characters. May be null.
+- `created_at` (always): When the transfer was created, UTC, in ISO 8601 to the microsecond, by the database clock. Text.
+- `sent_at` (always): When its units left the source, UTC, in ISO 8601 to the microsecond; null until it is sent. Text. May be null.
+- `received_at` (always): When its last units were received or written off, UTC, in ISO 8601 to the microsecond; null until then. Text. May be null.
+- `lines` (always): The transfer's lines, by ascending variant. A list of objects, each with `line_id`, `variant_id`, `quantity`, `received_quantity`, `lost_quantity`, `in_transit`, `allocated`.
+
+## `seocart/cancel-transfer`
+
+Cancels a draft, or a requested transfer that carries no order's units; a transfer in transit is received or written off instead, never cancelled.
+
+- Operation: `inventory.cancel_transfer`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.transfer_not_found` (404), `stock.transfer_state` (409), `authorization.denied` (403), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `true`, idempotent `false`
+- Exposed to agents: no
+
+### Input
+
+- `transfer_uuid` (required): The transfer to cancel. A uuid.
+
+### Output
+
+- `transfer_uuid` (always): The transfer's public identifier. A uuid.
+- `kind` (always): Who started the transfer: manual for a merchant's, order for one an order waits for, deactivation for the move of a deactivated location's stock. One of `manual`, `order`, `deactivation`.
+- `state` (always): Where the transfer stands: draft, requested, in_transit, received or cancelled. One of `draft`, `requested`, `in_transit`, `received`, `cancelled`.
+- `source_location_uuid` (always): The location the units leave, or null when it no longer exists. A uuid. May be null.
+- `destination_location_uuid` (always): The location the units arrive at, or null when it no longer exists. A uuid. May be null.
+- `order_id` (always): The order the transfer brings units to, for one of kind order; null otherwise. An integer. May be null.
+- `note` (always): The merchant's note on the transfer, such as a tracking number, or null for none. Text of at most 1000 characters. May be null.
+- `created_at` (always): When the transfer was created, UTC, in ISO 8601 to the microsecond, by the database clock. Text.
+- `sent_at` (always): When its units left the source, UTC, in ISO 8601 to the microsecond; null until it is sent. Text. May be null.
+- `received_at` (always): When its last units were received or written off, UTC, in ISO 8601 to the microsecond; null until then. Text. May be null.
+- `lines` (always): The transfer's lines, by ascending variant. A list of objects, each with `line_id`, `variant_id`, `quantity`, `received_quantity`, `lost_quantity`, `in_transit`, `allocated`.
 
 ## `seocart/refund-order`
 

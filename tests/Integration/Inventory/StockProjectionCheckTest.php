@@ -44,10 +44,13 @@ use SEOCart\Tests\Support\Inventory\StockTestCase;
 final class StockProjectionCheckTest extends StockTestCase {
 
 	/**
-	 * Tests that a consistent store passes, with stock at two locations, holds live and expired, an allocation in transit, a shortfall and a deleted variant; the default location's missing address is noted.
+	 * Tests that a consistent store passes, with stock at two locations, holds live and expired, a shortfall and a deleted variant; the default location's missing address is noted.
+	 *
+	 * An allocation in transit is consistent only with the transfer line that carries it: the
+	 * transfer tests show the doctor passing a store with one.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 Two locations, an allocation in transit, and the note.
+	 * @since 0.2.0 Two locations, and the note.
 	 */
 	public function test_a_consistent_store_passes(): void {
 		$first   = self::variant();
@@ -62,7 +65,6 @@ final class StockProjectionCheckTest extends StockTestCase {
 		$this->service->hold( array( new HoldLine( $first, 1 ), new HoldLine( $second, 2 ), new HoldLine( $first, 1, $other ) ), 600 );
 		$this->plantHold( $first, 1, -60 );
 		$this->service->adjust( $second, $this->defaultLocation, -1, LedgerReason::Recount, Actor::user( 1 ) );
-		$this->plantAllocation( $first, $other, 2, 'in_transit' );
 		$this->db->transaction( fn() => $this->service->deleteVariants( array( $deleted ), Actor::user( 1 ) ) );
 
 		$result = $this->projectionCheck();
@@ -277,6 +279,32 @@ final class StockProjectionCheckTest extends StockTestCase {
 	}
 
 	/**
+	 * Tests that a hold at a location that no longer exists is named critical, and that the repair, which recreates only items at a location that exists, leaves it for a person.
+	 *
+	 * Planted violation, shown red and removed: in StockProjectionCheck::drift(), leave out the
+	 * hold rows whose item is gone: the hold at the vanished location is no longer named.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_hold_at_a_vanished_location_is_named_and_left_for_a_person(): void {
+		$variant = self::variant();
+		$gone    = 999000 + $variant;
+		$b       = $this->secondConnection();
+
+		$this->stockItem( $variant, 2 );
+
+		$hold = $this->plantHold( $variant, 1, 900, null, $gone );
+
+		$pattern = sprintf( '/^Critical: hold %s holds 1 unit of variant %d at location %d, which no longer exists, so nothing can give it back\.$/', preg_quote( $hold, '/' ), $variant, $gone );
+
+		$this->assertFindings( array( $pattern, '/^Warning: the default location, \d+, has no address yet\./' ), $this->projectionCheck()->findings );
+		$this->assertSame( array(), $this->stockCheck()->repair()->changes, 'The repair recreates no item at a location that is gone.' );
+		$this->assertSame( array( $hold . ':1' ), $this->committedHolds( $b, $variant ), 'The hold is left for a person.' );
+		$this->assertNull( $this->committedItem( $b, $variant, $gone ) );
+		$this->assertFindings( array( $pattern, '/^Warning: the default location, \d+, has no address yet\./' ), $this->projectionCheck()->findings );
+	}
+
+	/**
 	 * Tests that the repair of a hold whose item is gone leaves an item someone created meanwhile, and its holds, as they are.
 	 *
 	 * A second connection creates the item, at zero, right before the repair recreates it: the
@@ -396,22 +424,20 @@ final class StockProjectionCheckTest extends StockTestCase {
 	 * Inserts an allocation of a number of units at a location, committed.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The location and the state.
+	 * @since 0.2.0 The location.
 	 *
-	 * @param int    $variantId  The variant.
-	 * @param int    $locationId The location.
-	 * @param int    $quantity   The units.
-	 * @param string $state      Optional. The state. Default `open`.
+	 * @param int $variantId  The variant.
+	 * @param int $locationId The location.
+	 * @param int $quantity   The units.
 	 */
-	private function plantAllocation( int $variantId, int $locationId, int $quantity, string $state = 'open' ): void {
+	private function plantAllocation( int $variantId, int $locationId, int $quantity ): void {
 		$this->db->execute(
-			'INSERT INTO %i ( variant_id, location_id, order_id, order_line_id, quantity, state, created_at ) VALUES ( %d, %d, 1, %d, %d, %s, UTC_TIMESTAMP(6) )',
+			"INSERT INTO %i ( variant_id, location_id, order_id, order_line_id, quantity, state, created_at ) VALUES ( %d, %d, 1, %d, %d, 'open', UTC_TIMESTAMP(6) )",
 			$this->table( InventoryTables::ALLOCATIONS ),
 			$variantId,
 			$locationId,
 			$variantId * 10 + $locationId,
-			$quantity,
-			$state
+			$quantity
 		);
 	}
 }

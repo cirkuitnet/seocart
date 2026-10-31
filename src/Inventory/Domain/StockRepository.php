@@ -41,6 +41,13 @@ defined( 'ABSPATH' ) || exit;
  * the order was being paid for, every claim still carries its invariant, and a deadlock it causes
  * is rolled back whole and run again by the deadlock retry policy, as any other is.
  *
+ * A second exception, by design: an allocation travelling with a transfer, `in_transit`, counts
+ * at no item, so it is written (set, shrunk, deleted or cancelled) under its transfer's row lock,
+ * which every writer of a transfer's allocations takes first, not under an item's. The units it
+ * leaves and joins are each moved by a statement that holds that item's lock. A transfer's row
+ * comes before every item in the lock order, and the order's row, where a caller holds it,
+ * before the transfer's.
+ *
  * The rule guarantees correctness, not freedom from deadlocks, so the service runs every unit of
  * work that writes these tables at READ COMMITTED. Under REPEATABLE READ, InnoDB also takes gap
  * locks on the `stock_holds` indexes: the give-back's subqueries and the delete lock the gaps
@@ -392,11 +399,12 @@ interface StockRepository {
 	 * @param string       $actorType     `user` or `system`.
 	 * @param int|null     $actorId       The user on whose authority it happened, or null.
 	 * @param string|null  $correlationId The request's correlation id.
+	 * @param int|null     $transferId    Optional. The transfer the movement belongs to. Default null, none.
 	 * @return int The entry's id.
 	 *
 	 * @phpstan-impure
 	 */
-	public function appendLedger( int $variantId, int $locationId, int $delta, int $onHandAfter, LedgerReason $reason, string $actorType, ?int $actorId, ?string $correlationId ): int;
+	public function appendLedger( int $variantId, int $locationId, int $delta, int $onHandAfter, LedgerReason $reason, string $actorType, ?int $actorId, ?string $correlationId, ?int $transferId = null ): int;
 
 	/**
 	 * Reads variants' levels at the default location, with their policies. A plain read: it locks nothing, and inside a transaction it may see that transaction's snapshot.
@@ -519,15 +527,15 @@ interface StockRepository {
 	public function createItems( array $variantIds, int $locationId ): array;
 
 	/**
-	 * Tells whether a variant has an open allocation at any location, with a locking read.
+	 * Tells whether a variant has an allocation open, or travelling with a transfer, at any location, with a locking read.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 At any location.
+	 * @since 0.2.0 At any location, and in transit.
 	 *
 	 * @throws \LogicException When called outside a transaction.
 	 *
 	 * @param int $variantId The variant.
-	 * @return bool True when one is open.
+	 * @return bool True when one is open or in transit.
 	 *
 	 * @phpstan-impure
 	 */
@@ -600,4 +608,220 @@ interface StockRepository {
 	 * @return bool True when it holds one.
 	 */
 	public function hasAllocationsFor( int $orderId ): bool;
+
+	/**
+	 * Tells whether any line of a variant is on a transfer requested or in transit, with a locking read of the lines and their transfers.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $variantId The variant.
+	 * @return bool True when one is.
+	 *
+	 * @phpstan-impure
+	 */
+	public function hasTransferInFlight( int $variantId ): bool;
+
+	/**
+	 * Takes units an order's allocation holds at an item off its on_hand and its `allocated` together, as they leave on a transfer.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location: the transfer's source.
+	 * @param int $quantity   The units, 1 or more.
+	 * @return bool True when the item had that many on hand and allocated, and is now locked.
+	 *
+	 * @phpstan-impure
+	 */
+	public function transferOutAllocated( int $variantId, int $locationId, int $quantity ): bool;
+
+	/**
+	 * Takes available units off an item's on_hand, as they leave on a transfer: only units no order or checkout claims.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location: the transfer's source.
+	 * @param int $quantity   The units, 1 or more.
+	 * @return bool True when that many were available, and the item is now locked.
+	 *
+	 * @phpstan-impure
+	 */
+	public function transferOutAvailable( int $variantId, int $locationId, int $quantity ): bool;
+
+	/**
+	 * Adds units arriving on a transfer to an item's on_hand, and those an order waits for to its `allocated`. Call it once createItemAt() holds the item.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location: the transfer's destination.
+	 * @param int $quantity   The units received, 1 or more.
+	 * @param int $allocated  How many of them become an order's allocation there: all or none.
+	 * @return bool True when the item was there to add to.
+	 *
+	 * @phpstan-impure
+	 */
+	public function transferIn( int $variantId, int $locationId, int $quantity, int $allocated ): bool;
+
+	/**
+	 * Moves an open allocation at a location to in transit: it travels with the transfer that sends its units, and counts at no item.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $allocationId The allocation.
+	 * @param int $locationId   The location its units leave.
+	 * @return bool True when it was open there.
+	 *
+	 * @phpstan-impure
+	 */
+	public function allocationInTransit( int $allocationId, int $locationId ): bool;
+
+	/**
+	 * Reads an allocation in transit with a locking read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $allocationId The allocation.
+	 * @return array{order_id: int, order_line_id: int, quantity: int}|null The order, its line and the units in transit, or null when no allocation of that id is in transit.
+	 *
+	 * @phpstan-impure
+	 */
+	public function lockInTransitAllocation( int $allocationId ): ?array;
+
+	/**
+	 * Gives an order line the units a transfer brought it at the destination: its open allocation there, created or added to. Call it under the item's lock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $variantId   The variant.
+	 * @param int $locationId  The destination.
+	 * @param int $orderId     The order.
+	 * @param int $orderLineId The order line.
+	 * @param int $quantity    The units received, 1 or more.
+	 *
+	 * @phpstan-impure
+	 */
+	public function allocateReceived( int $variantId, int $locationId, int $orderId, int $orderLineId, int $quantity ): void;
+
+	/**
+	 * Takes units received or lost off an allocation in transit that keeps some on the way.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $allocationId The allocation, locked.
+	 * @param int $quantity     The units, 1 or more, fewer than it holds.
+	 * @return bool True when it held more than that.
+	 *
+	 * @phpstan-impure
+	 */
+	public function shrinkInTransit( int $allocationId, int $quantity ): bool;
+
+	/**
+	 * Deletes an allocation in transit whose last units were received or lost.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $allocationId The allocation, locked.
+	 * @param int $quantity     The units it holds, all received or lost now.
+	 * @return bool True when it held exactly that many.
+	 *
+	 * @phpstan-impure
+	 */
+	public function deleteInTransit( int $allocationId, int $quantity ): bool;
+
+	/**
+	 * Lists an order's open allocations at locations other than one. A plain read on the allocations' order key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId    The order.
+	 * @param int $locationId The location to leave out: the order's destination.
+	 * @return list<array{id: int, variant_id: int, location_id: int, quantity: int}> The allocations, ascending by location then variant.
+	 */
+	public function openAllocationsAway( int $orderId, int $locationId ): array;
+
+	/**
+	 * Lists an order's allocations that are open or in transit. A plain read: every write of them decides again under its lock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId The order.
+	 * @return list<array{id: int, variant_id: int, location_id: int, quantity: int, posted_quantity: int, in_transit: bool}> The allocations, ascending by variant then location.
+	 */
+	public function orderAllocations( int $orderId ): array;
+
+	/**
+	 * Cancels an open allocation.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $allocationId The allocation, its item locked.
+	 * @return bool True when it was open.
+	 *
+	 * @phpstan-impure
+	 */
+	public function cancelOpenAllocation( int $allocationId ): bool;
+
+	/**
+	 * Gives units a cancelled allocation promised back to its item: they leave `allocated`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
+	 * @param int $quantity   The units, 1 or more.
+	 * @return bool True when `allocated` covered them.
+	 *
+	 * @phpstan-impure
+	 */
+	public function giveBackAllocated( int $variantId, int $locationId, int $quantity ): bool;
+
+	/**
+	 * Cancels an allocation in transit; its units stay on the transfer's line.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $allocationId The allocation, its transfer locked.
+	 * @return bool True when it was in transit.
+	 *
+	 * @phpstan-impure
+	 */
+	public function cancelInTransitAllocation( int $allocationId ): bool;
+
+	/**
+	 * Lists the variants with units available at a location, after a variant: a page of a deactivation's move. A plain read, decided again under each item's lock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId     The location.
+	 * @param int $afterVariantId Only variants with a higher id, or 0.
+	 * @param int $limit          The most variants.
+	 * @return list<int> The variants, ascending.
+	 */
+	public function movableItems( int $locationId, int $afterVariantId, int $limit ): array;
 }

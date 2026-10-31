@@ -74,6 +74,26 @@ interface LocationRepository {
 	public function lockRecord( string $uuid ): ?LocationRecord;
 
 	/**
+	 * Reads locations by uuid with a locking read in share mode, which keeps each from being changed or deleted until the commit.
+	 *
+	 * For a write that names a location without changing it, such as a transfer: a deletion of the
+	 * location takes its row's exclusive lock before it reads what uses it, so it waits for this
+	 * write to commit and then finds it, or comes first and leaves nothing to find. Shared locks do
+	 * not wait for each other, so the rows are read in ascending order of id and need no more order
+	 * than that against the one location an exclusive lock is ever taken on at a time.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param string[] $uuids The locations' public identifiers.
+	 * @return array<string, Location> The locations found, by lower-case uuid.
+	 *
+	 * @phpstan-impure
+	 */
+	public function lockShared( array $uuids ): array;
+
+	/**
 	 * Creates an active location, and returns its id.
 	 *
 	 * @since 0.2.0

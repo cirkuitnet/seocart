@@ -2051,7 +2051,7 @@
         "/locations/{location_uuid}/deactivation": {
             "post": {
                 "operationId": "inventory.deactivate_location",
-                "summary": "Deactivates a location: from now on no order is routed to it and its units are for sale nowhere, while its stock stays where it is; the default location cannot be deactivated.",
+                "summary": "Deactivates a location: from now on no order is routed to it and its units are for sale nowhere, while its stock stays where it is, or its available units move to another location as one transfer; the default location cannot be deactivated.",
                 "description": "Requires the capability `seocart_manage_settings`.",
                 "parameters": [
                     {
@@ -2068,19 +2068,39 @@
                         }
                     }
                 ],
+                "requestBody": {
+                    "required": false,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "move_stock_to": {
+                                        "type": "string",
+                                        "format": "uuid",
+                                        "description": "An active location to move the deactivated location's available units to, as one transfer worked in the background; units promised to orders or held by checkouts stay. Moving stock also needs the capability that manages inventory. Repeated with the same location, the deactivation answers the same transfer. Turning the location on again ends the move, the units moved so far staying where they arrived.",
+                                        "examples": [
+                                            "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
                 "responses": {
                     "200": {
-                        "description": "The operation succeeded. The body is the Location resource.",
+                        "description": "The operation succeeded. The body is the LocationDeactivation resource.",
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/Location"
+                                    "$ref": "#/components/schemas/LocationDeactivation"
                                 }
                             }
                         }
                     },
                     "400": {
-                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`stock.transfer_same_location`: Location {location_id} cannot be both where the units leave and where they arrive.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -2120,7 +2140,7 @@
                         }
                     },
                     "409": {
-                        "description": "`stock.location_is_default`: Location {location_id} is the default location, so it stays active and stays the default. Make another location the default first.",
+                        "description": "`stock.location_is_default`: Location {location_id} is the default location, so it stays active and stays the default. Make another location the default first.\n\n`stock.location_inactive`: Location {location_id} is deactivated.\n\n`stock.transfer_state`: Transfer {transfer_id} is {state}, so it cannot be changed that way.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3446,6 +3466,889 @@
                     },
                     "409": {
                         "description": "`stock.no_fulfilling_location`: No location ships online orders at the moment, so nothing can be sold.\n\n`stock.on_hand_conflict`: Variant {variant_id}: you expected {expected} on hand, but there are {on_hand}, so the adjustment was not applied. Read the stock again, then repeat the adjustment if it is still needed.\n\n`stock.adjustment_below_zero`: Variant {variant_id} has {on_hand} on hand, so a change of {delta} would take it below zero.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/stock-transfers": {
+            "get": {
+                "operationId": "inventory.list_transfers",
+                "summary": "Lists a page of stock transfers, newest first, each with its lines summed up, filtered by state, by a location they leave or arrive at, or by the order they serve.",
+                "description": "Requires the capability `seocart_manage_inventory`.",
+                "parameters": [
+                    {
+                        "name": "state",
+                        "in": "query",
+                        "required": false,
+                        "description": "Only transfers in this state.",
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "draft",
+                                "requested",
+                                "in_transit",
+                                "received",
+                                "cancelled"
+                            ],
+                            "examples": [
+                                "in_transit"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "location_uuid",
+                        "in": "query",
+                        "required": false,
+                        "description": "Only transfers that leave this location or arrive at it.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "order_id",
+                        "in": "query",
+                        "required": false,
+                        "description": "Only transfers this order waits for.",
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "examples": [
+                                1042
+                            ]
+                        }
+                    },
+                    {
+                        "name": "page",
+                        "in": "query",
+                        "required": false,
+                        "description": "Which page of the list, from 1 to 1000000.",
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000000,
+                            "default": 1,
+                            "examples": [
+                                1
+                            ]
+                        }
+                    },
+                    {
+                        "name": "per_page",
+                        "in": "query",
+                        "required": false,
+                        "description": "How many transfers a page holds, from 1 to 100.",
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "default": 20,
+                            "examples": [
+                                20
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the StockTransferList resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StockTransferList"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_inventory`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_inventory`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`stock.location_missing`: Location {location_id} does not exist.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "operationId": "inventory.create_transfer",
+                "summary": "Creates a draft transfer of units from one location to another: it promises nothing, may name more units than the source has, and claims them only when it is sent.",
+                "description": "Requires the capability `seocart_manage_inventory`.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "source_location_uuid": {
+                                        "type": "string",
+                                        "format": "uuid",
+                                        "description": "The location the units leave; it may be deactivated, so its stock can be moved away.",
+                                        "examples": [
+                                            "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                                        ]
+                                    },
+                                    "destination_location_uuid": {
+                                        "type": "string",
+                                        "format": "uuid",
+                                        "description": "The active location the units arrive at, not the source.",
+                                        "examples": [
+                                            "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                                        ]
+                                    },
+                                    "lines": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "variant_id": {
+                                                    "type": "integer",
+                                                    "minimum": 1,
+                                                    "description": "The variant whose units move."
+                                                },
+                                                "quantity": {
+                                                    "type": "integer",
+                                                    "minimum": 1,
+                                                    "maximum": 1000000,
+                                                    "description": "The units to send."
+                                                }
+                                            },
+                                            "required": [
+                                                "variant_id",
+                                                "quantity"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        "minItems": 1,
+                                        "maxItems": 500,
+                                        "description": "The units to send of each variant, from 1 to 500 lines; lines of one variant are added together.",
+                                        "examples": [
+                                            [
+                                                {
+                                                    "variant_id": 42,
+                                                    "quantity": 4
+                                                }
+                                            ]
+                                        ]
+                                    },
+                                    "note": {
+                                        "type": "string",
+                                        "maxLength": 1000,
+                                        "description": "A note on the transfer, such as why it is made; it may run over several lines.",
+                                        "examples": [
+                                            "Courier 1Z999AA10123456784"
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "source_location_uuid",
+                                    "destination_location_uuid",
+                                    "lines"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the StockTransfer resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StockTransfer"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`stock.transfer_same_location`: Location {location_id} cannot be both where the units leave and where they arrive.\n\n`stock.transfer_invalid`: The transfer field {field} is not valid. A note holds no control characters; a transfer has from 1 to 500 lines; a receipt names each line once and receives or loses at least one unit of it, no more than it has on the way.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_inventory`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_inventory`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`stock.location_missing`: Location {location_id} does not exist.\n\n`stock.item_missing`: Variant {variant_id} has no stock item.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`stock.location_inactive`: Location {location_id} is deactivated.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/stock-transfers/{transfer_uuid}": {
+            "get": {
+                "operationId": "inventory.get_transfer",
+                "summary": "Returns one stock transfer with its lines: what each sends, what was received and lost, what is on the way, and whether it carries an order's units.",
+                "description": "Requires the capability `seocart_manage_inventory`.",
+                "parameters": [
+                    {
+                        "name": "transfer_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The transfer.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "0f7e7c3a-5b1d-4c2e-9a8f-3d6b2e1c4a90"
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the StockTransfer resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StockTransfer"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_inventory`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_inventory`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`stock.transfer_not_found`: Transfer {transfer_id} does not exist, or has no line of the id given.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "operationId": "inventory.update_transfer",
+                "summary": "Changes the note or the lines of a draft or requested transfer, the fields the request gives only: lines given replace the lines that carry no order's units, which are kept as they are.",
+                "description": "Requires the capability `seocart_manage_inventory`.",
+                "parameters": [
+                    {
+                        "name": "transfer_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The transfer to change.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "0f7e7c3a-5b1d-4c2e-9a8f-3d6b2e1c4a90"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": false,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "lines": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "variant_id": {
+                                                    "type": "integer",
+                                                    "minimum": 1,
+                                                    "description": "The variant whose units move."
+                                                },
+                                                "quantity": {
+                                                    "type": "integer",
+                                                    "minimum": 1,
+                                                    "maximum": 1000000,
+                                                    "description": "The units to send."
+                                                }
+                                            },
+                                            "required": [
+                                                "variant_id",
+                                                "quantity"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        "maxItems": 500,
+                                        "description": "The units to send of each variant; given, they replace the lines that carry no order's units, and the transfer keeps from 1 to 500 lines.",
+                                        "examples": [
+                                            [
+                                                {
+                                                    "variant_id": 42,
+                                                    "quantity": 4
+                                                }
+                                            ]
+                                        ]
+                                    },
+                                    "note": {
+                                        "type": "string",
+                                        "maxLength": 1000,
+                                        "description": "The note on the transfer; an empty text removes it.",
+                                        "examples": [
+                                            "Courier 1Z999AA10123456784"
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the StockTransfer resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StockTransfer"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`stock.transfer_invalid`: The transfer field {field} is not valid. A note holds no control characters; a transfer has from 1 to 500 lines; a receipt names each line once and receives or loses at least one unit of it, no more than it has on the way.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_inventory`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_inventory`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`stock.transfer_not_found`: Transfer {transfer_id} does not exist, or has no line of the id given.\n\n`stock.item_missing`: Variant {variant_id} has no stock item.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`stock.transfer_state`: Transfer {transfer_id} is {state}, so it cannot be changed that way.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/stock-transfers/{transfer_uuid}/cancellation": {
+            "post": {
+                "operationId": "inventory.cancel_transfer",
+                "summary": "Cancels a draft, or a requested transfer that carries no order's units; a transfer in transit is received or written off instead, never cancelled.",
+                "description": "Requires the capability `seocart_manage_inventory`.",
+                "parameters": [
+                    {
+                        "name": "transfer_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The transfer to cancel.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "0f7e7c3a-5b1d-4c2e-9a8f-3d6b2e1c4a90"
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the StockTransfer resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StockTransfer"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_inventory`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_inventory`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`stock.transfer_not_found`: Transfer {transfer_id} does not exist, or has no line of the id given.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`stock.transfer_state`: Transfer {transfer_id} is {state}, so it cannot be changed that way.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/stock-transfers/{transfer_uuid}/dispatch": {
+            "post": {
+                "operationId": "inventory.send_transfer",
+                "summary": "Sends a draft or requested transfer: every line's units leave the source at once, or, when one line's are not there, none do; until they are received they are on the way, in no location's stock.",
+                "description": "Requires the capability `seocart_manage_inventory`.",
+                "parameters": [
+                    {
+                        "name": "transfer_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The transfer to send.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "0f7e7c3a-5b1d-4c2e-9a8f-3d6b2e1c4a90"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": false,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "note": {
+                                        "type": "string",
+                                        "maxLength": 1000,
+                                        "description": "A note to keep with the parcel, such as its tracking number; given, it replaces the transfer's note.",
+                                        "examples": [
+                                            "Courier 1Z999AA10123456784"
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the StockTransfer resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StockTransfer"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`stock.transfer_invalid`: The transfer field {field} is not valid. A note holds no control characters; a transfer has from 1 to 500 lines; a receipt names each line once and receives or loses at least one unit of it, no more than it has on the way.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_inventory`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_inventory`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`stock.transfer_not_found`: Transfer {transfer_id} does not exist, or has no line of the id given.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`stock.transfer_state`: Transfer {transfer_id} is {state}, so it cannot be changed that way.\n\n`stock.transfer_refused`: The transfer cannot be sent: variant {variant_id} needs {requested} units at its source, which can send {available}. Lower the line, or wait for the units.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/stock-transfers/{transfer_uuid}/receipts": {
+            "post": {
+                "operationId": "inventory.receive_transfer",
+                "summary": "Receives units of a transfer in transit at its destination, line by line, and writes off units lost on the way; the transfer is received once every line's units are received or lost.",
+                "description": "Requires the capability `seocart_manage_inventory`.",
+                "parameters": [
+                    {
+                        "name": "transfer_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The transfer received.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "0f7e7c3a-5b1d-4c2e-9a8f-3d6b2e1c4a90"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "lines": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "line_id": {
+                                                    "type": "integer",
+                                                    "minimum": 1,
+                                                    "description": "The line."
+                                                },
+                                                "received": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 1000000,
+                                                    "default": 0,
+                                                    "description": "The units of the line that arrived now."
+                                                },
+                                                "lost": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "maximum": 1000000,
+                                                    "default": 0,
+                                                    "description": "The units of the line written off as lost now."
+                                                },
+                                                "expected_received_quantity": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "description": "The units of the line the client last read as received so far; the receipt applies only while the line still has that many."
+                                                },
+                                                "expected_lost_quantity": {
+                                                    "type": "integer",
+                                                    "minimum": 0,
+                                                    "description": "The units of the line the client last read as lost so far; the receipt applies only while the line still has that many."
+                                                }
+                                            },
+                                            "required": [
+                                                "line_id",
+                                                "expected_received_quantity",
+                                                "expected_lost_quantity"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        "minItems": 1,
+                                        "maxItems": 500,
+                                        "description": "What arrived of each line, each line once: the units received and lost now, at least one of them, and the units the client last read as received and as lost, so a receipt repeated after a lost answer is refused rather than recorded twice.",
+                                        "examples": [
+                                            [
+                                                {
+                                                    "line_id": 501,
+                                                    "received": 1,
+                                                    "lost": 1,
+                                                    "expected_received_quantity": 0,
+                                                    "expected_lost_quantity": 0
+                                                }
+                                            ]
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "lines"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the StockTransfer resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StockTransfer"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`stock.transfer_invalid`: The transfer field {field} is not valid. A note holds no control characters; a transfer has from 1 to 500 lines; a receipt names each line once and receives or loses at least one unit of it, no more than it has on the way.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_inventory`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_inventory`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`stock.transfer_not_found`: Transfer {transfer_id} does not exist, or has no line of the id given.\n\n`stock.item_missing`: Variant {variant_id} has no stock item.\n\n`stock.location_missing`: Location {location_id} does not exist.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`stock.transfer_state`: Transfer {transfer_id} is {state}, so it cannot be changed that way.\n\n`stock.transfer_receipt_conflict`: Line {line_id}: you expected {expected} received and {expected_lost} lost so far, but it has {received_quantity} received and {lost_quantity} lost, so the receipt was not recorded. Read the transfer again, then receive what is still on the way.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -5518,6 +6421,221 @@
                     "hours"
                 ]
             },
+            "LocationDeactivation": {
+                "type": "object",
+                "properties": {
+                    "location_uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The location's public identifier.",
+                        "examples": [
+                            "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                        ]
+                    },
+                    "name": {
+                        "type": "string",
+                        "maxLength": 100,
+                        "description": "The name the merchant gives the location, such as Main warehouse; not blank.",
+                        "examples": [
+                            "Main warehouse"
+                        ]
+                    },
+                    "address": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "properties": {
+                            "country": {
+                                "type": "string",
+                                "maxLength": 2,
+                                "description": "The ISO 3166-1 alpha-2 country code, two capital letters, such as GB. It appears on customer-facing documents."
+                            },
+                            "line1": {
+                                "type": "string",
+                                "maxLength": 255,
+                                "description": "The first address line. It appears on customer-facing documents."
+                            },
+                            "line2": {
+                                "type": "string",
+                                "maxLength": 255,
+                                "description": "The second address line, empty when there is none. It appears on customer-facing documents."
+                            },
+                            "city": {
+                                "type": "string",
+                                "maxLength": 100,
+                                "description": "The city or town. It appears on customer-facing documents."
+                            },
+                            "region": {
+                                "type": "string",
+                                "maxLength": 64,
+                                "description": "The state, province, county or other subdivision, empty when there is none. It appears on customer-facing documents."
+                            },
+                            "postcode": {
+                                "type": "string",
+                                "maxLength": 32,
+                                "description": "The postal code. It appears on customer-facing documents."
+                            }
+                        },
+                        "required": [
+                            "country",
+                            "line1",
+                            "line2",
+                            "city",
+                            "region",
+                            "postcode"
+                        ],
+                        "additionalProperties": false,
+                        "description": "Where the location is, or null until an address is entered. It is public: it appears on customer-facing documents, such as pickup confirmations, packing slips and shipping labels.",
+                        "examples": [
+                            {
+                                "country": "GB",
+                                "line1": "12 Market Street",
+                                "line2": "Unit 4",
+                                "city": "Leeds",
+                                "region": "West Yorkshire",
+                                "postcode": "LS1 6AB"
+                            }
+                        ]
+                    },
+                    "phone": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "maxLength": 32,
+                        "description": "The location's phone number for the merchant's staff, or null for none. It is personal data, shown only to a user who may see personal data.",
+                        "examples": [
+                            "+44 113 496 0000"
+                        ]
+                    },
+                    "active": {
+                        "type": "boolean",
+                        "description": "Whether orders may be routed to the location; an inactive location keeps its stock, and its units are for sale nowhere.",
+                        "examples": [
+                            true
+                        ]
+                    },
+                    "is_default": {
+                        "type": "boolean",
+                        "description": "Whether the location is the store's default: the one an adjustment or an order that names no location uses.",
+                        "examples": [
+                            true
+                        ]
+                    },
+                    "fulfils_online": {
+                        "type": "boolean",
+                        "description": "Whether the location ships online orders; a new location does unless told otherwise.",
+                        "examples": [
+                            true
+                        ]
+                    },
+                    "offers_pickup": {
+                        "type": "boolean",
+                        "description": "Whether shoppers may collect orders at the location; a new location does not unless told otherwise.",
+                        "examples": [
+                            true
+                        ]
+                    },
+                    "pickup_ready_in": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "maxLength": 32,
+                        "description": "How soon a pickup order is usually ready, one of 1h, 2h, next_business_day, 2_4_days, or null when none was given.",
+                        "examples": [
+                            "1h"
+                        ]
+                    },
+                    "pickup_instructions": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "maxLength": 1000,
+                        "description": "What a shopper collecting an order is told, such as where to go, or null for nothing.",
+                        "examples": [
+                            "Ring the bell at the side door."
+                        ]
+                    },
+                    "priority": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000000,
+                        "description": "Where the location stands when an order is routed: the lowest number is tried first, and locations of the same number in the order they were created; a new location has 0 unless told otherwise.",
+                        "examples": [
+                            1
+                        ]
+                    },
+                    "hours": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "weekday": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 6,
+                                    "description": "The day of the week, 0 for Sunday to 6 for Saturday."
+                                },
+                                "opens_at": {
+                                    "type": "string",
+                                    "maxLength": 5,
+                                    "description": "When the location opens that day, local time, written HH:MM on a 24-hour clock."
+                                },
+                                "closes_at": {
+                                    "type": "string",
+                                    "maxLength": 5,
+                                    "description": "When it closes that day, local time, written HH:MM, later than it opens."
+                                }
+                            },
+                            "required": [
+                                "weekday",
+                                "opens_at",
+                                "closes_at"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "maxItems": 7,
+                        "description": "The days the location is open for pickup, by day; a day not listed is closed.",
+                        "examples": [
+                            [
+                                {
+                                    "weekday": 1,
+                                    "opens_at": "09:00",
+                                    "closes_at": "17:30"
+                                }
+                            ]
+                        ]
+                    },
+                    "move_transfer_uuid": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "uuid",
+                        "description": "The transfer that moves the location's available units, or null when no move was asked for.",
+                        "examples": [
+                            "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                        ]
+                    }
+                },
+                "required": [
+                    "location_uuid",
+                    "name",
+                    "address",
+                    "active",
+                    "is_default",
+                    "fulfils_online",
+                    "offers_pickup",
+                    "pickup_ready_in",
+                    "pickup_instructions",
+                    "priority",
+                    "hours",
+                    "move_transfer_uuid"
+                ]
+            },
             "LocationList": {
                 "type": "object",
                 "properties": {
@@ -6517,6 +7635,356 @@
                 },
                 "required": [
                     "variants"
+                ]
+            },
+            "StockTransfer": {
+                "type": "object",
+                "properties": {
+                    "transfer_uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The transfer's public identifier.",
+                        "examples": [
+                            "0f7e7c3a-5b1d-4c2e-9a8f-3d6b2e1c4a90"
+                        ]
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "manual",
+                            "order",
+                            "deactivation"
+                        ],
+                        "description": "Who started the transfer: manual for a merchant's, order for one an order waits for, deactivation for the move of a deactivated location's stock.",
+                        "examples": [
+                            "manual"
+                        ]
+                    },
+                    "state": {
+                        "type": "string",
+                        "enum": [
+                            "draft",
+                            "requested",
+                            "in_transit",
+                            "received",
+                            "cancelled"
+                        ],
+                        "description": "Where the transfer stands: draft, requested, in_transit, received or cancelled.",
+                        "examples": [
+                            "draft"
+                        ]
+                    },
+                    "source_location_uuid": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "uuid",
+                        "description": "The location the units leave, or null when it no longer exists.",
+                        "examples": [
+                            "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                        ]
+                    },
+                    "destination_location_uuid": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "uuid",
+                        "description": "The location the units arrive at, or null when it no longer exists.",
+                        "examples": [
+                            "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
+                        ]
+                    },
+                    "order_id": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "The order the transfer brings units to, for one of kind order; null otherwise.",
+                        "examples": [
+                            1042
+                        ]
+                    },
+                    "note": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "maxLength": 1000,
+                        "description": "The merchant's note on the transfer, such as a tracking number, or null for none.",
+                        "examples": [
+                            "Courier 1Z999AA10123456784"
+                        ]
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "description": "When the transfer was created, UTC, in ISO 8601 to the microsecond, by the database clock.",
+                        "examples": [
+                            "2026-10-25T14:03:27.512345Z"
+                        ]
+                    },
+                    "sent_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "When its units left the source, UTC, in ISO 8601 to the microsecond; null until it is sent.",
+                        "examples": [
+                            "2026-10-25T14:03:27.512345Z"
+                        ]
+                    },
+                    "received_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "When its last units were received or written off, UTC, in ISO 8601 to the microsecond; null until then.",
+                        "examples": [
+                            "2026-10-25T14:03:27.512345Z"
+                        ]
+                    },
+                    "lines": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "line_id": {
+                                    "type": "integer",
+                                    "description": "The line, as a receipt names it."
+                                },
+                                "variant_id": {
+                                    "type": "integer",
+                                    "description": "The variant whose units move."
+                                },
+                                "quantity": {
+                                    "type": "integer",
+                                    "description": "The units the line sends, or sent."
+                                },
+                                "received_quantity": {
+                                    "type": "integer",
+                                    "description": "The units received at the destination so far."
+                                },
+                                "lost_quantity": {
+                                    "type": "integer",
+                                    "description": "The units written off as lost so far."
+                                },
+                                "in_transit": {
+                                    "type": "integer",
+                                    "description": "The units on the way: sent, and neither received nor lost yet; 0 before the transfer is sent."
+                                },
+                                "allocated": {
+                                    "type": "boolean",
+                                    "description": "Whether the line carries, or carried until it was received, an order's units; such a line cannot be edited or removed."
+                                }
+                            },
+                            "required": [
+                                "line_id",
+                                "variant_id",
+                                "quantity",
+                                "received_quantity",
+                                "lost_quantity",
+                                "in_transit",
+                                "allocated"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "description": "The transfer's lines, by ascending variant.",
+                        "examples": [
+                            [
+                                {
+                                    "line_id": 501,
+                                    "variant_id": 42,
+                                    "quantity": 4,
+                                    "received_quantity": 3,
+                                    "lost_quantity": 0,
+                                    "in_transit": 1,
+                                    "allocated": false
+                                }
+                            ]
+                        ]
+                    }
+                },
+                "required": [
+                    "transfer_uuid",
+                    "kind",
+                    "state",
+                    "source_location_uuid",
+                    "destination_location_uuid",
+                    "order_id",
+                    "note",
+                    "created_at",
+                    "sent_at",
+                    "received_at",
+                    "lines"
+                ]
+            },
+            "StockTransferList": {
+                "type": "object",
+                "properties": {
+                    "transfers": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "transfer_uuid": {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "description": "The transfer's public identifier."
+                                },
+                                "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                        "manual",
+                                        "order",
+                                        "deactivation"
+                                    ],
+                                    "description": "Who started the transfer: manual for a merchant's, order for one an order waits for, deactivation for the move of a deactivated location's stock."
+                                },
+                                "state": {
+                                    "type": "string",
+                                    "enum": [
+                                        "draft",
+                                        "requested",
+                                        "in_transit",
+                                        "received",
+                                        "cancelled"
+                                    ],
+                                    "description": "Where the transfer stands: draft, requested, in_transit, received or cancelled."
+                                },
+                                "source_location_uuid": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "format": "uuid",
+                                    "description": "The location the units leave, or null when it no longer exists."
+                                },
+                                "destination_location_uuid": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "format": "uuid",
+                                    "description": "The location the units arrive at, or null when it no longer exists."
+                                },
+                                "order_id": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ],
+                                    "description": "The order the transfer brings units to, for one of kind order; null otherwise."
+                                },
+                                "note": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "maxLength": 1000,
+                                    "description": "The merchant's note on the transfer, such as a tracking number, or null for none."
+                                },
+                                "created_at": {
+                                    "type": "string",
+                                    "description": "When the transfer was created, UTC, in ISO 8601 to the microsecond, by the database clock."
+                                },
+                                "sent_at": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "description": "When its units left the source, UTC, in ISO 8601 to the microsecond; null until it is sent."
+                                },
+                                "received_at": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "description": "When its last units were received or written off, UTC, in ISO 8601 to the microsecond; null until then."
+                                },
+                                "lines": {
+                                    "type": "integer",
+                                    "description": "How many lines the transfer has."
+                                },
+                                "sent": {
+                                    "type": "integer",
+                                    "description": "The units of every line together: what the transfer sends, or sent once it is in transit."
+                                },
+                                "received": {
+                                    "type": "integer",
+                                    "description": "The units received so far, every line together."
+                                },
+                                "lost": {
+                                    "type": "integer",
+                                    "description": "The units written off as lost, every line together."
+                                }
+                            },
+                            "required": [
+                                "transfer_uuid",
+                                "kind",
+                                "state",
+                                "source_location_uuid",
+                                "destination_location_uuid",
+                                "order_id",
+                                "note",
+                                "created_at",
+                                "sent_at",
+                                "received_at",
+                                "lines",
+                                "sent",
+                                "received",
+                                "lost"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "description": "The page of transfers, newest first.",
+                        "examples": [
+                            [
+                                {
+                                    "transfer_uuid": "0f7e7c3a-5b1d-4c2e-9a8f-3d6b2e1c4a90",
+                                    "kind": "manual",
+                                    "state": "draft",
+                                    "source_location_uuid": "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8",
+                                    "destination_location_uuid": "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8",
+                                    "order_id": 1042,
+                                    "note": "Courier 1Z999AA10123456784",
+                                    "created_at": "2026-10-25T14:03:27.512345Z",
+                                    "sent_at": "2026-10-25T14:03:27.512345Z",
+                                    "received_at": "2026-10-25T14:03:27.512345Z",
+                                    "lines": 3,
+                                    "sent": 12,
+                                    "received": 10,
+                                    "lost": 1
+                                }
+                            ]
+                        ]
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "The page answered.",
+                        "examples": [
+                            1
+                        ]
+                    },
+                    "per_page": {
+                        "type": "integer",
+                        "description": "How many transfers a page holds.",
+                        "examples": [
+                            20
+                        ]
+                    },
+                    "has_more": {
+                        "type": "boolean",
+                        "description": "Whether a next page has transfers; no total is counted.",
+                        "examples": [
+                            false
+                        ]
+                    }
+                },
+                "required": [
+                    "transfers",
+                    "page",
+                    "per_page",
+                    "has_more"
                 ]
             },
             "StoreOrder": {

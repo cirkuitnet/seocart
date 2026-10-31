@@ -13,6 +13,8 @@ namespace SEOCart\Tests\Integration\Performance;
 
 use SEOCart\Catalog\Infrastructure\ProductTaxonomies;
 use SEOCart\Platform\Authorization\ProductCapabilities;
+use SEOCart\Platform\Events\EventCatalog;
+use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Tests\Support\BootstrapProbes;
 use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\LibraryShare;
@@ -139,6 +141,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 *   for a post of another type.
 	 *
 	 * That is twelve: the ceiling, with no margin left. A site of a network adds NETWORK_PLUGIN_HOOKS.
+	 * The plugin's listeners of its own events are a share of their own, G4_MAX_LISTENER_HOOKS.
 	 *
 	 * @since 0.1.0
 	 *
@@ -182,6 +185,20 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 * @var int
 	 */
 	private const G4_MAX_TAXONOMY_HOOKS = 3;
+
+	/**
+	 * G4, the listeners' share: hook registrations the plugin makes on a hook named after one of its
+	 * own events. There is one, `seocart_stock_transfer_fell_short` with the kernel's closure, which
+	 * puts an order left short by a transfer on hold: an order and an inventory module may not call
+	 * each other, so the order hears the event. It is added on every request, because an outbox
+	 * event is delivered at the end of whichever request or job drains it. Written as a number, not
+	 * as the count of the listeners, so a second listener comes back to this budget.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const G4_MAX_LISTENER_HOOKS = 1;
 
 	/**
 	 * G3, the bundled Action Scheduler's share: library PHP files an idle request may load.
@@ -455,27 +472,54 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Tests G4's listeners' share: the plugin's registrations on a hook named after one of its own events are the one stated.
+	 *
+	 * Planted violation, in Modules::inventorySubscribe(): `add_action( self::TRANSFER_SHORT_HOOK, static function (): void {} );`.
+	 * That makes two. The failure must list them. A callback of WordPress's own, such as
+	 * `__return_null`, is not the plugin's, and counts in the library's share instead.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_g4_the_plugins_listeners_of_its_own_events_are_the_measured_share(): void {
+		$hooks  = self::hookShares()['listeners'];
+		$report = "\n  " . implode( "\n  ", $hooks ) . "\n";
+
+		$this->assertNotSame( array(), $hooks, 'The probe saw no listener of the plugin\'s events, so a small count would prove nothing.' );
+
+		$this->assertLessThanOrEqual(
+			self::G4_MAX_LISTENER_HOOKS,
+			count( $hooks ),
+			'G4, the plugin\'s listeners of its own events on an idle request:' . $report
+		);
+	}
+
+	/**
 	 * Returns the idle request's hook registrations, split into the plugin's own, WordPress's for the product post type, WordPress's for the product taxonomies, and the bundled library's.
 	 *
 	 * What loading the plugin added and is not the plugin's own is the library's, except the
 	 * registrations on a hook WordPress names after the product post type, such as
 	 * `future_seocart_product`, which are the post type's, and those on a hook WordPress names
 	 * after a product taxonomy, such as `wp_ajax_add-seocart_category`, which are the taxonomies'.
+	 * Of the plugin's own, those on a hook named after one of the plugin's events, such as
+	 * `seocart_stock_transfer_fell_short`, are the listeners'.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The taxonomies' share.
+	 * @since 0.2.0 The taxonomies' share, and the listeners'.
 	 *
-	 * @return array{plugin: list<string>, library: list<string>, post_type: list<string>, taxonomies: list<string>} One line per registration.
+	 * @return array{plugin: list<string>, listeners: list<string>, library: list<string>, post_type: list<string>, taxonomies: list<string>} One line per registration.
 	 */
 	private static function hookShares(): array {
 		$measurements = self::measurements();
 		$shares       = LibraryShare::splitHooks( $measurements['with_plugin']['hooks'], $measurements['with_plugin']['all_hooks'], $measurements['without_plugin']['all_hooks'] );
 		$post_type    = '/^[a-z_]+_' . preg_quote( ProductCapabilities::POST_TYPE, '/' ) . ' @/';
 		$taxonomies   = '/^[a-z_]+-(?:' . implode( '|', array_map( static fn( string $name ): string => preg_quote( $name, '/' ), ProductTaxonomies::names() ) ) . ') @/';
+		$events       = '/^seocart_(?:' . implode( '|', array_map( static fn( string $name ): string => preg_quote( $name, '/' ), ( new EventCatalog( Modules::EVENT_CLASSES ) )->names() ) ) . ') @/';
 		$wordpress    = static fn( string $line ): bool => 1 === preg_match( $post_type, $line ) || 1 === preg_match( $taxonomies, $line );
+		$listener     = static fn( string $line ): bool => 1 === preg_match( $events, $line );
 
 		return array(
-			'plugin'     => $shares['plugin'],
+			'plugin'     => array_values( array_filter( $shares['plugin'], static fn( string $line ): bool => ! $listener( $line ) ) ),
+			'listeners'  => array_values( array_filter( $shares['plugin'], $listener ) ),
 			'library'    => array_values( array_filter( $shares['library'], static fn( string $line ): bool => ! $wordpress( $line ) ) ),
 			'post_type'  => array_values( array_filter( $shares['library'], static fn( string $line ): bool => 1 === preg_match( $post_type, $line ) ) ),
 			'taxonomies' => array_values( array_filter( $shares['library'], static fn( string $line ): bool => 1 === preg_match( $taxonomies, $line ) ) ),

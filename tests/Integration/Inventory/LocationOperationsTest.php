@@ -89,7 +89,7 @@ final class LocationOperationsTest extends StockTestCase {
 
 		( new CapabilityInstaller( new CapabilityDeclaration(), new InMemoryGrantLedger() ) )->install();
 
-		$this->locations = StockServices::locations( $this->db, new SequentialIdGenerator( 300000 ) );
+		$this->locations = StockServices::locations( $this->db, new SequentialIdGenerator( 300000 ), $this->transfersOver( $this->db, new SequentialIdGenerator( 310000 ) ) );
 		$this->manager   = Actor::user( $this->createUser( 'seocart_manager' ) );
 	}
 
@@ -204,6 +204,58 @@ final class LocationOperationsTest extends StockTestCase {
 			$this->assertSame( array( 'reason' => $reason ), $refused->details(), "A location with {$reason} was deleted or named another reason." );
 			$this->assertSame( '1', $b->fetchValue( sprintf( 'SELECT COUNT(*) FROM `%s` WHERE id = %d', $this->table( InventoryTables::LOCATIONS ), $location ) ) );
 		}
+
+		// A transfer that leaves the location keeps it as surely as one that arrives there.
+		$source = $this->plantLocation();
+
+		$this->db->execute( "INSERT INTO %i ( uuid, source_location_id, destination_location_id, kind, state, created_at, updated_at ) VALUES ( %s, %d, %d, 'manual', 'draft', UTC_TIMESTAMP(6), UTC_TIMESTAMP(6) )", $this->table( InventoryTables::TRANSFERS ), wp_generate_uuid4(), $source, $this->defaultLocation );
+
+		$this->assertSame( array( 'reason' => 'transfers' ), $this->assertRefused( InventoryError::LocationInUse, fn(): array => $this->locations->deleteLocation( array( 'location_uuid' => $this->uuidOf( $b, $source ) ), $this->manager ) )->details(), 'A location a transfer leaves was deleted.' );
+	}
+
+	/**
+	 * Tests that a move of the default locks the default before it clears it: the clear is never the statement that waits.
+	 *
+	 * The race tests below send the waiting side's statements themselves; this one holds the order
+	 * of moveDefault()'s own statements.
+	 *
+	 * Planted violation, shown red and removed: in MysqlLocationRepository::moveDefault(), leave
+	 * out the LOCK_DEFAULT read: the clear is then sent with no lock taken first.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_move_of_the_default_locks_it_before_it_clears_it(): void {
+		$b     = $this->secondConnection();
+		$other = $this->plantLocation();
+		$lock  = $this->raw( MysqlLocationRepository::LOCK_DEFAULT );
+		$sent  = array();
+
+		add_filter(
+			'query',
+			static function ( string $query ) use ( &$sent ): string {
+				$sent[] = $query;
+
+				return $query;
+			}
+		);
+
+		$clear = $this->beforeStatement(
+			self::shapeOf( MysqlLocationRepository::CLEAR_DEFAULT ),
+			function () use ( &$sent, $lock ): void {
+				$this->assertContains( $lock, $sent, 'The default was cleared before it was locked.' );
+			}
+		);
+
+		$this->locations->updateLocation(
+			array(
+				'location_uuid' => $this->uuidOf( $b, $other ),
+				'is_default'    => true,
+			),
+			$this->manager
+		);
+
+		$this->assertTrue( $clear->fired, 'The move sent no clear of the default.' );
+		$this->assertSame( array( (string) $other ), $this->defaults( $b ) );
 	}
 
 	/**
@@ -582,6 +634,8 @@ final class LocationOperationsTest extends StockTestCase {
 			),
 			'phone'               => array( 'phone' => "0113\t496" ),
 			'pickup_instructions' => array( 'pickup_instructions' => "Ring\x07" ),
+			'pickup_ready_in'     => array( 'pickup_ready_in' => 'bogus' ),
+			'priority'            => array( 'priority' => -5 ),
 			'hours'               => array( 'hours' => array( $day( 1, '17:00', '09:00' ) ) ),
 			'hours twice'         => array( 'hours' => array( $day( 1, '09:00', '12:00' ), $day( 1, '13:00', '17:00' ) ) ),
 			'hours at 24:00'      => array( 'hours' => array( $day( 1, '09:00', '24:00' ) ) ),

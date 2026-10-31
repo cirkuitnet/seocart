@@ -510,10 +510,10 @@ final class AdjustTest extends StockTestCase {
 	}
 
 	/**
-	 * Tests that the repository is the only code under src/ that names a stock table in a statement, with the upgrade's batch that gives the store's stock its default location.
+	 * Tests that the repository is the only code under src/ that names a stock table in a statement, with the upgrade's batch that gives the store's stock its default location, and the transfer repository, which names the transfer documents' own.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The upgrade's batch.
+	 * @since 0.2.0 The upgrade's batch, and the transfer repository.
 	 */
 	public function test_the_repository_is_the_only_class_with_stock_sql(): void {
 		$found = array();
@@ -526,6 +526,6 @@ final class AdjustTest extends StockTestCase {
 
 		sort( $found );
 
-		$this->assertSame( array( 'src/Inventory/Infrastructure/Migrations/SeedDefaultLocation.php', 'src/Inventory/Infrastructure/MysqlStockRepository.php' ), $found );
+		$this->assertSame( array( 'src/Inventory/Infrastructure/Migrations/SeedDefaultLocation.php', 'src/Inventory/Infrastructure/MysqlStockRepository.php', 'src/Inventory/Infrastructure/MysqlTransferRepository.php' ), $found );
 	}
 }

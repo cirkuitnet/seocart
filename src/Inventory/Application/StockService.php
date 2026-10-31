@@ -642,19 +642,21 @@ final class StockService {
 	}
 
 	/**
-	 * Returns the variants among some that have an open allocation, at any location: what deleteVariants() would refuse, read without writing anything.
+	 * Returns the variants among some that deleteVariants() would refuse: those with an allocation open or in transit, or units on a transfer requested or in transit, at any location, read without writing anything.
 	 *
 	 * For a delete that must decide whether it can go on before it writes: a product post's delete
 	 * refuses in WordPress's `pre_delete_post` and writes only once the post is gone. Each variant's
-	 * allocations are read with a locking read, ascending, in the caller's transaction.
+	 * allocations, then its transfer lines, are read with locking reads, ascending, in the caller's
+	 * transaction.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Allocations in transit, and transfers.
 	 *
 	 * @throws \LogicException           Outside a transaction, before any statement.
 	 * @throws \InvalidArgumentException When a variant id is below 1.
 	 *
 	 * @param int[] $variantIds The variants.
-	 * @return list<int> The variants with an open allocation, ascending.
+	 * @return list<int> The variants whose delete would be refused, ascending.
 	 */
 	public function openAllocationVariants( array $variantIds ): array {
 		$this->requireCallersTransaction( __FUNCTION__ );
@@ -662,7 +664,7 @@ final class StockService {
 		$open = array();
 
 		foreach ( self::variantIds( $variantIds ) as $variantId ) {
-			if ( $this->stock->hasOpenAllocation( $variantId ) ) {
+			if ( $this->isPromised( $variantId ) ) {
 				$open[] = $variantId;
 			}
 		}
@@ -674,8 +676,12 @@ final class StockService {
 	 * Removes the stock of variants being deleted, at every location: called by the product delete, inside its transaction.
 	 *
 	 * Per variant, ascending: its policy is locked, then every item of it, in ascending location
-	 * order; an open allocation at any location refuses the whole delete with
-	 * `stock.delete_blocked`; at each location every hold is given back, the remaining on_hand is
+	 * order; an allocation open or in transit at any location, or a line of the variant on a
+	 * transfer requested or in transit, refuses the whole delete with `stock.delete_blocked`, since
+	 * units on the way would otherwise arrive for a variant that is gone. The transfer check locks
+	 * the lines and their transfers, which a transfer's receipt takes before the variant's policy,
+	 * so the two can deadlock: the caller's deadlock retry policy runs the delete again, and it is
+	 * then refused or goes on. At each location every hold is given back, the remaining on_hand is
 	 * written off with a final ledger entry, reason `variant_deleted`, so the item's ledger adds up
 	 * to zero, and the item is deleted; then the policy is. Its ledger entries stay. A variant with
 	 * no policy and no item is skipped. All of it happens in a savepoint of the caller's
@@ -686,8 +692,8 @@ final class StockService {
 	 *
 	 * @throws \LogicException           Outside a transaction, before any statement.
 	 * @throws \InvalidArgumentException When a variant id is below 1.
-	 * @throws CodedException            `stock.delete_blocked` for a variant with an open allocation; `stock.projection_corrupt`
-	 *                                   when an item's `held` is below its rows.
+	 * @throws CodedException            `stock.delete_blocked` for a variant with an allocation open or in transit, or units on a
+	 *                                   transfer not yet received; `stock.projection_corrupt` when an item's `held` is below its rows.
 	 *
 	 * @param int[] $variantIds The variants.
 	 * @param Actor $actor      On whose authority.
@@ -714,7 +720,7 @@ final class StockService {
 						continue;
 					}
 
-					if ( $this->stock->hasOpenAllocation( $variantId ) ) {
+					if ( $this->isPromised( $variantId ) ) {
 						CodedException::raise( InventoryError::DeleteBlocked, array( 'variant_id' => $variantId ) );
 					}
 
@@ -1407,6 +1413,18 @@ final class StockService {
 		}
 
 		return $this->locations->findByUuid( $uuid ) ?? CodedException::raise( InventoryError::LocationMissing, array( 'location_id' => $uuid ) );
+	}
+
+	/**
+	 * Tells whether a variant's units are promised: an allocation of it is open or in transit, or a line of it is on a transfer requested or in transit. Two locking reads.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId The variant.
+	 * @return bool True when its delete is refused.
+	 */
+	private function isPromised( int $variantId ): bool {
+		return $this->stock->hasOpenAllocation( $variantId ) || $this->stock->hasTransferInFlight( $variantId );
 	}
 
 	/**

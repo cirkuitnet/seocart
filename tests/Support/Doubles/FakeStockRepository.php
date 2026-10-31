@@ -644,10 +644,11 @@ final class FakeStockRepository implements StockRepository {
 	 * @param string       $actorType     The actor type.
 	 * @param int|null     $actorId       The actor.
 	 * @param string|null  $correlationId The correlation id.
+	 * @param int|null     $transferId    Optional. The transfer. Default null.
 	 * @return int The entry's id.
 	 */
-	public function appendLedger( int $variantId, int $locationId, int $delta, int $onHandAfter, LedgerReason $reason, string $actorType, ?int $actorId, ?string $correlationId ): int {
-		$this->write( 'appendLedger:' . $variantId . '@' . $locationId . ':' . $delta );
+	public function appendLedger( int $variantId, int $locationId, int $delta, int $onHandAfter, LedgerReason $reason, string $actorType, ?int $actorId, ?string $correlationId, ?int $transferId = null ): int {
+		$this->write( 'appendLedger:' . $variantId . '@' . $locationId . ':' . $delta . ( null === $transferId ? '' : ':transfer' . $transferId ) );
 
 		$id             = count( $this->ledger ) + 1;
 		$this->ledger[] = array(
@@ -1091,5 +1092,269 @@ final class FakeStockRepository implements StockRepository {
 		}
 
 		return false;
+	}
+
+	/**
+	 * Tells whether a variant's units are on a transfer: the double keeps no transfer.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId The variant.
+	 * @return bool False.
+	 */
+	public function hasTransferInFlight( int $variantId ): bool {
+		$this->write( 'hasTransferInFlight:' . $variantId );
+
+		return false;
+	}
+
+	/**
+	 * Sends an order's allocated units from the item, when it has them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
+	 * @param int $quantity   The units.
+	 * @return bool Whether it matched.
+	 */
+	public function transferOutAllocated( int $variantId, int $locationId, int $quantity ): bool {
+		$this->write( 'transferOutAllocated:' . $variantId . '@' . $locationId . ':' . $quantity );
+
+		$item = self::LOCATION === $locationId ? ( $this->items[ $variantId ] ?? null ) : null;
+
+		if ( null === $item || $item['allocated'] < $quantity || $item['on_hand'] < $quantity ) {
+			return false;
+		}
+
+		$this->items[ $variantId ]['on_hand']   -= $quantity;
+		$this->items[ $variantId ]['allocated'] -= $quantity;
+
+		return true;
+	}
+
+	/**
+	 * Sends available units from the item, when that many are available.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
+	 * @param int $quantity   The units.
+	 * @return bool Whether it matched.
+	 */
+	public function transferOutAvailable( int $variantId, int $locationId, int $quantity ): bool {
+		$this->write( 'transferOutAvailable:' . $variantId . '@' . $locationId . ':' . $quantity );
+
+		if ( ! $this->available( $variantId, $locationId, $quantity ) ) {
+			return false;
+		}
+
+		$this->items[ $variantId ]['on_hand'] -= $quantity;
+
+		return true;
+	}
+
+	/**
+	 * Receives units at the item.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
+	 * @param int $quantity   The units.
+	 * @param int $allocated  How many of them an order waits for.
+	 * @return bool Whether the item is there.
+	 */
+	public function transferIn( int $variantId, int $locationId, int $quantity, int $allocated ): bool {
+		$this->write( 'transferIn:' . $variantId . '@' . $locationId . ':' . $quantity . ':' . $allocated );
+
+		if ( self::LOCATION !== $locationId || ! isset( $this->items[ $variantId ] ) ) {
+			return false;
+		}
+
+		$this->items[ $variantId ]['on_hand']   += $quantity;
+		$this->items[ $variantId ]['allocated'] += $allocated;
+
+		return true;
+	}
+
+	/**
+	 * Moves an allocation to in transit: the double keeps no allocation rows.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $allocationId The allocation.
+	 * @param int $locationId   The location.
+	 * @return bool True.
+	 */
+	public function allocationInTransit( int $allocationId, int $locationId ): bool {
+		$this->write( 'allocationInTransit:' . $allocationId . '@' . $locationId );
+
+		return true;
+	}
+
+	/**
+	 * Reads an allocation in transit: the double keeps none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $allocationId The allocation.
+	 * @return array{order_id: int, order_line_id: int, quantity: int}|null Null.
+	 */
+	public function lockInTransitAllocation( int $allocationId ): ?array {
+		$this->write( 'lockInTransitAllocation:' . $allocationId );
+
+		return null;
+	}
+
+	/**
+	 * Records an order line's received units.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId   The variant.
+	 * @param int $locationId  The destination.
+	 * @param int $orderId     The order.
+	 * @param int $orderLineId The order line.
+	 * @param int $quantity    The units.
+	 */
+	public function allocateReceived( int $variantId, int $locationId, int $orderId, int $orderLineId, int $quantity ): void {
+		$this->write( 'allocateReceived:' . $variantId . '@' . $locationId . ':' . $orderId . ':' . $orderLineId . ':' . $quantity );
+	}
+
+	/**
+	 * Shrinks an allocation in transit: the double keeps none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $allocationId The allocation.
+	 * @param int $quantity     The units.
+	 * @return bool False.
+	 */
+	public function shrinkInTransit( int $allocationId, int $quantity ): bool {
+		$this->write( 'shrinkInTransit:' . $allocationId . ':' . $quantity );
+
+		return false;
+	}
+
+	/**
+	 * Deletes an allocation in transit: the double keeps none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $allocationId The allocation.
+	 * @param int $quantity     The units.
+	 * @return bool False.
+	 */
+	public function deleteInTransit( int $allocationId, int $quantity ): bool {
+		$this->write( 'deleteInTransit:' . $allocationId . ':' . $quantity );
+
+		return false;
+	}
+
+	/**
+	 * Lists an order's open allocations away from a location: the double keeps none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId    The order.
+	 * @param int $locationId The location.
+	 * @return list<array{id: int, variant_id: int, location_id: int, quantity: int}> None.
+	 */
+	public function openAllocationsAway( int $orderId, int $locationId ): array {
+		$this->calls[] = 'openAllocationsAway:' . $orderId . ':' . $locationId;
+
+		return array();
+	}
+
+	/**
+	 * Lists an order's allocations: the double keeps none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId The order.
+	 * @return list<array{id: int, variant_id: int, location_id: int, quantity: int, posted_quantity: int, in_transit: bool}> None.
+	 */
+	public function orderAllocations( int $orderId ): array {
+		$this->calls[] = 'orderAllocations:' . $orderId;
+
+		return array();
+	}
+
+	/**
+	 * Cancels an open allocation: the double keeps none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $allocationId The allocation.
+	 * @return bool False.
+	 */
+	public function cancelOpenAllocation( int $allocationId ): bool {
+		$this->write( 'cancelOpenAllocation:' . $allocationId );
+
+		return false;
+	}
+
+	/**
+	 * Gives allocated units back to the item, when it covers them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
+	 * @param int $quantity   The units.
+	 * @return bool Whether it matched.
+	 */
+	public function giveBackAllocated( int $variantId, int $locationId, int $quantity ): bool {
+		$this->write( 'giveBackAllocated:' . $variantId . '@' . $locationId . ':' . $quantity );
+
+		if ( self::LOCATION !== $locationId || ( $this->items[ $variantId ]['allocated'] ?? 0 ) < $quantity ) {
+			return false;
+		}
+
+		$this->items[ $variantId ]['allocated'] -= $quantity;
+
+		return true;
+	}
+
+	/**
+	 * Cancels an allocation in transit: the double keeps none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $allocationId The allocation.
+	 * @return bool False.
+	 */
+	public function cancelInTransitAllocation( int $allocationId ): bool {
+		$this->write( 'cancelInTransitAllocation:' . $allocationId );
+
+		return false;
+	}
+
+	/**
+	 * Lists the variants with units available at the location, after a variant.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId     The location.
+	 * @param int $afterVariantId Only variants with a higher id.
+	 * @param int $limit          The most variants.
+	 * @return list<int> The variants, ascending.
+	 */
+	public function movableItems( int $locationId, int $afterVariantId, int $limit ): array {
+		$this->calls[] = 'movableItems:' . $locationId . ':' . $afterVariantId;
+
+		$variants = array();
+
+		foreach ( self::LOCATION === $locationId ? $this->items : array() as $variantId => $item ) {
+			if ( $variantId > $afterVariantId && $item['on_hand'] - $item['allocated'] - $item['held'] > 0 ) {
+				$variants[] = (int) $variantId;
+			}
+		}
+
+		sort( $variants );
+
+		return array_slice( $variants, 0, $limit );
 	}
 }

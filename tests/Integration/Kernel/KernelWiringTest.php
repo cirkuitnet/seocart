@@ -125,6 +125,7 @@ final class KernelWiringTest extends WP_UnitTestCase {
 			'wp_after_insert_post @10 ' . self::MODULES,
 			'transition_post_status @10 ' . self::MODULES,
 			'pre_delete_post @' . PHP_INT_MAX . ' ' . self::MODULES,
+			'seocart_stock_transfer_fell_short @10 ' . self::MODULES,
 		);
 
 		if ( 'admin' === $context ) {

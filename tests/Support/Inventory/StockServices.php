@@ -16,17 +16,20 @@ use SEOCart\Inventory\Application\FulfilmentRouting;
 use SEOCart\Inventory\Application\LocationDirectory;
 use SEOCart\Inventory\Application\Locations;
 use SEOCart\Inventory\Application\StockService;
+use SEOCart\Inventory\Application\Transfers;
 use SEOCart\Inventory\Domain\LocationRepository;
 use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Inventory\Domain\StockRepository;
 use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
 use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
+use SEOCart\Inventory\Infrastructure\MysqlTransferRepository;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\EventPublisher;
+use SEOCart\Platform\Jobs\JobQueue;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Support\Clock;
 use SEOCart\Support\IdGenerator;
@@ -92,12 +95,32 @@ final class StockServices {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param Database    $db  The connection, which is also the unit of work.
-	 * @param IdGenerator $ids Mints new locations' public identifiers.
+	 * @param Database    $db        The connection, which is also the unit of work.
+	 * @param IdGenerator $ids       Mints new locations' public identifiers.
+	 * @param Transfers   $transfers Moves a deactivated location's stock.
 	 * @return Locations The service.
 	 */
-	public static function locations( Database $db, IdGenerator $ids ): Locations {
-		return new Locations( new MysqlLocationRepository( $db ), new MysqlStockRepository( $db ), $db, $ids, new Authorizer( new CapabilityDeclaration() ) );
+	public static function locations( Database $db, IdGenerator $ids, Transfers $transfers ): Locations {
+		return new Locations( new MysqlLocationRepository( $db ), new MysqlStockRepository( $db ), $db, $ids, new Authorizer( new CapabilityDeclaration() ), $transfers );
+	}
+
+	/**
+	 * Builds the transfer service over a connection and the MySQL repositories, as the plugin wires it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Database       $db          The connection, which is also the unit of work.
+	 * @param EventPublisher $events      Publishes the events.
+	 * @param IdGenerator    $ids         Mints transfers' public identifiers.
+	 * @param Clock          $clock       Says when an event happened.
+	 * @param CorrelationId  $correlation The request's correlation id.
+	 * @param JobQueue       $queue       Queues a deactivation's move.
+	 * @return Transfers The service.
+	 */
+	public static function transfers( Database $db, EventPublisher $events, IdGenerator $ids, Clock $clock, CorrelationId $correlation, JobQueue $queue ): Transfers {
+		$locations = new MysqlLocationRepository( $db );
+
+		return new Transfers( new MysqlTransferRepository( $db ), new MysqlStockRepository( $db ), $locations, new LocationDirectory( $locations ), $db, $events, $ids, $clock, $correlation, new Authorizer( new CapabilityDeclaration() ), $queue );
 	}
 
 	/**
@@ -105,13 +128,17 @@ final class StockServices {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param Database     $db      The connection.
-	 * @param StockService $service The service its repair writes through.
+	 * @param Database      $db          The connection.
+	 * @param StockService  $service     The service its repair writes through.
+	 * @param \Closure|null $orderStatus Optional. Returns an order's status from its id, or null. Default null: no order exists.
+	 * @param int           $warningDays Optional. The days a transfer may stay requested or in transit. Default 3, the setting's default.
 	 * @return StockProjectionCheck The check.
+	 *
+	 * @phpstan-param (\Closure(int): ?string)|null $orderStatus
 	 */
-	public static function check( Database $db, StockService $service ): StockProjectionCheck {
+	public static function check( Database $db, StockService $service, ?\Closure $orderStatus = null, int $warningDays = 3 ): StockProjectionCheck {
 		$locations = new MysqlLocationRepository( $db );
 
-		return new StockProjectionCheck( new MysqlStockRepository( $db ), $locations, new LocationDirectory( $locations ), $service, $db );
+		return new StockProjectionCheck( new MysqlStockRepository( $db ), $locations, new LocationDirectory( $locations ), $service, $db, new MysqlTransferRepository( $db ), static fn(): int => $warningDays, $orderStatus ?? static fn(): ?string => null );
 	}
 }

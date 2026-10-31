@@ -295,14 +295,42 @@ final class LocationOperations {
 		return new OperationDefinition(
 			id: self::DEACTIVATE_LOCATION,
 			label: static fn(): string => __( 'Deactivate location', 'seocart' ),
-			summary: 'Deactivates a location: from now on no order is routed to it and its units are for sale nowhere, while its stock stays where it is; the default location cannot be deactivated.',
-			input: array( self::locationUuid( 'The location to deactivate.' ) ),
-			output: self::location(),
+			summary: 'Deactivates a location: from now on no order is routed to it and its units are for sale nowhere, while its stock stays where it is, or its available units move to another location as one transfer; the default location cannot be deactivated.',
+			input: array(
+				self::locationUuid( 'The location to deactivate.' ),
+				new FieldSpec(
+					name: 'move_stock_to',
+					type: FieldType::Uuid,
+					description: 'An active location to move the deactivated location\'s available units to, as one transfer worked in the background; units promised to orders or held by checkouts stay. Moving stock also needs the capability that manages inventory. Repeated with the same location, the deactivation answers the same transfer. Turning the location on again ends the move, the units moved so far staying where they arrived.',
+					label: static fn(): string => __( 'Move stock to', 'seocart' ),
+					example: self::EXAMPLE_UUID
+				),
+			),
+			output: new ResourceSchema(
+				'LocationDeactivation',
+				array_merge(
+					self::locationFields(),
+					array(
+						new FieldSpec(
+							name: 'move_transfer_uuid',
+							type: FieldType::Uuid,
+							description: 'The transfer that moves the location\'s available units, or null when no move was asked for.',
+							label: static fn(): string => __( 'Stock move', 'seocart' ),
+							example: self::EXAMPLE_UUID,
+							required: true,
+							nullable: true
+						),
+					)
+				)
+			),
 			capability: self::CAPABILITY,
 			resource_field: null,
 			errors: array(
 				InventoryError::LocationMissing,
 				InventoryError::LocationIsDefault,
+				InventoryError::LocationInactive,
+				InventoryError::TransferSameLocation,
+				InventoryError::TransferState,
 				AuthorizationError::Denied,
 			),
 			annotations: new Annotations( read_only: false, destructive: true, idempotent: true ),

@@ -338,7 +338,7 @@ final class StockServiceTest extends TestCase {
 	}
 
 	/**
-	 * Tests the delete seam's order: lock, the allocation check, the release, the write-off, the delete.
+	 * Tests the delete seam's order: lock, the allocation and transfer checks, the release, the write-off, the delete.
 	 *
 	 * @since 0.1.0
 	 */
@@ -351,7 +351,7 @@ final class StockServiceTest extends TestCase {
 		);
 
 		$this->assertSame(
-			array( 'lockPolicy:4', 'lockItemsOf:4', 'hasOpenAllocation:4', 'reclaimItem:4@1', 'lockItem:4@1', 'lockedLevel:4@1', 'adjust:4@1:-3', 'lockedLevel:4@1', 'appendLedger:4@1:-3', 'deleteItem:4@1', 'deletePolicy:4' ),
+			array( 'lockPolicy:4', 'lockItemsOf:4', 'hasOpenAllocation:4', 'hasTransferInFlight:4', 'reclaimItem:4@1', 'lockItem:4@1', 'lockedLevel:4@1', 'adjust:4@1:-3', 'lockedLevel:4@1', 'appendLedger:4@1:-3', 'deleteItem:4@1', 'deletePolicy:4' ),
 			$this->stock->calls()
 		);
 

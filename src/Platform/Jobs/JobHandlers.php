@@ -14,6 +14,7 @@ namespace SEOCart\Platform\Jobs;
 use SEOCart\Cart\Infrastructure\Jobs\SweepExpiredCarts;
 use SEOCart\Checkout\Infrastructure\Jobs\IdempotencyKeyRetention;
 use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
+use SEOCart\Inventory\Infrastructure\Jobs\MoveLocationStock;
 use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
 use SEOCart\Payment\Infrastructure\Jobs\WebhookReceiptRetention;
 use SEOCart\Platform\Jobs\Handlers\JobHistoryCleanup;
@@ -60,6 +61,7 @@ final class JobHandlers {
 		JobHistoryCleanup::class,
 		LogRetentionJob::class,
 		SweepHolds::class,
+		MoveLocationStock::class,
 		SweepRateCounters::class,
 		SweepExpiredCarts::class,
 		IdempotencyKeyRetention::class,

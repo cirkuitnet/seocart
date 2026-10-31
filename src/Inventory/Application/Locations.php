@@ -15,6 +15,7 @@ use SEOCart\Inventory\Domain\LocationDetails;
 use SEOCart\Inventory\Domain\LocationInUse;
 use SEOCart\Inventory\Domain\LocationRecord;
 use SEOCart\Inventory\Domain\LocationRepository;
+use SEOCart\Inventory\Domain\MerchantText;
 use SEOCart\Inventory\Domain\PickupHours;
 use SEOCart\Inventory\Domain\StockRepository;
 use SEOCart\Platform\Authorization\Actor;
@@ -48,7 +49,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * Every operation authorizes its actor itself: the reads with the capability that edits stock,
  * so whoever edits a location's stock can list the locations, and the changes with the one that
- * edits the store's settings.
+ * edits the store's settings. A deactivation that also moves the location's stock asks for both,
+ * since it moves stock as a transfer does.
  *
  * @since 0.2.0
  *
@@ -74,14 +76,6 @@ final class Locations {
 	 */
 	private const NOT_IN_A_LINE = '/[\x00-\x1F\x7F]/';
 
-	/**
-	 * A character no text of several lines holds: a control character other than a tab or a line break.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @var string
-	 */
-	private const NOT_IN_TEXT = '/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/';
 
 	/**
 	 * The locations.
@@ -129,6 +123,15 @@ final class Locations {
 	private Authorizer $authorizer;
 
 	/**
+	 * Moves a deactivated location's stock, as one transfer.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var Transfers
+	 */
+	private Transfers $transfers;
+
+	/**
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.2.0
@@ -138,13 +141,15 @@ final class Locations {
 	 * @param TransactionManager $tx         The unit of work.
 	 * @param IdGenerator        $ids        Mints a new location's public identifier.
 	 * @param Authorizer         $authorizer The capability check of the operations it performs.
+	 * @param Transfers          $transfers  Moves a deactivated location's stock.
 	 */
-	public function __construct( LocationRepository $locations, StockRepository $stock, TransactionManager $tx, IdGenerator $ids, Authorizer $authorizer ) {
+	public function __construct( LocationRepository $locations, StockRepository $stock, TransactionManager $tx, IdGenerator $ids, Authorizer $authorizer, Transfers $transfers ) {
 		$this->locations  = $locations;
 		$this->stock      = $stock;
 		$this->tx         = $tx;
 		$this->ids        = $ids;
 		$this->authorizer = $authorizer;
+		$this->transfers  = $transfers;
 	}
 
 	/**
@@ -225,9 +230,10 @@ final class Locations {
 	 *
 	 * The fields are checked before any statement; then, under the location's lock, the refusals
 	 * come before the writes: the default cannot stop being it, an inactive location cannot become
-	 * it, and turning a location off goes through deactivate(). Pickup hours, when given, replace
-	 * the location's seven days. Making the location the default moves the marker last, in the same
-	 * unit of work.
+	 * it, and turning a location off goes through deactivate(). Turning one on again ends a move of
+	 * its stock under way: the move's next page reads the location active and receives the move
+	 * with what it moved. Pickup hours, when given, replace the location's seven days. Making the
+	 * location the default moves the marker last, in the same unit of work.
 	 *
 	 * @since 0.2.0
 	 *
@@ -260,37 +266,58 @@ final class Locations {
 	}
 
 	/**
-	 * Performs `inventory.deactivate_location`: no order is routed to the location from now on, and its stock stays where it is.
+	 * Performs `inventory.deactivate_location`: no order is routed to the location from now on, and its stock stays where it is, or its available units move to another location.
 	 *
-	 * Deactivating a location that is inactive already changes nothing and answers the same.
+	 * Deactivating a location that is inactive already changes nothing and answers the same. A
+	 * location to move the stock to also needs the capability that manages inventory, checked
+	 * before any statement, so a refusal changes nothing. In the same unit of work as the
+	 * deactivation, under the location's lock, Transfers::moveStockOf() starts the move, one
+	 * transfer worked page by page by a background job, or finds the one under way: the answer
+	 * names it, and a repeat with the same target answers the same move.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @throws CodedException `authorization.denied` when the actor may not manage the store's settings;
-	 *                        `stock.location_missing` when no location has the uuid; `stock.location_is_default`
-	 *                        when it is the default location.
+	 * @throws CodedException `authorization.denied` when the actor may not manage the store's settings, or, to move its
+	 *                        stock, inventory; `stock.location_missing` when no location has the uuid, or the target's;
+	 *                        `stock.location_is_default` when it is the default location; `stock.transfer_same_location`
+	 *                        when the target is the location itself; `stock.location_inactive` when the target is
+	 *                        deactivated; `stock.transfer_state` when the location's stock is on its way elsewhere.
 	 *
-	 * @param array<string, mixed> $input The prepared input: location_uuid.
+	 * @param array<string, mixed> $input The prepared input: location_uuid and optionally move_stock_to.
 	 * @param Actor                $actor Who deactivates it.
-	 * @return array<string, mixed> The location as it is now, keyed by wire name.
+	 * @return array<string, mixed> The location as it is now and the move, keyed by wire name.
 	 */
 	public function deactivateLocation( array $input, Actor $actor ): array {
 		$this->authorizer->authorize( $actor, LocationOperations::CAPABILITY );
 
 		$uuid   = (string) $input['location_uuid'];
-		$record = $this->tx->transaction(
-			function () use ( $uuid ): LocationRecord {
-				$record = $this->locked( $uuid );
+		$target = isset( $input['move_stock_to'] ) ? strtolower( (string) $input['move_stock_to'] ) : null;
+
+		if ( null !== $target ) {
+			$this->authorizer->authorize( $actor, InventoryOperations::CAPABILITY );
+
+			if ( strtolower( $uuid ) === $target ) {
+				CodedException::raise( InventoryError::TransferSameLocation, array( 'location_id' => $target ) );
+			}
+		}
+
+		list( $record, $move ) = $this->tx->transaction(
+			function () use ( $uuid, $target, $actor ): array {
+				$record      = $this->locked( $uuid );
+				$wasInactive = ! $record->active;
 
 				$this->deactivate( $record );
 
-				return new LocationRecord( $record->id, $record->uuid, false, $record->isDefault, $record->details, $record->hours );
+				return array(
+					new LocationRecord( $record->id, $record->uuid, false, $record->isDefault, $record->details, $record->hours ),
+					null === $target ? null : $this->transfers->moveStockOf( $record, $target, $wasInactive, $actor ),
+				);
 			},
 			RetryPolicy::deadlocks(),
 			Isolation::ReadCommitted
 		);
 
-		return self::answer( $record );
+		return self::answer( $record ) + array( 'move_transfer_uuid' => $move );
 	}
 
 	/**
@@ -442,7 +469,10 @@ final class Locations {
 	 * Checks the fields an input gives, before any statement, and returns them as a record holds them.
 	 *
 	 * Text is trimmed. A name is not blank; no line of text holds a control character; the pickup
-	 * instructions may hold line breaks; an empty phone or empty instructions remove them.
+	 * instructions may hold line breaks; an empty phone or empty instructions remove them. How soon a
+	 * pickup is ready is one of LocationDetails::PICKUP_READY_IN, and a priority is 0 or more: the
+	 * declaration says so to every surface, and the service keeps them for any other caller, here
+	 * with the other fields, so a refused field is always named by the one error.
 	 *
 	 * @since 0.2.0
 	 *
@@ -481,12 +511,16 @@ final class Locations {
 
 		if ( array_key_exists( 'pickup_ready_in', $input ) ) {
 			$changes['pickup_ready_in'] = is_string( $input['pickup_ready_in'] ) ? $input['pickup_ready_in'] : '';
+
+			if ( ! in_array( $changes['pickup_ready_in'], LocationDetails::PICKUP_READY_IN, true ) ) {
+				self::refuseField( 'pickup_ready_in' );
+			}
 		}
 
 		if ( array_key_exists( 'pickup_instructions', $input ) ) {
 			$instructions = trim( is_string( $input['pickup_instructions'] ) ? $input['pickup_instructions'] : '' );
 
-			if ( 1 === preg_match( self::NOT_IN_TEXT, $instructions ) ) {
+			if ( ! MerchantText::isText( $instructions ) ) {
 				self::refuseField( 'pickup_instructions' );
 			}
 
@@ -495,6 +529,10 @@ final class Locations {
 
 		if ( array_key_exists( 'priority', $input ) ) {
 			$changes['priority'] = is_int( $input['priority'] ) ? $input['priority'] : 0;
+
+			if ( $changes['priority'] < 0 ) {
+				self::refuseField( 'priority' );
+			}
 		}
 
 		return $changes;

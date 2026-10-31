@@ -39,8 +39,10 @@ defined( 'ABSPATH' ) || exit;
  * constants alone that no statement updates or deletes the ledger.
  *
  * It keeps the one-lock rule StockRepository states: the claims, of a hold and of an allocation,
- * the conversion of a hold into an allocation, the upsert CREATE_ITEM_AT, which an adjustment
- * sends first, and the item lock are the statements that take an item's row lock, and every
+ * the conversion of a hold into an allocation, the upsert CREATE_ITEM_AT, which an adjustment and
+ * a transfer's receipt send first and TRANSFER_IN follows, the two statements that send a
+ * transfer's units, TRANSFER_OUT_ALLOCATED and TRANSFER_OUT_AVAILABLE, and the item lock are the
+ * statements that take an item's row lock, and every
  * reclaim begins with the item lock, so its hold rows are claimed, given back and deleted by the
  * item's lock holder alone; a conversion deletes or reduces its hold row only once its own
  * statement holds the lock. Every conditional update of an item sets `updated_at` from the database clock, and
@@ -322,13 +324,14 @@ final class MysqlStockRepository implements StockRepository {
 	public const ADJUST_EXPECTING = 'UPDATE {stock_items} SET on_hand = on_hand + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND location_id = %d AND on_hand + %d >= 0 AND on_hand = %d';
 
 	/**
-	 * A ledger entry; 0 stands for no actor, and an empty string for no correlation id.
+	 * A ledger entry; 0 stands for no actor and no transfer, and an empty string for no correlation id.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The transfer.
 	 *
 	 * @var string
 	 */
-	public const APPEND_LEDGER = "INSERT INTO {stock_ledger} ( variant_id, location_id, delta, on_hand_after, reason, actor_type, actor_id, correlation_id, created_at ) VALUES ( %d, %d, %d, %d, %s, %s, NULLIF( %d, 0 ), NULLIF( %s, '' ), UTC_TIMESTAMP(6) )";
+	public const APPEND_LEDGER = "INSERT INTO {stock_ledger} ( variant_id, location_id, delta, on_hand_after, reason, transfer_id, actor_type, actor_id, correlation_id, created_at ) VALUES ( %d, %d, %d, %d, %s, NULLIF( %d, 0 ), %s, NULLIF( %d, 0 ), NULLIF( %s, '' ), UTC_TIMESTAMP(6) )";
 
 	/**
 	 * Variants' levels at the default location, with their policies, a plain read.
@@ -390,13 +393,14 @@ final class MysqlStockRepository implements StockRepository {
 	public const LOCKED_LEVEL = 'SELECT i.variant_id, i.location_id, i.on_hand, i.allocated, i.held, ( SELECT p.track FROM {stock_policies} p WHERE p.variant_id = i.variant_id ) AS track, ( SELECT b.backorder_policy FROM {stock_policies} b WHERE b.variant_id = i.variant_id ) AS backorder_policy, ( SELECT SUM( t.on_hand ) FROM {stock_items} t WHERE t.variant_id = i.variant_id ) AS variant_on_hand, ( SELECT SUM( a.on_hand - a.allocated - a.held ) FROM {stock_items} a WHERE a.variant_id = i.variant_id ) AS variant_available FROM {stock_items} i WHERE i.variant_id = %d AND i.location_id = %d FOR UPDATE';
 
 	/**
-	 * One open allocation of a variant, at any location, a locking read.
+	 * One allocation of a variant, at any location, open or travelling with a transfer, a locking read.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 In transit too.
 	 *
 	 * @var string
 	 */
-	public const OPEN_ALLOCATION = "SELECT id FROM {stock_allocations} WHERE variant_id = %d AND state = 'open' LIMIT 1 FOR UPDATE";
+	public const OPEN_ALLOCATION = "SELECT id FROM {stock_allocations} WHERE variant_id = %d AND state IN ('open','in_transit') LIMIT 1 FOR UPDATE";
 
 	/**
 	 * A variant's policy, locked: the first lock of a variant's delete.
@@ -999,12 +1003,13 @@ final class MysqlStockRepository implements StockRepository {
 	 * @param string       $actorType     `user` or `system`.
 	 * @param int|null     $actorId       The user, or null.
 	 * @param string|null  $correlationId The correlation id, or null.
+	 * @param int|null     $transferId    Optional. The transfer, or null. Default null.
 	 * @return int The entry's id.
 	 */
-	public function appendLedger( int $variantId, int $locationId, int $delta, int $onHandAfter, LedgerReason $reason, string $actorType, ?int $actorId, ?string $correlationId ): int {
+	public function appendLedger( int $variantId, int $locationId, int $delta, int $onHandAfter, LedgerReason $reason, string $actorType, ?int $actorId, ?string $correlationId, ?int $transferId = null ): int {
 		$this->requireTransaction( __FUNCTION__ );
 
-		$this->write( self::APPEND_LEDGER, $variantId, $locationId, $delta, $onHandAfter, $reason->value, $actorType, $actorId ?? 0, $correlationId ?? '' );
+		$this->write( self::APPEND_LEDGER, $variantId, $locationId, $delta, $onHandAfter, $reason->value, $transferId ?? 0, $actorType, $actorId ?? 0, $correlationId ?? '' );
 
 		return $this->db->lastInsertId();
 	}
@@ -1753,5 +1758,386 @@ final class MysqlStockRepository implements StockRepository {
 	 */
 	public function hasAllocationsFor( int $orderId ): bool {
 		return array() !== $this->rows( self::ORDER_ALLOCATION, $orderId );
+	}
+
+	/**
+	 * One line of a variant on a transfer requested or in transit, a locking read of the line and its transfer: a variant's delete waits for, or is refused by, a transfer of its units.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const TRANSFER_IN_FLIGHT = "SELECT l.id FROM {stock_transfer_lines} l JOIN {stock_transfers} t ON t.id = l.transfer_id WHERE l.variant_id = %d AND t.state IN ('requested','in_transit') LIMIT 1 FOR UPDATE";
+
+	/**
+	 * Sends an order's allocated units from an item: they leave on_hand and `allocated` together, as a post does, only when the item has them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const TRANSFER_OUT_ALLOCATED = 'UPDATE {stock_items} SET on_hand = on_hand - %d, allocated = allocated - %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND location_id = %d AND allocated >= %d AND on_hand >= %d';
+
+	/**
+	 * Sends available units from an item: only when that many are available, the claim's own predicate.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const TRANSFER_OUT_AVAILABLE = 'UPDATE {stock_items} SET on_hand = on_hand - %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND location_id = %d AND ( on_hand - allocated - held ) >= %d';
+
+	/**
+	 * Receives units at an item, the allocated ones with them: after CREATE_ITEM_AT, which holds the item.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const TRANSFER_IN = 'UPDATE {stock_items} SET on_hand = on_hand + %d, allocated = allocated + %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND location_id = %d';
+
+	/**
+	 * An open allocation at a location sets out with its units: in transit, it counts at no item.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ALLOCATION_IN_TRANSIT = "UPDATE {stock_allocations} SET state = 'in_transit' WHERE id = %d AND state = 'open' AND location_id = %d";
+
+	/**
+	 * An allocation in transit, a locking read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const IN_TRANSIT_ALLOCATION = "SELECT order_id, order_line_id, quantity FROM {stock_allocations} WHERE id = %d AND state = 'in_transit' FOR UPDATE";
+
+	/**
+	 * The units a transfer brought an order line at its destination: its open allocation there, created or added to.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ALLOCATE_RECEIVED = "INSERT INTO {stock_allocations} ( variant_id, location_id, order_id, order_line_id, quantity, posted_quantity, state, created_at ) VALUES ( %d, %d, %d, %d, %d, 0, 'open', UTC_TIMESTAMP(6) ) ON DUPLICATE KEY UPDATE quantity = quantity + VALUES( quantity )";
+
+	/**
+	 * Takes units received or lost off an allocation in transit that keeps some on the way.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const SHRINK_IN_TRANSIT = "UPDATE {stock_allocations} SET quantity = quantity - %d WHERE id = %d AND state = 'in_transit' AND quantity > %d";
+
+	/**
+	 * Deletes an allocation in transit whose last units were received or lost.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DELETE_IN_TRANSIT = "DELETE FROM {stock_allocations} WHERE id = %d AND state = 'in_transit' AND quantity = %d";
+
+	/**
+	 * An order's open allocations away from one location, ascending by location then variant: what a waiting order needs brought to it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const OPEN_ALLOCATIONS_AWAY = "SELECT id, variant_id, location_id, quantity FROM {stock_allocations} WHERE order_id = %d AND state = 'open' AND location_id <> %d ORDER BY location_id, variant_id";
+
+	/**
+	 * An order's allocations open or in transit, ascending by variant then location: what its cancel gives back or detaches.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ORDER_ALLOCATIONS = "SELECT id, variant_id, location_id, quantity, posted_quantity, state FROM {stock_allocations} WHERE order_id = %d AND state IN ('open','in_transit') ORDER BY variant_id, location_id, id";
+
+	/**
+	 * Cancels an open allocation.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CANCEL_OPEN_ALLOCATION = "UPDATE {stock_allocations} SET state = 'cancelled' WHERE id = %d AND state = 'open'";
+
+	/**
+	 * Gives units a cancelled allocation promised back to its item, only when `allocated` covers them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const GIVE_BACK_ALLOCATED = 'UPDATE {stock_items} SET allocated = allocated - %d, updated_at = UTC_TIMESTAMP(6) WHERE variant_id = %d AND location_id = %d AND allocated >= %d';
+
+	/**
+	 * Cancels an allocation in transit; its units stay on the transfer's line.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CANCEL_IN_TRANSIT_ALLOCATION = "UPDATE {stock_allocations} SET state = 'cancelled' WHERE id = %d AND state = 'in_transit'";
+
+	/**
+	 * A page of a location's variants with units available, ascending after a variant: what a deactivation's move takes next.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const MOVABLE_ITEMS = 'SELECT variant_id FROM {stock_items} WHERE location_id = %d AND variant_id > %d AND on_hand - allocated - held > 0 ORDER BY variant_id LIMIT %d';
+
+	/**
+	 * Tells whether any line of a variant is on a transfer requested or in transit, with a locking read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId The variant.
+	 * @return bool True when one is.
+	 */
+	public function hasTransferInFlight( int $variantId ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return array() !== $this->rows( self::TRANSFER_IN_FLIGHT, $variantId );
+	}
+
+	/**
+	 * Sends an order's allocated units from an item.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
+	 * @param int $quantity   The units.
+	 * @return bool True when the update matched.
+	 */
+	public function transferOutAllocated( int $variantId, int $locationId, int $quantity ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->write( self::TRANSFER_OUT_ALLOCATED, $quantity, $quantity, $variantId, $locationId, $quantity, $quantity );
+	}
+
+	/**
+	 * Sends available units from an item.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
+	 * @param int $quantity   The units.
+	 * @return bool True when the update matched.
+	 */
+	public function transferOutAvailable( int $variantId, int $locationId, int $quantity ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->write( self::TRANSFER_OUT_AVAILABLE, $quantity, $variantId, $locationId, $quantity );
+	}
+
+	/**
+	 * Receives units at an item.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
+	 * @param int $quantity   The units received.
+	 * @param int $allocated  How many of them an order waits for.
+	 * @return bool True when the item was there.
+	 */
+	public function transferIn( int $variantId, int $locationId, int $quantity, int $allocated ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->write( self::TRANSFER_IN, $quantity, $allocated, $variantId, $locationId );
+	}
+
+	/**
+	 * Moves an open allocation to in transit.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $allocationId The allocation.
+	 * @param int $locationId   The location its units leave.
+	 * @return bool True when it was open there.
+	 */
+	public function allocationInTransit( int $allocationId, int $locationId ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->write( self::ALLOCATION_IN_TRANSIT, $allocationId, $locationId );
+	}
+
+	/**
+	 * Reads an allocation in transit with a locking read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $allocationId The allocation.
+	 * @return array{order_id: int, order_line_id: int, quantity: int}|null The allocation, or null.
+	 */
+	public function lockInTransitAllocation( int $allocationId ): ?array {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$row = $this->rows( self::IN_TRANSIT_ALLOCATION, $allocationId )[0] ?? null;
+
+		return null === $row ? null : array(
+			'order_id'      => (int) $row['order_id'],
+			'order_line_id' => (int) $row['order_line_id'],
+			'quantity'      => (int) $row['quantity'],
+		);
+	}
+
+	/**
+	 * Gives an order line its received units at the destination.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId   The variant.
+	 * @param int $locationId  The destination.
+	 * @param int $orderId     The order.
+	 * @param int $orderLineId The order line.
+	 * @param int $quantity    The units.
+	 */
+	public function allocateReceived( int $variantId, int $locationId, int $orderId, int $orderLineId, int $quantity ): void {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$this->write( self::ALLOCATE_RECEIVED, $variantId, $locationId, $orderId, $orderLineId, $quantity );
+	}
+
+	/**
+	 * Takes units off an allocation in transit that keeps some.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $allocationId The allocation.
+	 * @param int $quantity     The units.
+	 * @return bool True when it held more.
+	 */
+	public function shrinkInTransit( int $allocationId, int $quantity ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->write( self::SHRINK_IN_TRANSIT, $quantity, $allocationId, $quantity );
+	}
+
+	/**
+	 * Deletes an allocation in transit whose last units arrived or were lost.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $allocationId The allocation.
+	 * @param int $quantity     The units it holds.
+	 * @return bool True when it held exactly that many.
+	 */
+	public function deleteInTransit( int $allocationId, int $quantity ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->write( self::DELETE_IN_TRANSIT, $allocationId, $quantity );
+	}
+
+	/**
+	 * Lists an order's open allocations away from a location.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId    The order.
+	 * @param int $locationId The location to leave out.
+	 * @return list<array{id: int, variant_id: int, location_id: int, quantity: int}> The allocations.
+	 */
+	public function openAllocationsAway( int $orderId, int $locationId ): array {
+		return array_map(
+			static fn( array $row ): array => array(
+				'id'          => (int) $row['id'],
+				'variant_id'  => (int) $row['variant_id'],
+				'location_id' => (int) $row['location_id'],
+				'quantity'    => (int) $row['quantity'],
+			),
+			$this->rows( self::OPEN_ALLOCATIONS_AWAY, $orderId, $locationId )
+		);
+	}
+
+	/**
+	 * Lists an order's allocations open or in transit.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId The order.
+	 * @return list<array{id: int, variant_id: int, location_id: int, quantity: int, posted_quantity: int, in_transit: bool}> The allocations.
+	 */
+	public function orderAllocations( int $orderId ): array {
+		return array_map(
+			static fn( array $row ): array => array(
+				'id'              => (int) $row['id'],
+				'variant_id'      => (int) $row['variant_id'],
+				'location_id'     => (int) $row['location_id'],
+				'quantity'        => (int) $row['quantity'],
+				'posted_quantity' => (int) $row['posted_quantity'],
+				'in_transit'      => 'in_transit' === (string) $row['state'],
+			),
+			$this->rows( self::ORDER_ALLOCATIONS, $orderId )
+		);
+	}
+
+	/**
+	 * Cancels an open allocation.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $allocationId The allocation.
+	 * @return bool True when it was open.
+	 */
+	public function cancelOpenAllocation( int $allocationId ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->write( self::CANCEL_OPEN_ALLOCATION, $allocationId );
+	}
+
+	/**
+	 * Gives a cancelled allocation's units back to its item.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $variantId  The item's variant.
+	 * @param int $locationId The item's location.
+	 * @param int $quantity   The units.
+	 * @return bool True when `allocated` covered them.
+	 */
+	public function giveBackAllocated( int $variantId, int $locationId, int $quantity ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->write( self::GIVE_BACK_ALLOCATED, $quantity, $variantId, $locationId, $quantity );
+	}
+
+	/**
+	 * Cancels an allocation in transit.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $allocationId The allocation.
+	 * @return bool True when it was in transit.
+	 */
+	public function cancelInTransitAllocation( int $allocationId ): bool {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return 1 === $this->write( self::CANCEL_IN_TRANSIT_ALLOCATION, $allocationId );
+	}
+
+	/**
+	 * Lists a page of a location's variants with units available.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId     The location.
+	 * @param int $afterVariantId Only variants with a higher id, or 0.
+	 * @param int $limit          The most variants.
+	 * @return list<int> The variants, ascending.
+	 */
+	public function movableItems( int $locationId, int $afterVariantId, int $limit ): array {
+		return array_map( static fn( array $row ): int => (int) $row['variant_id'], $this->rows( self::MOVABLE_ITEMS, $locationId, $afterVariantId, $limit ) );
 	}
 }

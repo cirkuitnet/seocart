@@ -301,7 +301,7 @@ final class HoldConcurrencyTest extends StockTestCase {
 		$this->assertTrue( $raced->fired );
 		$this->assertSame( 1, $b->reap(), 'The adjustment records the count although a unit is held.' );
 
-		$b->query( $this->raw( MysqlStockRepository::APPEND_LEDGER, $variant, $this->defaultLocation, -1, 0, 'recount', 'user', 1, '' ) );
+		$b->query( $this->raw( MysqlStockRepository::APPEND_LEDGER, $variant, $this->defaultLocation, -1, 0, 'recount', 0, 'user', 1, '' ) );
 		$b->query( 'COMMIT' );
 
 		$this->assertSame(

@@ -122,7 +122,7 @@ final class LocationOperationSurfacesTest extends StockTestCase {
 			$registry,
 			null,
 			array(
-				Locations::class    => StockServices::locations( $this->db, new SequentialIdGenerator( 400000 ) ),
+				Locations::class    => StockServices::locations( $this->db, new SequentialIdGenerator( 400000 ), $this->transfersOver( $this->db, new SequentialIdGenerator( 410000 ) ) ),
 				StockService::class => $this->service,
 			)
 		);
@@ -230,13 +230,17 @@ final class LocationOperationSurfacesTest extends StockTestCase {
 	}
 
 	/**
-	 * Tests that the stock list answers the same on every surface: each variant's policy, a row for every active location and for an inactive one that has an item, zeros where there is none, and the figure for sale.
+	 * Tests that the stock list answers the same on every surface: each variant's policy, a row for every active location and for an inactive one that has an item, zeros where there is none, each row's own figures, and the figure for sale.
 	 *
-	 * Planted violation, shown red and removed: in StockService::listStock(), list only the
-	 * locations that have an item (drop `|| $location->active`). The active location without an
-	 * item of a variant loses its zero row.
+	 * The two locations' items hold different, nonzero units allocated and held, so a figure
+	 * answered in another's place is seen.
+	 *
+	 * Planted violations, shown red and removed: in StockService::listStock(), list only the
+	 * locations that have an item (drop `|| $location->active`): the active location without an
+	 * item of a variant loses its zero row; and answer `held` in the `allocated` slot.
 	 *
 	 * @since 0.2.0
+	 * @since 0.2.0 Units allocated and held.
 	 */
 	public function test_the_stock_list_is_the_same_on_every_surface(): void {
 		$counted   = self::variant();
@@ -246,8 +250,8 @@ final class LocationOperationSurfacesTest extends StockTestCase {
 		$inactive  = $this->plantLocation( 2, false );
 		$b         = $this->secondConnection();
 
-		$this->stockItem( $counted, 5 );
-		$this->stockItem( $elsewhere, 3, $active );
+		$this->plantItem( $counted, 10, 3, 2 );
+		$this->plantItem( $elsewhere, 7, 1, 4, locationId: $active );
 		$this->plantItem( $counted, locationId: $inactive );
 		$this->plantItem( $untracked, track: false );
 
@@ -255,12 +259,12 @@ final class LocationOperationSurfacesTest extends StockTestCase {
 
 		$outcomes = $this->surfaces->everywhere( LocationOperations::listStock(), array( 'variant_ids' => $untracked . ', ' . $counted . ',' . $elsewhere . ',999999,' . $counted ) );
 		$answers  = self::answers( $outcomes );
-		$row      = static fn( string $uuid, int $onHand = 0 ): array => array(
+		$row      = static fn( string $uuid, int $onHand = 0, int $allocated = 0, int $held = 0 ): array => array(
 			'location_uuid' => $uuid,
 			'on_hand'       => $onHand,
-			'allocated'     => 0,
-			'held'          => 0,
-			'available'     => $onHand,
+			'allocated'     => $allocated,
+			'held'          => $held,
+			'available'     => $onHand - $allocated - $held,
 		);
 		$default  = $this->uuidOf( $b, $this->defaultLocation );
 		$second   = $this->uuidOf( $b, $active );
@@ -272,15 +276,15 @@ final class LocationOperationSurfacesTest extends StockTestCase {
 					'backorder_policy'    => 'no',
 					'low_stock_threshold' => null,
 					'for_sale'            => 5,
-					'locations'           => array( $row( $default, 5 ), $row( $second ), $row( $this->uuidOf( $b, $inactive ) ) ),
+					'locations'           => array( $row( $default, 10, 3, 2 ), $row( $second ), $row( $this->uuidOf( $b, $inactive ) ) ),
 				),
 				array(
 					'variant_id'          => $elsewhere,
 					'track'               => true,
 					'backorder_policy'    => 'no',
 					'low_stock_threshold' => null,
-					'for_sale'            => 3,
-					'locations'           => array( $row( $default ), $row( $second, 3 ) ),
+					'for_sale'            => 2,
+					'locations'           => array( $row( $default ), $row( $second, 7, 1, 4 ) ),
 				),
 				array(
 					'variant_id'          => $untracked,

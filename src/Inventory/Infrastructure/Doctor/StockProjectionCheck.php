@@ -18,6 +18,7 @@ use SEOCart\Inventory\Domain\ReclaimedRows;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
+use SEOCart\Inventory\Infrastructure\MysqlTransferRepository;
 use SEOCart\Platform\Cli\Doctor\CheckResult;
 use SEOCart\Platform\Cli\Doctor\Repairable;
 use SEOCart\Platform\Cli\Doctor\RepairResult;
@@ -55,6 +56,19 @@ defined( 'ABSPATH' ) || exit;
  * that still has units available is a warning: they can be sold from nowhere. The default
  * location without an address yet is reported and does not fail the check: every store starts
  * so, and the address is the merchant's to enter.
+ *
+ * Units on the way between locations are on the transfer lines, in no item. Six transfer lines
+ * hold them to their records, and report only: a line that received and lost more than it sent,
+ * or a received transfer whose lines received and lost less, is critical; so is a sent transfer
+ * whose units on the way, by its lines, are not what its ledger entries moved less what was
+ * lost; an allocation in transit that no line of a transfer in transit carries with the same
+ * units on the way, or the reverse; a transfer naming a location that is gone; and a received
+ * transfer that lost an order's units whose order is not on hold, so the shortage was never acted
+ * on, or was undone by a person. A transfer requested, or in transit, for longer than the
+ * store's warning period is a warning: an order waits for a person, a parcel is late, or a
+ * deactivation's move lost its job. The warning period is the store's setting and the order's
+ * status the order module's, each read through a function the kernel gives, so the check reads
+ * no other module's tables.
  *
  * It reads through the repositories' statements, and prints ids and counts, never anything else.
  *
@@ -126,23 +140,59 @@ final class StockProjectionCheck implements Repairable {
 	private TransactionManager $transactions;
 
 	/**
+	 * The transfer statements.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var MysqlTransferRepository
+	 */
+	private MysqlTransferRepository $transfers;
+
+	/**
+	 * Returns the days a transfer may stay requested or in transit before it is reported.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var \Closure(): int
+	 */
+	private \Closure $warningDays;
+
+	/**
+	 * Returns an order's status, or null when there is no such order.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var \Closure(int): ?string
+	 */
+	private \Closure $orderStatus;
+
+	/**
 	 * Creates the check. Sends nothing.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The locations, and what the repair needs.
+	 * @since 0.2.0 The locations, what the repair needs, and the transfers.
 	 *
 	 * @param MysqlStockRepository    $stock        The stock statements.
 	 * @param MysqlLocationRepository $locations    The location statements.
 	 * @param LocationDirectory       $directory    Which locations serve which purpose.
 	 * @param StockService            $service      Gives a variant what its stock lacks.
 	 * @param TransactionManager      $transactions Runs the repair's units of work.
+	 * @param MysqlTransferRepository $transfers    The transfer statements.
+	 * @param \Closure                $warningDays  Returns the days a transfer may stay requested or in transit (int).
+	 * @param \Closure                $orderStatus  Returns an order's status from its id (int), or null for no such order.
+	 *
+	 * @phpstan-param \Closure(): int           $warningDays
+	 * @phpstan-param \Closure(int): ?string    $orderStatus
 	 */
-	public function __construct( MysqlStockRepository $stock, MysqlLocationRepository $locations, LocationDirectory $directory, StockService $service, TransactionManager $transactions ) {
+	public function __construct( MysqlStockRepository $stock, MysqlLocationRepository $locations, LocationDirectory $directory, StockService $service, TransactionManager $transactions, MysqlTransferRepository $transfers, \Closure $warningDays, \Closure $orderStatus ) {
 		$this->stock        = $stock;
 		$this->locations    = $locations;
 		$this->directory    = $directory;
 		$this->service      = $service;
 		$this->transactions = $transactions;
+		$this->transfers    = $transfers;
+		$this->warningDays  = $warningDays;
+		$this->orderStatus  = $orderStatus;
 	}
 
 	/**
@@ -176,7 +226,7 @@ final class StockProjectionCheck implements Repairable {
 	 */
 	public function run(): CheckResult {
 		$tolerance = self::toleranceSeconds();
-		$findings  = array_merge( $this->drift(), $this->holdFindings( $tolerance ), $this->locationFindings() );
+		$findings  = array_merge( $this->drift(), $this->holdFindings( $tolerance ), $this->locationFindings(), $this->transferFindings() );
 		$notes     = $this->notes();
 
 		if ( array() === $findings ) {
@@ -378,6 +428,64 @@ final class StockProjectionCheck implements Repairable {
 		foreach ( $this->stock->locationUnits( array_map( static fn( Location $location ): int => $location->id, $inactive ) ) as $locationId => $units ) {
 			if ( $units > 0 ) {
 				$findings[] = sprintf( 'Warning: location %1$d is deactivated but has %2$d %3$s available, which no order can be routed to. Move them, or activate it again.', $locationId, $units, 1 === $units ? 'unit' : 'units' );
+			}
+		}
+
+		return $findings;
+	}
+
+	/**
+	 * Lists what is wrong between the transfers and the stock they move.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> One finding per problem.
+	 */
+	private function transferFindings(): array {
+		$findings = array();
+
+		foreach ( $this->transfers->linesOutOfBounds( self::LIMIT ) as $line ) {
+			$findings[] = sprintf( 'Critical: line %1$d of transfer %2$d sends %3$d %4$s, of which %5$d were received and %6$d lost: more than it sent, or, on a transfer received, fewer.', $line['id'], $line['transfer_id'], $line['quantity'], 1 === $line['quantity'] ? 'unit' : 'units', $line['received_quantity'], $line['lost_quantity'] );
+		}
+
+		foreach ( $this->transfers->transitDrift( self::LIMIT ) as $transfer ) {
+			$findings[] = sprintf( 'Critical: transfer %1$d has %2$d units on the way by its lines, but its ledger entries moved %3$d out and in, and %4$d were lost: units left a location and are neither on the way, arrived nor lost.', $transfer['id'], $transfer['on_the_way'], $transfer['moved'], $transfer['lost'] );
+		}
+
+		foreach ( $this->transfers->uncarriedAllocations( self::LIMIT ) as $allocation ) {
+			$findings[] = sprintf( 'Critical: allocation %1$d of order %2$d is in transit with %3$d units, but the lines of transfers in transit carry %4$d of them.', $allocation['id'], $allocation['order_id'], $allocation['quantity'], $allocation['on_the_way'] );
+		}
+
+		foreach ( $this->transfers->strayCarriedLines( self::LIMIT ) as $line ) {
+			$findings[] = sprintf( 'Critical: line %1$d of transfer %2$d has units on the way for allocation %3$d, which is not in transit.', $line['id'], $line['transfer_id'], $line['allocation_id'] );
+		}
+
+		$days = ( $this->warningDays )();
+
+		foreach ( $this->transfers->overdue( $days, self::LIMIT ) as $transfer ) {
+			$findings[] = 'requested' === $transfer['state']
+				? sprintf( 'Warning: transfer %1$d was requested more than %2$d days ago and has not been sent: an order waits for it.', $transfer['id'], $days )
+				: sprintf( 'Warning: transfer %1$d (%2$s) was sent more than %3$d days ago and is still in transit. Receive what arrived; a deactivation\'s move with nothing moved has lost its job: deactivate the location again with the same target to queue it.', $transfer['id'], $transfer['kind'], $days );
+		}
+
+		$lost = $this->transfers->lostLocations( self::LIMIT );
+
+		foreach ( array(
+			'from' => $lost['from'],
+			'to'   => $lost['to'],
+		) as $end => $locationIds ) {
+			foreach ( $locationIds as $locationId ) {
+				$findings[] = sprintf( 'Critical: transfers %1$s location %2$d, which no longer exists, so their stock movements name nowhere. A person must decide where those units are.', $end, $locationId );
+			}
+		}
+
+		$short = 0;
+
+		foreach ( $this->transfers->shortOrderTransfers( self::LIMIT * 10 ) as $transfer ) {
+			$status = ( $this->orderStatus )( $transfer['order_id'] );
+
+			if ( 'on_hold' !== $status && $short++ < self::LIMIT ) {
+				$findings[] = sprintf( 'Critical: transfer %1$d lost units order %2$d waited for, but the order is %3$s, not on hold: the shortage was not acted on. Put the order on hold and decide what it ships.', $transfer['id'], $transfer['order_id'], $status ?? 'gone' );
 			}
 		}
 

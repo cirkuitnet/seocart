@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Support\Inventory;
 
 use SEOCart\Inventory\Application\StockService;
+use SEOCart\Inventory\Application\Transfers;
 use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Domain\Event\StockReservationReleased;
 use SEOCart\Inventory\Domain\Event\StockReserved;
@@ -40,6 +41,7 @@ use SEOCart\Support\Events\DomainEvent;
 use SEOCart\Support\IdGenerator;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\Doubles\FrozenClock;
+use SEOCart\Tests\Support\Doubles\RecordingJobQueue;
 use SEOCart\Tests\Support\Doubles\RecordingWake;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\SecondConnection;
@@ -149,6 +151,24 @@ abstract class StockTestCase extends DatabaseTestCase {
 	protected SequentialIdGenerator $ids;
 
 	/**
+	 * Returns an order's status for doctor, from the order's id, or null when there is no such order: the order module's answer, which a stock test plays.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var (\Closure(int): ?string)|null
+	 */
+	protected ?\Closure $orderStatus = null;
+
+	/**
+	 * What the transfer services of the test queued.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var RecordingJobQueue
+	 */
+	protected RecordingJobQueue $queue;
+
+	/**
 	 * Every after-commit stock event delivered, in order.
 	 *
 	 * @since 0.1.0
@@ -195,6 +215,7 @@ abstract class StockTestCase extends DatabaseTestCase {
 		$this->ids         = new SequentialIdGenerator( 1 );
 		$this->repository  = new MysqlStockRepository( $this->db );
 		$this->service     = $this->serviceOver( $this->db, $this->ids );
+		$this->queue       = new RecordingJobQueue( $this->db );
 
 		foreach ( array( StockReserved::eventName(), StockReservationReleased::eventName() ) as $name ) {
 			add_action(
@@ -231,9 +252,32 @@ abstract class StockTestCase extends DatabaseTestCase {
 	 * @return StockService The service.
 	 */
 	protected function serviceOver( Database $db, IdGenerator $ids ): StockService {
-		$publisher = new Publisher( $db, new Outbox( $db ), $this->bridge, new EventCatalog( Modules::EVENT_CLASSES ), $this->correlation, new RecordingWake() );
+		return StockServices::over( $db, $this->publisherOver( $db ), $ids, FrozenClock::at( self::NOW ), $this->correlation, fn(): FulfilmentMode => $this->mode );
+	}
 
-		return StockServices::over( $db, $publisher, $ids, FrozenClock::at( self::NOW ), $this->correlation, fn(): FulfilmentMode => $this->mode );
+	/**
+	 * Builds the transfer service over a connection, publishing through the real publisher and queueing through the test's queue.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Database    $db  The connection.
+	 * @param IdGenerator $ids The ids it mints: a second runner needs its own range.
+	 * @return Transfers The service.
+	 */
+	protected function transfersOver( Database $db, IdGenerator $ids ): Transfers {
+		return StockServices::transfers( $db, $this->publisherOver( $db ), $ids, FrozenClock::at( self::NOW ), $this->correlation, $this->queue );
+	}
+
+	/**
+	 * Builds the real publisher over a connection, delivering through the bridge every publisher of the test shares.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Database $db The connection.
+	 * @return Publisher The publisher.
+	 */
+	protected function publisherOver( Database $db ): Publisher {
+		return new Publisher( $db, new Outbox( $db ), $this->bridge, new EventCatalog( Modules::EVENT_CLASSES ), $this->correlation, new RecordingWake() );
 	}
 
 	/**
@@ -640,7 +684,7 @@ abstract class StockTestCase extends DatabaseTestCase {
 	 * @return StockProjectionCheck The check.
 	 */
 	protected function stockCheck(): StockProjectionCheck {
-		return StockServices::check( $this->db, $this->service );
+		return StockServices::check( $this->db, $this->service, $this->orderStatus );
 	}
 
 	/**

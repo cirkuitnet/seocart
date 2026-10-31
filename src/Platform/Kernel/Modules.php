@@ -78,17 +78,24 @@ use SEOCart\Inventory\Application\InventorySettings;
 use SEOCart\Inventory\Application\LocationDirectory;
 use SEOCart\Inventory\Application\Locations;
 use SEOCart\Inventory\Application\StockService;
+use SEOCart\Inventory\Application\Transfers;
 use SEOCart\Inventory\Domain\Event\StockAdjusted;
 use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Domain\Event\StockHoldExpired;
 use SEOCart\Inventory\Domain\Event\StockReservationReleased;
 use SEOCart\Inventory\Domain\Event\StockReserved;
+use SEOCart\Inventory\Domain\Event\StockTransferred;
+use SEOCart\Inventory\Domain\Event\StockTransferRequested;
+use SEOCart\Inventory\Domain\Event\StockTransferShort;
 use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Inventory\Domain\StockRepository;
+use SEOCart\Inventory\Domain\TransferRepository;
 use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
+use SEOCart\Inventory\Infrastructure\Jobs\MoveLocationStock;
 use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
 use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
+use SEOCart\Inventory\Infrastructure\MysqlTransferRepository;
 use SEOCart\Order\Application\ActorCustomers;
 use SEOCart\Order\Application\NoCustomers;
 use SEOCart\Order\Application\OrderAccessPolicy;
@@ -102,6 +109,7 @@ use SEOCart\Order\Domain\Event\OrderPlaced;
 use SEOCart\Order\Domain\Event\OrderStatusChanged;
 use SEOCart\Order\Domain\OrderNumberGenerator;
 use SEOCart\Order\Domain\OrderRepository;
+use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\OrderStatusRegistry;
 use SEOCart\Order\Infrastructure\MysqlConversionContexts;
 use SEOCart\Order\Infrastructure\MysqlOrderRepository;
@@ -136,6 +144,7 @@ use SEOCart\Payment\Infrastructure\Jobs\WebhookReceiptRetention;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Payment\Infrastructure\MysqlRefundRepository;
 use SEOCart\Payment\Infrastructure\MysqlWebhookReceipts;
+use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\AuthorizationError;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
@@ -235,6 +244,7 @@ use SEOCart\Promotion\Infrastructure\MysqlPromotionRepository;
 use SEOCart\Support\Clock;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Decimal;
+use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Error\ErrorTable;
 use SEOCart\Support\IdGenerator;
 use SEOCart\Support\Locale;
@@ -341,6 +351,9 @@ final class Modules {
 		StockHoldExpired::class,
 		StockReserved::class,
 		StockReservationReleased::class,
+		StockTransferred::class,
+		StockTransferRequested::class,
+		StockTransferShort::class,
 	);
 
 	/**
@@ -368,6 +381,19 @@ final class Modules {
 	 * @var string
 	 */
 	public const JOB_HOOK = 'seocart_job';
+
+	/**
+	 * The action an order left short by a transfer fires: the event StockTransferShort's.
+	 *
+	 * It is the event's action, `seocart_` followed by its name, spelled out for the same reason as
+	 * JOB_HOOK: the listener is added on every request, and naming the event's class would load it.
+	 * A test holds the two equal.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const TRANSFER_SHORT_HOOK = 'seocart_stock_transfer_fell_short';
 
 	/**
 	 * The maintenance commands: operational tooling that has no REST route or ability, so no
@@ -433,6 +459,7 @@ final class Modules {
 		self::operationsSubscribe( $container );
 		self::jobsSubscribe( $container, $cron || $ajax || $cli );
 		self::catalogSubscribe( $container, $admin );
+		self::inventorySubscribe( $container );
 		self::kernelSubscribe( $container, $admin, $ajax, $cli, $cron, is_multisite() );
 	}
 
@@ -1136,9 +1163,10 @@ final class Modules {
 	}
 
 	/**
-	 * The inventory module: the stock repository and service, the sweep of expired holds and the stock check of doctor.
+	 * The inventory module: the stock repository and service, the locations, the transfers, the sweep of expired holds and the stock check of doctor.
 	 *
-	 * It adds no hook: the sweep runs through JOB_HOOK, and the check through doctor.
+	 * It adds no hook: the sweep and a deactivation's move run through JOB_HOOK, and the check
+	 * through doctor. The one listener of a transfer's shortage is inventorySubscribe()'s.
 	 *
 	 * @since 0.1.0
 	 *
@@ -1175,10 +1203,30 @@ final class Modules {
 				$c->get( StockRepository::class ),
 				$c->get( TransactionManager::class ),
 				$c->get( IdGenerator::class ),
-				$c->get( Authorizer::class )
+				$c->get( Authorizer::class ),
+				$c->get( Transfers::class )
+			)
+		);
+		$container->bind( MysqlTransferRepository::class, static fn( Container $c ): MysqlTransferRepository => new MysqlTransferRepository( $c->get( Database::class ) ) );
+		$container->bind( TransferRepository::class, static fn( Container $c ): TransferRepository => $c->get( MysqlTransferRepository::class ) );
+		$container->bind(
+			Transfers::class,
+			static fn( Container $c ): Transfers => new Transfers(
+				$c->get( TransferRepository::class ),
+				$c->get( StockRepository::class ),
+				$c->get( MysqlLocationRepository::class ),
+				$c->get( LocationDirectory::class ),
+				$c->get( TransactionManager::class ),
+				$c->get( EventPublisher::class ),
+				$c->get( IdGenerator::class ),
+				$c->get( Clock::class ),
+				$c->get( CorrelationId::class ),
+				$c->get( Authorizer::class ),
+				$c->get( JobQueue::class )
 			)
 		);
 		$container->bind( SweepHolds::class, static fn( Container $c ): SweepHolds => new SweepHolds( $c->get( StockService::class ) ) );
+		$container->bind( MoveLocationStock::class, static fn( Container $c ): MoveLocationStock => new MoveLocationStock( $c->get( Transfers::class ) ) );
 		$container->bind(
 			StockProjectionCheck::class,
 			static fn( Container $c ): StockProjectionCheck => new StockProjectionCheck(
@@ -1186,8 +1234,42 @@ final class Modules {
 				$c->get( MysqlLocationRepository::class ),
 				$c->get( LocationDirectory::class ),
 				$c->get( StockService::class ),
-				$c->get( TransactionManager::class )
+				$c->get( TransactionManager::class ),
+				$c->get( MysqlTransferRepository::class ),
+				static fn(): int => (int) $c->get( SettingsStore::class )->value( InventorySettings::TRANSFER_WARNING_DAYS ),
+				static fn( int $orderId ): ?string => $c->get( Orders::class )->statusOf( $orderId )['status']->value ?? null
 			)
+		);
+	}
+
+	/**
+	 * The plugin's one listener of its own events: an order left short by a transfer is put on hold for a person.
+	 *
+	 * A receipt is an inventory operation and calls nothing of the order module, nor the order
+	 * module anything of inventory's; the receipt publishes StockTransferShort through the outbox,
+	 * and the listener, bound here because neither module may name the other, resolves the order
+	 * service only when the event is delivered, so an idle request builds and loads nothing for it.
+	 * An order on hold already, or ended, cannot go on hold, and the event is then done: a
+	 * redelivery, or a second shortage of an order a person has not looked at yet, changes nothing.
+	 * Any other failure is the event bridge's to report, and the event is not delivered again;
+	 * doctor names a received transfer that lost an order's units while the order is not on hold.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Container $container The container the listener resolves the order service from.
+	 */
+	private static function inventorySubscribe( Container $container ): void {
+		add_action(
+			self::TRANSFER_SHORT_HOOK,
+			static function ( StockTransferShort $event ) use ( $container ): void {
+				try {
+					$container->get( Orders::class )->transition( $event->orderId, OrderStatus::OnHold, 'stock_unavailable', Actor::system( 'inventory', 0 ) );
+				} catch ( CodedException $refused ) {
+					if ( OrderError::TransitionIllegal !== $refused->errorCode() ) {
+						throw $refused;
+					}
+				}
+			}
 		);
 	}
 

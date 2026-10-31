@@ -70,7 +70,16 @@ final class MysqlLocationRepository implements LocationRepository {
 	 *
 	 * @var string
 	 */
-	public const ALL = 'SELECT id, uuid, name, active, fulfils_online, offers_pickup, priority, is_default FROM {locations} ORDER BY priority, id';
+	public const ALL = 'SELECT ' . self::LOCATION_COLUMNS . ' FROM {locations} ORDER BY priority, id';
+
+	/**
+	 * Some locations by public identifier, locked in share mode until the commit, ascending by id.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCK_SHARED = 'SELECT ' . self::LOCATION_COLUMNS . ' FROM {locations} WHERE uuid IN ({list}) ORDER BY id LOCK IN SHARE MODE';
 
 	/**
 	 * The default location's id.
@@ -253,6 +262,15 @@ final class MysqlLocationRepository implements LocationRepository {
 	private const RECORD_COLUMNS = 'id, uuid, name, country, line1, line2, city, region, postcode, phone, active, fulfils_online, offers_pickup, pickup_ready_in, pickup_instructions, priority, is_default';
 
 	/**
+	 * The columns of a location as routing reads it, in the order location() reads them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const LOCATION_COLUMNS = 'id, uuid, name, active, fulfils_online, offers_pickup, priority, is_default';
+
+	/**
 	 * The connection.
 	 *
 	 * @since 0.2.0
@@ -338,6 +356,31 @@ final class MysqlLocationRepository implements LocationRepository {
 		}
 
 		return self::record( $row, $this->hoursOf( array( (int) $row['id'] ) )[ (int) $row['id'] ] ?? array() );
+	}
+
+	/**
+	 * Reads locations by uuid in share mode.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string[] $uuids The locations' public identifiers.
+	 * @return array<string, Location> The locations found, by uuid.
+	 */
+	public function lockShared( array $uuids ): array {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$found = array();
+
+		if ( array() === $uuids ) {
+			return $found;
+		}
+
+		foreach ( $this->statements->rows( self::LOCK_SHARED, array_values( array_map( 'strtolower', $uuids ) ) ) as $row ) {
+			$location                 = self::location( $row );
+			$found[ $location->uuid ] = $location;
+		}
+
+		return $found;
 	}
 
 	/**

@@ -136,19 +136,20 @@ wp seocart location update <location_uuid> [--name=<name>] [--active] [--is_defa
 
 ## `wp seocart location deactivate`
 
-Deactivates a location: from now on no order is routed to it and its units are for sale nowhere, while its stock stays where it is; the default location cannot be deactivated.
+Deactivates a location: from now on no order is routed to it and its units are for sale nowhere, while its stock stays where it is, or its available units move to another location as one transfer; the default location cannot be deactivated.
 
 ```sh
-wp seocart location deactivate <location_uuid> [--format=<format>]
+wp seocart location deactivate <location_uuid> [--move_stock_to=<move_stock_to>] [--format=<format>]
 ```
 
 - Operation: `inventory.deactivate_location`
 - Capability: `seocart_manage_settings`
-- Error codes: `stock.location_missing` (404), `stock.location_is_default` (409), `authorization.denied` (403), `store.unavailable` (503)
+- Error codes: `stock.location_missing` (404), `stock.location_is_default` (409), `stock.location_inactive` (409), `stock.transfer_same_location` (400), `stock.transfer_state` (409), `authorization.denied` (403), `store.unavailable` (503)
 
 ### Arguments
 
 - `<location_uuid>`: The location to deactivate. A uuid.
+- `[--move_stock_to=<move_stock_to>]`: An active location to move the deactivated location's available units to, as one transfer worked in the background; units promised to orders or held by checkouts stay. Moving stock also needs the capability that manages inventory. Repeated with the same location, the deactivation answers the same transfer. Turning the location on again ends the move, the units moved so far staying where they arrived. A uuid.
 - `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
 
 ## `wp seocart location delete`
@@ -183,6 +184,136 @@ wp seocart stock list --variant_ids=<variant_ids> [--format=<format>]
 ### Arguments
 
 - `--variant_ids=<variant_ids>`: The variants, by id: from 1 to 200 whole numbers above 0, separated by commas, such as 12,15,20. A variant with no stock is left out of the answer. Text of at most 4400 characters.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart transfer list`
+
+Lists a page of stock transfers, newest first, each with its lines summed up, filtered by state, by a location they leave or arrive at, or by the order they serve.
+
+```sh
+wp seocart transfer list [--state=<state>] [--location_uuid=<location_uuid>] [--order_id=<order_id>] [--page=<page>] [--per_page=<per_page>] [--format=<format>]
+```
+
+- Operation: `inventory.list_transfers`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.location_missing` (404), `authorization.denied` (403)
+
+### Arguments
+
+- `[--state=<state>]`: Only transfers in this state. One of `draft`, `requested`, `in_transit`, `received`, `cancelled`.
+- `[--location_uuid=<location_uuid>]`: Only transfers that leave this location or arrive at it. A uuid.
+- `[--order_id=<order_id>]`: Only transfers this order waits for. An integer of at least 1.
+- `[--page=<page>]`: Which page of the list, from 1 to 1000000. An integer from 1 to 1000000. Default `1`.
+- `[--per_page=<per_page>]`: How many transfers a page holds, from 1 to 100. An integer from 1 to 100. Default `20`.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart transfer get`
+
+Returns one stock transfer with its lines: what each sends, what was received and lost, what is on the way, and whether it carries an order's units.
+
+```sh
+wp seocart transfer get <transfer_uuid> [--format=<format>]
+```
+
+- Operation: `inventory.get_transfer`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.transfer_not_found` (404), `authorization.denied` (403)
+
+### Arguments
+
+- `<transfer_uuid>`: The transfer. A uuid.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart transfer create`
+
+Creates a draft transfer of units from one location to another: it promises nothing, may name more units than the source has, and claims them only when it is sent.
+
+```sh
+wp seocart transfer create --source_location_uuid=<source_location_uuid> --destination_location_uuid=<destination_location_uuid> --lines=<json> [--note=<note>] [--format=<format>]
+```
+
+- Operation: `inventory.create_transfer`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.transfer_same_location` (400), `stock.location_missing` (404), `stock.location_inactive` (409), `stock.item_missing` (404), `stock.transfer_invalid` (400), `authorization.denied` (403), `store.unavailable` (503)
+
+### Arguments
+
+- `--source_location_uuid=<source_location_uuid>`: The location the units leave; it may be deactivated, so its stock can be moved away. A uuid.
+- `--destination_location_uuid=<destination_location_uuid>`: The active location the units arrive at, not the source. A uuid.
+- `--lines=<json>`: The units to send of each variant, from 1 to 500 lines; lines of one variant are added together. A list of 1 to 500 objects, each with `variant_id`, `quantity`.
+- `[--note=<note>]`: A note on the transfer, such as why it is made; it may run over several lines. Text of at most 1000 characters.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart transfer update`
+
+Changes the note or the lines of a draft or requested transfer, the fields the request gives only: lines given replace the lines that carry no order's units, which are kept as they are.
+
+```sh
+wp seocart transfer update <transfer_uuid> [--lines=<json>] [--note=<note>] [--format=<format>]
+```
+
+- Operation: `inventory.update_transfer`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.transfer_not_found` (404), `stock.transfer_state` (409), `stock.item_missing` (404), `stock.transfer_invalid` (400), `authorization.denied` (403), `store.unavailable` (503)
+
+### Arguments
+
+- `<transfer_uuid>`: The transfer to change. A uuid.
+- `[--lines=<json>]`: The units to send of each variant; given, they replace the lines that carry no order's units, and the transfer keeps from 1 to 500 lines. A list of 0 to 500 objects, each with `variant_id`, `quantity`.
+- `[--note=<note>]`: The note on the transfer; an empty text removes it. Text of at most 1000 characters.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart transfer send`
+
+Sends a draft or requested transfer: every line's units leave the source at once, or, when one line's are not there, none do; until they are received they are on the way, in no location's stock.
+
+```sh
+wp seocart transfer send <transfer_uuid> [--note=<note>] [--format=<format>]
+```
+
+- Operation: `inventory.send_transfer`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.transfer_not_found` (404), `stock.transfer_state` (409), `stock.transfer_refused` (409), `stock.transfer_invalid` (400), `authorization.denied` (403), `store.unavailable` (503)
+
+### Arguments
+
+- `<transfer_uuid>`: The transfer to send. A uuid.
+- `[--note=<note>]`: A note to keep with the parcel, such as its tracking number; given, it replaces the transfer's note. Text of at most 1000 characters.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart transfer receive`
+
+Receives units of a transfer in transit at its destination, line by line, and writes off units lost on the way; the transfer is received once every line's units are received or lost.
+
+```sh
+wp seocart transfer receive <transfer_uuid> --lines=<json> [--format=<format>]
+```
+
+- Operation: `inventory.receive_transfer`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.transfer_not_found` (404), `stock.transfer_state` (409), `stock.transfer_receipt_conflict` (409), `stock.transfer_invalid` (400), `stock.item_missing` (404), `stock.location_missing` (404), `authorization.denied` (403), `store.unavailable` (503)
+
+### Arguments
+
+- `<transfer_uuid>`: The transfer received. A uuid.
+- `--lines=<json>`: What arrived of each line, each line once: the units received and lost now, at least one of them, and the units the client last read as received and as lost, so a receipt repeated after a lost answer is refused rather than recorded twice. A list of 1 to 500 objects, each with `line_id`, `received`, `lost`, `expected_received_quantity`, `expected_lost_quantity`.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart transfer cancel`
+
+Cancels a draft, or a requested transfer that carries no order's units; a transfer in transit is received or written off instead, never cancelled.
+
+```sh
+wp seocart transfer cancel <transfer_uuid> [--format=<format>]
+```
+
+- Operation: `inventory.cancel_transfer`
+- Capability: `seocart_manage_inventory`
+- Error codes: `stock.transfer_not_found` (404), `stock.transfer_state` (409), `authorization.denied` (403), `store.unavailable` (503)
+
+### Arguments
+
+- `<transfer_uuid>`: The transfer to cancel. A uuid.
 - `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
 
 ## `wp seocart order refund`

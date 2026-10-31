@@ -17,7 +17,7 @@ use SEOCart\Support\Error\ErrorDefinition;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * The errors holding, adjusting, routing or deleting stock, and changing a location, can end in.
+ * The errors holding, adjusting, routing, transferring or deleting stock, and changing a location, can end in.
  *
  * Owns one fact: how a refused stock change is reported. Each refusal happened in the database,
  * in the conditional statement's WHERE clause; the values in a message come from one read
@@ -64,9 +64,10 @@ enum InventoryError: string implements ErrorCode {
 	case AdjustmentBelowZero = 'stock.adjustment_below_zero';
 
 	/**
-	 * The variant cannot be deleted while an order's allocation of it is open.
+	 * The variant cannot be deleted while an order's allocation of it is open, or units of it are on a transfer not yet received.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Transfers.
 	 */
 	case DeleteBlocked = 'stock.delete_blocked';
 
@@ -134,6 +135,48 @@ enum InventoryError: string implements ErrorCode {
 	case VariantIdsInvalid = 'stock.variant_ids_invalid';
 
 	/**
+	 * No transfer has the identifier given, or the transfer has no line of the id a receipt names.
+	 *
+	 * @since 0.2.0
+	 */
+	case TransferNotFound = 'stock.transfer_not_found';
+
+	/**
+	 * The transfer's state does not allow what was asked: it was sent, received or cancelled already, or it carries an order's units.
+	 *
+	 * @since 0.2.0
+	 */
+	case TransferState = 'stock.transfer_state';
+
+	/**
+	 * The transfer cannot be sent: its source lacks the units of a line.
+	 *
+	 * @since 0.2.0
+	 */
+	case TransferRefused = 'stock.transfer_refused';
+
+	/**
+	 * A receipt line expected other figures received and lost so far: the receipt was made already, or another came first.
+	 *
+	 * @since 0.2.0
+	 */
+	case TransferReceiptConflict = 'stock.transfer_receipt_conflict';
+
+	/**
+	 * A transfer, or a deactivation's move, names one location as both its source and its destination.
+	 *
+	 * @since 0.2.0
+	 */
+	case TransferSameLocation = 'stock.transfer_same_location';
+
+	/**
+	 * A field of a transfer is not valid in a way its declaration cannot say: a note, or the lines.
+	 *
+	 * @since 0.2.0
+	 */
+	case TransferInvalid = 'stock.transfer_invalid';
+
+	/**
 	 * Returns the catalog's rows.
 	 *
 	 * @since 0.1.0
@@ -185,7 +228,7 @@ enum InventoryError: string implements ErrorCode {
 				409,
 				static fn(): string =>
 					/* translators: %1$s: The id of a product variant. */
-					__( 'Variant %1$s cannot be deleted while an order still has units of it allocated.', 'seocart' ),
+					__( 'Variant %1$s cannot be deleted while an order still has units of it allocated, or units of it are on a transfer not yet received.', 'seocart' ),
 				array( 'variant_id' )
 			),
 			new ErrorDefinition(
@@ -256,6 +299,57 @@ enum InventoryError: string implements ErrorCode {
 					/* translators: %1$s: The most variant ids one request may list. */
 					__( 'List from 1 to %1$s variant ids, whole numbers above 0 separated by commas, such as 12,15,20.', 'seocart' ),
 				array( 'most' )
+			),
+			new ErrorDefinition(
+				self::TransferNotFound,
+				404,
+				static fn(): string =>
+					/* translators: %1$s: The identifier of a stock transfer. */
+					__( 'Transfer %1$s does not exist, or has no line of the id given.', 'seocart' ),
+				array( 'transfer_id' ),
+				details: array( 'line_id' )
+			),
+			new ErrorDefinition(
+				self::TransferState,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: The identifier of a stock transfer. %2$s: Its state, such as in_transit. */
+					__( 'Transfer %1$s is %2$s, so it cannot be changed that way.', 'seocart' ),
+				array( 'transfer_id', 'state' ),
+				details: array( 'reason' )
+			),
+			new ErrorDefinition(
+				self::TransferRefused,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: The id of a product variant. %2$s: Units the transfer sends. %3$s: Units the source can send. */
+					__( 'The transfer cannot be sent: variant %1$s needs %2$s units at its source, which can send %3$s. Lower the line, or wait for the units.', 'seocart' ),
+				array( 'variant_id', 'requested', 'available' ),
+				details: array( 'location_id' )
+			),
+			new ErrorDefinition(
+				self::TransferReceiptConflict,
+				409,
+				static fn(): string =>
+					/* translators: %1$s: The id of a transfer line. %2$s: The units the request expected received so far. %3$s: The units it expected lost so far. %4$s: The units received so far. %5$s: The units lost so far. */
+					__( 'Line %1$s: you expected %2$s received and %3$s lost so far, but it has %4$s received and %5$s lost, so the receipt was not recorded. Read the transfer again, then receive what is still on the way.', 'seocart' ),
+				array( 'line_id', 'expected', 'expected_lost', 'received_quantity', 'lost_quantity' )
+			),
+			new ErrorDefinition(
+				self::TransferSameLocation,
+				400,
+				static fn(): string =>
+					/* translators: %1$s: The identifier of a stock location. */
+					__( 'Location %1$s cannot be both where the units leave and where they arrive.', 'seocart' ),
+				array( 'location_id' )
+			),
+			new ErrorDefinition(
+				self::TransferInvalid,
+				400,
+				static fn(): string =>
+					/* translators: %1$s: The name of a field of a transfer, such as note or lines. */
+					__( 'The transfer field %1$s is not valid. A note holds no control characters; a transfer has from 1 to 500 lines; a receipt names each line once and receives or loses at least one unit of it, no more than it has on the way.', 'seocart' ),
+				array( 'field' )
 			),
 		);
 	}

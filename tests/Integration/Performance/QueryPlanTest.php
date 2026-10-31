@@ -25,10 +25,14 @@ use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
+use SEOCart\Inventory\Domain\LocationInUse;
+use SEOCart\Inventory\Domain\Transfer;
+use SEOCart\Inventory\Domain\TransferState;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Migrations\SeedDefaultLocation;
 use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
+use SEOCart\Inventory\Infrastructure\MysqlTransferRepository;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\DataRegistry\OwnedData;
 use SEOCart\Platform\Kernel\Kernel;
@@ -222,6 +226,8 @@ final class QueryPlanTest extends DatabaseTestCase {
 		self::writeKeys( $db );
 
 		self::$secondLocation = self::writeSecondLocation( $db );
+
+		self::writeTransfers( $db, (int) ( new MysqlLocationRepository( $db ) )->defaultId(), self::$secondLocation );
 
 		$counts = array();
 
@@ -440,7 +446,33 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$this->assertCount( 2, $locations->records() );
 		$stock->locationTotals( array( $location, self::$secondLocation ) );
 		$stock->stockList( $page );
-		$this->assertNull( $stock->locationUse( self::$secondLocation ), 'The second location\'s items are all at zero, with no history.' );
+		$this->assertSame( LocationInUse::Transfers, $stock->locationUse( self::$secondLocation ), 'The second location\'s items are all at zero, with no stock history; the planted transfers name it.' );
+
+		// The transfers: one with its lines, by its uuid; the list's page with and without each
+		// filter, newest first, and its lines summed up; a page of a deactivation's move: its last
+		// line and the next variants of the source (its read of the transfer locks, so it runs with
+		// the locking reads below); a deactivation's look for a move in transit and for the last
+		// move to its target; an order's request, its cancel's read of its allocations and the lines
+		// its transfers carry. Doctor's reads run with doctor below.
+		$transfers = new MysqlTransferRepository( $db );
+		$planted   = sprintf( '0f7e7c3a-0000-4000-8000-%012d', 5000 );
+
+		$this->assertNotNull( $transfers->document( $planted ) );
+
+		$page = $transfers->page( null, null, null, 21, 0 );
+
+		$transfers->page( TransferState::InTransit, null, null, 21, 0 );
+		$transfers->page( null, self::$secondLocation, null, 21, 0 );
+		$transfers->page( TransferState::InTransit, self::$secondLocation, null, 21, 0 );
+		$transfers->page( null, null, 3000, 21, 0 );
+		$transfers->lineTotals( array_map( static fn( Transfer $transfer ): int => $transfer->id, $page ) );
+		$transfers->lastLineVariant( 5000 );
+		$stock->movableItems( $location, 0, 200 );
+		$transfers->movingFrom( self::$secondLocation );
+		$transfers->latestMove( self::$secondLocation, $location );
+		$stock->openAllocationsAway( 3000, $location );
+		$stock->orderAllocations( 3000 );
+		$transfers->carriedLines( array( 4998, 4999, 5000 ) );
 
 		// A cursor near the end of the table: doctor's own reverse check pages from 0, so this is
 		// the only place a real cursor reaches MysqlStockRepository::ITEM_VARIANT_IDS.
@@ -522,9 +554,18 @@ final class QueryPlanTest extends DatabaseTestCase {
 
 		try {
 			$db->transaction(
-				function () use ( $db, $products, $stock, $locations, $promotions, $expired, $location, $carts, $someCart, $keys, $rollBack ): void {
+				function () use ( $db, $products, $stock, $locations, $promotions, $expired, $location, $carts, $someCart, $keys, $transfers, $rollBack ): void {
 					$stock->lockedLevel( $expired, $location );
 					$stock->hasOpenAllocation( $expired );
+
+					// A delete's lock of the variant's transfers, a cancel's of an order's transfers, a
+					// receipt's of an allocation in transit, a new transfer's shared lock of its locations,
+					// and a move page's read of its transfer with its source's row in share mode.
+					$stock->hasTransferInFlight( $expired );
+					$transfers->lockOrderTransfers( 3000 );
+					$stock->lockInTransitAllocation( 1 );
+					$locations->lockShared( array( self::SECOND_LOCATION_UUID ) );
+					$transfers->moveOf( 5000 );
 
 					// A delete's locks of the variant's policy and items, and an adjustment's lock of its policy and location.
 					$stock->lockPolicy( $expired );
@@ -724,6 +765,47 @@ final class QueryPlanTest extends DatabaseTestCase {
 		wp_cache_delete( MysqlLocationRepository::CACHE_KEY, MysqlLocationRepository::CACHE_GROUP );
 
 		return $location;
+	}
+
+	/**
+	 * Gives the seeded store a history of transfers between its two locations, one line each, which the reference dataset leaves out because a store of one location moves no stock.
+	 *
+	 * There are more than QueryPlan's large table holds, so the plans of the transfer reads, the
+	 * list's and doctor's, are judged: most transfers received, the others spread over the other
+	 * states, two in three waited for by an order, whose line carries an allocation (an id of its own:
+	 * the seed has no orders), so the allocation_id index has a real store's spread. Every line of a
+	 * transfer sent was received whole and none moved with a ledger entry, so nothing is on the way
+	 * and doctor stays clean.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Database $db      The connection.
+	 * @param int      $home    The default location.
+	 * @param int      $second  The second location.
+	 */
+	private static function writeTransfers( Database $db, int $home, int $second ): void {
+		$count     = QueryPlan::LARGE_TABLE + 2000;
+		$states    = array_merge( array_fill( 0, 12, 'received' ), array( 'cancelled', 'cancelled', 'draft', 'draft', 'requested', 'requested', 'in_transit', 'in_transit' ) );
+		$row       = '( %s, %d, %d, %s, NULLIF( %d, 0 ), %s, UTC_TIMESTAMP(6) - INTERVAL %d SECOND, UTC_TIMESTAMP(6) )';
+		$transfers = $db->table( InventoryTables::TRANSFERS );
+		$lines     = $db->table( InventoryTables::TRANSFER_LINES );
+
+		for ( $first = 1; $first <= $count; $first += 1000 ) {
+			$last   = min( $count, $first + 999 );
+			$values = array( $transfers );
+
+			for ( $transfer = $first; $transfer <= $last; $transfer++ ) {
+				$order = 0 === $transfer % 3 ? 0 : $transfer;
+
+				array_push( $values, sprintf( '0f7e7c3a-0000-4000-8000-%012d', $transfer ), 0 === $transfer % 2 ? $home : $second, 0 === $transfer % 2 ? $second : $home, 0 === $order ? 'manual' : 'order', $order, $states[ $transfer % count( $states ) ], $count - $transfer );
+			}
+
+			$db->execute( 'INSERT INTO %i ( uuid, source_location_id, destination_location_id, kind, order_id, state, created_at, updated_at ) VALUES ' . implode( ', ', array_fill( 0, $last - $first + 1, $row ) ), ...$values );
+		}
+
+		$db->execute( "INSERT INTO %i ( transfer_id, variant_id, quantity, received_quantity, lost_quantity, allocation_id ) SELECT id, 1 + MOD( id, 10000 ), 2, IF( state IN ( 'in_transit', 'received' ), 2, 0 ), 0, order_id FROM %i", $lines, $transfers );
+		$db->execute( 'ANALYZE TABLE %i', $transfers );
+		$db->execute( 'ANALYZE TABLE %i', $lines );
 	}
 
 	/**
