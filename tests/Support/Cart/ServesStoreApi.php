@@ -69,14 +69,19 @@ trait ServesStoreApi {
 	 * Wires the kernel and boots the spy server. Call it in set_up().
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Further replacements.
+	 *
+	 * @param array $overrides Optional. Further replacements, which win. Default none.
+	 *
+	 * @phpstan-param array<string, callable(Container): object> $overrides
 	 */
-	protected function bootStoreApi(): void {
+	protected function bootStoreApi( array $overrides = array() ): void {
 		$this->saveRequestGlobals();
 
 		$_SERVER['REMOTE_ADDR'] = '192.0.2.30';
 
 		$container = new Container(
-			array(
+			$overrides + array(
 				TransactionManager::class => static fn( Container $c ): TransactionManager => $c->get( Database::class ),
 				CartTokenTransport::class => fn(): CartTokenTransport => new CartTokenTransport(
 					FrozenClock::at( self::STORE_NOW ),

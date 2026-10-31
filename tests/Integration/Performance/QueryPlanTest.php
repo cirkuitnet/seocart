@@ -16,10 +16,14 @@ use SEOCart\Cart\Domain\CartStatus;
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Cart\Infrastructure\MysqlCartRepository;
 use SEOCart\Catalog\Application\Query\Sellability;
+use SEOCart\Catalog\Application\Search\SearchQuery;
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Catalog\Domain\Sku;
+use SEOCart\Catalog\Infrastructure\CatalogTables;
+use SEOCart\Catalog\Infrastructure\MysqlCatalogSearch;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
+use SEOCart\Catalog\Infrastructure\MysqlStockSummaryProjection;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
@@ -34,6 +38,7 @@ use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Inventory\Infrastructure\MysqlTransferRepository;
 use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\ModuleStatements;
 use SEOCart\Platform\DataRegistry\OwnedData;
 use SEOCart\Platform\Kernel\Kernel;
 use SEOCart\Platform\RateLimiter\ClientIdentity;
@@ -68,7 +73,8 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  * keys; the run writes keys of its own, all placed, enough that doctor's search of them is judged. The store must then be sound: doctor passes
  * and every seeded variant may be sold (SeedVerifier). Then the plugin's reads run over a
  * PlanRecorder: the catalog's lookups by post, by source post and by variant, its sellability
- * query in a locale and without one, the price read of a calculation, the promotions of a
+ * query in a locale and without one, the product listing's page with every filter off and with
+ * every filter on, and its facts, the stock summaries' reads, the price read of a calculation, the promotions of a
  * calculation's codes, the reads of its write path, the locking reads of a trash
  * and a delete, and the reads of a change of a product's posts, the pages after a cursor of
  * doctor's catalog scans (their first pages come from the seed verifier's doctor run), and every
@@ -101,6 +107,8 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  *   no index serves the lookup, and the rule names the query, seocart_products and its plan (a
  *   scan of the whole source_post_id index);
  * - in tests/query-plan-allow-list.json, empty the reason of an entry: the list is refused;
+ * - remove the entry of the product listing's page, MysqlCatalogSearch::PAGE: the run names it as
+ *   breaking the rule, on the walk of wp_posts;
  * - add an entry for a query the run does not send: the run names the stale entry;
  * - in exercise(), leave out the sweep's search, expiredItems(): the run names the stock
  *   repository's EXPIRED_ITEMS statement as a read it did not send;
@@ -410,6 +418,38 @@ final class QueryPlanTest extends DatabaseTestCase {
 		( new Sellability( $products ) )->of( $page, false );
 		( new Sellability( $products ) )->of( array( 5000 ), false );
 		( new Sellability( $products ) )->of( $page, false, Locale::of( self::SECOND_LOCALE ) );
+
+		// The product listing's page, in the seed's own locale: plain first, so its list of one category id is explained
+		// with every filter off; then with every filter on, five category ids and three words, its other explained shape;
+		// then one category with the other filters, and three words alone, each the same statement. Then the page's facts.
+		$listing = new MysqlCatalogSearch( $db );
+		$locale  = Locale::of( get_locale() );
+		$listed  = $listing->search( new SearchQuery( $locale, 1, 24, SearchQuery::NEWEST, array(), array(), null, null, false ) );
+
+		$this->assertCount( 24, $listed->postIds, 'The seeded store lists a full page.' );
+		$this->assertTrue( $listed->hasMore );
+
+		$listing->search( new SearchQuery( $locale, 1, 24, SearchQuery::NEWEST, array( 'seed', 'product', '0' ), array( 1, 2, 3, 4, 5 ), 6, 7, true ) );
+		$listing->search( new SearchQuery( $locale, 2, 24, SearchQuery::NEWEST, array(), array( 1 ), 6, 7, true ) );
+		$listing->search( new SearchQuery( $locale, 1, 24, SearchQuery::NEWEST, array( 'seed', 'product', 'SEED-0' ), array(), null, null, false ) );
+		$this->assertCount( 24, $listing->of( $listed->postIds ) );
+
+		// The stock summaries: the products of a page of variants, their enabled variants, the command's pages of the
+		// complete products from the start and after a cursor 1000 rows from the end, and doctor's count. The write is an
+		// UPDATE by the primary key, so its plan is read here.
+		$summaries = new MysqlStockSummaryProjection( $db );
+
+		$this->assertSame( $page, $summaries->productsOfVariants( $page ) );
+		$this->assertCount( 24, $summaries->enabledVariants( $page ) );
+		$this->assertCount( 200, $summaries->completeProductIds( 0, 200 ) );
+		$this->assertCount( 200, $summaries->completeProductIds( Dataset::Medium->products() - 1000, 200 ) );
+		$this->assertSame( 0, $summaries->unsummarizedCount(), 'The seed summarizes every product.' );
+
+		list( $writeSql, $writeArguments ) = ModuleStatements::expand( MysqlStockSummaryProjection::WRITE_SUMMARY, array( 'in_stock', 5000, 'in_stock' ), array( CatalogTables::PRODUCTS ), array( $this->db, 'table' ), 'Catalog' );
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The statement is the projection's constant, expanded; this is its prepare step.
+		$write = $wpdb->get_row( $wpdb->prepare( 'EXPLAIN ' . $writeSql, ...$writeArguments ), ARRAY_A );
+
+		$this->assertSame( 'PRIMARY', $write['key'] ?? null, 'A summary is written by the product\'s primary key: ' . (string) wp_json_encode( $write ) );
 
 		// A calculation's price read: in the base currency, and in a cart's currency with the base one.
 		$products->explicitPrices( $page, Currency::of( self::$baseCurrency ) );

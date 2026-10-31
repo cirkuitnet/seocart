@@ -22,9 +22,12 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * Four structural checks over the shipped source:
  *
  * - The generation marker's column is named in a string, where SQL is written, by two files only:
- *   the table declaration and the product repository. No other class can select or filter on it.
- *   The one other file that spells the name declares the REST field that sends the marker to an
- *   editor: a wire name in a field declaration, never SQL.
+ *   the table declaration and the product repository. No other class can select or filter on it,
+ *   but for two that list or count `complete` products and decide no sale: the listing's search,
+ *   in its page, and the stock summaries, in their page of complete products and doctor's count,
+ *   each held to those statements. The two other files that spell the name declare the REST field
+ *   that sends the marker to an editor, and the field a repair's event says it changed: names,
+ *   never SQL.
  * - Inside the repository, the marker is compared with a value only in the statements that write
  *   it: the creation of a product, markUpdating() and relock() through remark(), leaveUpdating()
  *   and restoreMark(). The two
@@ -41,6 +44,7 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  *
  * - Add src/Catalog/Application/Query/Planted.php declaring a class with a method that returns
  *   `"SELECT id FROM products WHERE generation_state = 'complete'"`: the first check names the file.
+ * - In MysqlCatalogSearch::FACTS, also select `p.generation_state`: the listers' check names the file.
  * - Add a method `sellable()` to MysqlProductRepository that sends
  *   `SELECT id FROM %i WHERE generation_state = 'complete'`: the second check names the method.
  * - Add src/Catalog/Application/Query/Planted.php declaring a class with a method that returns
@@ -140,6 +144,40 @@ final class SellabilityIsOneRuleTest extends TestCase {
 	private const MARKER_FILTERS = array( 'incompleteCount', 'INCOMPLETE_MISMATCH_SCAN', 'stuckUpdating' );
 
 	/**
+	 * The classes outside the repository whose statements list or count `complete` products, with
+	 * the statements that may name the marker: the listing's page, which lists only complete
+	 * products and decides no sale, and the stock summaries' page of the complete products and
+	 * doctor's count of those still unsummarized. None decides a verdict; the listed item's
+	 * sellability stays sellabilityFacts()'s.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, list<string>>
+	 */
+	private const COMPLETE_LISTERS = array(
+		'src/Catalog/Infrastructure/MysqlCatalogSearch.php'          => array( 'PAGE' ),
+		'src/Catalog/Infrastructure/MysqlStockSummaryProjection.php' => array( 'COMPLETE_PRODUCT_IDS', 'UNSUMMARIZED' ),
+	);
+
+	/**
+	 * The file that names the marker as the field a repair changes, in the event it publishes: a field name, never SQL.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const SETTLE = 'src/Catalog/Application/Doctor/ProductSettler.php';
+
+	/**
+	 * The one member of SETTLE that names the marker.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const SETTLE_FIELD = 'MARKER_FIELD';
+
+	/**
 	 * The files that may name a verdict: the rule and the enum.
 	 *
 	 * @since 0.1.0
@@ -165,11 +203,37 @@ final class SellabilityIsOneRuleTest extends TestCase {
 		}
 
 		$this->assertArrayHasKey( self::REPOSITORY, $naming, 'The search did not find the repository\'s SQL on the marker, so an empty result would prove nothing.' );
-		$named = array_keys( $naming );
+		$named    = array_keys( $naming );
+		$expected = array_merge( array( self::DECLARATION, self::REPOSITORY, self::WIRE, self::SETTLE ), array_keys( self::COMPLETE_LISTERS ) );
 
 		sort( $named );
+		sort( $expected );
 
-		$this->assertSame( array( self::DECLARATION, self::REPOSITORY, self::WIRE ), $named, 'Only the repository may read or write the generation marker; a reader asks Query\\Sellability.' );
+		$this->assertSame( $expected, $named, 'Only the repository may read or write the generation marker; a reader asks Query\\Sellability.' );
+	}
+
+	/**
+	 * Tests that each class that lists complete products names the marker only in the statements that list or count them, and the settler only as its event's field.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_listers_name_the_marker_only_to_list_complete_products(): void {
+		$members = self::COMPLETE_LISTERS + array( self::SETTLE => array( self::SETTLE_FIELD ) );
+
+		foreach ( $members as $file => $allowed ) {
+			$naming = array();
+
+			foreach ( self::stringsByMember( (string) file_get_contents( PhpSource::root() . '/' . $file ) ) as $member => $literals ) {
+				if ( array() !== array_filter( $literals, static fn( string $literal ): bool => str_contains( $literal, self::MARKER ) ) ) {
+					$naming[] = $member;
+				}
+			}
+
+			sort( $naming );
+			sort( $allowed );
+
+			$this->assertSame( $allowed, $naming, $file . ' names the generation marker outside the statements that list complete products.' );
+		}
 	}
 
 	/**

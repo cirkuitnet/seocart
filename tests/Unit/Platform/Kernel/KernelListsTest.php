@@ -25,8 +25,8 @@ use SEOCart\Tests\Unit\Support\PhpSource;
 
 /**
  * Each list the kernel keeps by hand has a companion test, because a list that can drift from what
- * it lists is a parallel list: the error catalogs, the domain events and the capability prefix the
- * mapper's filter checks. The migration chain is not kept here: the kernel wires the data
+ * it lists is a parallel list: the error catalogs, the domain events, the plugin's own listeners
+ * and the capability prefix the mapper's filter checks. The migration chain is not kept here: the kernel wires the data
  * registry's, and WiredMigrationsTest holds the two equal. It also checks two rules the kernel's
  * own code must keep: only the kernel reaches its static container, and a code the kernel only
  * reports is never a code of the error table.
@@ -36,6 +36,8 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * - Remove KernelError from Modules::ERROR_CATALOGS: the catalog list differs from the search.
  * - Add an event under src/ that implements DomainEvent only through an abstract base class, and
  *   leave it out of Modules::EVENT_CLASSES: the event list differs from the search.
+ * - Give the stock summary projector's on() a third parameter, or list ThingHappened among the
+ *   events it hears in Modules::EVENT_LISTENERS: the listener check names it.
  * - Call `Kernel::container()` from any other file under src/: the entry-point rule fails.
  * - Change Modules::CAPABILITY_PREFIX: it no longer equals the declaration's.
  * - Change Modules::JOB_HOOK: it no longer equals the runner's hook.
@@ -78,6 +80,41 @@ final class KernelListsTest extends TestCase {
 		sort( $listed );
 
 		$this->assertSame( self::domainEventsUnder( 'src' ), $listed, 'Modules::EVENT_CLASSES must list every domain event under src/, and nothing else.' );
+	}
+
+	/**
+	 * Tests that every listener the bridge puts on its actions is a class under src/ with the
+	 * listener method, `on( DomainEvent, EventEnvelope ): void`, and hears catalogued events only,
+	 * each once.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_every_plugin_listener_hears_catalogued_events_through_its_listener_method(): void {
+		$this->assertNotSame( array(), Modules::EVENT_LISTENERS, 'There is no listener to check, so the test would prove nothing.' );
+
+		$source = (string) realpath( dirname( __DIR__, 4 ) . '/src' );
+
+		foreach ( Modules::EVENT_LISTENERS as $listener => $events ) {
+			$this->assertTrue( class_exists( $listener ), $listener . ' is not a class the autoloader finds.' );
+
+			$class = new \ReflectionClass( $listener );
+
+			$this->assertStringStartsWith( $source . DIRECTORY_SEPARATOR, (string) $class->getFileName(), $listener . ' is not a class under src/.' );
+			$this->assertTrue( $class->hasMethod( 'on' ), $listener . ' has no method on().' );
+
+			$method = $class->getMethod( 'on' );
+
+			$this->assertTrue( $method->isPublic() && ! $method->isStatic(), $listener . '::on() is not a public instance method.' );
+			$this->assertSame(
+				array( DomainEvent::class, EventEnvelope::class ),
+				array_map( static fn( \ReflectionParameter $parameter ): string => (string) $parameter->getType(), $method->getParameters() ),
+				$listener . '::on() does not take the event and its envelope.'
+			);
+			$this->assertSame( 'void', (string) $method->getReturnType(), $listener . '::on() does not return void.' );
+			$this->assertNotSame( array(), $events, $listener . ' hears no event.' );
+			$this->assertSame( array_values( array_unique( $events ) ), $events, $listener . ' lists an event twice.' );
+			$this->assertSame( array(), array_values( array_diff( $events, Modules::EVENT_CLASSES ) ), $listener . ' hears an event Modules::EVENT_CLASSES does not list.' );
+		}
 	}
 
 	/**

@@ -57,7 +57,13 @@ defined( 'ABSPATH' ) || exit;
  * publisher asks isDispatching() whether an event for the same aggregate is being delivered
  * anywhere in the current chain.
  *
+ * The plugin's own listeners are put on their actions by the attach callable the bridge is given,
+ * which attachListeners() calls once, before the first dispatch in the process: every delivery,
+ * from whichever process drains the outbox, finds them there, and a request that dispatches
+ * nothing adds none.
+ *
  * @since 0.1.0
+ * @since 0.2.0 The attach callable.
  */
 final class HookBridge {
 
@@ -96,6 +102,24 @@ final class HookBridge {
 	 * @var int
 	 */
 	private int $slowNanoseconds;
+
+	/**
+	 * Puts the plugin's own listeners on their actions, or null when there are none to put.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var (callable(): void)|null
+	 */
+	private $attach;
+
+	/**
+	 * Whether the attach callable has run.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var bool
+	 */
+	private bool $attached = false;
 
 	/**
 	 * The dispatches in progress in this process, innermost last: the envelope, the bridge that
@@ -137,26 +161,61 @@ final class HookBridge {
 	 *                                        which uses hrtime().
 	 * @param int           $slowMilliseconds Optional. How long a listener may take before it is reported
 	 *                                        as slow. Default DEFAULT_SLOW_MILLISECONDS.
+	 * @param callable|null $attach           Optional. Puts the plugin's own listeners on their actions:
+	 *                                        PluginListeners::attach(). Default null, for none.
+	 *
+	 * @phpstan-param (callable(): void)|null $attach
 	 */
-	public function __construct( callable $report, ?callable $clock = null, int $slowMilliseconds = self::DEFAULT_SLOW_MILLISECONDS ) {
+	public function __construct( callable $report, ?callable $clock = null, int $slowMilliseconds = self::DEFAULT_SLOW_MILLISECONDS, ?callable $attach = null ) {
 		$this->report          = $report;
 		$this->clock           = $clock ?? static fn(): int => (int) hrtime( true );
 		$this->slowNanoseconds = max( 0, $slowMilliseconds ) * 1000000;
+		$this->attach          = $attach;
+	}
+
+	/**
+	 * Puts the plugin's own listeners on their actions, the first time it is called.
+	 *
+	 * Called by dispatch() before anything else, so the listeners are on their actions whichever
+	 * process delivers the event, and by OutboxDrainer::listeners(), so that doctor lists them in
+	 * a process that has dispatched nothing yet.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \Throwable Whatever the attach callable throws; the next call tries again.
+	 */
+	public function attachListeners(): void {
+		if ( $this->attached || null === $this->attach ) {
+			return;
+		}
+
+		$this->attached = true;
+
+		try {
+			( $this->attach )();
+		} catch ( \Throwable $failure ) {
+			$this->attached = false;
+
+			throw $failure;
+		}
 	}
 
 	/**
 	 * Fires the event's action and runs every listener, each contained.
 	 *
 	 * Whatever a listener throws is reported, never thrown. What this method throws comes from
-	 * outside any listener, for example a callback on the `all` hook; the caller treats that
-	 * as a failure of the delivery.
+	 * outside any listener, for example a callback on the `all` hook, or the attaching of the
+	 * plugin's own listeners; the caller treats that as a failure of the delivery.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Puts the plugin's own listeners on their actions first.
 	 *
 	 * @param EventEnvelope $envelope The event and its delivery metadata.
 	 */
 	public function dispatch( EventEnvelope $envelope ): void {
 		global $wp_current_filter;
+
+		$this->attachListeners();
 
 		$current = is_array( $wp_current_filter ) ? count( $wp_current_filter ) : 0;
 

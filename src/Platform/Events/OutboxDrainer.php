@@ -379,11 +379,17 @@ final class OutboxDrainer {
 	/**
 	 * Lists the callbacks registered on every catalogued event's action, for doctor.
 	 *
+	 * The plugin's own listeners are put on their actions first, so the list holds them in a
+	 * process that has dispatched no event yet, as doctor's has not.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Puts the plugin's own listeners on their actions first.
 	 *
 	 * @return list<array{hook: string, callback: string, priority: int, plugin: string}> One entry per callback.
 	 */
 	public function listeners(): array {
+		$this->bridge->attachListeners();
+
 		$listeners = array();
 
 		foreach ( $this->catalog->names() as $name ) {

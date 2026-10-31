@@ -13,6 +13,7 @@ namespace SEOCart\Catalog\Infrastructure\Doctor;
 
 use SEOCart\Catalog\Application\Doctor\ProductSettler;
 use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
+use SEOCart\Catalog\Application\Projection\StockSummaries;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Cli\Doctor\Check;
@@ -23,7 +24,7 @@ use SEOCart\Support\Currency;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Builds the catalog's eleven doctor checks, plus the reverse cross-module line (a stock item
+ * Builds the catalog's twelve doctor checks, plus the reverse cross-module line (a stock item
  * whose variant is gone), in a fixed order.
  *
  * Owns one fact: which checks the catalog contributes to doctor, and what each one is built from.
@@ -31,6 +32,7 @@ defined( 'ABSPATH' ) || exit;
  * module's; nothing here is resolved before `wp seocart doctor` runs.
  *
  * @since 0.1.0
+ * @since 0.2.0 The check of the stock summaries.
  */
 final class CatalogChecks {
 
@@ -109,9 +111,19 @@ final class CatalogChecks {
 	private $withLock;
 
 	/**
+	 * The products' stock summaries.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var StockSummaries
+	 */
+	private StockSummaries $summaries;
+
+	/**
 	 * Creates the factory. Sends nothing.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The stock summaries.
 	 *
 	 * @param ProductRepository  $products     The products.
 	 * @param StockService       $stock        Reads and writes stock.
@@ -121,11 +133,12 @@ final class CatalogChecks {
 	 * @param TransactionManager $transactions Runs the unit of work checks 3, 6 and 11's repairs need.
 	 * @param callable           $baseCurrency Returns the store's base currency.
 	 * @param callable           $withLock     Takes a named lock, runs work while holding it and releases it.
+	 * @param StockSummaries     $summaries    The products' stock summaries.
 	 *
 	 * @phpstan-param callable(): Currency $baseCurrency
 	 * @phpstan-param callable(string, int, int, callable): mixed $withLock
 	 */
-	public function __construct( ProductRepository $products, StockService $stock, TranslationGroups $groups, ProductSettler $settler, Clock $clock, TransactionManager $transactions, callable $baseCurrency, callable $withLock ) {
+	public function __construct( ProductRepository $products, StockService $stock, TranslationGroups $groups, ProductSettler $settler, Clock $clock, TransactionManager $transactions, callable $baseCurrency, callable $withLock, StockSummaries $summaries ) {
 		$this->products     = $products;
 		$this->stock        = $stock;
 		$this->groups       = $groups;
@@ -134,6 +147,7 @@ final class CatalogChecks {
 		$this->transactions = $transactions;
 		$this->baseCurrency = $baseCurrency;
 		$this->withLock     = $withLock;
+		$this->summaries    = $summaries;
 	}
 
 	/**
@@ -157,6 +171,7 @@ final class CatalogChecks {
 			new IncompleteCountCheck( $this->products ),
 			new OrphanStockItemCheck( $this->products, $this->stock ),
 			new TranslationGroupCheck( $this->products, $this->groups, $this->transactions, $this->withLock ),
+			new UnsummarizedCheck( $this->summaries ),
 		);
 	}
 }

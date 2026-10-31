@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Catalog;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Application\Operations\Operations;
 use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Platform\Database\ReportCode as DatabaseReportCode;
 use SEOCart\Platform\Events\ReportCode as EventsReportCode;
@@ -28,7 +29,8 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * A code in ReportCode reaches the log, never a client. If one spelled a code of the error
  * table, a reader of the log could not tell a reported condition from a raised error. Every
  * `catalog.` code the module's source spells is either a row of the error table or a case of
- * the enum, so the enum stays the one list of the rest.
+ * the enum, so the enum stays the one list of the rest; the one other `catalog.` name it may spell
+ * is the id of one of its operations, which the operations registry lists.
  *
  * Planted violations, each confirmed to fail a test here:
  * - Give ReportCode::RestoreFailed the value 'catalog.write_conflict': the first test fails.
@@ -77,7 +79,7 @@ final class ReportCodeTest extends TestCase {
 	 * @since 0.1.0
 	 */
 	public function test_every_catalog_code_in_the_module_is_declared(): void {
-		$declared = array_merge( self::errorTableCodes(), self::reported() );
+		$declared = array_merge( self::errorTableCodes(), self::reported(), self::operationIds() );
 		$spelled  = array();
 
 		foreach ( PhpSource::files( 'src/Catalog' ) as $source ) {
@@ -99,6 +101,25 @@ final class ReportCodeTest extends TestCase {
 	 */
 	private static function reported(): array {
 		return array_map( static fn( ReportCode $code ): string => $code->value, ReportCode::cases() );
+	}
+
+	/**
+	 * Returns the ids of the catalog's operations, as the registry declares them: they share the codes' `catalog.` prefix, and name no code.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> The ids.
+	 */
+	private static function operationIds(): array {
+		$ids = array();
+
+		foreach ( Operations::registry()->all() as $definition ) {
+			if ( str_starts_with( $definition->id(), 'catalog.' ) ) {
+				$ids[] = $definition->id();
+			}
+		}
+
+		return $ids;
 	}
 
 	/**

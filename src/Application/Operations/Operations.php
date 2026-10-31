@@ -13,6 +13,7 @@ namespace SEOCart\Application\Operations;
 
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Cart\Interfaces\StoreApi\StoreOperations;
+use SEOCart\Catalog\Interfaces\StoreApi\CatalogOperations;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Inventory\Application\InventoryOperations;
 use SEOCart\Inventory\Application\LocationOperations;
@@ -65,6 +66,7 @@ final class Operations {
 		$registry->add( TransferOperations::SEND_TRANSFER, array( TransferOperations::class, 'sendTransfer' ) );
 		$registry->add( TransferOperations::RECEIVE_TRANSFER, array( TransferOperations::class, 'receiveTransfer' ) );
 		$registry->add( TransferOperations::CANCEL_TRANSFER, array( TransferOperations::class, 'cancelTransfer' ) );
+		$registry->add( CatalogOperations::LIST_PRODUCTS, array( CatalogOperations::class, 'listProducts' ) );
 		$registry->add( StoreOperations::GET_SESSION, array( StoreOperations::class, 'getSession' ) );
 		$registry->add( CartOperations::GET_CART, array( CartOperations::class, 'getCart' ) );
 		$registry->add( CartOperations::ADD_LINES, array( CartOperations::class, 'addLines' ) );

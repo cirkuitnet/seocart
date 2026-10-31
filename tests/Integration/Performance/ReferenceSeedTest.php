@@ -63,7 +63,7 @@ final class ReferenceSeedTest extends DatabaseTestCase {
 	 *
 	 * @var string
 	 */
-	private const SMALL_DIGEST = '6c5f74af115b5430c78314854c98a7dfc02dd0a27a3383664c06429c85bdced0';
+	private const SMALL_DIGEST = '490aa7514300db5d30ff4aa00ada3efa59e6a1b956f969a22d4f4096a1abd28e';
 
 	/**
 	 * The seed of the test, once it wrote.

@@ -18,6 +18,7 @@ use SEOCart\Application\Operations\CliBinding;
 use SEOCart\Application\Operations\CompiledOperation;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
+use SEOCart\Catalog\Interfaces\Cli\CatalogCommand;
 use SEOCart\Checkout\Interfaces\Rest\WebhookRoute;
 use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Interfaces\Operations\RestAdapter;
@@ -122,6 +123,10 @@ final class OperationSurfaceWalker {
 		'seocart gateway'   => array(
 			'class'  => GatewayCommand::class,
 			'reason' => 'Shows the payment gateways\' state, switches a gateway off or on, sets its mode and saves its credentials from a file: an operator\'s control of the gateways from the server, with no REST route or ability twin; credentials never travel in a request\'s arguments.',
+		),
+		'seocart catalog'   => array(
+			'class'  => CatalogCommand::class,
+			'reason' => 'Summarizes the stock of every complete product for the listings, a page at a time and resumably: a one-time catch-up for products saved before their summaries existed, run by an operator on the server, with no REST route or ability twin; every save and stock movement keeps the summaries right after that.',
 		),
 	);
 

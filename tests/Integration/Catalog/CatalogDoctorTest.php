@@ -34,6 +34,7 @@ use SEOCart\Catalog\Infrastructure\Doctor\OrphanStockItemCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\StuckUpdatingCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\TranslationGroupCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\UnboundPostCheck;
+use SEOCart\Catalog\Infrastructure\MysqlStockSummaryProjection;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Platform\Authorization\Authorizer;
@@ -125,12 +126,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 			new SequentialIdGenerator( 700000 )
 		);
 
-		$settler = new ProductSettler(
-			$this->products,
-			$this->stock,
-			$this->db,
-			array( new LockService( $this->db, LockMode::GetLock ), 'withLock' )
-		);
+		$settler = $this->newSettler();
 
 		$events   = new RecordingEventPublisher( $this->db );
 		$delete   = new DeleteProduct( $this->products, $this->stock, $this->db, $events, new FrozenClock( $this->databaseNow() ) );
@@ -152,7 +148,8 @@ final class CatalogDoctorTest extends CatalogTestCase {
 			new FrozenClock( $this->databaseNow() ),
 			$this->db,
 			static fn(): Currency => Currency::of( CatalogTestCase::BASE_CURRENCY ),
-			$this->withLock
+			$this->withLock,
+			new MysqlStockSummaryProjection( $this->db )
 		);
 	}
 
@@ -1319,7 +1316,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 	 * @return ProductSettler The settler.
 	 */
 	private function newSettler(): ProductSettler {
-		return new ProductSettler( $this->products, $this->stock, $this->db, array( new LockService( $this->db, LockMode::GetLock ), 'withLock' ) );
+		return new ProductSettler( $this->products, $this->stock, $this->db, array( new LockService( $this->db, LockMode::GetLock ), 'withLock' ), new RecordingEventPublisher( $this->db ), new FrozenClock( $this->databaseNow() ) );
 	}
 
 	/**

@@ -19,7 +19,8 @@ defined( 'ABSPATH' ) || exit;
 /**
  * The errors the catalog raises.
  *
- * Owns one fact: how a refused catalog write is reported to a client. A SKU another variant
+ * Owns one fact: how a refused catalog write, or a refused page of the product listing, is
+ * reported to a client. A SKU another variant
  * holds is a conflict (409), so a client can tell it from a SKU that is malformed. A duplicate
  * key in storage never reaches a client as a database error: the repository translates the SKU
  * key into `catalog.sku_taken`. Codes the catalog only reports, never raises, are not rows here.
@@ -124,6 +125,20 @@ enum CatalogError: string implements ErrorCode {
 	 * @since 0.1.0
 	 */
 	case LocaleFixed = 'catalog.locale_fixed';
+
+	/**
+	 * A listing was filtered by a category, brand or tag slug that no term of its taxonomy has.
+	 *
+	 * @since 0.2.0
+	 */
+	case TermNotFound = 'catalog.term_not_found';
+
+	/**
+	 * A listing's search held more words than a search may, or was not valid UTF-8 text.
+	 *
+	 * @since 0.2.0
+	 */
+	case SearchInvalid = 'catalog.search_invalid';
 
 	/**
 	 * Returns the catalog's rows.
@@ -237,6 +252,22 @@ enum CatalogError: string implements ErrorCode {
 					/* translators: 1: A post ID. 2: A locale, such as de_DE. */
 					__( 'Post %1$s presents its product in another locale than %2$s; change its language in the multilingual plugin.', 'seocart' ),
 				array( 'post_id', 'locale' )
+			),
+			new ErrorDefinition(
+				self::TermNotFound,
+				404,
+				static fn(): string =>
+					/* translators: 1: The filter, category, brand or tag. 2: The slug as it was given. */
+					__( 'No %1$s has the slug "%2$s".', 'seocart' ),
+				array( 'filter', 'slug' )
+			),
+			new ErrorDefinition(
+				self::SearchInvalid,
+				400,
+				static fn(): string =>
+					/* translators: %1$s: The most words a search may hold. */
+					__( 'A search may hold at most %1$s words, in valid UTF-8 text.', 'seocart' ),
+				array( 'most' )
 			),
 		);
 	}

@@ -240,7 +240,7 @@ A product was saved: its post and its commerce rows, in one unit of work.
 
 - `productId` (int): The product that was saved.
 - `postId` (int): The product's source post, the one that controls whether it exists.
-- `changedFields` (string[]): The names of the fields the save changed, as a list.
+- `changedFields` (string[]): The names of the fields the save changed, as a list; `generation_state` alone when doctor's repair of the generation marker publishes it.
 - `sku` (string|null): The default variant's SKU, or null for a product saved without one.
 - `priceMinor` (int|null): The default variant's price in the store's base currency, in minor units, or null for none.
 - `currency` (string|null): The ISO 4217 code of that price's currency, or null when there is no price.

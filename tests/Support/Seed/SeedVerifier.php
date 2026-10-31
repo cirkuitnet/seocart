@@ -20,6 +20,7 @@ use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Infrastructure\Doctor\CatalogChecks;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
+use SEOCart\Catalog\Infrastructure\MysqlStockSummaryProjection;
 use SEOCart\Checkout\Infrastructure\Doctor\CheckoutChecks;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Order\Infrastructure\MysqlOrderRepository;
@@ -152,8 +153,8 @@ final class SeedVerifier {
 		$stock      = StockServices::over( $db, new RecordingEventPublisher( $db ), new SequentialIdGenerator( 950000 ), new SystemClock(), new CorrelationId( new SequentialIdGenerator( 960000 ) ) );
 		$locales    = new SiteLocale();
 		$reconciler = new Reconciler( $products, $db, $locales, new SystemClock(), new SequentialIdGenerator( 970000 ) );
-		$settler    = new ProductSettler( $products, $stock, $db, array( new LockService( $db, LockMode::GetLock ), 'withLock' ) );
 		$events     = new RecordingEventPublisher( $db );
+		$settler    = new ProductSettler( $products, $stock, $db, array( new LockService( $db, LockMode::GetLock ), 'withLock' ), $events, new SystemClock() );
 		$delete     = new DeleteProduct( $products, $stock, $db, $events, new SystemClock() );
 		$bindings   = new TranslationBindings( $products, $db, $events, new SystemClock(), $delete, new Authorizer( new CapabilityDeclaration() ) );
 		$groups     = new TranslationGroups( $products, $locales, $bindings, $reconciler, $report );
@@ -179,7 +180,7 @@ final class SeedVerifier {
 			),
 			new PromotionUsageCheck( new MysqlPromotionRepository( $db ) ),
 			new SecretsCheck( self::secretsStatus( $db ) ),
-			...( new CatalogChecks( $products, $stock, $groups, $settler, new SystemClock(), $db, static fn(): Currency => Currency::of( $baseCurrency ), array( new LockService( $db, LockMode::GetLock ), 'withLock' ) ) )->checks()
+			...( new CatalogChecks( $products, $stock, $groups, $settler, new SystemClock(), $db, static fn(): Currency => Currency::of( $baseCurrency ), array( new LockService( $db, LockMode::GetLock ), 'withLock' ), new MysqlStockSummaryProjection( $db ) ) )->checks()
 		);
 	}
 

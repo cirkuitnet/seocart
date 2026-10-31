@@ -118,6 +118,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: Post {post_id} could not become the source post of product {product_id}: the source changed meanwhile, or the post does not present the product.
 - Values: `product_id`, `post_id`
 
+## `catalog.search_invalid`
+
+- HTTP status: 400
+- Message: A search may hold at most {most} words, in valid UTF-8 text.
+- Values: `most`
+
 ## `catalog.sku_invalid`
 
 - HTTP status: 400
@@ -135,6 +141,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 409
 - Message: Post {post_id} is its product's source post; make another of its posts the source first.
 - Values: `post_id`
+
+## `catalog.term_not_found`
+
+- HTTP status: 404
+- Message: No {filter} has the slug "{slug}".
+- Values: `filter`, `slug`
 
 ## `catalog.write_conflict`
 

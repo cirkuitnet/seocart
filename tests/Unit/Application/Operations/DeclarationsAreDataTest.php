@@ -35,8 +35,10 @@ use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
  *   bounds the payment method, the next action whose types and bounds the placement states, the
  *   refund caps' settings with the payment error catalog their check names, the refund's
  *   declaration with the reasons it lists, the capture's and the void's
- *   with the void reasons, the payment states and the outcomes they list, and the fixture — no
- *   service, no container, no kernel, no database layer.
+ *   with the void reasons, the payment states and the outcomes they list, the product listing's
+ *   declaration with the catalog's error catalog, the post binding whose locale length it bounds,
+ *   the search whose words and order it states and the stock summaries it lists, and the fixture —
+ *   no service, no container, no kernel, no database layer.
  *
  * The probe can also add an operation whose factory translates a string, reads an option and reads
  * a file; the second test runs it that way and requires each of the three to be reported, so a
@@ -125,6 +127,11 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Order/Domain/PaymentStatus.php',
 		'src/Order/Domain/AmountBasis.php',
 		'src/Platform/RateLimiter/RateLimit.php',
+		'src/Catalog/Interfaces/StoreApi/CatalogOperations.php',
+		'src/Catalog/Domain/CatalogError.php',
+		'src/Catalog/Domain/ProductPostBinding.php',
+		'src/Catalog/Application/Search/SearchQuery.php',
+		'src/Catalog/Application/Projection/StockSummary.php',
 		'tests/Fixtures/Operations/',
 	);
 

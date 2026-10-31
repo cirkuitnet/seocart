@@ -36,16 +36,25 @@ use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
 use SEOCart\Catalog\Application\PostGateway;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
+use SEOCart\Catalog\Application\Projection\StockSummaries;
+use SEOCart\Catalog\Application\Projection\StockSummaryProjector;
 use SEOCart\Catalog\Application\Query\Sellability;
+use SEOCart\Catalog\Application\Search\CatalogSearch;
+use SEOCart\Catalog\Application\Search\ListingFacts;
+use SEOCart\Catalog\Application\Search\ProductListing;
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\Event\ProductBindingPromoted;
 use SEOCart\Catalog\Domain\Event\ProductDeleted;
 use SEOCart\Catalog\Domain\Event\ProductSaved;
 use SEOCart\Catalog\Infrastructure\Doctor\CatalogChecks;
+use SEOCart\Catalog\Infrastructure\MysqlCatalogSearch;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
+use SEOCart\Catalog\Infrastructure\MysqlStockSummaryProjection;
 use SEOCart\Catalog\Infrastructure\ProductPostType;
+use SEOCart\Catalog\Infrastructure\ProductTaxonomies;
 use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
 use SEOCart\Catalog\Interfaces\Admin\ProductEditorPanel;
+use SEOCart\Catalog\Interfaces\Cli\CatalogCommand;
 use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
 use SEOCart\Checkout\Application\ChangeCartCurrency;
 use SEOCart\Checkout\Application\CheckoutSessions;
@@ -173,6 +182,7 @@ use SEOCart\Platform\Events\EventPublisher;
 use SEOCart\Platform\Events\HookBridge;
 use SEOCart\Platform\Events\Outbox;
 use SEOCart\Platform\Events\OutboxDrainer;
+use SEOCart\Platform\Events\PluginListeners;
 use SEOCart\Platform\Events\Publisher;
 use SEOCart\Platform\Http\OutboundClient;
 use SEOCart\Platform\Http\WordPressTransport;
@@ -292,7 +302,8 @@ use SEOCart\Tax\Domain\TaxRoundingMode;
  * `unexpected` and `internal` shapes.
  *
  * It also keeps the lists the kernel cannot derive at run time without loading every class: the
- * error catalogs, the domain events and the maintenance commands. Each has a test that holds it to
+ * error catalogs, the domain events, the plugin's own event listeners and the maintenance
+ * commands. Each has a test that holds it to
  * what exists. The migration chain is not one of them: the migrator runs the data registry's
  * migrations, the one production list of what the plugin owns in a site.
  *
@@ -357,6 +368,32 @@ final class Modules {
 	);
 
 	/**
+	 * The plugin's own event listeners, each with the event classes it hears.
+	 *
+	 * The hook bridge puts them on their actions before it dispatches its first event in a process
+	 * (PluginListeners), never at boot, so an idle request adds no hook and loads no file for them.
+	 * Each is resolved from the container and has `on( DomainEvent $event, EventEnvelope $envelope ): void`;
+	 * a test holds every listener to that and every event to EVENT_CLASSES.
+	 *
+	 * The stock summary projector hears the stock events the outbox delivers, not a checkout's hold
+	 * or its release (StockReserved, StockReservationReleased): those two are delivered right after
+	 * their commit, inside the shopper's checkout request, which the projector's statements would
+	 * slow. StockSummaryProjector says what the summary misses for it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<class-string, list<class-string>>
+	 */
+	public const EVENT_LISTENERS = array(
+		StockSummaryProjector::class => array(
+			StockAdjusted::class,
+			StockAllocated::class,
+			StockHoldExpired::class,
+			ProductSaved::class,
+		),
+	);
+
+	/**
 	 * What every plugin capability contains, which the capability mapper's filter checks first.
 	 *
 	 * It is CapabilityDeclaration::PREFIX, spelled out: naming the declaration's constant would load
@@ -409,6 +446,7 @@ final class Modules {
 		'seocart outbox'    => OutboxCommand::class,
 		'seocart jobs'      => JobsCommand::class,
 		'seocart doctor'    => DoctorCommand::class,
+		'seocart catalog'   => CatalogCommand::class,
 		'seocart secrets'   => SecretsCommand::class,
 		'seocart gateway'   => GatewayCommand::class,
 	);
@@ -777,7 +815,8 @@ final class Modules {
 	 * The events module: the catalog, the outbox, the hook bridge, the drainer, the publisher and the outbox command.
 	 *
 	 * The publisher's wake is the jobs module's EventWake, which delivers what a request stored
-	 * after its response has been sent. The drainer pauses while Safe Mode is on.
+	 * after its response has been sent. The drainer pauses while Safe Mode is on. The bridge puts
+	 * the plugin's own listeners, EVENT_LISTENERS, on their actions before its first dispatch.
 	 *
 	 * @since 0.1.0
 	 *
@@ -786,7 +825,8 @@ final class Modules {
 	private static function eventsRegister( Container $container ): void {
 		$container->bind( EventCatalog::class, static fn(): EventCatalog => new EventCatalog( self::EVENT_CLASSES ) );
 		$container->bind( Outbox::class, static fn( Container $c ): Outbox => new Outbox( $c->get( Database::class ) ) );
-		$container->bind( HookBridge::class, static fn( Container $c ): HookBridge => new HookBridge( $c->get( Reporter::class ) ) );
+		$container->bind( PluginListeners::class, static fn( Container $c ): PluginListeners => new PluginListeners( self::EVENT_LISTENERS, static fn( string $listener ): object => $c->get( $listener ) ) );
+		$container->bind( HookBridge::class, static fn( Container $c ): HookBridge => new HookBridge( $c->get( Reporter::class ), attach: static fn() => $c->get( PluginListeners::class )->attach() ) );
 		$container->bind(
 			OutboxDrainer::class,
 			static fn( Container $c ): OutboxDrainer => new OutboxDrainer(
@@ -904,7 +944,7 @@ final class Modules {
 	}
 
 	/**
-	 * The catalog module: the product repository, the sellability query, the product post gateway, the locale of a post, the product write, the product's REST controller, the editor's panel, and the product's lifecycle: the reconciler, the delete, the copy and the post lifecycle.
+	 * The catalog module: the product repository, the sellability query, the product post gateway, the locale of a post, the product write, the product's REST controller, the editor's panel, and the product's lifecycle: the reconciler, the delete, the copy and the post lifecycle; and the product listing with its search, and the stock summaries with their listener and command.
 	 *
 	 * The repository, the write and the panel read the store's base currency from the settings
 	 * when they need it, never when they are built. Without a multilingual plugin every post has
@@ -960,7 +1000,7 @@ final class Modules {
 		);
 		$container->bind(
 			ProductSettler::class,
-			static fn( Container $c ): ProductSettler => new ProductSettler( $c->get( ProductRepository::class ), $c->get( StockService::class ), $c->get( TransactionManager::class ), array( $c->get( LockService::class ), 'withLock' ) )
+			static fn( Container $c ): ProductSettler => new ProductSettler( $c->get( ProductRepository::class ), $c->get( StockService::class ), $c->get( TransactionManager::class ), array( $c->get( LockService::class ), 'withLock' ), $c->get( EventPublisher::class ), $c->get( Clock::class ) )
 		);
 		$container->bind(
 			CatalogChecks::class,
@@ -972,9 +1012,29 @@ final class Modules {
 				$c->get( Clock::class ),
 				$c->get( TransactionManager::class ),
 				self::baseCurrency( $c ),
-				array( $c->get( LockService::class ), 'withLock' )
+				array( $c->get( LockService::class ), 'withLock' ),
+				$c->get( StockSummaries::class )
 			)
 		);
+		$container->bind( MysqlCatalogSearch::class, static fn( Container $c ): MysqlCatalogSearch => new MysqlCatalogSearch( $c->get( Database::class ) ) );
+		$container->bind( CatalogSearch::class, static fn( Container $c ): CatalogSearch => $c->get( MysqlCatalogSearch::class ) );
+		$container->bind( ListingFacts::class, static fn( Container $c ): ListingFacts => $c->get( MysqlCatalogSearch::class ) );
+		$container->bind(
+			ProductListing::class,
+			static fn( Container $c ): ProductListing => new ProductListing(
+				$c->get( CatalogSearch::class ),
+				$c->get( ListingFacts::class ),
+				$c->get( PostLocales::class ),
+				array(
+					CatalogSearch::FACET_CATEGORY => ProductTaxonomies::CATEGORY,
+					CatalogSearch::FACET_BRAND    => ProductTaxonomies::BRAND,
+					CatalogSearch::FACET_TAG      => ProductTaxonomies::TAG,
+				)
+			)
+		);
+		$container->bind( StockSummaries::class, static fn( Container $c ): StockSummaries => new MysqlStockSummaryProjection( $c->get( Database::class ) ) );
+		$container->bind( StockSummaryProjector::class, static fn( Container $c ): StockSummaryProjector => new StockSummaryProjector( $c->get( StockSummaries::class ), $c->get( Availability::class ) ) );
+		$container->bind( CatalogCommand::class, static fn( Container $c ): CatalogCommand => new CatalogCommand( $c->get( StockSummaries::class ), $c->get( StockSummaryProjector::class ), array( $c->get( LockService::class ), 'withLock' ), self::commandOutput() ) );
 		$container->bind(
 			DeleteProduct::class,
 			static fn( Container $c ): DeleteProduct => new DeleteProduct( $c->get( ProductRepository::class ), $c->get( StockService::class ), $c->get( TransactionManager::class ), $c->get( EventPublisher::class ), $c->get( Clock::class ) )

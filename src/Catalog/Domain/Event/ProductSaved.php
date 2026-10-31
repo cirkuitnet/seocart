@@ -23,10 +23,13 @@ defined( 'ABSPATH' ) || exit;
  * the names of the fields the save changed, and a summary of the default variant: its SKU and
  * its price in the store's base currency, which are null for a product saved without them. It is
  * stored in the outbox by the transaction that saves the product, so it exists exactly when the
- * save committed, and fires `seocart_product_saved` after the commit. Each payload key is its
- * property's name in snake_case.
+ * save committed, and fires `seocart_product_saved` after the commit. Doctor's repair of a
+ * product's generation marker publishes it too, in the repair's transaction, with
+ * `generation_state` as the one field changed. Each payload key is its property's name in
+ * snake_case.
  *
  * @since 0.1.0
+ * @since 0.2.0 Published by doctor's repair of the generation marker.
  */
 final readonly class ProductSaved implements DomainEvent {
 
@@ -37,7 +40,7 @@ final readonly class ProductSaved implements DomainEvent {
 	 *
 	 * @param int                $productId     The product that was saved.
 	 * @param int                $postId        The product's source post, the one that controls whether it exists.
-	 * @param string[]           $changedFields The names of the fields the save changed, as a list.
+	 * @param string[]           $changedFields The names of the fields the save changed, as a list; `generation_state` alone when doctor's repair of the generation marker publishes it.
 	 * @param string|null        $sku           The default variant's SKU, or null for a product saved without one.
 	 * @param int|null           $priceMinor    The default variant's price in the store's base currency, in minor units, or null for none.
 	 * @param string|null        $currency      The ISO 4217 code of that price's currency, or null when there is no price.

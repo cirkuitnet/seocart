@@ -2856,6 +2856,181 @@
                 }
             }
         },
+        "/products": {
+            "servers": [
+                {
+                    "url": "{site}/wp-json/seocart/store/v1",
+                    "variables": {
+                        "site": {
+                            "default": "https://example.com",
+                            "description": "The address of the WordPress site."
+                        }
+                    }
+                }
+            ],
+            "get": {
+                "operationId": "catalog.list_products",
+                "summary": "Lists one page of the store's products in a locale, newest first, searched by words in their titles, excerpts or SKUs and filtered by category, brand, tag and availability; it carries no price and never sets a cookie.",
+                "description": "Public: requires no capability, and anyone may send it.",
+                "parameters": [
+                    {
+                        "name": "locale",
+                        "in": "query",
+                        "required": false,
+                        "description": "The WordPress locale whose product posts are listed, one the site publishes in; when absent, the site's locale.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 20,
+                            "examples": [
+                                "en_US"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "search",
+                        "in": "query",
+                        "required": false,
+                        "description": "Up to 3 words separated by spaces, each of which must appear in the product's title or excerpt or begin one of its SKUs; when absent, nothing is searched.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 100,
+                            "examples": [
+                                "linen shirt"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "category",
+                        "in": "query",
+                        "required": false,
+                        "description": "The slug of a product category: the products in it or in any of its descendants are listed.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 200,
+                            "examples": [
+                                "shirts"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "brand",
+                        "in": "query",
+                        "required": false,
+                        "description": "The slug of a product brand: only its products are listed.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 200,
+                            "examples": [
+                                "acme"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "tag",
+                        "in": "query",
+                        "required": false,
+                        "description": "The slug of a product tag: only the products it is given to are listed.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 200,
+                            "examples": [
+                                "summer"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "in_stock",
+                        "in": "query",
+                        "required": false,
+                        "description": "Whether to list only the products in stock; when absent, products are listed whatever their stock.",
+                        "schema": {
+                            "type": "boolean",
+                            "examples": [
+                                true
+                            ]
+                        }
+                    },
+                    {
+                        "name": "orderby",
+                        "in": "query",
+                        "required": false,
+                        "description": "The order of the products: newest, the most recently published first.",
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "newest"
+                            ],
+                            "default": "newest",
+                            "examples": [
+                                "newest"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "page",
+                        "in": "query",
+                        "required": false,
+                        "description": "The page to list, from 1 to 1000000.",
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000000,
+                            "default": 1,
+                            "examples": [
+                                2
+                            ]
+                        }
+                    },
+                    {
+                        "name": "per_page",
+                        "in": "query",
+                        "required": false,
+                        "description": "How many products a page holds, from 1 to 96.",
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 96,
+                            "default": 24,
+                            "examples": [
+                                24
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the ProductList resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProductList"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`catalog.locale_unsupported`: The site does not publish in {locale}.\n\n`catalog.search_invalid`: A search may hold at most {most} words, in valid UTF-8 text.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`catalog.term_not_found`: No {filter} has the slug \"{slug}\".",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/refund-claims/{refund_uuid}/settlement": {
             "post": {
                 "operationId": "payment.settle_refund_claim",
@@ -7104,6 +7279,152 @@
                     "outcome",
                     "status",
                     "payment_status"
+                ]
+            },
+            "ProductList": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "post_id": {
+                                    "type": "integer",
+                                    "description": "The product's post in the locale."
+                                },
+                                "product_id": {
+                                    "type": "integer",
+                                    "description": "The product."
+                                },
+                                "product_uuid": {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "description": "The product's public identifier."
+                                },
+                                "variant_id": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ],
+                                    "description": "The variant the listing shows: the enabled variant of the lowest position; null for a product whose variants are all disabled, which doctor reports."
+                                },
+                                "sku": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "description": "The SKU of that variant, or null when there is none."
+                                },
+                                "title": {
+                                    "type": "string",
+                                    "description": "The title of the product's post, as WordPress displays it, so it may hold HTML entities."
+                                },
+                                "permalink": {
+                                    "type": "string",
+                                    "description": "The address of the product's post."
+                                },
+                                "image": {
+                                    "type": [
+                                        "object",
+                                        "null"
+                                    ],
+                                    "properties": {
+                                        "id": {
+                                            "type": "integer",
+                                            "description": "The image's attachment."
+                                        },
+                                        "url": {
+                                            "type": "string",
+                                            "description": "The address of the image at the medium size, or at its full size when it has no medium size."
+                                        },
+                                        "alt": {
+                                            "type": "string",
+                                            "description": "The image's alternative text, empty when it has none."
+                                        }
+                                    },
+                                    "required": [
+                                        "id",
+                                        "url",
+                                        "alt"
+                                    ],
+                                    "additionalProperties": false,
+                                    "description": "The post's featured image at the medium size, or null for a post without one."
+                                },
+                                "availability": {
+                                    "type": "string",
+                                    "enum": [
+                                        "in_stock",
+                                        "out_of_stock",
+                                        "unknown"
+                                    ],
+                                    "description": "Whether the product is in stock at any location that ships online orders: in_stock, out_of_stock, or unknown while its stock has not been summarized."
+                                }
+                            },
+                            "required": [
+                                "post_id",
+                                "product_id",
+                                "product_uuid",
+                                "variant_id",
+                                "sku",
+                                "title",
+                                "permalink",
+                                "image",
+                                "availability"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "maxItems": 96,
+                        "description": "The products of the page, newest first: each one whose post in the locale is published and whose product is complete.",
+                        "examples": [
+                            [
+                                {
+                                    "post_id": 40,
+                                    "product_id": 12,
+                                    "product_uuid": "6b1f0c2e-4d7a-4c9b-8e15-3a2d9f7c4b60",
+                                    "variant_id": 15,
+                                    "sku": "SHIRT-LINEN-M",
+                                    "title": "Linen shirt",
+                                    "permalink": "https://example.com/products/linen-shirt/",
+                                    "image": {
+                                        "id": 77,
+                                        "url": "https://example.com/wp-content/uploads/linen-shirt-300x300.jpg",
+                                        "alt": "A linen shirt, folded"
+                                    },
+                                    "availability": "in_stock"
+                                }
+                            ]
+                        ]
+                    },
+                    "page": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "The page, from 1.",
+                        "examples": [
+                            1
+                        ]
+                    },
+                    "per_page": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "How many products a page holds.",
+                        "examples": [
+                            24
+                        ]
+                    },
+                    "has_more": {
+                        "type": "boolean",
+                        "description": "Whether at least one more product follows this page.",
+                        "examples": [
+                            true
+                        ]
+                    }
+                },
+                "required": [
+                    "items",
+                    "page",
+                    "per_page",
+                    "has_more"
                 ]
             },
             "Refund": {

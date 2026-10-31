@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Support\Seed;
 
 use SEOCart\Cart\Domain\LineIdentity;
 use SEOCart\Cart\Infrastructure\CartTables;
+use SEOCart\Catalog\Application\Projection\StockSummary;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
@@ -42,7 +43,8 @@ use SEOCart\Promotion\Infrastructure\PromotionTables;
  *
  * - its source post, published, and for every second product a second post in another of the
  *   store's locales, never the site's own;
- * - the product, complete, bound to its posts;
+ * - the product, complete, bound to its posts, its stock summarized as the rule sums it up:
+ *   in stock when its item has a unit on hand that no hold takes, out of stock otherwise;
  * - its default variant, enabled, in the generation the product publishes, with a price in the
  *   base currency;
  * - its stock policy, tracked, and its stock item at the store's default location, with a ledger
@@ -398,6 +400,8 @@ final class ReferenceSeed {
 				'updated_at'                => $created . '.000000',
 			);
 
+			$productRow = array_key_last( $buffers[ CatalogTables::PRODUCTS ] );
+
 			$buffers[ CatalogTables::PRODUCT_POSTS ][] = $this->binding( $sourceId, $product, $this->sourceLocale, $created );
 
 			if ( 0 === $product % 2 ) {
@@ -457,6 +461,9 @@ final class ReferenceSeed {
 			}
 
 			$held = $onHand < 2 ? 0 : ( 0 === $random->getInt( 0, 4 ) ? 2 : 1 );
+
+			// The one item, at the one location that ships online orders: for sale is what no hold takes.
+			$buffers[ CatalogTables::PRODUCTS ][ $productRow ]['stock_summary'] = StockSummary::of( array( $product => max( 0, $onHand - $held ) ) );
 
 			for ( $hold = 0; $hold < $held; $hold++ ) {
 				// Half the holds are live; the others expired within the period the sweep is allowed.
