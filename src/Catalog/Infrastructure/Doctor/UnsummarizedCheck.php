@@ -24,8 +24,8 @@ defined( 'ABSPATH' ) || exit;
  * product, so a complete product left unknown was saved before the summaries existed, or its
  * summary's write failed; the listing's in-stock filter leaves it out. A product whose every
  * variant is disabled is unknown by the rule, which the command cannot change, so it is not
- * counted. A summary a checkout's released hold left out of stock is not unknown, so this check
- * does not count it either.
+ * counted. A summary a failed delivery left behind its stock is not unknown, so this check does
+ * not count it either.
  * The failure names the command that summarizes them. It never repairs: the command does, a page
  * at a time.
  *

@@ -387,13 +387,14 @@ final class Modules {
 	 * The hook bridge puts them on their actions before it dispatches its first event in a process
 	 * (PluginListeners), never at boot, so an idle request adds no hook and loads no file for them.
 	 * Each is resolved from the container and has `on( DomainEvent $event, EventEnvelope $envelope ): void`;
-	 * a test holds every listener to that and every event to EVENT_CLASSES.
+	 * a test holds every listener to that, and every event it hears to EVENT_CLASSES and to the outbox.
 	 *
-	 * The stock summary projector hears the stock events the outbox delivers, not a checkout's hold
-	 * or its release (StockReserved, StockReservationReleased): those two are delivered right after
-	 * their commit, inside the shopper's checkout request, which the projector's statements would
-	 * slow. StockSummaryProjector says what the summary misses for it. The price projector hears every
-	 * product save and every new exchange-rate version; the search document projector every product save.
+	 * Every event a listener hears is stored in the outbox in its transaction and delivered after the
+	 * commit, after the response or by a later background run, never inside the request that stored
+	 * it, so no listener slows a shopper's checkout. The stock summary projector hears every stock
+	 * movement that changes what is for sale, a checkout's hold and the hold given back included, and
+	 * every product save. The price projector hears every product save and every new exchange-rate
+	 * version; the search document projector every product save.
 	 *
 	 * @since 0.2.0
 	 *
@@ -402,8 +403,11 @@ final class Modules {
 	public const EVENT_LISTENERS = array(
 		StockSummaryProjector::class   => array(
 			StockAdjusted::class,
+			StockReserved::class,
 			StockAllocated::class,
+			StockReservationReleased::class,
 			StockHoldExpired::class,
+			StockTransferred::class,
 			ProductSaved::class,
 		),
 		PriceProjector::class          => array(

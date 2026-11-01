@@ -200,6 +200,56 @@ final class TransferRulesTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a receipt repeated with the figures it read before is refused naming the line's figures now: a loss reported twice, a unit received and one lost reported twice, and a stale lost figure, which applies once the caller reads the line again.
+	 *
+	 * Planted violation, shown red and removed: in FakeTransferRepository::receiveLine(), drop the
+	 * match on the units lost so far: the loss reported twice is applied twice, and so is the
+	 * receipt with the stale lost figure.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_repeated_receipt_is_refused_with_the_lines_figures(): void {
+		$this->stock->plantItem( 4, 5 );
+		$this->stock->plantItem( 9, 5 );
+
+		$sent  = $this->transfers->sendTransfer(
+			array(
+				'transfer_uuid' => $this->plantDraft(
+					array(
+						4 => 3,
+						9 => 2,
+					)
+				),
+			),
+			$this->actor
+		);
+		$uuid  = (string) $sent['transfer_uuid'];
+		$lines = array_column( $sent['lines'], 'line_id', 'variant_id' );
+		$loss  = self::receipt( $lines[4], 0, 1 );
+		$both  = self::receipt( $lines[9], 1, 1 );
+
+		$this->receive( $uuid, $loss );
+		$this->assertRefused( InventoryError::TransferReceiptConflict, fn(): array => $this->receive( $uuid, $loss ), self::conflict( $lines[4], 0, 1 ) );
+
+		$this->receive( $uuid, $both );
+		$this->assertRefused( InventoryError::TransferReceiptConflict, fn(): array => $this->receive( $uuid, $both ), self::conflict( $lines[9], 1, 1 ) );
+
+		$this->assertRefused( InventoryError::TransferReceiptConflict, fn(): array => $this->receive( $uuid, self::receipt( $lines[4], 2 ) ), self::conflict( $lines[4], 0, 1 ) );
+
+		$received = $this->receive( $uuid, self::receipt( $lines[4], 2, 0, 0, 1 ) );
+
+		$this->assertSame( 'received', $received['state'], 'Every unit sent is received or lost.' );
+		$this->assertSame(
+			array(
+				4 => array( 2, 1 ),
+				9 => array( 1, 1 ),
+			),
+			array_combine( array_column( $received['lines'], 'variant_id' ), array_map( static fn( array $line ): array => array( $line['received_quantity'], $line['lost_quantity'] ), $received['lines'] ) ),
+			'Each receipt applied once.'
+		);
+	}
+
+	/**
 	 * Tests that a draft is cancelled, and a requested transfer carrying an order's units is not, with the reason.
 	 *
 	 * @since 0.2.0
@@ -337,21 +387,63 @@ final class TransferRulesTest extends TestCase {
 	}
 
 	/**
-	 * Returns a receipt line that expects nothing received or lost so far.
+	 * Returns a receipt line: the units received and lost, and the figures the caller read, by default nothing received or lost so far.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $lineId           The line.
+	 * @param int $received         The units received.
+	 * @param int $lost             Optional. The units lost. Default 0.
+	 * @param int $expectedReceived Optional. The units received so far, as read. Default 0.
+	 * @param int $expectedLost     Optional. The units lost so far, as read. Default 0.
+	 * @return array{line_id: int, received: int, lost: int, expected_received_quantity: int, expected_lost_quantity: int} The line.
+	 */
+	private static function receipt( int $lineId, int $received, int $lost = 0, int $expectedReceived = 0, int $expectedLost = 0 ): array {
+		return array(
+			'line_id'                    => $lineId,
+			'received'                   => $received,
+			'lost'                       => $lost,
+			'expected_received_quantity' => $expectedReceived,
+			'expected_lost_quantity'     => $expectedLost,
+		);
+	}
+
+	/**
+	 * Receives one line of a transfer.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string             $uuid The transfer.
+	 * @param array<string, int> $line The receipt line.
+	 * @return array<string, mixed> The transfer as it is now.
+	 */
+	private function receive( string $uuid, array $line ): array {
+		return $this->transfers->receiveTransfer(
+			array(
+				'transfer_uuid' => $uuid,
+				'lines'         => array( $line ),
+			),
+			$this->actor
+		);
+	}
+
+	/**
+	 * Returns the context of a receipt refused for figures read before: the figures it expected, none, and the line's now.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param int $lineId   The line.
-	 * @param int $received The units received.
-	 * @return array{line_id: int, received: int, lost: int, expected_received_quantity: int, expected_lost_quantity: int} The line.
+	 * @param int $received The units the line has received.
+	 * @param int $lost     The units the line has lost.
+	 * @return array{line_id: int, expected: int, expected_lost: int, received_quantity: int, lost_quantity: int} The context.
 	 */
-	private static function receipt( int $lineId, int $received ): array {
+	private static function conflict( int $lineId, int $received, int $lost ): array {
 		return array(
-			'line_id'                    => $lineId,
-			'received'                   => $received,
-			'lost'                       => 0,
-			'expected_received_quantity' => 0,
-			'expected_lost_quantity'     => 0,
+			'line_id'           => $lineId,
+			'expected'          => 0,
+			'expected_lost'     => 0,
+			'received_quantity' => $received,
+			'lost_quantity'     => $lost,
 		);
 	}
 

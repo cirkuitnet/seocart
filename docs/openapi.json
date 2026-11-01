@@ -2078,7 +2078,7 @@
                                     "move_stock_to": {
                                         "type": "string",
                                         "format": "uuid",
-                                        "description": "An active location to move the deactivated location's available units to, as one transfer worked in the background; units promised to orders or held by checkouts stay. Moving stock also needs the capability that manages inventory. Repeated with the same location, the deactivation answers the same transfer. Turning the location on again ends the move, the units moved so far staying where they arrived.",
+                                        "description": "An active location to move the deactivated location's available units to, as one transfer worked in the background; units promised to orders or held by checkouts stay. Moving stock also needs the capability that manages inventory. Repeated with the same location, the deactivation answers the same transfer, or, once that transfer has finished and the location has available units again, starts a new one. Turning the location on again ends the move, the units moved so far staying where they arrived.",
                                         "examples": [
                                             "2f6c1a52-8d3b-4a7e-9c41-5b0d7e93a6f8"
                                         ]

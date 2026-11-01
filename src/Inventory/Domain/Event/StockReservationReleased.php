@@ -30,10 +30,13 @@ defined( 'ABSPATH' ) || exit;
  * name each item given back to, a variant at a location, in ascending order of the variant then
  * the location, with the units given back there; the units of a variant's items add up to the
  * variant's. A release recorded before stock was kept per location has none of the three item
- * lists, and each is empty. Delivered in the same request right after the commit. Its aggregate
- * id is the lowest variant id released. Each payload key is its property's name in snake_case.
+ * lists, and each is empty. It is stored in the outbox inside the transaction that releases, and
+ * delivered after the commit, at least once, as every stock event is: after the response, or by a
+ * later background run, never inside the request that gave the hold back. Its aggregate id is the
+ * lowest variant id released. Each payload key is its property's name in snake_case.
  *
  * @since 0.1.0
+ * @since 0.2.0 Stored in the outbox and delivered after the commit, at least once.
  */
 final readonly class StockReservationReleased implements DomainEvent {
 
@@ -98,11 +101,12 @@ final readonly class StockReservationReleased implements DomainEvent {
 	 * Returns how the event is delivered.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Outbox.
 	 *
-	 * @return DeliveryMode AfterCommit.
+	 * @return DeliveryMode Outbox.
 	 */
 	public static function deliveryMode(): DeliveryMode {
-		return DeliveryMode::AfterCommit;
+		return DeliveryMode::Outbox;
 	}
 
 	/**

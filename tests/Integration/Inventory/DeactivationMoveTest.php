@@ -241,6 +241,73 @@ final class DeactivationMoveTest extends TransferTestCase {
 	}
 
 	/**
+	 * Tests that a location deactivated again after a reactivation ended its move, and asked then to move its stock, starts a new move for the units that came in meanwhile, and that once nothing is left to move the finished move is the answer and no transfer is written.
+	 *
+	 * Planted violation, shown red and removed: in Transfers::moveStockOf(), answer the newest move
+	 * whatever the location holds: the finished move is answered, no job is queued, and the units
+	 * stay at the deactivated location.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_move_asked_again_after_a_reactivation_moves_the_units_that_came_in(): void {
+		$b      = $this->secondConnection();
+		$source = $this->plantLocation();
+		$target = $this->plantLocation();
+		$first  = self::variant();
+		$later  = self::variant();
+
+		$this->stockItem( $first, 2, $source );
+
+		$ended = (string) $this->deactivate( $source, $target )['move_transfer_uuid'];
+		$job   = new MoveLocationStock( $this->transfers, 0, 1 );
+
+		$this->assertSame( MoveLocationStock::AGAIN_AFTER_SECONDS, $job->handle( $this->queue->queued[0]->payload ), 'The first page moved its variant.' );
+
+		$this->locations->updateLocation(
+			array(
+				'location_uuid' => $this->uuidOf( $b, $source ),
+				'active'        => true,
+			),
+			$this->manager
+		);
+
+		$this->assertNull( $job->handle( $this->queue->queued[0]->payload ), 'The next page ends the move.' );
+		$this->assertSame( 'received', $this->committedTransfer( $b, $ended )['state'] );
+
+		// Units come in while the location is on again; it is turned off with no move, then asked to move its stock.
+		$this->stockItem( $later, 3, $source );
+		$this->locations->deactivateLocation( array( 'location_uuid' => $this->uuidOf( $b, $source ) ), $this->manager );
+
+		$queued = count( $this->queue->queued );
+		$moved  = (string) $this->deactivate( $source, $target )['move_transfer_uuid'];
+
+		$this->assertNotSame( $ended, $moved, 'Units to move start a move of their own.' );
+		$this->assertSame(
+			array(
+				'kind'  => 'deactivation',
+				'state' => 'in_transit',
+			),
+			array_intersect_key( $this->committedTransfer( $b, $moved ), array_flip( array( 'kind', 'state' ) ) )
+		);
+		$this->assertCount( $queued + 1, $this->queue->queued, 'The new move\'s job is queued once the deactivation commits.' );
+		$this->assertSame( 2, $this->runMove( $this->queue->queued[ $queued ]->payload ), 'A page for the variant that came in, and one that finds no more.' );
+		$this->assertSame( 'received', $this->committedTransfer( $b, $moved )['state'] );
+		$this->assertSame( array( $later . ':3:3:0:-' ), $this->committedLines( $b, $moved ) );
+		$this->assertSame( array( 0, 0, 0 ), array_values( (array) $this->committedItem( $b, $later, $source ) ), 'Nothing is left at the deactivated location.' );
+		$this->assertSame( array( 3, 0, 0 ), array_values( (array) $this->committedItem( $b, $later, $target ) ), 'The units are at the target.' );
+
+		$transfers = $b->fetchValue( sprintf( 'SELECT COUNT(*) FROM `%s`', $this->table( InventoryTables::TRANSFERS ) ) );
+
+		$this->assertSame( $moved, $this->deactivate( $source, $target )['move_transfer_uuid'], 'With nothing left to move, the finished move is the answer.' );
+		$this->assertSame( $transfers, $b->fetchValue( sprintf( 'SELECT COUNT(*) FROM `%s`', $this->table( InventoryTables::TRANSFERS ) ) ), 'No transfer is written.' );
+		$this->assertCount( $queued + 1, $this->queue->queued, 'A move received has no job to queue.' );
+
+		$doctor = $this->projectionCheck();
+
+		$this->assertTrue( $doctor->passed, 'Doctor: ' . implode( "\n", $doctor->findings ) );
+	}
+
+	/**
 	 * Tests that moving the stock also needs the capability that manages inventory, refused before anything changes, while a deactivation without a move needs only the settings.
 	 *
 	 * Planted violation, shown red and removed: in Locations::deactivateLocation(), leave out the

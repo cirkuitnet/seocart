@@ -286,7 +286,8 @@ final class Locations {
 	 * before any statement, so a refusal changes nothing. In the same unit of work as the
 	 * deactivation, under the location's lock, Transfers::moveStockOf() starts the move, one
 	 * transfer worked page by page by a background job, or finds the one under way: the answer
-	 * names it, and a repeat with the same target answers the same move.
+	 * names it, and a repeat with the same target answers the same move, or a new one once that
+	 * move has finished and the location has available units again.
 	 *
 	 * @since 0.2.0
 	 *

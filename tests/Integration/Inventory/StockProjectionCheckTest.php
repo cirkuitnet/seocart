@@ -261,8 +261,7 @@ final class StockProjectionCheckTest extends StockTestCase {
 			$result->findings
 		);
 
-		$this->afterCommit = array();
-
+		$mark    = $this->outboxMark( $b );
 		$changes = $this->stockCheck()->repair()->changes;
 
 		// The sweep right after the repair, before anything else is asserted: a repair that leaves the hold to the sweep fails here.
@@ -274,7 +273,7 @@ final class StockProjectionCheckTest extends StockTestCase {
 		$this->assertSame( array( 2, 0, 1 ), array_values( (array) $this->committedItem( $b, $variant ) ), 'The item at the default location, and the unit its hold holds, are untouched.' );
 		$this->assertSame(
 			array( array( $expired, 'item_missing', array( $variant ) ), array( $live, 'item_missing', array( $variant ) ) ),
-			array_map( static fn( StockReservationReleased $event ): array => array( $event->holdId, $event->reason, $event->variantIds ), array_values( array_filter( $this->afterCommit, static fn( $event ): bool => $event instanceof StockReservationReleased ) ) )
+			array_map( static fn( StockReservationReleased $event ): array => array( $event->holdId, $event->reason, $event->variantIds ), array_values( array_filter( $this->committedHoldEvents( $b, $mark ), static fn( $event ): bool => $event instanceof StockReservationReleased ) ) )
 		);
 		$this->assertSame( array(), $this->stockCheck()->repair()->changes, 'A second repair has nothing to do.' );
 		$this->assertTrue( $this->projectionCheck()->passed, implode( "\n", $this->projectionCheck()->findings ) );

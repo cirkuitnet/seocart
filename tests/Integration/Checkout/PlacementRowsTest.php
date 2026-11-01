@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Checkout;
 
 use SEOCart\Cart\Infrastructure\CartTables;
+use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Inventory\Domain\Event\StockReserved;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
@@ -29,8 +30,9 @@ use SEOCart\Tests\Support\Checkout\PlacementTestCase;
  * an INSERT of its own. An approved placement converts its hold rows into allocation rows, so
  * none of them is left; a placement that waits for the shopper keeps its hold rows, and those are
  * compared instead. Every column is compared but the row's own id and its times; the times that
- * carry meaning are checked apart: an outbox row is due as soon as it is stored, and every hold
- * row expires when the hold the placement took does. The rows are read in id order, the order the outbox delivers them in, so a statement that writes several
+ * carry meaning are checked apart: an outbox row is due as soon as it is stored, the reservation
+ * the hold stores first expires the hold's time after the placement began, and every hold row
+ * expires when that reservation says. The rows are read in id order, the order the outbox delivers them in, so a statement that writes several
  * rows at once must also write them in the order they were written one by one. An id a row names
  * is replaced by what it names: the order, an order line by its position in the order, a variant
  * by its slot in Cart B, the cart, the hold, the intent, the ledger row and the request, so the
@@ -82,6 +84,7 @@ final class PlacementRowsTest extends PlacementTestCase {
 		'transaction_id'       => 'transaction',
 		'cart_id'              => 'cart',
 		'hold_group'           => 'hold',
+		'hold_id'              => 'hold',
 	);
 
 	/**
@@ -94,6 +97,7 @@ final class PlacementRowsTest extends PlacementTestCase {
 	private const AGGREGATES = array(
 		'order'          => 'order',
 		'payment_intent' => 'intent',
+		'variant'        => 'variant',
 	);
 
 	/**
@@ -107,17 +111,25 @@ final class PlacementRowsTest extends PlacementTestCase {
 	public function test_placing_cart_b_writes_the_recorded_rows(): void {
 		$variants = $this->readyCartB();
 		$after    = (int) $this->db->fetchValue( 'SELECT COALESCE( MAX( id ), 0 ) FROM %i', $this->table( OutboxTable::NAME ) );
+		$began    = strtotime( (string) $this->db->fetchValue( 'SELECT UTC_TIMESTAMP()' ) );
 		$answer   = $this->placement->place( $this->placeInput( 'rows' ), self::guest() );
+		$ended    = strtotime( (string) $this->db->fetchValue( 'SELECT UTC_TIMESTAMP()' ) );
 
 		$this->assertSame( 'approved', $answer['outcome'] );
 
-		$names = $this->namesOf( (string) $answer['order_uuid'], $variants );
-		$rows  = array(
+		$names  = $this->namesOf( (string) $answer['order_uuid'], $variants );
+		$rows   = array(
 			'allocations' => $this->allocations( $names ),
 			'outbox'      => $this->outbox( $after, $names ),
 		);
+		$expiry = strtotime( (string) ( $rows['outbox'][0]['payload']['p']['expires_at'] ?? '' ) );
+
+		// The reservation's expiry is a time, checked apart: the fixture names it.
+		$rows['outbox'][0]['payload']['p']['expires_at'] = 'the hold\'s expiry';
 
 		$this->assertSame( self::fixture( self::FIXTURE ), $rows );
+		$this->assertGreaterThanOrEqual( $began + PlaceOrder::HOLD_TTL_SECONDS, $expiry, 'The hold expires its time after the placement began.' );
+		$this->assertLessThanOrEqual( $ended + PlaceOrder::HOLD_TTL_SECONDS, $expiry, 'The hold expires its time after the placement began.' );
 		$this->assertSame( '0', $this->db->fetchValue( 'SELECT COUNT(*) FROM %i', $this->table( InventoryTables::HOLDS ) ), 'Every hold row became its allocation.' );
 		$this->assertSame(
 			array(),
@@ -136,22 +148,17 @@ final class PlacementRowsTest extends PlacementTestCase {
 	 */
 	public function test_placing_cart_b_that_waits_for_the_shopper_keeps_the_recorded_hold_rows(): void {
 		$variants = $this->readyCartB();
-		$expiries = array();
-
-		add_action(
-			'seocart_' . StockReserved::eventName(),
-			static function ( StockReserved $reserved ) use ( &$expiries ): void {
-				$expiries[] = $reserved->expiresAt;
-			}
-		);
-
-		$answer = $this->placement->place( $this->placeInput( 'holds', StubGateway::REQUIRES_ACTION ), self::guest() );
+		$answer   = $this->placement->place( $this->placeInput( 'holds', StubGateway::REQUIRES_ACTION ), self::guest() );
+		$reserved = $this->db->fetchAll( 'SELECT payload_json FROM %i WHERE event_name = %s', $this->table( OutboxTable::NAME ), StockReserved::eventName() );
 
 		$this->assertSame( 'requires_action', $answer['outcome'] );
 		$this->assertSame( self::fixture( self::HOLDS_FIXTURE ), $this->holds( $this->namesOf( (string) $answer['order_uuid'], $variants ) ) );
-		$this->assertCount( 1, $expiries, 'The placement took one hold.' );
+		$this->assertCount( 1, $reserved, 'The placement took one hold, and stored its reservation.' );
+
+		$stored = Outbox::decode( (string) $reserved[0]['payload_json'] );
+
 		$this->assertSame(
-			array_fill( 0, count( $variants ), $expiries[0] ),
+			array_fill( 0, count( $variants ), StockReserved::fromPayload( $stored['p'], $stored['at'], $stored['v'] )->expiresAt ),
 			array_map( static fn( array $row ): string => (string) $row['expires_at'], $this->db->fetchAll( 'SELECT expires_at FROM %i ORDER BY id', $this->table( InventoryTables::HOLDS ) ) ),
 			'Every hold row expires when the hold the placement took does.'
 		);

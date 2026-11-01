@@ -163,8 +163,7 @@ final class SeamsTest extends StockTestCase {
 		$this->stockItem( $variant, 3 );
 
 		$hold = $this->service->hold( array( new HoldLine( $variant, 1 ) ), 600 );
-
-		$this->afterCommit = array();
+		$mark = $this->outboxMark( $b );
 
 		$this->db->transaction(
 			function () use ( $variant ): void {
@@ -181,9 +180,11 @@ final class SeamsTest extends StockTestCase {
 		$this->assertSame( array( '-3', '0', 'variant_deleted', 'user', '4' ), array( $ledger[1]['delta'], $ledger[1]['on_hand_after'], $ledger[1]['reason'], $ledger[1]['actor_type'], $ledger[1]['actor_id'] ) );
 		$this->assertSame( 2, $this->committedEvents( $b, StockAdjusted::eventName() ), 'The write-off is an event too.' );
 
-		$this->assertCount( 1, $this->afterCommit );
-		$this->assertInstanceOf( StockReservationReleased::class, $this->afterCommit[0] );
-		$this->assertSame( array( $hold->holdGroup, 'variant_deleted', array( $variant ), array( 1 ) ), array( $this->afterCommit[0]->holdId, $this->afterCommit[0]->reason, $this->afterCommit[0]->variantIds, $this->afterCommit[0]->quantities ) );
+		$released = $this->committedHoldEvents( $b, $mark );
+
+		$this->assertCount( 1, $released );
+		$this->assertInstanceOf( StockReservationReleased::class, $released[0] );
+		$this->assertSame( array( $hold->holdGroup, 'variant_deleted', array( $variant ), array( 1 ) ), array( $released[0]->holdId, $released[0]->reason, $released[0]->variantIds, $released[0]->quantities ) );
 		$this->assertTrue( $this->projectionCheck()->passed, 'The kept ledger of a deleted variant is normal.' );
 	}
 
@@ -201,7 +202,7 @@ final class SeamsTest extends StockTestCase {
 		$this->service->adjust( $variant, $second, 2, LedgerReason::Received, Actor::user( 1 ) );
 		$this->service->hold( array( new HoldLine( $variant, 1 ), new HoldLine( $variant, 1, $second ) ), 600 );
 
-		$this->afterCommit = array();
+		$mark = $this->outboxMark( $b );
 
 		$this->db->transaction(
 			function () use ( $variant ): void {
@@ -217,7 +218,10 @@ final class SeamsTest extends StockTestCase {
 			array_map( static fn( array $row ): array => array( (int) $row['location_id'], (string) $row['delta'] ), $this->db->fetchAll( 'SELECT location_id, delta FROM %i WHERE variant_id = %d AND reason = %s ORDER BY id', $this->table( InventoryTables::LEDGER ), $variant, 'variant_deleted' ) ),
 			'One write-off per location, ascending.'
 		);
-		$this->assertSame( array( array( $variant ), array( 2 ), array( $variant, $variant ), array( $this->defaultLocation, $second ), array( 1, 1 ) ), self::lines( $this->afterCommit[0] ), 'One release of the hold, naming the variant once and both its items.' );
+		$released = $this->committedHoldEvents( $b, $mark );
+
+		$this->assertCount( 1, $released, 'One release of the hold.' );
+		$this->assertSame( array( array( $variant ), array( 2 ), array( $variant, $variant ), array( $this->defaultLocation, $second ), array( 1, 1 ) ), self::lines( $released[0] ), 'One release of the hold, naming the variant once and both its items.' );
 		$this->assertTrue( $this->projectionCheck()->passed, implode( "\n", $this->projectionCheck()->findings ) );
 	}
 
@@ -423,8 +427,8 @@ final class SeamsTest extends StockTestCase {
 		$this->stockItem( $other, 5 );
 		$this->service->hold( array( new HoldLine( $other, 1 ) ), 600 );
 
-		$this->afterCommit = array();
-		$ledgerBefore      = array( $this->committedLedger( $b, $first ), $this->committedLedger( $b, $second ) );
+		$mark         = $this->outboxMark( $b );
+		$ledgerBefore = array( $this->committedLedger( $b, $first ), $this->committedLedger( $b, $second ) );
 
 		$this->db->transaction(
 			function () use ( $first, $second ): void {
@@ -449,7 +453,7 @@ final class SeamsTest extends StockTestCase {
 
 		$released = array();
 
-		foreach ( $this->afterCommit as $event ) {
+		foreach ( $this->committedHoldEvents( $b, $mark ) as $event ) {
 			$this->assertInstanceOf( StockReservationReleased::class, $event );
 			$released[ $event->holdId ] = array( $event->reason, $event->variantIds, $event->quantities );
 		}

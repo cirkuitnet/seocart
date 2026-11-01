@@ -27,12 +27,14 @@ defined( 'ABSPATH' ) || exit;
  * item held, a variant at a location, in ascending order of the variant then the location, with
  * the units held there; the units of a variant's items add up to the variant's. A hold recorded
  * before stock was kept per location has none of the three item lists, and each is empty.
- * Untracked variants need no hold and are not listed. Delivered in the same request right after
- * the commit; its loss is tolerable, because the hold rows themselves are the record. Its
- * aggregate id is the lowest variant id of the hold. Each payload key is its property's name in
- * snake_case.
+ * Untracked variants need no hold and are not listed. It is stored in the outbox inside the
+ * transaction that holds, and delivered after the commit, at least once, as every stock event is:
+ * after the response, or by a later background run, never inside the request that took the hold.
+ * Its aggregate id is the lowest variant id of the hold. Each payload key is its property's name
+ * in snake_case.
  *
  * @since 0.1.0
+ * @since 0.2.0 Stored in the outbox and delivered after the commit, at least once.
  */
 final readonly class StockReserved implements DomainEvent {
 
@@ -101,11 +103,12 @@ final readonly class StockReserved implements DomainEvent {
 	 * Returns how the event is delivered.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Outbox.
 	 *
-	 * @return DeliveryMode AfterCommit.
+	 * @return DeliveryMode Outbox.
 	 */
 	public static function deliveryMode(): DeliveryMode {
-		return DeliveryMode::AfterCommit;
+		return DeliveryMode::Outbox;
 	}
 
 	/**

@@ -93,6 +93,63 @@
 	],
 	"outbox": [
 		{
+			"event_name": "stock_reserved",
+			"aggregate_type": "variant",
+			"aggregate_id": "variant 0",
+			"payload": {
+				"v": 1,
+				"p": {
+					"hold_id": "hold",
+					"cart_id": "cart",
+					"order_id": null,
+					"variant_ids": [
+						"variant 0",
+						"variant 1",
+						"variant 2",
+						"variant 3",
+						"variant 4",
+						"variant 5",
+						"variant 6",
+						"variant 7",
+						"variant 8",
+						"variant 9"
+					],
+					"quantities": [ 1, 2, 3, 1, 1, 4, 1, 2, 1, 3 ],
+					"location_variant_ids": [
+						"variant 0",
+						"variant 1",
+						"variant 2",
+						"variant 3",
+						"variant 4",
+						"variant 5",
+						"variant 6",
+						"variant 7",
+						"variant 8",
+						"variant 9"
+					],
+					"location_ids": [
+						"default location",
+						"default location",
+						"default location",
+						"default location",
+						"default location",
+						"default location",
+						"default location",
+						"default location",
+						"default location",
+						"default location"
+					],
+					"location_quantities": [ 1, 2, 3, 1, 1, 4, 1, 2, 1, 3 ],
+					"expires_at": "the hold's expiry"
+				}
+			},
+			"correlation_id": "request 0",
+			"state": "pending",
+			"claim_token": null,
+			"attempts": 0,
+			"last_error": null
+		},
+		{
 			"event_name": "order_created",
 			"aggregate_type": "order",
 			"aggregate_id": "order",

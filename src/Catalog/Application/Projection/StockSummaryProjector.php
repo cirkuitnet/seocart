@@ -16,6 +16,9 @@ use SEOCart\Inventory\Application\Availability;
 use SEOCart\Inventory\Domain\Event\StockAdjusted;
 use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Domain\Event\StockHoldExpired;
+use SEOCart\Inventory\Domain\Event\StockReservationReleased;
+use SEOCart\Inventory\Domain\Event\StockReserved;
+use SEOCart\Inventory\Domain\Event\StockTransferred;
 use SEOCart\Platform\Events\EventEnvelope;
 use SEOCart\Support\Events\DomainEvent;
 
@@ -26,30 +29,28 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Recomputes the stock summary of every product an event concerns, after the event's commit, and writes the ones that moved.
  *
- * Owns one fact: when a summary is computed. It hears the stock movements the outbox delivers (an
- * adjustment of on hand, an allocation to an order, an expired hold reclaimed) and every product
+ * Owns one fact: when a summary is computed. It hears every stock movement that changes what is
+ * for sale (an adjustment of on hand, a checkout's hold, the hold given back, an allocation to an
+ * order, an expired hold reclaimed, units sent between locations or received) and every product
  * save, which can change the product's variants. For each event it finds the products concerned,
  * reads their enabled variants of the published generation and, with one call for them all, the
  * units each has for sale (Availability::forSale(), Inventory's public figure, over every active
  * fulfilling location), applies StockSummary::of(), and writes the products whose summary differs.
  * An event's own numbers are never used: the figure is read when the event is delivered, so a late
  * or repeated delivery writes the current value, and two deliveries in either order end at the
- * same one.
+ * same one. A transfer's request and its shortfall move no unit a location counts, so it does not
+ * hear them.
  *
- * It does not hear a checkout's hold or the hold given back (StockReserved,
- * StockReservationReleased): both are delivered right after their commit, inside the shopper's
- * checkout request, which its statements would slow. So a product whose last units a checkout
- * holds is still summarized in stock while the hold lasts; the paid order's allocation is what
- * takes it out of stock. And when anything else recomputes the summary during a hold (an
- * adjustment, a save, another order's allocation), it reads out of stock, and stays so after the
- * hold is given back (a declined or abandoned payment), until the product's next event or
- * `wp seocart catalog summarize-stock`. The summary is a guide for listings; a placement checks
- * what is for sale again.
+ * Every event it hears comes through the outbox: stored in the transaction that moved the stock
+ * and delivered after the commit, after the response or by a later background run, never inside
+ * the shopper's checkout. So the summary follows a hold a moment after the checkout, not at its
+ * commit; it is a guide for listings, and a placement checks what is for sale again.
  *
  * Nothing runs in a transaction: each write is one conditional UPDATE. A summary write touches no
  * `updated_at` and no `generation_state`, so it never makes a concurrent repair of the generation
- * marker miss. A failure is thrown to the hook bridge, which reports it; the summary stays as it
- * was until the next event or `wp seocart catalog summarize-stock`.
+ * marker miss. A failure is thrown to the hook bridge, which reports it and does not deliver the
+ * event again; the summary stays as it was until the next event or
+ * `wp seocart catalog summarize-stock`.
  *
  * The hook bridge puts it on its actions before the first dispatch of a process
  * (Modules::EVENT_LISTENERS), so a drain in any process delivers to it.
@@ -139,6 +140,9 @@ final class StockSummaryProjector {
 	/**
 	 * Returns the variants a stock event moved.
 	 *
+	 * A transfer names its variants in both phases: a send takes them out of what the source counts,
+	 * and a receipt puts them where the destination does.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @throws \LogicException When the event is not a stock event the projector hears.
@@ -151,7 +155,7 @@ final class StockSummaryProjector {
 			return array( $event->variantId );
 		}
 
-		if ( $event instanceof StockAllocated ) {
+		if ( $event instanceof StockReserved || $event instanceof StockAllocated || $event instanceof StockReservationReleased || $event instanceof StockTransferred ) {
 			return $event->variantIds;
 		}
 

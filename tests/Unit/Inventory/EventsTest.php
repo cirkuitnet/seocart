@@ -22,7 +22,10 @@ use SEOCart\Inventory\Domain\Event\StockTransferRequested;
 use SEOCart\Inventory\Domain\Event\StockTransferShort;
 use SEOCart\Inventory\Domain\StockLines;
 use SEOCart\Platform\Events\EventCatalog;
+use SEOCart\Platform\Events\Outbox;
+use SEOCart\Platform\Events\Publisher;
 use SEOCart\Platform\Kernel\Modules;
+use SEOCart\Support\Events\DeliveryMode;
 use SEOCart\Support\Events\DomainEvent;
 use SEOCart\Tests\Support\Doubles\FakeTransactionManager;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
@@ -228,6 +231,38 @@ final class EventsTest extends TestCase {
 
 		$this->assertEquals( $event, $rebuilt );
 		$this->assertSame( $event->toPayload(), $rebuilt->toPayload() );
+	}
+
+	/**
+	 * Tests that a checkout's hold and its release travel through the outbox, as every stock event does, and that a reservation and a release naming items at three locations come back from their stored rows equal.
+	 *
+	 * Planted violation, shown red and removed: in StockReserved::deliveryMode(), answer
+	 * AfterCommit again: the reservation is no longer stored in the hold's transaction.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_hold_and_its_release_are_outbox_events_that_survive_their_rows(): void {
+		$at   = new \DateTimeImmutable( '2026-09-24 10:00:00.123456', new \DateTimeZone( 'UTC' ) );
+		$hold = '018f4e2a-7b3c-7d1e-9a2b-3c4d5e6f7a8b';
+
+		list( $variantIds, $quantities, $locationVariantIds, $locationIds, $locationQuantities ) = StockLines::of( array( array( 7, 1, 2 ), array( 7, 2, 1 ), array( 9, 3, 4 ), array( 9, 1, 1 ) ) );
+
+		$this->assertSame( array( 1, 2, 3 ), array_values( array_unique( $locationIds ) ), 'The items are at three locations.' );
+
+		foreach (
+			array(
+				new StockReserved( $hold, 3, 31, $variantIds, $quantities, $locationVariantIds, $locationIds, $locationQuantities, '2026-09-24 10:15:00', $at ),
+				new StockReservationReleased( $hold, 'payment_declined', $variantIds, $quantities, $locationVariantIds, $locationIds, $locationQuantities, $at ),
+			) as $event
+		) {
+			$this->assertSame( DeliveryMode::Outbox, $event::deliveryMode(), get_class( $event ) . ' is delivered through the outbox.' );
+
+			$stored  = Outbox::decode( Outbox::encode( $event, Publisher::DEFAULT_PAYLOAD_CAP_BYTES ) );
+			$rebuilt = $event::fromPayload( $stored['p'], $stored['at'], $stored['v'] );
+
+			$this->assertEquals( $event, $rebuilt, get_class( $event ) . ' comes back from its row equal.' );
+			$this->assertSame( $event->toPayload(), $rebuilt->toPayload() );
+		}
 	}
 
 	/**

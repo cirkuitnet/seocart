@@ -18,6 +18,7 @@ use SEOCart\Platform\Events\EventEnvelope;
 use SEOCart\Platform\Jobs\JobRunner;
 use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Support\Error\ErrorTable;
+use SEOCart\Support\Events\DeliveryMode;
 use SEOCart\Support\Events\DomainEvent;
 use SEOCart\Tests\Support\ErrorCatalogs;
 use SEOCart\Tests\Unit\Platform\Kernel\Fixtures\InheritedEvent;
@@ -38,6 +39,8 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  *   leave it out of Modules::EVENT_CLASSES: the event list differs from the search.
  * - Give the stock summary projector's on() a third parameter, or list ThingHappened among the
  *   events it hears in Modules::EVENT_LISTENERS: the listener check names it.
+ * - Make StockReserved::deliveryMode() answer AfterCommit: the listener check names the stock
+ *   summary projector and the event it would hear inside the request that stored it.
  * - Call `Kernel::container()` from any other file under src/: the entry-point rule fails.
  * - Change Modules::CAPABILITY_PREFIX: it no longer equals the declaration's.
  * - Change Modules::JOB_HOOK: it no longer equals the runner's hook.
@@ -85,7 +88,8 @@ final class KernelListsTest extends TestCase {
 	/**
 	 * Tests that every listener the bridge puts on its actions is a class under src/ with the
 	 * listener method, `on( DomainEvent, EventEnvelope ): void`, and hears catalogued events only,
-	 * each once.
+	 * each once, and each an outbox event: delivered after its commit, never inside the request
+	 * that stored it.
 	 *
 	 * @since 0.2.0
 	 */
@@ -114,6 +118,10 @@ final class KernelListsTest extends TestCase {
 			$this->assertNotSame( array(), $events, $listener . ' hears no event.' );
 			$this->assertSame( array_values( array_unique( $events ) ), $events, $listener . ' lists an event twice.' );
 			$this->assertSame( array(), array_values( array_diff( $events, Modules::EVENT_CLASSES ) ), $listener . ' hears an event Modules::EVENT_CLASSES does not list.' );
+
+			foreach ( $events as $event ) {
+				$this->assertSame( DeliveryMode::Outbox, $event::deliveryMode(), sprintf( '%1$s hears %2$s, which is not an outbox event: it would run inside the request that stored it.', $listener, $event ) );
+			}
 		}
 	}
 

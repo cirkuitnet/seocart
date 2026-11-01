@@ -71,8 +71,10 @@ final class HoldTest extends StockTestCase {
 		$this->assertSame( 1, $this->committedItem( $b, $variant )['held'] ?? null );
 		$this->assertSame( array( $hold->holdGroup . ':1' ), $this->committedHolds( $b, $variant ), 'The expired row is gone; the new hold is the only one.' );
 		$this->assertSame( 1, $this->committedEvents( $b, StockHoldExpired::eventName() ) );
-		$this->assertCount( 1, $this->afterCommit );
-		$this->assertInstanceOf( StockReserved::class, $this->afterCommit[0] );
+		$reserved = $this->committedHoldEvents( $b );
+
+		$this->assertCount( 1, $reserved );
+		$this->assertInstanceOf( StockReserved::class, $reserved[0] );
 	}
 
 	/**
@@ -148,7 +150,7 @@ final class HoldTest extends StockTestCase {
 		$this->assertSame( 1, $this->committedItem( $b, $variant )['held'] ?? null, 'held is what it was: the expired hold, unreclaimed.' );
 		$this->assertSame( array( $expired . ':1' ), $this->committedHolds( $b, $variant ) );
 		$this->assertSame( 0, $this->committedEvents( $b, StockHoldExpired::eventName() ) );
-		$this->assertSame( array(), $this->afterCommit );
+		$this->assertSame( array(), $this->committedHoldEvents( $b ) );
 		$this->assertSame( 0, $this->db->depth() );
 	}
 
@@ -242,7 +244,7 @@ final class HoldTest extends StockTestCase {
 
 		$this->assertSame( 0, $this->committedItem( $b, $variant )['held'] ?? null );
 		$this->assertSame( array(), $this->committedHolds( $b, $variant ) );
-		$this->assertSame( array(), $this->afterCommit );
+		$this->assertSame( array(), $this->committedHoldEvents( $b ) );
 	}
 
 	/**
@@ -352,7 +354,7 @@ final class HoldTest extends StockTestCase {
 		$this->assertEquals( array( new HoldLine( $tracked, 1, $this->defaultLocation ) ), $hold->lines );
 		$this->assertQueryCount( 0, $log->ofType( 'UPDATE', 'INSERT', 'DELETE' )->matching( '/variant_id = ' . $untracked . '\b|\( ' . $untracked . ',/' ), 'Writes naming the untracked item' );
 		$this->assertSame( array(), $this->committedHolds( $b, $untracked ) );
-		$this->assertSame( array( $tracked ), $this->afterCommit[0]->variantIds ?? null );
+		$this->assertSame( array( $tracked ), $this->committedHoldEvents( $b )[0]->variantIds ?? null );
 	}
 
 	/**
@@ -383,7 +385,7 @@ final class HoldTest extends StockTestCase {
 		$this->assertEquals( array( new HoldLine( $variant, 2, $default ) ), $hold->lines, 'Both lines are one line at the default location.' );
 		$this->assertSame( 2, $this->committedItem( $b, $variant, $default )['held'] ?? null );
 		$this->assertSame( 0, $this->committedItem( $b, $variant, $first )['held'] ?? null );
-		$this->assertSame( array( array( $variant ), array( 2 ), array( $variant ), array( $default ), array( 2 ) ), self::lines( $this->afterCommit[0] ) );
+		$this->assertSame( array( array( $variant ), array( 2 ), array( $variant ), array( $default ), array( 2 ) ), self::lines( $this->committedHoldEvents( $b )[0] ) );
 	}
 
 	/**
@@ -406,13 +408,15 @@ final class HoldTest extends StockTestCase {
 
 		$this->service->hold( array( new HoldLine( $other, 1 ), new HoldLine( $variant, 3, $second ), new HoldLine( $variant, 2 ) ), 600 );
 
-		$this->assertInstanceOf( StockReserved::class, $this->afterCommit[0] ?? null );
+		$reserved = $this->committedHoldEvents( $this->secondConnection() )[0] ?? null;
+
+		$this->assertInstanceOf( StockReserved::class, $reserved );
 		$this->assertSame(
 			array( array( $variant, $other ), array( 5, 1 ), array( $variant, $variant, $other ), array( $this->defaultLocation, $second, $this->defaultLocation ), array( 2, 3, 1 ) ),
-			self::lines( $this->afterCommit[0] )
+			self::lines( $reserved )
 		);
 
-		$payload = $this->afterCommit[0]->toPayload();
+		$payload = $reserved->toPayload();
 
 		$this->assertSame(
 			array(

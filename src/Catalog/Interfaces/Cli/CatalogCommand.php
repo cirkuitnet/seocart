@@ -29,8 +29,8 @@ defined( 'ABSPATH' ) || exit;
  * is not written, so a second run writes nothing. It is how a store whose products were saved
  * before the summaries, the sort prices or the search documents existed catches up, and how a drift is put right.
  * - `summarize-stock` recomputes each product's stock summary (StockSummaryProjector). Every save
- *   and every stock movement but a checkout's hold and its release keeps the summaries right after
- *   that, and a run also puts right a summary that a hold given back left out of stock.
+ *   and every stock movement, a checkout's hold and its release included, keeps the summaries right
+ *   after that, a moment after each commit.
  * - `project-prices` recomputes each product's sort prices in every currency the store sells in
  *   (PriceProjector). Every save, and the repricing job after a new exchange-rate version, keep
  *   them right after that.

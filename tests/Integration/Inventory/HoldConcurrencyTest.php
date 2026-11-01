@@ -92,8 +92,11 @@ final class HoldConcurrencyTest extends StockTestCase {
 
 		$this->assertSame( 1, $this->committedItem( $b, $variant )['held'] ?? null );
 		$this->assertSame( array( $hold->holdGroup . ':1' ), $this->committedHolds( $b, $variant ) );
-		$this->assertCount( 1, $this->afterCommit, 'One reservation, the winner\'s.' );
-		$this->assertInstanceOf( StockReserved::class, $this->afterCommit[0] );
+		$reserved = $this->committedHoldEvents( $b );
+
+		$this->assertCount( 1, $reserved, 'One reservation, the winner\'s.' );
+		$this->assertInstanceOf( StockReserved::class, $reserved[0] );
+		$this->assertSame( $hold->holdGroup, $reserved[0]->holdId );
 		$this->assertSame( 0, $this->committedEvents( $b, StockHoldExpired::eventName() ) );
 	}
 
@@ -547,8 +550,10 @@ final class HoldConcurrencyTest extends StockTestCase {
 			$this->assertSame( 1, $this->committedItem( $b, $variant )['held'] ?? null );
 		}
 
-		$this->assertCount( 1, $this->afterCommit, 'One reservation, not one per attempt.' );
-		$this->assertSame( $hold->holdGroup, $this->afterCommit[0]->holdId ?? null );
+		$reserved = $this->committedHoldEvents( $b );
+
+		$this->assertCount( 1, $reserved, 'One reservation, not one per attempt.' );
+		$this->assertSame( $hold->holdGroup, $reserved[0]->holdId ?? null );
 	}
 
 	/**
@@ -640,7 +645,7 @@ final class HoldConcurrencyTest extends StockTestCase {
 		$this->assertSame( 1, $this->committedItem( $b, $third )['held'] ?? null );
 		$this->assertSame( array( $groups[ $third ] . ':1' ), $this->committedHolds( $b, $third ) );
 		$this->assertSame( 1, $this->committedEvents( $b, StockHoldExpired::eventName() ), 'The expired hold is reported once.' );
-		$this->assertCount( 1, $this->afterCommit, 'One reservation.' );
+		$this->assertCount( 1, $this->committedHoldEvents( $b ), 'One reservation.' );
 		$this->assertTrue( $this->projectionCheck()->passed, implode( "\n", $this->projectionCheck()->findings ) );
 	}
 }

@@ -26,6 +26,7 @@ use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
+use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
@@ -46,7 +47,9 @@ use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
  * of a statement is the first placement step its caller passed through; a transaction's own
  * control statements are counted apart. The session is read once, before the transaction; a
  * cart's hold rows are one insert, and so are its allocation rows and the outbox rows of one
- * publish; the allocation reads the hold's rows, item by item, once. The calculation plans where
+ * publish; the hold stores its reservation in the outbox with one insert of the first unit, and
+ * nothing the placement sends reads or writes a product's stock summary, whose projector hears the
+ * reservation after the response; the allocation reads the hold's rows, item by item, once. The calculation plans where
  * the units are held: it reads the locations, the units each has, and the store's routing mode
  * with the days a transfer adds (one read of their group), each once, cold; the first unit
  * records the location the order ships from, and the second reads the mode again only when a
@@ -58,7 +61,10 @@ use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
  * grows by one, under the allocation; in StockService::allocateInside(), read the hold's rows
  * twice: the second unit's count grows by one, under the allocation; and in PlaceOrder::priced(),
  * price the cart without the session just read: the part before the transaction grows by one,
- * under the calculation.
+ * under the calculation; in StockReserved::deliveryMode(), answer AfterCommit: the hold step
+ * stores no reservation, and the projector, delivered the reservation in the request, reads and
+ * writes stock summaries between the two units; in StockService::holdInside(), publish each held
+ * line's reservation on its own: Cart B's hold step sends one outbox insert per line.
  *
  * @group performance
  *
@@ -111,7 +117,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 */
 	private const CART_A = array(
 		'before'  => 10,
-		'first'   => 32,
+		'first'   => 33,
 		'between' => 1,
 		'second'  => 34,
 	);
@@ -125,7 +131,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 */
 	private const CART_B = array(
 		'before'  => 11,
-		'first'   => 45,
+		'first'   => 46,
 		'between' => 1,
 		'second'  => 52,
 	);
@@ -139,7 +145,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 */
 	private const CART_B_PRESENTMENT = array(
 		'before'  => 12,
-		'first'   => 45,
+		'first'   => 46,
 		'between' => 1,
 		'second'  => 52,
 	);
@@ -153,7 +159,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 */
 	private const CART_A_NOTHING_DUE = array(
 		'before'  => 11,
-		'first'   => 34,
+		'first'   => 35,
 		'between' => 0,
 		'second'  => 30,
 	);
@@ -167,7 +173,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 */
 	private const CART_A_ACTING = array(
 		'before'  => 10,
-		'first'   => 32,
+		'first'   => 33,
 		'between' => 1,
 		'second'  => 15,
 	);
@@ -181,7 +187,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 */
 	private const CART_B_TRANSFER = array(
 		'before'  => 11,
-		'first'   => 45,
+		'first'   => 46,
 		'between' => 1,
 		'second'  => 57,
 	);
@@ -195,7 +201,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 */
 	private const CART_A_TRANSFER = array(
 		'before'  => 10,
-		'first'   => 33,
+		'first'   => 34,
 		'between' => 1,
 		'second'  => 39,
 	);
@@ -495,15 +501,19 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		$this->assertSame( $outcome, $answer['outcome'] ?? null, $name );
 		$this->assertSame( 2, $log->matching( '/^START TRANSACTION$/' )->count(), $name . ': two transactions.' );
 
-		$parts = array(
+		$parts        = array(
 			'before'  => 0,
 			'first'   => 0,
 			'between' => 0,
 			'second'  => 0,
 		);
-		$steps = array();
-		$order = array( 'before', 'first', 'between', 'second' );
-		$part  = 0;
+		$steps        = array();
+		$order        = array( 'before', 'first', 'between', 'second' );
+		$part         = 0;
+		$outbox       = '/^INSERT INTO `' . preg_quote( $this->table( OutboxTable::NAME ), '/' ) . '`/';
+		$hold         = array();
+		$reservations = 0;
+		$summaries    = array();
 
 		foreach ( $log->entries() as $entry ) {
 			// Each unit of work begins by asking for its isolation level, and ends with its COMMIT.
@@ -518,6 +528,18 @@ final class PlacementBudgetTest extends PlacementTestCase {
 			$step = self::stepOf( $entry );
 
 			$steps[ $key ][ $step ] = ( $steps[ $key ][ $step ] ?? 0 ) + 1;
+
+			if ( 'd. the stock hold' === $step ) {
+				$hold[] = $key . ': ' . substr( (string) preg_replace( '/\s+/', ' ', $entry['sql'] ), 0, 110 );
+
+				if ( 'first' === $key && 1 === preg_match( $outbox, $entry['sql'] ) ) {
+					++$reservations;
+				}
+			}
+
+			if ( str_contains( $entry['sql'], 'stock_summary' ) ) {
+				$summaries[] = $key . ': ' . $entry['sql'];
+			}
 
 			if ( 'COMMIT' === $entry['sql'] ) {
 				++$part;
@@ -534,7 +556,16 @@ final class PlacementBudgetTest extends PlacementTestCase {
 			}
 		}
 
+		$lines[] = '  the stock hold\'s statements:';
+
+		foreach ( $hold as $statement ) {
+			$lines[] = '    ' . $statement;
+		}
+
 		fwrite( STDOUT, implode( "\n", $lines ) . "\n" );
+
+		$this->assertSame( 1, $reservations, $name . ': the stock hold stores its reservation with one outbox insert, in the first unit.' );
+		$this->assertSame( array(), $summaries, $name . ': no statement of the placement reads or writes a stock summary.' );
 
 		return $parts;
 	}

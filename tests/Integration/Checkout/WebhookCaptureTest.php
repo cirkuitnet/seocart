@@ -395,7 +395,7 @@ final class WebhookCaptureTest extends WebhookTestCase {
 			PaymentTables::TRANSACTIONS => self::change( array(), array( self::ledgerRow( $name, 'capture:declined:1', $amount ) ) ),
 			OrderTables::ORDERS         => self::change( array( $name . ' pending_payment/pending/0' ), array( $name . ' failed/failed/0' ) ),
 			OrderTables::EVENTS         => self::change( array(), array( $name . ' order:pending_payment>failed:payment_declined', $name . ' payment:pending>failed:payment_declined' ) ),
-			OutboxTable::NAME           => self::change( array(), array( $name . ' order_status_changed', $name . ' payment_failed', $name . ' payment_status_changed' ) ),
+			OutboxTable::NAME           => self::change( array(), array( $name . ' order_status_changed', $name . ' payment_failed', $name . ' payment_status_changed', $name . ' stock_reservation_released' ) ),
 			InventoryTables::ITEMS      => self::change( array( $name . ' 5/0/1' ), array( $name . ' 5/0/0' ) ),
 			InventoryTables::HOLDS      => self::change( array( $name . ' held 1' ), array() ),
 			CartTables::CARTS           => self::change( array( $name . ' placing' ), array( $name . ' open' ) ),

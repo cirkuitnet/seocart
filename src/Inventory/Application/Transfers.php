@@ -775,10 +775,12 @@ final class Transfers {
 	 * be active. A move from the location in transit is the answer when it goes to the same target,
 	 * and its job is queued again, which finds nothing to do once one waits or runs; a move in
 	 * transit to another target refuses this one. A repeat of a deactivation, the location already
-	 * inactive, answers the newest move from it to the same target, received or not. Otherwise one
-	 * transfer of kind `deactivation` is written in transit with no line, and its job queued once
-	 * this unit of work commits, since nothing is queued inside a transaction. The job sends and
-	 * receives the units page by page.
+	 * inactive, answers the newest move from it to the same target, received or not, while the
+	 * location has no unit available to move (StockRepository::movableItems(), one plain read); a
+	 * location that has some again, after a reactivation ended its move and stock came in, starts a
+	 * new move. Otherwise one transfer of kind `deactivation` is written in transit with no line, and
+	 * its job queued once this unit of work commits, since nothing is queued inside a transaction.
+	 * The job sends and receives the units page by page.
 	 *
 	 * Two deactivations crossing, each moving to the other's location, may deadlock on the two
 	 * locations' rows; the deadlock retry policy runs the second again, and it is then refused,
@@ -833,7 +835,8 @@ final class Transfers {
 
 		$latest = $wasInactive ? $this->transfers->latestMove( $location->id, $target->id ) : null;
 
-		if ( null !== $latest ) {
+		// The finished move is the answer only while it left nothing to move; units that came in since need a move of their own.
+		if ( null !== $latest && array() === $this->stock->movableItems( $location->id, 0, 1 ) ) {
 			return $latest['uuid'];
 		}
 

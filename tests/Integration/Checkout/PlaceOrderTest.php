@@ -40,7 +40,8 @@ use SEOCart\Payment\Domain\Event\PaymentIntentCreated;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Platform\Authorization\Actor;
-use SEOCart\Platform\Events\EventEnvelope;
+use SEOCart\Platform\Events\Outbox;
+use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Platform\Kernel\Container;
 use SEOCart\Platform\RateLimiter\RateCountersTable;
 use SEOCart\Promotion\Infrastructure\PromotionTables;
@@ -67,33 +68,6 @@ final class PlaceOrderTest extends PlacementTestCase {
 
 	use CreatesUsers;
 	use GrantsCapabilities;
-
-	/**
-	 * The stock releases delivered after commit, in order.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var list<StockReservationReleased>
-	 */
-	private array $released = array();
-
-	/**
-	 * Listens for the releases.
-	 *
-	 * @since 0.1.0
-	 */
-	public function set_up(): void {
-		parent::set_up();
-
-		$this->released = array();
-
-		add_action(
-			EventEnvelope::hookFor( StockReservationReleased::eventName() ),
-			function ( StockReservationReleased $event ): void {
-				$this->released[] = $event;
-			}
-		);
-	}
 
 	/**
 	 * Deletes the users the test created.
@@ -400,7 +374,11 @@ final class PlaceOrderTest extends PlacementTestCase {
 		$this->assertSame( array( 'failed', 'failed' ), array( $order['status'], $order['payment_status'] ) );
 		$this->assertSame( array( 1, 0, 0 ), $this->committedStock( $b, $mug ), 'The hold is released.' );
 		$this->assertSame( 0, $this->committedCount( $b, InventoryTables::HOLDS ) );
-		$this->assertSame( 'payment_declined', $this->released[0]->reason ?? null );
+		$this->assertSame( 1, $this->committedEventRows( $b, StockReservationReleased::eventName() ), 'One release, stored with the decline.' );
+
+		$stored = Outbox::decode( (string) $b->fetchValue( sprintf( "SELECT payload_json FROM `%s` WHERE event_name = '%s'", $this->table( OutboxTable::NAME ), StockReservationReleased::eventName() ) ) );
+
+		$this->assertSame( 'payment_declined', StockReservationReleased::fromPayload( $stored['p'], $stored['at'], $stored['v'] )->reason );
 		$this->assertSame( '0', $b->fetchValue( sprintf( 'SELECT used FROM `%s` WHERE id = %d', $this->table( PromotionTables::PROMOTIONS ), $promotion ) ), 'The promotion\'s use is given back.' );
 		$this->assertSame( 'released', $b->fetchValue( sprintf( 'SELECT state FROM `%s` WHERE order_id = %d', $this->table( PromotionTables::USAGE ), $order['id'] ) ) );
 		$this->assertSame( 'failed', $b->fetchValue( sprintf( 'SELECT status FROM `%s` WHERE order_id = %d', $this->table( PaymentTables::INTENTS ), $order['id'] ) ) );

@@ -821,6 +821,9 @@ interface StockRepository {
 	/**
 	 * Lists the variants with units available at a location, after a variant: a page of a deactivation's move. A plain read, decided again under each item's lock.
 	 *
+	 * A repeat of a deactivation also reads one of them, to know whether the finished move left
+	 * anything to move (Transfers::moveStockOf()).
+	 *
 	 * @since 0.2.0
 	 *
 	 * @param int $locationId     The location.

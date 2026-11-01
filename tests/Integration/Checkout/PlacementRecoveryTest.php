@@ -22,6 +22,7 @@ use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Contracts\Payment\PaymentRequest;
 use SEOCart\Inventory\Domain\Event\StockAllocated;
+use SEOCart\Inventory\Domain\Event\StockReserved;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Order\Domain\Event\OrderCreated;
 use SEOCart\Order\Domain\Event\OrderPlaced;
@@ -103,7 +104,7 @@ final class PlacementRecoveryTest extends PlacementTestCase {
 		);
 		$this->assertSame( array( 'pending' ), array_values( array_unique( array_column( $rows, 'state' ) ) ), 'Nothing was delivered before the kill.' );
 
-		$expected = array( OrderCreated::eventName(), OrderPlaced::eventName(), OrderStatusChanged::eventName(), PaymentAuthorized::eventName(), PaymentIntentCreated::eventName(), StockAllocated::eventName() );
+		$expected = array( OrderCreated::eventName(), OrderPlaced::eventName(), OrderStatusChanged::eventName(), PaymentAuthorized::eventName(), PaymentIntentCreated::eventName(), StockAllocated::eventName(), StockReserved::eventName() );
 		$stored   = array_values( array_unique( array_column( $rows, 'event_name' ) ) );
 
 		sort( $expected );

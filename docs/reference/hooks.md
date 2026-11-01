@@ -356,7 +356,7 @@ Fires after an expired checkout hold of one variant was reclaimed and its units 
 
 Fires after the rows of a checkout hold are released, naming the variants given back and the units of each.
 
-- Delivery: `after_commit`. Fires after commit.
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
 - Payload version: 1
 - Aggregate type: `variant`
 - Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
@@ -376,7 +376,7 @@ Fires after the rows of a checkout hold are released, naming the variants given 
 
 Fires after a checkout hold is committed, naming every variant it holds and the units of each.
 
-- Delivery: `after_commit`. Fires after commit.
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
 - Payload version: 1
 - Aggregate type: `variant`
 - Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`

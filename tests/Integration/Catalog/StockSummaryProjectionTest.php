@@ -19,11 +19,19 @@ use SEOCart\Catalog\Application\Projection\StockSummaryProjector;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Interfaces\Cli\CatalogCommand;
+use SEOCart\Inventory\Application\InventoryOperations;
+use SEOCart\Inventory\Application\LocationOperations;
+use SEOCart\Inventory\Application\Locations;
 use SEOCart\Inventory\Application\StockService;
+use SEOCart\Inventory\Application\Transfers;
 use SEOCart\Inventory\Domain\Allocation;
+use SEOCart\Inventory\Domain\Event\StockReservationReleased;
+use SEOCart\Inventory\Domain\Event\StockReserved;
+use SEOCart\Inventory\Domain\Event\StockTransferred;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
+use SEOCart\Inventory\Infrastructure\Jobs\MoveLocationStock;
 use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Database;
@@ -41,14 +49,19 @@ use SEOCart\Platform\Events\HookBridge;
 use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Events\Outbox;
 use SEOCart\Platform\Events\OutboxDrainer;
+use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Platform\Events\Publisher;
+use SEOCart\Platform\Jobs\JobQueue;
 use SEOCart\Platform\Kernel\Container;
 use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Platform\Logging\LogsTable;
 use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
 use SEOCart\Tests\Support\Catalog\CatalogTestCase;
+use SEOCart\Tests\Support\CreatesUsers;
+use SEOCart\Tests\Support\Doubles\RecordingJobQueue;
 use SEOCart\Tests\Support\Doubles\RecordingWake;
+use SEOCart\Tests\Support\GrantsCapabilities;
 use SEOCart\Tests\Support\Inventory\StockTables;
 use SEOCart\Tests\Support\KernelContainer;
 use SEOCart\Tests\Support\SecondDatabase;
@@ -63,14 +76,10 @@ use SEOCart\Tests\Support\SecondDatabase;
  * reads. `wp seocart catalog summarize-stock` holds the drainer's lock for each page, so a drain in
  * another process never recomputes a summary during a page.
  *
- * The known limitation, in a merchant's words: a product's availability on the listing follows
- * stock received or adjusted, units a paid order takes, an expired checkout hold giving units back,
- * and every save of the product. It does not follow a shopper's checkout holding stock or giving
- * it back. So a product whose last units are held at checkout is still listed in stock while they
- * are held; and if anything else refreshes its availability while they are held, it is listed out
- * of stock and stays so after a declined or abandoned checkout gives them back, until its stock
- * next changes, it is saved, or `wp seocart catalog summarize-stock` runs. The listing's
- * availability is a guide: checkout checks the stock again.
+ * A checkout's hold, the hold given back and units sent or received between locations are outbox
+ * events too: nothing runs in the request that stores them, and a drain in another process, over a
+ * connection of its own, delivers them (drainElsewhere()), as the job runner or the end of the
+ * request does. The statements one delivery of each sends are printed, not pinned.
  *
  * Planted violations, each shown red and removed:
  *
@@ -82,15 +91,23 @@ use SEOCart\Tests\Support\SecondDatabase;
  *   `$this->bridge->attachListeners()` first): the drain in a process that published nothing
  *   delivers to no listener, and the summary stays unknown;
  * - in ProductSettler::settle(), publish nothing: the settled product's summary stays unknown;
- * - hear a checkout's hold again (list StockReserved among the projector's events in
- *   Modules::EVENT_LISTENERS, with its case in StockSummaryProjector::variantsOf()): the hold of the
- *   last units takes the product out of stock at its commit, and the hold test fails;
+ * - in StockReserved::deliveryMode(), answer AfterCommit: the projector runs in the request that
+ *   took the hold, and the summary moves at the hold's commit;
+ * - leave StockReservationReleased out of the projector's events in Modules::EVENT_LISTENERS: the
+ *   release drained leaves the product out of stock with its units back;
+ * - in StockSummaryProjector::variantsOf(), remove the StockReserved case: the drain reports
+ *   `events.listener_failed`;
+ * - leave StockTransferred out of the projector's events in Modules::EVENT_LISTENERS: a send of
+ *   the last units drained leaves the product in stock;
  * - in CompleteProductPager::walk(), do the page's work without the lock: the drain in another
  *   process delivers the receipt during the page, and the page's stale summary stays.
  *
  * @since 0.2.0
  */
 final class StockSummaryProjectionTest extends CatalogTestCase {
+
+	use CreatesUsers;
+	use GrantsCapabilities;
 
 	/**
 	 * The kernel's container, as a request that publishes builds it.
@@ -130,6 +147,17 @@ final class StockSummaryProjectionTest extends CatalogTestCase {
 	}
 
 	/**
+	 * Deletes the users the test created.
+	 *
+	 * @since 0.2.0
+	 */
+	public function tear_down(): void {
+		$this->deleteCreatedUsers();
+
+		parent::tear_down();
+	}
+
+	/**
 	 * Tests that a save, an adjustment, an expired hold's reclaim and an allocation each move the summary once the drain delivers them.
 	 *
 	 * @since 0.2.0
@@ -162,7 +190,7 @@ final class StockSummaryProjectionTest extends CatalogTestCase {
 		$this->assertSame( 'in_stock', $this->summary( $product ), 'The reclaim of an expired hold gives the units back.' );
 
 		$placed = $stock->hold( array( new HoldLine( $variant, 3 ) ), 900 );
-		$this->assertSame( 'in_stock', $this->summary( $product ), 'The order\'s hold alone leaves the summary as it was.' );
+		$this->assertSame( 'in_stock', $this->summary( $product ), 'The order\'s hold is delivered by the drain, after the commit.' );
 
 		$this->db->transaction(
 			static function () use ( $stock, $placed, $variant ): void {
@@ -176,40 +204,242 @@ final class StockSummaryProjectionTest extends CatalogTestCase {
 	}
 
 	/**
-	 * Tests that a checkout's hold and its release leave the summary as it was, so a summary refreshed during a hold stays out of stock after the release until the product's next event.
+	 * Tests that a checkout's hold of a product's last units leaves its summary as it was at the hold's commit, nothing having run in the request that took it, and that a drain in another process then takes it out of stock; the hold given back, drained by another process again, puts it back in stock.
 	 *
 	 * @since 0.2.0
 	 */
-	public function test_a_hold_and_its_release_leave_the_summary_as_it_was(): void {
+	public function test_a_hold_and_its_release_move_the_summary_from_a_drain_in_another_process(): void {
 		list( $product, $variant ) = $this->product( 'SUM-8' );
 		$stock                     = $this->stock();
 
 		$stock->adjust( $variant, $this->location, 3, LedgerReason::Received, Actor::user( 1 ) );
-		$this->drain();
+		$this->drainElsewhere();
 		$this->assertSame( 'in_stock', $this->summary( $product ) );
 
 		$hold = $stock->hold( array( new HoldLine( $variant, 3 ) ), 900 );
-		$this->drain();
-		$this->assertSame( 'in_stock', $this->summary( $product ), 'A checkout holding the last units leaves the product summarized in stock while they are held.' );
+
+		$this->assertSame( 'in_stock', $this->summary( $product ), 'Nothing ran in the request that took the hold.' );
+		$this->assertSame( array( Outbox::PENDING ), $this->states( StockReserved::eventName() ), 'The reservation waits in the outbox.' );
+
+		$this->drainElsewhere();
+		$this->assertNoListenerFailed();
+		$this->assertSame( 'out_of_stock', $this->summary( $product ), 'The drain in another process delivered the hold of the last units.' );
 
 		$stock->release( $hold->holdGroup, 'payment_declined' );
-		$this->drain();
-		$this->assertSame( 'in_stock', $this->summary( $product ), 'Its release leaves it as it was.' );
 
-		// The known limitation: a summary refreshed during a hold is not refreshed again by the hold's release.
+		$this->assertSame( 'out_of_stock', $this->summary( $product ), 'Nothing ran in the request that gave the hold back.' );
+		$this->assertSame( array( Outbox::PENDING ), $this->states( StockReservationReleased::eventName() ), 'The release waits in the outbox.' );
+
+		$this->drainElsewhere();
+		$this->assertNoListenerFailed();
+		$this->assertSame( 'in_stock', $this->summary( $product ), 'The release drained by another process puts the units back on the listing.' );
+	}
+
+	/**
+	 * Tests that a summary recomputed during a hold, out of stock, is put back in stock by the hold's release once drained.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_save_during_a_hold_then_its_release_ends_in_stock(): void {
+		list( $product, $variant ) = $this->product( 'SUM-10' );
+		$stock                     = $this->stock();
+
+		$stock->adjust( $variant, $this->location, 3, LedgerReason::Received, Actor::user( 1 ) );
+
 		$held = $stock->hold( array( new HoldLine( $variant, 3 ) ), 900 );
+
 		$this->saved( $product );
-		$this->drain();
+		$this->drainElsewhere();
 		$this->assertSame( 'out_of_stock', $this->summary( $product ), 'A save during the hold finds nothing for sale.' );
 
 		$stock->release( $held->holdGroup, 'payment_declined' );
-		$this->drain();
-		$this->assertSame( 'out_of_stock', $this->summary( $product ), 'The release is not heard, so the summary stays out of stock with the units back.' );
+		$this->drainElsewhere();
+		$this->assertSame( 'in_stock', $this->summary( $product ), 'The release is heard: the units are back on the listing.' );
+		$this->assertNoListenerFailed();
+	}
+
+	/**
+	 * Tests that the summary ends right whatever order a hold and its release are delivered in, and that a release delivered again writes no summary.
+	 *
+	 * The hold's row is held back, so a save during the hold and then the release are delivered
+	 * first; the hold's, delivered last, reads the units as they are then. The release's row is
+	 * then made pending again, as a delivery that never reported back would leave it, and the
+	 * drain delivers it again.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_late_hold_and_a_repeated_release_leave_the_summary_right(): void {
+		list( $product, $variant ) = $this->product( 'SUM-11' );
+		$stock                     = $this->stock();
+		$outbox                    = $this->db->table( OutboxTable::NAME );
+
+		$stock->adjust( $variant, $this->location, 3, LedgerReason::Received, Actor::user( 1 ) );
+		$this->drainElsewhere();
+
+		$hold = $stock->hold( array( new HoldLine( $variant, 3 ) ), 900 );
+
+		$this->db->execute( 'UPDATE %i SET available_at = UTC_TIMESTAMP(6) + INTERVAL 1 HOUR WHERE event_name = %s', $outbox, StockReserved::eventName() );
+		$this->saved( $product );
+		$this->drainElsewhere();
+		$this->assertSame( 'out_of_stock', $this->summary( $product ), 'A save during the hold finds nothing for sale.' );
+
+		$stock->release( $hold->holdGroup, 'payment_declined' );
+		$this->drainElsewhere();
+
+		$this->assertSame( array( Outbox::PENDING ), $this->states( StockReserved::eventName() ), 'The hold\'s row was held back.' );
+		$this->assertSame( 'in_stock', $this->summary( $product ), 'The release, delivered before its hold, reads the units back.' );
+
+		$this->db->execute( 'UPDATE %i SET available_at = UTC_TIMESTAMP(6) WHERE event_name = %s', $outbox, StockReserved::eventName() );
+		$this->drainElsewhere();
+
+		$this->assertSame( array( Outbox::DISPATCHED ), $this->states( StockReserved::eventName() ) );
+		$this->assertSame( 'in_stock', $this->summary( $product ), 'The hold, delivered last, reads the units as they are now: back.' );
+
+		$this->db->execute( "UPDATE %i SET state = 'pending', available_at = UTC_TIMESTAMP(6), dispatched_at = NULL, claim_token = NULL, claimed_until = NULL WHERE event_name = %s", $outbox, StockReservationReleased::eventName() );
+
+		$sent = $this->drainElsewhere();
+
+		$this->assertSame( '2', $this->db->fetchValue( 'SELECT attempts FROM %i WHERE event_name = %s', $outbox, StockReservationReleased::eventName() ), 'The release was delivered again.' );
+		$this->assertSame( array(), array_values( preg_grep( '/^UPDATE \S*' . CatalogTables::PRODUCTS . '\S* SET stock_summary/', $sent ) ), 'The repeated delivery wrote no summary.' );
+		$this->assertSame( 'in_stock', $this->summary( $product ) );
+		$this->assertNoListenerFailed();
+	}
+
+	/**
+	 * Tests that a transfer moves the summary: sending a product's last units takes it out of stock once drained, since units on their way are counted by no location, and their receipt at an active location that ships online orders puts it back.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_transfer_sent_and_received_moves_the_summary(): void {
+		list( $product, $variant ) = $this->product( 'SUM-12' );
+
+		$second    = $this->secondLocation();
+		$manager   = $this->userGranted( InventoryOperations::CAPABILITY );
+		$transfers = $this->kernel->get( Transfers::class );
+
+		$this->stock()->adjust( $variant, $this->location, 3, LedgerReason::Received, Actor::user( 1 ) );
+		$this->drainElsewhere();
+		$this->assertSame( 'in_stock', $this->summary( $product ) );
+
+		$draft = $transfers->createTransfer(
+			array(
+				'source_location_uuid'      => $this->uuidOf( $this->location ),
+				'destination_location_uuid' => $this->uuidOf( $second ),
+				'lines'                     => array(
+					array(
+						'variant_id' => $variant,
+						'quantity'   => 3,
+					),
+				),
+			),
+			$manager
+		);
+		$sent  = $transfers->sendTransfer( array( 'transfer_uuid' => $draft['transfer_uuid'] ), $manager );
+
+		$this->drainElsewhere();
+		$this->assertSame( 'out_of_stock', $this->summary( $product ), 'Units on their way are counted by no location.' );
+
+		$transfers->receiveTransfer(
+			array(
+				'transfer_uuid' => $sent['transfer_uuid'],
+				'lines'         => array(
+					array(
+						'line_id'                    => $sent['lines'][0]['line_id'],
+						'received'                   => 3,
+						'lost'                       => 0,
+						'expected_received_quantity' => 0,
+						'expected_lost_quantity'     => 0,
+					),
+				),
+			),
+			$manager
+		);
+		$this->drainElsewhere();
+		$this->assertSame( 'in_stock', $this->summary( $product ), 'Received at an active location that ships online orders.' );
+		$this->assertNoListenerFailed();
+	}
+
+	/**
+	 * Tests that a deactivation's move brings a product whose units are all at the deactivated location back in stock once its page is drained.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_deactivation_move_puts_the_units_back_in_stock(): void {
+		list( $product, $variant ) = $this->product( 'SUM-13' );
+
+		$gone    = $this->secondLocation();
+		$manager = $this->userGranted( LocationOperations::CAPABILITY, InventoryOperations::CAPABILITY );
+		$queue   = new RecordingJobQueue( $this->db );
+		$kernel  = $this->kernel( null, array( JobQueue::class => static fn(): JobQueue => $queue ) );
+
+		$this->stock()->adjust( $variant, $gone, 4, LedgerReason::Received, Actor::user( 1 ) );
+		$this->drainElsewhere();
+		$this->assertSame( 'in_stock', $this->summary( $product ), 'Units at a second active location are for sale.' );
+
+		$kernel->get( Locations::class )->deactivateLocation(
+			array(
+				'location_uuid' => $this->uuidOf( $gone ),
+				'move_stock_to' => $this->uuidOf( $this->location ),
+			),
+			$manager
+		);
+		wp_cache_delete( MysqlLocationRepository::CACHE_KEY, MysqlLocationRepository::CACHE_GROUP );
 
 		$this->saved( $product );
-		$this->drain();
-		$this->assertSame( 'in_stock', $this->summary( $product ), 'The product\'s next event puts the summary right.' );
+		$this->drainElsewhere();
+		$this->assertSame( 'out_of_stock', $this->summary( $product ), 'Units at a deactivated location are not for sale.' );
+		$this->assertCount( 1, $queue->queued, 'The move\'s job is queued.' );
 
+		$kernel->get( MoveLocationStock::class )->handle( $queue->queued[0]->payload );
+		$this->drainElsewhere();
+		$this->assertSame( 'in_stock', $this->summary( $product ), 'The move\'s page brought the units to an active location.' );
+		$this->assertNoListenerFailed();
+	}
+
+	/**
+	 * Prints the statements one delivery of a hold, of its release and of a transfer's send sends for one product, in a drain in another process that starts cold: the projector's, and the drain's own around them.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_statements_of_one_delivery_are_printed(): void {
+		list( $product, $variant ) = $this->product( 'SUM-14' );
+
+		$second    = $this->secondLocation();
+		$manager   = $this->userGranted( InventoryOperations::CAPABILITY );
+		$transfers = $this->kernel->get( Transfers::class );
+		$stock     = $this->stock();
+
+		$stock->adjust( $variant, $this->location, 3, LedgerReason::Received, Actor::user( 1 ) );
+		$this->drainElsewhere();
+
+		$hold = $stock->hold( array( new HoldLine( $variant, 3 ) ), 900 );
+
+		$this->printDelivery( StockReserved::class, $this->drainElsewhere() );
+		$this->assertSame( 'out_of_stock', $this->summary( $product ) );
+
+		$stock->release( $hold->holdGroup, 'payment_declined' );
+
+		$this->printDelivery( StockReservationReleased::class, $this->drainElsewhere() );
+		$this->assertSame( 'in_stock', $this->summary( $product ) );
+
+		$draft = $transfers->createTransfer(
+			array(
+				'source_location_uuid'      => $this->uuidOf( $this->location ),
+				'destination_location_uuid' => $this->uuidOf( $second ),
+				'lines'                     => array(
+					array(
+						'variant_id' => $variant,
+						'quantity'   => 3,
+					),
+				),
+			),
+			$manager
+		);
+
+		$transfers->sendTransfer( array( 'transfer_uuid' => $draft['transfer_uuid'] ), $manager );
+
+		$this->printDelivery( StockTransferred::class, $this->drainElsewhere() );
+		$this->assertSame( 'out_of_stock', $this->summary( $product ) );
 		$this->assertNoListenerFailed();
 	}
 
@@ -513,18 +743,116 @@ final class StockSummaryProjectionTest extends CatalogTestCase {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param Database|null $db Optional. The connection, for a container that plays another process. Default the test's.
+	 * @param Database|null $db        Optional. The connection, for a container that plays another process. Default the test's.
+	 * @param array         $overrides Optional. Further services the test replaces. Default none.
 	 * @return Container The container.
+	 *
+	 * @phpstan-param array<string, callable(Container): object> $overrides
 	 */
-	private function kernel( ?Database $db = null ): Container {
+	private function kernel( ?Database $db = null, array $overrides = array() ): Container {
 		return KernelContainer::build(
 			$db ?? $this->db,
 			$this->reporter(),
-			array(
+			$overrides + array(
 				TransactionManager::class => static fn( Container $c ): TransactionManager => $c->get( Database::class ),
 				EventPublisher::class     => static fn( Container $c ): EventPublisher => new Publisher( $c->get( TransactionManager::class ), $c->get( Outbox::class ), $c->get( HookBridge::class ), $c->get( EventCatalog::class ), $c->get( CorrelationId::class ), new RecordingWake() ),
 			)
 		);
+	}
+
+	/**
+	 * Delivers what the outbox holds from another process, as the job runner or the end of a request does: the request that stored the events ends, its listeners with it, and a kernel of its own, over a connection of its own and with no cache but the options WordPress loads at boot, drains through `wp seocart outbox drain`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> The statements the other process sent, in order.
+	 */
+	private function drainElsewhere(): array {
+		self::forgetListeners();
+		wp_cache_flush();
+		wp_load_alloptions();
+
+		$second = new SecondDatabase( $this->reporter() );
+		$sent   = array();
+		$lines  = array();
+		$record = static function ( string $sql ) use ( &$sent ): string {
+			$sent[] = $sql;
+
+			return $sql;
+		};
+
+		try {
+			$draining = $this->kernel( $second->db() );
+			$command  = new OutboxCommand(
+				$draining->get( OutboxDrainer::class ),
+				$draining->get( Outbox::class ),
+				static function ( string $line ) use ( &$lines ): void {
+					$lines[] = $line;
+				}
+			);
+
+			add_filter( 'query', $record );
+
+			$exit = $command->run( array( 'drain' ), array() );
+		} finally {
+			remove_filter( 'query', $record );
+			self::forgetListeners();
+			$second->close();
+		}
+
+		$this->assertSame( OutboxCommand::EXIT_OK, $exit, implode( "\n", $lines ) );
+
+		return $sent;
+	}
+
+	/**
+	 * Prints the statements a drain sent to deliver one event: the projector's, listed, and the drain's own around them, counted.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string   $event The event's class.
+	 * @param string[] $sent  Every statement of the drain.
+	 *
+	 * @phpstan-param list<string> $sent
+	 */
+	private function printDelivery( string $event, array $sent ): void {
+		$drains   = '/outbox|_locks\b|_logs\b|GET_LOCK|RELEASE_LOCK|IS_USED_LOCK|IS_FREE_LOCK|^(SET|START|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b/';
+		$projects = array_values( array_filter( $sent, static fn( string $sql ): bool => 1 !== preg_match( $drains, $sql ) ) );
+
+		fwrite(
+			STDOUT,
+			sprintf(
+				"\nOne delivery of %s for one product, drained cold in another process: %d statements, %d of them the projector's:\n  %s\n",
+				substr( (string) strrchr( $event, '\\' ), 1 ),
+				count( $sent ),
+				count( $projects ),
+				implode( "\n  ", array_map( static fn( string $sql ): string => substr( (string) preg_replace( '/\s+/', ' ', $sql ), 0, 140 ), $projects ) )
+			)
+		);
+	}
+
+	/**
+	 * Returns the states of an event's outbox rows, in id order.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $eventName The event's name.
+	 * @return list<string> The states.
+	 */
+	private function states( string $eventName ): array {
+		return array_map( static fn( array $row ): string => (string) $row['state'], $this->db->fetchAll( 'SELECT state FROM %i WHERE event_name = %s ORDER BY id', $this->db->table( OutboxTable::NAME ), $eventName ) );
+	}
+
+	/**
+	 * Returns a location's public identifier.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId The location.
+	 * @return string Its uuid.
+	 */
+	private function uuidOf( int $locationId ): string {
+		return (string) $this->db->fetchValue( 'SELECT uuid FROM %i WHERE id = %d', $this->db->table( InventoryTables::LOCATIONS ), $locationId );
 	}
 
 	/**

@@ -28,7 +28,6 @@ use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\Events\EventCatalog;
-use SEOCart\Platform\Events\EventEnvelope;
 use SEOCart\Platform\Events\HookBridge;
 use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Events\Outbox;
@@ -54,9 +53,9 @@ use SEOCart\Tests\Support\SecondDatabase;
  * Owns one fact: how a stock test gets real tables, a service over them, and a second runner.
  * The tables are created by their own migrations in set_up() and dropped by the base
  * tear_down(), and every test takes fresh variant ids from a counter, so a test passes alone,
- * in any order and any number of times. The service publishes through the real publisher: an
- * outbox event is a row, and an after-commit event reaches `$this->afterCommit` through the
- * hook bridge. The wake never drains.
+ * in any order and any number of times. The service publishes through the real publisher: every
+ * stock event is an outbox row, which committedHoldEvents() rebuilds for the holds and their
+ * releases. The wake never drains.
  *
  * The second runner is either connection B sending the repository's own statements, prepared
  * from its public constants (raw()), so a change to a statement changes B's copy; or a second
@@ -161,15 +160,6 @@ abstract class StockTestCase extends DatabaseTestCase {
 	protected RecordingJobQueue $queue;
 
 	/**
-	 * Every after-commit stock event delivered, in order.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var list<DomainEvent>
-	 */
-	protected array $afterCommit = array();
-
-	/**
 	 * The second databases this test opened.
 	 *
 	 * @since 0.1.0
@@ -188,9 +178,10 @@ abstract class StockTestCase extends DatabaseTestCase {
 	private HookBridge $bridge;
 
 	/**
-	 * Creates the tables and the service, and listens for the after-commit events.
+	 * Creates the tables and the service.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Listens for no event: the holds and their releases are outbox rows too.
 	 */
 	public function set_up(): void {
 		parent::set_up();
@@ -201,22 +192,12 @@ abstract class StockTestCase extends DatabaseTestCase {
 
 		$this->defaultLocation = StockTables::create( $this->db );
 
-		$this->afterCommit = array();
 		$this->correlation = new CorrelationId( new SequentialIdGenerator( 900000 ) );
 		$this->bridge      = new HookBridge( $this->reporter() );
 		$this->ids         = new SequentialIdGenerator( 1 );
 		$this->repository  = new MysqlStockRepository( $this->db );
 		$this->service     = $this->serviceOver( $this->db, $this->ids );
 		$this->queue       = new RecordingJobQueue( $this->db );
-
-		foreach ( array( StockReserved::eventName(), StockReservationReleased::eventName() ) as $name ) {
-			add_action(
-				EventEnvelope::hookFor( $name ),
-				function ( DomainEvent $event ): void {
-					$this->afterCommit[] = $event;
-				}
-			);
-		}
 	}
 
 	/**
@@ -416,6 +397,47 @@ abstract class StockTestCase extends DatabaseTestCase {
 	 */
 	protected function committedPayload( SecondConnection $b, string $eventName ): array {
 		return (array) Outbox::decode( (string) $b->fetchValue( sprintf( "SELECT payload_json FROM `%s` WHERE event_name = '%s' ORDER BY id DESC LIMIT 1", $this->table( OutboxTable::NAME ), $eventName ) ) )['p'];
+	}
+
+	/**
+	 * Returns the newest outbox row's id as connection B sees it: a mark committedHoldEvents() reads after.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param SecondConnection $b Connection B.
+	 * @return int The id, or 0 for an empty outbox.
+	 *
+	 * @phpstan-impure
+	 */
+	protected function outboxMark( SecondConnection $b ): int {
+		return (int) $b->fetchValue( sprintf( 'SELECT COALESCE( MAX( id ), 0 ) FROM `%s`', $this->table( OutboxTable::NAME ) ) );
+	}
+
+	/**
+	 * Rebuilds the committed reservations and releases connection B sees after a mark, in the order they were stored, each with its class's fromPayload(), as a listener would get them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param SecondConnection $b     Connection B.
+	 * @param int              $after Optional. Only rows after this id (outboxMark()). Default 0, every row.
+	 * @return list<StockReserved|StockReservationReleased> The events.
+	 *
+	 * @phpstan-impure
+	 */
+	protected function committedHoldEvents( SecondConnection $b, int $after = 0 ): array {
+		$table  = $this->table( OutboxTable::NAME );
+		$ids    = (string) $b->fetchValue( sprintf( "SELECT GROUP_CONCAT( id ORDER BY id SEPARATOR ',' ) FROM `%s` WHERE id > %d AND event_name IN ( '%s', '%s' )", $table, $after, StockReserved::eventName(), StockReservationReleased::eventName() ) );
+		$events = array();
+
+		foreach ( '' === $ids ? array() : explode( ',', $ids ) as $id ) {
+			$row    = (array) $b->fetchRow( sprintf( 'SELECT event_name, payload_json FROM `%s` WHERE id = %d', $table, (int) $id ) );
+			$stored = Outbox::decode( (string) $row['payload_json'] );
+			$class  = StockReserved::eventName() === $row['event_name'] ? StockReserved::class : StockReservationReleased::class;
+
+			$events[] = $class::fromPayload( $stored['p'], $stored['at'], $stored['v'] );
+		}
+
+		return $events;
 	}
 
 	/**

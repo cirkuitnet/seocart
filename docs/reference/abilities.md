@@ -140,7 +140,7 @@ Deactivates a location: from now on no order is routed to it and its units are f
 ### Input
 
 - `location_uuid` (required): The location to deactivate. A uuid.
-- `move_stock_to`: An active location to move the deactivated location's available units to, as one transfer worked in the background; units promised to orders or held by checkouts stay. Moving stock also needs the capability that manages inventory. Repeated with the same location, the deactivation answers the same transfer. Turning the location on again ends the move, the units moved so far staying where they arrived. A uuid.
+- `move_stock_to`: An active location to move the deactivated location's available units to, as one transfer worked in the background; units promised to orders or held by checkouts stay. Moving stock also needs the capability that manages inventory. Repeated with the same location, the deactivation answers the same transfer, or, once that transfer has finished and the location has available units again, starts a new one. Turning the location on again ends the move, the units moved so far staying where they arrived. A uuid.
 
 ### Output
 

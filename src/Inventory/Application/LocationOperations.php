@@ -301,7 +301,7 @@ final class LocationOperations {
 				new FieldSpec(
 					name: 'move_stock_to',
 					type: FieldType::Uuid,
-					description: 'An active location to move the deactivated location\'s available units to, as one transfer worked in the background; units promised to orders or held by checkouts stay. Moving stock also needs the capability that manages inventory. Repeated with the same location, the deactivation answers the same transfer. Turning the location on again ends the move, the units moved so far staying where they arrived.',
+					description: 'An active location to move the deactivated location\'s available units to, as one transfer worked in the background; units promised to orders or held by checkouts stay. Moving stock also needs the capability that manages inventory. Repeated with the same location, the deactivation answers the same transfer, or, once that transfer has finished and the location has available units again, starts a new one. Turning the location on again ends the move, the units moved so far staying where they arrived.',
 					label: static fn(): string => __( 'Move stock to', 'seocart' ),
 					example: self::EXAMPLE_UUID
 				),

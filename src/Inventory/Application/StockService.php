@@ -707,11 +707,12 @@ final class StockService {
 	 * then refused or goes on. At each location every hold is given back, the remaining on_hand is
 	 * written off with a final ledger entry, reason `variant_deleted`, so the item's ledger adds up
 	 * to zero, and the item is deleted; then the policy is. Its ledger entries stay. A variant with
-	 * no policy and no item is skipped. All of it happens in a savepoint of the caller's
-	 * transaction, so a refusal undoes all of it.
+	 * no policy and no item is skipped. The releases, one per hold, and the write-offs are published
+	 * together, so the outbox takes them in one insert. All of it happens in a savepoint of the
+	 * caller's transaction, so a refusal undoes all of it.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 At every location, and the policy.
+	 * @since 0.2.0 At every location, and the policy; the releases and the write-offs in one publish.
 	 *
 	 * @throws \LogicException           Outside a transaction, before any statement.
 	 * @throws \InvalidArgumentException When a variant id is below 1.
@@ -758,11 +759,7 @@ final class StockService {
 					$this->stock->deletePolicy( $variantId );
 				}
 
-				$this->publishReleases( $released, LedgerReason::VariantDeleted->value );
-
-				if ( array() !== $written ) {
-					$this->events->publish( ...$written );
-				}
+				$this->publishReleases( $released, LedgerReason::VariantDeleted->value, ...$written );
 			},
 			RetryPolicy::deadlocks()
 		);
@@ -1301,15 +1298,17 @@ final class StockService {
 	}
 
 	/**
-	 * Publishes one release per hold.
+	 * Publishes one release per hold, then the write-offs given, in one publish: one outbox insert for the transaction.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The write-offs, after the releases.
 	 *
-	 * @param array<string, array<int, array<int, int>>> $released Hold id => variant id => location id => units, items ascending.
-	 * @param string                                     $reason   Why.
+	 * @param array<string, array<int, array<int, int>>> $released     Hold id => variant id => location id => units, items ascending.
+	 * @param string                                     $reason       Why.
+	 * @param StockAdjusted                              ...$writeOffs Optional. The final entries of a delete, published after the releases.
 	 * @return int The hold rows released: one per hold and item.
 	 */
-	private function publishReleases( array $released, string $reason ): int {
+	private function publishReleases( array $released, string $reason, StockAdjusted ...$writeOffs ): int {
 		$events = array();
 		$rows   = 0;
 
@@ -1327,6 +1326,8 @@ final class StockService {
 			$events[] = new StockReservationReleased( (string) $holdGroup, $reason, $variantIds, $quantities, $locationVariantIds, $locationIds, $locationQuantities, $this->clock->now() );
 			$rows    += count( $items );
 		}
+
+		$events = array_merge( $events, $writeOffs );
 
 		if ( array() !== $events ) {
 			$this->events->publish( ...$events );

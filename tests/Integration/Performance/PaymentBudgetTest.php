@@ -35,12 +35,15 @@ use SEOCart\Tests\Support\QueryLog;
  * - A void through its operation, of an accepted order: the same shape, with the void.
  * - The end of a shopper's time to act, the one stale intent of a run: the page of stale intents,
  *   the void's reads, then the placement's settlement of the void, with the order's cancellation,
- *   the hold, the uses and the cart given back, then the page of orders with nothing due.
+ *   the hold, the uses and the cart given back, the hold's release one outbox insert of its own,
+ *   then the page of orders with nothing due.
  * - A resume that settles the provider's approval: the cart and the intent read, then the
  *   placement's settlement of the approval.
  *
- * Planted violation: in StockService::allocateInside(), read the hold's rows twice: a resume
- * sends one statement more than its budget.
+ * Planted violations: in StockService::allocateInside(), read the hold's rows twice: a resume
+ * sends one statement more than its budget; in StockReservationReleased::deliveryMode(), answer
+ * AfterCommit: the end of a shopper's time to act stores no release, one statement fewer, and runs
+ * the stock summary's six statements itself after its commit: five statements more.
  *
  * @group performance
  *
@@ -76,7 +79,7 @@ final class PaymentBudgetTest extends PlacementTestCase {
 	 *
 	 * @var int
 	 */
-	private const WINDOW_END = 37;
+	private const WINDOW_END = 38;
 
 	/**
 	 * The statements of a resume of Cart A's payment that settles the provider's approval.
