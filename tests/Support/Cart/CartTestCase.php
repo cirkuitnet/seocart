@@ -23,6 +23,11 @@ use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Checkout\Domain\CheckoutSession;
 use SEOCart\Checkout\Infrastructure\Migrations\CreateCheckoutTables;
 use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
+use SEOCart\Inventory\Application\Availability;
+use SEOCart\Inventory\Application\LocationDirectory;
+use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
+use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
+use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
@@ -53,6 +58,8 @@ use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\Doubles\FakeCartTokens;
 use SEOCart\Tests\Support\Doubles\OneLocationRouter;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
+use SEOCart\Tests\Support\Inventory\PlantsStock;
+use SEOCart\Tests\Support\Inventory\StockTables;
 use SEOCart\Tests\Support\Promotion\PlantsPromotions;
 use SEOCart\Tests\Support\SecondConnection;
 use SEOCart\Tests\Support\SecondDatabase;
@@ -60,7 +67,7 @@ use SEOCart\Tests\Support\SecondDatabase;
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- The base plants cart rows directly and reads them back through a second connection.
 
 /**
- * A DatabaseTestCase with the cart, catalog, promotion and rate-counter tables, and the cart service wired as the kernel wires it.
+ * A DatabaseTestCase with the cart, catalog, promotion, rate-counter and inventory tables, and the cart service wired as the kernel wires it.
  *
  * Owns one fact: how a cart test gets real tables, a service over them, and a second runner.
  * The tables are created by their own migrations in set_up() and dropped by the base
@@ -71,6 +78,12 @@ use SEOCart\Tests\Support\SecondDatabase;
  * two stub quoters and the stored promotions, as the kernel does; a variant has a price only once a
  * test gives it one, so a line of any other variant is reported unpriced, and a promotion exists
  * only once a test plants one (PlantsPromotions).
+ *
+ * Unlike the kernel's, the service sees no limit on any variant's units, so it reads no stock and
+ * flags no line, unless a test builds one with the kernel's figures (availabilityOver()). The
+ * inventory tables and the store's default location are there for those, and for the cart answers
+ * the kernel serves, which read the figures of their lines; a test plants stock at them through
+ * PlantsStock, so a variant has units only once a test gives it some.
  *
  * No test reads a clock: a cart's expiry is set and compared by the database clock alone.
  *
@@ -83,6 +96,16 @@ use SEOCart\Tests\Support\SecondDatabase;
 abstract class CartTestCase extends DatabaseTestCase {
 
 	use PlantsPromotions;
+	use PlantsStock;
+
+	/**
+	 * Matches the one statement that reads the figures for sale, MysqlStockRepository::SALE_FIGURES, by the column only it names.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	protected const SALE_FIGURES = '/ AS largest FROM /';
 
 	/**
 	 * The currency every new cart is in.
@@ -128,6 +151,15 @@ abstract class CartTestCase extends DatabaseTestCase {
 	 * @var int
 	 */
 	private static int $lastVariant = 5000;
+
+	/**
+	 * The store's default location, which set_up() creates as the upgrade does.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	protected int $defaultLocation;
 
 	/**
 	 * The repository over `$this->db`.
@@ -190,6 +222,8 @@ abstract class CartTestCase extends DatabaseTestCase {
 		( new CreateCheckoutTables() )->up( $operations );
 		$this->createPromotionTables();
 
+		$this->defaultLocation = StockTables::create( $this->db );
+
 		$this->identities = new ClientIdentities( new TrustedClientIp( array( 'REMOTE_ADDR' => '192.0.2.10' ) ), static fn(): string => 'cart tests' );
 		$this->repository = new MysqlCartRepository( $this->db );
 		$this->tokens     = new FakeCartTokens();
@@ -212,16 +246,21 @@ abstract class CartTestCase extends DatabaseTestCase {
 	}
 
 	/**
-	 * Builds a cart service over a connection, as the kernel builds it.
+	 * Builds a cart service over a connection, as the kernel builds it but for the units for sale, which by default have no limit.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The units for sale.
 	 *
 	 * @param Database        $db         The connection.
 	 * @param FakeCartTokens  $tokens     The token seam.
 	 * @param Calculator|null $calculator Optional. The calculator. Default null, the kernel's, over the connection.
+	 * @param \Closure|null   $forSale    Optional. Returns the units of each variant for sale, by variant id.
+	 *                                    Default null, no limit on any variant, which reads nothing.
 	 * @return CartService The service.
+	 *
+	 * @phpstan-param (\Closure(list<int>): array<int, int|null>)|null $forSale
 	 */
-	protected function serviceOver( Database $db, FakeCartTokens $tokens, ?Calculator $calculator = null ): CartService {
+	protected function serviceOver( Database $db, FakeCartTokens $tokens, ?Calculator $calculator = null, ?\Closure $forSale = null ): CartService {
 		return new CartService(
 			new MysqlCartRepository( $db ),
 			$db,
@@ -229,6 +268,7 @@ abstract class CartTestCase extends DatabaseTestCase {
 			new TableRateLimiter( $db ),
 			$this->identities,
 			$this->deliveryOver( $db ),
+			$forSale ?? static fn( array $variantIds ): array => array_fill_keys( $variantIds, null ),
 			static fn(): Currency => Currency::of( self::CURRENCY ),
 			static fn(): Locale => Locale::of( self::LOCALE ),
 			$calculator ?? self::calculatorOver( $db ),
@@ -248,6 +288,21 @@ abstract class CartTestCase extends DatabaseTestCase {
 		$sessions = new MysqlCheckoutSessions( $db );
 
 		return static fn( int $cartId ): array => CheckoutSession::deliveryOf( $sessions->find( $cartId ) );
+	}
+
+	/**
+	 * Returns what a cart service over a connection asks for the units for sale of its lines' variants: the kernel's reader, over a real Availability on that connection, in a mode.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Database       $db   The connection.
+	 * @param FulfilmentMode $mode The store's choice for orders no one location can ship whole.
+	 * @return \Closure(list<int>): array<int, int|null> The reader.
+	 */
+	protected function availabilityOver( Database $db, FulfilmentMode $mode ): \Closure {
+		$availability = new Availability( new LocationDirectory( new MysqlLocationRepository( $db ) ), new MysqlStockRepository( $db ), static fn(): FulfilmentMode => $mode );
+
+		return static fn( array $variantIds ): array => $availability->forSale( $variantIds, null );
 	}
 
 	/**
@@ -333,8 +388,8 @@ abstract class CartTestCase extends DatabaseTestCase {
 	 * @param string               $message Optional. What is being checked. Default empty.
 	 */
 	protected function assertEmptyCart( array $answer, string $message = '' ): void {
-		$this->assertSame( array( 'version', 'lines', 'promotion_codes', 'totals', 'unpriced_lines' ), array_keys( $answer ), $message );
-		$this->assertSame( array( 0, array(), array(), array() ), array( $answer['version'], $answer['lines'], $answer['promotion_codes'], $answer['unpriced_lines'] ), $message );
+		$this->assertSame( array( 'version', 'lines', 'promotion_codes', 'totals', 'unpriced_lines', 'unavailable_lines' ), array_keys( $answer ), $message );
+		$this->assertSame( array( 0, array(), array(), array(), array() ), array( $answer['version'], $answer['lines'], $answer['promotion_codes'], $answer['unpriced_lines'], $answer['unavailable_lines'] ), $message );
 		$this->assertSame( array( self::CURRENCY, array(), array(), 0, 0 ), array( $answer['totals']['currency'], $answer['totals']['lines'], $answer['totals']['adjustments'], $answer['totals']['summary']['grand_minor'], $answer['totals']['amount_due_minor'] ), $message );
 	}
 

@@ -21,6 +21,7 @@ use SEOCart\Cart\Application\CartService;
 use SEOCart\Cart\Application\PromotionCodeLimits;
 use SEOCart\Cart\Domain\Cart;
 use SEOCart\Cart\Domain\CartLine;
+use SEOCart\Cart\Domain\UnavailableLine;
 use SEOCart\Pricing\Application\UnpricedLine;
 use SEOCart\Pricing\Domain\PricingError;
 use SEOCart\Pricing\Interfaces\TotalsFields;
@@ -56,7 +57,8 @@ defined( 'ABSPATH' ) || exit;
  * refused with `cart.version_stale`, whose details carry the cart's current totals, so a client can
  * tell an answer it has overtaken and repaint. Every accepted write's answer carries the cart's
  * token, for as long as the cart now lives. Every answer is the cart: its version, its lines, its
- * promotion codes, the totals the calculation works out for them, and the lines it could not price.
+ * promotion codes, the totals the calculation works out for them, the lines it could not price,
+ * and the lines whose units are not for sale now in the quantity the cart holds.
  *
  * Declarations are data: building a definition calls no WordPress function.
  *
@@ -342,7 +344,7 @@ final class CartOperations {
 	}
 
 	/**
-	 * Returns the cart resource every answer is: the version, the lines, the totals and the unpriced lines.
+	 * Returns the cart resource every answer is: the version, the lines, the totals, the unpriced lines and the lines whose units are not for sale.
 	 *
 	 * @since 0.1.0
 	 *
@@ -393,6 +395,35 @@ final class CartOperations {
 							example: UnpricedLine::NO_PRICE_IN_CURRENCY,
 							required: true,
 							allowed: array( UnpricedLine::NO_PRICE_IN_CURRENCY, UnpricedLine::UNKNOWN_VARIANT )
+						),
+					),
+					required: true,
+					max_items: Cart::MAX_LINES
+				),
+				FieldSpec::objectList(
+					'unavailable_lines',
+					'The lines whose units are not for sale now in the quantity the cart holds, judged when the answer was built. They stay in the cart and in the totals, and placing the order checks the stock again. A line without a price is listed under unpriced_lines only.',
+					static fn(): string => __( 'Unavailable lines', 'seocart' ),
+					array(
+						self::lineIdentity(),
+						self::variantId(),
+						new FieldSpec(
+							name: 'reason',
+							type: FieldType::String,
+							description: 'Why: out_of_stock when no unit of the variant is for sale, insufficient_stock when fewer are than the cart\'s lines of the variant hold.',
+							label: static fn(): string => __( 'Reason', 'seocart' ),
+							example: UnavailableLine::INSUFFICIENT_STOCK,
+							required: true,
+							allowed: array( UnavailableLine::OUT_OF_STOCK, UnavailableLine::INSUFFICIENT_STOCK )
+						),
+						new FieldSpec(
+							name: 'for_sale',
+							type: FieldType::Integer,
+							description: 'The units of the variant for sale now.',
+							label: static fn(): string => __( 'For sale', 'seocart' ),
+							example: 2,
+							required: true,
+							minimum: 0
 						),
 					),
 					required: true,

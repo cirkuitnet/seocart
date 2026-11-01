@@ -23,7 +23,6 @@ use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Support\Address;
 use SEOCart\Tests\Support\Cart\CartTestCase;
 use SEOCart\Tests\Support\Cart\ServesStoreApi;
-use SEOCart\Tests\Support\Inventory\StockTables;
 use SEOCart\Tests\Support\Performance\ReferenceCarts;
 use SEOCart\Tests\Support\Pricing\Inputs;
 use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
@@ -34,7 +33,11 @@ use SEOCart\Tests\Support\QueryLog;
  * calculation of the totals and the request policy's count included:
  *
  * - reading a three-line cart costs at most 6 queries, one of them the read of its checkout
- *   session, which gives its totals their destination, and its answer at most 8 KB;
+ *   session, which gives its totals their destination, and one the read of its lines' figures for
+ *   sale, and its answer at most 8 KB; the read follows the cart's first write in the same process,
+ *   so the inventory settings and the location list are already cached, and the same read on a
+ *   cold object cache is printed with its statements;
+ * - a cart read asks no router: it sends the figures' read, never the router's;
  * - an add-lines write on Reference Cart B, with its two promotion codes, costs at most 20 queries,
  *   and so does applying each of the codes;
  * - adding lines writes them in one statement, whatever their number;
@@ -51,7 +54,11 @@ use SEOCart\Tests\Support\QueryLog;
  * - in MysqlPresentmentCurrencies::find(), take the current version from the rates table and read
  *   the enabled currencies on their own before the currency's row, instead of the one joined read
  *   at the version the installation record names: Cart B's read in EUR then costs three queries
- *   more than in USD.
+ *   more than in USD;
+ * - in CartService::unavailableLines(), read the figures once per line: the three-line read then
+ *   sends three reads of the figures.
+ *
+ * Every cart measured has ample stock, so its answers are a normal cart's.
  *
  * @since 0.1.0
  *
@@ -81,13 +88,22 @@ final class CartBudgetTest extends CartTestCase {
 	private const READ_BUDGET = 6;
 
 	/**
-	 * The queries of a read of a three-line cart, measured (G17): the cart, its lines, its checkout and the prices, with the promotion codes' read; no fulfilment plan.
+	 * The queries of a read of a three-line cart, measured (G17): the cart, its lines, its checkout and the prices, with the promotion codes' read, and its lines' figures for sale; no fulfilment plan.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var int
 	 */
-	private const G17 = 4;
+	private const G17 = 5;
+
+	/**
+	 * Matches the router's read of the units at each location, MysqlStockRepository::AVAILABILITY, by the expression only it ends its column with.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const ROUTER_READ = '/ i\.held \) AS available FROM /';
 
 	/**
 	 * The most bytes the answer to reading a three-line cart may take.
@@ -131,7 +147,7 @@ final class CartBudgetTest extends CartTestCase {
 	}
 
 	/**
-	 * Tests that reading a three-line cart stays within its query and size budgets.
+	 * Tests that reading a three-line cart stays within its query and size budgets, and prints the same read on a cold object cache and the answer with its lines flagged.
 	 *
 	 * @since 0.1.0
 	 */
@@ -143,28 +159,52 @@ final class CartBudgetTest extends CartTestCase {
 		);
 
 		$this->price( array_fill_keys( array_keys( $quantities ), 1999 ) );
+		$this->stockAmply( array_keys( $quantities ) );
 		$this->startOverTheWire( $quantities );
 
-		$read = array();
-		$log  = $this->captureQueries(
-			function () use ( &$read ): void {
-				$read = $this->store( 'GET', CartOperations::CART_ROUTE );
-			}
-		);
+		$read = $this->measure( 'GET', CartOperations::CART_ROUTE );
 
-		$bytes = strlen( $this->server->sent_body );
-
-		$this->assertSame( 200, $read['status'] );
 		$this->assertCount( 3, $read['body']['totals']['lines'] );
-		$this->assertQueryCountAtMost( self::READ_BUDGET, $log, 'Reading a three-line cart' );
-		$this->assertQueryCount( 1, $log->forTable( $this->table( CheckoutTables::SESSIONS ) ), 'The read of the checkout session of the cart' );
-		$this->assertLessThanOrEqual( self::READ_BYTES, $bytes );
+		$this->assertSame( array(), $read['body']['unavailable_lines'] );
+		$this->assertQueryCountAtMost( self::READ_BUDGET, $read['log'], 'Reading a three-line cart' );
+		$this->assertQueryCount( 1, $read['log']->forTable( $this->table( CheckoutTables::SESSIONS ) ), 'The read of the checkout session of the cart' );
+		$this->assertQueryCount( 1, $read['log']->matching( self::SALE_FIGURES ), 'The read of the lines\' figures for sale' );
+		$this->assertQueryCount( 0, $read['log']->matching( self::ROUTER_READ ), 'A cart read asks no router' );
+		$this->assertLessThanOrEqual( self::READ_BYTES, $read['bytes'] );
 
-		self::report( sprintf( 'G17, reading a three-line cart: %d queries (budget %d), %d bytes (budget %d).', $log->count(), self::READ_BUDGET, $bytes, self::READ_BYTES ) );
+		// A request on a host with no persistent object cache starts cold: the same read, printed, held to no budget.
+		wp_cache_flush();
+		wp_load_alloptions();
+
+		$cold = $this->measure( 'GET', CartOperations::CART_ROUTE );
+
+		$this->assertQueryCount( 1, $cold['log']->matching( self::SALE_FIGURES ), 'The cold read of the lines\' figures for sale' );
+		$this->assertQueryCount( 0, $cold['log']->matching( self::ROUTER_READ ), 'A cold cart read asks no router' );
+
+		$this->db->execute( 'UPDATE %i SET on_hand = 0', $this->table( InventoryTables::ITEMS ) );
+
+		$flagged = $this->measure( 'GET', CartOperations::CART_ROUTE );
+
+		$this->assertCount( 3, $flagged['body']['unavailable_lines'] );
+		$this->assertLessThanOrEqual( self::READ_BYTES, $flagged['bytes'] );
+
+		self::report(
+			sprintf(
+				"G17, reading a three-line cart: %d queries (budget %d), %d bytes (budget %d); with its three lines flagged, %d bytes.\nThe statements:\n%s\nG17 on a cold object cache: %d queries:\n%s",
+				$read['log']->count(),
+				self::READ_BUDGET,
+				$read['bytes'],
+				self::READ_BYTES,
+				$flagged['bytes'],
+				self::statements( $read['log'] ),
+				$cold['log']->count(),
+				self::statements( $cold['log'] )
+			)
+		);
 	}
 
 	/**
-	 * Tests that reading a cart whose checkout has a shipping address plans nothing: it sends G17's queries, and none to the stock tables.
+	 * Tests that reading a cart whose checkout has a shipping address plans nothing: it sends G17's queries, among them the read of its lines' figures for sale, and not the router's read of the units at each location.
 	 *
 	 * A plan is asked for by the checkout's write and its placement only; a cart read prices the
 	 * cart for the address with no plan.
@@ -180,13 +220,8 @@ final class CartBudgetTest extends CartTestCase {
 			self::variant() => 2,
 			self::variant() => 3,
 		);
-		$location   = StockTables::create( $this->db );
 
-		foreach ( array_keys( $quantities ) as $variantId ) {
-			$this->db->execute( 'INSERT INTO %i ( variant_id, updated_at ) VALUES ( %d, UTC_TIMESTAMP(6) )', $this->table( InventoryTables::POLICIES ), $variantId );
-			$this->db->execute( 'INSERT INTO %i ( variant_id, location_id, on_hand, updated_at ) VALUES ( %d, %d, 10, UTC_TIMESTAMP(6) )', $this->table( InventoryTables::ITEMS ), $variantId, $location );
-		}
-
+		$this->stockAmply( array_keys( $quantities ) );
 		$this->price( array_fill_keys( array_keys( $quantities ), 1999 ) );
 		$this->startOverTheWire( $quantities );
 
@@ -204,10 +239,11 @@ final class CartBudgetTest extends CartTestCase {
 
 		$this->assertSame( 200, $read['status'], (string) wp_json_encode( $read['body'] ) );
 		$this->assertSame( 500, $read['body']['totals']['summary']['shipping_total_minor'] ?? null, 'The read is priced for the saved address.' );
-		$this->assertQueryCount( 0, $log->matching( '/`[^`]+(?:stock_\w+|locations)`/' ), 'A cart read asks no router' );
+		$this->assertQueryCount( 0, $log->matching( self::ROUTER_READ ), 'A cart read asks no router' );
+		$this->assertQueryCount( 1, $log->matching( self::SALE_FIGURES ), 'The read of the lines\' figures for sale' );
 		$this->assertQueryCount( self::G17, $log, 'Reading a three-line cart with a shipping address' );
 
-		self::report( sprintf( 'G17, reading a three-line cart whose checkout has a shipping address: %d queries, none to the stock tables.', $log->count() ) );
+		self::report( sprintf( 'G17, reading a three-line cart whose checkout has a shipping address: %d queries, one of them the figures for sale and none the router\'s.', $log->count() ) );
 	}
 
 	/**
@@ -227,6 +263,7 @@ final class CartBudgetTest extends CartTestCase {
 		}
 
 		ReferenceCarts::seedPrices( $this->db, $cartA, $cartB, self::CURRENCY );
+		$this->stockAmply( array( $cartA, ...$cartB ) );
 
 		$aStart = $this->measure( 'POST', CartOperations::LINES_ROUTE, self::bodyOf( ReferenceCarts::cartA( $cartA ) ) );
 
@@ -261,6 +298,7 @@ final class CartBudgetTest extends CartTestCase {
 		$read  = $this->measure( 'GET', CartOperations::CART_ROUTE );
 
 		$this->assertSame( array(), $write['body']['unpriced_lines'] );
+		$this->assertSame( array(), $write['body']['unavailable_lines'] );
 		$this->assertCount( ReferenceCarts::CART_B_VARIANTS, $write['body']['totals']['lines'] );
 		$this->assertSame( array_keys( ReferenceCarts::CART_B_CODES ), array_column( $write['body']['promotion_codes'], 'code' ) );
 		$this->assertLessThan( 0, $write['body']['totals']['summary']['discount_total_minor'], 'Cart B\'s 10 % code took nothing off.' );
@@ -308,6 +346,7 @@ final class CartBudgetTest extends CartTestCase {
 		}
 
 		ReferenceCarts::seedPrices( $this->db, self::variant(), $cartB, self::CURRENCY );
+		$this->stockAmply( $cartB );
 
 		// Every other variant has a price authored in EUR; the rest are converted from USD.
 		foreach ( $cartB as $slot => $variant ) {
@@ -383,6 +422,39 @@ final class CartBudgetTest extends CartTestCase {
 		$this->assertSame( $one->count(), $tenLines->count(), 'Ten lines cost more statements than one.' );
 
 		self::report( sprintf( 'Adding lines to a cart: %d statements for one line, %d for ten, one of them writing the lines.', $one->count(), $tenLines->count() ) );
+	}
+
+	/**
+	 * Gives variants ample stock at the store's default location: 100 units each.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $variantIds The variants.
+	 *
+	 * @phpstan-param list<int> $variantIds
+	 */
+	private function stockAmply( array $variantIds ): void {
+		foreach ( $variantIds as $variantId ) {
+			$this->plantItem( $variantId, 100 );
+		}
+	}
+
+	/**
+	 * Writes a log's statements, one per line.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param QueryLog $log The statements.
+	 * @return string The statements, numbered.
+	 */
+	private static function statements( QueryLog $log ): string {
+		$lines = array();
+
+		foreach ( $log->sqls() as $index => $sql ) {
+			$lines[] = sprintf( '  %d. %s', $index + 1, $sql );
+		}
+
+		return implode( "\n", $lines );
 	}
 
 	/**

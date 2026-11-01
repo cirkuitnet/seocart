@@ -32,6 +32,10 @@ defined( 'ABSPATH' ) || exit;
  * A placement routes its lines and holds each unit where it is, so every unit the figure counts
  * is one a placement can hold, at the location it is at.
  *
+ * The stock list, the catalog's stock summary of each product for listings and the cart's check
+ * of each line of its answers read the figure; the router plans from the units at each location,
+ * never from it.
+ *
  * @since 0.2.0
  */
 final class Availability {

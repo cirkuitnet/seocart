@@ -1430,6 +1430,7 @@ final class Modules {
 				$c->get( RateLimiter::class ),
 				$c->get( ClientIdentities::class ),
 				self::checkoutDelivery( $c ),
+				static fn( array $variantIds ): array => $c->get( Availability::class )->forSale( $variantIds, null ),
 				self::baseCurrency( $c ),
 				static fn(): Locale => $c->get( PostLocales::class )->siteLocale(),
 				$c->get( Calculator::class ),

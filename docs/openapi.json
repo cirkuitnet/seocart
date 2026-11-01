@@ -5428,6 +5428,56 @@
                                 }
                             ]
                         ]
+                    },
+                    "unavailable_lines": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "line_identity": {
+                                    "type": "string",
+                                    "maxLength": 64,
+                                    "description": "The line's identity: 64 hexadecimal characters that stay the same for as long as the line is in the cart."
+                                },
+                                "variant_id": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "The variant the line holds."
+                                },
+                                "reason": {
+                                    "type": "string",
+                                    "enum": [
+                                        "out_of_stock",
+                                        "insufficient_stock"
+                                    ],
+                                    "description": "Why: out_of_stock when no unit of the variant is for sale, insufficient_stock when fewer are than the cart's lines of the variant hold."
+                                },
+                                "for_sale": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "description": "The units of the variant for sale now."
+                                }
+                            },
+                            "required": [
+                                "line_identity",
+                                "variant_id",
+                                "reason",
+                                "for_sale"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "maxItems": 50,
+                        "description": "The lines whose units are not for sale now in the quantity the cart holds, judged when the answer was built. They stay in the cart and in the totals, and placing the order checks the stock again. A line without a price is listed under unpriced_lines only.",
+                        "examples": [
+                            [
+                                {
+                                    "line_identity": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+                                    "variant_id": 42,
+                                    "reason": "insufficient_stock",
+                                    "for_sale": 2
+                                }
+                            ]
+                        ]
                     }
                 },
                 "required": [
@@ -5435,7 +5485,8 @@
                     "lines",
                     "promotion_codes",
                     "totals",
-                    "unpriced_lines"
+                    "unpriced_lines",
+                    "unavailable_lines"
                 ]
             },
             "CheckoutSession": {

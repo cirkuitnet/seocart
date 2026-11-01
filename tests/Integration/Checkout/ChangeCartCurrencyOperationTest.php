@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Checkout;
 
+use SEOCart\Cart\Domain\LineIdentity;
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
@@ -90,7 +91,7 @@ final class ChangeCartCurrencyOperationTest extends CheckoutTestCase {
 		$switched = $this->store( 'POST', CheckoutOperations::CURRENCY_ROUTE, $body );
 
 		$this->assertSame( 200, $switched['status'], (string) wp_json_encode( $switched['body'] ) );
-		$this->assertSame( array( 'version', 'lines', 'promotion_codes', 'totals', 'unpriced_lines' ), array_keys( $switched['body'] ) );
+		$this->assertSame( array( 'version', 'lines', 'promotion_codes', 'totals', 'unpriced_lines', 'unavailable_lines' ), array_keys( $switched['body'] ) );
 		$this->assertSame( array( 2, 'EUR', array() ), array( $switched['body']['version'], $switched['body']['totals']['currency'], $switched['body']['unpriced_lines'] ) );
 		$this->assertSame( array( $shirt ), array_column( $switched['body']['lines'], 'variant_id' ) );
 		$this->assertSame( 1824, $switched['body']['totals']['lines'][0]['unit_price_minor'] ?? null, '19.99 USD at 0.91230 is 18.24 EUR.' );
@@ -104,6 +105,45 @@ final class ChangeCartCurrencyOperationTest extends CheckoutTestCase {
 		$this->assertErrorShape( $replay['body'], 'cart.version_stale', 409 );
 		$this->assertSame( 'EUR', $replay['body']['data']['details']['totals']['currency'] ?? null );
 		$this->assertSame( array( 2, 'EUR' ), array( $this->store( 'GET', CartOperations::CART_ROUTE )['body']['version'] ?? null, $this->store( 'GET', CartOperations::CART_ROUTE )['body']['totals']['currency'] ?? null ) );
+	}
+
+	/**
+	 * Tests that a switch's answer names the lines whose units are not for sale, as every answer about the cart does.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_switch_answers_the_lines_not_for_sale(): void {
+		$shirt = self::variant();
+
+		$this->price( array( $shirt => 1999 ) );
+		$this->plantItem( $shirt, 1 );
+
+		$started = $this->store( 'POST', CartOperations::LINES_ROUTE, self::linesBody( array( $shirt => 2 ) ) );
+
+		$this->assertSame( 200, $started['status'], (string) wp_json_encode( $started['body'] ) );
+		$this->presentCookie( $this->cookies[0]['value'] );
+
+		$switched = $this->store(
+			'POST',
+			CheckoutOperations::CURRENCY_ROUTE,
+			array(
+				'cart_version' => 1,
+				'currency'     => 'EUR',
+			)
+		);
+
+		$this->assertSame( 200, $switched['status'], (string) wp_json_encode( $switched['body'] ) );
+		$this->assertSame(
+			array(
+				array(
+					'line_identity' => LineIdentity::of( $shirt )->value(),
+					'variant_id'    => $shirt,
+					'reason'        => 'insufficient_stock',
+					'for_sale'      => 1,
+				),
+			),
+			$switched['body']['unavailable_lines']
+		);
 	}
 
 	/**

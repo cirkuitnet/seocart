@@ -28,7 +28,8 @@ use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
  *   stock adjustment's declaration with the two enums it reads, the location operations'
  *   declarations with the backorder policies, the pickup keys and the days of pickup hours they
  *   state, the cart's declarations with the
- *   error catalogs, the two domain classes whose limits they state, the caps on refused promotion
+ *   error catalogs, the two domain classes whose limits they state and the unavailable line whose
+ *   reasons they list, the caps on refused promotion
  *   codes and on currency switches, and the declared shape of totals with the enums it lists, the
  *   checkout's declarations with their error catalog, the address document whose fields they state,
  *   the details whose method key they bound and the payment gateway descriptor whose id length
@@ -93,6 +94,7 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Promotion/Application/PromotionError.php',
 		'src/Cart/Domain/Cart.php',
 		'src/Cart/Domain/CartLine.php',
+		'src/Cart/Domain/UnavailableLine.php',
 		'src/Checkout/Interfaces/StoreApi/CheckoutOperations.php',
 		'src/Checkout/Domain/CheckoutError.php',
 		'src/Checkout/Domain/AddressDocument.php',

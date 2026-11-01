@@ -17,6 +17,7 @@ use SEOCart\Cart\Domain\CartRepository;
 use SEOCart\Cart\Domain\CartStatus;
 use SEOCart\Cart\Domain\CartToken;
 use SEOCart\Cart\Domain\LineIdentity;
+use SEOCart\Cart\Domain\UnavailableLine;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Isolation;
 use SEOCart\Platform\Database\RetryPolicy;
@@ -71,7 +72,11 @@ defined( 'ABSPATH' ) || exit;
  * starts a cart prices its lines before it creates anything, so a calculation that fails leaves no
  * cart behind whose token the client never received. Any other answer is priced once its
  * transaction has ended. A write refused as stale carries the totals of the cart as it is now,
- * worked out after the rollback.
+ * worked out after the rollback. Every answer but changeWith()'s also names the lines whose units
+ * are not for sale now, judged by Inventory's figure (Availability::forSale() of the inventory
+ * module, which the kernel hands the service) in one read once the totals are worked out, and
+ * never stored. A write that asks for more units than are for sale is accepted, and its line
+ * flagged: placing the order decides, with its hold of the units.
  *
  * A promotion code joins a cart only once its promotion applies to the cart, which the promotion
  * module decides before any transaction; the code's later fate is the calculation's, which leaves
@@ -88,7 +93,16 @@ defined( 'ABSPATH' ) || exit;
  * Order placement claims a cart, binds its order to it and settles it through the three methods
  * below that run only inside the placement's own transaction.
  *
+ * An answer is written by wire name in one of three shapes: the priced cart; the cart answer, the
+ * priced cart with the lines whose units are not for sale, which every Store API answer about the
+ * cart is; and the planned cart, the priced cart with what its fulfilment plan says of delivery,
+ * which changeWith() answers another module's write with.
+ *
  * @since 0.1.0
+ *
+ * @phpstan-type PricedCart array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>}
+ * @phpstan-type CartAnswer array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>, unavailable_lines: list<array{line_identity: string, variant_id: int, reason: string, for_sale: int}>}
+ * @phpstan-type PlannedCart array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>, routing: array{requires_transfer: bool, transfer_days: int|null}|null}
  */
 final class CartService {
 
@@ -174,6 +188,18 @@ final class CartService {
 	private \Closure $delivery;
 
 	/**
+	 * Returns the units of each variant for sale to the cart's shoppers, by variant id: null for no limit.
+	 *
+	 * Inventory's figure, Availability::forSale() of the inventory module, for any market until a
+	 * cart carries one.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var \Closure(list<int>): array<int, int|null>
+	 */
+	private \Closure $forSale;
+
+	/**
 	 * Returns the currency a new cart is in: the store's base currency.
 	 *
 	 * @since 0.1.0
@@ -222,22 +248,27 @@ final class CartService {
 	 * @param \Closure           $delivery   Returns, for a cart's id, where its order ships and the
 	 *                                       shipping method chosen, as its checkout has them: each
 	 *                                       null until the checkout knows it.
+	 * @param \Closure           $forSale    Returns, for the ids of some variants, the units of each
+	 *                                       for sale to the cart's shoppers, by variant id: null for
+	 *                                       no limit.
 	 * @param \Closure           $currency   Returns the currency a new cart is in.
 	 * @param \Closure           $locale     Returns the locale a new cart is started in.
 	 * @param Calculator         $calculator Works out the totals of a cart's lines.
 	 * @param PromotionResolver  $promotions Decides whether a promotion code applies to a cart.
 	 *
 	 * @phpstan-param \Closure(int): array{destination: Address|null, shipping_method_key: string|null} $delivery
+	 * @phpstan-param \Closure(list<int>): array<int, int|null> $forSale
 	 * @phpstan-param \Closure(): Currency $currency
 	 * @phpstan-param \Closure(): Locale   $locale
 	 */
-	public function __construct( CartRepository $carts, TransactionManager $tx, CartTokens $tokens, RateLimiter $limiter, ClientIdentities $identities, \Closure $delivery, \Closure $currency, \Closure $locale, Calculator $calculator, PromotionResolver $promotions ) {
+	public function __construct( CartRepository $carts, TransactionManager $tx, CartTokens $tokens, RateLimiter $limiter, ClientIdentities $identities, \Closure $delivery, \Closure $forSale, \Closure $currency, \Closure $locale, Calculator $calculator, PromotionResolver $promotions ) {
 		$this->carts      = $carts;
 		$this->tx         = $tx;
 		$this->tokens     = $tokens;
 		$this->limiter    = $limiter;
 		$this->identities = $identities;
 		$this->delivery   = $delivery;
+		$this->forSale    = $forSale;
 		$this->currency   = $currency;
 		$this->locale     = $locale;
 		$this->calculator = $calculator;
@@ -459,12 +490,14 @@ final class CartService {
 	 *
 	 * @param array<string, mixed> $input The prepared input: nothing.
 	 * @param Actor                $actor Who reads.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart, keyed by wire name.
+	 * @return array<string, mixed> The cart, keyed by wire name.
+	 *
+	 * @phpstan-return CartAnswer
 	 */
 	public function getCart( array $input, Actor $actor ): array {
 		unset( $input, $actor );
 
-		return $this->priced( $this->current() );
+		return $this->answered( $this->current() );
 	}
 
 	/**
@@ -476,7 +509,9 @@ final class CartService {
 	 *
 	 * @param array<string, mixed> $input The prepared input: lines, each with variant_id and quantity, and optionally cart_version.
 	 * @param Actor                $actor Who adds them.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
+	 * @return array<string, mixed> The cart after the change.
+	 *
+	 * @phpstan-return CartAnswer
 	 */
 	public function addLines( array $input, Actor $actor ): array {
 		$lines = array();
@@ -487,7 +522,7 @@ final class CartService {
 
 		$added = $this->addPricingNewCart( $lines, (int) ( $input['cart_version'] ?? 0 ), $actor );
 
-		return $this->priced( $added['cart'], $added['calculation'] );
+		return $this->answered( $added['cart'], $added['calculation'] );
 	}
 
 	/**
@@ -499,13 +534,15 @@ final class CartService {
 	 *
 	 * @param array<string, mixed> $input The prepared input: line_identity, quantity and cart_version.
 	 * @param Actor                $actor Who changes it.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
+	 * @return array<string, mixed> The cart after the change.
+	 *
+	 * @phpstan-return CartAnswer
 	 */
 	public function updateLine( array $input, Actor $actor ): array {
 		$sent     = (string) $input['line_identity'];
 		$identity = LineIdentity::fromString( $sent ) ?? CodedException::raise( CartError::LineNotFound, array( 'line_identity' => $sent ) );
 
-		return $this->priced( $this->changeQuantity( $identity, (int) $input['quantity'], (int) $input['cart_version'], $actor ) );
+		return $this->answered( $this->changeQuantity( $identity, (int) $input['quantity'], (int) $input['cart_version'], $actor ) );
 	}
 
 	/**
@@ -517,10 +554,12 @@ final class CartService {
 	 *
 	 * @param array<string, mixed> $input The prepared input: code and cart_version.
 	 * @param Actor                $actor Who applies it.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
+	 * @return array<string, mixed> The cart after the change.
+	 *
+	 * @phpstan-return CartAnswer
 	 */
 	public function applyCode( array $input, Actor $actor ): array {
-		return $this->priced( $this->applyPromotionCode( self::enteredCode( (string) $input['code'] ), (int) $input['cart_version'], $actor ) );
+		return $this->answered( $this->applyPromotionCode( self::enteredCode( (string) $input['code'] ), (int) $input['cart_version'], $actor ) );
 	}
 
 	/**
@@ -532,10 +571,12 @@ final class CartService {
 	 *
 	 * @param array<string, mixed> $input The prepared input: code and cart_version.
 	 * @param Actor                $actor Who removes it.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
+	 * @return array<string, mixed> The cart after the change.
+	 *
+	 * @phpstan-return CartAnswer
 	 */
 	public function removeCode( array $input, Actor $actor ): array {
-		return $this->priced( $this->removePromotionCode( self::enteredCode( (string) $input['code'] ), (int) $input['cart_version'], $actor ) );
+		return $this->answered( $this->removePromotionCode( self::enteredCode( (string) $input['code'] ), (int) $input['cart_version'], $actor ) );
 	}
 
 	/**
@@ -630,7 +671,8 @@ final class CartService {
 	 * transaction, after the compare-and-swap and only when it matched. It sends its own module's
 	 * statements and nothing else: no outbound call, and no calculation, which never runs inside
 	 * a transaction. The answer is priced once the transaction has ended, so its totals see what
-	 * the closure wrote.
+	 * the closure wrote. It names no line whose units are not for sale: its caller answers with
+	 * the totals, never the lines, so no stock is read for it.
 	 *
 	 * @since 0.1.0
 	 *
@@ -647,12 +689,13 @@ final class CartService {
 	 * @param \Closure|null     $pricing         Optional. Runs the answer's calculation, given the closure that
 	 *                                           runs it: the caller's wrapper, which may run it once more.
 	 *                                           Default null, run once.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>, routing: array{requires_transfer: bool, transfer_days: int|null}|null} The cart after the change,
-	 *         with what the plan says of delivery: whether units must be brought together, and the extra days the
-	 *         shopper is told that adds; null when no plan was made.
+	 * @return array<string, mixed> The cart after the change, with what the plan says of delivery:
+	 *                              whether units must be brought together, and the extra days the
+	 *                              shopper is told that adds; null when no plan was made.
 	 *
 	 * @phpstan-param \Closure(int): void $write
 	 * @phpstan-param (\Closure(\Closure(): Calculation): Calculation)|null $pricing
+	 * @phpstan-return PlannedCart
 	 */
 	public function changeWith( int $expectedVersion, Actor $actor, \Closure $write, ?RoutingScope $routing = null, ?\Closure $pricing = null ): array {
 		$presented   = $this->presentedRow() ?? CodedException::raise( CartError::NotFound );
@@ -697,9 +740,10 @@ final class CartService {
 	 * @param int      $expectedVersion The version the client based the switch on.
 	 * @param Actor    $actor           Who switches: whose lifetime the cart then lives.
 	 * @param \Closure $write           Writes the other module's rows, given the cart's id.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the switch, priced in its new currency.
+	 * @return array<string, mixed> The cart after the switch, priced in its new currency.
 	 *
 	 * @phpstan-param \Closure(int): void $write
+	 * @phpstan-return CartAnswer
 	 */
 	public function changeCurrency( Currency $currency, int $expectedVersion, Actor $actor, \Closure $write ): array {
 		$presented = $this->presentedRow() ?? CodedException::raise( CartError::NotFound );
@@ -726,7 +770,7 @@ final class CartService {
 			}
 		);
 
-		return $this->priced( $switched );
+		return $this->answered( $switched );
 	}
 
 	/**
@@ -1171,7 +1215,10 @@ final class CartService {
 	 * @param Cart|null        $cart        The cart, or null for none.
 	 * @param Calculation|null $calculation Optional. The cart's calculation, when its lines were
 	 *                                      priced already. Default null, work it out now.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The version, 0 for no cart, the lines, the promotion codes, the totals and the unpriced lines.
+	 * @return array<string, mixed> The version, 0 for no cart, the lines, the promotion codes, the
+	 *                              totals and the unpriced lines.
+	 *
+	 * @phpstan-return PricedCart
 	 */
 	private function priced( ?Cart $cart, ?Calculation $calculation = null ): array {
 		$calculation = $calculation ?? $this->calculation( $cart );
@@ -1199,5 +1246,70 @@ final class CartService {
 				$calculation->unpricedLines
 			),
 		);
+	}
+
+	/**
+	 * Writes a cart by wire name as every Store API answer about it is: what priced() writes, then the lines whose units are not for sale now.
+	 *
+	 * The calculation is worked out once, and the stock is judged after it, outside any
+	 * transaction, from figures read for this answer alone and never kept.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException The codes the calculation raises.
+	 *
+	 * @param Cart|null        $cart        The cart, or null for none.
+	 * @param Calculation|null $calculation Optional. The cart's calculation, when its lines were
+	 *                                      priced already. Default null, work it out now.
+	 * @return array<string, mixed> The priced cart, and the lines whose units are not for sale.
+	 *
+	 * @phpstan-return CartAnswer
+	 */
+	private function answered( ?Cart $cart, ?Calculation $calculation = null ): array {
+		$calculation ??= $this->calculation( $cart );
+
+		return $this->priced( $cart, $calculation ) + array(
+			'unavailable_lines' => array_map(
+				static fn( UnavailableLine $unavailable ): array => array(
+					'line_identity' => $unavailable->lineIdentity,
+					'variant_id'    => $unavailable->variantId,
+					'reason'        => $unavailable->reason,
+					'for_sale'      => $unavailable->forSale,
+				),
+				$this->unavailableLines( null === $cart ? array() : $cart->lines, $calculation )
+			),
+		);
+	}
+
+	/**
+	 * Returns the priced lines whose units are not for sale now, from one read of their variants' figures.
+	 *
+	 * A line the calculation could not price is left to the unpriced lines, so no line is named
+	 * twice. With no line left to judge, nothing is read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CartLine[]  $lines       The cart's lines, in its order.
+	 * @param Calculation $calculation Their calculation.
+	 * @return list<UnavailableLine> The lines flagged, in the cart's order.
+	 *
+	 * @phpstan-param list<CartLine> $lines
+	 */
+	private function unavailableLines( array $lines, Calculation $calculation ): array {
+		$unpriced = array();
+
+		foreach ( $calculation->unpricedLines as $line ) {
+			$unpriced[ $line->key ] = true;
+		}
+
+		$judged = array_values( array_filter( $lines, static fn( CartLine $line ): bool => ! isset( $unpriced[ $line->identity->value() ] ) ) );
+
+		if ( array() === $judged ) {
+			return array();
+		}
+
+		$variantIds = array_values( array_unique( array_map( static fn( CartLine $line ): int => $line->variantId, $judged ) ) );
+
+		return UnavailableLine::of( $judged, ( $this->forSale )( $variantIds ) );
 	}
 }

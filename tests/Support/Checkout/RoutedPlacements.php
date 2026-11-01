@@ -14,7 +14,6 @@ namespace SEOCart\Tests\Support\Checkout;
 use SEOCart\Inventory\Application\InventorySettings;
 use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
-use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Tests\Support\Inventory\StockTables;
@@ -22,40 +21,14 @@ use SEOCart\Tests\Support\Inventory\StockTables;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Plants locations and their stock, sets the store's routing, and reads what a placement held, allocated and recorded.
+ * Plants stock at locations, sets the store's routing, and reads what a placement held, allocated and recorded.
  *
- * For a PlacementTestCase: it uses the test's connection, tables and kernel.
+ * For a PlacementTestCase: it uses the test's connection, tables and kernel, and plants its
+ * locations with the plantLocation() every cart test has (PlantsStock).
  *
  * @since 0.2.0
  */
 trait RoutedPlacements {
-
-	/**
-	 * Plants an active location that ships online orders, and returns its id.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param int  $priority      Where it is tried when an order is routed: the lowest first; the default location's is 0.
-	 * @param bool $active        Optional. Whether it is active. Default true.
-	 * @param bool $fulfilsOnline Optional. Whether it ships online orders; a warehouse that does not can still send
-	 *                            units by transfer. Default true.
-	 * @return int The location's id.
-	 */
-	protected function plantLocation( int $priority, bool $active = true, bool $fulfilsOnline = true ): int {
-		$this->db->execute(
-			'INSERT INTO %i ( uuid, name, active, fulfils_online, offers_pickup, priority, created_at, updated_at ) VALUES ( %s, %s, %d, %d, 0, %d, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6) )',
-			$this->table( InventoryTables::LOCATIONS ),
-			wp_generate_uuid4(),
-			'Location ' . wp_generate_uuid4(),
-			$active ? 1 : 0,
-			$fulfilsOnline ? 1 : 0,
-			$priority
-		);
-
-		wp_cache_delete( MysqlLocationRepository::CACHE_KEY, MysqlLocationRepository::CACHE_GROUP );
-
-		return $this->db->lastInsertId();
-	}
 
 	/**
 	 * Sets a variant's units on hand at a location, creating the item there or replacing its figure.

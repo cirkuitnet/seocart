@@ -24,6 +24,7 @@ use SEOCart\Tests\Support\Checkout\CheckoutTestCase;
  *
  * - one transaction, which sends the cart's compare-and-swap and one statement to the session table;
  * - after it, one read of the session, which gives the totals their destination;
+ * - no read of the lines' figures for sale: the answer carries the totals, never the lines;
  * - at most 20 queries in all, on a three-line cart.
  *
  * The measurement is printed for the report.
@@ -112,8 +113,9 @@ final class CheckoutBudgetTest extends CheckoutTestCase {
 		$this->assertQueryCount( 1, $sessions->ofType( 'INSERT' ), 'The session\'s upsert' );
 		$this->assertQueryCount( 1, $sessions->ofType( 'SELECT' ), 'The read of the session for the totals' );
 		$this->assertQueryCount( 2, $log->forTable( $this->table( CartTables::CARTS ) )->ofType( 'UPDATE' ), 'The compare-and-swap and the recount of the cart' );
+		$this->assertQueryCount( 0, $log->matching( self::SALE_FIGURES ), 'The reads of the figures for sale, MysqlStockRepository::SALE_FIGURES' );
 		$this->assertQueryCountAtMost( self::WRITE_BUDGET, $log, 'A session write on a three-line cart' );
 
-		fwrite( STDOUT, sprintf( "\nA checkout session write on a three-line cart: %d queries (budget %d), the transaction's statements included.\n", $log->count(), self::WRITE_BUDGET ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- The measurement is printed for the report.
+		fwrite( STDOUT, sprintf( "\nA checkout session write on a three-line cart: %d queries (budget %d), the transaction's statements included:\n  %s\n", $log->count(), self::WRITE_BUDGET, implode( "\n  ", $log->sqls() ) ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- The measurement is printed for the report.
 	}
 }

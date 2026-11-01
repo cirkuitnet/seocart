@@ -43,6 +43,8 @@ defined( 'ABSPATH' ) || exit;
  * cart but takes nothing off.
  *
  * @since 0.1.0
+ *
+ * @phpstan-import-type CartAnswer from CartService
  */
 final class ChangeCartCurrency {
 
@@ -85,7 +87,9 @@ final class ChangeCartCurrency {
 	 *
 	 * @param array<string, mixed> $input The prepared input: cart_version and currency.
 	 * @param Actor                $actor Who switches: whose lifetime the cart then lives.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the switch, priced in its new currency.
+	 * @return array<string, mixed> The cart after the switch, priced in its new currency.
+	 *
+	 * @phpstan-return CartAnswer
 	 */
 	public function change( array $input, Actor $actor ): array {
 		$currency = $this->sold( (string) $input['currency'] ) ?? CodedException::raise( CheckoutError::CurrencyNotEnabled );

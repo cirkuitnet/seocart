@@ -111,7 +111,7 @@ final class ChangeCartCurrencyTest extends CurrencySwitchTestCase {
 		$eur = $this->kernel->get( PresentmentCurrencies::class )->find( Currency::of( 'USD' ), Currency::of( 'EUR' ) );
 
 		$this->assertNotNull( $eur );
-		$this->assertSame( array( 'version', 'lines', 'promotion_codes', 'totals', 'unpriced_lines' ), array_keys( $answer ) );
+		$this->assertSame( array( 'version', 'lines', 'promotion_codes', 'totals', 'unpriced_lines', 'unavailable_lines' ), array_keys( $answer ) );
 		$this->assertSame( $cart->version + 1, $answer['version'] );
 		$this->assertSame(
 			array( 'EUR', 'USD', $this->rateVersion, $eur->context->fingerprint() ),
@@ -121,8 +121,14 @@ final class ChangeCartCurrencyTest extends CurrencySwitchTestCase {
 		$this->assertSame( array( 'converted' ), array_column( $answer['totals']['lines'], 'price_source' ) );
 		$this->assertGreaterThan( 0, $answer['totals']['summary']['shipping_total_minor'], 'The flat rate, quoted again in EUR.' );
 
+		// The answer judges its lines against the units for sale: one read of the stock, which a placement's tables may see.
+		$figures = $log->matching( self::SALE_FIGURES );
+
+		$this->assertSame( 1, $figures->count(), 'The answer\'s one read of the units for sale.' );
+		$this->assertSame( array(), $answer['unavailable_lines'], 'Five mugs cover the line of two.' );
+
 		foreach ( self::PLACEMENT_TABLES as $table ) {
-			$this->assertSame( 0, $log->forTable( $this->table( $table ) )->count(), 'A switch sent a statement on ' . $table . ":\n" . $log->describe() );
+			$this->assertSame( 0, $log->difference( $figures )->forTable( $this->table( $table ) )->count(), 'A switch sent a statement on ' . $table . ":\n" . $log->describe() );
 		}
 
 		$writes = $log->matching( '/^(INSERT|UPDATE|DELETE)/' );
