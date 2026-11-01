@@ -42,4 +42,20 @@ enum Machine: string {
 	 * @since 0.1.0
 	 */
 	case Fulfillment = 'fulfillment';
+
+	/**
+	 * Returns the column of `orders` that holds the machine's status.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return string `status`, `payment_status` or `fulfillment_status`.
+	 */
+	public function statusColumn(): string {
+		// phpcs:ignore PHPCompatibility.Variables.ForbiddenThisUseContexts.OutsideObjectContext -- an enum's method has its case as $this; the sniff predates enums.
+		return match ( $this ) {
+			self::Order       => 'status',
+			self::Payment     => 'payment_status',
+			self::Fulfillment => 'fulfillment_status',
+		};
+	}
 }

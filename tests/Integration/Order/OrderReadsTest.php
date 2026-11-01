@@ -18,6 +18,7 @@ use SEOCart\Order\Domain\AmountBasis;
 use SEOCart\Order\Domain\FulfillmentStatus;
 use SEOCart\Order\Domain\LineOption;
 use SEOCart\Order\Domain\OrderStatus;
+use SEOCart\Order\Domain\OrderStockLines;
 use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
@@ -88,7 +89,7 @@ final class OrderReadsTest extends OrderTestCase {
 		$status   = null;
 		$log      = $this->captureQueries(
 			function () use ( $inserted, &$lines, &$status ): void {
-				$lines  = $this->orders->stockLines( $inserted->id );
+				$lines  = $this->orders->stockLines( $inserted->id )->lines;
 				$status = $this->orders->statusOf( $inserted->id );
 			}
 		);
@@ -107,7 +108,7 @@ final class OrderReadsTest extends OrderTestCase {
 		$this->assertQueryCount( 2, $log, 'One read each' );
 		$this->assertSame( 0, $log->matching( '/FOR UPDATE|FOR SHARE|LOCK IN SHARE MODE/' )->count(), 'Neither read locks.' );
 		$this->assertNull( $this->orders->statusOf( $inserted->id + 1000 ) );
-		$this->assertSame( array(), $this->orders->stockLines( $inserted->id + 1000 ) );
+		$this->assertEquals( OrderStockLines::none(), $this->orders->stockLines( $inserted->id + 1000 ) );
 	}
 
 	/**

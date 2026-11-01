@@ -109,15 +109,20 @@ final class Engine {
 	}
 
 	/**
-	 * Records the quotes: each shipping rate, the tax quote, and the rates of each tax class.
+	 * Records the quotes: the routing proposal when there is one, each shipping rate, the tax quote, and the rates of each tax class.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Records the routing proposal.
 	 *
 	 * @param TraceBuilder $trace  The trace.
 	 * @param Quotes       $quotes The quotes.
 	 */
 	private function traceQuotes( TraceBuilder $trace, Quotes $quotes ): void {
 		$trace->enter( 'quotes' );
+
+		if ( null !== $quotes->routing ) {
+			$trace->record( TraceEntry::QUOTE, array( 'record' => 'routing' ) + $quotes->routing->toArray() );
+		}
 
 		foreach ( $quotes->shippingRates as $rate ) {
 			$trace->record( TraceEntry::QUOTE, array( 'record' => 'shipping_rate' ) + $rate->toArray() );

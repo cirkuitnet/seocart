@@ -153,17 +153,60 @@ final class OrderQueryPlanTest extends OrderTestCase {
 	}
 
 	/**
+	 * Tests that a location's deletion's read of whether any order is fulfilled from it keeps the rule on an orders table large enough to be judged, by the `fulfilment_location` key.
+	 *
+	 * The orders are spread over five locations.
+	 *
+	 * Planted violation: in OrderTables::orders(), drop the `fulfilment_location` index: the read
+	 * then scans the orders, and the rule names it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_read_of_orders_fulfilled_from_a_location_keeps_the_rule_on_a_large_table(): void {
+		global $wpdb;
+
+		$ids      = new SequentialIdGenerator( 800000 );
+		$template = $this->db->transaction( fn() => $this->ordersOver( $this->db, $ids )->insert( NewOrders::forTwoLines( 'EUR', 'USD' ), Actor::user( 0 ) ) );
+		$planted  = QueryPlan::LARGE_TABLE + 2000;
+
+		$this->plantOrders( $template->id, $planted, array( 'fulfilment_location_id' => 'MOD( n.i, 5 ) + 1' ) );
+
+		$recorder = PlanRecorder::open();
+
+		$wpdb->query( $wpdb->prepare( 'ANALYZE TABLE %i', $this->table( OrderTables::ORDERS ) ) );
+
+		try {
+			$fulfilled = ( new MysqlOrderRepository( new OrderStatements( new Database( $recorder, true, $this->reporter() ) ), $ids ) )->anyFulfilledFrom( 3 );
+		} finally {
+			$recorder->close();
+		}
+
+		$this->assertCount( 1, $recorder->statements() );
+
+		$plan = QueryPlan::explain( $wpdb, $recorder->statements()[0], static fn( string $table ): int => (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i', $table ) ) );
+
+		fwrite( STDOUT, sprintf( "\nThe plan of the read of the orders fulfilled from a location, over %d orders:\n%s\n", $planted + 1, implode( "\n", $plan->lines( array() === $plan->breaches ? 'ok' : 'BREAKS THE RULE' ) ) ) );
+
+		$this->assertTrue( $fulfilled );
+		$this->assertSame( array(), $plan->breaches, implode( "\n", $plan->breaches ) );
+		$this->assertSame( 'fulfilment_location', $plan->accesses[0]['key'] ?? null, 'The read is served by the fulfilment_location key.' );
+	}
+
+	/**
 	 * Plants orders copied from one, each under its own uuid and number, all placed an hour ago: one in fifty pending payment, and one in a hundred pending with a grand total of zero; the rest accepted.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The columns the caller sets itself.
 	 *
-	 * @param int $templateId The order every planted one is copied from.
-	 * @param int $count      How many to plant.
+	 * @param int                   $templateId The order every planted one is copied from.
+	 * @param int                   $count      How many to plant.
+	 * @param array<string, string> $set        Optional. Expressions of other columns, by name, over `n.i`, the order's
+	 *                                          number among those planted. Default none.
 	 * @return list<int> The ids of the planted orders pending payment with nothing to pay, in id order.
 	 */
-	private function plantOrders( int $templateId, int $count ): array {
+	private function plantOrders( int $templateId, int $count, array $set = array() ): array {
 		$orders   = $this->table( OrderTables::ORDERS );
-		$override = array(
+		$override = $set + array(
 			'uuid'              => "CONCAT( '0192f000-0000-7000-8000-', LPAD( n.i, 12, '0' ) )",
 			'order_number'      => "CONCAT( 'QP', n.i )",
 			'status'            => "IF( MOD( n.i, 50 ) = 0, 'pending_payment', 'processing' )",
@@ -226,6 +269,10 @@ final class OrderQueryPlanTest extends OrderTestCase {
 		// Reconciliation's read of the orders with nothing due still pending payment.
 		$orders->pendingNothingDue( 600, 0, 50 );
 
+		// A location's deletion's read of whether any order is fulfilled from it, and doctor's read of where some orders are.
+		$orders->anyFulfilledFrom( 1 );
+		$orders->fulfilmentLocationsOf( array( $inserted->id ) );
+
 		// The order's flag and clearance by its uuid, which a clearance reads back and a settlement answers with; and the
 		// order's lock by its uuid, which a clearance takes before it reads the money it clears.
 		$repository->reconciliation( $inserted->uuid );
@@ -241,9 +288,10 @@ final class OrderQueryPlanTest extends OrderTestCase {
 		$repository->findRefundable( $inserted->uuid, array( (string) $this->db->fetchValue( 'SELECT line_uuid FROM %i WHERE order_id = %d ORDER BY sort_order LIMIT 1', $this->table( OrderTables::LINES ), $inserted->id ) ), true );
 
 		// The read inside the event a refund appends, the order's payment status by its primary key: the SELECT of
-		// MysqlOrderRepository::APPEND_AUDIT, cut from the statement and sent alone, as the INSERT reads it.
+		// MysqlOrderRepository::APPEND_AUDIT, cut from the statement and sent alone, as the INSERT reads it, with the
+		// machine's status column named twice.
 		$audit                    = MysqlOrderRepository::APPEND_AUDIT;
-		list( $read, $arguments ) = OrderStatements::expand( substr( $audit, (int) strpos( $audit, 'SELECT ' ) ), array( 'payment', 'refund_recorded', '0199a0b1-c2d3-7e4f-8a5b-6c7d8e9f0a1b', 'user', 1, '', $inserted->id ), fn( string $name ): string => $this->table( $name ) );
+		list( $read, $arguments ) = OrderStatements::expand( substr( $audit, (int) strpos( $audit, 'SELECT ' ) ), array( 'payment', 'payment_status', 'payment_status', 'refund_recorded', '0199a0b1-c2d3-7e4f-8a5b-6c7d8e9f0a1b', 'user', 1, '', $inserted->id ), fn( string $name ): string => $this->table( $name ) );
 
 		$db->fetchRow( $read, ...$arguments );
 

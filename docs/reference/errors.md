@@ -253,7 +253,7 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 409
 - Message: The cart's totals have changed since you read them, so no order was placed. Check the new totals, then place the order again with them.
 - Values: none
-- Details: `version`, `totals`, beside the values
+- Details: `version`, `totals`, `delivery`, beside the values
 
 ## `currency.unknown`
 

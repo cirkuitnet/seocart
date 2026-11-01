@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Inventory;
 
 use SEOCart\Inventory\Application\InventoryError;
+use SEOCart\Inventory\Application\RoutingContext;
 use SEOCart\Inventory\Domain\Allocation;
 use SEOCart\Inventory\Domain\Event\StockAllocated;
 use SEOCart\Inventory\Domain\Event\StockHoldExpired;
@@ -490,6 +491,32 @@ final class AllocateTest extends StockTestCase {
 		} catch ( CodedException $refused ) {
 			$this->assertSame( InventoryError::Insufficient, $refused->errorCode() );
 			$this->assertSame( array( 5, 3, $this->defaultLocation ), array( $refused->context()['requested'], $refused->context()['available'], $refused->details()['location_id'] ?? null ) );
+		}
+
+		$this->assertSame( array(), $this->committedLocatedAllocations( $b ) );
+	}
+
+	/**
+	 * Tests that units claimed afresh for a pickup location that was deactivated are refused naming that location, not the destination.
+	 *
+	 * Planted violation: in StockService::claimAfresh(), name the destination whatever the refusal
+	 * was about.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_units_claimed_afresh_for_a_deactivated_pickup_location_are_refused_naming_it(): void {
+		$variant = self::variant();
+		$pickup  = $this->plantLocation( 2, false );
+		$b       = $this->secondConnection();
+
+		$this->stockItem( $variant, 3 );
+
+		try {
+			$this->db->transaction( fn(): array => $this->service->allocate( '01928c3e-7b3c-7d1e-9a2b-000000000004', self::ORDER, array( new Allocation( 10, $variant, 1 ) ), new RoutingContext( null, $pickup, $this->defaultLocation ) ) );
+			$this->fail( 'Units were brought to a deactivated pickup location.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( InventoryError::Insufficient, $refused->errorCode() );
+			$this->assertSame( $pickup, $refused->details()['location_id'] ?? null, 'The refusal names the destination, not the pickup location it was about.' );
 		}
 
 		$this->assertSame( array(), $this->committedLocatedAllocations( $b ) );

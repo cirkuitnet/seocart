@@ -132,6 +132,15 @@ final class Locations {
 	private Transfers $transfers;
 
 	/**
+	 * Tells whether any order is fulfilled from a location: the order module's answer, which the kernel gives.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var \Closure(int): bool
+	 */
+	private \Closure $ordersAt;
+
+	/**
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.2.0
@@ -142,8 +151,12 @@ final class Locations {
 	 * @param IdGenerator        $ids        Mints a new location's public identifier.
 	 * @param Authorizer         $authorizer The capability check of the operations it performs.
 	 * @param Transfers          $transfers  Moves a deactivated location's stock.
+	 * @param \Closure           $ordersAt   Tells whether any order is fulfilled from a location, by its id (bool).
+	 *
+	 * @phpstan-param \Closure(int): bool $ordersAt
 	 */
-	public function __construct( LocationRepository $locations, StockRepository $stock, TransactionManager $tx, IdGenerator $ids, Authorizer $authorizer, Transfers $transfers ) {
+	public function __construct( LocationRepository $locations, StockRepository $stock, TransactionManager $tx, IdGenerator $ids, Authorizer $authorizer, Transfers $transfers, \Closure $ordersAt ) {
+		$this->ordersAt   = $ordersAt;
 		$this->locations  = $locations;
 		$this->stock      = $stock;
 		$this->tx         = $tx;
@@ -323,8 +336,12 @@ final class Locations {
 	/**
 	 * Performs `inventory.delete_location`: deletes a location nothing refers to, with its items that count nothing.
 	 *
-	 * Under the location's lock, one read says what refers to it; when nothing does, its empty
-	 * items, its pickup hours, its markets and its row are deleted in the same unit of work.
+	 * Under the location's lock, one read says what of the stock refers to it, and when nothing
+	 * does, one more asks the order module whether any order is fulfilled from it: such an order
+	 * may hold no unit there, its units being brought to it. When nothing refers to it, its empty
+	 * items, its pickup hours, its markets and its row are deleted in the same unit of work. A
+	 * placement whose order names the location and holds nothing there locks the location's row in
+	 * share mode first, so the deletion waits for it to commit and then finds its order.
 	 *
 	 * @since 0.2.0
 	 *
@@ -345,6 +362,10 @@ final class Locations {
 			function () use ( $uuid ): array {
 				$record = $this->locked( $uuid );
 				$use    = $record->isDefault ? LocationInUse::IsDefault : $this->stock->locationUse( $record->id );
+
+				if ( null === $use && ( $this->ordersAt )( $record->id ) ) {
+					$use = LocationInUse::Orders;
+				}
 
 				if ( null !== $use ) {
 					self::refuseDeletion( $record, $use );

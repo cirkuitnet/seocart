@@ -30,6 +30,7 @@ use SEOCart\Inventory\Infrastructure\Migrations\SeedDefaultLocation;
 use SEOCart\Order\Infrastructure\Migrations\AddFulfilmentLocation;
 use SEOCart\Order\Infrastructure\Migrations\AddMoneyReconciliation;
 use SEOCart\Order\Infrastructure\Migrations\AddOrderEventReference;
+use SEOCart\Order\Infrastructure\Migrations\AddOrderRoutingSnapshot;
 use SEOCart\Order\Infrastructure\Migrations\AddOrderStatusIndex;
 use SEOCart\Order\Infrastructure\Migrations\CreateOrderTables;
 use SEOCart\Order\Infrastructure\OrderTables;
@@ -108,7 +109,7 @@ final class OwnedData {
 			new Contribution( jobGroups: array( JobQueue::GROUP => 'Jobs' ) ),
 			new Contribution( tables: InventoryTables::all(), migrations: array( new CreateStockTablesMigration(), new AddLocations(), new SeedDefaultLocation(), new RekeyStockByLocation() ) ),
 			new Contribution( tables: array( RateCountersTable::definition() ), migrations: array( new CreateRateCountersMigration() ) ),
-			new Contribution( tables: OrderTables::all(), migrations: array( new CreateOrderTables(), new AddOrderStatusIndex(), new AddOrderEventReference(), new AddMoneyReconciliation(), new AddFulfilmentLocation() ) ),
+			new Contribution( tables: OrderTables::all(), migrations: array( new CreateOrderTables(), new AddOrderStatusIndex(), new AddOrderEventReference(), new AddMoneyReconciliation(), new AddFulfilmentLocation(), new AddOrderRoutingSnapshot() ) ),
 			new Contribution( tables: CartTables::all(), migrations: array( new CreateCartTables() ) ),
 			new Contribution( tables: PaymentTables::all(), migrations: array( new CreatePaymentTables(), new AddIntentMode(), new KeyLedgerByOutcome() ) ),
 			new Contribution( tables: WebhookReceiptTables::all(), migrations: array( new CreateWebhookReceipts(), new CanonicalizeProviderReferences() ) ),

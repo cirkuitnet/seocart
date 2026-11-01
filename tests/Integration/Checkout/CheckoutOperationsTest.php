@@ -67,6 +67,7 @@ final class CheckoutOperationsTest extends CheckoutTestCase {
 		$shirt = self::variant();
 
 		$this->price( array( $shirt => 1999 ) );
+		$this->stocked( array( $shirt ) );
 
 		$started = $this->store( 'POST', CartOperations::LINES_ROUTE, self::linesBody( array( $shirt => 1 ) ) );
 
@@ -82,7 +83,14 @@ final class CheckoutOperationsTest extends CheckoutTestCase {
 		$written = $this->store( 'PUT', CheckoutOperations::ROUTE, $body );
 
 		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
-		$this->assertSame( array( 'checkout_session', 'version', 'totals' ), array_keys( $written['body'] ) );
+		$this->assertSame( array( 'checkout_session', 'version', 'totals', 'delivery' ), array_keys( $written['body'] ) );
+		$this->assertSame(
+			array(
+				'requires_transfer' => false,
+				'transfer_days'     => null,
+			),
+			$written['body']['delivery']
+		);
 		$this->assertSame(
 			array(
 				'billing_address'     => null,

@@ -14,12 +14,14 @@ namespace SEOCart\Tests\Integration\Inventory;
 use SEOCart\Inventory\Domain\Event\StockReservationReleased;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
+use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Jobs\SweepHolds;
 use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Tests\Support\Inventory\StockServices;
 use SEOCart\Tests\Support\Inventory\StockTestCase;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- The test plants inconsistent rows on purpose.
@@ -439,5 +441,106 @@ final class StockProjectionCheckTest extends StockTestCase {
 			$variantId * 10 + $locationId,
 			$quantity
 		);
+	}
+
+	/**
+	 * Tests that an order with a unit allocated away from the location it is fulfilled from, and no transfer requested or in transit, is named; a waiting order, one at home and one with no location are not.
+	 *
+	 * Planted violation: the order module's answer naming the default location for every order.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_order_with_units_away_and_no_transfer_is_named(): void {
+		$stranded  = self::variant();
+		$waiting   = self::variant();
+		$home      = self::variant();
+		$untracked = self::variant();
+		$second    = $this->plantLocation( 3 );
+		$orders    = array(
+			1 => $this->defaultLocation,
+			2 => $this->defaultLocation,
+			3 => $second,
+			4 => null,
+		);
+
+		foreach ( array( $stranded, $waiting, $home, $untracked ) as $variant ) {
+			$this->plantItem( $variant, 5 );
+			$this->plantItem( $variant, 5, 0, 0, true, $second );
+		}
+
+		// Order 1 is fulfilled from the default location with a unit at the second and no transfer; order 2 waits for one.
+		$this->plantOrderAllocation( 1, $stranded, $second );
+		$this->plantOrderAllocation( 2, $waiting, $second );
+		$this->db->execute( "INSERT INTO %i ( uuid, kind, state, source_location_id, destination_location_id, order_id, created_at, updated_at ) VALUES ( %s, 'order', 'requested', %d, %d, 2, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6) )", $this->table( InventoryTables::TRANSFERS ), wp_generate_uuid4(), $second, $this->defaultLocation );
+		// Order 3's units are all where it ships from; order 4 recorded no location.
+		$this->plantOrderAllocation( 3, $home, $second );
+		$this->plantOrderAllocation( 4, $untracked, $second );
+
+		$findings = StockServices::check( $this->db, $this->service, null, 3, static fn( array $ids ): array => array_intersect_key( $orders, array_flip( $ids ) ), FulfilmentMode::Transfer )->run()->findings;
+
+		$this->assertSame( array( 'Warning: order 1 has units allocated at a location other than the one it is fulfilled from and no transfer requested or in transit: request a transfer or re-route it.' ), self::stranded( $findings ) );
+	}
+
+	/**
+	 * Tests that in a store that splits orders an order with units at two locations is not named: each part ships from where it is.
+	 *
+	 * Planted violation: in StockProjectionCheck::strandedOrders(), judge the orders whatever the
+	 * store's mode.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_split_order_at_two_locations_is_not_named_in_a_store_that_splits(): void {
+		$here    = self::variant();
+		$there   = self::variant();
+		$second  = $this->plantLocation( 3 );
+		$default = $this->defaultLocation;
+
+		foreach ( array( $here, $there ) as $variant ) {
+			$this->plantItem( $variant, 5 );
+			$this->plantItem( $variant, 5, 0, 0, true, $second );
+		}
+
+		// Order 5 is fulfilled from the default location, one part allocated there and one at the second.
+		$this->plantOrderAllocation( 5, $here, $default );
+		$this->plantOrderAllocation( 5, $there, $second );
+
+		$findings = StockServices::check( $this->db, $this->service, null, 3, static fn( array $ids ): array => array_fill_keys( $ids, $default ), FulfilmentMode::Split )->run()->findings;
+
+		$this->assertSame( array(), self::stranded( $findings ), 'A split order was named as stranded.' );
+	}
+
+	/**
+	 * Returns the stranded-order warnings among a check's findings.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string[] $findings The findings.
+	 * @return list<string> The warnings, in order.
+	 *
+	 * @phpstan-param list<string> $findings
+	 */
+	private static function stranded( array $findings ): array {
+		return array_values( array_filter( $findings, static fn( string $finding ): bool => str_starts_with( $finding, 'Warning: order ' ) && str_contains( $finding, 'allocated at a location other than' ) ) );
+	}
+
+	/**
+	 * Plants one open allocation of an order: one unit of a variant at a location, counted on its item.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId    The order.
+	 * @param int $variantId  The variant.
+	 * @param int $locationId The location.
+	 */
+	private function plantOrderAllocation( int $orderId, int $variantId, int $locationId ): void {
+		$this->db->execute(
+			"INSERT INTO %i ( variant_id, location_id, order_id, order_line_id, quantity, state, created_at ) VALUES ( %d, %d, %d, %d, 1, 'open', UTC_TIMESTAMP(6) )",
+			$this->table( InventoryTables::ALLOCATIONS ),
+			$variantId,
+			$locationId,
+			$orderId,
+			$orderId * 1000 + $variantId
+		);
+		$this->db->execute( 'UPDATE %i SET allocated = allocated + 1 WHERE variant_id = %d AND location_id = %d', $this->table( InventoryTables::ITEMS ), $variantId, $locationId );
 	}
 }

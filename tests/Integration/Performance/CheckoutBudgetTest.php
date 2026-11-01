@@ -83,6 +83,7 @@ final class CheckoutBudgetTest extends CheckoutTestCase {
 		);
 
 		$this->price( array_fill_keys( array_keys( $quantities ), 1999 ) );
+		$this->stocked( array_keys( $quantities ) );
 
 		$started = $this->store( 'POST', CartOperations::LINES_ROUTE, self::linesBody( $quantities ) );
 

@@ -241,6 +241,7 @@ final class OrderTables {
 					self::locale( 'locale', 'The WordPress locale the order was placed in, which its snapshots and messages are written in.' ),
 					new ColumnSpec( 'market_id', 'bigint unsigned', Classification::Public, 'The market the order was placed in; NULL when the store has none.', nullable: true ),
 					new ColumnSpec( 'fulfilment_location_id', 'bigint unsigned', Classification::Public, 'The one location the order is fulfilled from: where it ships from, or where it is collected; NULL when none was recorded.', nullable: true ),
+					new ColumnSpec( 'transfer_lead_days', 'smallint unsigned', Classification::Public, 'The extra days the shopper was told a transfer adds; NULL when the order needed no transfer.', nullable: true ),
 					new ColumnSpec( 'tax_display_mode_snapshot', 'varchar(8)', Classification::Public, 'Whether prices were shown with or without tax when the order was placed; NULL when not recorded.', nullable: true, collation: 'ascii_bin' ),
 					new ColumnSpec( 'cross_zone_policy_snapshot', 'varchar(12)', Classification::Public, 'The cross-zone tax policy the totals were calculated under.', collation: 'ascii_bin' ),
 					new ColumnSpec( 'tax_rounding_mode_snapshot', 'varchar(16)', Classification::Public, 'The tax rounding mode the totals were calculated under.', collation: 'ascii_bin' ),
@@ -287,6 +288,7 @@ final class OrderTables {
 			array(
 				IndexSpec::key( 'unreconciled', array( 'has_unreconciled_money' ), 'The orders a person must reconcile, which doctor reports.' ),
 				IndexSpec::key( 'status_created', array( 'status', 'created_at' ), 'The orders in a status placed before a time, such as those still pending payment that reconciliation settles.' ),
+				IndexSpec::key( 'fulfilment_location', array( 'fulfilment_location_id' ), 'Whether any order is fulfilled from a location, which a location\'s deletion asks.' ),
 			),
 			self::FINANCIAL,
 			array(

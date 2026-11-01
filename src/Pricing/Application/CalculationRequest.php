@@ -20,9 +20,12 @@ defined( 'ABSPATH' ) || exit;
  * A request for totals: the lines, the currency, where the order goes, the codes entered and the shipping chosen.
  *
  * Owns one fact: what a caller of the calculation provides. It carries no money: prices, rates
- * and tax are the calculation's to find, so no caller can hand in a price of its own.
+ * and tax are the calculation's to find, so no caller can hand in a price of its own. A routing
+ * scope asks the calculation to plan where the order's units are held, and to quote shipping and
+ * tax from the location the plan fulfils it from; a request without one plans nothing.
  *
  * @since 0.1.0
+ * @since 0.2.0 The routing scope was added.
  */
 final readonly class CalculationRequest {
 
@@ -31,11 +34,13 @@ final readonly class CalculationRequest {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param Currency     $currency          The cart's currency.
-	 * @param array        $lines             The lines, in cart order: the order every tie is broken in.
-	 * @param Address|null $destination       Where the order ships, or null before an address is known.
-	 * @param array        $promotionCodes    The codes the customer entered.
-	 * @param string|null  $shippingMethodKey The shipping method chosen, or null for the cheapest.
+	 * @param Currency          $currency          The cart's currency.
+	 * @param array             $lines             The lines, in cart order: the order every tie is broken in.
+	 * @param Address|null      $destination       Where the order ships, or null before an address is known.
+	 * @param array             $promotionCodes    The codes the customer entered.
+	 * @param string|null       $shippingMethodKey The shipping method chosen, or null for the cheapest.
+	 * @param RoutingScope|null $routing           Optional. Asks for a fulfilment plan, once the request knows
+	 *                                             where the order goes. Default null, no plan.
 	 *
 	 * @phpstan-param list<LineRequest> $lines
 	 * @phpstan-param list<string>      $promotionCodes
@@ -45,7 +50,8 @@ final readonly class CalculationRequest {
 		public array $lines,
 		public ?Address $destination = null,
 		public array $promotionCodes = array(),
-		public ?string $shippingMethodKey = null
+		public ?string $shippingMethodKey = null,
+		public ?RoutingScope $routing = null
 	) {
 	}
 }

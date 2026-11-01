@@ -15,10 +15,15 @@ use SEOCart\Cart\Domain\CartLine;
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
+use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
+use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
+use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Support\Address;
 use SEOCart\Tests\Support\Cart\CartTestCase;
 use SEOCart\Tests\Support\Cart\ServesStoreApi;
+use SEOCart\Tests\Support\Inventory\StockTables;
 use SEOCart\Tests\Support\Performance\ReferenceCarts;
 use SEOCart\Tests\Support\Pricing\Inputs;
 use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
@@ -74,6 +79,15 @@ final class CartBudgetTest extends CartTestCase {
 	 * @var int
 	 */
 	private const READ_BUDGET = 6;
+
+	/**
+	 * The queries of a read of a three-line cart, measured (G17): the cart, its lines, its checkout and the prices, with the promotion codes' read; no fulfilment plan.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const G17 = 4;
 
 	/**
 	 * The most bytes the answer to reading a three-line cart may take.
@@ -147,6 +161,53 @@ final class CartBudgetTest extends CartTestCase {
 		$this->assertLessThanOrEqual( self::READ_BYTES, $bytes );
 
 		self::report( sprintf( 'G17, reading a three-line cart: %d queries (budget %d), %d bytes (budget %d).', $log->count(), self::READ_BUDGET, $bytes, self::READ_BYTES ) );
+	}
+
+	/**
+	 * Tests that reading a cart whose checkout has a shipping address plans nothing: it sends G17's queries, and none to the stock tables.
+	 *
+	 * A plan is asked for by the checkout's write and its placement only; a cart read prices the
+	 * cart for the address with no plan.
+	 *
+	 * Planted violation: in CartService::getCart(), price the cart with the checkout's routing
+	 * scope: the read then asks the router for the address, and reads more.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_reading_a_cart_with_a_shipping_address_asks_no_router(): void {
+		$quantities = array(
+			self::variant() => 1,
+			self::variant() => 2,
+			self::variant() => 3,
+		);
+		$location   = StockTables::create( $this->db );
+
+		foreach ( array_keys( $quantities ) as $variantId ) {
+			$this->db->execute( 'INSERT INTO %i ( variant_id, updated_at ) VALUES ( %d, UTC_TIMESTAMP(6) )', $this->table( InventoryTables::POLICIES ), $variantId );
+			$this->db->execute( 'INSERT INTO %i ( variant_id, location_id, on_hand, updated_at ) VALUES ( %d, %d, 10, UTC_TIMESTAMP(6) )', $this->table( InventoryTables::ITEMS ), $variantId, $location );
+		}
+
+		$this->price( array_fill_keys( array_keys( $quantities ), 1999 ) );
+		$this->startOverTheWire( $quantities );
+
+		$cartId   = (int) $this->db->fetchValue( 'SELECT MAX( id ) FROM %i', $this->table( CartTables::CARTS ) );
+		$sessions = new MysqlCheckoutSessions( $this->db );
+
+		$this->db->transaction( static fn() => $sessions->save( $cartId, new CheckoutDetails( null, new Address( 'US', line1: '1 Main Street', city: 'Austin', postcode: '78701' ), null, null ) ) );
+
+		$read = array();
+		$log  = $this->captureQueries(
+			function () use ( &$read ): void {
+				$read = $this->store( 'GET', CartOperations::CART_ROUTE );
+			}
+		);
+
+		$this->assertSame( 200, $read['status'], (string) wp_json_encode( $read['body'] ) );
+		$this->assertSame( 500, $read['body']['totals']['summary']['shipping_total_minor'] ?? null, 'The read is priced for the saved address.' );
+		$this->assertQueryCount( 0, $log->matching( '/`[^`]+(?:stock_\w+|locations)`/' ), 'A cart read asks no router' );
+		$this->assertQueryCount( self::G17, $log, 'Reading a three-line cart with a shipping address' );
+
+		self::report( sprintf( 'G17, reading a three-line cart whose checkout has a shipping address: %d queries, none to the stock tables.', $log->count() ) );
 	}
 
 	/**

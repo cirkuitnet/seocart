@@ -87,7 +87,7 @@ final class StockServices {
 		$directory = new LocationDirectory( $locations );
 		$routing   = new FulfilmentRouting( $directory, $stock, $mode );
 
-		return new StockService( $stock, $tx, $events, $ids, $clock, $correlation, new Authorizer( new CapabilityDeclaration() ), $directory, $routing, new Availability( $directory, $stock, $mode ) );
+		return new StockService( $stock, $tx, $events, $ids, $clock, $correlation, new Authorizer( new CapabilityDeclaration() ), $directory, $routing, new Availability( $directory, $stock, $mode ), $locations );
 	}
 
 	/**
@@ -95,13 +95,16 @@ final class StockServices {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param Database    $db        The connection, which is also the unit of work.
-	 * @param IdGenerator $ids       Mints new locations' public identifiers.
-	 * @param Transfers   $transfers Moves a deactivated location's stock.
+	 * @param Database      $db        The connection, which is also the unit of work.
+	 * @param IdGenerator   $ids       Mints new locations' public identifiers.
+	 * @param Transfers     $transfers Moves a deactivated location's stock.
+	 * @param \Closure|null $ordersAt Optional. Tells whether any order is fulfilled from a location. Default null: none is.
 	 * @return Locations The service.
+	 *
+	 * @phpstan-param (\Closure(int): bool)|null $ordersAt
 	 */
-	public static function locations( Database $db, IdGenerator $ids, Transfers $transfers ): Locations {
-		return new Locations( new MysqlLocationRepository( $db ), new MysqlStockRepository( $db ), $db, $ids, new Authorizer( new CapabilityDeclaration() ), $transfers );
+	public static function locations( Database $db, IdGenerator $ids, Transfers $transfers, ?\Closure $ordersAt = null ): Locations {
+		return new Locations( new MysqlLocationRepository( $db ), new MysqlStockRepository( $db ), $db, $ids, new Authorizer( new CapabilityDeclaration() ), $transfers, $ordersAt ?? static fn(): bool => false );
 	}
 
 	/**
@@ -128,17 +131,21 @@ final class StockServices {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param Database      $db          The connection.
-	 * @param StockService  $service     The service its repair writes through.
-	 * @param \Closure|null $orderStatus Optional. Returns an order's status from its id, or null. Default null: no order exists.
-	 * @param int           $warningDays Optional. The days a transfer may stay requested or in transit. Default 3, the setting's default.
+	 * @param Database       $db          The connection.
+	 * @param StockService   $service     The service its repair writes through.
+	 * @param \Closure|null  $orderStatus Optional. Returns an order's status from its id, or null. Default null: no order exists.
+	 * @param int            $warningDays Optional. The days a transfer may stay requested or in transit. Default 3, the setting's default.
+	 * @param \Closure|null  $fulfilment  Optional. Returns the location each of some orders is fulfilled from. Default
+	 *                                    null: none recorded.
+	 * @param FulfilmentMode $mode       Optional. The store's routing mode. Default `split`, the setting's default.
 	 * @return StockProjectionCheck The check.
 	 *
 	 * @phpstan-param (\Closure(int): ?string)|null $orderStatus
+	 * @phpstan-param (\Closure(list<int>): array<int, int|null>)|null $fulfilment
 	 */
-	public static function check( Database $db, StockService $service, ?\Closure $orderStatus = null, int $warningDays = 3 ): StockProjectionCheck {
+	public static function check( Database $db, StockService $service, ?\Closure $orderStatus = null, int $warningDays = 3, ?\Closure $fulfilment = null, FulfilmentMode $mode = FulfilmentMode::Split ): StockProjectionCheck {
 		$locations = new MysqlLocationRepository( $db );
 
-		return new StockProjectionCheck( new MysqlStockRepository( $db ), $locations, new LocationDirectory( $locations ), $service, $db, new MysqlTransferRepository( $db ), static fn(): int => $warningDays, $orderStatus ?? static fn(): ?string => null );
+		return new StockProjectionCheck( new MysqlStockRepository( $db ), $locations, new LocationDirectory( $locations ), $service, $db, new MysqlTransferRepository( $db ), static fn(): int => $warningDays, $orderStatus ?? static fn(): ?string => null, $fulfilment ?? static fn(): array => array(), static fn(): FulfilmentMode => $mode );
 	}
 }

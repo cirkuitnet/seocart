@@ -20,8 +20,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: what one location can give an order. A variant the location has no row of has
  * nothing there; a negative figure, left by an adjustment below what is promised, counts as
- * nothing. A variant that may be sold beyond what is available, because its stock is not counted
- * or it may be backordered, can be given anywhere in any quantity.
+ * nothing. A variant that may be sold beyond what is available (StockPolicy::sellsBeyondStock():
+ * its stock is not counted) can be given anywhere in any quantity.
  *
  * @since 0.2.0
  */
@@ -56,7 +56,7 @@ final readonly class Candidate {
 	 * @param int   $priority      Its routing priority: the lowest is tried first.
 	 * @param bool  $fulfilsOnline Whether it ships online orders; one that does not may still send units to one that does.
 	 * @param array $available     Units available of each variant, by variant id.
-	 * @param array $unlimited     The variants that may be sold beyond what is available, by variant id: untracked, or backorder allowed.
+	 * @param array $unlimited     The variants that may be sold beyond what is available, by variant id: those whose stock is not counted.
 	 *
 	 * @phpstan-param array<int, int>  $available
 	 * @phpstan-param array<int, bool> $unlimited
@@ -107,7 +107,7 @@ final readonly class Candidate {
 	 * @since 0.2.0
 	 *
 	 * @param int $variantId The variant.
-	 * @return bool True when untracked or backorder allowed.
+	 * @return bool True when its stock is not counted.
 	 */
 	public function isUnlimited( int $variantId ): bool {
 		return $this->unlimited[ $variantId ] ?? false;

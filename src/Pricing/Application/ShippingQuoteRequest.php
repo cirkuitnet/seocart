@@ -23,9 +23,11 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: what a shipping quoter is given. The lines are the first phase's, so the rates
  * are quoted for exactly what will be priced. A rate is answered in the cart's currency; a
- * provider that quotes in the base currency converts through the context.
+ * provider that quotes in the base currency converts through the context. The origin is the
+ * location the order is fulfilled from, when a fulfilment plan was asked for.
  *
  * @since 0.1.0
+ * @since 0.2.0 The origin location was added.
  */
 final readonly class ShippingQuoteRequest {
 
@@ -39,6 +41,7 @@ final readonly class ShippingQuoteRequest {
 	 * @param Currency           $currency          The cart's currency, the one rates are answered in.
 	 * @param ConversionContext  $conversionContext The frozen rate from the base currency to the cart's.
 	 * @param \DateTimeImmutable $calculatedAt      When the calculation was asked for; a quote's expiry counts from it.
+	 * @param int|null           $originLocationId  Optional. The location the order ships from. Default null, not planned.
 	 *
 	 * @phpstan-param list<ResolvedLine> $lines
 	 */
@@ -47,7 +50,8 @@ final readonly class ShippingQuoteRequest {
 		public ?Address $destination,
 		public Currency $currency,
 		public ConversionContext $conversionContext,
-		public \DateTimeImmutable $calculatedAt
+		public \DateTimeImmutable $calculatedAt,
+		public ?int $originLocationId = null
 	) {
 	}
 }

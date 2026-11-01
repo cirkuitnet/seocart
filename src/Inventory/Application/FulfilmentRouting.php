@@ -31,7 +31,9 @@ defined( 'ABSPATH' ) || exit;
  * still refuse. The availability read is a plain read: run inside a unit of work at READ
  * COMMITTED, as the settlement's claim of a variant whose hold is gone runs it, it sees the rows
  * committed when it is sent, and the claims that follow re-decide under each row's lock what it
- * saw.
+ * saw. A variant counts as available in any quantity only when its stock is not counted
+ * (StockPolicy::sellsBeyondStock()), the rule a hold's claim keeps: so, unraced, every unit the
+ * router plans is one the claim takes.
  *
  * @since 0.2.0
  */

@@ -19,6 +19,7 @@ use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Inventory\Application\InventorySettings;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
 use SEOCart\Order\Infrastructure\Migrations\CreateOrderTables;
@@ -181,6 +182,11 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 
 		foreach ( $this->posts as $postId ) {
 			$wpdb->delete( $wpdb->posts, array( 'ID' => $postId ) );
+		}
+
+		// A test that routed in another mode leaves the next one the store's defaults.
+		foreach ( InventorySettings::settings() as $setting ) {
+			delete_option( $setting->optionName() );
 		}
 
 		parent::tear_down();

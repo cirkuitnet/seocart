@@ -22,10 +22,12 @@ use SEOCart\Inventory\Domain\Hold;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Domain\Location;
+use SEOCart\Inventory\Domain\LocationRepository;
 use SEOCart\Inventory\Domain\ReclaimedRows;
 use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Inventory\Domain\StockLevel;
 use SEOCart\Inventory\Domain\StockLines;
+use SEOCart\Inventory\Domain\StockPolicy;
 use SEOCart\Inventory\Domain\StockRepository;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\Authorizer;
@@ -189,6 +191,15 @@ final class StockService {
 	private Availability $availability;
 
 	/**
+	 * The location rows, which a placement's destination is locked by.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var LocationRepository
+	 */
+	private LocationRepository $locationRows;
+
+	/**
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
@@ -204,8 +215,10 @@ final class StockService {
 	 * @param LocationDirectory  $locations    The locations, which name the default one.
 	 * @param FulfilmentRouting  $routing      Plans where units claimed afresh come from.
 	 * @param Availability       $availability Says how many units of each variant are for sale.
+	 * @param LocationRepository $locationRows The location rows, which a placement's destination is locked by.
 	 */
-	public function __construct( StockRepository $stock, TransactionManager $tx, EventPublisher $events, IdGenerator $ids, Clock $clock, CorrelationId $correlation, Authorizer $authorizer, LocationDirectory $locations, FulfilmentRouting $routing, Availability $availability ) {
+	public function __construct( StockRepository $stock, TransactionManager $tx, EventPublisher $events, IdGenerator $ids, Clock $clock, CorrelationId $correlation, Authorizer $authorizer, LocationDirectory $locations, FulfilmentRouting $routing, Availability $availability, LocationRepository $locationRows ) {
+		$this->locationRows = $locationRows;
 		$this->stock        = $stock;
 		$this->tx           = $tx;
 		$this->events       = $events;
@@ -234,23 +247,33 @@ final class StockService {
 	 * A hold is a stock operation, not a sale: it does not ask whether the product may be sold.
 	 * A caller that sells checks that first, and holds only the lines that may be.
 	 *
+	 * A placement names the location its order is fulfilled from. When no tracked line is held
+	 * there, as when every unit is brought to it by a transfer, nothing at that location keeps it
+	 * from being deleted or deactivated before the order commits: so the hold locks the location's
+	 * row in share mode, after the one read of the policies and before any item, and refuses a
+	 * location that is gone or deactivated.
+	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 Each line at a location.
+	 * @since 0.2.0 Each line at a location, and the destination's lock.
 	 *
 	 * @throws CodedException|\InvalidArgumentException `stock.item_missing` when a variant has no stock policy;
+	 *         `stock.location_missing` or `stock.location_inactive` when the destination holds none of the lines and
+	 *         is gone or deactivated;
 	 *         `stock.no_fulfilling_location` when a line names no location and the store has no default one;
 	 *         `stock.insufficient` when too few units are available at a line's location; `stock.projection_corrupt`
 	 *         when a reclaim finds `held` below its rows; a database error the transaction could not retry. An
 	 *         \InvalidArgumentException when there is no line, a line is not a HoldLine, the TTL is below 1 second, or a
 	 *         cart or order id is below 1.
 	 *
-	 * @param HoldLine[] $lines      The lines.
-	 * @param int        $ttlSeconds How long the hold lasts, 1 second or more.
-	 * @param int|null   $cartId     Optional. The cart the hold is for. Default null.
-	 * @param int|null   $orderId    Optional. The order the hold is for. Default null.
+	 * @param HoldLine[] $lines                 The lines.
+	 * @param int        $ttlSeconds            How long the hold lasts, 1 second or more.
+	 * @param int|null   $cartId                Optional. The cart the hold is for. Default null.
+	 * @param int|null   $orderId               Optional. The order the hold is for. Default null.
+	 * @param int|null   $destinationLocationId Optional. The location the order is fulfilled from. Default null,
+	 *                                          none named.
 	 * @return Hold What was held, each line at its location.
 	 */
-	public function hold( array $lines, int $ttlSeconds, ?int $cartId = null, ?int $orderId = null ): Hold {
+	public function hold( array $lines, int $ttlSeconds, ?int $cartId = null, ?int $orderId = null, ?int $destinationLocationId = null ): Hold {
 		$lines = self::normalise( $lines );
 
 		if ( $ttlSeconds < 1 ) {
@@ -264,7 +287,7 @@ final class StockService {
 		}
 
 		return $this->tx->transaction(
-			fn(): Hold => $this->holdInside( $lines, $ttlSeconds, $cartId, $orderId ),
+			fn(): Hold => $this->holdInside( $lines, $ttlSeconds, $cartId, $orderId, $destinationLocationId ),
 			RetryPolicy::deadlocks(),
 			Isolation::ReadCommitted
 		);
@@ -777,6 +800,35 @@ final class StockService {
 	}
 
 	/**
+	 * Reclaims some variants' expired holds at every active location, each item in a unit of work of its own: what a checkout whose plan found too few units does before it asks again.
+	 *
+	 * Until the sweep reclaims it, an expired hold still counts its units as held, and routing does
+	 * not offer them. The locations are the directory's active ones, cached; each item is
+	 * reclaimExpired()'s, so an item that does not exist reclaims nothing.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException            `stock.projection_corrupt` when an item's `held` is below its rows.
+	 * @throws \InvalidArgumentException When a variant id is below 1.
+	 *
+	 * @param int[] $variantIds The variants.
+	 * @return int The hold rows reclaimed; 0 when there were none.
+	 *
+	 * @phpstan-param list<int> $variantIds
+	 */
+	public function reclaimExpiredOf( array $variantIds ): int {
+		$reclaimed = 0;
+
+		foreach ( self::variantIds( $variantIds ) as $variantId ) {
+			foreach ( $this->locations->active() as $location ) {
+				$reclaimed += $this->reclaimExpired( $variantId, $location->id );
+			}
+		}
+
+		return $reclaimed;
+	}
+
+	/**
 	 * Gives back the hold rows of items that are gone, recreating each item first: doctor's repair of holds nothing else can reach, in a unit of work of its own.
 	 *
 	 * Every reclaim begins with its item's lock, so a hold row whose item is gone is given back by
@@ -867,15 +919,16 @@ final class StockService {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param HoldLine[] $lines      The lines, one per variant and location or default.
-	 * @param int        $ttlSeconds How long the hold lasts.
-	 * @param int|null   $cartId     The cart, or null.
-	 * @param int|null   $orderId    The order, or null.
+	 * @param HoldLine[] $lines                 The lines, one per variant and location or default.
+	 * @param int        $ttlSeconds            How long the hold lasts.
+	 * @param int|null   $cartId                The cart, or null.
+	 * @param int|null   $orderId               The order, or null.
+	 * @param int|null   $destinationLocationId The location the order is fulfilled from, or null.
 	 * @return Hold What was held.
 	 *
 	 * @phpstan-param list<HoldLine> $lines
 	 */
-	private function holdInside( array $lines, int $ttlSeconds, ?int $cartId, ?int $orderId ): Hold {
+	private function holdInside( array $lines, int $ttlSeconds, ?int $cartId, ?int $orderId, ?int $destinationLocationId ): Hold {
 		$configuration = $this->stock->configuration( array_values( array_unique( array_map( static fn( HoldLine $line ): int => $line->variantId, $lines ) ) ), $ttlSeconds );
 
 		foreach ( $lines as $line ) {
@@ -884,7 +937,12 @@ final class StockService {
 			}
 		}
 
-		$lines     = self::located( $lines, $configuration['default_location_id'] );
+		$lines = self::located( $lines, $configuration['default_location_id'] );
+
+		if ( null !== $destinationLocationId ) {
+			$this->lockUnheldDestination( $lines, $configuration['policies'], $destinationLocationId );
+		}
+
 		$expiresAt = (string) $configuration['expires_at'];
 		$holdGroup = $this->ids->generate();
 		$held      = array();
@@ -919,6 +977,40 @@ final class StockService {
 		}
 
 		return new Hold( $holdGroup, new \DateTimeImmutable( $expiresAt, new \DateTimeZone( 'UTC' ) ), $held, array_values( $untracked ) );
+	}
+
+	/**
+	 * Locks the destination's row in share mode when no tracked line is held there, refusing a destination that is gone or deactivated.
+	 *
+	 * A tracked line at the destination claims an item there, and an item with units keeps the
+	 * location from being deleted; with none, only the location's own row does.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `stock.location_missing` or `stock.location_inactive`, naming the location.
+	 *
+	 * @param HoldLine[]              $lines                 The lines, each at its location.
+	 * @param array<int, StockPolicy> $policies              Each variant's policy.
+	 * @param int                     $destinationLocationId The location the order is fulfilled from.
+	 *
+	 * @phpstan-param list<HoldLine> $lines
+	 */
+	private function lockUnheldDestination( array $lines, array $policies, int $destinationLocationId ): void {
+		foreach ( $lines as $line ) {
+			if ( $destinationLocationId === $line->locationId && $policies[ $line->variantId ]->track ) {
+				return;
+			}
+		}
+
+		$location = $this->locationRows->lockSharedById( $destinationLocationId );
+
+		if ( null === $location ) {
+			CodedException::raise( InventoryError::LocationMissing, array( 'location_id' => $destinationLocationId ) );
+		}
+
+		if ( ! $location->active ) {
+			CodedException::raise( InventoryError::LocationInactive, array( 'location_id' => $destinationLocationId ) );
+		}
 	}
 
 	/**
@@ -1095,6 +1187,7 @@ final class StockService {
 				throw $refused;
 			}
 
+			// A location refused by name is the one named: a pickup location gone or deactivated, not the destination.
 			CodedException::raise(
 				InventoryError::Insufficient,
 				array(
@@ -1102,7 +1195,7 @@ final class StockService {
 					'requested'  => $quantity,
 					'available'  => (int) ( $refused->details()['available'] ?? 0 ),
 				),
-				array( 'location_id' => $destination )
+				array( 'location_id' => $refused->context()['location_id'] ?? $destination )
 			);
 		}
 

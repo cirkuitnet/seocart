@@ -241,11 +241,28 @@ final class CheckoutOperations {
 						minimum: 1
 					),
 					TotalsFields::totals( 'totals', 'The cart\'s totals after the write, worked out for the shipping address and method now chosen.', static fn(): string => __( 'Totals', 'seocart' ) ),
+					FieldSpec::object(
+						'delivery',
+						'What the plan of where the order\'s items are held says of its delivery; null until a shipping address is given.',
+						static fn(): string => __( 'Delivery', 'seocart' ),
+						array(
+							new FieldSpec(
+								name: 'requires_transfer',
+								type: FieldType::Boolean,
+								description: 'Whether some items must be brought together before the order ships, which delays its delivery.',
+								label: static fn(): string => __( 'Items brought together', 'seocart' ),
+								example: true,
+								required: true
+							),
+							self::transferDays( 'The extra days bringing the items together adds to delivery, as the store tells shoppers; null when no transfer is needed.' ),
+						),
+						nullable: true
+					),
 				)
 			),
 			capability: null,
 			resource_field: null,
-			errors: array( CartError::NotFound, CartError::VersionStale, CartError::NotOpen, CheckoutError::InvalidAddress, CheckoutError::InvalidMethodKey, PricingError::QuoteUnavailable, PricingError::NoShippingRate, PricingError::CurrencyNotEnabled ),
+			errors: array( CartError::NotFound, CartError::VersionStale, CartError::NotOpen, CheckoutError::InvalidAddress, CheckoutError::InvalidMethodKey, PricingError::QuoteUnavailable, PricingError::NoShippingRate, PricingError::CurrencyNotEnabled, InventoryError::RoutingRefused, InventoryError::NoFulfillingLocation, InventoryError::ItemMissing ),
 			annotations: new Annotations( read_only: false, destructive: false, idempotent: true ),
 			service: array( UpdateCheckoutSession::class, 'update' ),
 			rest: new RestBinding( self::ROUTE, WriteMethod::Put, store: true ),
@@ -343,6 +360,7 @@ final class CheckoutOperations {
 					self::outcome( 'What the placement came to: approved, requires_action when the shopper must act, processing while the gateway decides, or, given to a retry with the same key, any outcome the placement came to since, declined included; pending only while the payment is not yet known.' ),
 					self::orderStatus( 'The order\'s status once the placement settled.' ),
 					self::paymentStatus( 'How far the order is paid once the placement settled.' ),
+					self::transferDays( 'The extra days the shopper is told bringing the order\'s items together adds to delivery, kept with the order; null when the order needs no transfer.' ),
 					self::nextAction(),
 				)
 			),
@@ -361,6 +379,11 @@ final class CheckoutOperations {
 				CheckoutError::TotalsChanged,
 				CheckoutError::PaymentMethodUnavailable,
 				InventoryError::Insufficient,
+				InventoryError::ItemMissing,
+				InventoryError::RoutingRefused,
+				InventoryError::NoFulfillingLocation,
+				InventoryError::LocationMissing,
+				InventoryError::LocationInactive,
 				PromotionError::LimitReached,
 				CheckoutError::PaymentDeclined,
 				CheckoutError::GatewayUnavailable,
@@ -663,6 +686,26 @@ final class CheckoutOperations {
 			example: 'stub',
 			nullable: $output,
 			max_length: GatewayDescriptor::ID_MAX_LENGTH
+		);
+	}
+
+	/**
+	 * Declares the extra days the shopper is told that bringing the order's items together adds to delivery.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $description What the field is, in the answer that carries it.
+	 * @return FieldSpec The field.
+	 */
+	private static function transferDays( string $description ): FieldSpec {
+		return new FieldSpec(
+			name: 'transfer_days',
+			type: FieldType::Integer,
+			description: $description,
+			label: static fn(): string => __( 'Extra days for a transfer', 'seocart' ),
+			example: 3,
+			nullable: true,
+			minimum: 0
 		);
 	}
 }

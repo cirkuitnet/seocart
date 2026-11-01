@@ -18,9 +18,11 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: which quotes belong to which lines. The fingerprint names the lines the
  * shipping was quoted for, the first phase's lines; the second phase refuses quotes whose
- * fingerprint is not its own, so a rate quoted for other lines is never applied.
+ * fingerprint is not its own, so a rate quoted for other lines is never applied. The routing
+ * proposal, when one was asked for, is the plan the rates were quoted from.
  *
  * @since 0.1.0
+ * @since 0.2.0 The routing proposal was added.
  */
 final readonly class Quotes {
 
@@ -29,16 +31,19 @@ final readonly class Quotes {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param array    $shippingRates       The shipping rates, in the provider's order.
-	 * @param TaxQuote $taxQuote            The tax rates.
-	 * @param string   $packagesFingerprint The fingerprint of the lines the quotes were taken for.
+	 * @param array                $shippingRates       The shipping rates, in the provider's order.
+	 * @param TaxQuote             $taxQuote            The tax rates.
+	 * @param string               $packagesFingerprint The fingerprint of the lines the quotes were taken for.
+	 * @param RoutingProposal|null $routing             Optional. Where the lines are to be held, and the origin
+	 *                                                  of the quotes. Default null, no plan was asked for.
 	 *
 	 * @phpstan-param list<ShippingRateQuote> $shippingRates
 	 */
 	public function __construct(
 		public array $shippingRates,
 		public TaxQuote $taxQuote,
-		public string $packagesFingerprint
+		public string $packagesFingerprint,
+		public ?RoutingProposal $routing = null
 	) {
 	}
 }

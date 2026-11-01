@@ -23,15 +23,14 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: the figure. It counts the active locations that fulfil the market's online
  * orders, each location's units at no fewer than zero. Under `split` and `transfer` an order may
  * take units from several of them, so the figure is their sum; under `refuse` an order ships from
- * one, so it is the most any one has. A variant whose stock is not counted, or that may be
- * backordered, has no limit, and its figure is null. A variant with no stock policy has nothing
- * for sale. One read, never cached, and never a decision: a hold decides with its own update.
+ * one, so it is the most any one has. A variant whose stock is not counted has no limit, and its
+ * figure is null (StockPolicy::sellsBeyondStock(), the rule the router reads too); a variant whose
+ * stock is counted is sold from its units only, whatever its backorder policy, since a hold claims
+ * only units that are there. A variant with no stock policy has nothing for sale. One read, never
+ * cached, and never a decision: a hold decides with its own update.
  *
- * Nothing calls it yet, and nothing may until checkout routes an order's lines. Until then a
- * placement holds every line at the default location, so under `split` and `transfer` a figure
- * that counts another location's units can be more than a cart could hold. Its first caller, the
- * cart's check of each line, comes with the routing of placement, when every unit it counts can
- * be held where it is.
+ * A placement routes its lines and holds each unit where it is, so every unit the figure counts
+ * is one a placement can hold, at the location it is at.
  *
  * @since 0.2.0
  */

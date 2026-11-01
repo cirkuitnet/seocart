@@ -70,6 +70,10 @@ final readonly class NewOrder {
 	 * @param string|null          $holdGroup         Optional. The stock hold placement took for it, or null when nothing was held. Default null.
 	 * @param string|null          $clientIp          Optional. The IP address it was placed from, or null. Default null.
 	 * @param string|null          $userAgent         Optional. The browser it was placed from, or null. Default null.
+	 * @param int|null             $fulfilmentLocationId Optional. The one location it is fulfilled from, or null when
+	 *                                                   none was planned. Default null.
+	 * @param int|null             $transferLeadDays  Optional. The extra days its shopper was told a transfer adds, 0 or
+	 *                                                more; null when it needs no transfer. Default null.
 	 */
 	public function __construct(
 		public OrderChannel $channel,
@@ -85,7 +89,9 @@ final readonly class NewOrder {
 		public ?Address $shippingAddress = null,
 		public ?string $holdGroup = null,
 		public ?string $clientIp = null,
-		public ?string $userAgent = null
+		public ?string $userAgent = null,
+		public ?int $fulfilmentLocationId = null,
+		public ?int $transferLeadDays = null
 	) {
 		$this->checkHeader();
 		$this->checkReferences();
@@ -126,10 +132,14 @@ final readonly class NewOrder {
 			throw new \InvalidArgumentException( 'An order needs the e-mail address its messages go to.' );
 		}
 
-		foreach ( array( $this->customerId, $this->marketId ) as $id ) {
+		foreach ( array( $this->customerId, $this->marketId, $this->fulfilmentLocationId ) as $id ) {
 			if ( null !== $id && $id < 1 ) {
-				throw new \InvalidArgumentException( 'A customer or market id is 1 or more, or null.' );
+				throw new \InvalidArgumentException( 'A customer, market or location id is 1 or more, or null.' );
 			}
+		}
+
+		if ( null !== $this->transferLeadDays && ( $this->transferLeadDays < 0 || null === $this->fulfilmentLocationId ) ) {
+			throw new \InvalidArgumentException( 'The days a transfer adds are 0 or more, and name the location the units are brought to.' );
 		}
 
 		if ( null !== $this->holdGroup && 1 !== preg_match( self::UUID_PATTERN, $this->holdGroup ) ) {

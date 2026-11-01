@@ -81,6 +81,7 @@ final class OrderStatusRead {
 			'paid_minor'           => $order->paid->minorUnits(),
 			'refunded_minor'       => $order->refunded->minorUnits(),
 			'due_minor'            => $order->due->minorUnits(),
+			'transfer_days'        => $order->transferLeadDays,
 			'lines'                => array_map( self::line( ... ), $order->lines ),
 		);
 	}

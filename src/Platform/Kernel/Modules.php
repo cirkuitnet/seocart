@@ -68,6 +68,7 @@ use SEOCart\Checkout\Application\ChangeCartCurrency;
 use SEOCart\Checkout\Application\CheckoutSessions;
 use SEOCart\Checkout\Application\IdempotencyKeys;
 use SEOCart\Checkout\Application\PlaceOrder;
+use SEOCart\Checkout\Application\PlannedPricing;
 use SEOCart\Checkout\Application\ReceiveWebhook;
 use SEOCart\Checkout\Application\ResumePayment;
 use SEOCart\Checkout\Application\SettlePlacement;
@@ -239,6 +240,7 @@ use SEOCart\Platform\Settings\SettingsService;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Pricing\Application\Calculator;
 use SEOCart\Pricing\Application\ExchangeRates;
+use SEOCart\Pricing\Application\FulfilmentRouter;
 use SEOCart\Pricing\Application\PresentmentCurrencies;
 use SEOCart\Pricing\Application\PriceResolver;
 use SEOCart\Pricing\Application\PromotionCodes;
@@ -254,6 +256,7 @@ use SEOCart\Pricing\Infrastructure\MysqlPresentmentCurrencies;
 use SEOCart\Pricing\Infrastructure\PricingCurrencyTerms;
 use SEOCart\Pricing\Infrastructure\Quotes\FixedRateTaxQuoter;
 use SEOCart\Pricing\Infrastructure\Quotes\FlatRateShippingQuoter;
+use SEOCart\Pricing\Infrastructure\Routing\InventoryFulfilmentRouter;
 use SEOCart\Promotion\Application\PromotionError;
 use SEOCart\Promotion\Application\PromotionRepository;
 use SEOCart\Promotion\Application\PromotionResolver;
@@ -1152,6 +1155,22 @@ final class Modules {
 	}
 
 	/**
+	 * Returns the store's routing mode, read from its setting when it is asked for.
+	 *
+	 * Owns one fact: where every service that routes or settles an order gets the store's answer
+	 * to an order no single location can ship. It is the setting, read when it is asked for,
+	 * never when the service is built, so building one sends no query.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Container $container The container the settings store comes from.
+	 * @return \Closure(): FulfilmentMode The reader.
+	 */
+	private static function fulfilmentMode( Container $container ): \Closure {
+		return static fn(): FulfilmentMode => FulfilmentMode::from( (string) $container->get( SettingsStore::class )->value( InventorySettings::MULTI_LOCATION_FULFILMENT ) );
+	}
+
+	/**
 	 * The catalog module's hooks: the product post type, registered on every request's `init`; the product's lifecycle, on every request; and in the admin the product editor's panel.
 	 *
 	 * The registration callback is the registration itself, which loads its own file and the
@@ -1266,14 +1285,12 @@ final class Modules {
 	 * @param Container $container The container.
 	 */
 	private static function inventoryRegister( Container $container ): void {
-		$mode = static fn( Container $c ): \Closure => static fn(): FulfilmentMode => FulfilmentMode::from( (string) $c->get( SettingsStore::class )->value( InventorySettings::MULTI_LOCATION_FULFILMENT ) );
-
 		$container->bind( MysqlStockRepository::class, static fn( Container $c ): MysqlStockRepository => new MysqlStockRepository( $c->get( Database::class ) ) );
 		$container->bind( StockRepository::class, static fn( Container $c ): StockRepository => $c->get( MysqlStockRepository::class ) );
 		$container->bind( MysqlLocationRepository::class, static fn( Container $c ): MysqlLocationRepository => new MysqlLocationRepository( $c->get( Database::class ) ) );
 		$container->bind( LocationDirectory::class, static fn( Container $c ): LocationDirectory => new LocationDirectory( $c->get( MysqlLocationRepository::class ) ) );
-		$container->bind( FulfilmentRouting::class, static fn( Container $c ): FulfilmentRouting => new FulfilmentRouting( $c->get( LocationDirectory::class ), $c->get( StockRepository::class ), $mode( $c ) ) );
-		$container->bind( Availability::class, static fn( Container $c ): Availability => new Availability( $c->get( LocationDirectory::class ), $c->get( StockRepository::class ), $mode( $c ) ) );
+		$container->bind( FulfilmentRouting::class, static fn( Container $c ): FulfilmentRouting => new FulfilmentRouting( $c->get( LocationDirectory::class ), $c->get( StockRepository::class ), self::fulfilmentMode( $c ) ) );
+		$container->bind( Availability::class, static fn( Container $c ): Availability => new Availability( $c->get( LocationDirectory::class ), $c->get( StockRepository::class ), self::fulfilmentMode( $c ) ) );
 		$container->bind(
 			StockService::class,
 			static fn( Container $c ): StockService => new StockService(
@@ -1286,7 +1303,8 @@ final class Modules {
 				$c->get( Authorizer::class ),
 				$c->get( LocationDirectory::class ),
 				$c->get( FulfilmentRouting::class ),
-				$c->get( Availability::class )
+				$c->get( Availability::class ),
+				$c->get( MysqlLocationRepository::class )
 			)
 		);
 		$container->bind(
@@ -1297,7 +1315,8 @@ final class Modules {
 				$c->get( TransactionManager::class ),
 				$c->get( IdGenerator::class ),
 				$c->get( Authorizer::class ),
-				$c->get( Transfers::class )
+				$c->get( Transfers::class ),
+				static fn( int $locationId ): bool => $c->get( Orders::class )->anyFulfilledFrom( $locationId )
 			)
 		);
 		$container->bind( MysqlTransferRepository::class, static fn( Container $c ): MysqlTransferRepository => new MysqlTransferRepository( $c->get( Database::class ) ) );
@@ -1330,7 +1349,9 @@ final class Modules {
 				$c->get( TransactionManager::class ),
 				$c->get( MysqlTransferRepository::class ),
 				static fn(): int => (int) $c->get( SettingsStore::class )->value( InventorySettings::TRANSFER_WARNING_DAYS ),
-				static fn( int $orderId ): ?string => $c->get( Orders::class )->statusOf( $orderId )['status']->value ?? null
+				static fn( int $orderId ): ?string => $c->get( Orders::class )->statusOf( $orderId )['status']->value ?? null,
+				static fn( array $orderIds ): array => $c->get( Orders::class )->fulfilmentLocationsOf( $orderIds ),
+				self::fulfilmentMode( $c )
 			)
 		);
 	}
@@ -1440,7 +1461,8 @@ final class Modules {
 		$container->bind( CheckoutSessions::class, static fn( Container $c ): CheckoutSessions => $c->get( MysqlCheckoutSessions::class ) );
 		$container->bind( MysqlIdempotencyKeys::class, static fn( Container $c ): MysqlIdempotencyKeys => new MysqlIdempotencyKeys( $c->get( Database::class ) ) );
 		$container->bind( IdempotencyKeys::class, static fn( Container $c ): IdempotencyKeys => $c->get( MysqlIdempotencyKeys::class ) );
-		$container->bind( UpdateCheckoutSession::class, static fn( Container $c ): UpdateCheckoutSession => new UpdateCheckoutSession( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( Gateways::class ) ) );
+		$container->bind( PlannedPricing::class, static fn( Container $c ): PlannedPricing => new PlannedPricing( static fn( array $variantIds ): int => $c->get( StockService::class )->reclaimExpiredOf( $variantIds ) ) );
+		$container->bind( UpdateCheckoutSession::class, static fn( Container $c ): UpdateCheckoutSession => new UpdateCheckoutSession( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( Gateways::class ), $c->get( PlannedPricing::class ) ) );
 		$container->bind( ChangeCartCurrency::class, static fn( Container $c ): ChangeCartCurrency => new ChangeCartCurrency( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( PresentmentCurrencies::class ), $c->get( Orders::class ), self::baseCurrency( $c ) ) );
 		$container->bind(
 			SettlePlacement::class,
@@ -1451,7 +1473,9 @@ final class Modules {
 				$c->get( StockService::class ),
 				$c->get( PromotionUsage::class ),
 				$c->get( CartService::class ),
-				$c->get( IdempotencyKeys::class )
+				$c->get( IdempotencyKeys::class ),
+				$c->get( Transfers::class ),
+				self::fulfilmentMode( $c )
 			)
 		);
 		$container->bind(
@@ -1471,7 +1495,8 @@ final class Modules {
 				$c->get( TransactionManager::class ),
 				$c->get( RateLimiter::class ),
 				$c->get( ClientIdentities::class ),
-				$c->get( Gateways::class )
+				$c->get( Gateways::class ),
+				$c->get( PlannedPricing::class )
 			)
 		);
 		$container->bind( ResumePayment::class, static fn( Container $c ): ResumePayment => new ResumePayment( $c->get( TransactionManager::class ), $c->get( CartService::class ), $c->get( PaymentService::class ), $c->get( SettlePlacement::class ), $c->get( Orders::class ) ) );
@@ -1535,6 +1560,14 @@ final class Modules {
 		);
 		$container->bind( TaxQuoter::class, static fn(): TaxQuoter => new FixedRateTaxQuoter( Percentage::fromString( FixedRateTaxQuoter::RATE ), FixedRateTaxQuoter::JURISDICTION ) );
 		$container->bind(
+			FulfilmentRouter::class,
+			static fn( Container $c ): FulfilmentRouter => new InventoryFulfilmentRouter(
+				$c->get( FulfilmentRouting::class ),
+				$c->get( LocationDirectory::class ),
+				static fn(): int => (int) $c->get( SettingsStore::class )->value( InventorySettings::TRANSFER_LEAD_DAYS )
+			)
+		);
+		$container->bind(
 			Calculator::class,
 			static fn( Container $c ): Calculator => new Calculator(
 				$c->get( PriceResolver::class ),
@@ -1547,7 +1580,8 @@ final class Modules {
 				static fn(): CrossZonePolicy => CrossZonePolicy::from( (string) $c->get( SettingsStore::class )->value( InternationalSettings::CROSS_ZONE_POLICY ) ),
 				static fn(): TaxRoundingMode => TaxRoundingMode::from( (string) $c->get( SettingsStore::class )->value( InternationalSettings::TAX_ROUNDING_MODE ) ),
 				$c->get( PresentmentCurrencies::class ),
-				$c->get( PromotionCodes::class )
+				$c->get( PromotionCodes::class ),
+				$c->get( FulfilmentRouter::class )
 			)
 		);
 		$container->bind( MysqlPresentmentCurrencies::class, static fn( Container $c ): MysqlPresentmentCurrencies => new MysqlPresentmentCurrencies( $c->get( Database::class ), self::rateVersion( $c ) ) );

@@ -654,8 +654,11 @@ final class Transfers {
 	 * per location, ascending, one requested transfer of kind `order` is written with one line per
 	 * allocation, carrying it, and StockTransferRequested is published. Nothing is locked: the
 	 * sources hold the order's units, so a deletion of either is refused by what uses it, and the
-	 * destination is the order's own location. Four statements for one source, three more for
-	 * each further one. It writes nothing of the order's own.
+	 * destination is the order's own location, which a deletion refuses while any order is
+	 * fulfilled from it (the orders read a location's deletion is given). Four statements for one
+	 * source and six for two: the read, then the transfers, their lines and one outbox insert for
+	 * every event. It writes nothing of the order's own; the settlement that calls it records each
+	 * transfer on the order.
 	 *
 	 * Outside a transaction it throws \LogicException before any statement.
 	 *

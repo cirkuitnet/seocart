@@ -11,14 +11,17 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Checkout;
 
+use SEOCart\Checkout\Application\PlannedPricing;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
+use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Support\Address;
 use SEOCart\Tests\Support\Cart\CartTestCase;
+use SEOCart\Tests\Support\Inventory\StockTables;
 use SEOCart\Tests\Support\Payment\TestGateways;
 use SEOCart\Tests\Support\SecondConnection;
 
@@ -91,7 +94,26 @@ abstract class CheckoutTestCase extends CartTestCase {
 
 		$this->sessions = new MysqlCheckoutSessions( $this->db );
 		$this->keys     = new MysqlIdempotencyKeys( $this->db );
-		$this->checkout = new UpdateCheckoutSession( $this->service, $this->sessions, TestGateways::of( new StubGateway() ) );
+		$this->checkout = new UpdateCheckoutSession( $this->service, $this->sessions, TestGateways::of( new StubGateway() ), new PlannedPricing( static fn(): int => 0 ) );
+	}
+
+	/**
+	 * Gives variants units at the store's default location, creating the inventory tables first: what a session write the plugin wires plans the order's units with.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $variantIds The variants.
+	 * @param int   $onHand     Optional. The units of each. Default 100.
+	 *
+	 * @phpstan-param list<int> $variantIds
+	 */
+	protected function stocked( array $variantIds, int $onHand = 100 ): void {
+		$location = StockTables::create( $this->db );
+
+		foreach ( $variantIds as $variantId ) {
+			$this->db->execute( 'INSERT INTO %i ( variant_id, updated_at ) VALUES ( %d, UTC_TIMESTAMP(6) )', $this->table( InventoryTables::POLICIES ), $variantId );
+			$this->db->execute( 'INSERT INTO %i ( variant_id, location_id, on_hand, updated_at ) VALUES ( %d, %d, %d, UTC_TIMESTAMP(6) )', $this->table( InventoryTables::ITEMS ), $variantId, $location, $onHand );
+		}
 	}
 
 	/**

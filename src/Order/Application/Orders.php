@@ -24,6 +24,7 @@ use SEOCart\Order\Domain\OrderNumberGenerator;
 use SEOCart\Order\Domain\OrderRepository;
 use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\OrderStatusRegistry;
+use SEOCart\Order\Domain\OrderStockLines;
 use SEOCart\Order\Domain\OrderView;
 use SEOCart\Order\Domain\PaymentDelta;
 use SEOCart\Order\Domain\PaymentStatus;
@@ -504,32 +505,34 @@ final class Orders {
 	}
 
 	/**
-	 * Records in the order's events something done to its payment that changes no status, such as a refund, naming it by its uuid.
+	 * Records in the order's events something done that changes no status, such as a refund or where the order is fulfilled from, naming it by its uuid.
 	 *
-	 * One `order_events` row of the payment machine whose from and to are the payment status the
-	 * order has: written whether or not the payment status changed, which a status change records
-	 * in a row of its own. Inside the caller's transaction, which has locked the order for the
-	 * payment, so the status copied is the one the transaction leaves. The row names the actor and
-	 * the request's correlation id. A reason that is not a lowercase snake_case word is an
+	 * One `order_events` row of the machine named, the payment's unless another is, whose from and
+	 * to are that machine's status the order has: written whether or not the status changed, which a
+	 * status change records in a row of its own. Inside the caller's transaction, which has written or
+	 * locked the order, so the status copied is the one the transaction leaves. The row names the
+	 * actor and the request's correlation id. A reason that is not a lowercase snake_case word is an
 	 * \InvalidArgumentException before any statement.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @throws \LogicException Outside a transaction, before any statement; or when the order is gone, which the caller's lock rules out.
 	 *
-	 * @param int    $orderId   The order's internal id, locked by the caller's transaction.
-	 * @param string $reason    What happened, a lowercase snake_case word such as `refund_recorded`.
-	 * @param string $reference The uuid of what it records, such as the refund's.
-	 * @param Actor  $actor     On whose authority.
+	 * @param int     $orderId   The order's internal id, locked by the caller's transaction.
+	 * @param string  $reason    What happened, a lowercase snake_case word such as `refund_recorded`.
+	 * @param string  $reference The uuid of what it records, such as the refund's.
+	 * @param Actor   $actor     On whose authority.
+	 * @param Machine $machine   Optional. The machine the event is of: `fulfillment` for where the order is
+	 *                           fulfilled from and what is brought there. Default the payment's.
 	 * @return int The event row's id.
 	 */
-	public function appendAudit( int $orderId, string $reason, string $reference, Actor $actor ): int {
+	public function appendAudit( int $orderId, string $reason, string $reference, Actor $actor, Machine $machine = Machine::Payment ): int {
 		$this->requireCallersTransaction( __FUNCTION__ );
 		self::checkReason( $reason );
 
 		list( $actorType, $actorId ) = self::actorOf( $actor );
 
-		return $this->orders->appendAudit( $orderId, $reason, $reference, $actorType, $actorId, $this->correlation->current() );
+		return $this->orders->appendAudit( $orderId, $machine, $reason, $reference, $actorType, $actorId, $this->correlation->current() );
 	}
 
 	/**
@@ -631,18 +634,49 @@ final class Orders {
 	}
 
 	/**
-	 * Reads what each of an order's lines sells, for the stock the order is allocated: one read, in variant order.
+	 * Reads what each of an order's lines sells, for the stock the order is allocated, with the market and the location the order is fulfilled from: one read, in variant order.
 	 *
 	 * The settlement of a placement calls it once the payment path has locked the order, so the
 	 * lines it reads are the ones the order keeps.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Answers the order's market and fulfilment location too.
 	 *
 	 * @param int $orderId The order's internal id.
-	 * @return list<array{orderLineId: int, variantId: int, quantity: int}> The lines; none for no such order.
+	 * @return OrderStockLines The lines and the order's facts; none for no such order.
 	 */
-	public function stockLines( int $orderId ): array {
+	public function stockLines( int $orderId ): OrderStockLines {
 		return $this->orders->stockLines( $orderId );
+	}
+
+	/**
+	 * Tells whether any order is fulfilled from a location: for a location's deletion, which must keep a location any order names.
+	 *
+	 * One read, which locks nothing: a placement whose order names a location it holds nothing at
+	 * locks the location's row in share mode until it commits, so a deletion that locked the row
+	 * first is followed by no such order, and one that waited sees the order here.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId The location's id.
+	 * @return bool True when one is.
+	 */
+	public function anyFulfilledFrom( int $locationId ): bool {
+		return $this->orders->anyFulfilledFrom( $locationId );
+	}
+
+	/**
+	 * Reads the location each of some orders is fulfilled from: one read; for doctor, which compares it with where the orders' units are.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $orderIds The orders.
+	 * @return array<int, int|null> Each order found, by id, with its location or null for none recorded.
+	 *
+	 * @phpstan-param list<int> $orderIds
+	 */
+	public function fulfilmentLocationsOf( array $orderIds ): array {
+		return $this->orders->fulfilmentLocationsOf( $orderIds );
 	}
 
 	/**

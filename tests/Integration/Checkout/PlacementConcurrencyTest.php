@@ -97,7 +97,7 @@ final class PlacementConcurrencyTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Tests that two placements of the last unit leave one order: the second waits for the first's claim of the item, then finds it gone, and rolls back whole.
+	 * Tests that two placements of the last unit leave one order: the second waits for the first's claim of the item, then finds it gone, rolls back whole, and plans once more, which finds no unit.
 	 *
 	 * Planted violations:
 	 * - in MysqlStockRepository::CLAIM, drop `AND ( on_hand - allocated - held ) >= %d`: the
@@ -133,7 +133,7 @@ final class PlacementConcurrencyTest extends PlacementTestCase {
 
 		$this->assertTrue( $barriers->fired );
 		$this->assertSame( 'approved', $answer['outcome'] );
-		$this->assertSame( InventoryError::Insufficient->value, $report['refused'] ?? $report, 'The second placement found the unit gone.' );
+		$this->assertSame( InventoryError::RoutingRefused->value, $report['refused'] ?? $report, 'The second placement found the unit gone, and its fresh plan no unit.' );
 		$this->assertSame( 1, $this->committedCount( $b, OrderTables::ORDERS ), 'One order.' );
 		$this->assertSame( array( 1, 1, 0 ), $this->committedStock( $b, $mug ) );
 		$this->assertSame( 0, $this->committedCount( $b, InventoryTables::HOLDS ) );

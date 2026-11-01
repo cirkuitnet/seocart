@@ -763,4 +763,27 @@ final class LocationOperationsTest extends StockTestCase {
 
 		return $wpdb->get_blog_prefix() . 'user_roles';
 	}
+
+	/**
+	 * Tests that a location an order is fulfilled from is kept, though no stock, hold or ledger row refers to it.
+	 *
+	 * Planted violation: the order module's answer always false.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_location_an_order_is_fulfilled_from_is_kept_though_no_stock_refers_to_it(): void {
+		$b               = $this->secondConnection();
+		$location        = $this->plantLocation( 3 );
+		$this->locations = StockServices::locations(
+			$this->db,
+			new SequentialIdGenerator( 320000 ),
+			$this->transfersOver( $this->db, new SequentialIdGenerator( 330000 ) ),
+			static fn( int $locationId ): bool => $location === $locationId
+		);
+
+		$refused = $this->assertRefused( InventoryError::LocationInUse, fn(): array => $this->locations->deleteLocation( array( 'location_uuid' => $this->uuidOf( $b, $location ) ), $this->manager ) );
+
+		$this->assertSame( array( 'reason' => 'orders' ), $refused->details(), 'A location an order is fulfilled from was deleted.' );
+		$this->assertSame( $location, (int) $b->fetchValue( sprintf( 'SELECT id FROM `%s` WHERE id = %d', $this->table( InventoryTables::LOCATIONS ), $location ) ) );
+	}
 }

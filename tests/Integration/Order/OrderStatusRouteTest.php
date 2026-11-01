@@ -220,6 +220,7 @@ final class OrderStatusRouteTest extends OrderTestCase {
 			'paid_minor'           => 0,
 			'refunded_minor'       => 0,
 			'due_minor'            => 3080,
+			'transfer_days'        => null,
 			'lines'                => array(
 				array(
 					'line_uuid'           => $lines[0]->lineUuid,

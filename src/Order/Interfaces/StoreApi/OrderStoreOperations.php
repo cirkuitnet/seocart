@@ -168,6 +168,15 @@ final class OrderStoreOperations {
 					self::amount( 'paid_minor', 'What has been captured so far, in minor units.', static fn(): string => __( 'Paid', 'seocart' ) ),
 					self::amount( 'refunded_minor', 'What has been refunded so far, in minor units.', static fn(): string => __( 'Refunded', 'seocart' ) ),
 					self::amount( 'due_minor', 'What is still to be paid, in minor units.', static fn(): string => __( 'Due', 'seocart' ) ),
+					new FieldSpec(
+						name: 'transfer_days',
+						type: FieldType::Integer,
+						description: 'The extra days the shopper was told, when the order was placed, that bringing its items together adds to delivery; null when the order needed no transfer. It is what was told then, whatever the store says now.',
+						label: static fn(): string => __( 'Extra days for a transfer', 'seocart' ),
+						example: 3,
+						nullable: true,
+						minimum: 0
+					),
 					self::lines(),
 				)
 			),

@@ -239,11 +239,11 @@ final class StockSummaryProjectionTest extends CatalogTestCase {
 	}
 
 	/**
-	 * Tests that a variant whose stock is not counted, and one that may be backordered, are in stock with nothing on hand.
+	 * Tests that a variant whose stock is not counted is in stock with nothing on hand, and one that may be backordered is not: it is sold from its units only, as a hold claims them.
 	 *
 	 * @since 0.2.0
 	 */
-	public function test_an_untracked_or_backorderable_variant_is_in_stock(): void {
+	public function test_an_untracked_variant_is_in_stock_and_a_backorderable_one_only_with_units(): void {
 		list( $untracked, $notCounted ) = $this->product( 'SUM-3' );
 		list( $backordered, $allowed )  = $this->product( 'SUM-4' );
 		$policies                       = $this->db->table( InventoryTables::POLICIES );
@@ -256,7 +256,7 @@ final class StockSummaryProjectionTest extends CatalogTestCase {
 		$this->drain();
 
 		$this->assertSame( 'in_stock', $this->summary( $untracked ) );
-		$this->assertSame( 'in_stock', $this->summary( $backordered ) );
+		$this->assertSame( 'out_of_stock', $this->summary( $backordered ), 'A variant that may be backordered was in stock with no unit a hold could claim.' );
 		$this->assertNoListenerFailed();
 	}
 

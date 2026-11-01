@@ -78,9 +78,13 @@ final class OrderDocument {
 	 * @param array<int, SellabilityFacts> $sold       The facts the sale of each line's variant was judged on, by variant id.
 	 * @param string|null                  $holdGroup  The stock hold taken for the order, or null when nothing was held.
 	 * @param int|null                     $customerId The customer the order belongs to, or null for a guest.
+	 * @param int|null                     $fulfilmentLocationId Optional. The location the plan fulfils the order from.
+	 *                                                           Default null, none planned.
+	 * @param int|null                     $transferLeadDays     Optional. The extra days the shopper was told a transfer
+	 *                                                           adds; null when the plan needs none. Default null.
 	 * @return NewOrder The document.
 	 */
-	public static function of( Totals $totals, Locale $locale, CheckoutDetails $details, array $sold, ?string $holdGroup, ?int $customerId ): NewOrder {
+	public static function of( Totals $totals, Locale $locale, CheckoutDetails $details, array $sold, ?string $holdGroup, ?int $customerId, ?int $fulfilmentLocationId = null, ?int $transferLeadDays = null ): NewOrder {
 		$billing = $details->billingAddress ?? throw new \InvalidArgumentException( 'An order is placed with a billing address.' );
 
 		return new NewOrder(
@@ -95,7 +99,9 @@ final class OrderDocument {
 			adjustments: array_map( array( self::class, 'adjustment' ), $totals->adjustments ),
 			billingAddress: $billing,
 			shippingAddress: $details->shippingAddress,
-			holdGroup: $holdGroup
+			holdGroup: $holdGroup,
+			fulfilmentLocationId: $fulfilmentLocationId,
+			transferLeadDays: $transferLeadDays
 		);
 	}
 

@@ -51,6 +51,7 @@ use SEOCart\Tax\Domain\CrossZonePolicy;
 use SEOCart\Tax\Domain\TaxRoundingMode;
 use SEOCart\Tests\Support\DatabaseTestCase;
 use SEOCart\Tests\Support\Doubles\FakeCartTokens;
+use SEOCart\Tests\Support\Doubles\OneLocationRouter;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\Promotion\PlantsPromotions;
 use SEOCart\Tests\Support\SecondConnection;
@@ -272,7 +273,8 @@ abstract class CartTestCase extends DatabaseTestCase {
 			static fn(): CrossZonePolicy => CrossZonePolicy::FixedNet,
 			static fn(): TaxRoundingMode => TaxRoundingMode::PerLine,
 			new MysqlPresentmentCurrencies( $db, static fn(): ?int => null ),
-			self::promotionsOver( $db )
+			self::promotionsOver( $db ),
+			new OneLocationRouter()
 		);
 	}
 

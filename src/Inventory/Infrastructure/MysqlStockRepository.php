@@ -48,7 +48,9 @@ defined( 'ABSPATH' ) || exit;
  * statement holds the lock. Every conditional update of an item sets `updated_at` from the database clock, and
  * the item lock moves it forward by at least a microsecond, so one affected row always means the
  * WHERE clause matched. Reads made under a lock are locking reads, so they see the latest
- * committed row and never an older snapshot of the transaction.
+ * committed row and never an older snapshot of the transaction. A placement that holds none of
+ * its units at the location its order is fulfilled from locks that location's row in share mode
+ * first (MysqlLocationRepository::LOCK_SHARED_BY_ID), before any item's.
  *
  * The reads for `doctor` live here too, because they are stock SQL; they are not part of the
  * port the service sees.
@@ -1851,6 +1853,15 @@ final class MysqlStockRepository implements StockRepository {
 	public const OPEN_ALLOCATIONS_AWAY = "SELECT id, variant_id, location_id, quantity FROM {stock_allocations} WHERE order_id = %d AND state = 'open' AND location_id <> %d ORDER BY location_id, variant_id";
 
 	/**
+	 * The orders with open allocations, each with the locations they are at, the newest orders by allocation first: for doctor, a scan of the open allocations by design.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const OPEN_ALLOCATION_LOCATIONS_BY_ORDER = "SELECT order_id, GROUP_CONCAT( DISTINCT location_id ORDER BY location_id ) AS location_ids FROM {stock_allocations} WHERE state = 'open' AND location_id IS NOT NULL GROUP BY order_id ORDER BY MAX( id ) DESC LIMIT %d";
+
+	/**
 	 * An order's allocations open or in transit, ascending by variant then location: what its cancel gives back or detaches.
 	 *
 	 * @since 0.2.0
@@ -2038,6 +2049,24 @@ final class MysqlStockRepository implements StockRepository {
 		$this->requireTransaction( __FUNCTION__ );
 
 		return 1 === $this->write( self::DELETE_IN_TRANSIT, $allocationId, $quantity );
+	}
+
+	/**
+	 * Lists the newest orders with open allocations, each with the locations they are at.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit The most orders to list.
+	 * @return list<array{order_id: int, location_ids: list<int>}> The orders, newest allocation first, each with its locations ascending.
+	 */
+	public function openAllocationLocationsByOrder( int $limit ): array {
+		return array_map(
+			static fn( array $row ): array => array(
+				'order_id'     => (int) $row['order_id'],
+				'location_ids' => array_map( 'intval', explode( ',', (string) $row['location_ids'] ) ),
+			),
+			$this->rows( self::OPEN_ALLOCATION_LOCATIONS_BY_ORDER, $limit )
+		);
 	}
 
 	/**

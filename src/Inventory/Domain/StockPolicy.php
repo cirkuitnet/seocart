@@ -44,13 +44,20 @@ final readonly class StockPolicy {
 	}
 
 	/**
-	 * Tells whether the variant may be sold beyond the units available: its stock is not counted, or backorders are allowed.
+	 * Tells whether the variant may be sold beyond the units available: only when its stock is not counted.
+	 *
+	 * The one rule the router and the figure for sale both read, so neither plans or shows a unit
+	 * that a hold's claim refuses. A variant whose stock is counted is claimed only where units are
+	 * available, whatever its backorder policy: so it is sold only from units, and the policy
+	 * `allow` changes nothing yet. A claim that reads the backorder policy is what will let such a
+	 * variant be sold beyond its units; this answer changes with it, and the router, the figure for
+	 * sale and the stock list follow.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @return bool True when no figure limits a sale.
+	 * @return bool True when no figure limits a sale: the variant's stock is not counted.
 	 */
 	public function sellsBeyondStock(): bool {
-		return ! $this->track || BackorderPolicy::Allow === $this->backorderPolicy;
+		return ! $this->track;
 	}
 }

@@ -82,6 +82,18 @@ final class FakeLocationRepository implements LocationRepository {
 	}
 
 	/**
+	 * Reads the one location, when the id is its own.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId The id.
+	 * @return Location|null The location, or null.
+	 */
+	public function lockSharedById( int $locationId ): ?Location {
+		return FakeStockRepository::LOCATION === $locationId ? $this->all()[0] : null;
+	}
+
+	/**
 	 * Reads the one location's record, when the uuid is its own.
 	 *
 	 * @since 0.2.0

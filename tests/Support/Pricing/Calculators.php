@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Support\Pricing;
 use SEOCart\Catalog\Domain\VariantPrice;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Pricing\Application\Calculator;
+use SEOCart\Pricing\Application\FulfilmentRouter;
 use SEOCart\Pricing\Application\PresentmentCurrencies;
 use SEOCart\Pricing\Application\PresentmentCurrency;
 use SEOCart\Pricing\Application\PriceResolver;
@@ -55,6 +56,7 @@ final class Calculators {
 	 * @param PresentmentCurrencies|null $currencies   Optional. The currencies it offers. Default null, the base currency alone.
 	 * @param PromotionCodes|null        $codes        Optional. What resolves the codes entered. Default none: every code is unknown.
 	 * @param PromotionEvaluator|null    $evaluator    Optional. The promotions' evaluator. Default the quoters' own.
+	 * @param FulfilmentRouter|null      $router       Optional. The router a routing scope asks. Default none.
 	 * @return Calculator The calculator.
 	 */
 	public static function over(
@@ -65,7 +67,8 @@ final class Calculators {
 		TaxRoundingMode $mode = TaxRoundingMode::PerLine,
 		?PresentmentCurrencies $currencies = null,
 		?PromotionCodes $codes = null,
-		?PromotionEvaluator $evaluator = null
+		?PromotionEvaluator $evaluator = null,
+		?FulfilmentRouter $router = null
 	): Calculator {
 		return new Calculator(
 			new PriceResolver( $prices ),
@@ -78,7 +81,8 @@ final class Calculators {
 			static fn(): CrossZonePolicy => $policy,
 			static fn(): TaxRoundingMode => $mode,
 			$currencies ?? new FixedPresentmentCurrencies(),
-			$codes
+			$codes,
+			$router
 		);
 	}
 

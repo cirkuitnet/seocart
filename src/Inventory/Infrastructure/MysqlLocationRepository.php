@@ -82,6 +82,15 @@ final class MysqlLocationRepository implements LocationRepository {
 	public const LOCK_SHARED = 'SELECT ' . self::LOCATION_COLUMNS . ' FROM {locations} WHERE uuid IN ({list}) ORDER BY id LOCK IN SHARE MODE';
 
 	/**
+	 * One location by id, locked in share mode until the commit: a placement's destination that holds none of its units.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCK_SHARED_BY_ID = 'SELECT ' . self::LOCATION_COLUMNS . ' FROM {locations} WHERE id = %d LOCK IN SHARE MODE';
+
+	/**
 	 * The default location's id.
 	 *
 	 * @since 0.2.0
@@ -381,6 +390,22 @@ final class MysqlLocationRepository implements LocationRepository {
 		}
 
 		return $found;
+	}
+
+	/**
+	 * Reads one location by id in share mode.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId The location's id.
+	 * @return Location|null The location, or null when there is none with the id.
+	 */
+	public function lockSharedById( int $locationId ): ?Location {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$row = $this->statements->rows( self::LOCK_SHARED_BY_ID, $locationId )[0] ?? null;
+
+		return null === $row ? null : self::location( $row );
 	}
 
 	/**

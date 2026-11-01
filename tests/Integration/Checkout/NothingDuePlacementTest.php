@@ -386,7 +386,9 @@ final class NothingDuePlacementTest extends PlacementTestCase {
 		self::ratesOver( $this->db, static function (): void {} )->saveVersion( array( self::rateTo( 'JPY', '250' ) ), Actor::user( 0 ) );
 		$this->plantBootRecord( 1 );
 
-		$sticker = $this->sellable( 5, 100, 'Sticker' );
+		// Building the placement read the boot record; a request that starts now reads it as planted.
+		$this->placement = $this->freshPlacement();
+		$sticker         = $this->sellable( 5, 100, 'Sticker' );
 
 		$this->db->execute( "INSERT INTO %i ( variant_id, currency, amount_basis, price_minor, created_at, updated_at ) VALUES ( %d, 'JPY', 'net', 1, UTC_TIMESTAMP(), UTC_TIMESTAMP() )", $this->table( 'variant_prices' ), $sticker );
 		$this->plantPromotion( 'SHIPFREE', self::FREE_SHIPPING );

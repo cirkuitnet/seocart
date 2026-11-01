@@ -15,6 +15,7 @@ use SEOCart\Inventory\Application\LocationDirectory;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Domain\Location;
 use SEOCart\Inventory\Domain\ReclaimedRows;
+use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
@@ -57,7 +58,7 @@ defined( 'ABSPATH' ) || exit;
  * location without an address yet is reported and does not fail the check: every store starts
  * so, and the address is the merchant's to enter.
  *
- * Units on the way between locations are on the transfer lines, in no item. Six transfer lines
+ * Units on the way between locations are on the transfer lines, in no item. Seven transfer lines
  * hold them to their records, and report only: a line that received and lost more than it sent,
  * or a received transfer whose lines received and lost less, is critical; so is a sent transfer
  * whose units on the way, by its lines, are not what its ledger entries moved less what was
@@ -66,8 +67,11 @@ defined( 'ABSPATH' ) || exit;
  * transfer that lost an order's units whose order is not on hold, so the shortage was never acted
  * on, or was undone by a person. A transfer requested, or in transit, for longer than the
  * store's warning period is a warning: an order waits for a person, a parcel is late, or a
- * deactivation's move lost its job. The warning period is the store's setting and the order's
- * status the order module's, each read through a function the kernel gives, so the check reads
+ * deactivation's move lost its job. An order with an open allocation at a location other than
+ * the one it is fulfilled from, and no transfer requested or in transit, is a warning too: it is
+ * stranded, its units neither there nor on their way (an order that recorded no location is not
+ * judged, and in a store that splits orders none is: each part ships from where it is). The warning period is the store's setting, and the order's status and fulfilment
+ * location the order module's, each read through a function the kernel gives, so the check reads
  * no other module's tables.
  *
  * It reads through the repositories' statements, and prints ids and counts, never anything else.
@@ -93,6 +97,15 @@ final class StockProjectionCheck implements Repairable {
 	 * @var int
 	 */
 	public const LIMIT = 20;
+
+	/**
+	 * The most orders with open allocations the stranded-order line looks at, the newest first.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const ORDERS_SCANNED = 200;
 
 	/**
 	 * The stock statements.
@@ -167,6 +180,24 @@ final class StockProjectionCheck implements Repairable {
 	private \Closure $orderStatus;
 
 	/**
+	 * Returns the location each of some orders is fulfilled from, by order id, null for none recorded.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var \Closure(list<int>): array<int, int|null>
+	 */
+	private \Closure $fulfilmentLocations;
+
+	/**
+	 * Returns the store's routing mode: a store that splits orders ships each part from where it is allocated.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var \Closure(): FulfilmentMode
+	 */
+	private \Closure $mode;
+
+	/**
 	 * Creates the check. Sends nothing.
 	 *
 	 * @since 0.1.0
@@ -180,11 +211,15 @@ final class StockProjectionCheck implements Repairable {
 	 * @param MysqlTransferRepository $transfers    The transfer statements.
 	 * @param \Closure                $warningDays  Returns the days a transfer may stay requested or in transit (int).
 	 * @param \Closure                $orderStatus  Returns an order's status from its id (int), or null for no such order.
+	 * @param \Closure                $fulfilmentLocations Returns the location each of some orders is fulfilled from, by order id.
+	 * @param \Closure                $mode         Returns the store's routing mode.
 	 *
 	 * @phpstan-param \Closure(): int           $warningDays
 	 * @phpstan-param \Closure(int): ?string    $orderStatus
+	 * @phpstan-param \Closure(list<int>): array<int, int|null> $fulfilmentLocations
+	 * @phpstan-param \Closure(): FulfilmentMode $mode
 	 */
-	public function __construct( MysqlStockRepository $stock, MysqlLocationRepository $locations, LocationDirectory $directory, StockService $service, TransactionManager $transactions, MysqlTransferRepository $transfers, \Closure $warningDays, \Closure $orderStatus ) {
+	public function __construct( MysqlStockRepository $stock, MysqlLocationRepository $locations, LocationDirectory $directory, StockService $service, TransactionManager $transactions, MysqlTransferRepository $transfers, \Closure $warningDays, \Closure $orderStatus, \Closure $fulfilmentLocations, \Closure $mode ) {
 		$this->stock        = $stock;
 		$this->locations    = $locations;
 		$this->directory    = $directory;
@@ -193,6 +228,9 @@ final class StockProjectionCheck implements Repairable {
 		$this->transfers    = $transfers;
 		$this->warningDays  = $warningDays;
 		$this->orderStatus  = $orderStatus;
+
+		$this->fulfilmentLocations = $fulfilmentLocations;
+		$this->mode                = $mode;
 	}
 
 	/**
@@ -486,6 +524,49 @@ final class StockProjectionCheck implements Repairable {
 
 			if ( 'on_hold' !== $status && $short++ < self::LIMIT ) {
 				$findings[] = sprintf( 'Critical: transfer %1$d lost units order %2$d waited for, but the order is %3$s, not on hold: the shortage was not acted on. Put the order on hold and decide what it ships.', $transfer['id'], $transfer['order_id'], $status ?? 'gone' );
+			}
+		}
+
+		return array_merge( $findings, $this->strandedOrders() );
+	}
+
+	/**
+	 * Lists the orders with units allocated away from the location they are fulfilled from and no transfer to bring them there.
+	 *
+	 * In a store that splits orders, none: each part ships from where it is allocated, and nothing
+	 * more is read. Otherwise three reads: the newest orders with open allocations and their
+	 * locations, their fulfilment locations through the order module, and which of them have a
+	 * transfer requested or in transit.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> One warning per stranded order, at most LIMIT.
+	 */
+	private function strandedOrders(): array {
+		if ( FulfilmentMode::Split === ( $this->mode )() ) {
+			return array();
+		}
+
+		$allocated = $this->stock->openAllocationLocationsByOrder( self::ORDERS_SCANNED );
+
+		if ( array() === $allocated ) {
+			return array();
+		}
+
+		$orderIds  = array_column( $allocated, 'order_id' );
+		$locations = ( $this->fulfilmentLocations )( $orderIds );
+		$moving    = array_flip( $this->transfers->ordersWithOpenTransfer( $orderIds ) );
+		$findings  = array();
+
+		foreach ( $allocated as $order ) {
+			$location = $locations[ $order['order_id'] ] ?? null;
+
+			if ( null === $location || isset( $moving[ $order['order_id'] ] ) || array() === array_diff( $order['location_ids'], array( $location ) ) ) {
+				continue;
+			}
+
+			if ( count( $findings ) < self::LIMIT ) {
+				$findings[] = sprintf( 'Warning: order %d has units allocated at a location other than the one it is fulfilled from and no transfer requested or in transit: request a transfer or re-route it.', $order['order_id'] );
 			}
 		}
 

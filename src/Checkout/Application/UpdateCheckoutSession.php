@@ -17,6 +17,7 @@ use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Payment\Application\Gateways;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Pricing\Application\RoutingScope;
 use SEOCart\Support\Address;
 use SEOCart\Support\Error\CodedException;
 
@@ -33,7 +34,9 @@ defined( 'ABSPATH' ) || exit;
  * change exactly when the cart's version moves on, and a write based on an older version changes
  * neither. Moving the version on makes the session's quotes stale, and the upsert drops them too.
  * The cart's totals are then worked out after the transaction, for the shipping address and
- * method just written.
+ * method just written, with the plan of where the order's units are held (PlannedPricing). A
+ * plan no location can give is refused with the router's code, as a destination with no shipping
+ * rate is.
  *
  * A payment method is the id of a payment gateway the store has, set up for the mode it takes new
  * payments in. Whether it can take this cart's payment, by its currency and total, is checked when
@@ -72,19 +75,30 @@ final class UpdateCheckoutSession {
 	private Gateways $gateways;
 
 	/**
+	 * The checkout's pricing with its plan, which asks once more after reclaiming expired holds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var PlannedPricing
+	 */
+	private PlannedPricing $pricing;
+
+	/**
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The gateways were added.
+	 * @since 0.2.0 The gateways and the planned pricing were added.
 	 *
 	 * @param CartService      $carts    The cart.
 	 * @param CheckoutSessions $sessions The stored sessions.
 	 * @param Gateways         $gateways The store's payment gateways.
+	 * @param PlannedPricing   $pricing  The checkout's pricing with its plan.
 	 */
-	public function __construct( CartService $carts, CheckoutSessions $sessions, Gateways $gateways ) {
+	public function __construct( CartService $carts, CheckoutSessions $sessions, Gateways $gateways, PlannedPricing $pricing ) {
 		$this->carts    = $carts;
 		$this->sessions = $sessions;
 		$this->gateways = $gateways;
+		$this->pricing  = $pricing;
 	}
 
 	/**
@@ -97,13 +111,16 @@ final class UpdateCheckoutSession {
 	 *                        one, or the payment method is not a gateway the store has set up for
 	 *                        its mode, before anything is written; `cart.not_found`,
 	 *                        `cart.version_stale` or `cart.not_open` when the cart's
-	 *                        compare-and-swap refuses; the codes the calculation raises.
+	 *                        compare-and-swap refuses; the codes the calculation raises, its plan's
+	 *                        `stock.routing_refused` and `stock.no_fulfilling_location` among them.
 	 *
 	 * @param array<string, mixed> $input The prepared input: cart_version, and optionally
 	 *                                    billing_address, shipping_address, shipping_method_key
 	 *                                    and payment_method_key.
 	 * @param Actor                $actor Who writes: whose lifetime the cart then lives.
-	 * @return array{checkout_session: array<string, mixed>, version: int, totals: array<string, mixed>} The session, the cart's version and its totals, by wire name.
+	 * @return array{checkout_session: array<string, mixed>, version: int, totals: array<string, mixed>, delivery: array{requires_transfer: bool, transfer_days: int|null}|null} The session,
+	 *         the cart's version, its totals and what its plan says of delivery, by wire name: whether units must be
+	 *         brought together and the extra days the shopper is told that adds; null when no plan was made.
 	 */
 	public function update( array $input, Actor $actor ): array {
 		$details = new CheckoutDetails(
@@ -118,7 +135,9 @@ final class UpdateCheckoutSession {
 			$actor,
 			function ( int $cartId ) use ( $details ): void {
 				$this->sessions->save( $cartId, $details );
-			}
+			},
+			RoutingScope::checkout(),
+			$this->pricing->price( ... )
 		);
 
 		return array(
@@ -130,6 +149,7 @@ final class UpdateCheckoutSession {
 			),
 			'version'          => $cart['version'],
 			'totals'           => $cart['totals'],
+			'delivery'         => $cart['routing'],
 		);
 	}
 

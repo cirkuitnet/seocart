@@ -306,6 +306,15 @@ final class MysqlTransferRepository implements TransferRepository {
 	public const STRAY_CARRIED_LINES = "SELECT l.id, l.transfer_id, l.allocation_id FROM {stock_transfers} t JOIN {stock_transfer_lines} l ON l.transfer_id = t.id LEFT JOIN {stock_allocations} a ON a.id = l.allocation_id AND a.state = 'in_transit' WHERE t.state = 'in_transit' AND l.allocation_id IS NOT NULL AND l.quantity - l.received_quantity - l.lost_quantity > 0 AND a.id IS NULL ORDER BY l.id LIMIT %d";
 
 	/**
+	 * Which of some orders have a transfer requested or in transit, on the `order_id` key: doctor's stranded-order line.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ORDERS_WITH_OPEN_TRANSFER = "SELECT DISTINCT order_id FROM {stock_transfers} WHERE order_id IN ({list}) AND state IN ('requested','in_transit')";
+
+	/**
 	 * Transfers requested longer ago than some days, or in transit since longer ago than that: doctor's fourth transfer line. A transfer is sent after it is created, so a send that old was created that long ago too.
 	 *
 	 * @since 0.2.0
@@ -809,6 +818,24 @@ final class MysqlTransferRepository implements TransferRepository {
 			),
 			$this->statements->rows( self::STRAY_CARRIED_LINES, $limit )
 		);
+	}
+
+	/**
+	 * Lists which of some orders have a transfer requested or in transit.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $orderIds The orders.
+	 * @return list<int> The orders that have one.
+	 *
+	 * @phpstan-param list<int> $orderIds
+	 */
+	public function ordersWithOpenTransfer( array $orderIds ): array {
+		if ( array() === $orderIds ) {
+			return array();
+		}
+
+		return array_map( static fn( array $row ): int => (int) $row['order_id'], $this->statements->rows( self::ORDERS_WITH_OPEN_TRANSFER, $orderIds ) );
 	}
 
 	/**

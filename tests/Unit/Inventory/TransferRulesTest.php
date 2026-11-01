@@ -268,7 +268,7 @@ final class TransferRulesTest extends TestCase {
 	 * @since 0.2.0
 	 */
 	public function test_the_locations_service_refuses_a_pickup_time_or_a_priority_out_of_bounds(): void {
-		$locations = new Locations( new FakeLocationRepository(), $this->stock, $this->tx, new SequentialIdGenerator( 200 ), new Authorizer( new CapabilityDeclaration() ), $this->transfers );
+		$locations = new Locations( new FakeLocationRepository(), $this->stock, $this->tx, new SequentialIdGenerator( 200 ), new Authorizer( new CapabilityDeclaration() ), $this->transfers, static fn(): bool => false );
 
 		foreach (
 			array(

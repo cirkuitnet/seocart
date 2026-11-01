@@ -19,6 +19,7 @@ use SEOCart\Pricing\Domain\Engine\PhaseAResult;
 use SEOCart\Pricing\Domain\PricingError;
 use SEOCart\Pricing\Domain\PromotionEvaluator;
 use SEOCart\Pricing\Domain\Quote\Quotes;
+use SEOCart\Pricing\Domain\Quote\RoutingProposal;
 use SEOCart\Support\Clock;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
@@ -32,9 +33,10 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: the order in which a calculation reaches outside the engine. First the prices,
  * in one query, and the promotions of the codes entered, in one more when there are codes; then
- * the engine's first phase; then the shipping and tax quotes, once each, for exactly the lines
- * that phase resolved; then the second phase. Nothing else is read, and nothing is computed
- * here: every figure comes from the engine.
+ * the engine's first phase; then, when the request carries a routing scope and knows where the
+ * order goes, the fulfilment plan for exactly the lines that phase resolved; then the shipping
+ * and tax quotes, once each, for those lines and from the plan's destination; then the second
+ * phase. Nothing else is read, and nothing is computed here: every figure comes from the engine.
  *
  * A calculation never runs inside a transaction. Its quotes may be taken from a provider over
  * the network, and a transaction must not wait on the network: so it is refused outright, before
@@ -52,6 +54,7 @@ defined( 'ABSPATH' ) || exit;
  * A code whose promotion does not apply is left out of the totals and traced with the reason.
  *
  * @since 0.1.0
+ * @since 0.2.0 Asks the fulfilment router for a request with a routing scope.
  */
 final class Calculator {
 
@@ -73,6 +76,9 @@ final class Calculator {
 	 * @param PromotionCodes|null   $codes           Optional. Finds the promotions of the codes entered. The plugin
 	 *                                               always gives it; null is for a caller without a promotion
 	 *                                               module, and traces every code as unknown. Default null.
+	 * @param FulfilmentRouter|null $router          Optional. Plans where an order's units are held. The plugin
+	 *                                               always gives it; null is for a caller that never sends a
+	 *                                               routing scope. Default null.
 	 *
 	 * @phpstan-param \Closure(): Currency        $baseCurrency
 	 * @phpstan-param \Closure(): CrossZonePolicy $crossZonePolicy
@@ -89,7 +95,8 @@ final class Calculator {
 		private \Closure $crossZonePolicy,
 		private \Closure $taxRoundingMode,
 		private PresentmentCurrencies $currencies,
-		private ?PromotionCodes $codes = null
+		private ?PromotionCodes $codes = null,
+		private ?FulfilmentRouter $router = null
 	) {
 	}
 
@@ -101,7 +108,9 @@ final class Calculator {
 	 * @throws \LogicException When a transaction is open.
 	 * @throws CodedException  With PricingError::CurrencyNotEnabled when prices are not offered in the
 	 *                         cart's currency; PricingError::QuoteUnavailable when a provider cannot
-	 *                         quote; PricingError::NoShippingRate when the destination has no rate.
+	 *                         quote; PricingError::NoShippingRate when the destination has no rate;
+	 *                         the router's refusals (FulfilmentRouter::propose()) for a request with
+	 *                         a routing scope.
 	 *
 	 * @param CalculationRequest $request The lines, the currency, the destination, the codes and the shipping chosen.
 	 * @return Calculation The totals, and the lines that could not be priced.
@@ -139,7 +148,7 @@ final class Calculator {
 		$engine = new Engine();
 		$phaseA = $engine->phaseA( $input, $this->promotions );
 
-		return new Calculation( $engine->phaseB( $phaseA, $this->quotes( $phaseA ) ), $prices->unpriced );
+		return new Calculation( $engine->phaseB( $phaseA, $this->quotes( $phaseA, $request->routing ) ), $prices->unpriced );
 	}
 
 	/**
@@ -173,20 +182,24 @@ final class Calculator {
 	}
 
 	/**
-	 * Takes the shipping and tax quotes for the first phase's lines: the calculation's only reach outside.
+	 * Takes the fulfilment plan, when asked for, and the shipping and tax quotes for the first phase's lines: the calculation's only reach outside.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Takes the fulfilment plan first, and quotes from its destination.
 	 *
 	 * @throws CodedException With PricingError::QuoteUnavailable when a provider cannot quote, or the
-	 *                        tax quote leaves out a class the calculation needs.
+	 *                        tax quote leaves out a class the calculation needs; the router's refusals.
 	 *
-	 * @param PhaseAResult $phaseA The first phase's result.
+	 * @param PhaseAResult      $phaseA  The first phase's result.
+	 * @param RoutingScope|null $routing The request's routing scope, or null when it asks for no plan.
 	 * @return Quotes The quotes.
 	 */
-	private function quotes( PhaseAResult $phaseA ): Quotes {
-		$input   = $phaseA->input;
-		$rates   = $this->shipping->quote( new ShippingQuoteRequest( $phaseA->lines, $input->destination, $input->currency, $input->conversionContext, $input->calculatedAt ) );
-		$classes = array();
+	private function quotes( PhaseAResult $phaseA, ?RoutingScope $routing ): Quotes {
+		$input    = $phaseA->input;
+		$proposal = $this->route( $phaseA, $routing );
+		$origin   = $proposal?->originLocationId();
+		$rates    = $this->shipping->quote( new ShippingQuoteRequest( $phaseA->lines, $input->destination, $input->currency, $input->conversionContext, $input->calculatedAt, $origin ) );
+		$classes  = array();
 
 		foreach ( $phaseA->lines as $resolved ) {
 			$classes[] = $resolved->line->taxClass;
@@ -203,13 +216,50 @@ final class Calculator {
 		}
 
 		$classes = array_values( array_unique( $classes ) );
-		$tax     = $this->tax->quote( new TaxQuoteRequest( $classes, $input->destination, $input->calculatedAt ) );
+		$tax     = $this->tax->quote( new TaxQuoteRequest( $classes, $input->destination, $input->calculatedAt, $origin ) );
 
 		// A quote that leaves out a class cannot price it; charging it no tax instead would be the silent zero.
 		if ( ! $tax->covers( ...$classes ) ) {
 			CodedException::raise( PricingError::QuoteUnavailable, array( 'provider' => $tax->providerFingerprint ) );
 		}
 
-		return new Quotes( $rates, $tax, $phaseA->packagesFingerprint() );
+		return new Quotes( $rates, $tax, $phaseA->packagesFingerprint(), $proposal );
+	}
+
+	/**
+	 * Asks the router where the first phase's units are held, when the request asks for a plan and knows where the order goes.
+	 *
+	 * The order goes somewhere once the request has a destination, or its scope a pickup location.
+	 * A request with no line plans nothing.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException|\LogicException The router's refusals (FulfilmentRouter::propose()); a \LogicException
+	 *         when a plan is asked for of a calculator given no router.
+	 *
+	 * @param PhaseAResult      $phaseA  The first phase's result.
+	 * @param RoutingScope|null $routing The request's routing scope, or null when it asks for no plan.
+	 * @return RoutingProposal|null The proposal; null when none was asked for, or there is no line or nowhere to send it yet.
+	 */
+	private function route( PhaseAResult $phaseA, ?RoutingScope $routing ): ?RoutingProposal {
+		if ( null === $routing || ( null === $phaseA->input->destination && null === $routing->pickupLocationId ) ) {
+			return null;
+		}
+
+		$units = array();
+
+		foreach ( $phaseA->lines as $resolved ) {
+			$units[ $resolved->line->variantId ] = ( $units[ $resolved->line->variantId ] ?? 0 ) + $resolved->line->quantity;
+		}
+
+		if ( array() === $units ) {
+			return null;
+		}
+
+		if ( null === $this->router ) {
+			throw new \LogicException( 'A routing scope asks for a fulfilment plan, and this calculator was given no router to ask.' );
+		}
+
+		return $this->router->propose( $units, $routing );
 	}
 }

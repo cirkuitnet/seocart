@@ -17,6 +17,7 @@ use SEOCart\Checkout\Application\ReceiveWebhook;
 use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Contracts\Payment\Outcome;
+use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Domain\Webhook\ReceiptResult;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
@@ -30,6 +31,7 @@ use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Money;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
+use SEOCart\Tests\Support\Checkout\RoutedPlacements;
 use SEOCart\Tests\Support\Payment\StubWebhooks;
 use SEOCart\Tests\Support\Performance\ReferenceCarts;
 use SEOCart\Tests\Support\Pricing\Inputs;
@@ -44,7 +46,11 @@ use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
  * of a statement is the first placement step its caller passed through; a transaction's own
  * control statements are counted apart. The session is read once, before the transaction; a
  * cart's hold rows are one insert, and so are its allocation rows and the outbox rows of one
- * publish; the allocation reads the hold's rows, item by item, once.
+ * publish; the allocation reads the hold's rows, item by item, once. The calculation plans where
+ * the units are held: it reads the locations, the units each has, and the store's routing mode
+ * with the days a transfer adds (one read of their group), each once, cold; the first unit
+ * records the location the order ships from, and the second reads the mode again only when a
+ * unit is allocated away from it, warm in the same request.
  *
  * Planted violations: in PlaceOrder::placeInside(), read the session again before storing its
  * quotes: the first unit's count grows by one, and the step is named; and in
@@ -61,6 +67,7 @@ use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
 final class PlacementBudgetTest extends PlacementTestCase {
 
 	use PricesInCurrencies;
+	use RoutedPlacements;
 
 	/**
 	 * The steps of a placement, each with the caller that marks it, the most specific first.
@@ -103,8 +110,8 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 * @var array{before: int, first: int, between: int, second: int}
 	 */
 	private const CART_A = array(
-		'before'  => 7,
-		'first'   => 31,
+		'before'  => 10,
+		'first'   => 32,
 		'between' => 1,
 		'second'  => 34,
 	);
@@ -117,8 +124,8 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 * @var array{before: int, first: int, between: int, second: int}
 	 */
 	private const CART_B = array(
-		'before'  => 8,
-		'first'   => 44,
+		'before'  => 11,
+		'first'   => 45,
 		'between' => 1,
 		'second'  => 52,
 	);
@@ -131,8 +138,8 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 * @var array{before: int, first: int, between: int, second: int}
 	 */
 	private const CART_B_PRESENTMENT = array(
-		'before'  => 9,
-		'first'   => 44,
+		'before'  => 12,
+		'first'   => 45,
 		'between' => 1,
 		'second'  => 52,
 	);
@@ -145,8 +152,8 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 * @var array{before: int, first: int, between: int, second: int}
 	 */
 	private const CART_A_NOTHING_DUE = array(
-		'before'  => 8,
-		'first'   => 33,
+		'before'  => 11,
+		'first'   => 34,
 		'between' => 0,
 		'second'  => 30,
 	);
@@ -159,10 +166,38 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 * @var array{before: int, first: int, between: int, second: int}
 	 */
 	private const CART_A_ACTING = array(
-		'before'  => 7,
-		'first'   => 31,
+		'before'  => 10,
+		'first'   => 32,
 		'between' => 1,
 		'second'  => 15,
+	);
+
+	/**
+	 * The statements of each part of a placement of Cart B whose plan brings one line to the order's location: that line's units are all at a warehouse that ships no online orders, the other nine lines' at the default location, the order's. One source: one transfer requested, and the order's record of it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array{before: int, first: int, between: int, second: int}
+	 */
+	private const CART_B_TRANSFER = array(
+		'before'  => 11,
+		'first'   => 45,
+		'between' => 1,
+		'second'  => 57,
+	);
+
+	/**
+	 * The statements of each part of a placement of Cart A whose units are all at a warehouse that ships no online orders, the default location, the order's, holding none: the first unit locks that location's row in share mode, and the second requests one transfer and records it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array{before: int, first: int, between: int, second: int}
+	 */
+	private const CART_A_TRANSFER = array(
+		'before'  => 10,
+		'first'   => 33,
+		'between' => 1,
+		'second'  => 39,
 	);
 
 	/**
@@ -173,6 +208,15 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 * @var int
 	 */
 	private const WEBHOOK_EXTRA = 8;
+
+	/**
+	 * The statement a settlement in a request of its own adds when it allocates a unit away from the order's location: the store's routing mode, read cold, to know whether to request a transfer.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const COLD_MODE_READ = 1;
 
 	/**
 	 * The most statements a placement of Cart B in a presentment currency may send beyond one in the base currency.
@@ -278,6 +322,57 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Tests that placing Cart B with one line brought from a warehouse stays within its baseline, in two transactions.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_placing_cart_b_with_one_line_brought_from_a_warehouse_stays_within_its_baseline(): void {
+		$variants  = $this->readyCartB();
+		$warehouse = $this->plantLocation( 5, true, false );
+
+		// The first line's units are all at the warehouse; the other nine lines' at the default location, the order's.
+		$this->stockAt( $variants[0], $this->defaultLocation(), 0 );
+		$this->stockAt( $variants[0], $warehouse, 10 );
+		$this->routeIn( FulfilmentMode::Transfer );
+
+		$parts = $this->measure( 'Cart B, transfer' );
+
+		$this->assertWithin( self::CART_B_TRANSFER, $parts, 'Cart B, transfer' );
+		$this->assertSame( array( 'requested:' . $warehouse . '>' . $this->defaultLocation() ), $this->transfersOf( $this->lastOrder() ) );
+	}
+
+	/**
+	 * Tests that placing Cart A whose units are all at a warehouse stays within its baseline, in two transactions.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_placing_cart_a_from_a_warehouse_stays_within_its_baseline(): void {
+		$variant   = $this->sellable( 0, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+		$warehouse = $this->plantLocation( 5, true, false );
+
+		// The default location, the order's, holds none of the units: the warehouse has them all.
+		$this->stockAt( $variant, $warehouse, 5 );
+		$this->routeIn( FulfilmentMode::Transfer );
+		$this->readyCart( self::quantities( ReferenceCarts::cartA( $variant ) ) );
+
+		$parts = $this->measure( 'Cart A, transfer' );
+
+		$this->assertWithin( self::CART_A_TRANSFER, $parts, 'Cart A, transfer' );
+		$this->assertSame( array( 'requested:' . $warehouse . '>' . $this->defaultLocation() ), $this->transfersOf( $this->lastOrder() ) );
+	}
+
+	/**
+	 * Returns the newest order's id.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return int The order.
+	 */
+	private function lastOrder(): int {
+		return (int) $this->db->fetchValue( 'SELECT MAX( id ) FROM %i', $this->table( OrderTables::ORDERS ) );
+	}
+
+	/**
 	 * Tests that settling Cart A and Cart B by a delivered approval, for placements the gateway never answered, costs the second unit of work and WEBHOOK_EXTRA statements, exactly.
 	 *
 	 * @since 0.2.0
@@ -292,6 +387,16 @@ final class PlacementBudgetTest extends PlacementTestCase {
 
 		$this->readyCartB();
 		$this->assertSame( self::CART_B['second'] + self::WEBHOOK_EXTRA, $this->settledByWebhook( 'Cart B' ), 'Cart B, settled by a delivered approval.' );
+
+		// Cart A again, its units all at a warehouse: the settlement requests the transfer, reading the mode cold.
+		$away      = $this->sellable( 0, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+		$warehouse = $this->plantLocation( 5, true, false );
+
+		$this->stockAt( $away, $warehouse, 5 );
+		$this->routeIn( FulfilmentMode::Transfer );
+		$this->readyCart( self::quantities( ReferenceCarts::cartA( $away ) ) );
+		$this->assertSame( self::CART_A_TRANSFER['second'] + self::WEBHOOK_EXTRA + self::COLD_MODE_READ, $this->settledByWebhook( 'Cart A, transfer' ), 'Cart A, transfer, settled by a delivered approval.' );
+		$this->assertSame( array( 'requested:' . $warehouse . '>' . $this->defaultLocation() ), $this->transfersOf( $this->lastOrder() ) );
 	}
 
 	/**
@@ -348,6 +453,9 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		$this->enableCurrency( 'EUR' );
 		self::ratesOver( $this->db, static function (): void {} )->saveVersion( array( self::rateTo( 'EUR', '0.91230' ) ), Actor::user( 0 ) );
 		$this->plantBootRecord( 1 );
+
+		// Building the placement read the boot record; a request that starts now reads it as planted.
+		$this->placement = $this->freshPlacement();
 
 		$this->readyCartB();
 		$this->assertSame( 1, $this->db->execute( "UPDATE %i SET currency = 'EUR' WHERE status = 'open'", $this->table( CartTables::CARTS ) ), 'One cart is open.' );

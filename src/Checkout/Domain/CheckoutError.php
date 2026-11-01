@@ -179,7 +179,7 @@ enum CheckoutError: string implements ErrorCode {
 				self::TotalsChanged,
 				409,
 				static fn(): string => __( 'The cart\'s totals have changed since you read them, so no order was placed. Check the new totals, then place the order again with them.', 'seocart' ),
-				details: array( 'version', 'totals' )
+				details: array( 'version', 'totals', 'delivery' )
 			),
 			new ErrorDefinition(
 				self::LineUnsellable,

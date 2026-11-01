@@ -12,10 +12,15 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Inventory;
 
 use SEOCart\Inventory\Application\Availability;
+use SEOCart\Inventory\Application\FulfilmentRouting;
+use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Inventory\Application\LocationDirectory;
+use SEOCart\Inventory\Application\RoutingContext;
+use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
+use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Inventory\StockTestCase;
 
 /**
@@ -84,7 +89,7 @@ final class AvailabilityTest extends StockTestCase {
 			$this->assertSame(
 				array(
 					$untracked => null,
-					$backorder => null,
+					$backorder => 0,
 					$short     => 2,
 					$missing   => 0,
 				),
@@ -97,6 +102,68 @@ final class AvailabilityTest extends StockTestCase {
 		wp_cache_delete( MysqlLocationRepository::CACHE_KEY, MysqlLocationRepository::CACHE_GROUP );
 
 		$this->assertSame( array( $short => 0 ), $this->availability( FulfilmentMode::Split )->forSale( array( $short ), null ), 'No location ships online orders.' );
+	}
+
+	/**
+	 * Tests that, over every policy and availability, the router plans a unit only when a hold's claim takes it, unraced, and the figure for sale agrees.
+	 *
+	 * A variant whose stock is counted is sold from its units, whatever its backorder policy; an
+	 * untracked one has no limit and no hold.
+	 *
+	 * Planted violation: in StockPolicy::sellsBeyondStock(), answer true for backorder `allow` too:
+	 * the router then plans the unit the claim refuses.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_router_plans_a_unit_only_when_the_claim_takes_it(): void {
+		$routing = new FulfilmentRouting( new LocationDirectory( new MysqlLocationRepository( $this->db ) ), $this->repository, static fn(): FulfilmentMode => FulfilmentMode::Split );
+
+		foreach ( array( array( true, 'no' ), array( true, 'allow' ), array( false, 'no' ) ) as list( $track, $backorder ) ) {
+			foreach ( array( 0, 2 ) as $onHand ) {
+				$variant = self::variant();
+				$case    = sprintf( 'track %d, backorder %s, %d on hand', $track ? 1 : 0, $backorder, $onHand );
+
+				$this->plantPolicy( $variant, $track, $backorder );
+				$this->db->execute( 'INSERT INTO %i ( variant_id, location_id, on_hand, updated_at ) VALUES ( %d, %d, %d, UTC_TIMESTAMP(6) )', $this->table( InventoryTables::ITEMS ), $variant, $this->defaultLocation, $onHand );
+
+				$planned = null;
+
+				try {
+					$planned = $routing->propose( array( $variant => 1 ), RoutingContext::none() );
+				} catch ( CodedException $refused ) {
+					$this->assertSame( array( InventoryError::RoutingRefused, 'quantity', 0 ), array( $refused->errorCode(), $refused->details()['reason'] ?? null, $refused->details()['available'] ?? null ), $case );
+				}
+
+				$figure = $this->availability( FulfilmentMode::Split )->forSale( array( $variant ), null )[ $variant ];
+
+				if ( null === $planned ) {
+					$this->assertSame( 0, $figure, $case . ': a unit the router refuses is shown for sale.' );
+					$this->assertRefusedHold( $variant, $case );
+
+					continue;
+				}
+
+				$this->assertSame( $track ? $onHand : null, $figure, $case );
+				$this->service->hold( $planned->lines, 60 );
+			}
+		}
+	}
+
+	/**
+	 * Asserts that a hold of one unit of a variant is refused as insufficient.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int    $variantId The variant.
+	 * @param string $label     The case, for the message.
+	 */
+	private function assertRefusedHold( int $variantId, string $label ): void {
+		try {
+			$this->service->hold( array( new HoldLine( $variantId, 1 ) ), 60 );
+			$this->fail( $label . ': a unit was held that the router refused.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( InventoryError::Insufficient, $refused->errorCode(), $label );
+		}
 	}
 
 	/**

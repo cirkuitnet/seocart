@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Pricing\Application;
 
+use SEOCart\Pricing\Domain\Quote\RoutingProposal;
 use SEOCart\Pricing\Domain\Totals\Totals;
 use SEOCart\Pricing\Domain\Totals\TraceEntry;
 
@@ -23,9 +24,10 @@ defined( 'ABSPATH' ) || exit;
  * arithmetic; while any line is unpriced, an order must not be placed. What an order records
  * beside the totals, and the totals do not name, is read here from the calculation's own trace,
  * so no caller reads the trace's entries itself: the promotions that applied, the shipping rate
- * selected and the fingerprint of the tax quote.
+ * selected, the fingerprint of the tax quote and the routing proposal.
  *
  * @since 0.1.0
+ * @since 0.2.0 Reads the routing proposal back.
  */
 final readonly class Calculation {
 
@@ -127,6 +129,20 @@ final readonly class Calculation {
 		}
 
 		return hash( 'sha256', implode( "\n", $lines ) );
+	}
+
+	/**
+	 * Returns the fulfilment plan the calculation was quoted with, as its trace recorded it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return RoutingProposal|null The proposal; null when none was asked for, or the request had no line
+	 *                              or nowhere to send it.
+	 */
+	public function routingProposal(): ?RoutingProposal {
+		$recorded = $this->recorded( TraceEntry::QUOTE, 'routing' );
+
+		return array() === $recorded ? null : RoutingProposal::fromArray( $recorded[0] );
 	}
 
 	/**

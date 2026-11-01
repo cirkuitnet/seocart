@@ -41,6 +41,11 @@ defined( 'ABSPATH' ) || exit;
  * the order was being paid for, every claim still carries its invariant, and a deadlock it causes
  * is rolled back whole and run again by the deadlock retry policy, as any other is.
  *
+ * A location's row comes before every item. A placement whose order is fulfilled from a location
+ * none of its units are held at locks that location's row in share mode before it claims any
+ * item (LocationRepository::lockSharedById()), since no item row there keeps the location from
+ * being deleted; a location's deletion takes the row's exclusive lock before it reads what uses it.
+ *
  * A second exception, by design: an allocation travelling with a transfer, `in_transit`, counts
  * at no item, so it is written (set, shrunk, deleted or cancelled) under its transfer's row lock,
  * which every writer of a transfer's allocations takes first, not under an item's. The units it

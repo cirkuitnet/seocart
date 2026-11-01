@@ -169,8 +169,8 @@ final class WebhookRouteTest extends WebhookTestCase {
 	public function test_a_switched_off_gateway_still_receives_its_deliveries(): void {
 		global $wpdb;
 
-		// The boot record holds the switch; it is planted before anything reads it.
-		( new BootOption( $this->db, $this->reporter() ) )->mutate( static fn(): BootRecord => KernelTestCase::installedRecord() );
+		// The boot record holds the switch; it is planted through the kernel's own boot option, which building the placement read already.
+		$this->kernel->get( BootOption::class )->mutate( static fn(): BootRecord => KernelTestCase::installedRecord() );
 
 		try {
 			$placed   = $this->placed( StubGateway::THROW );

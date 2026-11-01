@@ -17,6 +17,7 @@ use SEOCart\Order\Domain\FulfillmentStatus;
 use SEOCart\Order\Domain\LineOption;
 use SEOCart\Order\Domain\LockedOrder;
 use SEOCart\Order\Domain\Machine;
+use SEOCart\Order\Domain\OrderStockLines;
 use SEOCart\Order\Domain\NewOrder;
 use SEOCart\Order\Domain\NewTaxComponent;
 use SEOCart\Order\Domain\OrderAccess;
@@ -72,13 +73,17 @@ final class MysqlOrderRepository implements OrderRepository {
 	/**
 	 * The order row, in its first status; the access key expires the given seconds after placed_at, both by the database clock.
 	 *
+	 * 0 stands for no fulfilment location, and -1 for no transfer's days: 0 days is a value.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The fulfilment location and the days a transfer adds.
 	 *
 	 * @var string
 	 */
 	public const INSERT_ORDER = 'INSERT INTO {orders} SET uuid = %s, order_number = %s, channel = %s, actor_type = %s, actor_id = NULLIF( %d, 0 ), '
 		. 'status = %s, customer_id = NULLIF( %d, 0 ), email = %s, currency = %s, base_currency = %s, conversion_context_id = %d, '
-		. "locale = %s, market_id = NULLIF( %d, 0 ), tax_display_mode_snapshot = NULLIF( %s, '' ), cross_zone_policy_snapshot = %s, tax_rounding_mode_snapshot = %s, "
+		. 'locale = %s, market_id = NULLIF( %d, 0 ), fulfilment_location_id = NULLIF( %d, 0 ), transfer_lead_days = NULLIF( %d, -1 ), '
+		. "tax_display_mode_snapshot = NULLIF( %s, '' ), cross_zone_policy_snapshot = %s, tax_rounding_mode_snapshot = %s, "
 		. 'subtotal_minor = %d, discount_total_minor = %d, shipping_total_minor = %d, fee_total_minor = %d, tax_total_minor = %d, grand_total_minor = %d, due_minor = %d, '
 		. 'base_subtotal_minor = %d, base_discount_total_minor = %d, base_shipping_total_minor = %d, base_fee_total_minor = %d, base_tax_total_minor = %d, base_grand_total_minor = %d, '
 		. "hold_group = NULLIF( %s, '' ), access_key_hash = %s, access_key_expires_at = UTC_TIMESTAMP() + INTERVAL %d SECOND, "
@@ -191,17 +196,18 @@ final class MysqlOrderRepository implements OrderRepository {
 	public const APPEND_EVENT = "INSERT INTO {order_events} SET order_id = %d, machine = %s, from_status = %s, to_status = %s, reason = %s, actor_type = %s, actor_id = NULLIF( %d, 0 ), correlation_id = NULLIF( %s, '' ), created_at = UTC_TIMESTAMP(6)";
 
 	/**
-	 * An event of the order's payment that changes no status, with what it records by its uuid: from and to are the payment status the order row has, by the primary key.
+	 * An event of one of the order's machines that changes no status, with what it records by its uuid: from and to are that machine's status the order row has, by the primary key.
 	 *
-	 * The order is locked by the caller's transaction, so the status copied is current. 0 stands for
-	 * no actor, and an empty string for no correlation id.
+	 * The machine's status column is named twice, by an identifier placeholder each time
+	 * (Machine::statusColumn()). The order is locked by the caller's transaction, so the status
+	 * copied is current. 0 stands for no actor, and an empty string for no correlation id.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
 	public const APPEND_AUDIT = 'INSERT INTO {order_events} ( order_id, machine, from_status, to_status, reason, reference, actor_type, actor_id, correlation_id, created_at ) '
-		. "SELECT id, %s, payment_status, payment_status, %s, %s, %s, NULLIF( %d, 0 ), NULLIF( %s, '' ), UTC_TIMESTAMP(6) FROM {orders} WHERE id = %d";
+		. "SELECT id, %s, %i, %i, %s, %s, %s, NULLIF( %d, 0 ), NULLIF( %s, '' ), UTC_TIMESTAMP(6) FROM {orders} WHERE id = %d";
 
 	/**
 	 * The order's lock: a locking read of what a transition, an acceptance and a payment decide from, with the order's last clearance, which money kept for a person is dated after.
@@ -373,7 +379,7 @@ final class MysqlOrderRepository implements OrderRepository {
 	 * @var string
 	 */
 	public const FIND_ORDER = 'SELECT id, uuid, order_number, status, payment_status, fulfillment_status, channel, currency, locale, email, customer_id, '
-		. 'subtotal_minor, discount_total_minor, shipping_total_minor, fee_total_minor, tax_total_minor, grand_total_minor, paid_minor, refunded_minor, due_minor, placed_at '
+		. 'subtotal_minor, discount_total_minor, shipping_total_minor, fee_total_minor, tax_total_minor, grand_total_minor, paid_minor, refunded_minor, due_minor, placed_at, transfer_lead_days '
 		. 'FROM {orders} WHERE uuid = %s';
 
 	/**
@@ -481,13 +487,15 @@ final class MysqlOrderRepository implements OrderRepository {
 	public const REFUNDED_QUANTITIES = 'SELECT id, line_uuid, refunded_quantity FROM {order_lines} WHERE id > %d ORDER BY id LIMIT %d';
 
 	/**
-	 * What each of an order's lines sells: its id, its variant and its units, by variant, for the stock it is allocated.
+	 * What each of an order's lines sells: its id, its variant and its units, by variant, for the stock it is allocated; with the order's market and the location it is fulfilled from, by its primary key.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Reads the order's market and fulfilment location in the same statement.
 	 *
 	 * @var string
 	 */
-	public const STOCK_LINES = 'SELECT id, variant_id, quantity FROM {order_lines} WHERE order_id = %d ORDER BY variant_id, id';
+	public const STOCK_LINES = 'SELECT l.id, l.variant_id, l.quantity, o.market_id, o.fulfilment_location_id FROM {orders} o JOIN {order_lines} l ON l.order_id = o.id '
+		. 'WHERE o.id = %d ORDER BY l.variant_id, l.id';
 
 	/**
 	 * An order's public identifier, status and payment status, and when a person last cleared its unreconciled money, by its internal id: a plain read, which locks nothing.
@@ -498,6 +506,24 @@ final class MysqlOrderRepository implements OrderRepository {
 	 * @var string
 	 */
 	public const STATUS_OF = 'SELECT uuid, status, payment_status, money_reconciled_at FROM {orders} WHERE id = %d';
+
+	/**
+	 * Whether any order is fulfilled from a location, on the `fulfilment_location` key: what a location's deletion asks.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ORDERS_AT_LOCATION = 'SELECT EXISTS ( SELECT 1 FROM {orders} WHERE fulfilment_location_id = %d ) AS fulfilled';
+
+	/**
+	 * The location each of some orders is fulfilled from, by the primary key: what doctor compares an order's allocations with.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FULFILMENT_LOCATIONS_OF = 'SELECT id, fulfilment_location_id FROM {orders} WHERE id IN ({list})';
 
 	/**
 	 * The scope of a line's tax component.
@@ -605,6 +631,9 @@ final class MysqlOrderRepository implements OrderRepository {
 
 		$totals = $order->totals;
 
+		// The statement reads -1 as no transfer's days, since 0 days is a value.
+		$leadDays = $order->transferLeadDays ?? -1;
+
 		$this->statements->execute(
 			self::INSERT_ORDER,
 			$uuid,
@@ -620,6 +649,8 @@ final class MysqlOrderRepository implements OrderRepository {
 			$conversionContextId,
 			$order->locale->toString(),
 			$order->marketId ?? 0,
+			$order->fulfilmentLocationId ?? 0,
+			$leadDays,
 			$totals->taxDisplayMode ?? '',
 			$totals->crossZonePolicy,
 			$totals->taxRoundingMode,
@@ -929,13 +960,14 @@ final class MysqlOrderRepository implements OrderRepository {
 	}
 
 	/**
-	 * Appends an event of the order's payment that changes no status, naming what it records.
+	 * Appends an event of one of the order's machines that changes no status, naming what it records.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @throws \LogicException Outside a transaction, or when no order has the id.
 	 *
 	 * @param int      $orderId       The order.
+	 * @param Machine  $machine       The machine the event is of, whose status it copies.
 	 * @param string   $reason        What happened.
 	 * @param string   $reference     The uuid of what it records.
 	 * @param string   $actorType     `user` or `system`.
@@ -943,10 +975,10 @@ final class MysqlOrderRepository implements OrderRepository {
 	 * @param string   $correlationId The request's correlation id.
 	 * @return int The event row's id.
 	 */
-	public function appendAudit( int $orderId, string $reason, string $reference, string $actorType, ?int $actorId, string $correlationId ): int {
+	public function appendAudit( int $orderId, Machine $machine, string $reason, string $reference, string $actorType, ?int $actorId, string $correlationId ): int {
 		$this->statements->requireTransaction( __METHOD__ );
 
-		if ( 1 !== $this->statements->execute( self::APPEND_AUDIT, Machine::Payment->value, $reason, $reference, $actorType, $actorId ?? 0, $correlationId, $orderId ) ) {
+		if ( 1 !== $this->statements->execute( self::APPEND_AUDIT, $machine->value, $machine->statusColumn(), $machine->statusColumn(), $reason, $reference, $actorType, $actorId ?? 0, $correlationId, $orderId ) ) {
 			throw new \LogicException( sprintf( 'Order %d has no row to record an event of: the caller\'s lock rules that out.', $orderId ) );
 		}
 
@@ -1253,7 +1285,8 @@ final class MysqlOrderRepository implements OrderRepository {
 			new \DateTimeImmutable( (string) $row['placed_at'], new \DateTimeZone( 'UTC' ) ),
 			$this->lineViews( $orderId, $money ),
 			$addresses[ self::BILLING ],
-			$addresses[ self::SHIPPING ] ?? null
+			$addresses[ self::SHIPPING ] ?? null,
+			null === $row['transfer_lead_days'] ? null : (int) $row['transfer_lead_days']
 		);
 	}
 
@@ -1433,22 +1466,69 @@ final class MysqlOrderRepository implements OrderRepository {
 	}
 
 	/**
-	 * Reads what each of an order's lines sells, by variant.
+	 * Reads what each of an order's lines sells, by variant, with the order's market and fulfilment location.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Answers the order's market and fulfilment location too.
 	 *
 	 * @param int $orderId The order.
-	 * @return list<array{orderLineId: int, variantId: int, quantity: int}> The lines, by variant and then by id.
+	 * @return OrderStockLines The lines, by variant and then by id, and the order's facts; none for no such order.
 	 */
-	public function stockLines( int $orderId ): array {
-		return array_map(
-			static fn( array $row ): array => array(
-				'orderLineId' => (int) $row['id'],
-				'variantId'   => (int) $row['variant_id'],
-				'quantity'    => (int) $row['quantity'],
+	public function stockLines( int $orderId ): OrderStockLines {
+		$rows = $this->statements->rows( self::STOCK_LINES, $orderId );
+
+		if ( array() === $rows ) {
+			return OrderStockLines::none();
+		}
+
+		return new OrderStockLines(
+			array_map(
+				static fn( array $row ): array => array(
+					'orderLineId' => (int) $row['id'],
+					'variantId'   => (int) $row['variant_id'],
+					'quantity'    => (int) $row['quantity'],
+				),
+				$rows
 			),
-			$this->statements->rows( self::STOCK_LINES, $orderId )
+			null === $rows[0]['market_id'] ? null : (int) $rows[0]['market_id'],
+			null === $rows[0]['fulfilment_location_id'] ? null : (int) $rows[0]['fulfilment_location_id']
 		);
+	}
+
+	/**
+	 * Tells whether any order is fulfilled from a location.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId The location's id.
+	 * @return bool True when one is.
+	 */
+	public function anyFulfilledFrom( int $locationId ): bool {
+		return '1' === (string) ( $this->statements->rows( self::ORDERS_AT_LOCATION, $locationId )[0]['fulfilled'] ?? '0' );
+	}
+
+	/**
+	 * Reads the location each of some orders is fulfilled from.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $orderIds The orders.
+	 * @return array<int, int|null> Each order found, by id, with its location or null for none recorded.
+	 *
+	 * @phpstan-param list<int> $orderIds
+	 */
+	public function fulfilmentLocationsOf( array $orderIds ): array {
+		$found = array();
+
+		if ( array() === $orderIds ) {
+			return $found;
+		}
+
+		foreach ( $this->statements->rows( self::FULFILMENT_LOCATIONS_OF, $orderIds ) as $row ) {
+			$found[ (int) $row['id'] ] = null === $row['fulfilment_location_id'] ? null : (int) $row['fulfilment_location_id'];
+		}
+
+		return $found;
 	}
 
 	/**

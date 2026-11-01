@@ -57,6 +57,8 @@ final readonly class OrderView {
 	 * @param OrderLineView[]    $lines             Its lines, in their order.
 	 * @param Address            $billingAddress    The billing address.
 	 * @param Address|null       $shippingAddress   The shipping address, or null when nothing is shipped.
+	 * @param int|null           $transferLeadDays  Optional. The extra days its shopper was told a transfer adds, as
+	 *                                              told at placement; null when it needed no transfer. Default null.
 	 */
 	public function __construct(
 		public string $uuid,
@@ -81,7 +83,8 @@ final readonly class OrderView {
 		public \DateTimeImmutable $placedAt,
 		public array $lines,
 		public Address $billingAddress,
-		public ?Address $shippingAddress
+		public ?Address $shippingAddress,
+		public ?int $transferLeadDays = null
 	) {
 	}
 }

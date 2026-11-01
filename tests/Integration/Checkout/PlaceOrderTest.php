@@ -124,7 +124,7 @@ final class PlaceOrderTest extends PlacementTestCase {
 		$answer = $this->placement->place( $this->placeInput(), self::guest() );
 		$b      = $this->secondConnection();
 
-		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status', 'next_action' ), array_keys( $answer ) );
+		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status', 'transfer_days', 'next_action' ), array_keys( $answer ) );
 		$this->assertSame( array( 'approved', 'processing', 'authorized', 3 ), array( $answer['outcome'], $answer['status'], $answer['payment_status'], $answer['cart_version'] ) );
 
 		$order = $this->committedOrder( $b, $answer['order_uuid'] );

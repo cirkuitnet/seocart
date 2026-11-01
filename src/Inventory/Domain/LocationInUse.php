@@ -65,4 +65,11 @@ enum LocationInUse: string {
 	 * @since 0.2.0
 	 */
 	case Transfers = 'transfers';
+
+	/**
+	 * An order is fulfilled from it.
+	 *
+	 * @since 0.2.0
+	 */
+	case Orders = 'orders';
 }

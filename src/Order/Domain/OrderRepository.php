@@ -150,7 +150,7 @@ interface OrderRepository {
 	public function appendEvent( int $orderId, Machine $machine, string $from, string $to, string $reason, string $actorType, ?int $actorId, string $correlationId ): int;
 
 	/**
-	 * Appends an event of the order's payment that changes no status, naming what it records by its uuid: its from and to are the payment status the order has.
+	 * Appends an event of one of the order's machines that changes no status, naming what it records by its uuid: its from and to are that machine's status the order has.
 	 *
 	 * Inside the caller's transaction, which has locked the order, so the status it copies is the
 	 * order's as the transaction leaves it.
@@ -160,6 +160,7 @@ interface OrderRepository {
 	 * @throws \LogicException Outside a transaction, or when no order has the id, which the caller's lock rules out.
 	 *
 	 * @param int      $orderId       The order.
+	 * @param Machine  $machine       The machine the event is of, whose status it copies.
 	 * @param string   $reason        What happened, a lowercase snake_case word such as `refund_recorded`.
 	 * @param string   $reference     The uuid of what it records, such as the refund's.
 	 * @param string   $actorType     `user` or `system`.
@@ -167,7 +168,7 @@ interface OrderRepository {
 	 * @param string   $correlationId The request's correlation id.
 	 * @return int The event row's id.
 	 */
-	public function appendAudit( int $orderId, string $reason, string $reference, string $actorType, ?int $actorId, string $correlationId ): int;
+	public function appendAudit( int $orderId, Machine $machine, string $reason, string $reference, string $actorType, ?int $actorId, string $correlationId ): int;
 
 	/**
 	 * Reads the order with a locking read: the transaction's lock of the order, and the values it decides from.
@@ -345,14 +346,37 @@ interface OrderRepository {
 	public function refundedQuantities( int $afterId, int $limit ): array;
 
 	/**
-	 * Reads what each of an order's lines sells: its id, its variant and its units, in variant order.
+	 * Reads what each of an order's lines sells: its id, its variant and its units, in variant order; with the order's market and fulfilment location, in the same read.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Answers the order's market and fulfilment location too.
 	 *
 	 * @param int $orderId The order's internal id.
-	 * @return list<array{orderLineId: int, variantId: int, quantity: int}> The lines, by variant and then by id; none for no such order.
+	 * @return OrderStockLines The lines, by variant and then by id, and the order's facts; none for no such order.
 	 */
-	public function stockLines( int $orderId ): array;
+	public function stockLines( int $orderId ): OrderStockLines;
+
+	/**
+	 * Tells whether any order is fulfilled from a location: one read, on an index, which locks nothing.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId The location's id.
+	 * @return bool True when one is.
+	 */
+	public function anyFulfilledFrom( int $locationId ): bool;
+
+	/**
+	 * Reads the location each of some orders is fulfilled from: one read, by the primary key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $orderIds The orders.
+	 * @return array<int, int|null> Each order found, by id, with its location or null for none recorded.
+	 *
+	 * @phpstan-param list<int> $orderIds
+	 */
+	public function fulfilmentLocationsOf( array $orderIds ): array;
 
 	/**
 	 * Reads an order's public identifier, status and payment status, and when a person last cleared its unreconciled money, by its internal id, without a lock.

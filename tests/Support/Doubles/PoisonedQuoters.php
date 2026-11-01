@@ -90,6 +90,24 @@ final class PoisonedQuoters {
 	public array $shippedLineCounts = array();
 
 	/**
+	 * The origin location each shipping quote was asked from, in order.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<int|null>
+	 */
+	public array $shippingOrigins = array();
+
+	/**
+	 * The origin location each tax quote was asked from, in order.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<int|null>
+	 */
+	public array $taxOrigins = array();
+
+	/**
 	 * Holds the answers.
 	 *
 	 * @since 0.1.0
@@ -228,6 +246,7 @@ final class PoisonedQuoters {
 
 		++$this->shippingCalls;
 		$this->shippedLineCounts[] = count( $request->lines );
+		$this->shippingOrigins[]   = $request->originLocationId;
 
 		if ( null !== $this->shippingFailure ) {
 			throw $this->shippingFailure;
@@ -251,6 +270,7 @@ final class PoisonedQuoters {
 
 		++$this->taxCalls;
 		$this->taxClassesAsked[] = $request->taxClasses;
+		$this->taxOrigins[]      = $request->originLocationId;
 
 		return $this->taxQuote;
 	}

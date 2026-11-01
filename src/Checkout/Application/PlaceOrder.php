@@ -33,10 +33,12 @@ use SEOCart\Checkout\Domain\SettledPlacement;
 use SEOCart\Contracts\Payment\GatewayUnavailable;
 use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Contracts\Payment\NextAction;
+use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Order\Application\ActorCustomers;
 use SEOCart\Order\Application\Orders;
+use SEOCart\Order\Domain\Machine;
 use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Payment\Application\Gateways;
@@ -50,6 +52,8 @@ use SEOCart\Platform\RateLimiter\ClientIdentities;
 use SEOCart\Platform\RateLimiter\RateLimit;
 use SEOCart\Platform\RateLimiter\RateLimiter;
 use SEOCart\Pricing\Application\Calculation;
+use SEOCart\Pricing\Application\RoutingScope;
+use SEOCart\Pricing\Domain\Quote\RoutingProposal;
 use SEOCart\Pricing\Domain\Source;
 use SEOCart\Promotion\Application\PromotionUsage;
 use SEOCart\Promotion\Application\UsageClaim;
@@ -63,7 +67,9 @@ use SEOCart\Support\Error\CodedException;
  * Owns one fact: the order in which a placement does its work. Before anything is written, a
  * request whose key an earlier request placed its order with is answered as that one was; then
  * the cart, its checkout and its totals are checked, and the cart is priced from what the store
- * holds, never from the client: the client's grand total must be the one priced. The payment
+ * holds, never from the client: the client's grand total must be the one priced. The pricing plans
+ * where the order's units are held and the one location it is fulfilled from, from the stock as
+ * read then. The payment
  * method chosen must still be able to take that total, by its gateway's capability matrix and the
  * gateway's own rules, before anything is written; the payment is created in the mode the gateway
  * takes new payments in now. Then two units of
@@ -73,14 +79,26 @@ use SEOCart\Support\Error\CodedException;
  * 1. the first, in the lock order every placement keeps (the cart, the key, the stock items in
  *    ascending order, the order's number and rows, the promotions in ascending order, the intent):
  *    the cart's claim, which moves it to placing; the key's claim; the sale decision, read as last
- *    committed, so a product being saved now is refused; the stock hold; the order, written from
- *    the totals; the promotions' uses; the payment intent, for the order's total, when anything is
+ *    committed, so a product being saved now is refused; the stock hold, each unit where the plan
+ *    found it, with the destination's row locked first when none is held there; the order, written
+ *    from the totals with the location it is fulfilled from and the days a transfer was said to
+ *    add, and the `routed` event naming that location; the promotions' uses; the payment intent, for the order's total, when anything is
  *    due; the order's binding to the cart; the quotes the totals were priced with, kept on the
  *    session; and the key's completion, with the answer a retry gets. Any refusal rolls all of it
  *    back.
  * 2. the second is SettlePlacement's: the gateway's result applied through the one money path,
  *    and the stock, the promotions and the cart settled by what it came to. An order with nothing
  *    due has no intent and the gateway is not asked: the second unit settles it as paid.
+ *
+ * The plan is made from what was available before the first unit began, so another checkout may
+ * take a planned unit first, or the location the order is fulfilled from may be deleted or
+ * deactivated. When the first unit is refused for that (`stock.insufficient`,
+ * `stock.location_missing`, `stock.location_inactive`), the placement prices and plans once more,
+ * from the stock as it is now, and tries the first unit once more with the fresh plan, never a
+ * third time. A fresh plan that holds the same units at the same locations cannot do better, so
+ * the first refusal is the answer; a fresh plan that changes whether units must be brought
+ * together changes what the shopper was told, so the answer is `checkout.totals_changed` with the
+ * new delivery; and a fresh total the client did not agree to is `checkout.totals_changed` as ever.
  *
  * The first unit's answer is kept with the key, so a client that lost its answer and sends the same
  * request again gets it back, its access key included; the key is kept sealed with the cart's
@@ -95,9 +113,20 @@ use SEOCart\Support\Error\CodedException;
  * cart the request's token was found to name.
  *
  * @since 0.1.0
- * @since 0.2.0 Checks the payment method can take the payment, and records the payment's mode.
+ * @since 0.2.0 Checks the payment method can take the payment, and records the payment's mode. Holds
+ *              each unit where the plan found it, records where the order is fulfilled from, and plans
+ *              once more when the plan went stale.
  */
 final class PlaceOrder {
+
+	/**
+	 * The reason of the order event that records the location an order is fulfilled from.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ROUTED = 'routed';
 
 	/**
 	 * How long a key is kept after it is claimed, in seconds: thirty days.
@@ -164,6 +193,7 @@ final class PlaceOrder {
 	 * @param RateLimiter        $limiter     Counts each cart's declined payments.
 	 * @param ClientIdentities   $identities  Names the cart a count is kept for.
 	 * @param Gateways           $gateways    The store's payment gateways, which say whether the payment method can take the payment.
+	 * @param PlannedPricing     $pricing     The cart's pricing with its plan, which may ask once more.
 	 */
 	public function __construct(
 		private CartService $carts,
@@ -180,7 +210,8 @@ final class PlaceOrder {
 		private TransactionManager $tx,
 		private RateLimiter $limiter,
 		private ClientIdentities $identities,
-		private Gateways $gateways
+		private Gateways $gateways,
+		private PlannedPricing $pricing
 	) {
 	}
 
@@ -208,8 +239,11 @@ final class PlaceOrder {
 	 *                        `cart.version_stale`; `checkout.cart_empty`,
 	 *                        `checkout.session_incomplete`, `checkout.line_unsellable`,
 	 *                        `checkout.totals_changed` and `checkout.payment_method_unavailable`,
-	 *                        before anything is written; `stock.insufficient` and
-	 *                        `promotion.limit_reached`, which roll the placement back;
+	 *                        before anything is written; `stock.routing_refused` and
+	 *                        `stock.no_fulfilling_location` when no plan gives the order its units;
+	 *                        `stock.insufficient`, `stock.location_missing`, `stock.location_inactive`
+	 *                        and `promotion.limit_reached`, which roll the placement back (the first
+	 *                        three once the placement has planned again);
 	 *                        `checkout.gateway_unavailable`, `checkout.payment_method_unavailable`
 	 *                        once the order is written and released, and `checkout.payment_declined`,
 	 *                        naming the order; the codes the calculation raises.
@@ -220,7 +254,8 @@ final class PlaceOrder {
 	 * @param Actor                $actor Who places the order.
 	 * @return array<string, mixed> The placement, by wire name: the order's uuid, number and access
 	 *                              key, the cart's version, the outcome, the order's status and
-	 *                              payment status, and what the shopper must do while they must act.
+	 *                              payment status, the extra days a transfer adds, and what the
+	 *                              shopper must do while they must act.
 	 */
 	public function place( array $input, Actor $actor ): array {
 		$key = (string) ( $input['idempotency_key'] ?? '' );
@@ -250,20 +285,119 @@ final class PlaceOrder {
 		$this->refuseAfterDeclines( $token );
 
 		$session     = $this->sessions->find( $cart->id );
-		$calculation = $this->priced( $cart, $session, $input );
+		$replan      = true;
+		$calculation = $this->priced( $cart, $session, $input, $replan );
 		$mode        = $this->paymentMode( $session, $calculation );
 
-		try {
-			$placed = $this->tx->transaction(
-				fn(): array => $this->placeInside( $cart, $session, $calculation, $mode, $keyHash, $fingerprint, $token, $key, $actor ),
-				RetryPolicy::deadlocks(),
-				Isolation::ReadCommitted
-			);
-		} catch ( CodedException $refused ) {
-			return $this->answerRefusedClaim( $refused, $keyHash, $fingerprint, $token, $key );
+		while ( true ) {
+			try {
+				$placed = $this->tx->transaction(
+					fn(): array => $this->placeInside( $cart, $session, $calculation, $mode, $keyHash, $fingerprint, $token, $key, $actor ),
+					RetryPolicy::deadlocks(),
+					Isolation::ReadCommitted
+				);
+
+				break;
+			} catch ( CodedException $refused ) {
+				if ( ! $replan || ! self::isStalePlan( $refused ) ) {
+					return $this->answerRefusedClaim( $refused, $keyHash, $fingerprint, $token, $key );
+				}
+
+				// One more plan, from the stock as it is now, unless the pricing planned again already; never a third attempt.
+				$replan      = false;
+				$calculation = $this->replanned( $cart, $session, $input, $calculation, $refused );
+				$mode        = $this->paymentMode( $session, $calculation );
+			}
 		}
 
 		return $this->paid( $placed, (array) ( $input['payment_data'] ?? array() ), $token, $key, $actor );
+	}
+
+	/**
+	 * Prices and plans the cart once more after the first unit of work found its plan stale, and decides whether the fresh plan may be tried.
+	 *
+	 * Runs at depth 0: the refused unit rolled back whole, the cart's claim and the key's with it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException What the fresh pricing refuses (priced()), its plan's refusals included;
+	 *                        `checkout.totals_changed` with the fresh delivery when the fresh plan changes
+	 *                        whether units must be brought together; the stale plan's own refusal when the
+	 *                        fresh plan holds the same units at the same locations.
+	 *
+	 * @param Cart                 $cart    The cart, as read before the first attempt.
+	 * @param CheckoutSession      $session Its checkout.
+	 * @param array<string, mixed> $input   The request's grand total and currency.
+	 * @param Calculation          $stale   The calculation whose plan the first unit could not hold.
+	 * @param CodedException       $refused What the first unit was refused.
+	 * @return Calculation The fresh calculation, whose plan differs from the stale one.
+	 */
+	private function replanned( Cart $cart, CheckoutSession $session, array $input, Calculation $stale, CodedException $refused ): Calculation {
+		$again = false;
+		$fresh = $this->priced( $cart, $session, $input, $again );
+		$was   = self::routingOf( $stale );
+		$now   = self::routingOf( $fresh );
+
+		if ( $now->requiresTransfer !== $was->requiresTransfer ) {
+			CodedException::raise(
+				CheckoutError::TotalsChanged,
+				array(),
+				array(
+					'version'  => $cart->version,
+					'totals'   => $fresh->totals->toArray(),
+					'delivery' => self::delivery( $now ),
+				)
+			);
+		}
+
+		if ( $now->fingerprint() === $was->fingerprint() ) {
+			throw $refused;
+		}
+
+		return $fresh;
+	}
+
+	/**
+	 * Tells whether the first unit of work was refused because its plan went stale: a planned unit taken, or the destination gone or deactivated.
+	 *
+	 * A deadlock is not one: the retry policy runs the unit again with the same plan.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CodedException $refused What the unit was refused.
+	 * @return bool True for `stock.insufficient`, `stock.location_missing` and `stock.location_inactive`.
+	 */
+	private static function isStalePlan( CodedException $refused ): bool {
+		return in_array( $refused->errorCode(), array( InventoryError::Insufficient, InventoryError::LocationMissing, InventoryError::LocationInactive ), true );
+	}
+
+	/**
+	 * Returns the plan a placement's calculation was quoted with.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When it has none, which a placement's shipping address rules out.
+	 *
+	 * @param Calculation $calculation The calculation.
+	 * @return RoutingProposal The plan.
+	 */
+	private static function routingOf( Calculation $calculation ): RoutingProposal {
+		return $calculation->routingProposal() ?? throw new \LogicException( 'A placement is priced with a shipping address and at least one line, so its calculation carries a plan.' );
+	}
+
+	/**
+	 * Returns what a plan says of delivery, by wire name: whether units must be brought together, and the extra days the shopper is told that adds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param RoutingProposal|null $routing The plan, or null when none was made.
+	 * @return array{requires_transfer: bool, transfer_days: int|null}|null The delivery; null with no plan.
+	 */
+	private static function delivery( ?RoutingProposal $routing ): ?array {
+		return null === $routing ? null : array(
+			'requires_transfer' => $routing->requiresTransfer,
+			'transfer_days'     => $routing->transferLeadDays,
+		);
 	}
 
 	/**
@@ -297,10 +431,18 @@ final class PlaceOrder {
 
 		$customer  = $this->customers->customerOf( $actor );
 		$sold      = $this->saleOf( $cart );
-		$hold      = $this->stock->hold( array_map( static fn( CartLine $line ): HoldLine => new HoldLine( $line->variantId, $line->quantity ), $cart->lines ), self::HOLD_TTL_SECONDS, $cart->id );
-		$order     = $this->orders->insert( OrderDocument::of( $calculation->totals, $cart->locale, $session->details, $sold, $hold->holdGroup, $customer ), $actor );
+		$routing   = self::routingOf( $calculation );
+		$hold      = $this->stock->hold(
+			array_map( static fn( array $line ): HoldLine => new HoldLine( $line['variant_id'], $line['quantity'], $line['location_id'] ), $routing->lines ),
+			self::HOLD_TTL_SECONDS,
+			$cart->id,
+			destinationLocationId: $routing->destinationLocationId
+		);
+		$order     = $this->orders->insert( OrderDocument::of( $calculation->totals, $cart->locale, $session->details, $sold, $hold->holdGroup, $customer, $routing->destinationLocationId, $routing->transferLeadDays ), $actor );
 		$summary   = $calculation->totals->summary;
 		$tokenHash = $token->hash();
+
+		$this->orders->appendAudit( $order->id, self::ROUTED, $routing->destinationLocationUuid, $actor, Machine::Fulfillment );
 
 		$this->usage->claim(
 			array_map(
@@ -327,6 +469,7 @@ final class PlaceOrder {
 			'outcome'        => PlacementOutcome::Pending->value,
 			'status'         => OrderStatus::PendingPayment->value,
 			'payment_status' => PaymentStatus::Unpaid->value,
+			'transfer_days'  => $routing->transferLeadDays,
 			'next_action'    => null,
 		);
 
@@ -462,28 +605,38 @@ final class PlaceOrder {
 	/**
 	 * Prices the cart as the store holds it, and refuses a placement it cannot make at the totals the client agreed to.
 	 *
+	 * Priced with its plan through PlannedPricing: a plan refused for too few units may be asked
+	 * once more, after the expired holds of the variants it named are reclaimed, and that is the
+	 * placement's one plan more.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Priced with its plan, which may be asked once more.
 	 *
 	 * @throws CodedException `checkout.session_incomplete` with the fields missing;
 	 *                        `checkout.line_unsellable` for a line with no price in the cart's
-	 *                        currency; `checkout.totals_changed` with the cart's version and totals.
+	 *                        currency; `checkout.totals_changed` with the cart's version and totals;
+	 *                        the plan's refusals.
 	 *
 	 * @param Cart                 $cart    The cart.
 	 * @param CheckoutSession|null $session Its checkout, or null when it has none.
 	 * @param array<string, mixed> $input   The request's grand total and currency.
+	 * @param bool                 $replan  Whether the placement may still plan once more; set to false when the
+	 *                                      pricing did.
 	 * @return Calculation The totals the order is placed with.
 	 *
 	 * @phpstan-assert CheckoutSession $session
+	 * @param-out bool $replan
 	 */
-	private function priced( Cart $cart, ?CheckoutSession $session, array $input ): Calculation {
+	private function priced( Cart $cart, ?CheckoutSession $session, array $input, bool &$replan ): Calculation {
 		$missing = null === $session ? array( 'billing_address', 'shipping_address', 'payment_method_key' ) : $session->details->missingForPlacement();
 
 		if ( array() !== $missing || null === $session ) {
 			CodedException::raise( CheckoutError::SessionIncomplete, array(), array( 'missing' => $missing ) );
 		}
 
-		// Priced with the session just read: the cart's claim, at the version read with it, refuses a session changed since.
-		$calculation = $this->carts->calculation( $cart, CheckoutSession::deliveryOf( $session ) );
+		// Priced and planned with the session just read: the cart's claim, at the version read with it, refuses a session changed since.
+		$delivery    = CheckoutSession::deliveryOf( $session );
+		$calculation = $this->pricing->price( fn(): Calculation => $this->carts->calculation( $cart, $delivery, RoutingScope::checkout() ), $replan );
 
 		foreach ( $calculation->unpricedLines as $unpriced ) {
 			CodedException::raise(
@@ -502,8 +655,9 @@ final class PlaceOrder {
 				CheckoutError::TotalsChanged,
 				array(),
 				array(
-					'version' => $cart->version,
-					'totals'  => $calculation->totals->toArray(),
+					'version'  => $cart->version,
+					'totals'   => $calculation->totals->toArray(),
+					'delivery' => self::delivery( $calculation->routingProposal() ),
 				)
 			);
 		}

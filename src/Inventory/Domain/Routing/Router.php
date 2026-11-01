@@ -39,8 +39,8 @@ defined( 'ABSPATH' ) || exit;
  *    the most any one has; otherwise `combination`, naming the lines the location that can give
  *    the most of the order cannot.
  *
- * A variant that may be sold beyond what is available, because its stock is not counted or it may
- * be backordered, is never short: what is not available of it goes to the order's destination.
+ * A variant that may be sold beyond what is available, which is one whose stock is not counted, is
+ * never short: what is not available of it goes to the order's destination.
  * A request that names a destination is planned with the units brought to it, so a variant
  * claimed afresh for an order already routed ends where the order does.
  *

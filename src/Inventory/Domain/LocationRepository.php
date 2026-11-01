@@ -94,6 +94,25 @@ interface LocationRepository {
 	public function lockShared( array $uuids ): array;
 
 	/**
+	 * Reads one location by id with a locking read in share mode, which keeps it from being changed or deleted until the commit.
+	 *
+	 * For a placement whose order is fulfilled from a location none of its units are held at: no
+	 * stock, hold or ledger row there keeps the location from being deleted, so the row itself is
+	 * locked, as lockShared() locks a transfer's. A deletion waits for the placement to commit and
+	 * then finds its order, or comes first and leaves no row to find.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When called outside a transaction.
+	 *
+	 * @param int $locationId The location's id.
+	 * @return Location|null The location, active or not; null when there is none with the id.
+	 *
+	 * @phpstan-impure
+	 */
+	public function lockSharedById( int $locationId ): ?Location;
+
+	/**
 	 * Creates an active location, and returns its id.
 	 *
 	 * @since 0.2.0

@@ -29,6 +29,7 @@ use SEOCart\Pricing\Application\Calculation;
 use SEOCart\Pricing\Application\CalculationRequest;
 use SEOCart\Pricing\Application\Calculator;
 use SEOCart\Pricing\Application\LineRequest;
+use SEOCart\Pricing\Application\RoutingScope;
 use SEOCart\Pricing\Application\UnpricedLine;
 use SEOCart\Promotion\Application\PromotionError;
 use SEOCart\Promotion\Application\PromotionResolver;
@@ -638,17 +639,34 @@ final class CartService {
 	 *                        compare-and-swap refuses; what the closure raises; the codes the
 	 *                        calculation raises.
 	 *
-	 * @param int      $expectedVersion The version the client based the write on.
-	 * @param Actor    $actor           Who writes: whose lifetime the cart then lives.
-	 * @param \Closure $write           Writes the other module's rows, given the cart's id.
-	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>} The cart after the change.
+	 * @param int               $expectedVersion The version the client based the write on.
+	 * @param Actor             $actor           Who writes: whose lifetime the cart then lives.
+	 * @param \Closure          $write           Writes the other module's rows, given the cart's id.
+	 * @param RoutingScope|null $routing         Optional. Asks the answer's calculation for a fulfilment
+	 *                                           plan. Default null, no plan.
+	 * @param \Closure|null     $pricing         Optional. Runs the answer's calculation, given the closure that
+	 *                                           runs it: the caller's wrapper, which may run it once more.
+	 *                                           Default null, run once.
+	 * @return array{version: int, lines: list<array{line_identity: string, variant_id: int, quantity: int}>, promotion_codes: list<array{code: string}>, totals: array<string, mixed>, unpriced_lines: list<array{line_identity: string, variant_id: int, reason: string}>, routing: array{requires_transfer: bool, transfer_days: int|null}|null} The cart after the change,
+	 *         with what the plan says of delivery: whether units must be brought together, and the extra days the
+	 *         shopper is told that adds; null when no plan was made.
 	 *
 	 * @phpstan-param \Closure(int): void $write
+	 * @phpstan-param (\Closure(\Closure(): Calculation): Calculation)|null $pricing
 	 */
-	public function changeWith( int $expectedVersion, Actor $actor, \Closure $write ): array {
-		$presented = $this->presentedRow() ?? CodedException::raise( CartError::NotFound );
+	public function changeWith( int $expectedVersion, Actor $actor, \Closure $write, ?RoutingScope $routing = null, ?\Closure $pricing = null ): array {
+		$presented   = $this->presentedRow() ?? CodedException::raise( CartError::NotFound );
+		$cart        = $this->change( $presented, $expectedVersion, $actor, $write );
+		$price       = fn(): Calculation => $this->calculation( $cart, null, $routing );
+		$calculation = null === $pricing ? $price() : $pricing( $price );
+		$proposal    = $calculation->routingProposal();
 
-		return $this->priced( $this->change( $presented, $expectedVersion, $actor, $write ) );
+		return $this->priced( $cart, $calculation ) + array(
+			'routing' => null === $proposal ? null : array(
+				'requires_transfer' => $proposal->requiresTransfer,
+				'transfer_days'     => $proposal->transferLeadDays,
+			),
+		);
 	}
 
 	/**
@@ -1093,22 +1111,24 @@ final class CartService {
 	 *
 	 * @throws CodedException The codes the calculation raises.
 	 *
-	 * @param Cart|null  $cart     The cart, or null for none.
-	 * @param array|null $delivery Optional. Where the order ships and the shipping method chosen, as the
-	 *                             cart's checkout gave them to the caller; null to ask the checkout.
-	 *                             Default null.
+	 * @param Cart|null         $cart     The cart, or null for none.
+	 * @param array|null        $delivery Optional. Where the order ships and the shipping method chosen, as the
+	 *                                    cart's checkout gave them to the caller; null to ask the checkout.
+	 *                                    Default null.
+	 * @param RoutingScope|null $routing  Optional. Asks for a fulfilment plan: only the checkout's write and
+	 *                                    its placement do, so a cart read plans nothing. Default null.
 	 * @return Calculation The totals, and the lines that could not be priced.
 	 *
 	 * @phpstan-param array{destination: Address|null, shipping_method_key: string|null}|null $delivery
 	 */
-	public function calculation( ?Cart $cart, ?array $delivery = null ): Calculation {
+	public function calculation( ?Cart $cart, ?array $delivery = null, ?RoutingScope $routing = null ): Calculation {
 		if ( null === $cart ) {
 			return $this->priceLines( ( $this->currency )(), array(), array() );
 		}
 
 		$delivery ??= ( $this->delivery )( $cart->id );
 
-		return $this->priceLines( $cart->currency, $cart->lines, $cart->promotionCodes, $delivery['destination'], $delivery['shipping_method_key'] );
+		return $this->priceLines( $cart->currency, $cart->lines, $cart->promotionCodes, $delivery['destination'], $delivery['shipping_method_key'], $routing );
 	}
 
 	/**
@@ -1120,24 +1140,25 @@ final class CartService {
 	 *
 	 * @throws CodedException The codes the calculation raises.
 	 *
-	 * @param Currency     $currency          The currency.
-	 * @param CartLine[]   $lines             The lines, in the cart's order.
-	 * @param string[]     $promotionCodes    The promotion codes applied.
-	 * @param Address|null $destination       Optional. Where the order ships. Default null, not known yet.
-	 * @param string|null  $shippingMethodKey Optional. The shipping method chosen. Default null, the cheapest.
+	 * @param Currency          $currency          The currency.
+	 * @param CartLine[]        $lines             The lines, in the cart's order.
+	 * @param string[]          $promotionCodes    The promotion codes applied.
+	 * @param Address|null      $destination       Optional. Where the order ships. Default null, not known yet.
+	 * @param string|null       $shippingMethodKey Optional. The shipping method chosen. Default null, the cheapest.
+	 * @param RoutingScope|null $routing           Optional. Asks for a fulfilment plan. Default null, none.
 	 * @return Calculation The totals, and the lines that could not be priced.
 	 *
 	 * @phpstan-param list<CartLine> $lines
 	 * @phpstan-param list<string>   $promotionCodes
 	 */
-	private function priceLines( Currency $currency, array $lines, array $promotionCodes, ?Address $destination = null, ?string $shippingMethodKey = null ): Calculation {
+	private function priceLines( Currency $currency, array $lines, array $promotionCodes, ?Address $destination = null, ?string $shippingMethodKey = null, ?RoutingScope $routing = null ): Calculation {
 		$requests = array();
 
 		foreach ( $lines as $line ) {
 			$requests[] = new LineRequest( $line->identity->value(), $line->variantId, $line->quantity );
 		}
 
-		return $this->calculator->calculate( new CalculationRequest( $currency, $requests, $destination, $promotionCodes, $shippingMethodKey ) );
+		return $this->calculator->calculate( new CalculationRequest( $currency, $requests, $destination, $promotionCodes, $shippingMethodKey, $routing ) );
 	}
 
 	/**

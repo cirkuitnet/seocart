@@ -1050,7 +1050,7 @@
                         }
                     },
                     "404": {
-                        "description": "`cart.not_found`: There is no cart for this request: it was never started, or it has expired. Start a new cart by adding a line.",
+                        "description": "`cart.not_found`: There is no cart for this request: it was never started, or it has expired. Start a new cart by adding a line.\n\n`stock.item_missing`: Variant {variant_id} has no stock item.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -1070,7 +1070,7 @@
                         }
                     },
                     "409": {
-                        "description": "`cart.version_stale`: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.\n\n`cart.not_open`: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.\n\n`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.",
+                        "description": "`cart.version_stale`: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.\n\n`cart.not_open`: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.\n\n`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.\n\n`stock.routing_refused`: These items cannot be sent together in the quantities asked for.\n\n`stock.no_fulfilling_location`: No location ships online orders at the moment, so nothing can be sold.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -1230,7 +1230,7 @@
                         }
                     },
                     "404": {
-                        "description": "`cart.not_found`: There is no cart for this request: it was never started, or it has expired. Start a new cart by adding a line.",
+                        "description": "`cart.not_found`: There is no cart for this request: it was never started, or it has expired. Start a new cart by adding a line.\n\n`stock.item_missing`: Variant {variant_id} has no stock item.\n\n`stock.location_missing`: Location {location_id} does not exist.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -1250,7 +1250,7 @@
                         }
                     },
                     "409": {
-                        "description": "`checkout.placement_in_progress`: An order is being placed with this idempotency key right now. Wait a moment, then send the same request again.\n\n`cart.not_open`: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.\n\n`cart.version_stale`: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.\n\n`checkout.line_unsellable`: The variant {variant_id} cannot be sold now ({reason}), so no order was placed. Remove it from the cart, then place the order again.\n\n`checkout.totals_changed`: The cart's totals have changed since you read them, so no order was placed. Check the new totals, then place the order again with them.\n\n`checkout.payment_method_unavailable`: The payment method {payment_method_key} cannot take this order's payment now, so the order was not placed. Choose another way to pay, then place the order again.\n\n`stock.insufficient`: Variant {variant_id}: {requested} asked for, but only {available} available.\n\n`promotion.limit_reached`: That code can no longer be used. Remove it to go on.\n\n`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.",
+                        "description": "`checkout.placement_in_progress`: An order is being placed with this idempotency key right now. Wait a moment, then send the same request again.\n\n`cart.not_open`: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.\n\n`cart.version_stale`: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.\n\n`checkout.line_unsellable`: The variant {variant_id} cannot be sold now ({reason}), so no order was placed. Remove it from the cart, then place the order again.\n\n`checkout.totals_changed`: The cart's totals have changed since you read them, so no order was placed. Check the new totals, then place the order again with them.\n\n`checkout.payment_method_unavailable`: The payment method {payment_method_key} cannot take this order's payment now, so the order was not placed. Choose another way to pay, then place the order again.\n\n`stock.insufficient`: Variant {variant_id}: {requested} asked for, but only {available} available.\n\n`stock.routing_refused`: These items cannot be sent together in the quantities asked for.\n\n`stock.no_fulfilling_location`: No location ships online orders at the moment, so nothing can be sold.\n\n`stock.location_inactive`: Location {location_id} is deactivated.\n\n`promotion.limit_reached`: That code can no longer be used. Remove it to go on.\n\n`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -6361,6 +6361,37 @@
                                 "amount_due_minor": 1299
                             }
                         ]
+                    },
+                    "delivery": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "properties": {
+                            "requires_transfer": {
+                                "type": "boolean",
+                                "description": "Whether some items must be brought together before the order ships, which delays its delivery."
+                            },
+                            "transfer_days": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ],
+                                "minimum": 0,
+                                "description": "The extra days bringing the items together adds to delivery, as the store tells shoppers; null when no transfer is needed."
+                            }
+                        },
+                        "required": [
+                            "requires_transfer"
+                        ],
+                        "additionalProperties": false,
+                        "description": "What the plan of where the order's items are held says of its delivery; null until a shipping address is given.",
+                        "examples": [
+                            {
+                                "requires_transfer": true,
+                                "transfer_days": 3
+                            }
+                        ]
                     }
                 },
                 "required": [
@@ -7269,6 +7300,17 @@
                         "description": "How far the order is paid once the placement settled.",
                         "examples": [
                             "authorized"
+                        ]
+                    },
+                    "transfer_days": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "minimum": 0,
+                        "description": "The extra days the shopper is told bringing the order's items together adds to delivery, kept with the order; null when the order needs no transfer.",
+                        "examples": [
+                            3
                         ]
                     },
                     "next_action": {
@@ -8475,6 +8517,17 @@
                         "description": "What is still to be paid, in minor units.",
                         "examples": [
                             1299
+                        ]
+                    },
+                    "transfer_days": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "minimum": 0,
+                        "description": "The extra days the shopper was told, when the order was placed, that bringing its items together adds to delivery; null when the order needed no transfer. It is what was told then, whatever the store says now.",
+                        "examples": [
+                            3
                         ]
                     },
                     "lines": {

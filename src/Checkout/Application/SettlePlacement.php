@@ -19,9 +19,13 @@ use SEOCart\Contracts\Payment\GatewayUnavailable;
 use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Inventory\Application\InventoryError;
+use SEOCart\Inventory\Application\RoutingContext;
 use SEOCart\Inventory\Application\StockService;
+use SEOCart\Inventory\Application\Transfers;
 use SEOCart\Inventory\Domain\Allocation;
+use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Order\Application\Orders;
+use SEOCart\Order\Domain\Machine;
 use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Payment\Application\PaymentError;
@@ -54,8 +58,10 @@ defined( 'ABSPATH' ) || exit;
  * the order's status; by what it came to, this settles the rest in the same transaction:
  *
  * - approved, the authorization or the capture of a payment the gateway authorized and captured
- *   at once: the order's held units are allocated to it, its promotions' uses committed and its
- *   cart converted. When its units are gone, because its hold expired and was taken, the order
+ *   at once: the order's held units are allocated to it, a transfer requested from each location
+ *   they are at other than the one the order is fulfilled from unless the store splits orders, its
+ *   promotions' uses committed and its cart converted. When its units are gone, because its hold
+ *   expired and was taken, the order
  *   goes on hold for a person, with its uses committed and its cart converted: the payment stands.
  *   An order on hold already, as one whose capture the payment path kept for a person before the
  *   authorization landed, stays on hold as it is;
@@ -115,6 +121,15 @@ final class SettlePlacement {
 	public const PAYMENT_DECLINED = 'payment_declined';
 
 	/**
+	 * The reason of the order event that records a transfer requested to bring the order's units together, naming the transfer.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const TRANSFER_REQUESTED = 'transfer_requested';
+
+	/**
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
@@ -125,7 +140,12 @@ final class SettlePlacement {
 	 * @param StockService       $stock    The order's hold: allocated, or released; and whether its units were allocated before.
 	 * @param PromotionUsage     $usage    The order's promotion uses: committed, or given back.
 	 * @param CartService        $carts    The cart that placed the order: converted, or opened again.
-	 * @param IdempotencyKeys    $keys     The answer the placement's key keeps: rewritten to the outcome.
+	 * @param IdempotencyKeys    $keys      The answer the placement's key keeps: rewritten to the outcome.
+	 * @param Transfers          $transfers The transfers that bring an order's units to the location it is fulfilled from.
+	 * @param \Closure           $mode      Returns the store's routing mode, read only when units are allocated away from
+	 *                                      that location: a store that splits orders ships them from where they are.
+	 *
+	 * @phpstan-param \Closure(): FulfilmentMode $mode
 	 */
 	public function __construct(
 		private TransactionManager $tx,
@@ -134,7 +154,9 @@ final class SettlePlacement {
 		private StockService $stock,
 		private PromotionUsage $usage,
 		private CartService $carts,
-		private IdempotencyKeys $keys
+		private IdempotencyKeys $keys,
+		private Transfers $transfers,
+		private \Closure $mode
 	) {
 	}
 
@@ -290,7 +312,7 @@ final class SettlePlacement {
 					break;
 				}
 
-				$this->allocate( $applied->orderId, self::holdGroup( $applied->orderId, $applied->holdGroup ) );
+				$this->allocate( $applied->orderId, self::holdGroup( $applied->orderId, $applied->holdGroup ), $actor );
 				$this->close( $applied->orderId, true );
 
 				$outcome = PlacementOutcome::AmountMismatch;
@@ -449,7 +471,7 @@ final class SettlePlacement {
 	private function accept( int $orderId, string $holdGroup, ?OrderStatus $orderStatus, PaymentStatus $paymentStatus, Actor $actor ): SettledPlacement {
 		$outcome = PlacementOutcome::Approved;
 
-		if ( ! $this->allocate( $orderId, $holdGroup ) ) {
+		if ( ! $this->allocate( $orderId, $holdGroup, $actor ) ) {
 			$outcome = PlacementOutcome::StockUnavailable;
 			$onHold  = null === $orderStatus && OrderStatus::OnHold === ( $this->orders->statusOf( $orderId )['status'] ?? null );
 
@@ -483,24 +505,38 @@ final class SettlePlacement {
 	}
 
 	/**
-	 * Allocates the order's units from its hold, all or nothing.
+	 * Allocates the order's units from its hold, all or nothing, and requests the transfers that bring them to the location the order is fulfilled from.
+	 *
+	 * Every settlement that allocates comes here, whichever path delivered the gateway's answer.
+	 * The order's lines are read with its market and fulfilment location, in one read; units whose
+	 * hold is gone are claimed afresh where they are, routed to that location as a transfer would
+	 * bring them whatever the store's routing mode, so a paid order is never refused for it. When
+	 * any allocation is at another location and the store does not split orders, as it reads now,
+	 * one transfer per source is requested and the order records each (`transfer_requested`,
+	 * naming it, under the fulfillment machine), in this same transaction, after the allocations. A
+	 * store that splits orders ships each part from where it is allocated and requests nothing. An
+	 * order that recorded no fulfilment location is brought to the default location and requests
+	 * nothing.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Allocates with the order's routing facts, and requests its transfers.
 	 *
-	 * @throws CodedException What the allocation refuses, but that the units are gone.
+	 * @throws CodedException What the allocation or a transfer's request refuses, but that the units are gone.
 	 *
 	 * @param int    $orderId   The order.
 	 * @param string $holdGroup Its stock hold.
+	 * @param Actor  $actor     On whose authority the settlement runs.
 	 * @return bool True when the units are allocated; false when they are gone, and nothing was allocated.
 	 */
-	private function allocate( int $orderId, string $holdGroup ): bool {
+	private function allocate( int $orderId, string $holdGroup, Actor $actor ): bool {
+		$stock = $this->orders->stockLines( $orderId );
 		$lines = array_map(
 			static fn( array $line ): Allocation => new Allocation( $line['orderLineId'], $line['variantId'], $line['quantity'] ),
-			$this->orders->stockLines( $orderId )
+			$stock->lines
 		);
 
 		try {
-			$this->stock->allocate( $holdGroup, $orderId, $lines );
+			$allocations = $this->stock->allocate( $holdGroup, $orderId, $lines, new RoutingContext( $stock->marketId, null, $stock->fulfilmentLocationId ) );
 		} catch ( CodedException $short ) {
 			if ( ! in_array( $short->errorCode(), array( InventoryError::Insufficient, InventoryError::ItemMissing ), true ) ) {
 				throw $short;
@@ -509,7 +545,34 @@ final class SettlePlacement {
 			return false;
 		}
 
+		if ( null !== $stock->fulfilmentLocationId && self::anyAway( $allocations, $stock->fulfilmentLocationId ) && FulfilmentMode::Split !== ( $this->mode )() ) {
+			foreach ( $this->transfers->requestForOrder( $orderId, $stock->fulfilmentLocationId ) as $transfer ) {
+				$this->orders->appendAudit( $orderId, self::TRANSFER_REQUESTED, $transfer->uuid, $actor, Machine::Fulfillment );
+			}
+		}
+
 		return true;
+	}
+
+	/**
+	 * Tells whether any allocation is at a location other than the one the order is fulfilled from.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Allocation[] $allocations The allocations made.
+	 * @param int          $locationId  The location the order is fulfilled from.
+	 * @return bool True when units must be brought there.
+	 *
+	 * @phpstan-param list<Allocation> $allocations
+	 */
+	private static function anyAway( array $allocations, int $locationId ): bool {
+		foreach ( $allocations as $allocation ) {
+			if ( null !== $allocation->locationId && $locationId !== $allocation->locationId ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**

@@ -17,7 +17,7 @@ defined( 'ABSPATH' ) || exit;
  * Says whether a product is in stock, out of stock or not yet known, from its enabled variants' units for sale.
  *
  * Owns one fact: the rule. A product is in stock when any of its enabled variants has units for
- * sale, or has no limit (its stock is not counted, or it may be backordered); out of stock when it
+ * sale, or has no limit (its stock is not counted); out of stock when it
  * has enabled variants and none has a unit for sale; unknown when it has no enabled variant, so
  * there is nothing to judge. The figures are Availability::forSale()'s, over every active location
  * that fulfils online orders, so the summary is the store's, not a market's; it is a state, never

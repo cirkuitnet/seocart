@@ -34,6 +34,7 @@ use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Inventory\Domain\LocationInUse;
 use SEOCart\Inventory\Domain\Transfer;
 use SEOCart\Inventory\Domain\TransferState;
+use SEOCart\Inventory\Infrastructure\Doctor\StockProjectionCheck;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Migrations\SeedDefaultLocation;
 use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
@@ -563,6 +564,11 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$stock->orderAllocations( 3000 );
 		$transfers->carriedLines( array( 4998, 4999, 5000 ) );
 
+		// Doctor's stranded-order line: the newest orders with open allocations and their locations (a scan of the
+		// open allocations by design), then which of them have a transfer requested or in transit, by the order_id key.
+		$stock->openAllocationLocationsByOrder( StockProjectionCheck::ORDERS_SCANNED );
+		$transfers->ordersWithOpenTransfer( array( 4998, 4999, 5000 ) );
+
 		// A cursor near the end of the table: doctor's own reverse check pages from 0, so this is
 		// the only place a real cursor reaches MysqlStockRepository::ITEM_VARIANT_IDS.
 		$stock->itemVariantIds( Dataset::Medium->products() - 1000, 20 );
@@ -654,6 +660,9 @@ final class QueryPlanTest extends DatabaseTestCase {
 					$transfers->lockOrderTransfers( 3000 );
 					$stock->lockInTransitAllocation( 1 );
 					$locations->lockShared( array( self::SECOND_LOCATION_UUID ) );
+
+					// A placement's hold of units brought to its destination locks the destination's row in share mode, by its id.
+					$locations->lockSharedById( self::$secondLocation );
 					$transfers->moveOf( 5000 );
 
 					// A delete's locks of the variant's policy and items, and an adjustment's lock of its policy and location.
