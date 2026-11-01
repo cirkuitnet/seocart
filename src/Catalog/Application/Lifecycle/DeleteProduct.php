@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Catalog\Application\Lifecycle;
 
+use SEOCart\Catalog\Application\Projection\PriceProjections;
+use SEOCart\Catalog\Application\Search\CatalogSearch;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Inventory\Application\InventoryError;
@@ -35,7 +37,7 @@ defined( 'ABSPATH' ) || exit;
  *   caller's transaction read before the lock: the product, and then, as they are deleted, its
  *   variants of every generation with their SKUs;
  * - the catalog's rows go, children first: the variants' prices, the variants, the bindings and
- *   the product;
+ *   the product; then the rows derived from it, its sort prices and its search documents;
  * - then the inventory's, for exactly the variants deleted: StockService::deleteVariants()
  *   releases their holds, writes their stock off with a final ledger entry each, and deletes
  *   their stock items. Their ledger entries stay. A variant with an open allocation refuses the
@@ -97,6 +99,24 @@ final class DeleteProduct {
 	private Clock $clock;
 
 	/**
+	 * Deletes the product's sort prices in the unit of work.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var PriceProjections
+	 */
+	private PriceProjections $projections;
+
+	/**
+	 * Deletes the product's search documents in the unit of work.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var CatalogSearch
+	 */
+	private CatalogSearch $search;
+
+	/**
 	 * Creates the service. Does nothing else.
 	 *
 	 * @since 0.1.0
@@ -106,13 +126,17 @@ final class DeleteProduct {
 	 * @param TransactionManager $transactions Runs the unit of work.
 	 * @param EventPublisher     $events       Stores ProductDeleted.
 	 * @param Clock              $clock        Tells the time.
+	 * @param PriceProjections   $projections  Deletes the product's sort prices.
+	 * @param CatalogSearch      $search       Deletes the product's search documents.
 	 */
-	public function __construct( ProductRepository $products, StockService $stock, TransactionManager $transactions, EventPublisher $events, Clock $clock ) {
+	public function __construct( ProductRepository $products, StockService $stock, TransactionManager $transactions, EventPublisher $events, Clock $clock, PriceProjections $projections, CatalogSearch $search ) {
 		$this->products     = $products;
 		$this->stock        = $stock;
 		$this->transactions = $transactions;
 		$this->events       = $events;
 		$this->clock        = $clock;
+		$this->projections  = $projections;
+		$this->search       = $search;
 	}
 
 	/**
@@ -161,6 +185,9 @@ final class DeleteProduct {
 				}
 
 				$skus = $this->products->delete( $product );
+
+				$this->projections->deleteOf( $productId );
+				$this->search->delete( $productId );
 
 				$this->stock->deleteVariants( array_keys( $skus ), $actor );
 

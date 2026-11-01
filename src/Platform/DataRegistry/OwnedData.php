@@ -18,6 +18,8 @@ use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Cart\Infrastructure\Migrations\CreateCartTables;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\Migrations\CreateCatalogTables;
+use SEOCart\Catalog\Infrastructure\Migrations\CreatePriceProjections;
+use SEOCart\Catalog\Infrastructure\Migrations\CreateSearchIndex;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\Migrations\CreateCheckoutTables;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
@@ -102,7 +104,7 @@ final class OwnedData {
 			new Contribution( options: array( new OptionDefinition( BootOption::NAME, 'Kernel', 'The installation record: the plugin version and schema head the site was installed to, how locks are held, the install identity and address Safe Mode compares with, the recorded Safe Mode reason, and the current exchange-rate version.', true, Classification::Public ) ) ),
 			new Contribution( tables: array( SecretKeysTable::definition() ), migrations: array( new CreateSecretKeysMigration() ) ),
 			new Contribution( tables: array( LogsTable::definition() ), migrations: array( new CreateLogsMigration() ) ),
-			new Contribution( tables: CatalogTables::all(), migrations: array( new CreateCatalogTables() ) ),
+			new Contribution( tables: CatalogTables::all(), migrations: array( new CreateCatalogTables(), new CreatePriceProjections(), new CreateSearchIndex() ) ),
 			new Contribution( jobGroups: array( JobQueue::GROUP => 'Jobs' ) ),
 			new Contribution( tables: InventoryTables::all(), migrations: array( new CreateStockTablesMigration(), new AddLocations(), new SeedDefaultLocation(), new RekeyStockByLocation() ) ),
 			new Contribution( tables: array( RateCountersTable::definition() ), migrations: array( new CreateRateCountersMigration() ) ),

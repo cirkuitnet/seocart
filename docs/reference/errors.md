@@ -70,6 +70,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: A product price must be in the store's base currency, {base_currency}, not {currency}.
 - Values: `currency`, `base_currency`
 
+## `catalog.currency_unsupported`
+
+- HTTP status: 400
+- Message: The store does not sell in {currency}.
+- Values: `currency`
+
 ## `catalog.locale_fixed`
 
 - HTTP status: 409
@@ -88,6 +94,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The site does not publish in {locale}.
 - Values: `locale`
 
+## `catalog.order_unavailable`
+
+- HTTP status: 400
+- Message: Products are ordered by {orderby} only for a search: give the words to search for.
+- Values: `orderby`
+
 ## `catalog.post_bound_elsewhere`
 
 - HTTP status: 409
@@ -105,6 +117,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 400
 - Message: WordPress did not save the product's post ({wordpress_code}), so nothing was saved. db_update_error: the database refused the update, as it does when another request changed the post meanwhile: save it again.
 - Values: `wordpress_code`
+
+## `catalog.price_range_invalid`
+
+- HTTP status: 400
+- Message: The lowest price, {min_price_minor}, is above the highest, {max_price_minor}.
+- Values: `min_price_minor`, `max_price_minor`
 
 ## `catalog.product_not_found`
 

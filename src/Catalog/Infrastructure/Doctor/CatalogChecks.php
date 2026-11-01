@@ -13,8 +13,12 @@ namespace SEOCart\Catalog\Infrastructure\Doctor;
 
 use SEOCart\Catalog\Application\Doctor\ProductSettler;
 use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
+use SEOCart\Catalog\Application\Projection\CurrencyTerms;
+use SEOCart\Catalog\Application\Projection\PriceProjections;
 use SEOCart\Catalog\Application\Projection\StockSummaries;
 use SEOCart\Catalog\Application\ProductRepository;
+use SEOCart\Catalog\Application\Search\CatalogSearch;
+use SEOCart\Catalog\Application\Search\SearchDocuments;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Cli\Doctor\Check;
 use SEOCart\Platform\Database\TransactionManager;
@@ -33,6 +37,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * @since 0.1.0
  * @since 0.2.0 The check of the stock summaries.
+ * @since 0.2.0 The checks of the sort prices.
+ * @since 0.2.0 The check of the search documents.
  */
 final class CatalogChecks {
 
@@ -120,6 +126,42 @@ final class CatalogChecks {
 	private StockSummaries $summaries;
 
 	/**
+	 * The products' sort prices.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var PriceProjections
+	 */
+	private PriceProjections $projections;
+
+	/**
+	 * The current exchange-rate version.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var CurrencyTerms
+	 */
+	private CurrencyTerms $terms;
+
+	/**
+	 * The search, whose documents doctor's repair of orphan rows deletes.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var CatalogSearch
+	 */
+	private CatalogSearch $search;
+
+	/**
+	 * The search documents' sources, which doctor counts the posts without one through.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var SearchDocuments
+	 */
+	private SearchDocuments $documents;
+
+	/**
 	 * Creates the factory. Sends nothing.
 	 *
 	 * @since 0.1.0
@@ -134,11 +176,15 @@ final class CatalogChecks {
 	 * @param callable           $baseCurrency Returns the store's base currency.
 	 * @param callable           $withLock     Takes a named lock, runs work while holding it and releases it.
 	 * @param StockSummaries     $summaries    The products' stock summaries.
+	 * @param PriceProjections   $projections  The products' sort prices.
+	 * @param CurrencyTerms      $terms        The current exchange-rate version.
+	 * @param CatalogSearch      $search       The search, whose documents a repair deletes.
+	 * @param SearchDocuments    $documents    The search documents' sources.
 	 *
 	 * @phpstan-param callable(): Currency $baseCurrency
 	 * @phpstan-param callable(string, int, int, callable): mixed $withLock
 	 */
-	public function __construct( ProductRepository $products, StockService $stock, TranslationGroups $groups, ProductSettler $settler, Clock $clock, TransactionManager $transactions, callable $baseCurrency, callable $withLock, StockSummaries $summaries ) {
+	public function __construct( ProductRepository $products, StockService $stock, TranslationGroups $groups, ProductSettler $settler, Clock $clock, TransactionManager $transactions, callable $baseCurrency, callable $withLock, StockSummaries $summaries, PriceProjections $projections, CurrencyTerms $terms, CatalogSearch $search, SearchDocuments $documents ) {
 		$this->products     = $products;
 		$this->stock        = $stock;
 		$this->groups       = $groups;
@@ -148,6 +194,10 @@ final class CatalogChecks {
 		$this->baseCurrency = $baseCurrency;
 		$this->withLock     = $withLock;
 		$this->summaries    = $summaries;
+		$this->projections  = $projections;
+		$this->terms        = $terms;
+		$this->search       = $search;
+		$this->documents    = $documents;
 	}
 
 	/**
@@ -166,12 +216,15 @@ final class CatalogChecks {
 			new IncompleteMismatchCheck( $this->products, $this->baseCurrency, $this->settler ),
 			new MissingStockItemCheck( $this->products, $this->stock, $this->transactions, $this->withLock ),
 			new StuckUpdatingCheck( $this->products, $this->clock, $this->settler ),
-			new OrphanCommerceRowCheck( $this->products ),
+			new OrphanCommerceRowCheck( $this->products, $this->projections, $this->search ),
 			new ForeignHooksCheck(),
 			new IncompleteCountCheck( $this->products ),
 			new OrphanStockItemCheck( $this->products, $this->stock ),
 			new TranslationGroupCheck( $this->products, $this->groups, $this->transactions, $this->withLock ),
 			new UnsummarizedCheck( $this->summaries ),
+			new UnprojectedCheck( $this->projections, $this->baseCurrency ),
+			new StalePricesCheck( $this->projections, $this->terms ),
+			new UnindexedCheck( $this->documents ),
 		);
 	}
 }

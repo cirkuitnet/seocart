@@ -26,7 +26,7 @@ defined( 'ABSPATH' ) || exit;
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- These exceptions report stored data that cannot be a currency's terms, for the developer; they are never HTML.
 
 /**
- * Finds an enabled currency and its rate in the current exchange-rate version, in one read, once per request.
+ * Finds an enabled currency and its rate in the current exchange-rate version, in one read, once per request, and lists the currencies offered.
  *
  * Owns one fact: how a currency's terms are read. The current version is the one the
  * installation record names, which is read with the record at no cost; a store that has never
@@ -52,6 +52,15 @@ final class MysqlPresentmentCurrencies implements PresentmentCurrencies {
 	 * @var string
 	 */
 	public const FIND = 'SELECT c.rounding_mode, c.cash_rounding_step_minor, c.conversion_fallback_allowed, r.rate, r.rate_scale, r.source, r.created_at FROM {currencies} c JOIN {exchange_rates} r ON r.base_currency = %s AND r.quote_currency = c.code AND r.version = %d WHERE c.code = %s AND c.is_enabled = 1';
+
+	/**
+	 * The enabled currencies with a rate from the base currency at one version, by code.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const OFFERED_CURRENCIES = 'SELECT c.code FROM {currencies} c JOIN {exchange_rates} r ON r.base_currency = %s AND r.quote_currency = c.code AND r.version = %d WHERE c.is_enabled = 1 ORDER BY c.code';
 
 	/**
 	 * The connection, which names the current site's tables.
@@ -88,6 +97,15 @@ final class MysqlPresentmentCurrencies implements PresentmentCurrencies {
 	 * @var array<string, PresentmentCurrency|null>
 	 */
 	private array $found = array();
+
+	/**
+	 * The currencies offered in this request, by site, base currency and version.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, list<Currency>>
+	 */
+	private array $offered = array();
 
 	/**
 	 * Creates the reader. Sends nothing.
@@ -138,6 +156,36 @@ final class MysqlPresentmentCurrencies implements PresentmentCurrencies {
 		}
 
 		return $this->found[ $key ];
+	}
+
+	/**
+	 * Returns the enabled currencies with a rate at the current version, other than the base currency, in one read, once per request.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Currency $base The store's base currency.
+	 * @return list<Currency> The currencies, by code; none, without a query, when no version was ever saved.
+	 */
+	public function offered( Currency $base ): array {
+		$version = ( $this->currentVersion )();
+
+		if ( null === $version ) {
+			return array();
+		}
+
+		$key = $this->db->prefix() . ' ' . $base->code() . '@' . $version;
+
+		if ( ! array_key_exists( $key, $this->offered ) ) {
+			$this->offered[ $key ] = array();
+
+			foreach ( $this->statements->rows( self::OFFERED_CURRENCIES, $base->code(), $version ) as $row ) {
+				if ( (string) $row['code'] !== $base->code() ) {
+					$this->offered[ $key ][] = Currency::of( (string) $row['code'] );
+				}
+			}
+		}
+
+		return $this->offered[ $key ];
 	}
 
 	/**

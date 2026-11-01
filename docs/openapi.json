@@ -2870,7 +2870,7 @@
             ],
             "get": {
                 "operationId": "catalog.list_products",
-                "summary": "Lists one page of the store's products in a locale, newest first, searched by words in their titles, excerpts or SKUs and filtered by category, brand, tag and availability; it carries no price and never sets a cookie.",
+                "summary": "Lists one page of the store's products in a locale, newest first or by price in a currency, searched by words in their titles, excerpts or SKUs and filtered by category, brand, tag, availability and price; it carries no price and never sets a cookie.",
                 "description": "Public: requires no capability, and anyone may send it.",
                 "parameters": [
                     {
@@ -2890,7 +2890,7 @@
                         "name": "search",
                         "in": "query",
                         "required": false,
-                        "description": "Up to 3 words separated by spaces, each of which must appear in the product's title or excerpt or begin one of its SKUs; when absent, nothing is searched.",
+                        "description": "Up to 3 words separated by spaces, each of which must appear in the product's title or excerpt or begin one of its SKUs; when absent, nothing is searched. Ordered by relevance, each run of 3 or more letters and digits of a word must begin a word of the title, the excerpt or a SKU; a shorter run is left out, as is, in any case, each word the index never holds: about, are, com, for, from, how, that, the, this, und, was, what, when, where, who, will, with, www; the other characters only separate runs.",
                         "schema": {
                             "type": "string",
                             "maxLength": 100,
@@ -2954,15 +2954,59 @@
                         "name": "orderby",
                         "in": "query",
                         "required": false,
-                        "description": "The order of the products: newest, the most recently published first.",
+                        "description": "The order of the products: newest, the most recently published first; price_asc, the lowest price in the currency first; price_desc, the highest first; relevance, for a search only, the product whose words match it best first. A price order lists only the products with a price in the currency, and ties by the product.",
                         "schema": {
                             "type": "string",
                             "enum": [
-                                "newest"
+                                "newest",
+                                "price_asc",
+                                "price_desc",
+                                "relevance"
                             ],
                             "default": "newest",
                             "examples": [
                                 "newest"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "currency",
+                        "in": "query",
+                        "required": false,
+                        "description": "The ISO 4217 code of the currency a price order sorts in and the price range is in, one the store sells in; when absent, the store's base currency.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 3,
+                            "examples": [
+                                "EUR"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "min_price_minor",
+                        "in": "query",
+                        "required": false,
+                        "description": "The lowest price listed, in the currency's minor units, such as cents; when absent, no lowest price.",
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1000000000000,
+                            "examples": [
+                                1000
+                            ]
+                        }
+                    },
+                    {
+                        "name": "max_price_minor",
+                        "in": "query",
+                        "required": false,
+                        "description": "The highest price listed, in the currency's minor units, such as cents, no lower than the lowest; when absent, no highest price.",
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1000000000000,
+                            "examples": [
+                                5000
                             ]
                         }
                     },
@@ -3009,7 +3053,7 @@
                         }
                     },
                     "400": {
-                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`catalog.locale_unsupported`: The site does not publish in {locale}.\n\n`catalog.search_invalid`: A search may hold at most {most} words, in valid UTF-8 text.",
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.\n\n`catalog.locale_unsupported`: The site does not publish in {locale}.\n\n`catalog.search_invalid`: A search may hold at most {most} words, in valid UTF-8 text.\n\n`catalog.currency_unsupported`: The store does not sell in {currency}.\n\n`catalog.price_range_invalid`: The lowest price, {min_price_minor}, is above the highest, {max_price_minor}.\n\n`catalog.order_unavailable`: Products are ordered by {orderby} only for a search: give the words to search for.",
                         "content": {
                             "application/json": {
                                 "schema": {

@@ -1212,6 +1212,60 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
+	 * Lists `product_price_projections` rows whose product no longer exists, by id (doctor check 8).
+	 *
+	 * Walks the rows in id order and stops at the limit, each row's product found by its primary key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit The most to list.
+	 * @return list<array{id: int, product_id: int}> The orphans.
+	 */
+	public function orphanPriceProjections( int $limit ): array {
+		$rows = $this->db->fetchAll(
+			'SELECT pr.id, pr.product_id FROM %i pr LEFT JOIN %i p ON p.id = pr.product_id WHERE p.id IS NULL ORDER BY pr.id LIMIT %d',
+			$this->table( CatalogTables::PRICE_PROJECTIONS ),
+			$this->table( CatalogTables::PRODUCTS ),
+			$limit
+		);
+
+		return array_map(
+			static fn( array $row ): array => array(
+				'id'         => (int) $row['id'],
+				'product_id' => (int) $row['product_id'],
+			),
+			$rows
+		);
+	}
+
+	/**
+	 * Lists `product_search_index` rows whose product no longer exists, by product and locale (doctor check 8).
+	 *
+	 * Walks the rows in primary-key order and stops at the limit, each row's product found by its primary key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit The most to list.
+	 * @return list<array{product_id: int, locale: string}> The orphans.
+	 */
+	public function orphanSearchDocuments( int $limit ): array {
+		$rows = $this->db->fetchAll(
+			'SELECT si.product_id, si.locale FROM %i si LEFT JOIN %i p ON p.id = si.product_id WHERE p.id IS NULL ORDER BY si.product_id, si.locale LIMIT %d',
+			$this->table( CatalogTables::SEARCH_INDEX ),
+			$this->table( CatalogTables::PRODUCTS ),
+			$limit
+		);
+
+		return array_map(
+			static fn( array $row ): array => array(
+				'product_id' => (int) $row['product_id'],
+				'locale'     => (string) $row['locale'],
+			),
+			$rows
+		);
+	}
+
+	/**
 	 * Counts products marked `incomplete` (doctor check 10).
 	 *
 	 * @since 0.1.0

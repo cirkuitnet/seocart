@@ -60,7 +60,7 @@ final class SchemaOperations {
 	 *
 	 * @var string
 	 */
-	private const ALTER_CLAUSE = '/^(?:(?:MODIFY|DROP COLUMN|DROP INDEX|ADD KEY|ADD UNIQUE KEY|ADD PRIMARY KEY) [^;]+|DROP PRIMARY KEY)\z/';
+	private const ALTER_CLAUSE = '/^(?:(?:MODIFY|DROP COLUMN|DROP INDEX|ADD KEY|ADD UNIQUE KEY|ADD FULLTEXT KEY|ADD PRIMARY KEY) [^;]+|DROP PRIMARY KEY)\z/';
 
 	/**
 	 * Saves the session's SQL mode and adds strict mode to it, for the one ALTER that follows.
@@ -229,7 +229,7 @@ final class SchemaOperations {
 
 		foreach ( $clauses as $clause ) {
 			if ( 1 !== preg_match( self::ALTER_CLAUSE, $clause ) ) {
-				throw new \InvalidArgumentException( sprintf( 'The clause "%s" is not one alterTable() sends: MODIFY, DROP PRIMARY KEY, ADD PRIMARY KEY, DROP COLUMN, DROP INDEX, ADD KEY or ADD UNIQUE KEY, in capitals.', $clause ) );
+				throw new \InvalidArgumentException( sprintf( 'The clause "%s" is not one alterTable() sends: MODIFY, DROP PRIMARY KEY, ADD PRIMARY KEY, DROP COLUMN, DROP INDEX, ADD KEY, ADD UNIQUE KEY or ADD FULLTEXT KEY, in capitals.', $clause ) );
 			}
 		}
 

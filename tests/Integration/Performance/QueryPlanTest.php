@@ -21,7 +21,9 @@ use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Catalog\Domain\Sku;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
+use SEOCart\Catalog\Infrastructure\Jobs\RepriceProjections;
 use SEOCart\Catalog\Infrastructure\MysqlCatalogSearch;
+use SEOCart\Catalog\Infrastructure\MysqlPriceProjections;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Catalog\Infrastructure\MysqlStockSummaryProjection;
 use SEOCart\Checkout\Domain\CheckoutError;
@@ -74,7 +76,8 @@ use SEOCart\Tests\Support\Seed\SeedVerifier;
  * and every seeded variant may be sold (SeedVerifier). Then the plugin's reads run over a
  * PlanRecorder: the catalog's lookups by post, by source post and by variant, its sellability
  * query in a locale and without one, the product listing's page with every filter off and with
- * every filter on, and its facts, the stock summaries' reads, the price read of a calculation, the promotions of a
+ * every filter on, and its facts, its price orders the same way, with their covering key and no
+ * sort read directly, the price projection's reads, the stock summaries' reads, the price read of a calculation, the promotions of a
  * calculation's codes, the reads of its write path, the locking reads of a trash
  * and a delete, and the reads of a change of a product's posts, the pages after a cursor of
  * doctor's catalog scans (their first pages come from the seed verifier's doctor run), and every
@@ -424,15 +427,51 @@ final class QueryPlanTest extends DatabaseTestCase {
 		// then one category with the other filters, and three words alone, each the same statement. Then the page's facts.
 		$listing = new MysqlCatalogSearch( $db );
 		$locale  = Locale::of( get_locale() );
-		$listed  = $listing->search( new SearchQuery( $locale, 1, 24, SearchQuery::NEWEST, array(), array(), null, null, false ) );
+		$base    = Currency::of( self::$baseCurrency );
+		$listed  = $listing->search( new SearchQuery( $locale, 1, 24, SearchQuery::NEWEST, array(), array(), null, null, false, $base ) );
 
 		$this->assertCount( 24, $listed->postIds, 'The seeded store lists a full page.' );
 		$this->assertTrue( $listed->hasMore );
 
-		$listing->search( new SearchQuery( $locale, 1, 24, SearchQuery::NEWEST, array( 'seed', 'product', '0' ), array( 1, 2, 3, 4, 5 ), 6, 7, true ) );
-		$listing->search( new SearchQuery( $locale, 2, 24, SearchQuery::NEWEST, array(), array( 1 ), 6, 7, true ) );
-		$listing->search( new SearchQuery( $locale, 1, 24, SearchQuery::NEWEST, array( 'seed', 'product', 'SEED-0' ), array(), null, null, false ) );
+		$listing->search( new SearchQuery( $locale, 1, 24, SearchQuery::NEWEST, array( 'seed', 'product', '0' ), array( 1, 2, 3, 4, 5 ), 6, 7, true, $base, 100, 50000 ) );
+		$listing->search( new SearchQuery( $locale, 2, 24, SearchQuery::NEWEST, array(), array( 1 ), 6, 7, true, $base ) );
+		$listing->search( new SearchQuery( $locale, 1, 24, SearchQuery::NEWEST, array( 'seed', 'product', 'SEED-0' ), array(), null, null, false, $base ) );
+		$listing->search( new SearchQuery( $locale, 1, 24, SearchQuery::NEWEST, array(), array(), null, null, false, $base, 100, 50000 ) );
 		$this->assertCount( 24, $listing->of( $listed->postIds ) );
+
+		// The price orders, each plain first, then with every filter, a price range and three words.
+		foreach ( array( SearchQuery::PRICE_ASC, SearchQuery::PRICE_DESC ) as $order ) {
+			$priced = $listing->search( new SearchQuery( $locale, 1, 24, $order, array(), array(), null, null, false, $base ) );
+
+			$this->assertCount( 24, $priced->postIds, 'The seeded store lists a full page by price.' );
+			$this->assertTrue( $priced->hasMore );
+
+			$listing->search( new SearchQuery( $locale, 1, 24, $order, array( 'seed', 'product', '0' ), array( 1, 2, 3, 4, 5 ), 6, 7, true, $base, 100, 50000 ) );
+		}
+
+		// The order by relevance: three words first, as a search sends them; then with every filter and a price range.
+		$this->assertCount( 24, $listing->search( new SearchQuery( $locale, 1, 24, SearchQuery::RELEVANCE, array( 'seed', 'product', 'SEED' ), array(), null, null, false, $base ) )->postIds, 'The seeded store lists a full page by relevance.' );
+		$listing->search( new SearchQuery( $locale, 1, 24, SearchQuery::RELEVANCE, array( 'seed', 'product', '000' ), array( 1, 2, 3, 4, 5 ), 6, 7, true, $base, 100, 50000 ) );
+
+		// The word index's reads: a page's documents from their posts and variants, and the stored documents, which the seed
+		// wrote as the rule does, so the page writes nothing.
+		$documents = $listing->documents( range( 4001, 4024 ) );
+
+		$this->assertCount( 24, $documents );
+		$this->assertSame( 0, $listing->index( ...array_merge( ...array_values( $documents ) ) ), 'The seed indexes every post as the projector does.' );
+		$this->assertSame( 0, $listing->unindexedCount(), 'The seed indexes every post.' );
+
+		// Each price order walks the currency's sort prices by the covering key, in its order, and sorts nothing: read
+		// directly, as the run's plans keep only each access's key and estimate.
+		foreach ( array_merge( $this->sentBy( fn() => ( new MysqlCatalogSearch( $this->db ) )->search( new SearchQuery( $locale, 1, 24, SearchQuery::PRICE_ASC, array(), array(), null, null, false, $base ) ) ), $this->sentBy( fn() => ( new MysqlCatalogSearch( $this->db ) )->search( new SearchQuery( $locale, 1, 24, SearchQuery::PRICE_DESC, array(), array(), null, null, false, $base ) ) ) ) as $index => $sql ) {
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- The statement the adapter sent, prepared; this is its EXPLAIN.
+			$plan = $wpdb->get_results( 'EXPLAIN ' . $sql, ARRAY_A );
+
+			$this->assertSame( 'currency_price', $plan[0]['key'] ?? null, 'A price order walks the sort prices by currency_price: ' . (string) wp_json_encode( $plan ) );
+			$this->assertSame( array(), array_filter( array_column( $plan, 'Extra' ), static fn( mixed $extra ): bool => str_contains( (string) $extra, 'filesort' ) ), 'A price order sorts nothing: ' . (string) wp_json_encode( $plan ) );
+
+			fwrite( STDOUT, sprintf( "\nThe plan of %s: %s\n", 0 === $index ? 'PAGE_PRICE_ASC' : 'PAGE_PRICE_DESC', (string) wp_json_encode( $plan ) ) );
+		}
 
 		// The stock summaries: the products of a page of variants, their enabled variants, the command's pages of the
 		// complete products from the start and after a cursor 1000 rows from the end, and doctor's count. The write is an
@@ -444,6 +483,16 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$this->assertCount( 200, $summaries->completeProductIds( 0, 200 ) );
 		$this->assertCount( 200, $summaries->completeProductIds( Dataset::Medium->products() - 1000, 200 ) );
 		$this->assertSame( 0, $summaries->unsummarizedCount(), 'The seed summarizes every product.' );
+
+		// The price projection's reads: a page's variants with their prices, its stored rows, the job's page of the
+		// converted prices behind a version, and doctor's counts, which the seed, selling in its base currency only, passes.
+		$projections = new MysqlPriceProjections( $db );
+
+		$this->assertCount( 24, $projections->sources( $page ) );
+		$this->assertCount( 24, $projections->stored( $page ) );
+		$this->assertSame( array(), $projections->staleProductIds( 2, RepriceProjections::PAGE ), 'The seed converts no price.' );
+		$this->assertSame( 0, $projections->staleCount( 2 ) );
+		$this->assertSame( 0, $projections->unprojectedCount( self::$baseCurrency ), 'The seed projects every product.' );
 
 		list( $writeSql, $writeArguments ) = ModuleStatements::expand( MysqlStockSummaryProjection::WRITE_SUMMARY, array( 'in_stock', 5000, 'in_stock' ), array( CatalogTables::PRODUCTS ), array( $this->db, 'table' ), 'Catalog' );
 		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The statement is the projection's constant, expanded; this is its prepare step.
@@ -752,6 +801,33 @@ final class QueryPlanTest extends DatabaseTestCase {
 		}
 
 		return $gaps;
+	}
+
+	/**
+	 * Returns the statements a call sends, as the server receives them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param callable $call The call.
+	 * @return list<string> The statements, in order.
+	 */
+	private function sentBy( callable $call ): array {
+		$sent    = array();
+		$capture = static function ( string $sql ) use ( &$sent ): string {
+			$sent[] = $sql;
+
+			return $sql;
+		};
+
+		add_filter( 'query', $capture );
+
+		try {
+			$call();
+		} finally {
+			remove_filter( 'query', $capture );
+		}
+
+		return $sent;
 	}
 
 	/**

@@ -263,6 +263,34 @@ final class DdlGeneratorTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a fulltext key is written as `FULLTEXT KEY`, among the plain keys, in the form dbDelta parses.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_fulltext_key_is_written_as_a_fulltext_key(): void {
+		$table = new TableDefinition(
+			'documents',
+			'Tests',
+			'A fixture.',
+			MutationPattern::Config,
+			array(
+				new ColumnSpec( 'product_id', 'bigint unsigned', Classification::Public, 'Key.' ),
+				new ColumnSpec( 'body', 'text', Classification::Public, 'Words.' ),
+			),
+			array( 'product_id' ),
+			array(),
+			array( IndexSpec::fulltext( 'body', array( 'body' ), 'Finds the documents holding words.' ) ),
+			'permanent',
+			array()
+		);
+
+		$this->assertSame(
+			"CREATE TABLE `wp_seocart_documents` (\n\t`product_id` bigint unsigned NOT NULL,\n\t`body` text NOT NULL,\n\tPRIMARY KEY  (`product_id`),\n\tFULLTEXT KEY `body` (`body`)\n) ENGINE=InnoDB " . self::CHARSET,
+			( new DdlGenerator() )->createTable( $table, 'wp_seocart_documents', self::CHARSET )
+		);
+	}
+
+	/**
 	 * Declares a fixture table that uses every rule the generator applies.
 	 *
 	 * @since 0.1.0

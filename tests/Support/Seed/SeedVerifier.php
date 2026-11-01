@@ -19,6 +19,8 @@ use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Infrastructure\Doctor\CatalogChecks;
+use SEOCart\Catalog\Infrastructure\MysqlCatalogSearch;
+use SEOCart\Catalog\Infrastructure\MysqlPriceProjections;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Catalog\Infrastructure\MysqlStockSummaryProjection;
 use SEOCart\Checkout\Infrastructure\Doctor\CheckoutChecks;
@@ -56,6 +58,8 @@ use SEOCart\Platform\Settings\Settings;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Pricing\Infrastructure\Doctor\RateVersionCheck;
 use SEOCart\Pricing\Infrastructure\MysqlExchangeRates;
+use SEOCart\Pricing\Infrastructure\MysqlPresentmentCurrencies;
+use SEOCart\Pricing\Infrastructure\PricingCurrencyTerms;
 use SEOCart\Promotion\Infrastructure\Doctor\PromotionUsageCheck;
 use SEOCart\Promotion\Infrastructure\MysqlPromotionRepository;
 use SEOCart\Support\Currency;
@@ -155,7 +159,7 @@ final class SeedVerifier {
 		$reconciler = new Reconciler( $products, $db, $locales, new SystemClock(), new SequentialIdGenerator( 970000 ) );
 		$events     = new RecordingEventPublisher( $db );
 		$settler    = new ProductSettler( $products, $stock, $db, array( new LockService( $db, LockMode::GetLock ), 'withLock' ), $events, new SystemClock() );
-		$delete     = new DeleteProduct( $products, $stock, $db, $events, new SystemClock() );
+		$delete     = new DeleteProduct( $products, $stock, $db, $events, new SystemClock(), new MysqlPriceProjections( $db ), new MysqlCatalogSearch( $db ) );
 		$bindings   = new TranslationBindings( $products, $db, $events, new SystemClock(), $delete, new Authorizer( new CapabilityDeclaration() ) );
 		$groups     = new TranslationGroups( $products, $locales, $bindings, $reconciler, $report );
 		$gateways   = TestGateways::of( new StubGateway() );
@@ -172,7 +176,7 @@ final class SeedVerifier {
 			new PaymentLedgerCheck( new MysqlPaymentRepository( $db, new SequentialIdGenerator( 980000 ) ), new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 990000 ) ) ),
 			new GatewaysCheck( new GatewayStatuses( $gateways, $payments ), $gateways ),
 			new RateVersionCheck(
-				new MysqlExchangeRates( $db, $db, array( new LockService( $db, LockMode::GetLock ), 'withLock' ), static fn(): Currency => Currency::of( $baseCurrency ), static function (): void {} ),
+				new MysqlExchangeRates( $db, $db, array( new LockService( $db, LockMode::GetLock ), 'withLock' ), static fn(): Currency => Currency::of( $baseCurrency ), static function (): void {}, new RecordingEventPublisher( $db ), new SystemClock() ),
 				static fn(): ?int => ( new BootOption( $db, $report ) )->read()->rateVersion(),
 				static function (): void {
 					throw new \LogicException( 'The seed verifier reports what doctor finds; it never repairs.' );
@@ -180,8 +184,24 @@ final class SeedVerifier {
 			),
 			new PromotionUsageCheck( new MysqlPromotionRepository( $db ) ),
 			new SecretsCheck( self::secretsStatus( $db ) ),
-			...( new CatalogChecks( $products, $stock, $groups, $settler, new SystemClock(), $db, static fn(): Currency => Currency::of( $baseCurrency ), array( new LockService( $db, LockMode::GetLock ), 'withLock' ), new MysqlStockSummaryProjection( $db ) ) )->checks()
+			...( new CatalogChecks( $products, $stock, $groups, $settler, new SystemClock(), $db, static fn(): Currency => Currency::of( $baseCurrency ), array( new LockService( $db, LockMode::GetLock ), 'withLock' ), new MysqlStockSummaryProjection( $db ), new MysqlPriceProjections( $db ), self::currencyTerms( $db, $report, $baseCurrency ), new MysqlCatalogSearch( $db ), new MysqlCatalogSearch( $db ) ) )->checks()
 		);
+	}
+
+	/**
+	 * Builds the currency terms the catalog's checks read, over a Database of the caller's, as the kernel builds them: the store's current rate version, from its record.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Database $db           The connection.
+	 * @param callable $report       Receives a machine code (string) and its context (array).
+	 * @param string   $baseCurrency The store's base currency.
+	 * @return PricingCurrencyTerms The terms.
+	 */
+	private static function currencyTerms( Database $db, callable $report, string $baseCurrency ): PricingCurrencyTerms {
+		$version = static fn(): ?int => ( new BootOption( $db, $report ) )->read()->rateVersion();
+
+		return new PricingCurrencyTerms( new MysqlPresentmentCurrencies( $db, $version ), $version, static fn(): Currency => Currency::of( $baseCurrency ) );
 	}
 
 	/**

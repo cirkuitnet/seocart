@@ -14,6 +14,20 @@ Whether a request that published events ends its response before delivering them
 - Returning `true`: Ends the response before delivering, so the client never waits for a listener.
 - Returning `false`: Hands the delivery to the job runner instead, as on a server that cannot end a response early.
 
+## `seocart_exchange_rate_version_changed`
+
+A rate set was saved as the next version of the store's exchange rates.
+
+- Delivery: `outbox`. Fires from the outbox after commit, at least once.
+- Payload version: 1
+- Aggregate type: `exchange_rates`
+- Listener arguments: `( DomainEvent $event, EventEnvelope $envelope )`
+- Register with: `add_action( 'seocart_exchange_rate_version_changed', $callback, 10, 2 )`; the first argument is a `SEOCart\Pricing\Domain\Event\ExchangeRateVersionChanged`.
+
+### Event properties
+
+- `version` (int): The version saved.
+
 ## `seocart_order_created`
 
 Fires after an order is committed in `pending_payment`, before its payment is known.

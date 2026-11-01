@@ -11,9 +11,11 @@ declare( strict_types=1 );
 
 namespace SEOCart\Catalog\Application\Search;
 
+use SEOCart\Catalog\Application\Projection\CurrencyTerms;
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Localization\PostLocales;
+use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Locale;
 
@@ -24,15 +26,20 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: what a page of the listing holds. A product is listed when its post in the
  * request's locale is published and its product is `complete`; nobody sees more, whoever asks.
- * The locale defaults to the site's and must be one the site publishes in. The category, brand
+ * The order is newest, by price in a currency the store sells in, the base currency by default,
+ * in which a price range is given too, or, for a search, by relevance; a price order lists only the
+ * products with a price in the currency, and the order by relevance those the word index holds. The locale defaults to the site's and must be one the site publishes in. The category, brand
  * and tag are slugs, resolved together by one get_terms(), and a category's descendants by one
  * more, so the search is given term-taxonomy ids. A search holds up to SearchQuery::MOST_WORDS
  * words. Each item is the post's id, title, permalink and featured image at the `medium` size, and
  * the product's id, uuid, listed variant and SKU, and its stock summary; no price, no excerpt, no
  * content: prices are hydrated by the page that shows them.
  *
- * The page costs the same statements whatever its length, on a cold cache: the search, the
- * page's posts with their terms and meta, the facts, and the featured images' posts and meta. It
+ * The page costs the same statements whatever its length or its order, on a cold cache: the
+ * search, the page's posts with their terms and meta, the facts, and the featured images' posts
+ * and meta. A request that asks anything of prices (a price order, a price range or a currency)
+ * reads the store's base currency too, one statement, and a currency other than the base one the
+ * read of its terms. It
  * renders nothing and knows no theme.
  *
  * @since 0.2.0
@@ -76,6 +83,24 @@ final class ProductListing {
 	private array $taxonomies;
 
 	/**
+	 * Which currencies the store sells in.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var CurrencyTerms
+	 */
+	private CurrencyTerms $terms;
+
+	/**
+	 * Returns the store's base currency.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var callable(): Currency
+	 */
+	private $baseCurrency;
+
+	/**
 	 * Creates the listing. Sends nothing.
 	 *
 	 * @since 0.2.0
@@ -85,14 +110,19 @@ final class ProductListing {
 	 * @param PostLocales   $locales    The locales the site publishes in.
 	 * @param string[]      $taxonomies The taxonomy of each term facet, keyed by CatalogSearch::FACET_CATEGORY,
 	 *                                  FACET_BRAND and FACET_TAG: the product taxonomies.
+	 * @param CurrencyTerms $terms        Which currencies the store sells in.
+	 * @param callable      $baseCurrency Returns the store's base currency (Currency).
 	 *
 	 * @phpstan-param array{category: string, brand: string, tag: string} $taxonomies
+	 * @phpstan-param callable(): Currency                                $baseCurrency
 	 */
-	public function __construct( CatalogSearch $search, ListingFacts $facts, PostLocales $locales, array $taxonomies ) {
-		$this->search     = $search;
-		$this->facts      = $facts;
-		$this->locales    = $locales;
-		$this->taxonomies = $taxonomies;
+	public function __construct( CatalogSearch $search, ListingFacts $facts, PostLocales $locales, array $taxonomies, CurrencyTerms $terms, callable $baseCurrency ) {
+		$this->search       = $search;
+		$this->facts        = $facts;
+		$this->locales      = $locales;
+		$this->taxonomies   = $taxonomies;
+		$this->terms        = $terms;
+		$this->baseCurrency = $baseCurrency;
 	}
 
 	/**
@@ -100,9 +130,9 @@ final class ProductListing {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @throws CodedException CatalogError::LocaleUnsupported, SearchInvalid and TermNotFound, before anything is searched.
+	 * @throws CodedException CatalogError::LocaleUnsupported, SearchInvalid, OrderUnavailable, PriceRangeInvalid, CurrencyUnsupported and TermNotFound, before anything is searched.
 	 *
-	 * @param array<string, mixed> $input The prepared input: locale, search, category, brand, tag, in_stock, orderby, page and per_page.
+	 * @param array<string, mixed> $input The prepared input: locale, search, category, brand, tag, in_stock, orderby, currency, min_price_minor, max_price_minor, page and per_page.
 	 * @param Actor                $actor Who reads; every reader is shown the same page.
 	 * @return array{items: list<array<string, mixed>>, page: int, per_page: int, has_more: bool} The page, keyed by wire name.
 	 */
@@ -111,6 +141,15 @@ final class ProductListing {
 
 		$locale  = $this->locale( (string) ( $input['locale'] ?? '' ) );
 		$words   = self::words( (string) ( $input['search'] ?? '' ) );
+		$orderBy = (string) ( $input['orderby'] ?? SearchQuery::NEWEST );
+
+		if ( SearchQuery::RELEVANCE === $orderBy && array() === $words ) {
+			CodedException::raise( CatalogError::OrderUnavailable, array( 'orderby' => $orderBy ) );
+		}
+
+		$range   = self::priceRange( $input );
+		$given   = (string) ( $input['currency'] ?? '' );
+		$money   = self::pricesAsked( $orderBy, $range, $given ) ? $this->currency( $given ) : null;
 		$terms   = $this->terms( $input );
 		$page    = (int) ( $input['page'] ?? 1 );
 		$perPage = (int) ( $input['per_page'] ?? 1 );
@@ -119,12 +158,15 @@ final class ProductListing {
 				$locale,
 				$page,
 				$perPage,
-				(string) ( $input['orderby'] ?? SearchQuery::NEWEST ),
+				$orderBy,
 				$words,
 				$terms[ CatalogSearch::FACET_CATEGORY ],
 				$terms[ CatalogSearch::FACET_BRAND ][0] ?? null,
 				$terms[ CatalogSearch::FACET_TAG ][0] ?? null,
-				(bool) ( $input['in_stock'] ?? false )
+				(bool) ( $input['in_stock'] ?? false ),
+				$money,
+				$range[0],
+				$range[1]
 			)
 		);
 
@@ -162,6 +204,86 @@ final class ProductListing {
 		}
 
 		return $locale;
+	}
+
+	/**
+	 * Tells whether the request asks anything of prices: a price order, a price range, or a currency.
+	 *
+	 * Only such a request reads the currency, since the store's base currency is a setting, and
+	 * reading it is one statement on a cold request: a listing that asks nothing of prices costs
+	 * none of it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string                          $orderBy The order asked for.
+	 * @param array{0: int|null, 1: int|null} $range   The price range asked for.
+	 * @param string                          $given   The currency's code asked for, or an empty string.
+	 * @return bool True when the request needs its currency.
+	 */
+	private static function pricesAsked( string $orderBy, array $range, string $given ): bool {
+		return in_array( $orderBy, array( SearchQuery::PRICE_ASC, SearchQuery::PRICE_DESC ), true ) || null !== $range[0] || null !== $range[1] || '' !== $given;
+	}
+
+	/**
+	 * Returns the currency asked for, or the store's base currency when none is.
+	 *
+	 * The base currency is a setting, read once: one statement on a cold request. It is offered
+	 * without a further read; another currency is asked of the currency terms, with one read of its
+	 * terms.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException CatalogError::CurrencyUnsupported for a code that is no currency, or a currency the store does not sell in.
+	 *
+	 * @param string $given The currency's code, or an empty string.
+	 * @return Currency The currency.
+	 */
+	private function currency( string $given ): Currency {
+		$base = ( $this->baseCurrency )();
+
+		if ( '' === $given ) {
+			return $base;
+		}
+
+		try {
+			$currency = Currency::of( $given );
+		} catch ( CodedException $notACurrency ) {
+			// Not an ISO 4217 code the store knows: a currency it cannot sell in.
+			CodedException::raise( CatalogError::CurrencyUnsupported, array( 'currency' => $given ) );
+		}
+
+		if ( ! $currency->equals( $base ) && ! $this->terms->isOffered( $currency ) ) {
+			CodedException::raise( CatalogError::CurrencyUnsupported, array( 'currency' => $given ) );
+		}
+
+		return $currency;
+	}
+
+	/**
+	 * Returns the price range asked for: its lowest and its highest price, each null when not given.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException CatalogError::PriceRangeInvalid when the lowest price is above the highest.
+	 *
+	 * @param array<string, mixed> $input The prepared input.
+	 * @return array{0: int|null, 1: int|null} The lowest and the highest price, in the currency's minor units.
+	 */
+	private static function priceRange( array $input ): array {
+		$lowest  = isset( $input['min_price_minor'] ) ? (int) $input['min_price_minor'] : null;
+		$highest = isset( $input['max_price_minor'] ) ? (int) $input['max_price_minor'] : null;
+
+		if ( null !== $lowest && null !== $highest && $lowest > $highest ) {
+			CodedException::raise(
+				CatalogError::PriceRangeInvalid,
+				array(
+					'min_price_minor' => $lowest,
+					'max_price_minor' => $highest,
+				)
+			);
+		}
+
+		return array( $lowest, $highest );
 	}
 
 	/**

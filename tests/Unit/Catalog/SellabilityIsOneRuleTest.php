@@ -147,7 +147,7 @@ final class SellabilityIsOneRuleTest extends TestCase {
 	 * The classes outside the repository whose statements list or count `complete` products, with
 	 * the statements that may name the marker: the listing's page, which lists only complete
 	 * products and decides no sale, and the stock summaries' page of the complete products and
-	 * doctor's count of those still unsummarized. None decides a verdict; the listed item's
+	 * doctor's counts of those still unsummarized and of those without a sort price. None decides a verdict; the listed item's
 	 * sellability stays sellabilityFacts()'s.
 	 *
 	 * @since 0.2.0
@@ -155,8 +155,9 @@ final class SellabilityIsOneRuleTest extends TestCase {
 	 * @var array<string, list<string>>
 	 */
 	private const COMPLETE_LISTERS = array(
-		'src/Catalog/Infrastructure/MysqlCatalogSearch.php'          => array( 'PAGE' ),
+		'src/Catalog/Infrastructure/MysqlCatalogSearch.php'          => array( 'PAGE', 'PAGE_PRICE_ASC', 'PAGE_PRICE_DESC', 'PAGE_RELEVANCE', 'UNINDEXED' ),
 		'src/Catalog/Infrastructure/MysqlStockSummaryProjection.php' => array( 'COMPLETE_PRODUCT_IDS', 'UNSUMMARIZED' ),
+		'src/Catalog/Infrastructure/MysqlPriceProjections.php'       => array( 'UNPROJECTED' ),
 	);
 
 	/**

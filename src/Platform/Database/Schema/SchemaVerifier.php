@@ -25,7 +25,8 @@ defined( 'ABSPATH' ) || exit;
  * type, nullability, default and EXTRA (exactly `auto_increment` or nothing, as declared); every
  * text column has its declared collation, or the table's when none is declared; no column is
  * undeclared; and the index set is exactly the declared one, primary key included, by name,
- * uniqueness, column order and prefix length. An empty diff is the only pass. dbDelta's
+ * uniqueness, kind (a B-tree or a fulltext index, as INDEX_TYPE reports it), column order and
+ * prefix length. An empty diff is the only pass. dbDelta's
  * return value is never taken as evidence.
  *
  * Both sides are normalized before they are compared. Integer display widths are dropped
@@ -297,6 +298,7 @@ final class SchemaVerifier {
 		$declared = array(
 			'primary' => array(
 				'unique'  => true,
+				'type'    => IndexKind::Unique->indexType(),
 				'columns' => $definition->primaryKey(),
 			),
 		);
@@ -320,6 +322,10 @@ final class SchemaVerifier {
 				$lines[] = sprintf( '%s: index %s is %s, declared %s', $table, $label, $actual[ $name ]['unique'] ? 'unique' : 'not unique', $index['unique'] ? 'unique' : 'not unique' );
 			}
 
+			if ( $actual[ $name ]['type'] !== $index['type'] ) {
+				$lines[] = sprintf( '%s: index %s is a %s index, declared %s', $table, $label, $actual[ $name ]['type'], $index['type'] );
+			}
+
 			if ( $actual[ $name ]['columns'] !== $index['columns'] ) {
 				$lines[] = sprintf( '%s: index %s covers (%s), declared (%s)', $table, $label, implode( ',', $actual[ $name ]['columns'] ), implode( ',', $index['columns'] ) );
 			}
@@ -335,7 +341,7 @@ final class SchemaVerifier {
 	}
 
 	/**
-	 * Tells whether a table's key of a declared key's name is as declared: as unique, over the same columns in the same order.
+	 * Tells whether a table's key of a declared key's name is as declared: as unique, of the same kind, over the same columns in the same order.
 	 *
 	 * @since 0.2.0
 	 *
@@ -353,23 +359,25 @@ final class SchemaVerifier {
 	}
 
 	/**
-	 * Reads a table's keys from information_schema: each one's uniqueness and its columns in key order, a prefix length after its column.
+	 * Reads a table's keys from information_schema: each one's uniqueness, its index type and its columns in key order, a prefix length after its column.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param string $table The full table name.
-	 * @return array<string, array{unique: bool, columns: list<string>}> The keys, by lowercase name.
+	 * @return array<string, array{unique: bool, type: string, columns: list<string>}> The keys, by lowercase name.
 	 */
 	private function actualIndexes( string $table ): array {
 		$actual = array();
 
 		foreach ( $this->db->fetchAll(
-			'SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique, SEQ_IN_INDEX AS seq, COLUMN_NAME AS column_name, SUB_PART AS sub_part FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s ORDER BY INDEX_NAME, SEQ_IN_INDEX',
+			'SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique, INDEX_TYPE AS index_type, SEQ_IN_INDEX AS seq, COLUMN_NAME AS column_name, SUB_PART AS sub_part FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s ORDER BY INDEX_NAME, SEQ_IN_INDEX',
 			$table
 		) as $row ) {
 			$name = strtolower( (string) $row['index_name'] );
 
+			// Fulltext or not is the kind a declaration states: InnoDB keeps every other key as a B-tree, and a table of another engine is reported by its engine.
 			$actual[ $name ]['unique']    = '0' === (string) $row['non_unique'];
+			$actual[ $name ]['type']      = 'FULLTEXT' === strtoupper( (string) $row['index_type'] ) ? IndexKind::Fulltext->indexType() : IndexKind::Key->indexType();
 			$actual[ $name ]['columns'][] = strtolower( (string) $row['column_name'] ) . ( null === $row['sub_part'] ? '' : '(' . $row['sub_part'] . ')' );
 		}
 
@@ -377,16 +385,17 @@ final class SchemaVerifier {
 	}
 
 	/**
-	 * Returns a declared key as actualIndexes() reads one: its uniqueness and its columns, a prefix length after its column.
+	 * Returns a declared key as actualIndexes() reads one: its uniqueness, its index type and its columns, a prefix length after its column.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param IndexSpec $index The declared key.
-	 * @return array{unique: bool, columns: list<string>} The key.
+	 * @return array{unique: bool, type: string, columns: list<string>} The key.
 	 */
 	private static function declaredIndex( IndexSpec $index ): array {
 		return array(
 			'unique'  => $index->isUnique(),
+			'type'    => $index->kind()->indexType(),
 			'columns' => array_map( static fn( array $column ): string => $column['name'] . ( null === $column['length'] ? '' : '(' . $column['length'] . ')' ), $index->columns() ),
 		);
 	}

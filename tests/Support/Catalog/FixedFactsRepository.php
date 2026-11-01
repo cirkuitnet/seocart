@@ -484,6 +484,34 @@ final class FixedFactsRepository implements ProductRepository {
 	/**
 	 * Not used by the tests this double serves.
 	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $limit The most to list.
+	 * @return never
+	 */
+	public function orphanPriceProjections( int $limit ): array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int $limit The most to list.
+	 * @return never
+	 */
+	public function orphanSearchDocuments( int $limit ): array {
+		throw new \LogicException( 'Not used by the tests this double serves.' );
+	}
+
+	/**
+	 * Not used by the tests this double serves.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \LogicException Always.

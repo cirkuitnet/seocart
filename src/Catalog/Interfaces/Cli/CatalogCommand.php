@@ -11,35 +11,38 @@ declare( strict_types=1 );
 
 namespace SEOCart\Catalog\Interfaces\Cli;
 
-use SEOCart\Catalog\Application\Projection\StockSummaries;
+use SEOCart\Catalog\Application\Projection\CompleteProductPager;
+use SEOCart\Catalog\Application\Projection\PriceProjector;
+use SEOCart\Catalog\Application\Projection\SearchDocumentProjector;
 use SEOCart\Catalog\Application\Projection\StockSummaryProjector;
 use SEOCart\Platform\Database\Exception\DatabaseException;
-use SEOCart\Platform\Database\Exception\LockNotAcquired;
-use SEOCart\Platform\Events\DrainOptions;
-use SEOCart\Platform\Events\OutboxDrainer;
 use SEOCart\Support\Error\ErrorDefinition;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Summarizes the stock of every complete product, a page at a time, resumably.
+ * Recomputes what the listings read of every complete product, a page at a time, resumably: its stock summary, its sort prices, or its search documents.
  *
- * Owns one fact: the command's contract with an operator. `summarize-stock` walks the complete
- * products by id, PAGE at a time, recomputes each page's summaries as the stock events do, and
- * prints after each page the id it reached, which `--after` resumes from. A summary already right
+ * Owns one fact: the command's contract with an operator. Each action walks the complete products
+ * by id, PAGE at a time (CompleteProductPager), recomputes each page as the events that keep it do,
+ * and prints after each page the id it reached, which `--after` resumes from. A value already right
  * is not written, so a second run writes nothing. It is how a store whose products were saved
- * before their summaries existed catches up; every save and every stock movement but a checkout's
- * hold and its release keeps them right after that, and a run also puts right a summary that a
- * hold given back left out of stock (StockSummaryProjector says when). It exits 0 when done, and
- * 1 on a database failure, with its code and message.
+ * before the summaries, the sort prices or the search documents existed catches up, and how a drift is put right.
+ * - `summarize-stock` recomputes each product's stock summary (StockSummaryProjector). Every save
+ *   and every stock movement but a checkout's hold and its release keeps the summaries right after
+ *   that, and a run also puts right a summary that a hold given back left out of stock.
+ * - `project-prices` recomputes each product's sort prices in every currency the store sells in
+ *   (PriceProjector). Every save, and the repricing job after a new exchange-rate version, keep
+ *   them right after that.
+ * - `index-products` rebuilds each product's search documents, one per post that presents it
+ *   (SearchDocumentProjector). Every save, a write to its post by any other path included, keeps
+ *   them right after that.
  *
- * It serialises with the drain that delivers the stock events: each page is recomputed and written
- * while the command holds the outbox drainer's lock, OutboxDrainer::LOCK_NAME, so a page and a drain
- * never recompute summaries at once, and a page never writes over a fresher summary that a drain
- * wrote from stock moved after the page read it. A drain that finds the lock held leaves its events
- * pending for the next drain, at the latest the catch-up job's, which reads the stock after the page
- * is written. A page waits up to LOCK_WAIT_SECONDS for a drain at work; a run that cannot take the
- * lock in that time stops with exit code 1 and the lock's message, and `--after` resumes it.
+ * Each page runs while the command holds the outbox drainer's lock, so a page and a drain never
+ * recompute a product at once (CompleteProductPager says how, and how long a page waits). It exits 0
+ * when done, and 1 on a database failure, with its code and message: a drain that held the lock for
+ * the whole wait, or the lock lost during a page, whose cursor is then not printed, so `--after`
+ * from the last cursor printed does that page again.
  *
  * It is a maintenance command, not an application operation: it has no REST or Ability twin,
  * so it resolves to no operation definition by design. Output goes through a callable and run()
@@ -68,7 +71,7 @@ final class CatalogCommand {
 	public const EXIT_FAILED = 1;
 
 	/**
-	 * How many products one page summarizes.
+	 * How many products one page recomputes.
 	 *
 	 * @since 0.2.0
 	 *
@@ -77,50 +80,62 @@ final class CatalogCommand {
 	public const PAGE = 200;
 
 	/**
-	 * How long a page waits for a drain at work to give the drainer's lock back, in seconds: twice as
-	 * long as `wp seocart outbox drain` delivers for.
+	 * Each action, with what it recomputes, for the lines it prints.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @var int
+	 * @var array<string, array{done: string, label: string}>
 	 */
-	private const LOCK_WAIT_SECONDS = 2 * DrainOptions::COMMAND_BUDGET_SECONDS;
+	private const ACTIONS = array(
+		'summarize-stock' => array(
+			'done'  => 'Summarized',
+			'label' => 'summarized',
+		),
+		'project-prices'  => array(
+			'done'  => 'Projected the prices of',
+			'label' => 'projected',
+		),
+		'index-products'  => array(
+			'done'  => 'Indexed the words of',
+			'label' => 'indexed',
+		),
+	);
 
 	/**
-	 * How long a table-mode lease on the lock lasts: far longer than a page takes.
+	 * Walks the complete products beside the drain.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @var int
+	 * @var CompleteProductPager
 	 */
-	private const LOCK_TTL_SECONDS = 60;
+	private CompleteProductPager $pager;
 
 	/**
-	 * The summaries.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @var StockSummaries
-	 */
-	private StockSummaries $summaries;
-
-	/**
-	 * Recomputes summaries as the stock events do.
+	 * Recomputes stock summaries as the stock events do.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var StockSummaryProjector
 	 */
-	private StockSummaryProjector $projector;
+	private StockSummaryProjector $summaries;
 
 	/**
-	 * Takes a named lock, runs work while holding it and releases it: LockService::withLock().
+	 * Recomputes sort prices as a save does.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @var callable(string, int, int, callable): mixed
+	 * @var PriceProjector
 	 */
-	private $withLock;
+	private PriceProjector $prices;
+
+	/**
+	 * Rebuilds search documents as a save does.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var SearchDocumentProjector
+	 */
+	private SearchDocumentProjector $documents;
 
 	/**
 	 * Prints one line for the operator.
@@ -136,30 +151,32 @@ final class CatalogCommand {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param StockSummaries         $summaries The summaries.
-	 * @param StockSummaryProjector  $projector Recomputes summaries as the stock events do.
-	 * @param callable               $withLock  Takes a named lock, runs work while holding it and releases it.
-	 * @param callable(string): void $output    Prints one line, for example WP_CLI::log().
-	 *
-	 * @phpstan-param callable(string, int, int, callable): mixed $withLock
+	 * @param CompleteProductPager    $pager     Walks the complete products beside the drain.
+	 * @param StockSummaryProjector   $summaries Recomputes stock summaries as the stock events do.
+	 * @param PriceProjector          $prices    Recomputes sort prices as a save does.
+	 * @param SearchDocumentProjector $documents Rebuilds search documents as a save does.
+	 * @param callable(string): void  $output    Prints one line, for example WP_CLI::log().
 	 */
-	public function __construct( StockSummaries $summaries, StockSummaryProjector $projector, callable $withLock, callable $output ) {
+	public function __construct( CompleteProductPager $pager, StockSummaryProjector $summaries, PriceProjector $prices, SearchDocumentProjector $documents, callable $output ) {
+		$this->pager     = $pager;
 		$this->summaries = $summaries;
-		$this->projector = $projector;
-		$this->withLock  = $withLock;
+		$this->prices    = $prices;
+		$this->documents = $documents;
 		$this->output    = $output;
 	}
 
 	/**
-	 * Summarizes the stock of every complete product for the listings.
+	 * Recomputes what the listings read of every complete product: its stock summary, its sort prices, or its search documents.
 	 *
 	 * ## OPTIONS
 	 *
 	 * <action>
-	 * : What to do. `summarize-stock` recomputes every complete product's stock summary.
+	 * : What to do. `summarize-stock` recomputes every complete product's stock summary; `project-prices` its sort price in every currency the store sells in; `index-products` its search documents.
 	 * ---
 	 * options:
 	 *   - summarize-stock
+	 *   - project-prices
+	 *   - index-products
 	 * ---
 	 *
 	 * [--after=<id>]
@@ -170,12 +187,13 @@ final class CatalogCommand {
 	 *
 	 * ## EXIT STATUS
 	 *
-	 * 0 when done, 1 on a database failure, such as a drain of the outbox holding its lock for longer than a page waits.
+	 * 0 when done, 1 on a database failure, such as a drain of the outbox holding its lock for longer than a page waits, or the lock lost during a page.
 	 *
 	 * ## EXAMPLES
 	 *
 	 *     wp seocart catalog summarize-stock
-	 *     wp seocart catalog summarize-stock --after=4200
+	 *     wp seocart catalog project-prices --after=4200
+	 *     wp seocart catalog index-products
 	 *
 	 * @since 0.2.0
 	 *
@@ -191,19 +209,21 @@ final class CatalogCommand {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string[]                   $args      The action: summarize-stock.
+	 * @param string[]                   $args      The action: summarize-stock, project-prices or index-products.
 	 * @param array<string, string|bool> $assocArgs The options: after.
 	 * @return int One of the EXIT_* constants.
 	 */
 	public function run( array $args, array $assocArgs ): int {
-		if ( 'summarize-stock' !== ( $args[0] ?? '' ) ) {
-			$this->say( 'Usage: wp seocart catalog summarize-stock [--after=<id>]' );
+		$action = (string) ( $args[0] ?? '' );
+
+		if ( ! isset( self::ACTIONS[ $action ] ) ) {
+			$this->say( 'Usage: wp seocart catalog ' . implode( '|', array_keys( self::ACTIONS ) ) . ' [--after=<id>]' );
 
 			return self::EXIT_FAILED;
 		}
 
 		try {
-			return $this->summarizeStock( max( 0, (int) ( $assocArgs['after'] ?? 0 ) ) );
+			return $this->walk( $action, max( 0, (int) ( $assocArgs['after'] ?? 0 ) ) );
 		} catch ( DatabaseException $failure ) {
 			$this->say( (string) $failure->errorCode()->value . ': ' . ErrorDefinition::of( $failure->errorCode() )->render( $failure->context() ) );
 
@@ -212,63 +232,47 @@ final class CatalogCommand {
 	}
 
 	/**
-	 * Summarizes the complete products after a cursor, a page at a time.
+	 * Recomputes the complete products after a cursor, a page at a time, for one action.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param int $after The last product id already done, or 0.
+	 * @param string $action One of ACTIONS' keys.
+	 * @param int    $after  The last product id already done, or 0.
 	 * @return int EXIT_OK.
 	 */
-	private function summarizeStock( int $after ): int {
-		$products = 0;
-		$written  = 0;
-
-		do {
-			$page = $this->summaries->completeProductIds( $after, self::PAGE );
-			$full = self::PAGE === count( $page );
-
-			if ( array() === $page ) {
-				break;
+	private function walk( string $action, int $after ): int {
+		$words = self::ACTIONS[ $action ];
+		$done  = $this->pager->walk(
+			$after,
+			self::PAGE,
+			fn( array $productIds ): int => $this->work( $action, $productIds ),
+			function ( int $products, int $cursor, int $written ) use ( $words ): void {
+				$this->say( sprintf( '%1$s %2$d products up to id %3$d, %4$d written. To resume: --after=%3$d', $words['done'], $products, $cursor, $written ) );
 			}
+		);
 
-			$changed   = $this->summarizePage( $page );
-			$after     = (int) end( $page );
-			$products += count( $page );
-			$written  += $changed;
-
-			$this->say( sprintf( 'Summarized %1$d products up to id %2$d, %3$d written. To resume: --after=%2$d', count( $page ), $after, $changed ) );
-		} while ( $full );
-
-		$this->say( sprintf( 'Done: %1$d complete products summarized, %2$d written.', $products, $written ) );
+		$this->say( sprintf( 'Done: %1$d complete products %2$s, %3$d written.', $done['products'], $words['label'], $done['written'] ) );
 
 		return self::EXIT_OK;
 	}
 
 	/**
-	 * Recomputes one page's summaries while holding the drainer's lock, so no drain recomputes them meanwhile.
+	 * Does one page's work for an action.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @throws LockNotAcquired When a drain held the lock for the whole wait; nothing was written.
-	 *
-	 * @param int[] $productIds The page's products.
-	 * @return int How many summaries were written.
+	 * @param string $action     One of ACTIONS' keys.
+	 * @param int[]  $productIds The page's products.
+	 * @return int How many rows the page wrote.
 	 *
 	 * @phpstan-param list<int> $productIds
 	 */
-	private function summarizePage( array $productIds ): int {
-		$written = 0;
-
-		( $this->withLock )(
-			OutboxDrainer::LOCK_NAME,
-			self::LOCK_TTL_SECONDS,
-			self::LOCK_WAIT_SECONDS,
-			function () use ( $productIds, &$written ): void {
-				$written = $this->projector->project( $productIds );
-			}
-		);
-
-		return $written;
+	private function work( string $action, array $productIds ): int {
+		return match ( $action ) {
+			'summarize-stock' => $this->summaries->project( $productIds ),
+			'project-prices' => $this->prices->project( $productIds ),
+			default => $this->documents->project( $productIds ),
+		};
 	}
 
 	/**

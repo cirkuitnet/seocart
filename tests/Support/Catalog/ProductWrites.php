@@ -21,6 +21,8 @@ use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
+use SEOCart\Catalog\Infrastructure\MysqlCatalogSearch;
+use SEOCart\Catalog\Infrastructure\MysqlPriceProjections;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
 use SEOCart\Inventory\Application\StockService;
@@ -166,7 +168,7 @@ final class ProductWrites {
 		);
 
 		$reconciler = new Reconciler( $products, $transactions, $locales, $clock, $ids );
-		$delete     = new DeleteProduct( $products, $stock, $transactions, $events, $clock );
+		$delete     = new DeleteProduct( $products, $stock, $transactions, $events, $clock, new MysqlPriceProjections( $db ), new MysqlCatalogSearch( $db ) );
 		$bindings   = new TranslationBindings( $products, $transactions, $events, $clock, $delete, $container->get( Authorizer::class ) );
 		$groups     = new TranslationGroups( $products, $locales, $bindings, $reconciler, $report );
 
@@ -178,7 +180,7 @@ final class ProductWrites {
 			$reconciler,
 			$delete,
 			new DuplicateProduct( $products, $save, $posts, $locales ),
-			new PostLifecycle( $products, $groups, $bindings, $delete, $stock, $transactions, $posts, $locales, $report, $debug ),
+			new PostLifecycle( $products, $groups, $bindings, $delete, $stock, $transactions, $posts, $locales, static fn(): EventPublisher => $events, $clock, $report, $debug ),
 			$bindings,
 			$groups,
 			$locales

@@ -1,6 +1,6 @@
 <?php
 /**
- * CatalogTables: the declarations of the catalog's four tables
+ * CatalogTables: the declarations of the catalog's tables
  *
  * @package SEOCart
  * @since   0.1.0
@@ -21,7 +21,7 @@ use SEOCart\Platform\Database\Schema\TableDefinition;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Declares `products`, `product_posts`, `variants` and `variant_prices`.
+ * Declares `products`, `product_posts`, `variants` and `variant_prices`, and the two tables derived from them, `product_price_projections` and `product_search_index`.
  *
  * Owns one fact: the shape of the catalog's storage. The migration that creates the tables and
  * the data registry that lists them call these factories, so each table is declared once. The
@@ -29,8 +29,10 @@ defined( 'ABSPATH' ) || exit;
  * SKU used once in the store (in the table's collation, so without regard to case) and one price
  * row per variant and currency. `products.updated_at` keeps microseconds, so a statement that
  * rewrites the generation marker always changes the row and reports it. `variant_prices` holds
- * money and is classified `financial`; the other three hold nothing personal. The rows of all
- * four live as long as the product they belong to and are removed by the service that deletes it.
+ * money and is classified `financial`, as are the price projections; the others hold nothing
+ * personal. The rows of all six live as long as the product they belong to and are removed by the
+ * service that deletes it. The two derived tables are rebuilt from the others by the catalog's
+ * commands, never read as the truth of a price or a word.
  *
  * @since 0.1.0
  */
@@ -73,6 +75,24 @@ final class CatalogTables {
 	public const VARIANT_PRICES = 'variant_prices';
 
 	/**
+	 * The unprefixed name of the price projections table.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const PRICE_PROJECTIONS = 'product_price_projections';
+
+	/**
+	 * The unprefixed name of the search index table.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const SEARCH_INDEX = 'product_search_index';
+
+	/**
 	 * The owning module, as every declaration names it.
 	 *
 	 * @since 0.1.0
@@ -91,14 +111,15 @@ final class CatalogTables {
 	private const RETENTION = 'entity_lifetime';
 
 	/**
-	 * Returns the four declarations, parents before children.
+	 * Returns the six declarations, parents before children, the derived tables last.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The price projections and the search index.
 	 *
-	 * @return list<TableDefinition> `products`, `product_posts`, `variants`, `variant_prices`.
+	 * @return list<TableDefinition> `products`, `product_posts`, `variants`, `variant_prices`, `product_price_projections`, `product_search_index`.
 	 */
 	public static function all(): array {
-		return array( self::products(), self::productPosts(), self::variants(), self::variantPrices() );
+		return array( self::products(), self::productPosts(), self::variants(), self::variantPrices(), self::priceProjections(), self::searchIndex() );
 	}
 
 	/**
@@ -125,7 +146,7 @@ final class CatalogTables {
 				new ColumnSpec( 'generation_state', 'varchar(12)', $public, 'The generation marker: incomplete, updating or complete. Only a complete product may be sold.', defaultValue: 'incomplete', collation: 'ascii_bin' ),
 				new ColumnSpec( 'active_variant_generation', 'int unsigned', $public, 'The generation of variants the product publishes; 0 before it publishes any.', defaultValue: '0' ),
 				new ColumnSpec( 'visibility', 'varchar(12)', $public, 'Where the product is listed; not yet written.', defaultValue: 'hidden', collation: 'ascii_bin' ),
-				new ColumnSpec( 'stock_summary', 'varchar(16)', $public, 'A summary of its variants\' stock for listings; not yet written.', defaultValue: 'unknown', collation: 'ascii_bin' ),
+				new ColumnSpec( 'stock_summary', 'varchar(16)', $public, 'A summary of its variants\' stock for listings: in_stock, out_of_stock or unknown, written by the stock summary projector and `wp seocart catalog summarize-stock`.', defaultValue: 'unknown', collation: 'ascii_bin' ),
 				new ColumnSpec( 'variant_count', 'int unsigned', $public, 'How many variants the published generation has.', defaultValue: '0' ),
 				new ColumnSpec( 'enabled_variant_count', 'int unsigned', $public, 'How many of them are enabled.', defaultValue: '0' ),
 				new ColumnSpec( 'default_amount_basis', 'varchar(5)', $public, 'Whether its prices are authored net or gross by default.', defaultValue: 'net', collation: 'ascii_bin' ),
@@ -266,6 +287,90 @@ final class CatalogTables {
 			self::RETENTION,
 			array(
 				'variant_prices -> variants' => 'A price whose variant no longer exists is reported, never repaired.',
+			)
+		);
+	}
+
+	/**
+	 * Declares `product_price_projections`: the price each product sorts by in each currency the store sells in.
+	 *
+	 * Derived: PriceProjector writes it from the product's prices and the current exchange rates, and
+	 * `wp seocart catalog project-prices` rebuilds it. A product has a row in a currency only when it
+	 * can be sold there, so a price order lists only what it can price. The covering key on the
+	 * currency, the price and the product is the whole of what a price order reads of the table.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return TableDefinition The declaration.
+	 */
+	public static function priceProjections(): TableDefinition {
+		$financial = Classification::Financial;
+
+		return new TableDefinition(
+			self::PRICE_PROJECTIONS,
+			self::MODULE,
+			'Holds, for each product and each currency the store sells in, the price its listed variant sorts by in a price order; derived from its prices and the exchange rates, and rebuilt by `wp seocart catalog project-prices`.',
+			MutationPattern::Derived,
+			array(
+				new ColumnSpec( 'id', 'bigint unsigned', $financial, 'Surrogate key.', autoIncrement: true ),
+				new ColumnSpec( 'product_id', 'bigint unsigned', $financial, 'The product.' ),
+				new ColumnSpec( 'currency', 'char(3)', $financial, 'ISO 4217 code of the price\'s currency, in upper case.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'sort_price_minor', 'bigint', $financial, 'The listed variant\'s price in the currency, in minor units: the price authored in it, or the base price converted at the current rate.' ),
+				new ColumnSpec( 'amount_basis', 'varchar(5)', $financial, 'net or gross, as the price it comes from was authored.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'has_explicit_price', 'tinyint(1)', $financial, '1 when the price was authored in the currency; 0 when it is the base price converted.' ),
+				new ColumnSpec( 'rate_version', 'bigint unsigned', $financial, 'The exchange-rate version a converted price was converted at; NULL for an authored price.', nullable: true ),
+				new ColumnSpec( 'created_at', 'datetime', $financial, 'When the row was first written, UTC.' ),
+				new ColumnSpec( 'updated_at', 'datetime(6)', $financial, 'When the price was last computed, UTC.' ),
+			),
+			array( 'id' ),
+			array(
+				IndexSpec::unique( 'product_currency', array( 'product_id', 'currency' ), 'A product has one sort price per currency; also finds a product\'s rows.' ),
+			),
+			array(
+				IndexSpec::key( 'currency_price', array( 'currency', 'sort_price_minor', 'product_id' ), 'Walks a currency\'s products in price order, either way, holding everything a price order reads of the table.' ),
+				IndexSpec::key( 'stale_converted', array( 'has_explicit_price', 'rate_version' ), 'Finds the converted prices behind the current exchange-rate version.' ),
+			),
+			self::RETENTION,
+			array(
+				'products -> product_price_projections' => 'Deleting a product deletes its rows in the same transaction. A row whose product no longer exists is deleted by doctor --repair.',
+			)
+		);
+	}
+
+	/**
+	 * Declares `product_search_index`: one document of searchable words per product and locale.
+	 *
+	 * Derived: SearchDocumentProjector writes it from the product's posts and variants, and
+	 * `wp seocart catalog index-products` rebuilds it. The document is in the site's collation, so its
+	 * words match whatever their case; its fulltext key is what a search ordered by relevance reads.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return TableDefinition The declaration.
+	 */
+	public static function searchIndex(): TableDefinition {
+		$public = Classification::Public;
+
+		return new TableDefinition(
+			self::SEARCH_INDEX,
+			self::MODULE,
+			'Holds, for each product and each locale it has a post in, the words a search ordered by relevance matches: the post\'s title and excerpt and the SKUs of its enabled variants; derived from them, and rebuilt by `wp seocart catalog index-products`.',
+			MutationPattern::Derived,
+			array(
+				new ColumnSpec( 'product_id', 'bigint unsigned', $public, 'The product.' ),
+				new ColumnSpec( 'locale', 'varchar(' . ProductPostBinding::LOCALE_MAX_LENGTH . ')', $public, 'The WordPress locale of the post the words come from, such as en_US.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'search_document', 'text', $public, 'The words: the title, the excerpt and the SKUs, without markup, in the site\'s collation.' ),
+				new ColumnSpec( 'created_at', 'datetime', $public, 'When the row was first written, UTC.' ),
+				new ColumnSpec( 'updated_at', 'datetime(6)', $public, 'When the words were last written, UTC.' ),
+			),
+			array( 'product_id', 'locale' ),
+			array(),
+			array(
+				IndexSpec::fulltext( 'search_document', array( 'search_document' ), 'Finds, and ranks, the documents that hold every word of a search ordered by relevance.' ),
+			),
+			self::RETENTION,
+			array(
+				'products -> product_search_index' => 'Deleting a product deletes its documents in the same transaction. A document whose product no longer exists is deleted by doctor --repair.',
 			)
 		);
 	}

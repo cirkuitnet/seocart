@@ -60,7 +60,7 @@ use SEOCart\Tests\Support\Localization\MultilingualFixtures;
  * - k: a product with no post in a locale is `not_translated` there.
  *
  * Rows out of scope at this stage, each a skipped test saying why: h (translated product
- * categories, brands and tags are not covered yet), j (there is no import yet), l (the product listing reads each locale's own posts as they are, and there is no per-locale search or facet index yet), m (notification
+ * categories, brands and tags are not covered yet), j (there is no import yet), l (the product listing reads each locale's own posts as they are, a search ordered by relevance reads a per-locale word index, the facets are WordPress's own terms, and a search's speed in each language is measured later), m (notification
  * templates come later) and n (there are no orders yet).
  *
  * Planted violations, each confirmed to fail its row against Polylang:
@@ -555,7 +555,7 @@ final class MultilingualConformanceTest extends ProductRestTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_row_l_per_locale_index(): void {
-		$this->markTestSkipped( 'Out of scope: the product listing searches and filters each locale\'s own posts as they are, and there is no per-locale search or facet index yet.' );
+		$this->markTestSkipped( 'Out of scope: the product listing searches and filters each locale\'s own posts as they are, and a search ordered by relevance reads a word index of one document per post and locale; the facets are WordPress\'s own terms, and how fast a search is in each language is measured with the multilingual plugin later.' );
 	}
 
 	/**

@@ -189,6 +189,7 @@ final class DataRegistrySnapshot {
 			$read[ $index->name() ] = array(
 				'columns' => $index->columns(),
 				'unique'  => $index->isUnique(),
+				'kind'    => $index->kind()->value,
 				'purpose' => $index->purpose(),
 			);
 		}

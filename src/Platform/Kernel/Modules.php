@@ -36,18 +36,26 @@ use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
 use SEOCart\Catalog\Application\PostGateway;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
+use SEOCart\Catalog\Application\Projection\CompleteProductPager;
+use SEOCart\Catalog\Application\Projection\CurrencyTerms;
+use SEOCart\Catalog\Application\Projection\PriceProjections;
+use SEOCart\Catalog\Application\Projection\PriceProjector;
+use SEOCart\Catalog\Application\Projection\SearchDocumentProjector;
 use SEOCart\Catalog\Application\Projection\StockSummaries;
 use SEOCart\Catalog\Application\Projection\StockSummaryProjector;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Application\Search\CatalogSearch;
 use SEOCart\Catalog\Application\Search\ListingFacts;
 use SEOCart\Catalog\Application\Search\ProductListing;
+use SEOCart\Catalog\Application\Search\SearchDocuments;
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\Event\ProductBindingPromoted;
 use SEOCart\Catalog\Domain\Event\ProductDeleted;
 use SEOCart\Catalog\Domain\Event\ProductSaved;
 use SEOCart\Catalog\Infrastructure\Doctor\CatalogChecks;
+use SEOCart\Catalog\Infrastructure\Jobs\RepriceProjections;
 use SEOCart\Catalog\Infrastructure\MysqlCatalogSearch;
+use SEOCart\Catalog\Infrastructure\MysqlPriceProjections;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Catalog\Infrastructure\MysqlStockSummaryProjection;
 use SEOCart\Catalog\Infrastructure\ProductPostType;
@@ -237,11 +245,13 @@ use SEOCart\Pricing\Application\PromotionCodes;
 use SEOCart\Pricing\Application\ShippingRateQuoter;
 use SEOCart\Pricing\Application\TaxQuoter;
 use SEOCart\Pricing\Domain\AmountBasis;
+use SEOCart\Pricing\Domain\Event\ExchangeRateVersionChanged;
 use SEOCart\Pricing\Domain\PricingError;
 use SEOCart\Pricing\Domain\PromotionEvaluator;
 use SEOCart\Pricing\Infrastructure\Doctor\RateVersionCheck;
 use SEOCart\Pricing\Infrastructure\MysqlExchangeRates;
 use SEOCart\Pricing\Infrastructure\MysqlPresentmentCurrencies;
+use SEOCart\Pricing\Infrastructure\PricingCurrencyTerms;
 use SEOCart\Pricing\Infrastructure\Quotes\FixedRateTaxQuoter;
 use SEOCart\Pricing\Infrastructure\Quotes\FlatRateShippingQuoter;
 use SEOCart\Promotion\Application\PromotionError;
@@ -365,6 +375,7 @@ final class Modules {
 		StockTransferred::class,
 		StockTransferRequested::class,
 		StockTransferShort::class,
+		ExchangeRateVersionChanged::class,
 	);
 
 	/**
@@ -378,17 +389,25 @@ final class Modules {
 	 * The stock summary projector hears the stock events the outbox delivers, not a checkout's hold
 	 * or its release (StockReserved, StockReservationReleased): those two are delivered right after
 	 * their commit, inside the shopper's checkout request, which the projector's statements would
-	 * slow. StockSummaryProjector says what the summary misses for it.
+	 * slow. StockSummaryProjector says what the summary misses for it. The price projector hears every
+	 * product save and every new exchange-rate version; the search document projector every product save.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var array<class-string, list<class-string>>
 	 */
 	public const EVENT_LISTENERS = array(
-		StockSummaryProjector::class => array(
+		StockSummaryProjector::class   => array(
 			StockAdjusted::class,
 			StockAllocated::class,
 			StockHoldExpired::class,
+			ProductSaved::class,
+		),
+		PriceProjector::class          => array(
+			ProductSaved::class,
+			ExchangeRateVersionChanged::class,
+		),
+		SearchDocumentProjector::class => array(
 			ProductSaved::class,
 		),
 	);
@@ -1013,12 +1032,18 @@ final class Modules {
 				$c->get( TransactionManager::class ),
 				self::baseCurrency( $c ),
 				array( $c->get( LockService::class ), 'withLock' ),
-				$c->get( StockSummaries::class )
+				$c->get( StockSummaries::class ),
+				$c->get( PriceProjections::class ),
+				$c->get( CurrencyTerms::class ),
+				$c->get( CatalogSearch::class ),
+				$c->get( SearchDocuments::class )
 			)
 		);
 		$container->bind( MysqlCatalogSearch::class, static fn( Container $c ): MysqlCatalogSearch => new MysqlCatalogSearch( $c->get( Database::class ) ) );
 		$container->bind( CatalogSearch::class, static fn( Container $c ): CatalogSearch => $c->get( MysqlCatalogSearch::class ) );
 		$container->bind( ListingFacts::class, static fn( Container $c ): ListingFacts => $c->get( MysqlCatalogSearch::class ) );
+		$container->bind( SearchDocuments::class, static fn( Container $c ): SearchDocuments => $c->get( MysqlCatalogSearch::class ) );
+		$container->bind( SearchDocumentProjector::class, static fn( Container $c ): SearchDocumentProjector => new SearchDocumentProjector( $c->get( SearchDocuments::class ), $c->get( CatalogSearch::class ) ) );
 		$container->bind(
 			ProductListing::class,
 			static fn( Container $c ): ProductListing => new ProductListing(
@@ -1029,15 +1054,21 @@ final class Modules {
 					CatalogSearch::FACET_CATEGORY => ProductTaxonomies::CATEGORY,
 					CatalogSearch::FACET_BRAND    => ProductTaxonomies::BRAND,
 					CatalogSearch::FACET_TAG      => ProductTaxonomies::TAG,
-				)
+				),
+				$c->get( CurrencyTerms::class ),
+				self::baseCurrency( $c )
 			)
 		);
 		$container->bind( StockSummaries::class, static fn( Container $c ): StockSummaries => new MysqlStockSummaryProjection( $c->get( Database::class ) ) );
 		$container->bind( StockSummaryProjector::class, static fn( Container $c ): StockSummaryProjector => new StockSummaryProjector( $c->get( StockSummaries::class ), $c->get( Availability::class ) ) );
-		$container->bind( CatalogCommand::class, static fn( Container $c ): CatalogCommand => new CatalogCommand( $c->get( StockSummaries::class ), $c->get( StockSummaryProjector::class ), array( $c->get( LockService::class ), 'withLock' ), self::commandOutput() ) );
+		$container->bind( PriceProjections::class, static fn( Container $c ): PriceProjections => new MysqlPriceProjections( $c->get( Database::class ) ) );
+		$container->bind( PriceProjector::class, static fn( Container $c ): PriceProjector => new PriceProjector( $c->get( PriceProjections::class ), $c->get( CurrencyTerms::class ), static fn(): JobQueue => $c->get( JobQueue::class ) ) );
+		$container->bind( RepriceProjections::class, static fn( Container $c ): RepriceProjections => new RepriceProjections( $c->get( PriceProjections::class ), $c->get( PriceProjector::class ), $c->get( CurrencyTerms::class ), array( $c->get( LockService::class ), 'withLock' ) ) );
+		$container->bind( CompleteProductPager::class, static fn( Container $c ): CompleteProductPager => new CompleteProductPager( $c->get( StockSummaries::class ), array( $c->get( LockService::class ), 'withLock' ) ) );
+		$container->bind( CatalogCommand::class, static fn( Container $c ): CatalogCommand => new CatalogCommand( $c->get( CompleteProductPager::class ), $c->get( StockSummaryProjector::class ), $c->get( PriceProjector::class ), $c->get( SearchDocumentProjector::class ), self::commandOutput() ) );
 		$container->bind(
 			DeleteProduct::class,
-			static fn( Container $c ): DeleteProduct => new DeleteProduct( $c->get( ProductRepository::class ), $c->get( StockService::class ), $c->get( TransactionManager::class ), $c->get( EventPublisher::class ), $c->get( Clock::class ) )
+			static fn( Container $c ): DeleteProduct => new DeleteProduct( $c->get( ProductRepository::class ), $c->get( StockService::class ), $c->get( TransactionManager::class ), $c->get( EventPublisher::class ), $c->get( Clock::class ), $c->get( PriceProjections::class ), $c->get( CatalogSearch::class ) )
 		);
 		$container->bind(
 			DuplicateProduct::class,
@@ -1062,6 +1093,8 @@ final class Modules {
 				$c->get( TransactionManager::class ),
 				$c->get( PostGateway::class ),
 				$c->get( PostLocales::class ),
+				static fn(): EventPublisher => $c->get( EventPublisher::class ),
+				$c->get( Clock::class ),
 				$c->get( Reporter::class ),
 				defined( 'WP_DEBUG' ) && WP_DEBUG,
 				array( $c->get( Reporter::class ), 'error' )
@@ -1517,7 +1550,9 @@ final class Modules {
 				$c->get( PromotionCodes::class )
 			)
 		);
-		$container->bind( PresentmentCurrencies::class, static fn( Container $c ): PresentmentCurrencies => new MysqlPresentmentCurrencies( $c->get( Database::class ), self::rateVersion( $c ) ) );
+		$container->bind( MysqlPresentmentCurrencies::class, static fn( Container $c ): MysqlPresentmentCurrencies => new MysqlPresentmentCurrencies( $c->get( Database::class ), self::rateVersion( $c ) ) );
+		$container->bind( PresentmentCurrencies::class, static fn( Container $c ): PresentmentCurrencies => $c->get( MysqlPresentmentCurrencies::class ) );
+		$container->bind( CurrencyTerms::class, static fn( Container $c ): CurrencyTerms => new PricingCurrencyTerms( $c->get( MysqlPresentmentCurrencies::class ), self::rateVersion( $c ), self::baseCurrency( $c ) ) );
 		$container->bind(
 			MysqlExchangeRates::class,
 			static fn( Container $c ): MysqlExchangeRates => new MysqlExchangeRates(
@@ -1527,7 +1562,9 @@ final class Modules {
 				self::baseCurrency( $c ),
 				static function ( int $version ) use ( $c ): void {
 					self::recordRateVersion( $c, $version, false );
-				}
+				},
+				$c->get( EventPublisher::class ),
+				$c->get( Clock::class )
 			)
 		);
 		$container->bind( ExchangeRates::class, static fn( Container $c ): ExchangeRates => $c->get( MysqlExchangeRates::class ) );

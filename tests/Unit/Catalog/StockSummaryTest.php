@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Unit\Catalog;
 use PHPUnit\Framework\TestCase;
 use SEOCart\Catalog\Application\Projection\StockSummary;
 use SEOCart\Catalog\Application\Search\SearchQuery;
+use SEOCart\Support\Currency;
 use SEOCart\Support\Locale;
 
 /**
@@ -80,7 +81,7 @@ final class StockSummaryTest extends TestCase {
 			'page 0'      => static fn(): SearchQuery => self::query( 0, 24, array() ),
 			'per page 0'  => static fn(): SearchQuery => self::query( 1, 0, array() ),
 			'four words'  => static fn(): SearchQuery => self::query( 1, 24, array( 'a', 'b', 'c', 'd' ) ),
-			'title order' => static fn(): SearchQuery => new SearchQuery( Locale::of( 'en_US' ), 1, 24, 'title', array(), array(), null, null, false ),
+			'title order' => static fn(): SearchQuery => new SearchQuery( Locale::of( 'en_US' ), 1, 24, 'title', array(), array(), null, null, false, Currency::of( 'USD' ) ),
 		) as $case => $build ) {
 			try {
 				$build();
@@ -105,6 +106,6 @@ final class StockSummaryTest extends TestCase {
 	 * @phpstan-param list<string> $words
 	 */
 	private static function query( int $page, int $perPage, array $words ): SearchQuery {
-		return new SearchQuery( Locale::of( 'en_US' ), $page, $perPage, SearchQuery::NEWEST, $words, array(), null, null, false );
+		return new SearchQuery( Locale::of( 'en_US' ), $page, $perPage, SearchQuery::NEWEST, $words, array(), null, null, false, Currency::of( 'USD' ) );
 	}
 }

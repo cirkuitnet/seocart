@@ -18,6 +18,8 @@ use SEOCart\Catalog\Domain\Sku;
 use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Catalog\Domain\VariantPrice;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
+use SEOCart\Catalog\Infrastructure\MysqlCatalogSearch;
+use SEOCart\Catalog\Infrastructure\MysqlPriceProjections;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Locale;
@@ -28,7 +30,8 @@ use SEOCart\Support\Locale;
  * Owns one fact: what a listing test plants. A product post is written with WordPress's after
  * hooks off, so no lifecycle binds it a second time; the product is stored through the
  * repository, bound to the post in its locale, priced and taken out of `updating` into the state
- * asked for; its stock summary is written as asked; its terms are set and its featured image is an
+ * asked for; its sort price in the base currency is written as the price projection writes it,
+ * unless it is asked not to be, and so are its search documents; its stock summary is written as asked; its terms are set and its featured image is an
  * attachment with a `medium` size and alternative text, written without a file. For a
  * CatalogTestCase, which deletes the posts; the attachments are deleted by deletePlantedImages().
  *
@@ -64,17 +67,22 @@ trait PlantsListedProducts {
 	 * @param array  $options Optional. `status` (default `publish`), `excerpt` (default empty), `state`
 	 *                        (a GenerationState value, default `complete`), `summary` (default
 	 *                        `in_stock`), `terms` (term ids by taxonomy, default none) and `image`
-	 *                        (bool, default false). Default none.
+	 *                        (bool, default false), `price` (the base price in cents, default 1999)
+	 *                        and `projected` (whether its sort price in the base currency is written,
+	 *                        default true) and `indexed` (whether its search documents are written,
+	 *                        default true). Default none.
 	 * @return array{post_id: int, product_id: int, variant_id: int, image_id: int|null} What was planted.
 	 *
-	 * @phpstan-param array{status?: string, excerpt?: string, state?: string, summary?: string, terms?: array<string, list<int>>, image?: bool} $options
+	 * @phpstan-param array{status?: string, excerpt?: string, state?: string, summary?: string, terms?: array<string, list<int>>, image?: bool, price?: int, projected?: bool, indexed?: bool} $options
 	 */
 	protected function plantListed( string $title, string $sku, array $options = array() ): array {
 		$base    = Currency::of( CatalogTestCase::BASE_CURRENCY );
 		$postId  = $this->plantPost( $title, $options['status'] ?? 'publish', $options['excerpt'] ?? '' );
 		$product = Product::firstBinding( $this->ids->generate(), $postId, Locale::of( self::LOCALE ), Variant::byDefault( $this->ids->generate(), Sku::of( $sku ) ), new \DateTimeImmutable( '2026-10-01 09:00:00', new \DateTimeZone( 'UTC' ) ) );
 
-		$product->applyCommerce( Sku::of( $sku ), VariantPrice::net( $base, 1999 ), 250, $base );
+		$price = $options['price'] ?? 1999;
+
+		$product->applyCommerce( Sku::of( $sku ), VariantPrice::net( $base, $price ), 250, $base );
 		$this->products->save( $product );
 
 		$productId = (int) $product->id();
@@ -85,6 +93,14 @@ trait PlantsListedProducts {
 		}
 
 		$this->db->execute( 'UPDATE %i SET stock_summary = %s WHERE id = %d', $this->db->table( CatalogTables::PRODUCTS ), $options['summary'] ?? 'in_stock', $productId );
+
+		if ( $options['projected'] ?? true ) {
+			$this->projectIn( $productId, CatalogTestCase::BASE_CURRENCY, $price );
+		}
+
+		if ( $options['indexed'] ?? true ) {
+			$this->indexListed( $productId );
+		}
 
 		foreach ( $options['terms'] ?? array() as $taxonomy => $termIds ) {
 			$this->assertIsArray( wp_set_object_terms( $postId, $termIds, $taxonomy ) );
@@ -116,6 +132,42 @@ trait PlantsListedProducts {
 		$this->products->addBinding( $productId, new ProductPostBinding( $postId, Locale::of( $locale ), new \DateTimeImmutable( '2026-10-01 09:00:00', new \DateTimeZone( 'UTC' ) ) ) );
 
 		return $postId;
+	}
+
+	/**
+	 * Writes a planted product's search documents, as the search document projector writes them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $productId The product.
+	 */
+	protected function indexListed( int $productId ): void {
+		$search = new MysqlCatalogSearch( $this->db );
+
+		$search->index( ...( $search->documents( array( $productId ) )[ $productId ] ?? array() ) );
+	}
+
+	/**
+	 * Writes a planted product's sort price in a currency, as the price projection writes it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int      $productId   The product.
+	 * @param string   $currency    The currency.
+	 * @param int      $priceMinor  The sort price, in the currency's minor units.
+	 * @param int|null $rateVersion Optional. The rate version a converted price was converted at; null for an authored one. Default null.
+	 */
+	protected function projectIn( int $productId, string $currency, int $priceMinor, ?int $rateVersion = null ): void {
+		( new MysqlPriceProjections( $this->db ) )->insert(
+			$productId,
+			$currency,
+			array(
+				'sort_price_minor'   => $priceMinor,
+				'amount_basis'       => 'net',
+				'has_explicit_price' => null === $rateVersion,
+				'rate_version'       => $rateVersion,
+			)
+		);
 	}
 
 	/**

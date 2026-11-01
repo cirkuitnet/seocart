@@ -40,7 +40,8 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  * It runs only when SEOCART_QUERY_PLANS is 1, as `composer test:query-plans` sets it.
  *
  * Planted violation, shown red and removed: leave the currency's read out of exercise(): the run
- * names MysqlPresentmentCurrencies's FIND as a read it did not send.
+ * names MysqlPresentmentCurrencies's FIND as a read it did not send; leave the read of the currencies
+ * offered out: the run names OFFERED_CURRENCIES.
  *
  * @group performance
  *
@@ -131,8 +132,12 @@ final class PricingQueryPlanTest extends DatabaseTestCase {
 		$rates->saveVersion( array( self::rateTo( 'EUR', '0.91230' ), self::rateTo( 'GBP', '0.79' ), self::rateTo( 'CHF', '0.8866' ) ), Actor::user( 0 ) );
 		$rates->saveVersion( array( self::rateTo( 'EUR', '0.92' ), self::rateTo( 'GBP', '0.80' ), self::rateTo( 'CHF', '0.89' ) ), Actor::user( 0 ) );
 
-		// A calculation's read of its currency's terms, with the rate of the current version.
-		$this->assertNotNull( ( new MysqlPresentmentCurrencies( $db, static fn(): ?int => $version ) )->find( Currency::of( 'USD' ), Currency::of( 'GBP' ) ) );
+		// A calculation's read of its currency's terms, with the rate of the current version, and the catalog's read of the
+		// currencies prices are offered in, by code.
+		$currencies = new MysqlPresentmentCurrencies( $db, static fn(): ?int => $version );
+
+		$this->assertNotNull( $currencies->find( Currency::of( 'USD' ), Currency::of( 'GBP' ) ) );
+		$this->assertSame( array( 'CHF', 'EUR', 'GBP' ), array_map( static fn( Currency $currency ): string => $currency->code(), $currencies->offered( Currency::of( 'USD' ) ) ) );
 
 		// Doctor's comparison of the current version with the newest stored.
 		$this->assertTrue( ( new RateVersionCheck( $rates, static fn(): ?int => $version, static function (): void {} ) )->run()->passed );

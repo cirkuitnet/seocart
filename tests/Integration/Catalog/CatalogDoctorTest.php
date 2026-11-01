@@ -31,9 +31,14 @@ use SEOCart\Catalog\Infrastructure\Doctor\MissingStockItemCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\NoBindingCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\OrphanCommerceRowCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\OrphanStockItemCheck;
+use SEOCart\Catalog\Infrastructure\Doctor\StalePricesCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\StuckUpdatingCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\TranslationGroupCheck;
 use SEOCart\Catalog\Infrastructure\Doctor\UnboundPostCheck;
+use SEOCart\Catalog\Infrastructure\Doctor\UnindexedCheck;
+use SEOCart\Catalog\Infrastructure\Doctor\UnprojectedCheck;
+use SEOCart\Catalog\Infrastructure\MysqlCatalogSearch;
+use SEOCart\Catalog\Infrastructure\MysqlPriceProjections;
 use SEOCart\Catalog\Infrastructure\MysqlStockSummaryProjection;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
@@ -49,6 +54,8 @@ use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\Database\ServerKind;
 use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Logging\CorrelationId;
+use SEOCart\Pricing\Infrastructure\MysqlPresentmentCurrencies;
+use SEOCart\Pricing\Infrastructure\PricingCurrencyTerms;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Locale;
 use SEOCart\Tests\Support\Catalog\CatalogTestCase;
@@ -129,7 +136,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		$settler = $this->newSettler();
 
 		$events   = new RecordingEventPublisher( $this->db );
-		$delete   = new DeleteProduct( $this->products, $this->stock, $this->db, $events, new FrozenClock( $this->databaseNow() ) );
+		$delete   = new DeleteProduct( $this->products, $this->stock, $this->db, $events, new FrozenClock( $this->databaseNow() ), new MysqlPriceProjections( $this->db ), new MysqlCatalogSearch( $this->db ) );
 		$bindings = new TranslationBindings(
 			$this->products,
 			$this->db,
@@ -149,7 +156,11 @@ final class CatalogDoctorTest extends CatalogTestCase {
 			$this->db,
 			static fn(): Currency => Currency::of( CatalogTestCase::BASE_CURRENCY ),
 			$this->withLock,
-			new MysqlStockSummaryProjection( $this->db )
+			new MysqlStockSummaryProjection( $this->db ),
+			new MysqlPriceProjections( $this->db ),
+			new PricingCurrencyTerms( new MysqlPresentmentCurrencies( $this->db, static fn(): ?int => null ), static fn(): ?int => null, static fn(): Currency => Currency::of( CatalogTestCase::BASE_CURRENCY ) ),
+			new MysqlCatalogSearch( $this->db ),
+			new MysqlCatalogSearch( $this->db )
 		);
 	}
 
@@ -385,7 +396,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 
 		$reconciler = new Reconciler( $this->products, $this->db, $locales, new FrozenClock( $this->databaseNow() ), new SequentialIdGenerator( 820000 ) );
 		$events     = new RecordingEventPublisher( $this->db );
-		$delete     = new DeleteProduct( $this->products, $this->stock, $this->db, $events, new FrozenClock( $this->databaseNow() ) );
+		$delete     = new DeleteProduct( $this->products, $this->stock, $this->db, $events, new FrozenClock( $this->databaseNow() ), new MysqlPriceProjections( $this->db ), new MysqlCatalogSearch( $this->db ) );
 		$bindings   = new TranslationBindings( $this->products, $this->db, $events, new FrozenClock( $this->databaseNow() ), $delete, new Authorizer( new CapabilityDeclaration() ) );
 		$groups     = new TranslationGroups( $this->products, $locales, $bindings, $reconciler, $this->reporter() );
 
@@ -995,10 +1006,130 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		$variantId = $this->plantOrphanVariant();
 		$this->plantOrphanPrice( $variantId + 1 );
 
-		$result = ( new OrphanCommerceRowCheck( $this->products ) )->run();
+		$result = ( new OrphanCommerceRowCheck( $this->products, new MysqlPriceProjections( $this->db ), new MysqlCatalogSearch( $this->db ) ) )->run();
 
 		$this->assertFalse( $result->passed );
 		$this->assertCount( 2, $result->findings );
+	}
+
+	/**
+	 * Tests that the sort prices of a product gone are reported as repairable and deleted by the repair, beside the orphan variants and prices, which stay.
+	 *
+	 * Planted violation: two sort prices of a product that does not exist.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_row_8_repairs_the_sort_prices_of_a_product_gone(): void {
+		$variantId = $this->plantOrphanVariant();
+
+		$this->plantProjection( 987654, 'USD', 1999, null );
+		$this->plantProjection( 987654, 'EUR', 1825, 3 );
+
+		$check  = new OrphanCommerceRowCheck( $this->products, new MysqlPriceProjections( $this->db ), new MysqlCatalogSearch( $this->db ) );
+		$result = $check->run();
+
+		$this->assertFalse( $result->passed );
+		$this->assertSame( 'Repairable: the sort prices of product 987654, which no longer exists. --repair deletes them: they are derived.', $result->findings[1] ?? null, implode( "\n", $result->findings ) );
+		$this->assertSame( array( 'deleted the 2 sort prices of product 987654, which no longer exists.' ), $check->repair()->changes );
+		$this->assertSame( '0', (string) $this->db->fetchValue( 'SELECT COUNT(*) FROM %i', $this->catalogTable( CatalogTables::PRICE_PROJECTIONS ) ) );
+
+		$after = $check->run();
+
+		$this->assertCount( 1, $after->findings, 'The orphan variant is still reported, and never repaired.' );
+		$this->assertStringContainsString( (string) $variantId, $after->findings[0] );
+	}
+
+	/**
+	 * Tests that the search documents of a product gone are reported as repairable and deleted by the repair.
+	 *
+	 * Planted violation: two search documents of a product that does not exist.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_row_8_repairs_the_search_documents_of_a_product_gone(): void {
+		foreach ( array( 'en_US', 'de_DE' ) as $locale ) {
+			$this->db->execute(
+				'INSERT INTO %i ( product_id, locale, search_document, created_at, updated_at ) VALUES ( %d, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(6) )',
+				$this->catalogTable( CatalogTables::SEARCH_INDEX ),
+				987655,
+				$locale,
+				'Gone shirt'
+			);
+		}
+
+		$check  = new OrphanCommerceRowCheck( $this->products, new MysqlPriceProjections( $this->db ), new MysqlCatalogSearch( $this->db ) );
+		$result = $check->run();
+
+		$this->assertFalse( $result->passed );
+		$this->assertSame( array( 'Repairable: the search documents of product 987655, which no longer exists. --repair deletes them: they are derived.' ), $result->findings );
+		$this->assertSame( array( 'deleted the 2 search documents of product 987655, which no longer exists.' ), $check->repair()->changes );
+		$this->assertTrue( $check->run()->passed );
+	}
+
+	/**
+	 * Tests that doctor's line of the posts without a search document fails with the count and the command, and passes once each has one.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_posts_without_a_search_document_are_counted(): void {
+		$product = $this->storedProduct( 'UNI-1' );
+		$search  = new MysqlCatalogSearch( $this->db );
+		$check   = new UnindexedCheck( $search );
+
+		$this->assertSame( array( false, '1 post of complete products has no search document yet, so a search ordered by relevance leaves it out. Run `wp seocart catalog index-products`.' ), array( $check->run()->passed, $check->run()->summary ) );
+
+		$search->index( ...$search->documents( array( (int) $product->id() ) )[ (int) $product->id() ] );
+
+		$this->assertSame( array( true, 'Every post of a complete product has its search document.' ), array( $check->run()->passed, $check->run()->summary ) );
+	}
+
+	/**
+	 * Tests that doctor's line of the products without a sort price fails with the count and the command, and passes once each has one.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_products_without_a_sort_price_are_counted(): void {
+		$product = $this->storedProduct( 'UNP-1' );
+		$check   = new UnprojectedCheck( new MysqlPriceProjections( $this->db ), static fn(): Currency => Currency::of( CatalogTestCase::BASE_CURRENCY ) );
+
+		$this->assertSame( array( false, '1 complete product has no sort price yet, so the price orders leave it out. Run `wp seocart catalog project-prices`.' ), array( $check->run()->passed, $check->run()->summary ) );
+
+		$this->plantProjection( (int) $product->id(), CatalogTestCase::BASE_CURRENCY, 1999, null );
+
+		$this->assertSame( array( true, 'Every complete product has its sort price for the price orders.' ), array( $check->run()->passed, $check->run()->summary ) );
+	}
+
+	/**
+	 * Tests that doctor's line of the converted prices behind the current rate version fails with the count, the job and the command, and passes at that version.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_sort_prices_behind_the_rate_version_are_counted(): void {
+		$version = 2;
+		$check   = new StalePricesCheck(
+			new MysqlPriceProjections( $this->db ),
+			new PricingCurrencyTerms(
+				new MysqlPresentmentCurrencies( $this->db, static fn(): int => $version ),
+				static function () use ( &$version ): int {
+					return $version;
+				},
+				static fn(): Currency => Currency::of( CatalogTestCase::BASE_CURRENCY )
+			)
+		);
+
+		$this->plantProjection( 11, 'EUR', 1825, 1 );
+		$this->plantProjection( 12, 'EUR', 1750, null, true );
+		$this->plantProjection( 13, 'GBP', 1500, 2 );
+
+		$this->assertSame(
+			array( false, '1 converted sort price is converted at an exchange-rate version older than 2, so the price orders in other currencies sort its product at the earlier rate. The `catalog.reprice_projections` job rewrites them after each new version; run `wp seocart catalog project-prices` if it has not.' ),
+			array( $check->run()->passed, $check->run()->summary ),
+			'Only the converted price behind the version is counted; an authored price has none.'
+		);
+
+		$version = 1;
+
+		$this->assertTrue( $check->run()->passed, 'At the version they were converted at, none is behind.' );
 	}
 
 	/**
@@ -1255,7 +1386,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		$locales    = new SeveralLocales( 'en_GB' );
 		$reconciler = new Reconciler( $this->products, $this->db, $locales, new FrozenClock( $this->databaseNow() ), new SequentialIdGenerator( 730000 ) );
 		$events     = new RecordingEventPublisher( $this->db );
-		$delete     = new DeleteProduct( $this->products, $this->stock, $this->db, $events, new FrozenClock( $this->databaseNow() ) );
+		$delete     = new DeleteProduct( $this->products, $this->stock, $this->db, $events, new FrozenClock( $this->databaseNow() ), new MysqlPriceProjections( $this->db ), new MysqlCatalogSearch( $this->db ) );
 		$bindings   = new TranslationBindings( $this->products, $this->db, $events, new FrozenClock( $this->databaseNow() ), $delete, new Authorizer( new CapabilityDeclaration() ) );
 		$groups     = new TranslationGroups( $this->products, $locales, $bindings, $reconciler, $this->reporter() );
 
@@ -1347,7 +1478,7 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		$locales    = new OneLocale();
 		$reconciler = new Reconciler( $this->products, $this->db, $locales, new FrozenClock( $this->databaseNow() ), new SequentialIdGenerator( 810000 ) );
 		$events     = new RecordingEventPublisher( $this->db );
-		$delete     = new DeleteProduct( $this->products, $this->stock, $this->db, $events, new FrozenClock( $this->databaseNow() ) );
+		$delete     = new DeleteProduct( $this->products, $this->stock, $this->db, $events, new FrozenClock( $this->databaseNow() ), new MysqlPriceProjections( $this->db ), new MysqlCatalogSearch( $this->db ) );
 		$bindings   = new TranslationBindings( $this->products, $this->db, $events, new FrozenClock( $this->databaseNow() ), $delete, new Authorizer( new CapabilityDeclaration() ) );
 
 		return new TranslationGroups( $this->products, $locales, $bindings, $reconciler, $this->reporter() );
@@ -1499,6 +1630,30 @@ final class CatalogDoctorTest extends CatalogTestCase {
 		$parts[] = md5( (string) wp_json_encode( $this->db->fetchAll( 'SELECT * FROM %i ORDER BY id', $this->db->table( InventoryTables::LEDGER ) ) ) );
 
 		return implode( ':', $parts );
+	}
+
+	/**
+	 * Plants a sort price row directly.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int      $productId   The product.
+	 * @param string   $currency    The currency.
+	 * @param int      $priceMinor  The sort price.
+	 * @param int|null $rateVersion The rate version a converted price was converted at; null for an authored one.
+	 * @param bool     $authored    Optional. Whether the price is authored. Default: when it has no rate version.
+	 */
+	private function plantProjection( int $productId, string $currency, int $priceMinor, ?int $rateVersion, ?bool $authored = null ): void {
+		$this->db->execute(
+			'INSERT INTO %i ( product_id, currency, sort_price_minor, amount_basis, has_explicit_price, rate_version, created_at, updated_at ) VALUES ( %d, %s, %d, %s, %d, NULLIF( %d, 0 ), UTC_TIMESTAMP(), UTC_TIMESTAMP(6) )',
+			$this->catalogTable( CatalogTables::PRICE_PROJECTIONS ),
+			$productId,
+			$currency,
+			$priceMinor,
+			'net',
+			(int) ( $authored ?? null === $rateVersion ),
+			(int) $rateVersion
+		);
 	}
 
 	/**

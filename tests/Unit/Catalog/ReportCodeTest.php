@@ -16,6 +16,7 @@ use SEOCart\Application\Operations\Operations;
 use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Platform\Database\ReportCode as DatabaseReportCode;
 use SEOCart\Platform\Events\ReportCode as EventsReportCode;
+use SEOCart\Platform\Jobs\JobHandlers;
 use SEOCart\Platform\Jobs\ReportCode as JobsReportCode;
 use SEOCart\Platform\Logging\ReportCode as LoggingReportCode;
 use SEOCart\Support\Error\ErrorCode;
@@ -30,7 +31,8 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * table, a reader of the log could not tell a reported condition from a raised error. Every
  * `catalog.` code the module's source spells is either a row of the error table or a case of
  * the enum, so the enum stays the one list of the rest; the one other `catalog.` name it may spell
- * is the id of one of its operations, which the operations registry lists.
+ * is the id of one of its operations, which the operations registry lists, or the name of one of
+ * its jobs, which the job registry lists.
  *
  * Planted violations, each confirmed to fail a test here:
  * - Give ReportCode::RestoreFailed the value 'catalog.write_conflict': the first test fails.
@@ -79,7 +81,7 @@ final class ReportCodeTest extends TestCase {
 	 * @since 0.1.0
 	 */
 	public function test_every_catalog_code_in_the_module_is_declared(): void {
-		$declared = array_merge( self::errorTableCodes(), self::reported(), self::operationIds() );
+		$declared = array_merge( self::errorTableCodes(), self::reported(), self::operationIds(), self::jobNames() );
 		$spelled  = array();
 
 		foreach ( PhpSource::files( 'src/Catalog' ) as $source ) {
@@ -120,6 +122,25 @@ final class ReportCodeTest extends TestCase {
 		}
 
 		return $ids;
+	}
+
+	/**
+	 * Returns the names of the catalog's jobs, as the job registry lists them: they share the codes' `catalog.` prefix, and name no code.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> The names.
+	 */
+	private static function jobNames(): array {
+		$names = array();
+
+		foreach ( JobHandlers::PRODUCTION as $class ) {
+			if ( str_starts_with( $class::name(), 'catalog.' ) ) {
+				$names[] = $class::name();
+			}
+		}
+
+		return $names;
 	}
 
 	/**

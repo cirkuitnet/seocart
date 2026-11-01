@@ -19,8 +19,12 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: what a search engine must answer for the catalog. Given a query, it returns the
  * ids of the product posts of one page, in order, and whether another page follows; never markup,
  * never a price. A query names its facets after the listing has resolved them: categories, brand
- * and tag as term-taxonomy ids, and the in-stock filter. An adapter that cannot filter by a facet
- * says so in supportsFacet().
+ * and tag as term-taxonomy ids, the in-stock filter and the price range, in the query's currency,
+ * which a price order sorts in too. An adapter that cannot filter by a facet says so in
+ * supportsFacet().
+ *
+ * It keeps the documents a search ordered by relevance reads too: index() stores a product's,
+ * delete() removes them.
  *
  * The plugin's own adapter reads its MySQL tables (MysqlCatalogSearch). The port is internal for
  * now: there is no registration action and no second adapter, and its names are the ones a public
@@ -67,6 +71,15 @@ interface CatalogSearch {
 	public const FACET_IN_STOCK = 'in_stock';
 
 	/**
+	 * The facet of the price range, in the query's currency.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FACET_PRICE = 'price';
+
+	/**
 	 * Finds one page of products.
 	 *
 	 * @since 0.2.0
@@ -85,4 +98,26 @@ interface CatalogSearch {
 	 * @return bool True when search() honours the facet.
 	 */
 	public function supportsFacet( string $facet ): bool;
+
+	/**
+	 * Stores the complete set of documents of the products they belong to: a document that changed or is missing is written, and one of those products in a locale not given is deleted.
+	 *
+	 * Idempotent: documents stored as given write nothing.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param ProductIndexDocument ...$documents Every document of each product they name.
+	 * @return int How many documents were written or deleted.
+	 */
+	public function index( ProductIndexDocument ...$documents ): int;
+
+	/**
+	 * Deletes every document of a product: one gone, or one no post presents any more.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $productId The product.
+	 * @return int How many documents were deleted.
+	 */
+	public function delete( int $productId ): int;
 }

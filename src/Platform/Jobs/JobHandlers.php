@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Platform\Jobs;
 
 use SEOCart\Cart\Infrastructure\Jobs\SweepExpiredCarts;
+use SEOCart\Catalog\Infrastructure\Jobs\RepriceProjections;
 use SEOCart\Checkout\Infrastructure\Jobs\IdempotencyKeyRetention;
 use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
 use SEOCart\Inventory\Infrastructure\Jobs\MoveLocationStock;
@@ -67,6 +68,7 @@ final class JobHandlers {
 		IdempotencyKeyRetention::class,
 		ReconcileStalePlacements::class,
 		WebhookReceiptRetention::class,
+		RepriceProjections::class,
 	);
 
 	/**

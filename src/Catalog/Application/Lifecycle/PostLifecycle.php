@@ -13,6 +13,7 @@ namespace SEOCart\Catalog\Application\Lifecycle;
 
 use SEOCart\Catalog\Application\PostGateway;
 use SEOCart\Catalog\Application\ProductRepository;
+use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\ReportCode;
@@ -22,10 +23,12 @@ use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
+use SEOCart\Platform\Events\EventPublisher;
 use SEOCart\Platform\Kernel\GateState;
 use SEOCart\Platform\Kernel\KernelError;
 use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Platform\Localization\TranslationWatcher;
+use SEOCart\Support\Clock;
 use SEOCart\Support\Error\CodedException;
 
 defined( 'ABSPATH' ) || exit;
@@ -222,6 +225,24 @@ final class PostLifecycle implements TranslationWatcher {
 	private PostGateway $posts;
 
 	/**
+	 * Returns the event publisher, resolved only when a write by another path asks for it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var \Closure(): EventPublisher
+	 */
+	private \Closure $events;
+
+	/**
+	 * Tells when a product was saved.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var Clock
+	 */
+	private Clock $clock;
+
+	/**
 	 * Receives a machine code and context for anything reported rather than thrown.
 	 *
 	 * @since 0.1.0
@@ -291,6 +312,8 @@ final class PostLifecycle implements TranslationWatcher {
 	 * @param TransactionManager  $transactions Runs each step in one unit of work.
 	 * @param PostGateway         $posts        Tells the plugin's own writes from every other.
 	 * @param PostLocales         $locales      Tells of the changes a multilingual plugin makes later.
+	 * @param \Closure            $events       Returns the event publisher (EventPublisher), which stores the save a write by another path makes.
+	 * @param Clock               $clock        Tells when a product was saved.
 	 * @param callable            $report       Receives a machine code (string) and its context (array).
 	 * @param bool                $debug        Optional. Whether to report writes to bound posts by other paths, as WP_DEBUG does. Default false.
 	 * @param callable|null       $alarm        Optional. Receives, at error level, a machine code (string) and its context (array)
@@ -299,7 +322,7 @@ final class PostLifecycle implements TranslationWatcher {
 	 * @phpstan-param callable(string, array<string, mixed>): void $report
 	 * @phpstan-param (callable(string, array<string, mixed>): void)|null $alarm
 	 */
-	public function __construct( ProductRepository $products, TranslationGroups $groups, TranslationBindings $bindings, DeleteProduct $delete, StockService $stock, TransactionManager $transactions, PostGateway $posts, PostLocales $locales, callable $report, bool $debug = false, ?callable $alarm = null ) {
+	public function __construct( ProductRepository $products, TranslationGroups $groups, TranslationBindings $bindings, DeleteProduct $delete, StockService $stock, TransactionManager $transactions, PostGateway $posts, PostLocales $locales, \Closure $events, Clock $clock, callable $report, bool $debug = false, ?callable $alarm = null ) {
 		$this->products     = $products;
 		$this->groups       = $groups;
 		$this->bindings     = $bindings;
@@ -308,6 +331,8 @@ final class PostLifecycle implements TranslationWatcher {
 		$this->stock        = $stock;
 		$this->transactions = $transactions;
 		$this->posts        = $posts;
+		$this->events       = $events;
+		$this->clock        = $clock;
 		$this->report       = $report;
 		$this->debug        = $debug;
 		$this->alarm        = $alarm ?? $report;
@@ -608,7 +633,7 @@ final class PostLifecycle implements TranslationWatcher {
 	}
 
 	/**
-	 * Decides what a write by another path does to a product post that is already bound: nothing to its product; under WP_DEBUG it is reported, once per request.
+	 * Decides what a write by another path does to a product post that is already bound: nothing to its commerce rows, and its save is published; under WP_DEBUG it is reported, once per request.
 	 *
 	 * A write that changes the post's status into the trash or out of it is not such a write,
 	 * whichever path makes it, the plugin's own REST delete included: it is a step of the post's
@@ -624,7 +649,9 @@ final class PostLifecycle implements TranslationWatcher {
 	 * post field a sale depends on, the status, is read by the sellability rule on every path, so
 	 * the product follows it anyway. A revision restore then restores editorial content only, an
 	 * autosave never touches a commerce row, and a title fixed in Quick Edit leaves a live product
-	 * on sale.
+	 * on sale. Each such write publishes the product's save (ProductSaved, the post as the field
+	 * changed) in a transaction of its own (publishSave()), so what is derived from the post's words,
+	 * the product's search documents, follows it.
 	 *
 	 * @since 0.1.0
 	 *
@@ -639,6 +666,8 @@ final class PostLifecycle implements TranslationWatcher {
 			return;
 		}
 
+		$this->publishSave( $postId );
+
 		if ( ! $this->debug || $this->writeReported ) {
 			return;
 		}
@@ -651,6 +680,34 @@ final class PostLifecycle implements TranslationWatcher {
 				'post_id' => $postId,
 				'update'  => $update,
 			)
+		);
+	}
+
+	/**
+	 * Publishes that a bound post's product was saved, as its post changed, in a transaction of its own.
+	 *
+	 * The post's own write is already committed when WordPress fires `wp_after_insert_post`, so the
+	 * event tells no lie. A product without a source post names no post for the event, and publishes
+	 * none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $postId The product post.
+	 */
+	private function publishSave( int $postId ): void {
+		$this->transactions->transaction(
+			function () use ( $postId ): void {
+				$product = $this->products->findByPost( $postId );
+
+				if ( null === $product || null === $product->sourcePostId() ) {
+					return;
+				}
+
+				$product->markSaved( array( SaveProduct::POST_FIELDS ), $this->clock->now() );
+
+				( $this->events )()->publish( ...$product->releaseEvents() );
+			},
+			RetryPolicy::deadlocks()
 		);
 	}
 

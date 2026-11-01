@@ -115,7 +115,7 @@ final class CatalogTablesTest extends DatabaseTestCase {
 			$this->assertEquals( $table, $registry->tableNamed( $table->name() ), "The registry holds {$table->name()} exactly as declared." );
 			$this->assertSame( 'entity_lifetime', $table->retention() );
 
-			$expected = CatalogTables::VARIANT_PRICES === $table->name() ? Classification::Financial : Classification::Public;
+			$expected = in_array( $table->name(), array( CatalogTables::VARIANT_PRICES, CatalogTables::PRICE_PROJECTIONS ), true ) ? Classification::Financial : Classification::Public;
 
 			foreach ( $table->columns() as $column ) {
 				$this->assertSame( $expected, $column->classification(), "{$table->name()}.{$column->name()}" );

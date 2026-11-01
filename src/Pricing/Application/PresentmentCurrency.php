@@ -14,6 +14,7 @@ namespace SEOCart\Pricing\Application;
 use SEOCart\Support\ConversionContext;
 use SEOCart\Support\Currency;
 use SEOCart\Support\CurrencyRoundingRule;
+use SEOCart\Support\Money;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -28,7 +29,8 @@ defined( 'ABSPATH' ) || exit;
  * converted price and every base-currency figure of the calculation uses.
  *
  * The base currency is offered on fixed terms: its default rounding rule, its identity context,
- * and nothing to convert, since every price is authored in it.
+ * and nothing to convert, since every price is authored in it. convert() is the one formula a base
+ * price is converted by.
  *
  * @since 0.1.0
  */
@@ -76,6 +78,21 @@ final readonly class PresentmentCurrency {
 	 */
 	public function currency(): Currency {
 		return $this->context->quoteCurrency();
+	}
+
+	/**
+	 * Returns a base-currency price in this currency: converted at the current rate, rounded once by the currency's rule, then to its cash step.
+	 *
+	 * The one formula a converted price comes from: a cart's line priced from its base price and the
+	 * catalog's price projection both convert through it, so a product sorts at the price its cart shows.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Money $base A price in the base currency.
+	 * @return Money The price in this currency.
+	 */
+	public function convert( Money $base ): Money {
+		return $this->context->convertToQuoteMoney( $base, $this->roundingRule->roundingMode() )->roundToCashStep( $this->roundingRule );
 	}
 
 	/**

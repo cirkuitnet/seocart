@@ -31,7 +31,7 @@ defined( 'ABSPATH' ) || exit;
  *
  * A line without one is priced from its base price when the currency allows conversion: the
  * base price at the currency's current rate, rounded once by the currency's rule and then to its
- * cash step, in the basis the base price was authored in. That is the one rounding of a
+ * cash step (PresentmentCurrency::convert()), in the basis the base price was authored in. That is the one rounding of a
  * calculation outside its engine; the line says its price was converted, and the calculation
  * records the rate it was converted at. Otherwise the line is not priced at zero or at a guess:
  * it is reported as unpriced, with no price in the currency when the variant has a base price,
@@ -127,8 +127,7 @@ final class PriceResolver {
 			return null;
 		}
 
-		$rule = $currency->roundingRule;
-		$unit = $currency->context->convertToQuoteMoney( Money::of( $base['price']->priceMinor(), $currency->baseCurrency() ), $rule->roundingMode() )->roundToCashStep( $rule );
+		$unit = $currency->convert( Money::of( $base['price']->priceMinor(), $currency->baseCurrency() ) );
 
 		return new InputLine( $line->key, $line->variantId, $line->quantity, new AuthoredAmount( $unit, AmountBasis::from( $base['price']->amountBasis() ) ), PriceSource::Converted, self::taxClassOf( $base ) );
 	}

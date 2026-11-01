@@ -214,7 +214,7 @@ final class LocationsMigrationTest extends DatabaseTestCase {
 		$registered = array_map( static fn( Migration $migration ): string => $migration->id(), OwnedData::registry()->migrations() );
 		$chain      = array( AddLocations::ID, SeedDefaultLocation::ID, RekeyStockByLocation::ID, AddFulfilmentLocation::ID );
 
-		$this->assertSame( $chain, array_slice( $registered, -4 ), 'The four steps are the newest migrations, in order.' );
+		$this->assertSame( $chain, array_slice( $registered, (int) array_search( AddLocations::ID, $registered, true ), 4 ), 'The four steps follow each other, in order, with no other migration between them.' );
 		$this->assertGreaterThan( '20261010_0003_payment_provider_references', AddLocations::ID );
 		$this->assertSame( array( false, false, false, true ), array_map( static fn( Migration $migration ): bool => $migration->canOperateHalfApplied(), array( new AddLocations(), new SeedDefaultLocation(), new RekeyStockByLocation(), new AddFulfilmentLocation() ) ) );
 		$this->assertEquals( InventoryTables::all(), ( new RekeyStockByLocation() )->tables() );

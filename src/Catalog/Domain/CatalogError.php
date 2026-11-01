@@ -141,6 +141,27 @@ enum CatalogError: string implements ErrorCode {
 	case SearchInvalid = 'catalog.search_invalid';
 
 	/**
+	 * A listing was asked for a currency the store does not sell in, or for a code that is no currency.
+	 *
+	 * @since 0.2.0
+	 */
+	case CurrencyUnsupported = 'catalog.currency_unsupported';
+
+	/**
+	 * A listing's price range had its lowest price above its highest.
+	 *
+	 * @since 0.2.0
+	 */
+	case PriceRangeInvalid = 'catalog.price_range_invalid';
+
+	/**
+	 * A listing was asked for an order it offers only with a search, without one.
+	 *
+	 * @since 0.2.0
+	 */
+	case OrderUnavailable = 'catalog.order_unavailable';
+
+	/**
 	 * Returns the catalog's rows.
 	 *
 	 * @since 0.1.0
@@ -268,6 +289,30 @@ enum CatalogError: string implements ErrorCode {
 					/* translators: %1$s: The most words a search may hold. */
 					__( 'A search may hold at most %1$s words, in valid UTF-8 text.', 'seocart' ),
 				array( 'most' )
+			),
+			new ErrorDefinition(
+				self::CurrencyUnsupported,
+				400,
+				static fn(): string =>
+					/* translators: %1$s: The currency code as it was given, such as EUR. */
+					__( 'The store does not sell in %1$s.', 'seocart' ),
+				array( 'currency' )
+			),
+			new ErrorDefinition(
+				self::PriceRangeInvalid,
+				400,
+				static fn(): string =>
+					/* translators: 1: The lowest price asked for, in minor units. 2: The highest price asked for, in minor units. */
+					__( 'The lowest price, %1$s, is above the highest, %2$s.', 'seocart' ),
+				array( 'min_price_minor', 'max_price_minor' )
+			),
+			new ErrorDefinition(
+				self::OrderUnavailable,
+				400,
+				static fn(): string =>
+					/* translators: %1$s: The order asked for, such as relevance. */
+					__( 'Products are ordered by %1$s only for a search: give the words to search for.', 'seocart' ),
+				array( 'orderby' )
 			),
 		);
 	}

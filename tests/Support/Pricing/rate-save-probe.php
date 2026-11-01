@@ -24,6 +24,8 @@ use SEOCart\Platform\Database\LockService;
 use SEOCart\Pricing\Application\ManualRate;
 use SEOCart\Pricing\Infrastructure\MysqlExchangeRates;
 use SEOCart\Support\Currency;
+use SEOCart\Support\SystemClock;
+use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 use SEOCart\Support\Decimal;
 
 // phpcs:disable WordPress.WP.AlternativeFunctions -- The probe writes its report to the file its parent reads.
@@ -46,7 +48,9 @@ $seocart_probe_rates = new MysqlExchangeRates(
 	$seocart_probe_db,
 	array( new LockService( $seocart_probe_db, LockMode::GetLock ), 'withLock' ),
 	static fn(): Currency => Currency::of( 'USD' ),
-	static function (): void {}
+	static function (): void {},
+	new RecordingEventPublisher( $seocart_probe_db ),
+	new SystemClock()
 );
 
 try {

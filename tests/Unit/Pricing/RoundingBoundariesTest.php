@@ -21,9 +21,10 @@ use SEOCart\Tests\Unit\Support\PhpSource;
  * (`ofDecimal`), dividing or rescaling a decimal, building a taxed amount from a rate
  * (`fromNet`, `fromGross`), converting at a rate, splitting by largest remainder (`allocate`)
  * and cash rounding. A call to one anywhere else in the domain would be a rounding the trace
- * does not record. The price resolver is the one application file allowed to round, since it
- * converts a price before a calculation starts; every other application file is held to the
- * same rule.
+ * does not record. The presentment currency is the one application file allowed to round, since
+ * its convert() is the one formula a base price is converted by before a calculation starts (the
+ * price resolver and the catalog's price projection both call it); every other application file,
+ * the price resolver included, is held to the same rule.
  *
  * Planted violation, shown red and removed: in DiscountStep::discountLines(), round the
  * discount with `Money::ofDecimal( $exact, $currency, RoundingMode::HalfUp )` instead of the
@@ -49,7 +50,7 @@ final class RoundingBoundariesTest extends TestCase {
 	 *
 	 * @var list<string>
 	 */
-	private const ALLOWED = array( 'src/Pricing/Domain/Engine/Rounder.php', 'src/Pricing/Application/PriceResolver.php' );
+	private const ALLOWED = array( 'src/Pricing/Domain/Engine/Rounder.php', 'src/Pricing/Application/PresentmentCurrency.php' );
 
 	/**
 	 * Tests that no pricing domain or application file rounds but the ones allowed.

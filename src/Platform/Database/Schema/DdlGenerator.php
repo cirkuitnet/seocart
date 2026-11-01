@@ -21,7 +21,7 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: the formatting rules dbDelta's regular-expression parser needs, applied by
  * code instead of by hand. Lowercase types, backticked identifiers, one column or key per line
  * and no blank line, exactly two spaces between `PRIMARY KEY` and its column list, exactly
- * one space after `KEY name` and `UNIQUE KEY name`, no COMMENT, no IF NOT EXISTS and no
+ * one space after `KEY name`, `UNIQUE KEY name` and `FULLTEXT KEY name`, no COMMENT, no IF NOT EXISTS and no
  * FOREIGN KEY, and `ENGINE=InnoDB` stated with the site's character set and collation after it.
  * And, for the statement dbDelta compares with an existing table on a server that reports
  * integer display widths, each integer type written as that server reports it.
@@ -60,6 +60,7 @@ final class DdlGenerator {
 	 *
 	 * @since 0.1.0
 	 * @since 0.2.0 The integer display widths, for the statement dbDelta compares with an existing table.
+	 * @since 0.2.0 A fulltext key, as `FULLTEXT KEY`, which dbDelta parses as it parses a plain one.
 	 *
 	 * @param TableDefinition $definition     The table's declaration.
 	 * @param string          $tableName      The full table name, prefix included, as Database::table() returns it.
@@ -90,7 +91,7 @@ final class DdlGenerator {
 		}
 
 		foreach ( $definition->indexes() as $index ) {
-			$lines[] = 'KEY `' . $index->name() . '` (' . self::columnList( $index->columns() ) . ')';
+			$lines[] = ( IndexKind::Fulltext === $index->kind() ? 'FULLTEXT KEY `' : 'KEY `' ) . $index->name() . '` (' . self::columnList( $index->columns() ) . ')';
 		}
 
 		return 'CREATE TABLE `' . $tableName . "` (\n\t" . implode( ",\n\t", $lines ) . "\n) ENGINE=InnoDB" . ( '' === $charsetCollate ? '' : ' ' . $charsetCollate );

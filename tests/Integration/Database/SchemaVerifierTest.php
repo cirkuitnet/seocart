@@ -13,10 +13,12 @@ namespace SEOCart\Tests\Integration\Database;
 
 use SEOCart\Platform\Database\Schema\Classification;
 use SEOCart\Platform\Database\Schema\ColumnSpec;
+use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\IndexSpec;
 use SEOCart\Platform\Database\Schema\MutationPattern;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\Schema\TableDefinition;
+use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Tests\Support\DatabaseTestCase;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL -- Each test builds the table under inspection by hand, as a host or a broken migration would leave it.
@@ -30,7 +32,7 @@ use SEOCart\Tests\Support\DatabaseTestCase;
  * Planted violations: in SchemaVerifier, remove the comparison of one aspect at a time (the
  * column type, the nullability, the default, the undeclared-column check, the missing-index
  * check, the uniqueness, the index columns, the engine, the table collation, the column
- * collation). Each removal turns its own case red.
+ * collation, the index type). Each removal turns its own case red.
  *
  * The engine case uses MEMORY rather than MyISAM: some servers, the development server among
  * them, disable MyISAM, and the verifier only needs an engine that is not InnoDB.
@@ -61,6 +63,20 @@ final class SchemaVerifierTest extends DatabaseTestCase {
 		KEY name (name),
 		KEY a_b (a, b)
 	) ENGINE=%e %c";
+
+	/**
+	 * A table of documents with a fulltext key, written as the matching statement is.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const FULLTEXT = 'CREATE TABLE `%s` (
+		id bigint unsigned NOT NULL AUTO_INCREMENT,
+		body varchar(200) NOT NULL,
+		PRIMARY KEY (id),
+		FULLTEXT KEY body (body)
+	) ENGINE=%e %c';
 
 	/**
 	 * Tests that the table as declared passes.
@@ -146,6 +162,66 @@ final class SchemaVerifierTest extends DatabaseTestCase {
 	}
 
 	/**
+	 * Tests that a fulltext key as declared passes: the server's hidden document id column and its index are not the table's.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_fulltext_key_as_declared_has_an_empty_diff(): void {
+		$this->createShape( self::FULLTEXT );
+
+		$this->assertSame( array(), ( new SchemaVerifier( $this->db ) )->diff( self::documents( true ) ) );
+	}
+
+	/**
+	 * Tests that a B-tree key where a fulltext key is declared, and the reverse, is one line naming the index type.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_index_of_the_other_kind_is_one_line_naming_its_type(): void {
+		$this->createShape( str_replace( 'FULLTEXT KEY body (body)', 'KEY body (body)', self::FULLTEXT ) );
+
+		$this->assertSame( array( $this->shapeTable() . ': index body is a BTREE index, declared FULLTEXT' ), ( new SchemaVerifier( $this->db ) )->diff( self::documents( true ) ) );
+
+		$this->db->execute( 'DROP TABLE %i', $this->shapeTable() );
+		$this->createShape( self::FULLTEXT );
+
+		$this->assertSame( array( $this->shapeTable() . ': index body is a FULLTEXT index, declared BTREE' ), ( new SchemaVerifier( $this->db ) )->diff( self::documents( false ) ) );
+	}
+
+	/**
+	 * Tests that a table created with a fulltext key and handed again to createTable() sends no DDL: dbDelta reads the key as the generator wrote it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_fulltext_key_handed_again_to_create_table_sends_no_ddl(): void {
+		$operations = new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) );
+
+		$first = $this->captureQueries( fn() => $operations->createTable( self::documents( true ) ) );
+
+		$this->assertQueryCount( 1, $first->ofType( 'CREATE' ), 'The first call creates the table.' );
+		$this->assertSame( array(), ( new SchemaVerifier( $this->db ) )->diff( self::documents( true ) ) );
+
+		$again = $this->captureQueries( fn() => $operations->createTable( self::documents( true ) ) );
+
+		$this->assertQueryCount( 0, $again->ofType( 'CREATE', 'ALTER', 'DROP' ), 'DDL when the table with its fulltext key is handed to createTable() again' );
+	}
+
+	/**
+	 * Tests that alterTable() admits a clause that adds a fulltext key, and that the table then matches its declaration.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_alter_table_adds_a_fulltext_key(): void {
+		$this->createShape( str_replace( ",\n\t\tFULLTEXT KEY body (body)", '', self::FULLTEXT ) );
+
+		$operations = new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) );
+
+		$operations->alterTable( self::documents( true ), 'ADD FULLTEXT KEY body (body)' );
+
+		$this->assertSame( array(), ( new SchemaVerifier( $this->db ) )->diff( self::documents( true ) ) );
+	}
+
+	/**
 	 * Creates the table under inspection.
 	 *
 	 * @since 0.1.0
@@ -199,6 +275,32 @@ final class SchemaVerifierTest extends DatabaseTestCase {
 				IndexSpec::key( 'name', array( 'name' ), 'Lookups by name.' ),
 				IndexSpec::key( 'a_b', array( 'a', 'b' ), 'Lookups by the pair.' ),
 			),
+			'permanent',
+			array()
+		);
+	}
+
+	/**
+	 * Declares a table of documents with one text column and a key on it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param bool $fulltext Whether the key is declared a fulltext key; a plain key otherwise.
+	 * @return TableDefinition The declaration.
+	 */
+	private static function documents( bool $fulltext ): TableDefinition {
+		return new TableDefinition(
+			'test_shape',
+			'Tests',
+			'A table of documents the verifier inspects.',
+			MutationPattern::Config,
+			array(
+				new ColumnSpec( 'id', 'bigint unsigned', Classification::Public, 'Key.', autoIncrement: true ),
+				new ColumnSpec( 'body', 'varchar(200)', Classification::Public, 'Words.' ),
+			),
+			array( 'id' ),
+			array(),
+			array( $fulltext ? IndexSpec::fulltext( 'body', array( 'body' ), 'Finds the documents holding words.' ) : IndexSpec::key( 'body', array( 'body' ), 'Lookups by body.' ) ),
 			'permanent',
 			array()
 		);

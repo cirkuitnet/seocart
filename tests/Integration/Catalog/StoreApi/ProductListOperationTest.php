@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Catalog\StoreApi;
 
 use SEOCart\Catalog\Infrastructure\CatalogTables;
+use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Catalog\Infrastructure\ProductTaxonomies;
 use SEOCart\Catalog\Interfaces\StoreApi\CatalogOperations;
 use SEOCart\Platform\Localization\PostLocales;
@@ -22,13 +23,15 @@ use SEOCart\Tests\Support\Catalog\CreatesTerms;
 use SEOCart\Tests\Support\Catalog\PlantsListedProducts;
 use SEOCart\Tests\Support\Doubles\SeveralLocales;
 use SEOCart\Tests\Support\KernelHooks;
+use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
 
 /**
  * `GET /seocart/store/v1/products` through the production wiring: who is listed, in what order,
  * in which locale, filtered and searched how, refused when, with which headers, in which shape.
  *
  * The kernel is wired as in production, with a site that publishes in en_US and de_DE; the
- * product lifecycle's hooks are taken off, so the planted posts are bound only as planted. Every
+ * product lifecycle's hooks are taken off, so the planted posts are bound only as planted. The
+ * store sells in EUR besides USD, its base currency. Every
  * planted product keeps the `hidden` visibility the column defaults to, and is listed all the same.
  *
  * Planted violations, each shown red and removed:
@@ -40,7 +43,14 @@ use SEOCart\Tests\Support\KernelHooks;
  * - in ProductListing::items(), keep a post whatever its status: the post made private after the
  *   search is listed;
  * - in ProductListing::words(), read a failed split as no words: the search in invalid UTF-8 lists
- *   the catalog.
+ *   the catalog;
+ * - in MysqlCatalogSearch::PAGE_PRICE_ASC, join the products' sort prices to the products with a
+ *   LEFT JOIN from the products: the product without a sort price is listed in the price order;
+ * - in MysqlCatalogSearch::booleanSearch(), send the words as typed: `+linen -shirt` leaves the
+ *   shirt out, and `"linen"` and `(linen)` change the search;
+ * - in SearchQuery::STOPWORDS, hold no word: `the linen` lists nothing;
+ * - in MysqlCatalogSearch::search(), send the statement for a search left with no run: `the` sends
+ *   one.
  *
  * @since 0.2.0
  */
@@ -48,7 +58,17 @@ final class ProductListOperationTest extends CatalogTestCase {
 
 	use CreatesTerms;
 	use PlantsListedProducts;
+	use PricesInCurrencies;
 	use ServesStoreApi;
+
+	/**
+	 * Every order the listing offers.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<string>
+	 */
+	private const ORDERS = array( 'newest', 'price_asc', 'price_desc', 'relevance' );
 
 	/**
 	 * Wires the kernel over a site in two locales, and takes the product lifecycle's hooks off.
@@ -57,6 +77,12 @@ final class ProductListOperationTest extends CatalogTestCase {
 	 */
 	public function set_up(): void {
 		parent::set_up();
+
+		// The store sells in EUR too, at a rate version the installation record names, before the kernel reads the record.
+		$this->createRateTables();
+		$this->enableCurrency( 'EUR' );
+		self::ratesOver( $this->db, static function (): void {} )->saveVersion( array( self::rateTo( 'EUR', '0.91230' ) ), Actor::user( 0 ) );
+		$this->plantBootRecord( 1 );
 
 		$this->bootStoreApi( array( PostLocales::class => static fn(): PostLocales => new SeveralLocales( 'en_US', 'de_DE' ) ) );
 
@@ -72,6 +98,7 @@ final class ProductListOperationTest extends CatalogTestCase {
 		$this->deletePlantedImages();
 		$this->deleteCreatedTerms();
 		$this->shutStoreApi();
+		$this->removeBootRecord();
 
 		parent::tear_down();
 	}
@@ -124,14 +151,14 @@ final class ProductListOperationTest extends CatalogTestCase {
 	}
 
 	/**
-	 * Tests that a post made private between the search and the read of the page's posts is left out.
+	 * Tests that a post made private between the search and the read of the page's posts is left out, in every order.
 	 *
 	 * @since 0.2.0
 	 */
 	public function test_a_post_made_private_after_the_search_is_left_out(): void {
 		global $wpdb;
 
-		$hidden = $this->plantListed( 'Public title', 'GONE-1' );
+		$hidden = $this->plantListed( 'Public shirt', 'GONE-1' );
 		$shown  = $this->plantListed( 'Other shirt', 'KEPT-1' );
 		$db     = $this->db;
 		$posts  = $wpdb->posts;
@@ -157,18 +184,273 @@ final class ProductListOperationTest extends CatalogTestCase {
 			return $sql;
 		};
 
-		wp_cache_flush();
-		add_filter( 'query', $privatise );
+		foreach ( self::ORDERS as $order ) {
+			$state = array(
+				'searched' => false,
+				'before'   => '',
+			);
 
-		try {
-			$answer = $this->list();
-		} finally {
-			remove_filter( 'query', $privatise );
+			$this->db->execute( 'UPDATE %i SET post_status = %s, post_title = %s WHERE ID = %d', $posts, 'publish', 'Public shirt', $hidden['post_id'] );
+			wp_cache_flush();
+			add_filter( 'query', $privatise );
+
+			try {
+				$answer = $this->list( $this->ordered( $order ) );
+			} finally {
+				remove_filter( 'query', $privatise );
+			}
+
+			$this->assertStringStartsWith( "SELECT {$posts}.* FROM {$posts} WHERE ID IN", $state['before'], $order . ': the post was made private between the search and the read of the page\'s posts.' );
+			$this->assertSame( array( $shown['post_id'] ), self::postIds( $answer ), $order . ': the post made private after the search is left out.' );
+			$this->assertStringNotContainsString( 'Secret title', (string) wp_json_encode( $answer['body'] ) );
+		}
+	}
+
+	/**
+	 * Tests the price orders in the base currency: lowest or highest first, ties by the product, has_more, only the products with a sort price, the item as newest gives it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_price_orders(): void {
+		$dear   = $this->plantListed( 'Dear shirt', 'PRICE-1', array( 'price' => 3000 ) );
+		$cheap  = $this->plantListed( 'Cheap shirt', 'PRICE-2', array( 'price' => 1000 ) );
+		$middle = $this->plantListed( 'Middle shirt', 'PRICE-3', array( 'price' => 2000 ) );
+		$twin   = $this->plantListed( 'Cheap twin', 'PRICE-4', array( 'price' => 1000 ) );
+		$bare   = $this->plantListed( 'Unpriced shirt', 'PRICE-5', array( 'projected' => false ) );
+
+		$this->plantListed(
+			'Private shirt',
+			'PRICE-6',
+			array(
+				'price'  => 100,
+				'status' => 'private',
+			)
+		);
+
+		$newest    = $this->list();
+		$ascending = $this->list( array( 'orderby' => 'price_asc' ) );
+
+		$this->assertSame( array( $bare['post_id'], $twin['post_id'], $middle['post_id'], $cheap['post_id'], $dear['post_id'] ), self::postIds( $newest ), 'Newest lists the product without a sort price.' );
+		$this->assertSame( array( $cheap['post_id'], $twin['post_id'], $middle['post_id'], $dear['post_id'] ), self::postIds( $ascending ), 'Lowest first, two equal prices by the product; the product without a sort price and the private post are left out.' );
+		$this->assertSame( array( $dear['post_id'], $middle['post_id'], $twin['post_id'], $cheap['post_id'] ), self::postIds( $this->list( array( 'orderby' => 'price_desc' ) ) ), 'Highest first, two equal prices by the product, the last first.' );
+		$this->assertSame( array_keys( $newest['body']['items'][0] ), array_keys( $ascending['body']['items'][0] ), 'An item of a price order has the fields of any other: no price.' );
+
+		$first = $this->list(
+			array(
+				'orderby'  => 'price_asc',
+				'per_page' => 2,
+			)
+		);
+		$last  = $this->list(
+			array(
+				'orderby'  => 'price_asc',
+				'per_page' => 2,
+				'page'     => 2,
+			)
+		);
+
+		$this->assertSame( array( $cheap['post_id'], $twin['post_id'] ), self::postIds( $first ) );
+		$this->assertTrue( $first['body']['has_more'] );
+		$this->assertSame( array( $middle['post_id'], $dear['post_id'] ), self::postIds( $last ) );
+		$this->assertFalse( $last['body']['has_more'] );
+		$this->assertSame( 400, $this->list( array( 'orderby' => 'title' ) )['status'], 'An order the listing does not offer is refused.' );
+	}
+
+	/**
+	 * Tests a price order in another currency, by its own sort prices, and the price range on newest and on a price order, in the currency asked for.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_currency_and_the_price_range(): void {
+		$dear   = $this->plantListed( 'Dear shirt', 'RANGE-1', array( 'price' => 3000 ) );
+		$cheap  = $this->plantListed( 'Cheap shirt', 'RANGE-2', array( 'price' => 1000 ) );
+		$middle = $this->plantListed( 'Middle shirt', 'RANGE-3', array( 'price' => 2000 ) );
+		$twin   = $this->plantListed( 'Cheap twin', 'RANGE-4', array( 'price' => 1000 ) );
+
+		// In EUR: two converted prices and an authored one, which sorts the cheap shirt above the middle one; the twin sells no EUR price.
+		$this->projectIn( $dear['product_id'], 'EUR', 2700, 1 );
+		$this->projectIn( $cheap['product_id'], 'EUR', 1100 );
+		$this->projectIn( $middle['product_id'], 'EUR', 900, 1 );
+
+		$this->assertSame(
+			array( $middle['post_id'], $cheap['post_id'], $dear['post_id'] ),
+			self::postIds(
+				$this->list(
+					array(
+						'orderby'  => 'price_asc',
+						'currency' => 'EUR',
+					)
+				)
+			),
+			'EUR sorts by the EUR prices, authored and converted together.'
+		);
+		$this->assertSame(
+			array( $dear['post_id'], $cheap['post_id'], $middle['post_id'] ),
+			self::postIds(
+				$this->list(
+					array(
+						'orderby'  => 'price_desc',
+						'currency' => 'EUR',
+					)
+				)
+			)
+		);
+
+		foreach ( array( 'XXX', 'GBP', 'EU' ) as $code ) {
+			$refused = $this->list(
+				array(
+					'orderby'  => 'price_asc',
+					'currency' => $code,
+				)
+			);
+
+			$this->assertSame( 400, $refused['status'], $code );
+			$this->assertErrorShape( $refused['body'], 'catalog.currency_unsupported', 400 );
 		}
 
-		$this->assertStringStartsWith( "SELECT {$posts}.* FROM {$posts} WHERE ID IN", $state['before'], 'The post was made private between the search and the read of the page\'s posts.' );
-		$this->assertSame( array( $shown['post_id'] ), self::postIds( $answer ), 'The post made private after the search is left out.' );
-		$this->assertStringNotContainsString( 'Secret title', (string) wp_json_encode( $answer['body'] ) );
+		$this->assertSame(
+			array( $middle['post_id'] ),
+			self::postIds(
+				$this->list(
+					array(
+						'min_price_minor' => 1500,
+						'max_price_minor' => 2500,
+					)
+				)
+			),
+			'A range on newest, in the base currency.'
+		);
+		$this->assertSame(
+			array( $cheap['post_id'], $dear['post_id'] ),
+			self::postIds(
+				$this->list(
+					array(
+						'currency'        => 'EUR',
+						'min_price_minor' => 1000,
+						'max_price_minor' => 3000,
+					)
+				)
+			),
+			'A range on newest, in EUR.'
+		);
+		$this->assertSame(
+			array( $cheap['post_id'], $twin['post_id'], $middle['post_id'] ),
+			self::postIds(
+				$this->list(
+					array(
+						'orderby'         => 'price_asc',
+						'min_price_minor' => 1000,
+						'max_price_minor' => 2000,
+					)
+				)
+			),
+			'A range on a price order, both bounds kept.'
+		);
+		$this->assertSame(
+			array( $dear['post_id'], $middle['post_id'] ),
+			self::postIds(
+				$this->list(
+					array(
+						'orderby'         => 'price_desc',
+						'min_price_minor' => 1500,
+					)
+				)
+			),
+			'A lowest price alone.'
+		);
+
+		$inverted = $this->list(
+			array(
+				'min_price_minor' => 2000,
+				'max_price_minor' => 1000,
+			)
+		);
+
+		$this->assertSame( 400, $inverted['status'] );
+		$this->assertErrorShape( $inverted['body'], 'catalog.price_range_invalid', 400 );
+		$this->assertSame( 400, $this->list( array( 'min_price_minor' => -1 ) )['status'], 'A negative price is refused.' );
+		$this->assertSame( 400, $this->list( array( 'max_price_minor' => '9223372036854775807' ) )['status'], 'A bound past the highest a price may have is refused.' );
+	}
+
+	/**
+	 * Tests the order by relevance: only for a search, by the words of the title, the excerpt and the SKUs, every word required and matched as a prefix, short words left out, operators read as separators, an unindexed product left out.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_order_by_relevance(): void {
+		$linen  = $this->plantListed( 'Linen shirt', 'SHIRT-LINEN-M', array( 'excerpt' => 'Woven from flax.' ) );
+		$cotton = $this->plantListed( 'Cotton shirt', 'SHIRT-COT-01' );
+		$hat    = $this->plantListed( 'Straw hat', 'HAT-STR-01', array( 'excerpt' => 'A linen band.' ) );
+		$bare   = $this->plantListed( 'Linen scarf', 'SCARF-01', array( 'indexed' => false ) );
+
+		$refused = $this->list( array( 'orderby' => 'relevance' ) );
+
+		$this->assertSame( 400, $refused['status'], 'Relevance without a search is refused.' );
+		$this->assertErrorShape( $refused['body'], 'catalog.order_unavailable', 400 );
+
+		$this->assertEqualsCanonicalizing( array( $linen['post_id'], $hat['post_id'] ), self::postIds( $this->relevant( 'linen' ) ), 'A title word and an excerpt word; the product without a document is left out.' );
+		$this->assertContains( $bare['post_id'], self::postIds( $this->list( array( 'search' => 'linen' ) ) ), 'Newest lists the product the index does not hold.' );
+		$this->assertSame( array( $linen['post_id'] ), self::postIds( $this->relevant( 'flax' ) ), 'An excerpt word alone.' );
+		$this->assertSame( array( $cotton['post_id'] ), self::postIds( $this->relevant( 'COT' ) ), 'A SKU token, whatever its case.' );
+		$this->assertSame( array( $linen['post_id'] ), self::postIds( $this->relevant( 'linen shirt' ) ), 'Every word is required.' );
+		$this->assertSame( array( $linen['post_id'] ), self::postIds( $this->relevant( 'lin shi' ) ), 'Each word matches as a prefix.' );
+		$this->assertEqualsCanonicalizing( array( $linen['post_id'], $hat['post_id'] ), self::postIds( $this->relevant( 'linen xl' ) ), 'A word of two characters is left out: the search is linen\'s alone.' );
+
+		$short = $this->relevant( 'xl m' );
+
+		$this->assertSame( array(), self::postIds( $short ), 'A search of short words only lists nothing.' );
+		$this->assertFalse( $short['body']['has_more'] );
+
+		$this->assertSame( array( $linen['post_id'] ), self::postIds( $this->relevant( '+linen -shirt' ) ), 'A minus separates: the shirt is required, never left out.' );
+
+		foreach ( array( '"linen"', 'linen*', '(linen)', '<linen>', '~linen', '@linen' ) as $search ) {
+			$this->assertEqualsCanonicalizing( array( $linen['post_id'], $hat['post_id'] ), self::postIds( $this->relevant( $search ) ), $search . ': operators are separators, never operators.' );
+		}
+
+		$this->assertSame( array_keys( $this->list()['body']['items'][0] ), array_keys( $this->relevant( 'linen' )['body']['items'][0] ), 'An item of the order by relevance has the fields of any other.' );
+	}
+
+	/**
+	 * Tests that a stopword, which the index never holds, is left out of a search by relevance in any case, and that a search of stopwords only lists nothing without a statement.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_stopword_is_left_out_of_the_order_by_relevance(): void {
+		$linen = $this->plantListed( 'Linen shirt', 'SHIRT-LINEN-M', array( 'excerpt' => 'Cut for the summer.' ) );
+
+		$this->plantListed( 'Cotton shirt', 'SHIRT-COT-01' );
+
+		foreach ( array( 'the linen', 'linen for', 'THE Linen', 'shirt with linen' ) as $search ) {
+			$this->assertSame( array( $linen['post_id'] ), self::postIds( $this->relevant( $search ) ), $search . ': the stopword is left out, so the shirt that holds the other words is listed.' );
+		}
+
+		$index = $this->db->table( CatalogTables::SEARCH_INDEX );
+
+		$this->assertQueryCount( 1, $this->captureQueries( fn(): array => $this->relevant( 'linen' ) )->forTable( $index ), 'Statements of a search by relevance' );
+
+		foreach ( array( 'the', 'For THE' ) as $search ) {
+			$answer = $this->relevant( $search );
+
+			$this->assertSame( array(), self::postIds( $answer ), $search . ': a search of stopwords only lists nothing.' );
+			$this->assertFalse( $answer['body']['has_more'] );
+			$this->assertQueryCount( 0, $this->captureQueries( fn(): array => $this->relevant( $search ) )->forTable( $index ), $search . ': statements of a search of stopwords only' );
+		}
+	}
+
+	/**
+	 * Tests that a product in two of the categories asked for is listed once, whatever the order.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_product_in_two_categories_is_listed_once_on_every_order(): void {
+		$clothing = $this->term( ProductTaxonomies::CATEGORY, 'Clothing' );
+		$shirts   = $this->term( ProductTaxonomies::CATEGORY, 'Shirts', $clothing );
+		$twice    = $this->plantListed( 'Shirt in two', 'TWO-1', array( 'terms' => array( ProductTaxonomies::CATEGORY => array( $clothing, $shirts ) ) ) );
+		$once     = $this->plantListed( 'Shirt in one', 'ONE-1', array( 'terms' => array( ProductTaxonomies::CATEGORY => array( $shirts ) ) ) );
+
+		foreach ( self::ORDERS as $order ) {
+			$this->assertEqualsCanonicalizing( array( $twice['post_id'], $once['post_id'] ), self::postIds( $this->list( $this->ordered( $order, array( 'category' => 'clothing' ) ) ) ), $order );
+		}
 	}
 
 	/**
@@ -372,6 +654,36 @@ final class ProductListOperationTest extends CatalogTestCase {
 	 */
 	private function list( array $query = array() ): array {
 		return $this->serve( $this->server, 'GET', '/seocart/store/v1' . CatalogOperations::ROUTE, array(), array(), $query );
+	}
+
+	/**
+	 * Lists products ordered by relevance for a search.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $search The search.
+	 * @return array{status: int|null, headers: array<string, string>, body: array<string, mixed>} What was sent.
+	 */
+	private function relevant( string $search ): array {
+		return $this->list(
+			array(
+				'orderby' => 'relevance',
+				'search'  => $search,
+			)
+		);
+	}
+
+	/**
+	 * Returns a query in an order, with the words relevance needs.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string                    $order The order.
+	 * @param array<string, int|string> $query Optional. The rest of the query. Default none.
+	 * @return array<string, int|string> The query.
+	 */
+	private function ordered( string $order, array $query = array() ): array {
+		return array( 'orderby' => $order ) + $query + ( 'relevance' === $order ? array( 'search' => 'shirt' ) : array() );
 	}
 
 	/**

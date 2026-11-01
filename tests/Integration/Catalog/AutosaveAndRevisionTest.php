@@ -20,8 +20,9 @@ use SEOCart\Tests\Support\Catalog\ProductRestTestCase;
  * controller, and prepare a post with its prepare_item_for_database(), which knows no commerce
  * field; neither calls the product write. A revision restore is an editorial post update. The
  * product lifecycle is hooked, as on a site, and a draft's autosave and a revision restore reach
- * it as writes by another path to a bound post, which leave the product alone. So the four
- * catalog tables stay byte for byte as they were, and a live product stays on sale.
+ * it as writes by another path to a bound post, which leave the product's rows alone and publish
+ * its save, the post as the field changed, so what is derived from the post's words follows. So
+ * the four catalog tables stay byte for byte as they were, and a live product stays on sale.
  *
  * The autosave requests carry a `seocart` object on purpose: the block editor sends none, and a
  * hand-made one must be ignored too.
@@ -75,7 +76,7 @@ final class AutosaveAndRevisionTest extends ProductRestTestCase {
 		$this->assertSame( 200, $response->get_status(), (string) wp_json_encode( $response->get_data() ) );
 		$this->assertSame( 'Autosaved draft title', get_post_field( 'post_title', $created ), 'An autosave of a draft by its author updates the post itself.' );
 		$this->assertSame( $before, $this->catalogChecksums( $b ), 'An autosave changed a catalog row.' );
-		$this->assertSame( $saves, $this->committedSavesOfAll( $b ), 'An autosave saved the product.' );
+		$this->assertSame( $saves + 1, $this->committedSavesOfAll( $b ), 'An autosave of a draft, a write to the post itself, publishes the product\'s save once.' );
 		$this->assertSame( SellabilityReason::NotPublished, $this->verdictOfPost( $created ) );
 	}
 
@@ -107,7 +108,7 @@ final class AutosaveAndRevisionTest extends ProductRestTestCase {
 		$this->assertNotFalse( wp_restore_post_revision( (int) $second ) );
 		$this->assertSame( 'Second title', get_post_field( 'post_title', $created ) );
 		$this->assertSame( $before, $this->catalogChecksums( $b ), 'A revision restore changed a catalog row.' );
-		$this->assertSame( $saves, $this->committedSavesOfAll( $b ) );
+		$this->assertSame( $saves + 1, $this->committedSavesOfAll( $b ), 'A revision restore, a write to the post, publishes the product\'s save once.' );
 		$this->assertSame( SellabilityReason::Sellable, $this->verdictOfPost( $created ) );
 	}
 

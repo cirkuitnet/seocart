@@ -15,8 +15,11 @@ use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\ModuleStatements;
 use SEOCart\Platform\Database\TransactionManager;
+use SEOCart\Platform\Events\EventPublisher;
 use SEOCart\Pricing\Application\ExchangeRates;
 use SEOCart\Pricing\Application\ManualRate;
+use SEOCart\Pricing\Domain\Event\ExchangeRateVersionChanged;
+use SEOCart\Support\Clock;
 use SEOCart\Support\Currency;
 
 defined( 'ABSPATH' ) || exit;
@@ -29,7 +32,8 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: how a version of the rates is written. The set is checked as a whole first: at
  * least one rate, each from the store's base currency, one per currency. Then the save takes the
  * rates lock, so saves run one after another: inside it, one transaction takes the next version
- * from the newest one stored and inserts the whole set at it in one statement, and once that has
+ * from the newest one stored, inserts the whole set at it in one statement and stores
+ * ExchangeRateVersionChanged in the outbox, and once that has
  * committed the version is recorded as current. Two saves at the same moment therefore publish
  * two versions in turn, each a whole set, never one version made of two halves. Nothing is ever
  * updated or deleted, so every version an order was placed at stays as it was.
@@ -145,6 +149,24 @@ final class MysqlExchangeRates implements ExchangeRates {
 	private \Closure $recordVersion;
 
 	/**
+	 * Stores ExchangeRateVersionChanged in the save's transaction.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var EventPublisher
+	 */
+	private EventPublisher $events;
+
+	/**
+	 * Tells when a version was saved.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var Clock
+	 */
+	private Clock $clock;
+
+	/**
 	 * Creates the writer. Sends nothing.
 	 *
 	 * @since 0.1.0
@@ -155,17 +177,21 @@ final class MysqlExchangeRates implements ExchangeRates {
 	 *                                          (callable) while holding it and releases it: LockService::withLock().
 	 * @param \Closure           $baseCurrency  Returns the store's base currency (Currency).
 	 * @param \Closure           $recordVersion Records a version (int) as the current one, once it is committed.
+	 * @param EventPublisher     $events        Stores ExchangeRateVersionChanged in the save's transaction.
+	 * @param Clock              $clock         Tells when a version was saved.
 	 *
 	 * @phpstan-param callable(string, int, int, callable): mixed $withLock
 	 * @phpstan-param \Closure(): Currency                       $baseCurrency
 	 * @phpstan-param \Closure(int): void                        $recordVersion
 	 */
-	public function __construct( Database $db, TransactionManager $transactions, callable $withLock, \Closure $baseCurrency, \Closure $recordVersion ) {
+	public function __construct( Database $db, TransactionManager $transactions, callable $withLock, \Closure $baseCurrency, \Closure $recordVersion, EventPublisher $events, Clock $clock ) {
 		$this->statements    = new ModuleStatements( $db, 'pricing', PricingTables::names() );
 		$this->transactions  = $transactions;
 		$this->withLock      = $withLock;
 		$this->baseCurrency  = $baseCurrency;
 		$this->recordVersion = $recordVersion;
+		$this->events        = $events;
+		$this->clock         = $clock;
 	}
 
 	/**
@@ -221,7 +247,7 @@ final class MysqlExchangeRates implements ExchangeRates {
 	}
 
 	/**
-	 * Inserts the set at the next version in a transaction of its own, then records that version as current.
+	 * Inserts the set at the next version in a transaction of its own, with the event that says so, then records that version as current.
 	 *
 	 * The newest version is a plain read, and nothing retries the insert: every save runs under the
 	 * rates lock, so no other version can be inserted between the two. A writer outside the lock
@@ -246,6 +272,7 @@ final class MysqlExchangeRates implements ExchangeRates {
 				}
 
 				$this->statements->execute( ModuleStatements::forRows( self::INSERT_RATES, count( $rates ) ), ...$values );
+				$this->events->publish( new ExchangeRateVersionChanged( $version, $this->clock->now() ) );
 
 				return $version;
 			}

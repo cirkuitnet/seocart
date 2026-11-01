@@ -12,7 +12,9 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Catalog;
 
 use SEOCart\Catalog\Application\Doctor\ProductSettler;
-use SEOCart\Catalog\Application\Projection\StockSummaries;
+use SEOCart\Catalog\Application\Projection\CompleteProductPager;
+use SEOCart\Catalog\Application\Projection\PriceProjector;
+use SEOCart\Catalog\Application\Projection\SearchDocumentProjector;
 use SEOCart\Catalog\Application\Projection\StockSummaryProjector;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
@@ -25,7 +27,6 @@ use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Database;
-use SEOCart\Platform\Database\LockService;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
@@ -84,7 +85,7 @@ use SEOCart\Tests\Support\SecondDatabase;
  * - hear a checkout's hold again (list StockReserved among the projector's events in
  *   Modules::EVENT_LISTENERS, with its case in StockSummaryProjector::variantsOf()): the hold of the
  *   last units takes the product out of stock at its commit, and the hold test fails;
- * - in CatalogCommand::summarizePage(), project the page without the lock: the drain in another
+ * - in CompleteProductPager::walk(), do the page's work without the lock: the drain in another
  *   process delivers the receipt during the page, and the page's stale summary stays.
  *
  * @since 0.2.0
@@ -373,9 +374,10 @@ final class StockSummaryProjectionTest extends CatalogTestCase {
 
 		$lines   = array();
 		$command = new CatalogCommand(
-			$this->kernel->get( StockSummaries::class ),
+			$this->kernel->get( CompleteProductPager::class ),
 			$this->kernel->get( StockSummaryProjector::class ),
-			array( $this->kernel->get( LockService::class ), 'withLock' ),
+			$this->kernel->get( PriceProjector::class ),
+			$this->kernel->get( SearchDocumentProjector::class ),
 			static function ( string $line ) use ( &$lines ): void {
 				$lines[] = $line;
 			}

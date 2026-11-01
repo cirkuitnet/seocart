@@ -36,8 +36,10 @@ defined( 'ABSPATH' ) || exit;
  * private` with `Vary: Cookie`, and it never sets a cookie.
  *
  * A page lists the products whose post in the locale is published and whose product is complete,
- * newest first. The search matches up to three words, each in the title or the excerpt, or at the
- * start of a SKU; the category filter includes its descendants. A page carries no price: prices
+ * newest first, or by price in a currency the store sells in, lowest or highest first, which lists
+ * only the products with a price in that currency. The search matches up to three words, each in
+ * the title or the excerpt, or at the start of a SKU; the category filter includes its
+ * descendants; a price range is in the currency's minor units. A page carries no price: prices
  * are hydrated by the page that shows them.
  *
  * @since 0.2.0
@@ -99,6 +101,15 @@ final class CatalogOperations {
 	private const MOST_SEARCH_LENGTH = 100;
 
 	/**
+	 * The highest bound a price range may have, in minor units: far past any price, and small enough to stay an integer.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const MOST_PRICE_MINOR = 1000000000000;
+
+	/**
 	 * The most characters a term slug may hold, as WordPress stores one.
 	 *
 	 * @since 0.2.0
@@ -127,7 +138,7 @@ final class CatalogOperations {
 		return new OperationDefinition(
 			id: self::LIST_PRODUCTS,
 			label: static fn(): string => __( 'List products', 'seocart' ),
-			summary: 'Lists one page of the store\'s products in a locale, newest first, searched by words in their titles, excerpts or SKUs and filtered by category, brand, tag and availability; it carries no price and never sets a cookie.',
+			summary: 'Lists one page of the store\'s products in a locale, newest first or by price in a currency, searched by words in their titles, excerpts or SKUs and filtered by category, brand, tag, availability and price; it carries no price and never sets a cookie.',
 			input: self::input(),
 			output: new ResourceSchema(
 				'ProductList',
@@ -158,6 +169,9 @@ final class CatalogOperations {
 				CatalogError::LocaleUnsupported,
 				CatalogError::TermNotFound,
 				CatalogError::SearchInvalid,
+				CatalogError::CurrencyUnsupported,
+				CatalogError::PriceRangeInvalid,
+				CatalogError::OrderUnavailable,
 			),
 			annotations: new Annotations( read_only: true, destructive: false, idempotent: true ),
 			service: array( ProductListing::class, 'list' ),
@@ -166,7 +180,7 @@ final class CatalogOperations {
 	}
 
 	/**
-	 * Declares the listing's input: the locale, the search, the three term filters, availability, the order and the page.
+	 * Declares the listing's input: the locale, the search, the three term filters, availability, the order, the currency, the price range and the page.
 	 *
 	 * @since 0.2.0
 	 *
@@ -185,7 +199,7 @@ final class CatalogOperations {
 			new FieldSpec(
 				name: 'search',
 				type: FieldType::String,
-				description: 'Up to ' . SearchQuery::MOST_WORDS . ' words separated by spaces, each of which must appear in the product\'s title or excerpt or begin one of its SKUs; when absent, nothing is searched.',
+				description: 'Up to ' . SearchQuery::MOST_WORDS . ' words separated by spaces, each of which must appear in the product\'s title or excerpt or begin one of its SKUs; when absent, nothing is searched. Ordered by relevance, each run of ' . SearchQuery::WORD_MIN . ' or more letters and digits of a word must begin a word of the title, the excerpt or a SKU; a shorter run is left out, as is, in any case, each word the index never holds: ' . implode( ', ', array_filter( SearchQuery::STOPWORDS, static fn( string $word ): bool => strlen( $word ) >= SearchQuery::WORD_MIN ) ) . '; the other characters only separate runs.',
 				label: static fn(): string => __( 'Search', 'seocart' ),
 				example: 'linen shirt',
 				max_length: self::MOST_SEARCH_LENGTH
@@ -203,12 +217,22 @@ final class CatalogOperations {
 			new FieldSpec(
 				name: 'orderby',
 				type: FieldType::String,
-				description: 'The order of the products: newest, the most recently published first.',
+				description: 'The order of the products: newest, the most recently published first; price_asc, the lowest price in the currency first; price_desc, the highest first; relevance, for a search only, the product whose words match it best first. A price order lists only the products with a price in the currency, and ties by the product.',
 				label: static fn(): string => __( 'Order', 'seocart' ),
 				example: SearchQuery::NEWEST,
 				default_value: SearchQuery::NEWEST,
-				allowed: array( SearchQuery::NEWEST )
+				allowed: SearchQuery::ORDERS
 			),
+			new FieldSpec(
+				name: 'currency',
+				type: FieldType::String,
+				description: 'The ISO 4217 code of the currency a price order sorts in and the price range is in, one the store sells in; when absent, the store\'s base currency.',
+				label: static fn(): string => __( 'Currency', 'seocart' ),
+				example: 'EUR',
+				max_length: 3
+			),
+			self::price( 'min_price_minor', 'The lowest price listed, in the currency\'s minor units, such as cents; when absent, no lowest price.', static fn(): string => __( 'Lowest price', 'seocart' ), 1000 ),
+			self::price( 'max_price_minor', 'The highest price listed, in the currency\'s minor units, such as cents, no lower than the lowest; when absent, no highest price.', static fn(): string => __( 'Highest price', 'seocart' ), 5000 ),
 			new FieldSpec(
 				name: 'page',
 				type: FieldType::Integer,
@@ -346,6 +370,31 @@ final class CatalogOperations {
 			label: $label,
 			example: $example,
 			max_length: self::MOST_SLUG_LENGTH
+		);
+	}
+
+	/**
+	 * Declares one bound of the price range.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string   $name        The wire name.
+	 * @param string   $description The machine description.
+	 * @param \Closure $label       Returns the label through a literal gettext call.
+	 * @param int      $example     A price the documentation shows.
+	 * @return FieldSpec The field.
+	 *
+	 * @phpstan-param \Closure(): string $label
+	 */
+	private static function price( string $name, string $description, \Closure $label, int $example ): FieldSpec {
+		return new FieldSpec(
+			name: $name,
+			type: FieldType::Integer,
+			description: $description,
+			label: $label,
+			example: $example,
+			minimum: 0,
+			maximum: self::MOST_PRICE_MINOR
 		);
 	}
 

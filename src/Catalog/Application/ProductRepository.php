@@ -492,6 +492,26 @@ interface ProductRepository {
 	public function orphanPrices( int $limit ): array;
 
 	/**
+	 * Lists `product_price_projections` rows whose product no longer exists (doctor check 8).
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit The most to list.
+	 * @return list<array{id: int, product_id: int}> The orphans, by id.
+	 */
+	public function orphanPriceProjections( int $limit ): array;
+
+	/**
+	 * Lists `product_search_index` rows whose product no longer exists (doctor check 8).
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit The most to list.
+	 * @return list<array{product_id: int, locale: string}> The orphans, by product and locale.
+	 */
+	public function orphanSearchDocuments( int $limit ): array;
+
+	/**
 	 * Counts products marked `incomplete` (doctor check 10).
 	 *
 	 * @since 0.1.0

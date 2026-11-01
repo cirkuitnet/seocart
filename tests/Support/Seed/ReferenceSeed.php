@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Support\Seed;
 use SEOCart\Cart\Domain\LineIdentity;
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Catalog\Application\Projection\StockSummary;
+use SEOCart\Catalog\Application\Search\ProductIndexDocument;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
@@ -35,6 +36,7 @@ use SEOCart\Platform\RateLimiter\RateCountersTable;
 use SEOCart\Platform\Secrets\SecretKeysTable;
 use SEOCart\Pricing\Infrastructure\PricingTables;
 use SEOCart\Promotion\Infrastructure\PromotionTables;
+use SEOCart\Support\Locale;
 
 /**
  * Generates a reference dataset and writes it with multi-row INSERTs.
@@ -114,6 +116,8 @@ final class ReferenceSeed {
 		CatalogTables::PRODUCT_POSTS,
 		CatalogTables::VARIANTS,
 		CatalogTables::VARIANT_PRICES,
+		CatalogTables::PRICE_PROJECTIONS,
+		CatalogTables::SEARCH_INDEX,
 		InventoryTables::POLICIES,
 		InventoryTables::ITEMS,
 		InventoryTables::LEDGER,
@@ -403,6 +407,7 @@ final class ReferenceSeed {
 			$productRow = array_key_last( $buffers[ CatalogTables::PRODUCTS ] );
 
 			$buffers[ CatalogTables::PRODUCT_POSTS ][] = $this->binding( $sourceId, $product, $this->sourceLocale, $created );
+			$buffers[ CatalogTables::SEARCH_INDEX ][]  = self::document( $product, $this->sourceLocale, null, $created );
 
 			if ( 0 === $product % 2 ) {
 				$locale   = $second[ intdiv( $product, 2 ) % count( $second ) ];
@@ -410,13 +415,14 @@ final class ReferenceSeed {
 
 				$buffers['posts'][]                        = self::post( $secondId, $product, $locale, $created );
 				$buffers[ CatalogTables::PRODUCT_POSTS ][] = $this->binding( $secondId, $product, $locale, $created );
+				$buffers[ CatalogTables::SEARCH_INDEX ][]  = self::document( $product, $locale, $locale, $created );
 			}
 
 			$buffers[ CatalogTables::VARIANTS ][] = array(
 				'id'               => $product,
 				'uuid'             => self::uuid( $random ),
 				'product_id'       => $product,
-				'sku'              => sprintf( 'SEED-%06d', $product ),
+				'sku'              => self::sku( $product ),
 				'combination_hash' => $hash,
 				'generation'       => Variant::FIRST_GENERATION,
 				'is_enabled'       => 1,
@@ -437,6 +443,19 @@ final class ReferenceSeed {
 				'compare_at_minor' => 0 === $random->getInt( 0, 4 ) ? $price + $random->getInt( 100, 5000 ) : null,
 				'created_at'       => $created,
 				'updated_at'       => $created,
+			);
+
+			// The listed variant's base price, as the price projection writes it: authored, so no rate version.
+			$buffers[ CatalogTables::PRICE_PROJECTIONS ][] = array(
+				'id'                 => $product,
+				'product_id'         => $product,
+				'currency'           => $this->baseCurrency,
+				'sort_price_minor'   => $price,
+				'amount_basis'       => 'net',
+				'has_explicit_price' => 1,
+				'rate_version'       => null,
+				'created_at'         => $created,
+				'updated_at'         => $created . '.000000',
 			);
 
 			$onHand = 0;
@@ -751,6 +770,41 @@ final class ReferenceSeed {
 			'post_mime_type'        => '',
 			'comment_count'         => 0,
 		);
+	}
+
+	/**
+	 * Returns the search document of a seeded post, as the search document projector writes it: its title and its variant's SKU.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int         $product The product.
+	 * @param string      $locale  The post's locale.
+	 * @param string|null $second  The locale of a second post, or null for the source post: it is in the post's title.
+	 * @param string      $date    When it was written, UTC.
+	 * @return array<string, int|string|null> The row.
+	 */
+	private static function document( int $product, string $locale, ?string $second, string $date ): array {
+		$post = self::post( 0, $product, $second, $date );
+
+		return array(
+			'product_id'      => $product,
+			'locale'          => $locale,
+			'search_document' => ( new ProductIndexDocument( $product, Locale::of( $locale ), (string) $post['post_title'], (string) $post['post_excerpt'], array( self::sku( $product ) ) ) )->text(),
+			'created_at'      => $date,
+			'updated_at'      => $date . '.000000',
+		);
+	}
+
+	/**
+	 * Returns the SKU of a seeded product's one variant.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $product The product.
+	 * @return string Such as `SEED-000001`.
+	 */
+	private static function sku( int $product ): string {
+		return sprintf( 'SEED-%06d', $product );
 	}
 
 	/**

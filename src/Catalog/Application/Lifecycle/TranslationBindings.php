@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Catalog\Application\Lifecycle;
 
 use SEOCart\Catalog\Application\ProductRepository;
+use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\ProductPostBinding;
@@ -53,6 +54,12 @@ defined( 'ABSPATH' ) || exit;
  * SKU, price and stock belong to the product, so whichever post a change comes through, the
  * product has one of each.
  *
+ * Every change that adds, moves or removes a binding publishes the product's save (ProductSaved,
+ * the post as the field changed) in its own transaction, so what is derived from the words of a
+ * product's posts, its search documents, follows its bindings: a linked post is indexed, and an
+ * unlinked post's document goes. A promotion moves no binding, and publishes ProductBindingPromoted
+ * alone.
+ *
  * @since 0.1.0
  */
 final class TranslationBindings {
@@ -85,7 +92,7 @@ final class TranslationBindings {
 	private TransactionManager $transactions;
 
 	/**
-	 * Stores ProductBindingPromoted.
+	 * Stores ProductBindingPromoted and ProductSaved.
 	 *
 	 * @since 0.1.0
 	 *
@@ -94,7 +101,7 @@ final class TranslationBindings {
 	private EventPublisher $events;
 
 	/**
-	 * Tells when a post is bound and when the source moved.
+	 * Tells when a post is bound, when the source moved and when the product was saved.
 	 *
 	 * @since 0.1.0
 	 *
@@ -127,7 +134,7 @@ final class TranslationBindings {
 	 *
 	 * @param ProductRepository  $products     Locks, reads and writes the bindings.
 	 * @param TransactionManager $transactions Runs each change.
-	 * @param EventPublisher     $events       Stores ProductBindingPromoted.
+	 * @param EventPublisher     $events       Stores ProductBindingPromoted and ProductSaved.
 	 * @param Clock              $clock        Tells the time.
 	 * @param DeleteProduct      $delete       Deletes the product a post gives way to another with.
 	 * @param Authorizer         $authorizer   Decides whether an actor may move a product's source away from its source post.
@@ -142,7 +149,7 @@ final class TranslationBindings {
 	}
 
 	/**
-	 * Links a post to a product as its post in a locale.
+	 * Links a post to a product as its post in a locale, and publishes the product's save when a binding was added or moved.
 	 *
 	 * Runs in the caller's transaction, or in its own.
 	 *
@@ -169,8 +176,8 @@ final class TranslationBindings {
 				}
 
 				if ( $productId === $current?->id() ) {
-					if ( null !== $binding && ! $binding->locale()->equals( $locale ) ) {
-						$this->products->moveBinding( $postId, $locale );
+					if ( null !== $binding && ! $binding->locale()->equals( $locale ) && $this->products->moveBinding( $postId, $locale ) ) {
+						$this->publishSave( $locked[ $productId ] );
 					}
 
 					return;
@@ -181,13 +188,14 @@ final class TranslationBindings {
 				}
 
 				$this->products->addBinding( $productId, new ProductPostBinding( $postId, $locale, $this->clock->now() ) );
+				$this->publishSave( $locked[ $productId ] );
 			},
 			RetryPolicy::deadlocks()
 		);
 	}
 
 	/**
-	 * Unlinks a post from the product it presents: its binding goes, the product and its other posts stay.
+	 * Unlinks a post from the product it presents: its binding goes, the product and its other posts stay, and the product's save is published.
 	 *
 	 * Runs in the caller's transaction, or in its own. A post that presents no product is left as it is.
 	 *
@@ -211,7 +219,9 @@ final class TranslationBindings {
 					CodedException::raise( CatalogError::SourceBindingKept, array( 'post_id' => $postId ) );
 				}
 
-				$this->products->removeBinding( (int) $product->id(), $postId );
+				if ( $this->products->removeBinding( (int) $product->id(), $postId ) ) {
+					$this->publishSave( $product );
+				}
 			},
 			RetryPolicy::deadlocks()
 		);
@@ -328,7 +338,7 @@ final class TranslationBindings {
 				}
 
 				$this->mayMoveSourceFrom( (int) $from, $actor );
-				$this->moveSource( $productId, (int) $from, $postId, $actor );
+				$this->events->publish( ...$this->moveSource( $productId, (int) $from, $postId, $actor )->releaseEvents() );
 			},
 			RetryPolicy::deadlocks()
 		);
@@ -340,7 +350,8 @@ final class TranslationBindings {
 	 * Runs inside the caller's transaction, which has locked the product: the post-delete path,
 	 * which cannot be refused for want of a promotion, so it is reconciled instead. Fails with
 	 * `catalog.promotion_conflict` when the post is no longer the source, or no other post
-	 * presents the product.
+	 * presents the product. ProductBindingPromoted and the product's save are stored together, as
+	 * the product the promotion read again stands.
 	 *
 	 * The caller has asked authorizeHandOver() first, before WordPress deleted the post: once the
 	 * post is gone, whether its user could edit it can no longer be asked.
@@ -359,8 +370,10 @@ final class TranslationBindings {
 			throw new \LogicException( 'A hand-over of the source post runs inside the transaction that locked the product.' );
 		}
 
-		$this->moveSource( $productId, $postId, null, $actor );
+		$product = $this->moveSource( $productId, $postId, null, $actor );
+
 		$this->products->removeBinding( $productId, $postId );
+		$this->publishSave( $product );
 	}
 
 	/**
@@ -404,7 +417,7 @@ final class TranslationBindings {
 	}
 
 	/**
-	 * Moves the source with the one conditional statement, and records the move.
+	 * Moves the source with the one conditional statement, and records the move on the product, which the caller publishes.
 	 *
 	 * @since 0.1.0
 	 *
@@ -412,8 +425,9 @@ final class TranslationBindings {
 	 * @param int      $from      The post that must be the source now.
 	 * @param int|null $to        The post to make the source, or null for the oldest remaining one.
 	 * @param Actor    $actor     On whose authority.
+	 * @return Product The product as the promotion left it, read again under its lock, ProductBindingPromoted recorded.
 	 */
-	private function moveSource( int $productId, int $from, ?int $to, Actor $actor ): void {
+	private function moveSource( int $productId, int $from, ?int $to, Actor $actor ): Product {
 		if ( null === $this->products->promoteSource( $productId, $from, $to ) ) {
 			CodedException::raise(
 				CatalogError::PromotionConflict,
@@ -432,6 +446,24 @@ final class TranslationBindings {
 		}
 
 		$product->markPromoted( $from, null === $actor->systemName() ? 'user' : 'system', $actor->userId() > 0 ? $actor->userId() : null, $this->clock->now() );
+
+		return $product;
+	}
+
+	/**
+	 * Publishes, inside the change's transaction, the product's save (ProductSaved, the post as the field changed) with any event the change recorded on it before.
+	 *
+	 * One insert into the outbox, and no read. A product without a source post names no post for
+	 * the save, and records none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Product $product The product whose bindings changed, locked.
+	 */
+	private function publishSave( Product $product ): void {
+		if ( null !== $product->sourcePostId() ) {
+			$product->markSaved( array( SaveProduct::POST_FIELDS ), $this->clock->now() );
+		}
 
 		$this->events->publish( ...$product->releaseEvents() );
 	}

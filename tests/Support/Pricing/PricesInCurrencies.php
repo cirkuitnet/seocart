@@ -19,6 +19,7 @@ use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\DataRegistry\OwnedData;
+use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Kernel\BootOption;
 use SEOCart\Platform\Kernel\BootRecord;
 use SEOCart\Pricing\Application\ManualRate;
@@ -27,6 +28,8 @@ use SEOCart\Pricing\Infrastructure\MysqlExchangeRates;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Decimal;
 use SEOCart\Support\RoundingMode;
+use SEOCart\Support\SystemClock;
+use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 use SEOCart\Tests\Support\KernelTestCase;
 
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- The installation record is read and put back past every cache, on purpose.
@@ -66,12 +69,16 @@ trait PricesInCurrencies {
 	private bool $recordPlanted = false;
 
 	/**
-	 * Creates `currencies` and `exchange_rates`.
+	 * Creates `currencies` and `exchange_rates`, and the outbox a rate save stores its event in.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The outbox.
 	 */
 	protected function createRateTables(): void {
-		( new CreateRateTables() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+		$schema = new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) );
+
+		( new CreateRateTables() )->up( $schema );
+		( new CreateOutboxMigration() )->up( $schema );
 	}
 
 	/**
@@ -103,7 +110,7 @@ trait PricesInCurrencies {
 	 * @phpstan-param \Closure(int): void $recordVersion
 	 */
 	protected static function ratesOver( Database $db, \Closure $recordVersion ): MysqlExchangeRates {
-		return new MysqlExchangeRates( $db, $db, array( new LockService( $db, LockMode::GetLock ), 'withLock' ), static fn(): Currency => Currency::of( 'USD' ), $recordVersion );
+		return new MysqlExchangeRates( $db, $db, array( new LockService( $db, LockMode::GetLock ), 'withLock' ), static fn(): Currency => Currency::of( 'USD' ), $recordVersion, new RecordingEventPublisher( $db ), new SystemClock() );
 	}
 
 	/**
