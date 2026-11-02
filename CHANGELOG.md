@@ -223,6 +223,7 @@ seocart jobs run` and from a short tick on admin requests; `wp seocart jobs stat
 - An order is held and fulfilled from the location that can ship it: split across locations or brought together by a requested transfer, as the store's multi-location setting says, and the shopper is told how many extra days a transfer adds.
 - A cart now says which of its items can no longer be bought in the quantity wanted, and how many are left: every cart answer of the Store API lists them, judged against the stock when it is built. The items stay in the cart, and the order is still checked against stock when it is placed.
 - The `seocart_stock_reserved` and `seocart_stock_reservation_released` actions reach their listeners through the event outbox, like the other stock actions: at least once, after the response or sometimes from a later background run, and never inside the request that took the hold or gave it back.
+- A product can have option axes, such as size and grind, whose values combine into its variants, each with its own SKU, weight, price in each currency the store offers and stock at each location, all saved in one request.
 
 ### Fixed
 
