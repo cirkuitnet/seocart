@@ -173,6 +173,23 @@ final class FixedFactsRepository implements ProductRepository {
 	/**
 	 * Not used by a reader.
 	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int   $productId  Unused.
+	 * @param array $selections Unused.
+	 * @return never
+	 *
+	 * @phpstan-param array<string, \SEOCart\Catalog\Domain\VariantSelection> $selections
+	 */
+	public function variantsOfCombinations( int $productId, array $selections ): never {
+		throw new \LogicException( 'A sellability reader saves nothing.' );
+	}
+
+	/**
+	 * Not used by a reader.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws \LogicException Always.
@@ -672,5 +689,24 @@ final class FixedFactsRepository implements ProductRepository {
 	 */
 	public function promoteSource( int $productId, int $fromPostId, ?int $toPostId ): never {
 		throw new \LogicException( 'A sellability reader changes no binding.' );
+	}
+
+	/**
+	 * Answers that no option row is orphaned.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit Unused.
+	 * @return array<string, list<array<string, int>>> Four empty lists.
+	 *
+	 * @phpstan-return array{axes: list<array{id: int, product_id: int}>, values: list<array{id: int, axis_id: int}>, selections: list<array{variant_id: int, option_value_id: int}>, images: list<array{id: int, image_attachment_id: int}>}
+	 */
+	public function orphanOptionRows( int $limit ): array {
+		return array(
+			'axes'       => array(),
+			'values'     => array(),
+			'selections' => array(),
+			'images'     => array(),
+		);
 	}
 }

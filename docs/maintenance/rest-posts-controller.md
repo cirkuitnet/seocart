@@ -30,9 +30,14 @@ than called, each WordPress major must be diffed against this list.
 | `update_item( $request )`               | Reproduces core's update sequence around one product save; see below.                                                                                                                                           |
 | `prepare_item_for_response( $item, … )` | Calls the parent, remembering the post it prepares for the override below.                                                                                                                                      |
 | `add_additional_fields_to_object()`     | Calls the parent, then adds the `seocart` object, unless `_fields` leaves it out or the request is `HEAD`. Core calls it before its context filter and `rest_prepare_{$post_type}`, which both see the object.  |
+| `create_item_permissions_check()`       | Calls the parent; when it allows the request, also asks `edit_post` on the source post of the product a `translation_of` names, and `seocart_manage_inventory` when the request gives stock cells.              |
+| `update_item_permissions_check()`       | As the create's, and also `edit_post` on the product's source post when the request gives commerce fields through another of its posts.                                                                         |
 
-No permission method is overridden: reading and writing a product are decided by core's
-methods, through the post type's mapped capabilities.
+Reading a product is decided by core's methods, through the post type's mapped capabilities;
+writing one is decided by core's first, then by the two checks above, each made before anything
+is written. A request that gives stock cells, `seocart.variants[].stock[]`, needs
+`seocart_manage_inventory` besides the right to edit the post: the cells change stock, which
+the post's capability does not cover.
 
 ## Reproduced
 
@@ -55,7 +60,8 @@ insert itself, which `SaveProduct` makes:
 14. `$request->set_param( 'context', 'edit' )`.
 15. `do_action( "rest_after_insert_{$post_type}", $post, $request, true )`.
 16. `wp_after_insert_post( $post, false, null )` — through `PostGateway::fireAfterInsert()`.
-17. The response of `prepare_item_for_response()`, status 201, with a `Location` header from `rest_get_route_for_post()`.
+17. **Added:** the request's stock cells, each named by its variant's combination, are applied by `SetStockLevels` in a unit of work of its own, by the ids the save gave each combination; a `WP_Error` is returned, with the product saved.
+18. The response of `prepare_item_for_response()`, status 201, with a `Location` header from `rest_get_route_for_post()`, each cell with what became of it.
 
 `update_item()` in 7.1.1 (lines 944–1055), in order:
 
@@ -72,7 +78,8 @@ insert itself, which `SaveProduct` makes:
 11. The attachment branch is not reproduced: the product is never an attachment.
 12. `do_action( "rest_after_insert_{$post_type}", $post, $request, false )`.
 13. `wp_after_insert_post( $post, true, $post_before )` — through `PostGateway::fireAfterInsert()`.
-14. The response of `prepare_item_for_response()`.
+14. **Added:** the stock cells, as step 17 of the create.
+15. The response of `prepare_item_for_response()`, each cell with what became of it.
 
 Steps 6 onwards of either sequence run after the product's transaction has committed, as core
 runs them after its insert: another plugin's `rest_insert_`, `rest_after_insert_`, REST field,
@@ -85,7 +92,11 @@ product write's recovery allows for.
 
 - A save WordPress or the product refuses is answered with the plugin's error: a refused post
   write is `catalog.post_rejected` (400), WordPress's own code in `details.wordpress_code`, where
-  core returns WordPress's error; a SKU another product holds is `catalog.sku_taken` (409).
+  core returns WordPress's error; a SKU another product holds is `catalog.sku_taken` (409), the
+  combination of the variant that asked for it in `details.combination`.
+- Before anything is written, a stock cell's location is resolved by its UUID; one that does not
+  exist is `stock.location_missing` (404), and two cells of one variant at one location are
+  `rest_invalid_param` (400).
 - None other in the write: core's `prepare_item_for_database()` always sets the post's type, so
   even an update that sends only the `seocart` object writes the post, and `save_post` fires as
   it does for core.
@@ -94,15 +105,15 @@ product write's recovery allows for.
 
 Inherited unchanged, and relied on by the overrides:
 
-| Core member                                                                               | What the controller relies on                                                                              |
-| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `prepare_item_for_database()`                                                             | Maps the request to the post's fields and applies `rest_pre_insert_{$post_type}`; knows no commerce field. |
-| `get_post()`                                                                              | Refuses an id that is not a post of this type with 404.                                                    |
-| `handle_featured_media()`, `handle_template()`, `handle_terms()`, `$meta`                 | The steps after the insert, called exactly as core calls them.                                             |
-| `update_additional_fields_for_object()`                                                   | Runs other plugins' `register_rest_field()` update callbacks.                                              |
-| `get_fields_for_response()`, `filter_response_by_context()`                               | `_fields`, and the `context` filtering core applies to the `seocart` object, nested properties included.   |
-| `add_additional_fields_schema()`                                                          | Other plugins' fields in the schema the override returns.                                                  |
-| `register_routes()`, the permission methods, `get_item()`, `get_items()`, `delete_item()` | Unchanged.                                                                                                 |
+| Core member                                                                                               | What the controller relies on                                                                              |
+| --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `prepare_item_for_database()`                                                                             | Maps the request to the post's fields and applies `rest_pre_insert_{$post_type}`; knows no commerce field. |
+| `get_post()`                                                                                              | Refuses an id that is not a post of this type with 404.                                                    |
+| `handle_featured_media()`, `handle_template()`, `handle_terms()`, `$meta`                                 | The steps after the insert, called exactly as core calls them.                                             |
+| `update_additional_fields_for_object()`                                                                   | Runs other plugins' `register_rest_field()` update callbacks.                                              |
+| `get_fields_for_response()`, `filter_response_by_context()`                                               | `_fields`, and the `context` filtering core applies to the `seocart` object, nested properties included.   |
+| `add_additional_fields_schema()`                                                                          | Other plugins' fields in the schema the override returns.                                                  |
+| `register_routes()`, the read and delete permission methods, `get_item()`, `get_items()`, `delete_item()` | Unchanged.                                                                                                 |
 
 And outside the controller:
 

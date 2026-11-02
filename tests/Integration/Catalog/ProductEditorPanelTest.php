@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Catalog;
 
 use SEOCart\Catalog\Application\ProductWrite\CommerceFields;
+use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Infrastructure\ProductPostType;
 use SEOCart\Catalog\Interfaces\Admin\ProductEditorPanel;
@@ -155,6 +156,30 @@ final class ProductEditorPanelTest extends WP_UnitTestCase {
 			),
 			array_column( $settings['fields'], 'kind', 'name' )
 		);
+		$this->assertSame(
+			array(
+				array(
+					'code'     => 'JPY',
+					'exponent' => 0,
+				),
+				array(
+					'code'     => 'EUR',
+					'exponent' => 2,
+				),
+			),
+			$settings['currencies'],
+			'Every currency the store offers, with its exponent.'
+		);
+
+		$lists    = array_column( $settings['lists'], null, 'name' );
+		$variants = array_column( $lists['variants']['fields'] ?? array(), null, 'name' );
+
+		$this->assertSame( array( 'options', 'variants' ), array_keys( $lists ) );
+		$this->assertSame( array( 'list', Product::MAX_SYNC_VARIANTS ), array( $lists['variants']['kind'], $lists['variants']['maxItems'] ) );
+		$this->assertSame( array( 'list', Product::MAX_AXES ), array( $lists['options']['kind'], $lists['options']['maxItems'] ) );
+		$this->assertSame( array( 'variant_id', 'combination', 'sku', 'enabled', 'position', 'label', 'weight_grams', 'prices', 'stock', 'sellability' ), array_keys( $variants ) );
+		$this->assertSame( array( 'boolean', 'list', 'list' ), array( $variants['enabled']['kind'], $variants['prices']['kind'], $variants['stock']['kind'] ) );
+		$this->assertSame( 'amount', array_column( $variants['prices']['fields'], 'kind', 'name' )['price_minor'] ?? null, 'A variant\'s price is an amount, as the single price is.' );
 		$this->assertSame( array_map( static fn( SellabilityReason $reason ): string => $reason->value, SellabilityReason::cases() ), array_keys( $settings['sellability']['reasons'] ) );
 		$this->assertNotContains( '', $settings['sellability']['reasons'], 'A verdict has no sentence.' );
 		$this->assertNotContains( '', array_column( $settings['fields'], 'label' ), 'A field has no label.' );
@@ -182,6 +207,6 @@ final class ProductEditorPanelTest extends WP_UnitTestCase {
 	 * @return ProductEditorPanel The panel.
 	 */
 	private function panel( string $pluginFile ): ProductEditorPanel {
-		return new ProductEditorPanel( $pluginFile, static fn(): Currency => Currency::of( 'JPY' ), new SeveralLocales() );
+		return new ProductEditorPanel( $pluginFile, static fn(): Currency => Currency::of( 'JPY' ), new SeveralLocales(), static fn(): array => array( Currency::of( 'JPY' ), Currency::of( 'EUR' ) ) );
 	}
 }

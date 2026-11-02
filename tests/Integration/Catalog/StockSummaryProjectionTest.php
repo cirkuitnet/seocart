@@ -20,8 +20,10 @@ use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Interfaces\Cli\CatalogCommand;
 use SEOCart\Inventory\Application\InventoryOperations;
+use SEOCart\Inventory\Application\LocationDirectory;
 use SEOCart\Inventory\Application\LocationOperations;
 use SEOCart\Inventory\Application\Locations;
+use SEOCart\Inventory\Application\SetStockLevels;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Application\Transfers;
 use SEOCart\Inventory\Domain\Allocation;
@@ -30,6 +32,7 @@ use SEOCart\Inventory\Domain\Event\StockReserved;
 use SEOCart\Inventory\Domain\Event\StockTransferred;
 use SEOCart\Inventory\Domain\HoldLine;
 use SEOCart\Inventory\Domain\LedgerReason;
+use SEOCart\Inventory\Domain\StockTarget;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Jobs\MoveLocationStock;
 use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
@@ -866,5 +869,39 @@ final class StockSummaryProjectionTest extends CatalogTestCase {
 				remove_all_actions( EventEnvelope::hookFor( $event::eventName() ) );
 			}
 		}
+	}
+
+	/**
+	 * Tests that stock cells set at two locations make the product `in_stock` after the drain, the summary leaving `updated_at` and the marker alone.
+	 *
+	 * Planted violation: in SetStockLevels, store no StockAdjusted; the drain then has nothing to
+	 * project, the summary stays `out_of_stock`, and the test fails.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_cells_set_at_two_locations_make_the_product_in_stock_after_the_drain(): void {
+		list( $product, $variant ) = $this->product( 'SKU-CELLS' );
+
+		$second = $this->secondLocation();
+
+		$this->saved( $product );
+		$this->drain();
+
+		$this->assertSame( 'out_of_stock', $this->summary( $product ) );
+
+		$before = $this->db->fetchRow( 'SELECT generation_state, updated_at FROM %i WHERE id = %d', $this->db->table( CatalogTables::PRODUCTS ), (int) $product->id() );
+
+		$this->kernel->get( SetStockLevels::class )->apply(
+			array(
+				new StockTarget( $variant, (int) $this->kernel->get( LocationDirectory::class )->default()?->id, 3, 0 ),
+				new StockTarget( $variant, $second, 4, 0 ),
+			),
+			Actor::user( 1 )
+		);
+		$this->drain();
+
+		$this->assertSame( 'in_stock', $this->summary( $product ) );
+		$this->assertSame( $before, $this->db->fetchRow( 'SELECT generation_state, updated_at FROM %i WHERE id = %d', $this->db->table( CatalogTables::PRODUCTS ), (int) $product->id() ), 'The summary leaves the marker and updated_at alone.' );
+		$this->assertNoListenerFailed();
 	}
 }

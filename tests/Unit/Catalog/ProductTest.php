@@ -105,7 +105,7 @@ final class ProductTest extends TestCase {
 		$usd     = Currency::of( 'USD' );
 		$variant = Variant::byDefault( SequentialIdGenerator::nth( 2 ), Sku::of( 'A-1' ) );
 		$binding = new ProductPostBinding( $bound ? 42 : 43, Locale::of( 'en_US' ), self::instant() );
-		$product = Product::stored( 5, SequentialIdGenerator::nth( 1 ), 42, array( $binding ), GenerationState::Updating, 1, $variant->withId( 9 ) );
+		$product = Product::stored( 5, SequentialIdGenerator::nth( 1 ), 42, array( $binding ), GenerationState::Updating, 1, array( $variant->withId( 9 ) ) );
 
 		$product->applyCommerce( Sku::of( 'A-1' ), $priced ? VariantPrice::net( $usd, 1000 ) : null, null, $usd );
 
@@ -179,14 +179,14 @@ final class ProductTest extends TestCase {
 	public function test_identify_records_the_stored_ids_once(): void {
 		$product = $this->firstBinding();
 
-		$product->identify( 11, 12 );
-		$product->identify( 11, 12 );
+		$product->identify( 11, array( Variant::defaultCombinationHash() => 12 ) );
+		$product->identify( 11, array( Variant::defaultCombinationHash() => 12 ) );
 
 		$this->assertSame( 11, $product->id() );
 		$this->assertSame( 12, $product->defaultVariant()?->id() );
 
 		$this->expectException( \LogicException::class );
-		$product->identify( 13, 12 );
+		$product->identify( 13, array( Variant::defaultCombinationHash() => 12 ) );
 	}
 
 	/**
@@ -199,7 +199,7 @@ final class ProductTest extends TestCase {
 		$product = $this->firstBinding();
 
 		$product->applyCommerce( Sku::of( 'C-3' ), VariantPrice::net( $usd, 999 ), null, $usd );
-		$product->identify( 21, 22 );
+		$product->identify( 21, array( Variant::defaultCombinationHash() => 22 ) );
 		$product->markSaved( array( 'sku', 'price_minor' ), self::instant() );
 		$product->markDeleted( array( 'C-3', 'C-3-NEXT' ), self::instant() );
 

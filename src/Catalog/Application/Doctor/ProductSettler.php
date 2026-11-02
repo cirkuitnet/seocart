@@ -14,6 +14,7 @@ namespace SEOCart\Catalog\Application\Doctor;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Domain\GenerationState;
+use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Database\Exception\LockNotAcquired;
 use SEOCart\Platform\Database\RetryPolicy;
@@ -64,7 +65,7 @@ final class ProductSettler {
 	private ProductRepository $products;
 
 	/**
-	 * Tells whether the default variant has a stock item.
+	 * Tells whether the variants of the generation a product publishes have their stock items.
 	 *
 	 * @since 0.1.0
 	 *
@@ -115,7 +116,7 @@ final class ProductSettler {
 	 * @since 0.2.0 The event publisher and the clock.
 	 *
 	 * @param ProductRepository  $products     Stores and reloads products.
-	 * @param StockService       $stock        Tells whether the default variant has a stock item.
+	 * @param StockService       $stock        Tells whether a product's variants have their stock items.
 	 * @param TransactionManager $transactions Runs the unit of work.
 	 * @param callable           $withLock     Takes a named lock, runs work while holding it and releases it.
 	 * @param EventPublisher     $events       Publishes the event of a settled product.
@@ -168,9 +169,9 @@ final class ProductSettler {
 								return null;
 							}
 
-							$variantId      = $product->defaultVariant()?->id();
-							$stockItemKnown = null !== $variantId && array_key_exists( $variantId, $this->stock->levels( array( $variantId ) ) );
-							$to             = $product->settle( $stockItemKnown );
+							$variantIds      = array_map( static fn( Variant $variant ): int => (int) $variant->id(), $product->variants() );
+							$stockItemsKnown = array() !== $variantIds && count( $this->stock->levels( $variantIds ) ) === count( $variantIds );
+							$to              = $product->settle( $stockItemsKnown );
 
 							if ( $to === $from ) {
 								return null;

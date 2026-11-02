@@ -17,9 +17,25 @@ use SEOCart\Catalog\Application\ProductWrite\CommerceFields;
 use SEOCart\Catalog\Application\ProductWrite\CommerceInput;
 use SEOCart\Catalog\Application\ProductWrite\ProductSave;
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
+use SEOCart\Catalog\Application\ProductWrite\SaveResult;
+use SEOCart\Catalog\Application\ProductWrite\VariantFields;
 use SEOCart\Catalog\Application\Query\Sellability;
+use SEOCart\Catalog\Domain\OptionAxis;
+use SEOCart\Catalog\Domain\OptionMatrix;
+use SEOCart\Catalog\Domain\OptionValue;
 use SEOCart\Catalog\Domain\Product;
+use SEOCart\Catalog\Domain\SellabilityReason;
+use SEOCart\Catalog\Domain\Variant;
+use SEOCart\Catalog\Domain\VariantPrice;
+use SEOCart\Catalog\Domain\VariantSelection;
 use SEOCart\Interfaces\Operations\ErrorTranslator;
+use SEOCart\Inventory\Application\InventoryError;
+use SEOCart\Inventory\Application\InventoryOperations;
+use SEOCart\Inventory\Application\LocationDirectory;
+use SEOCart\Inventory\Application\SetStockLevels;
+use SEOCart\Inventory\Application\StockService;
+use SEOCart\Inventory\Domain\StockOutcome;
+use SEOCart\Inventory\Domain\StockTarget;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Locale;
@@ -60,10 +76,20 @@ defined( 'ABSPATH' ) || exit;
  * `updated_at`. WordPress keeps the term counts.
  *
  * A response is core's, with the `seocart` object added among the REST fields, before core's
- * context filter and `rest_prepare_seocart_product`: the commerce data, the post's locale among
- * the product's posts and the product's source post when it is another, the verdict on the
- * default variant for the requesting user in the post's locale, and in the `edit` context the
- * product's marker.
+ * context filter and `rest_prepare_seocart_product`: the single variant's commerce data for a
+ * product without options, the post's locale among the product's posts and the product's source
+ * post when it is another, the verdict on the product for the requesting user in the post's
+ * locale, and in the `edit` context the product's marker, its option axes and its variants, each
+ * with its prices, its verdict and a stock cell per active location: one read of the levels for
+ * every variant.
+ *
+ * Stock cells ride the same request: each sets a variant's units on hand at a location, from the
+ * count the merchant read there. Their locations are resolved before anything is written, and a
+ * request that gives cells needs `seocart_manage_inventory` besides the right to edit the post,
+ * checked with the others before anything is written. They are applied after core's sequence,
+ * by the ids the save gave each combination, in one unit of work of their own (SetStockLevels),
+ * and each comes back in the response with what became of it. A refusal of the unit, the product
+ * saved, is returned as a failure of a later step is.
  *
  * Reading and writing are decided by the product post type's mapped capabilities, exactly as for
  * core's controller. A create or an update that names, in `translation_of`, the post it
@@ -72,7 +98,7 @@ defined( 'ABSPATH' ) || exit;
  * fields through a post that is not its product's source post, since the product's SKU, price
  * and stock are one for all its posts. The check is core's meta capability, so `edit_others_*`
  * applies, and it is made before anything is written. The save asks again under the product's
- * lock. Deleting, listing and reading are
+ * lock. Stock cells need `seocart_manage_inventory` too. Deleting, listing and reading are
  * core's, unchanged. Core's autosave and revision controllers are built from this one: they
  * prepare posts with its prepare_item_for_database(), which knows no commerce field, and never
  * save a product, so an autosave or a revision restore cannot touch a commerce row.
@@ -143,6 +169,42 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 	private $report;
 
 	/**
+	 * Returns the unit that applies stock cells; called on the first write that gives cells.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var (\Closure(): SetStockLevels)|null
+	 */
+	private ?\Closure $stockLevels;
+
+	/**
+	 * Returns the stock service, whose levels an `edit`-context response reads.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var (\Closure(): StockService)|null
+	 */
+	private ?\Closure $stock;
+
+	/**
+	 * Returns the stock locations, which a stock cell names and an `edit`-context response lists.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var (\Closure(): LocationDirectory)|null
+	 */
+	private ?\Closure $locations;
+
+	/**
+	 * What became of the stock cells of the write being answered, by variant and location: none outside a write.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, StockOutcome>
+	 */
+	private array $outcomes = array();
+
+	/**
 	 * The post prepare_item_for_response() is preparing, for add_additional_fields_to_object(); null outside it.
 	 *
 	 * @since 0.1.0
@@ -163,9 +225,15 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 	 * @param PostGateway|null       $posts       Optional. Fires the deferred after-insert hook. Default none.
 	 * @param ErrorTranslator|null   $errors      Optional. Turns a refused save into the plugin's error. Default none.
 	 * @param callable|null          $report      Optional. Receives an unexpected failure (Throwable) and where it happened (string). Default none.
+	 * @param \Closure|null          $stockLevels Optional. Returns the unit that applies stock cells (a SetStockLevels). Default none.
+	 * @param \Closure|null          $stock       Optional. Returns the stock service (a StockService). Default none.
+	 * @param \Closure|null          $locations   Optional. Returns the stock locations (a LocationDirectory). Default none.
 	 *
 	 * @phpstan-param (\Closure(): SaveProduct)|null             $save
 	 * @phpstan-param (callable(\Throwable, string): void)|null $report
+	 * @phpstan-param (\Closure(): SetStockLevels)|null          $stockLevels
+	 * @phpstan-param (\Closure(): StockService)|null            $stock
+	 * @phpstan-param (\Closure(): LocationDirectory)|null       $locations
 	 */
 	public function __construct(
 		$post_type,
@@ -174,7 +242,10 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 		?Sellability $sellability = null,
 		?PostGateway $posts = null,
 		?ErrorTranslator $errors = null,
-		?callable $report = null
+		?callable $report = null,
+		?\Closure $stockLevels = null,
+		?\Closure $stock = null,
+		?\Closure $locations = null
 	) {
 		parent::__construct( $post_type );
 
@@ -184,6 +255,9 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 		$this->posts       = $posts;
 		$this->errors      = $errors;
 		$this->report      = $report;
+		$this->stockLevels = $stockLevels;
+		$this->stock       = $stock;
+		$this->locations   = $locations;
 	}
 
 	/**
@@ -344,7 +418,7 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 		}
 
 		if ( rest_is_field_included( ProductCommerceSchema::PROPERTY, $this->get_fields_for_response( $request ) ) ) {
-			$response_data[ ProductCommerceSchema::PROPERTY ] = $this->commerce( $this->responding );
+			$response_data[ ProductCommerceSchema::PROPERTY ] = $this->commerce( $this->responding, 'edit' === $request['context'] );
 		}
 
 		return $response_data;
@@ -362,16 +436,22 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 	 */
 	private function write( WP_REST_Request $request, object $prepared, ?WP_Post $before ) {
 		$creating = null === $before;
-		$saved    = $this->save( $request, $prepared, $before );
+		$cells    = $this->stockCells( $request );
+
+		if ( $cells instanceof WP_Error ) {
+			return $cells;
+		}
+
+		$saved = $this->save( $request, $prepared, $before );
 
 		if ( $saved instanceof WP_Error ) {
 			return $saved;
 		}
 
-		$post = get_post( $saved );
+		$post = get_post( $saved->postId );
 
 		if ( ! $post instanceof WP_Post ) {
-			return $this->unexpected( new \LogicException( sprintf( 'The saved post %d cannot be read back.', $saved ) ) );
+			return $this->unexpected( new \LogicException( sprintf( 'The saved post %d cannot be read back.', $saved->postId ) ) );
 		}
 
 		/** This action is documented in wp-includes/rest-api/endpoints/class-wp-rest-posts-controller.php */
@@ -399,7 +479,17 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 		// save() has refused already when the gateway is missing.
 		$this->posts?->fireAfterInsert( $post->ID, ! $creating, $before );
 
-		$response = rest_ensure_response( $this->prepare_item_for_response( $post, $request ) );
+		$applied = $this->applyStock( $cells, $saved );
+
+		if ( $applied instanceof WP_Error ) {
+			return $applied;
+		}
+
+		try {
+			$response = rest_ensure_response( $this->prepare_item_for_response( $post, $request ) );
+		} finally {
+			$this->outcomes = array();
+		}
 
 		if ( $creating ) {
 			$response->set_status( 201 );
@@ -419,12 +509,13 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 	 */
 	public function create_item_permissions_check( $request ) {
 		$allowed = parent::create_item_permissions_check( $request );
+		$allowed = true === $allowed ? $this->mayJoin( $request ) : $allowed;
 
-		return true === $allowed ? $this->mayJoin( $request ) : $allowed;
+		return true === $allowed ? self::maySetStock( $request ) : $allowed;
 	}
 
 	/**
-	 * Checks core's permission to update the post, then the permission to join the product of the post the request names as the one it translates, and to change the commerce data of the product the post presents.
+	 * Checks core's permission to update the post, then the permission to join the product of the post the request names as the one it translates, to change the commerce data of the product the post presents, and to set its stock.
 	 *
 	 * @since 0.1.0
 	 *
@@ -434,8 +525,9 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 	public function update_item_permissions_check( $request ) {
 		$allowed = parent::update_item_permissions_check( $request );
 		$allowed = true === $allowed ? $this->mayJoin( $request ) : $allowed;
+		$allowed = true === $allowed ? $this->mayChangeCommerce( $request ) : $allowed;
 
-		return true === $allowed ? $this->mayChangeCommerce( $request ) : $allowed;
+		return true === $allowed ? self::maySetStock( $request ) : $allowed;
 	}
 
 	/**
@@ -476,7 +568,7 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 	 *                       none, or the user may edit the product; the error otherwise.
 	 */
 	private function mayChangeCommerce( WP_REST_Request $request ) {
-		$given = array_intersect_key( self::writableValues( $request[ ProductCommerceSchema::PROPERTY ] ), CommerceFields::all() );
+		$given = array_intersect_key( self::writableValues( $request[ ProductCommerceSchema::PROPERTY ] ), array_merge( CommerceFields::all(), VariantFields::all() ) );
 
 		if ( array() === $given ) {
 			return true;
@@ -497,16 +589,158 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 	}
 
 	/**
+	 * Refuses a request that gives stock cells, when the user may not manage inventory: `seocart_manage_inventory`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param WP_REST_Request $request The request to create or update a post.
+	 * @return true|WP_Error True when it gives no cell, or the user may manage inventory; the error otherwise.
+	 */
+	private static function maySetStock( WP_REST_Request $request ) {
+		$given = false;
+
+		foreach ( self::writableValues( $request[ ProductCommerceSchema::PROPERTY ] )[ VariantFields::VARIANTS ] ?? array() as $variant ) {
+			$given = $given || ( is_array( $variant ) && array() !== ( $variant[ VariantFields::STOCK ] ?? array() ) );
+		}
+
+		if ( ! $given || current_user_can( InventoryOperations::CAPABILITY ) ) {
+			return true;
+		}
+
+		return new WP_Error(
+			'rest_cannot_edit',
+			__( 'Sorry, you are not allowed to change the stock of that product.', 'seocart' ),
+			array( 'status' => rest_authorization_required_code() )
+		);
+	}
+
+	/**
+	 * Reads the stock cells a request gives, each named by the hash of its variant's combination and resolved to its location, before anything is written.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param WP_REST_Request $request The request.
+	 * @return list<array{hash: string, location: int, on_hand: int, expected: int}>|WP_Error The cells, or the refusal of a
+	 *         location that does not exist, a combination that is not valid, a cell without the count it was read at,
+	 *         or two cells of one combination at one location.
+	 */
+	private function stockCells( WP_REST_Request $request ): array|WP_Error {
+		$cells = array();
+
+		try {
+			foreach ( self::writableValues( $request[ ProductCommerceSchema::PROPERTY ] )[ VariantFields::VARIANTS ] ?? array() as $variant ) {
+				if ( ! is_array( $variant ) || array() === ( $variant[ VariantFields::STOCK ] ?? array() ) ) {
+					continue;
+				}
+
+				$hash = self::selectionOf( $variant )->hash();
+
+				foreach ( (array) $variant[ VariantFields::STOCK ] as $cell ) {
+					$read = $this->stockCell( $hash, (array) $cell );
+					$at   = $hash . '@' . $read['location'];
+
+					// One count per item: a second cell would set the item the first one sets.
+					if ( isset( $cells[ $at ] ) ) {
+						return self::invalid( new \InvalidArgumentException( 'A variant gives two stock cells at one location.' ) );
+					}
+
+					$cells[ $at ] = $read;
+				}
+			}
+		} catch ( CodedException $refused ) {
+			return null === $this->errors ? $this->unexpected( $refused ) : $this->errors->translate( $refused );
+		} catch ( \InvalidArgumentException $invalid ) {
+			return self::invalid( $invalid );
+		}
+
+		return array_values( $cells );
+	}
+
+	/**
+	 * Reads one stock cell of a variant, its location resolved by its UUID.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \InvalidArgumentException When the cell gives no count it was read at, or no location directory was given.
+	 * @phpstan-throws \InvalidArgumentException|CodedException `stock.location_missing` when no location has the UUID.
+	 *
+	 * @param string               $hash The combination hash of the cell's variant.
+	 * @param array<string, mixed> $cell The cell, as WordPress validated it.
+	 * @return array{hash: string, location: int, on_hand: int, expected: int} The cell.
+	 */
+	private function stockCell( string $hash, array $cell ): array {
+		$uuid     = (string) ( $cell[ VariantFields::LOCATION_UUID ] ?? '' );
+		$expected = $cell[ VariantFields::EXPECTED_ON_HAND ] ?? null;
+
+		if ( null === $this->locations || ! is_int( $expected ) ) {
+			throw new \InvalidArgumentException( 'A stock cell gives the units on hand it was read at, expected_on_hand.' );
+		}
+
+		$location = ( $this->locations )()->findByUuid( $uuid ) ?? CodedException::raise( InventoryError::LocationMissing, array( 'location_id' => $uuid ) );
+
+		return array(
+			'hash'     => $hash,
+			'location' => $location->id,
+			'on_hand'  => (int) ( $cell[ VariantFields::ON_HAND ] ?? 0 ),
+			'expected' => $expected,
+		);
+	}
+
+	/**
+	 * Applies the stock cells of a committed save, by the ids the save gave each combination, and keeps their outcomes for the response.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param list<array{hash: string, location: int, on_hand: int, expected: int}> $cells The cells.
+	 * @param SaveResult                                                            $saved The save.
+	 * @return true|WP_Error True, or the refusal of the unit, the product saved.
+	 */
+	private function applyStock( array $cells, SaveResult $saved ) {
+		if ( array() === $cells ) {
+			return true;
+		}
+
+		try {
+			if ( null === $this->stockLevels ) {
+				return $this->unexpected( new \LogicException( 'This instance of the product controller was built without the unit that applies stock cells.' ) );
+			}
+
+			$targets = array();
+
+			foreach ( $cells as $cell ) {
+				$variantId = $saved->variantIds[ $cell['hash'] ] ?? null;
+
+				if ( null === $variantId ) {
+					return $this->unexpected( new \LogicException( 'A stock cell names a combination the save did not write.' ) );
+				}
+
+				$targets[] = new StockTarget( $variantId, $cell['location'], $cell['on_hand'], $cell['expected'] );
+			}
+
+			foreach ( ( $this->stockLevels )()->apply( $targets, Actor::user( get_current_user_id() ) ) as $outcome ) {
+				$this->outcomes[ $outcome->variantId . '@' . $outcome->locationId ] = $outcome;
+			}
+		} catch ( CodedException $refused ) {
+			return null === $this->errors ? $this->unexpected( $refused ) : $this->errors->translate( $refused );
+		} catch ( \Throwable $failure ) {
+			return $this->unexpected( $failure );
+		}
+
+		return true;
+	}
+
+	/**
 	 * Saves the product: the post's fields core prepared and the `seocart` object, in one call.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Returns the save's result.
 	 *
 	 * @param WP_REST_Request $request  The request.
 	 * @param object          $prepared The post as core prepared it.
 	 * @param WP_Post|null    $before   The post before an update, or null for a create.
-	 * @return int|WP_Error The post's id, or the error.
+	 * @return SaveResult|WP_Error The save's result, or the error.
 	 */
-	private function save( WP_REST_Request $request, object $prepared, ?WP_Post $before ): int|WP_Error {
+	private function save( WP_REST_Request $request, object $prepared, ?WP_Post $before ): SaveResult|WP_Error {
 		if ( null === $this->save || null === $this->posts || null === $this->errors ) {
 			return $this->unexpected( new \LogicException( 'This instance of the product controller was built by WordPress without its services; the kernel installs the one that saves.' ) );
 		}
@@ -523,14 +757,12 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 		}
 
 		try {
-			$result = ( $this->save )()->save( new ProductSave( $before?->ID, (array) $prepared, $commerce, Actor::user( get_current_user_id() ), self::translationOf( $request ), $locale ) );
+			return ( $this->save )()->save( new ProductSave( $before?->ID, (array) $prepared, $commerce, Actor::user( get_current_user_id() ), self::translationOf( $request ), $locale ) );
 		} catch ( CodedException $refused ) {
 			return $this->errors->translate( $refused );
 		} catch ( \Throwable $failure ) {
 			return $this->unexpected( $failure );
 		}
-
-		return $result->postId;
 	}
 
 	/**
@@ -633,26 +865,185 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 	 * Builds the `seocart` object of a response.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The options and the variants in the `edit` context.
 	 *
 	 * @param WP_Post $post The post.
-	 * @return array<string, mixed> The commerce fields of the default variant, the post's locale and source post, the verdict, and the product's marker.
+	 * @param bool    $edit Whether the response is in the `edit` context.
+	 * @return array<string, mixed> The commerce fields of the single variant of a product without options, the post's
+	 *                              locale and source post, the verdict, and in the `edit` context the product's marker,
+	 *                              options and variants.
 	 */
-	private function commerce( WP_Post $post ): array {
-		$product = null === $this->products ? null : $this->products->findByPost( $post->ID );
-		$values  = self::commerceValues( $product );
-		$type    = get_post_type_object( $this->post_type );
-		$source  = $product?->sourcePostId();
-		$locale  = $product?->bindingOf( $post->ID )?->locale();
+	private function commerce( WP_Post $post, bool $edit ): array {
+		$product  = null === $this->products ? null : $this->products->findByPost( $post->ID );
+		$values   = self::commerceValues( $product );
+		$type     = get_post_type_object( $this->post_type );
+		$source   = $product?->sourcePostId();
+		$locale   = $product?->bindingOf( $post->ID )?->locale();
+		$private  = $type instanceof WP_Post_Type && current_user_can( $type->cap->read_private_posts );
+		$judged   = $source === $post->ID ? null : $locale;
+		$verdicts = array();
+
+		if ( $edit && null !== $product && null !== $this->sellability ) {
+			$verdicts = $this->sellability->of( array_map( static fn( Variant $variant ): int => (int) $variant->id(), $product->variants() ), $private, $judged );
+
+			$values[ VariantFields::OPTIONS ]  = self::optionsOf( $product->options() );
+			$values[ VariantFields::VARIANTS ] = $this->variantsOf( $product, $verdicts );
+		}
 
 		$values[ ProductCommerceSchema::LOCALE ]         = $locale?->toString();
 		$values[ ProductCommerceSchema::TRANSLATION_OF ] = null === $source || $source === $post->ID ? null : $source;
-		$values[ ProductCommerceSchema::SELLABILITY ]    = null === $this->sellability ? null : $this->sellability->ofProduct( $product, $type instanceof WP_Post_Type && current_user_can( $type->cap->read_private_posts ), $source === $post->ID ? null : $locale )->value;
+		$values[ ProductCommerceSchema::SELLABILITY ]    = null === $this->sellability ? null : ( array() !== $verdicts ? Sellability::verdictOnProduct( $verdicts ) : $this->sellability->ofProduct( $product, $private, $judged ) )->value;
 
 		if ( null !== $product ) {
 			$values[ ProductCommerceSchema::GENERATION_STATE ] = $product->generation()->value;
 		}
 
 		return $values;
+	}
+
+	/**
+	 * Returns a product's option axes as the wire carries them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param OptionMatrix $options The axes.
+	 * @return list<array<string, mixed>> Each axis with its values.
+	 */
+	private static function optionsOf( OptionMatrix $options ): array {
+		return array_map(
+			static fn( OptionAxis $axis ): array => array(
+				VariantFields::KEY      => $axis->key,
+				VariantFields::LABEL    => $axis->label,
+				VariantFields::POSITION => $axis->position,
+				VariantFields::VALUES   => array_map(
+					static fn( OptionValue $value ): array => array(
+						VariantFields::KEY      => $value->key,
+						VariantFields::LABEL    => $value->label,
+						VariantFields::POSITION => $value->position,
+						VariantFields::IMAGE_ID => $value->imageAttachmentId,
+						VariantFields::SWATCH   => $value->swatchHex,
+					),
+					$axis->values
+				),
+			),
+			$options->axes
+		);
+	}
+
+	/**
+	 * Returns a product's variants as the wire carries them, each with a stock cell per active location and the outcome of a cell the request set.
+	 *
+	 * The levels of every variant are one read; the locations, the cached list. A variant whose SKU
+	 * another variant took has none, and its SKU is null: its placeholder is the store's, never a client's.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Product                       $product  The product.
+	 * @param array<int, SellabilityReason> $verdicts The verdict on each variant, by id: one for every variant.
+	 * @return list<array<string, mixed>> The variants.
+	 */
+	private function variantsOf( Product $product, array $verdicts ): array {
+		$ids       = array_map( static fn( Variant $variant ): int => (int) $variant->id(), $product->variants() );
+		$levels    = null === $this->stock || array() === $ids ? array() : ( $this->stock )()->levelsAt( $ids );
+		$directory = null === $this->locations ? null : ( $this->locations )();
+		$variants  = array();
+
+		foreach ( $product->variants() as $variant ) {
+			$id     = (int) $variant->id();
+			$onHand = array();
+
+			foreach ( $levels[ $id ] ?? array() as $level ) {
+				$onHand[ $level->locationId ] = $level->onHand;
+			}
+
+			$cells = array();
+
+			foreach ( null === $directory ? array() : $directory->all() as $location ) {
+				$outcome = $this->outcomes[ $id . '@' . $location->id ] ?? null;
+
+				if ( ! $location->active && null === $outcome ) {
+					continue;
+				}
+
+				$cell = array(
+					VariantFields::LOCATION_UUID    => $location->uuid,
+					VariantFields::ON_HAND          => $onHand[ $location->id ] ?? 0,
+					VariantFields::EXPECTED_ON_HAND => null,
+				);
+
+				if ( null !== $outcome ) {
+					$cell[ VariantFields::OUTCOME ] = $outcome->outcome;
+				}
+
+				$cells[] = $cell;
+			}
+
+			$variants[] = array(
+				VariantFields::VARIANT_ID    => $id,
+				VariantFields::COMBINATION   => self::combinationOf( $variant->selection() ),
+				CommerceFields::SKU          => $variant->hasSku() ? $variant->sku()->toString() : null,
+				VariantFields::ENABLED       => $variant->isEnabled(),
+				VariantFields::POSITION      => $variant->position(),
+				VariantFields::LABEL         => $variant->label(),
+				CommerceFields::WEIGHT_GRAMS => $variant->weightGrams(),
+				VariantFields::PRICES        => array_map(
+					static fn( VariantPrice $price ): array => array(
+						CommerceFields::CURRENCY         => $price->currency()->code(),
+						CommerceFields::PRICE_MINOR      => $price->priceMinor(),
+						CommerceFields::COMPARE_AT_MINOR => $price->compareAtMinor(),
+						VariantFields::AMOUNT_BASIS      => $price->amountBasis(),
+					),
+					$variant->prices()
+				),
+				VariantFields::STOCK         => $cells,
+				VariantFields::SELLABILITY   => $verdicts[ $id ]->value,
+			);
+		}
+
+		return $variants;
+	}
+
+	/**
+	 * Returns a selection as the wire carries a combination: one pair per axis.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param VariantSelection $selection The selection.
+	 * @return list<array{axis: string, value: string}> The pairs.
+	 */
+	private static function combinationOf( VariantSelection $selection ): array {
+		$pairs = array();
+
+		foreach ( $selection->pairs() as $axis => $value ) {
+			$pairs[] = array(
+				VariantFields::AXIS  => (string) $axis,
+				VariantFields::VALUE => $value,
+			);
+		}
+
+		return $pairs;
+	}
+
+	/**
+	 * Returns the selection a written variant names by its combination.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException With CatalogError::CombinationInvalid when a key is not one, or an axis is named twice.
+	 *
+	 * @param array<mixed> $variant The variant, as WordPress validated it.
+	 * @return VariantSelection The selection.
+	 */
+	private static function selectionOf( array $variant ): VariantSelection {
+		$pairs = array();
+
+		foreach ( (array) ( $variant[ VariantFields::COMBINATION ] ?? array() ) as $pair ) {
+			$pair = (array) $pair;
+
+			$pairs[] = array( (string) ( $pair[ VariantFields::AXIS ] ?? '' ), (string) ( $pair[ VariantFields::VALUE ] ?? '' ) );
+		}
+
+		return VariantSelection::ofList( $pairs );
 	}
 
 	/**
@@ -666,7 +1057,7 @@ final class ProductPostsController extends WP_REST_Posts_Controller {
 	private static function commerceValues( ?Product $product ): array {
 		$variant = $product?->defaultVariant();
 
-		if ( null === $variant ) {
+		if ( null === $variant || ! $product->options()->isEmpty() ) {
 			return array();
 		}
 

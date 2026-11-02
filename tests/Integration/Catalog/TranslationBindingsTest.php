@@ -37,6 +37,8 @@ use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Locale;
 use SEOCart\Tests\Support\Catalog\ProductRestTestCase;
 use SEOCart\Tests\Support\Catalog\ProductWrites;
+use SEOCart\Tests\Support\Catalog\SavesVariantSets;
+use SEOCart\Tests\Support\Catalog\VariantSets;
 use SEOCart\Tests\Support\Doubles\SeveralLocales;
 use SEOCart\Tests\Support\SecondConnection;
 
@@ -51,7 +53,9 @@ use SEOCart\Tests\Support\SecondConnection;
  *   linking it again moves it to the locale given. A post bound to a product that holds nothing
  *   is adopted, that product deleted with a ProductDeleted naming no SKU; a post bound to a
  *   product with commerce data, or a locale the product has a post in, is refused. A group whose
- *   products all hold nothing still has one owner, the product of its oldest-bound post.
+ *   products all hold nothing still has one owner, the product of its oldest-bound post. A product
+ *   that has started a generation of variants holds commerce data, even when that generation is
+ *   empty: its stock stays in storage, and it is never deleted to adopt its post.
  * - Unlinking removes the mapping only; the source post is never unlinked. Promoting moves the
  *   source with one conditional statement and records ProductBindingPromoted.
  * - Deleting a translation's post removes its binding only. Deleting the source post of a product
@@ -127,6 +131,11 @@ use SEOCart\Tests\Support\SecondConnection;
  * - In Modules::catalogLifecycleHooks(), make the change in `pre_delete_post`, calling deleted()
  *   right after the check lets the delete go on: the source is handed over before WordPress
  *   deletes the post, and the tests of the hand-over's moment and of a later refusal fail.
+ * - In Product::holdsNothing(), leave out the generation: a product with stock and an empty
+ *   generation gives way to the product of the group it is put in, deleted with its units, and
+ *   the test of such a product fails, the ledger showing the write-offs.
+ * - In Product::hasCommerceData(), leave out the generation: a post regrouped away from such a
+ *   product is moved onto the other product.
  * - In PostLifecycle::deleted(), drop the check that the delete is still the one decided on: the
  *   product a translation joined after the check is deleted with it.
  * - In PostLifecycle::deleted(), refuse every delete that differs from the one the check decided
@@ -136,6 +145,8 @@ use SEOCart\Tests\Support\SecondConnection;
  * @since 0.1.0
  */
 final class TranslationBindingsTest extends ProductRestTestCase {
+
+	use SavesVariantSets;
 
 	/**
 	 * The languages the services see.
@@ -946,6 +957,141 @@ final class TranslationBindingsTest extends ProductRestTestCase {
 	}
 
 	/**
+	 * Returns the saves that leave a product no variant in the generation it publishes, each as the `seocart` object of a PUT.
+	 *
+	 * The product is saved with a size and a grind axis first, so a size axis alone is other axis keys.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{0: array<string, mixed>}> The saves.
+	 */
+	public static function savesThatEmptyTheGeneration(): array {
+		$sizes = array( VariantSets::options()[0] );
+
+		return array(
+			'no options at all'                  => array( array( 'options' => array() ) ),
+			'options alone with other axis keys' => array( array( 'options' => $sizes ) ),
+			'options with no variant'            => array(
+				array(
+					'options'  => $sizes,
+					'variants' => array(),
+				),
+			),
+		);
+	}
+
+	/**
+	 * Tests that a product with stock whose generation a save left empty is kept when the setup puts its post in another product's group and when the post is linked to that product: it holds commerce data, and no write-off is recorded.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider savesThatEmptyTheGeneration
+	 *
+	 * @param array<string, mixed> $commerce The save that empties the generation.
+	 */
+	public function test_a_product_with_stock_and_an_empty_generation_is_kept_by_a_group_change_and_a_link( array $commerce ): void {
+		$b     = $this->secondConnection();
+		$other = $this->savedProduct( 'SKU-2', 'Other product' );
+		$saved = $this->stockedWithAnEmptyGeneration( $commerce );
+		$kept  = array(
+			'product'     => 1,
+			'variants'    => 2,
+			'units'       => 14,
+			'ledger rows' => 2,
+			'written off' => 0,
+		);
+
+		$this->assertSame( $kept, $this->committedHoldings( $b, $saved ), 'The save itself lost something.' );
+
+		$this->locales->change( $saved->postId, 'de_DE', $other->postId );
+
+		$this->assertSame( $kept, $this->committedHoldings( $b, $saved ), 'The group change took the product.' );
+		$this->assertSame( $saved->productId, $this->products->findByPost( $saved->postId )?->id(), 'The post was moved onto the other product.' );
+		$this->assertSame( array(), $this->deletions( $b ), 'A product was deleted.' );
+		$this->assertSame(
+			array(
+				array(
+					'code'    => ReportCode::TranslationConflict->value,
+					'context' => array(
+						'post_id'   => $saved->postId,
+						'conflicts' => array( $saved->postId => CatalogError::PostBoundElsewhere->value ),
+					),
+				),
+			),
+			$this->reports
+		);
+
+		$this->assertSame( CatalogError::PostBoundElsewhere, $this->refusal( fn() => $this->services->bindings->link( $other->productId, $saved->postId, Locale::of( 'de_DE' ) ) ) );
+		$this->assertSame( $kept, $this->committedHoldings( $b, $saved ), 'The link took the product.' );
+		$this->assertSame( array(), $this->deletions( $b ), 'A product was deleted.' );
+	}
+
+	/**
+	 * Tests that a post regrouped away from a product with stock whose generation a save left empty stays on it: the product holds commerce data, and the conflict is reported.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider savesThatEmptyTheGeneration
+	 *
+	 * @param array<string, mixed> $commerce The save that empties the generation.
+	 */
+	public function test_a_post_regrouped_away_from_a_product_with_an_empty_generation_stays_on_it( array $commerce ): void {
+		$saved  = $this->stockedWithAnEmptyGeneration( $commerce );
+		$german = $this->unboundPost();
+
+		$this->link( $saved, $german, 'de_DE' );
+
+		$other = $this->savedProduct( 'SKU-2', 'Other product' );
+
+		$this->locales->change( $german, 'de_DE', $other->postId );
+
+		$this->assertSame( $saved->productId, $this->products->findByPost( $german )?->id(), 'The post was moved onto the other product.' );
+		$this->assertSame(
+			array(
+				'post_id'   => $german,
+				'conflicts' => array( $german => CatalogError::PostBoundElsewhere->value ),
+			),
+			$this->reports[0]['context'] ?? null
+		);
+	}
+
+	/**
+	 * Tests that a product that has no generation yet still gives way, to a group change as to a link: nothing was ever sold or published for it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_product_at_no_generation_still_gives_way(): void {
+		$b      = $this->secondConnection();
+		$saved  = $this->stocked();
+		$posts  = array(
+			'by a group change' => $this->post(),
+			'by a link'         => $this->post(),
+		);
+		$before = array_map( fn( int $post ): ?Product => $this->products->findByPost( $post ), $posts );
+
+		foreach ( $before as $how => $fresh ) {
+			$this->assertInstanceOf( Product::class, $fresh, $how );
+			$this->assertSame( Product::NO_GENERATION, $fresh->activeGeneration(), $how );
+			$this->assertTrue( $fresh->holdsNothing(), $how );
+			$this->assertFalse( $fresh->hasCommerceData(), $how );
+		}
+
+		$this->locales->change( $posts['by a group change'], 'de_DE', $saved->postId );
+		$this->link( $saved, $posts['by a link'], 'en_GB' );
+
+		foreach ( $posts as $how => $post ) {
+			$this->assertSame( $saved->productId, $this->products->findByPost( $post )?->id(), $how );
+		}
+
+		$this->assertSame(
+			array( array( (int) $before['by a group change']?->id(), array() ), array( (int) $before['by a link']?->id(), array() ) ),
+			$this->deletions( $b ),
+			'A fresh product did not give way, with its event.'
+		);
+		$this->assertSame( array(), $this->reports );
+	}
+
+	/**
 	 * Tests that a product first saved through the endpoint with no commerce field, which recorded ProductSaved, is deleted with its ProductDeleted when its post is adopted.
 	 *
 	 * @since 0.1.0
@@ -1273,6 +1419,54 @@ final class TranslationBindingsTest extends ProductRestTestCase {
 		$this->services->stock->adjust( (int) $saved->variantId, $this->defaultLocation, 5, LedgerReason::Received, Actor::user( 1 ) );
 
 		return $saved;
+	}
+
+	/**
+	 * Saves a product with two variants of two axes and seven units of each, then sends a PUT that leaves no variant in the generation it publishes.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, mixed> $commerce The PUT's `seocart` object.
+	 * @return SaveResult The product, as its first save left it.
+	 */
+	private function stockedWithAnEmptyGeneration( array $commerce ): SaveResult {
+		$grinds = array( 'whole' );
+		$saved  = $this->saveSet( null, VariantSets::options( VariantSets::SIZES, $grinds ), VariantSets::variants( 'KEPT', VariantSets::SIZES, $grinds ) );
+
+		foreach ( $saved->variantIds as $variantId ) {
+			$this->services->stock->adjust( $variantId, $this->defaultLocation, 7, LedgerReason::Received, Actor::user( 1 ) );
+		}
+
+		$response = $this->request( 'PUT', '/' . $saved->postId, array( ProductCommerceSchema::PROPERTY => $commerce ) );
+		$product  = $this->products->find( $saved->productId );
+
+		$this->assertSame( 200, $response->get_status(), (string) wp_json_encode( $response->get_data() ) );
+		$this->assertInstanceOf( Product::class, $product );
+		$this->assertSame( array(), $product->variants(), 'The save left a variant in the generation.' );
+		$this->assertSame( 2, $product->activeGeneration() );
+
+		return $saved;
+	}
+
+	/**
+	 * Reads what a product and its first save's variants hold, as a second connection sees it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param SecondConnection $b     The second connection.
+	 * @param SaveResult       $saved The product.
+	 * @return array<string, int> The product's row, its variant rows, the units on hand, the ledger's rows and those that wrote stock off.
+	 *
+	 * @phpstan-impure
+	 */
+	private function committedHoldings( SecondConnection $b, SaveResult $saved ): array {
+		return array(
+			'product'     => $this->committedCount( $b, CatalogTables::PRODUCTS, sprintf( 'id = %d', $saved->productId ) ),
+			'variants'    => $this->committedCount( $b, CatalogTables::VARIANTS, sprintf( 'product_id = %d', $saved->productId ) ),
+			'units'       => (int) $b->fetchValue( sprintf( 'SELECT COALESCE( SUM( on_hand ), 0 ) FROM `%s` WHERE variant_id IN ( %s )', $this->db->table( InventoryTables::ITEMS ), implode( ', ', $saved->variantIds ) ) ),
+			'ledger rows' => $this->committedCount( $b, InventoryTables::LEDGER ),
+			'written off' => $this->committedCount( $b, InventoryTables::LEDGER, sprintf( "reason = '%s'", LedgerReason::VariantDeleted->value ) ),
+		);
 	}
 
 	/**

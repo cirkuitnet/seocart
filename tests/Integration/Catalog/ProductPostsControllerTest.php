@@ -19,9 +19,14 @@ use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\ProductPostType;
 use SEOCart\Catalog\Interfaces\Rest\ProductCommerceSchema;
 use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
+use SEOCart\Inventory\Domain\Event\StockAdjusted;
+use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Platform\Authorization\ProductCapabilities;
+use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Platform\Kernel\Kernel;
 use SEOCart\Tests\Support\Catalog\ProductRestTestCase;
+use SEOCart\Tests\Support\Catalog\SavesVariantSets;
+use SEOCart\Tests\Support\Catalog\VariantSets;
 use SEOCart\Tests\Support\SecondConnection;
 
 /**
@@ -48,10 +53,14 @@ use SEOCart\Tests\Support\SecondConnection;
  *   a controller is built for a type the plugin does not serve.
  * - In ProductPostsController::commerceValues(), leave out `weight_grams`, or add a key the schema
  *   does not declare: the `seocart` object no longer matches its declaration.
+ * - In ProductPostsController::combinationOf(), leave out the cast of the axis key: an axis key of
+ *   digits alone reads as a number, and the read sent back is refused.
  *
  * @since 0.1.0
  */
 final class ProductPostsControllerTest extends ProductRestTestCase {
+
+	use SavesVariantSets;
 
 	/**
 	 * Tests that an update with a title and a price is one save and one `save_post_seocart_product`, and answers with both.
@@ -199,7 +208,14 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 		$this->assertSame( 409, $response->get_status() );
 		$this->assertSame( CatalogError::SkuTaken->value, $error['code'] ?? null );
 		$this->assertSame( 409, $error['data']['status'] ?? null );
-		$this->assertSame( array( 'sku' => 'SKU-1' ), (array) ( $error['data']['details'] ?? array() ) );
+		$this->assertSame(
+			array(
+				'sku'         => 'SKU-1',
+				'combination' => array(),
+			),
+			(array) ( $error['data']['details'] ?? array() ),
+			'The combination of a product without options is the empty one.'
+		);
 		$this->assertSame( self::CORRELATION_ID, $error['data']['correlation_id'] ?? null );
 		$this->assertSame( array( 'status', 'details', 'correlation_id' ), array_keys( (array) ( $error['data'] ?? array() ) ), 'The plugin\'s error shape carries exactly these.' );
 		$this->assertSame( array( 'Second', 'SKU-2', '1999' ), $this->committedProduct( $b, $second ) );
@@ -310,8 +326,9 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 		$this->assertArrayHasKey( 'price_minor', $sent, 'The edit context returned no price to send back.' );
 
 		$this->ageCommerceRows( $b, (int) $saved->variantId );
-		$before   = array_intersect_key( $this->catalogChecksums( $b ), array_flip( $tables ) );
-		$response = $this->request( 'PUT', '/' . $saved->postId, array( ProductCommerceSchema::PROPERTY => array_diff_key( $sent, array_flip( array( ProductCommerceSchema::SELLABILITY, ProductCommerceSchema::GENERATION_STATE ) ) ) ) );
+		$before = array_intersect_key( $this->catalogChecksums( $b ), array_flip( $tables ) );
+		// The edit context carries both shapes for a product without options; a client writes back one.
+		$response = $this->request( 'PUT', '/' . $saved->postId, array( ProductCommerceSchema::PROPERTY => array_diff_key( $sent, array_flip( array( ProductCommerceSchema::SELLABILITY, ProductCommerceSchema::GENERATION_STATE, 'options', 'variants' ) ) ) ) );
 
 		$this->assertSame( 200, $response->get_status(), (string) wp_json_encode( $response->get_data() ) );
 		$this->assertSame( $before, array_intersect_key( $this->catalogChecksums( $b ), array_flip( $tables ) ), 'An unchanged variant or price row was rewritten.' );
@@ -801,5 +818,610 @@ final class ProductPostsControllerTest extends ProductRestTestCase {
 	private function ageCommerceRows( SecondConnection $b, int $variantId ): void {
 		$b->query( sprintf( 'UPDATE `%s` SET updated_at = updated_at - INTERVAL 5 SECOND WHERE id = %d', $this->db->table( CatalogTables::VARIANTS ), $variantId ) );
 		$b->query( sprintf( 'UPDATE `%s` SET updated_at = updated_at - INTERVAL 5 SECOND WHERE variant_id = %d', $this->db->table( CatalogTables::VARIANT_PRICES ), $variantId ) );
+	}
+
+	/**
+	 * Tests the done-when through the REST server: one PUT saves six variants of two axes, prices in two currencies and twelve stock cells at two locations, and answers each cell's outcome.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_one_put_saves_six_variants_with_prices_and_stock_at_two_locations(): void {
+		$b         = $this->secondConnection();
+		$post      = $this->save(
+			null,
+			array(
+				'post_title'  => 'Coffee',
+				'post_status' => 'publish',
+			)
+		);
+		$locations = array( $this->locationUuid( $this->defaultLocation ), $this->locationUuid( $this->secondLocation() ) );
+		$response  = $this->request(
+			'PUT',
+			'/' . $post->postId,
+			array(
+				ProductCommerceSchema::PROPERTY => array(
+					'options'  => VariantSets::options(),
+					'variants' => VariantSets::withStock( VariantSets::variants( 'COF' ), $locations ),
+				),
+			)
+		);
+		$data      = (array) ( $response->get_data()[ ProductCommerceSchema::PROPERTY ] ?? array() );
+
+		$this->assertSame( 200, $response->get_status(), (string) wp_json_encode( $response->get_data() ) );
+		$this->assertCount( 6, $data['variants'] ?? array() );
+		$this->assertSame( array( 'complete', 1, 6, 6 ), $this->committedGeneration( $b, $post->productId ) );
+		$this->assertSame( SellabilityReason::Sellable->value, $data['sellability'] ?? null );
+
+		$cells = array();
+
+		foreach ( $data['variants'] as $index => $variant ) {
+			$this->assertSame( VariantSets::variants( 'COF' )[ $index ]['sku'], $variant['sku'] );
+			$this->assertSame( 'sellable', $variant['sellability'] );
+
+			foreach ( $variant['stock'] as $at => $cell ) {
+				$cells[] = array( $cell['location_uuid'], $cell['on_hand'], $cell['outcome'] ?? null );
+
+				$this->assertSame( array( $locations[ $at ], 10 + 2 * $index + $at, 'applied' ), array( $cell['location_uuid'], $cell['on_hand'], $cell['outcome'] ?? null ) );
+			}
+		}
+
+		$this->assertCount( 12, $cells );
+
+		$ids = implode( ', ', array_column( $data['variants'], 'variant_id' ) );
+
+		$this->assertSame( '12', $b->fetchValue( sprintf( "SELECT COUNT(*) FROM `%s` WHERE variant_id IN ( %s ) AND reason = 'recount'", $this->db->table( 'stock_ledger' ), $ids ) ), 'A recount entry for each cell.' );
+		$this->assertSame( (string) array_sum( array_map( static fn( int $i ): int => 10 + 2 * $i + 10 + 2 * $i + 1, range( 0, 5 ) ) ), $b->fetchValue( sprintf( 'SELECT SUM( on_hand ) FROM `%s` WHERE variant_id IN ( %s )', $this->db->table( 'stock_items' ), $ids ) ) );
+		$this->assertSame( '12', $b->fetchValue( sprintf( "SELECT COUNT(*) FROM `%s` WHERE event_name = '%s'", $this->db->table( OutboxTable::NAME ), StockAdjusted::eventName() ) ), 'A StockAdjusted for each cell.' );
+	}
+
+	/**
+	 * Tests that a user who may edit the post but not manage inventory is refused cells with 403, before anything is written.
+	 *
+	 * Planted violation: in ProductPostsController, check the capability only when the cells are
+	 * applied, after the save; the product is then written and the test fails.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_cells_from_a_user_who_may_not_manage_inventory_are_refused_before_anything_is_written(): void {
+		$b     = $this->secondConnection();
+		$saved = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'COF' ) );
+		$sums  = $this->catalogChecksums( $b );
+
+		add_filter(
+			'user_has_cap',
+			static function ( array $capabilities ): array {
+				$capabilities['seocart_manage_inventory'] = false;
+
+				return $capabilities;
+			},
+			PHP_INT_MAX
+		);
+
+		$this->assertTrue( current_user_can( 'edit_post', $saved->postId ) );
+		$this->assertFalse( current_user_can( 'seocart_manage_inventory' ) ); // phpcs:ignore WordPress.WP.Capabilities.Unknown -- The plugin's own capability, which its installer grants.
+
+		$response = $this->request(
+			'PUT',
+			'/' . $saved->postId,
+			array(
+				'title'                         => 'Renamed',
+				ProductCommerceSchema::PROPERTY => array( 'variants' => VariantSets::withStock( VariantSets::variants( 'COF' ), array( $this->locationUuid( $this->defaultLocation ) ) ) ),
+			)
+		);
+
+		$this->assertSame( 403, $response->get_status() );
+		$this->assertSame( $sums, $this->catalogChecksums( $b ), 'Nothing of the product was written.' );
+		$this->assertSame( 'Coffee', get_post( $saved->postId )?->post_title );
+		$this->assertSame( '0', $b->fetchValue( sprintf( 'SELECT COUNT(*) FROM `%s`', $this->db->table( 'stock_ledger' ) ) ) );
+	}
+
+	/**
+	 * Tests that a cell naming a location that does not exist is refused before the save, nothing written.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_unknown_location_is_refused_before_the_save(): void {
+		$b        = $this->secondConnection();
+		$saved    = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'COF' ) );
+		$sums     = $this->catalogChecksums( $b );
+		$response = $this->request(
+			'PUT',
+			'/' . $saved->postId,
+			array(
+				'title'                         => 'Renamed',
+				ProductCommerceSchema::PROPERTY => array( 'variants' => VariantSets::withStock( VariantSets::variants( 'COF' ), array( '0f8b1c7e-5d1a-4c3e-9a7b-2e4f6a8c0d12' ) ) ),
+			)
+		);
+
+		$this->assertSame( 404, $response->get_status() );
+		$this->assertSame( 'stock.location_missing', $response->get_data()['code'] ?? null );
+		$this->assertSame( $sums, $this->catalogChecksums( $b ) );
+		$this->assertSame( 'Coffee', get_post( $saved->postId )?->post_title );
+	}
+
+	/**
+	 * Tests that two cells of one variant at one location are refused with 400 before the save: nothing written, no failure of the server reported.
+	 *
+	 * Planted violation: in ProductPostsController::stockCells(), keep both cells; the product is
+	 * then saved, and the unit refuses the pair after the commit as the server's own failure.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_two_cells_of_a_variant_at_one_location_are_refused_before_the_save(): void {
+		$b        = $this->secondConnection();
+		$saved    = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'COF' ) );
+		$location = $this->locationUuid( $this->defaultLocation );
+		$sums     = $this->catalogChecksums( $b );
+		$response = $this->request(
+			'PUT',
+			'/' . $saved->postId,
+			array(
+				'title'                         => 'Renamed',
+				ProductCommerceSchema::PROPERTY => array( 'variants' => VariantSets::withStock( VariantSets::variants( 'COF' ), array( $location, $location ) ) ),
+			)
+		);
+
+		$this->assertSame( array( 400, 'rest_invalid_param' ), array( $response->get_status(), $response->get_data()['code'] ?? null ), (string) wp_json_encode( $response->get_data() ) );
+		$this->assertSame( $sums, $this->catalogChecksums( $b ), 'Nothing of the product was written.' );
+		$this->assertSame( 'Coffee', $b->fetchValue( sprintf( 'SELECT post_title FROM `%s` WHERE ID = %d', $GLOBALS['wpdb']->posts, $saved->postId ) ) );
+		$this->assertSame( 1, $this->committedSaves( $b, $saved->productId ) );
+		$this->assertSame( '0', $b->fetchValue( sprintf( 'SELECT COUNT(*) FROM `%s`', $this->db->table( 'stock_ledger' ) ) ) );
+		$this->assertSame( array(), $this->failures, 'No failure of the server is reported.' );
+	}
+
+	/**
+	 * Tests that a variant naming one axis twice is refused before anything is written, whichever values it names, on an update with stock cells and without them, and on a create.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_variant_naming_one_axis_twice_is_refused_before_anything_is_written(): void {
+		global $wpdb;
+
+		$b        = $this->secondConnection();
+		$saved    = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'COF' ) );
+		$location = $this->locationUuid( $this->defaultLocation );
+		$sums     = $this->catalogChecksums( $b );
+		$posts    = sprintf( "SELECT COUNT(*) FROM `%s` WHERE post_type = '%s'", $wpdb->posts, ProductCapabilities::POST_TYPE );
+		$before   = $b->fetchValue( $posts );
+
+		foreach ( array( '1kg', '250g' ) as $again ) {
+			$twice                     = VariantSets::variants( 'COF' );
+			$twice[0]['combination'][] = array(
+				'axis'  => 'size',
+				'value' => $again,
+			);
+
+			$requests = array(
+				'without cells' => array( 'PUT', '/' . $saved->postId, $twice ),
+				'with cells'    => array( 'PUT', '/' . $saved->postId, VariantSets::withStock( $twice, array( $location ) ) ),
+				'on a create'   => array( 'POST', '', $twice ),
+			);
+
+			foreach ( $requests as $how => list( $method, $route, $variants ) ) {
+				$response = $this->request(
+					$method,
+					$route,
+					array(
+						'title'                         => 'Renamed',
+						ProductCommerceSchema::PROPERTY => array(
+							'options'  => VariantSets::options(),
+							'variants' => $variants,
+						),
+					)
+				);
+
+				$this->assertSame( array( 400, CatalogError::CombinationInvalid->value ), array( $response->get_status(), $response->get_data()['code'] ?? null ), $how . ': ' . wp_json_encode( $response->get_data() ) );
+				$this->assertStringContainsString( 'size=250g, grind=whole, size=' . $again, (string) ( $response->get_data()['message'] ?? '' ), $how );
+			}
+		}
+
+		$this->assertSame( $sums, $this->catalogChecksums( $b ), 'Nothing of the product was written.' );
+		$this->assertSame( $before, $b->fetchValue( $posts ), 'No post was created.' );
+		$this->assertSame( 'Coffee', $b->fetchValue( sprintf( 'SELECT post_title FROM `%s` WHERE ID = %d', $wpdb->posts, $saved->postId ) ) );
+		$this->assertSame( 1, $this->committedSaves( $b, $saved->productId ) );
+		$this->assertSame( '0', $b->fetchValue( sprintf( 'SELECT COUNT(*) FROM `%s`', $this->db->table( 'stock_ledger' ) ) ) );
+		$this->assertSame( array(), $this->failures, 'No failure of the server is reported.' );
+	}
+
+	/**
+	 * Tests that an axis key and a value key of digits alone read as text, as the schema declares them, and that the options and the variants of that read, sent back without their stock cells, are accepted.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_keys_of_digits_alone_read_as_text_and_the_read_can_be_sent_back(): void {
+		$b           = $this->secondConnection();
+		$saved       = $this->saveSet( null, VariantSets::digitOptions(), VariantSets::digitVariants( 'DIGITS' ) );
+		$read        = $this->request( 'GET', '/' . $saved->postId, array(), array( 'context' => 'edit' ) )->get_data()[ ProductCommerceSchema::PROPERTY ];
+		$combination = static fn( string $value ): array => array(
+			array(
+				'axis'  => '2024',
+				'value' => $value,
+			),
+			array(
+				'axis'  => '9',
+				'value' => '7',
+			),
+		);
+
+		$this->assertSame( array( $combination( '500' ), $combination( '1000' ) ), array_column( $read['variants'], 'combination' ) );
+		$this->assertSame( array( '2024', '9' ), array_column( $read['options'], 'key' ) );
+		$this->assertSame( array( '500', '1000' ), array_column( $read['options'][0]['values'], 'key' ) );
+
+		$response = $this->request(
+			'PUT',
+			'/' . $saved->postId,
+			array(
+				ProductCommerceSchema::PROPERTY => array(
+					'options'  => $read['options'],
+					'variants' => array_map(
+						static function ( array $variant ): array {
+							unset( $variant['stock'] );
+
+							return $variant;
+						},
+						$read['variants']
+					),
+				),
+			)
+		);
+
+		$this->assertSame( 200, $response->get_status(), (string) wp_json_encode( $response->get_data() ) );
+		$this->assertSame( array( 'complete', 1, 2, 2 ), $this->committedGeneration( $b, $saved->productId ) );
+		$this->assertEqualsCanonicalizing( array_values( $saved->variantIds ), array_keys( $this->committedVariants( $b, $saved->productId ) ), 'The read sent back named the same variants.' );
+	}
+
+	/**
+	 * Tests that the stock unit refused after the product committed is answered as an error, the product saved and no stock written.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_units_refusal_after_the_product_committed_is_an_error_with_the_product_saved(): void {
+		$b      = $this->secondConnection();
+		$saved  = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'COF' ) );
+		$second = $this->secondLocation();
+		$uuid   = $this->locationUuid( $second );
+
+		// The location goes after the request resolved it and before the unit runs.
+		add_action(
+			'rest_after_insert_' . ProductCapabilities::POST_TYPE,
+			function () use ( $second ): void {
+				$this->db->execute( 'DELETE FROM %i WHERE id = %d', $this->db->table( 'locations' ), $second );
+			}
+		);
+
+		$response = $this->request(
+			'PUT',
+			'/' . $saved->postId,
+			array(
+				'title'                         => 'Renamed',
+				ProductCommerceSchema::PROPERTY => array( 'variants' => VariantSets::withStock( VariantSets::variants( 'COF' ), array( $uuid ) ) ),
+			)
+		);
+
+		$this->assertSame( 404, $response->get_status() );
+		$this->assertSame( 'stock.location_missing', $response->get_data()['code'] ?? null );
+		$this->assertSame( 'Renamed', $b->fetchValue( sprintf( 'SELECT post_title FROM `%s` WHERE ID = %d', $GLOBALS['wpdb']->posts, $saved->postId ) ), 'The product is saved.' );
+		$this->assertSame( 2, $this->committedSaves( $b, $saved->productId ) );
+		$this->assertSame( '0', $b->fetchValue( sprintf( 'SELECT COUNT(*) FROM `%s`', $this->db->table( 'stock_ledger' ) ) ), 'A refused unit writes nothing of stock.' );
+	}
+
+	/**
+	 * Tests that the single variant's fields given with a variant set are refused as ambiguous.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_flat_fields_with_a_variant_set_are_refused(): void {
+		$saved    = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'COF' ) );
+		$response = $this->request(
+			'PUT',
+			'/' . $saved->postId,
+			array(
+				ProductCommerceSchema::PROPERTY => array(
+					'sku'      => 'FLAT-1',
+					'variants' => VariantSets::variants( 'COF' ),
+				),
+			)
+		);
+
+		$this->assertSame( 400, $response->get_status() );
+		$this->assertSame( CatalogError::VariantsAmbiguous->value, $response->get_data()['code'] ?? null );
+	}
+
+	/**
+	 * Tests that the view context sends neither list, and the edit context sends the options and every variant with a stock cell per active location, read at its count.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_lists_and_their_stock_cells_are_sent_in_the_edit_context_only(): void {
+		$saved  = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'COF' ) );
+		$second = $this->locationUuid( $this->secondLocation() );
+		$view   = (array) ( $this->request( 'GET', '/' . $saved->postId )->get_data()[ ProductCommerceSchema::PROPERTY ] ?? array() );
+		$edit   = (array) ( $this->request( 'GET', '/' . $saved->postId, array(), array( 'context' => 'edit' ) )->get_data()[ ProductCommerceSchema::PROPERTY ] ?? array() );
+
+		$this->assertArrayNotHasKey( 'options', $view );
+		$this->assertArrayNotHasKey( 'variants', $view );
+		$this->assertArrayNotHasKey( 'sku', $view, 'A product with options has no single SKU.' );
+		$this->assertSame( 'sellable', $view['sellability'] ?? null );
+		$this->assertSame( array( 'size', 'grind' ), array_column( $edit['options'] ?? array(), 'key' ) );
+		$this->assertSame(
+			array(
+				'key'      => '250g',
+				'label'    => '250 g',
+				'position' => 0,
+				'image_id' => null,
+				'swatch'   => null,
+			),
+			$edit['options'][0]['values'][0] ?? null
+		);
+		$this->assertCount( 6, $edit['variants'] ?? array() );
+		$this->assertSame(
+			array(
+				array(
+					'location_uuid'    => $this->locationUuid( $this->defaultLocation ),
+					'on_hand'          => 0,
+					'expected_on_hand' => null,
+				),
+				array(
+					'location_uuid'    => $second,
+					'on_hand'          => 0,
+					'expected_on_hand' => null,
+				),
+			),
+			$edit['variants'][0]['stock'] ?? null,
+			'A cell per active location, at its count, with no outcome.'
+		);
+		$this->assertSame( '250 g / Whole bean', $edit['variants'][0]['label'] ?? null );
+		$this->assertSame(
+			array(
+				array(
+					'currency'         => 'USD',
+					'price_minor'      => 1200,
+					'compare_at_minor' => null,
+					'amount_basis'     => 'net',
+				),
+				array(
+					'currency'         => 'EUR',
+					'price_minor'      => 1100,
+					'compare_at_minor' => null,
+					'amount_basis'     => 'gross',
+				),
+			),
+			$edit['variants'][0]['prices'] ?? null
+		);
+	}
+
+	/**
+	 * Tests that a variant whose SKU another variant took has no SKU on the wire, that its record sent back saves nothing new, and that it is enabled again only with a SKU of its own, never one starting with "~".
+	 *
+	 * Planted violations, each shown failing and put back:
+	 * - In ProductPostsController::variantsOf(), send every variant's stored SKU: the record shows
+	 *   the placeholder.
+	 * - In Product::skuOf(), keep the placeholder of a variant given no SKU whether or not it is
+	 *   enabled: the record sent back with the variant enabled is saved, and it is sellable.
+	 * - In Variant::givenSku(), take a SKU that starts with "~".
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_variant_whose_sku_another_took_has_none_on_the_wire_and_is_enabled_only_with_one(): void {
+		$b        = $this->secondConnection();
+		$six      = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'COF' ) );
+		$variants = VariantSets::variants( 'COF' );
+		$taken    = $six->variantIds[ VariantSets::hash(
+			array(
+				'size'  => '250g',
+				'grind' => 'filter',
+			)
+		) ];
+
+		// The variant of 250 g whole bean takes the SKU of 250 g filter, which the set leaves out.
+		$variants[0]['sku'] = $variants[1]['sku'];
+
+		unset( $variants[1] );
+
+		$this->saveSet( $six->postId, VariantSets::options(), array_values( $variants ) );
+
+		$stored = $this->committedVariants( $b, $six->productId )[ $taken ];
+
+		$this->assertSame( array( 0, '~' ), array( $stored['enabled'], $stored['sku'][0] ?? '' ), 'The variant left out is disabled, its SKU released.' );
+
+		$record = (array) ( $this->request( 'GET', '/' . $six->postId, array(), array( 'context' => 'edit' ) )->get_data()[ ProductCommerceSchema::PROPERTY ] ?? array() );
+		$back   = array();
+		$at     = null;
+
+		foreach ( $record['variants'] ?? array() as $index => $variant ) {
+			if ( $taken === $variant['variant_id'] ) {
+				$at = $index;
+			}
+
+			// Every field as read but the stock cells, which a client sends with the count it read.
+			unset( $variant['stock'] );
+
+			$back[] = $variant;
+		}
+
+		$this->assertNotNull( $at );
+		$this->assertSame( array( null, false, 'variant_disabled' ), array( $back[ $at ]['sku'], $back[ $at ]['enabled'], $back[ $at ]['sellability'] ), 'The record shows no SKU, never the placeholder.' );
+		$this->assertSame( array(), array_filter( array_column( $back, 'sku' ), static fn( ?string $sku ): bool => null !== $sku && str_starts_with( $sku, '~' ) ) );
+
+		$sums     = $this->catalogChecksums( $b );
+		$response = $this->request( 'PUT', '/' . $six->postId, array( ProductCommerceSchema::PROPERTY => array( 'variants' => $back ) ) );
+
+		$this->assertSame( 200, $response->get_status(), (string) wp_json_encode( $response->get_data() ) );
+		$this->assertSame( array_diff_key( $sums, array( CatalogTables::PRODUCTS => true ) ), array_diff_key( $this->catalogChecksums( $b ), array( CatalogTables::PRODUCTS => true ) ), 'The record sent back stores nothing new.' );
+
+		$enabled                   = $back;
+		$enabled[ $at ]['enabled'] = true;
+		$response                  = $this->request( 'PUT', '/' . $six->postId, array( ProductCommerceSchema::PROPERTY => array( 'variants' => $enabled ) ) );
+
+		$this->assertSame( array( 400, CatalogError::SkuInvalid->value ), array( $response->get_status(), $response->get_data()['code'] ?? null ), 'A variant without a SKU is not enabled.' );
+		$this->assertSame( array( 0, $stored['sku'] ), array( $this->committedVariants( $b, $six->productId )[ $taken ]['enabled'], $this->committedVariants( $b, $six->productId )[ $taken ]['sku'] ) );
+		$this->assertSame( SellabilityReason::VariantDisabled, $this->verdict( $taken ) );
+
+		$enabled[ $at ]['sku'] = $stored['sku'];
+		$response              = $this->request( 'PUT', '/' . $six->postId, array( ProductCommerceSchema::PROPERTY => array( 'variants' => $enabled ) ) );
+
+		$this->assertSame( array( 400, CatalogError::SkuInvalid->value ), array( $response->get_status(), $response->get_data()['code'] ?? null ), 'A SKU a client gives never starts with "~", the placeholder\'s least of all.' );
+
+		$response = $this->request(
+			'PUT',
+			'/' . $six->postId,
+			array(
+				'title'                         => 'Renamed',
+				ProductCommerceSchema::PROPERTY => array( 'sku' => '~FLAT' ),
+			)
+		);
+
+		$this->assertSame( array( 400, CatalogError::SkuInvalid->value ), array( $response->get_status(), $response->get_data()['code'] ?? null ), 'Nor does the single SKU of a product without options.' );
+
+		$enabled[ $at ]['sku'] = 'COF-250g-filter-2';
+		$response              = $this->request( 'PUT', '/' . $six->postId, array( ProductCommerceSchema::PROPERTY => array( 'variants' => $enabled ) ) );
+
+		$this->assertSame( 200, $response->get_status(), (string) wp_json_encode( $response->get_data() ) );
+		$this->assertSame( array( 1, 'COF-250g-filter-2' ), array( $this->committedVariants( $b, $six->productId )[ $taken ]['enabled'], $this->committedVariants( $b, $six->productId )[ $taken ]['sku'] ), 'Given a SKU of its own, it is enabled.' );
+		$this->assertSame( SellabilityReason::Sellable, $this->verdict( $taken ) );
+	}
+
+	/**
+	 * Tests that two SKUs the table's collation finds equal, and the check before the window does not, are refused with 400 as one SKU given twice, never as a conflict.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_two_skus_equal_in_the_collation_are_refused_with_400(): void {
+		$saved    = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'COF' ) );
+		$variants = VariantSets::variants( 'COF' );
+
+		$variants[0]['sku'] = 'cafe-x';
+		$variants[1]['sku'] = "CAF\u{00C9}-x";
+
+		$response = $this->request( 'PUT', '/' . $saved->postId, array( ProductCommerceSchema::PROPERTY => array( 'variants' => $variants ) ) );
+
+		$this->assertSame( array( 400, CatalogError::SkuDuplicate->value ), array( $response->get_status(), $response->get_data()['code'] ?? null ), (string) wp_json_encode( $response->get_data() ) );
+		$this->assertSame( array(), $this->failures, 'No failure of the server is reported.' );
+	}
+
+	/**
+	 * Tests that the refusal of two SKUs the table's collation finds equal names a SKU of the merchant's, when the set starts with a variant whose SKU another took.
+	 *
+	 * `abc3` and `ABC³` read as two to the check before the window and to the pair the refusal looks
+	 * for, so it names one variant of the set: never the placeholder of the one that has no SKU.
+	 *
+	 * Planted violation: in MysqlProductRepository::refuseSkuCollision(), name `$set[0]`; the
+	 * message names the placeholder, and the test fails.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_refusal_of_two_skus_equal_in_the_collation_names_no_placeholder(): void {
+		$saved    = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'PLC' ) );
+		$variants = VariantSets::variants( 'PLC' );
+		$left     = $variants[1];
+
+		// The variant of 250 g whole bean takes the SKU of 250 g filter, which the set leaves out.
+		$variants[0]['sku'] = $variants[1]['sku'];
+
+		unset( $variants[1] );
+
+		$variants = array_values( $variants );
+
+		$this->saveSet( $saved->postId, VariantSets::options(), $variants );
+
+		$first = array_merge(
+			$left,
+			array(
+				'sku'      => null,
+				'enabled'  => false,
+				'position' => 0,
+			)
+		);
+		$set   = array( $first );
+
+		foreach ( $variants as $index => $variant ) {
+			$set[] = array_merge( $variant, array( 'position' => $index + 1 ) );
+		}
+
+		$set[1]['sku'] = 'abc3';
+		$set[2]['sku'] = "ABC\u{00B3}";
+
+		$response = $this->request( 'PUT', '/' . $saved->postId, array( ProductCommerceSchema::PROPERTY => array( 'variants' => $set ) ) );
+		$answer   = (string) wp_json_encode( $response->get_data(), JSON_UNESCAPED_UNICODE );
+
+		$this->assertSame( array( 400, CatalogError::SkuDuplicate->value ), array( $response->get_status(), $response->get_data()['code'] ?? null ), $answer );
+		$this->assertStringNotContainsString( '~', $answer, 'A client is never told a placeholder.' );
+		$this->assertStringContainsString( '"abc3"', (string) ( $response->get_data()['message'] ?? '' ), 'It names a SKU of the set.' );
+		$this->assertSame( array(), $this->failures, 'No failure of the server is reported.' );
+	}
+
+	/**
+	 * Tests that a PUT of a product's flat fields leaves a gross price gross, and its price in another currency as it is.
+	 *
+	 * Planted violation: in SaveProduct::applyFlatFields(), drop `->onBasisOf( $stored )`; the PUT
+	 * of a weight moves the price to net, and the test fails.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_flat_put_leaves_a_gross_price_gross(): void {
+		$b     = $this->secondConnection();
+		$saved = $this->savedOnGrossPrices( 'GROSS-PUT' );
+
+		foreach ( array(
+			array(
+				array( 'weight_grams' => 8 ),
+				array( 'EUR:gross:999', 'USD:gross:1234:2000' ),
+			),
+			array(
+				array( 'price_minor' => 1500 ),
+				array( 'EUR:gross:999', 'USD:gross:1500:2000' ),
+			),
+			array(
+				array( 'compare_at_minor' => 3000 ),
+				array( 'EUR:gross:999', 'USD:gross:1500:3000' ),
+			),
+		) as list( $flat, $prices ) ) {
+			$response = $this->request( 'PUT', '/' . $saved->postId, array( ProductCommerceSchema::PROPERTY => $flat ) );
+
+			$this->assertSame( 200, $response->get_status(), (string) wp_json_encode( $response->get_data() ) );
+			$this->assertSame( $prices, $this->committedPrices( $b, (int) $saved->variantId ), (string) wp_json_encode( $flat ) );
+		}
+
+		$read = $this->request( 'GET', '/' . $saved->postId, array(), array( 'context' => 'edit' ) )->get_data()[ ProductCommerceSchema::PROPERTY ];
+
+		$this->assertSame(
+			array(
+				'USD' => 'gross',
+				'EUR' => 'gross',
+			),
+			array_column( $read['variants'][0]['prices'], 'amount_basis', 'currency' )
+		);
+	}
+
+	/**
+	 * Returns the UUID of a location.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $locationId The location.
+	 * @return string The UUID.
+	 */
+	private function locationUuid( int $locationId ): string {
+		return (string) $this->db->fetchValue( 'SELECT uuid FROM %i WHERE id = %d', $this->db->table( 'locations' ), $locationId );
+	}
+
+	/**
+	 * Creates a second active location, and returns its id.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return int The location.
+	 */
+	private function secondLocation(): int {
+		$this->db->execute(
+			'INSERT INTO %i ( uuid, name, active, fulfils_online, offers_pickup, priority, created_at, updated_at ) VALUES ( %s, %s, 1, 1, 0, 5, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6) )',
+			$this->db->table( 'locations' ),
+			wp_generate_uuid4(),
+			'Second warehouse'
+		);
+
+		wp_cache_delete( MysqlLocationRepository::CACHE_KEY, MysqlLocationRepository::CACHE_GROUP );
+
+		return $this->db->lastInsertId();
 	}
 }

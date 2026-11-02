@@ -20,8 +20,10 @@ defined( 'ABSPATH' ) || exit;
  * A product was saved: its post and its commerce rows, in one unit of work.
  *
  * Owns one fact: what a listener learns when a product is saved. The product, its source post,
- * the names of the fields the save changed, and a summary of the default variant: its SKU and
- * its price in the store's base currency, which are null for a product saved without them. It is
+ * the names of the fields the save changed, `options`, `variants` and `prices` among them when the
+ * save gave them, and a summary of the default variant: its SKU and its price in the store's base
+ * currency, which are null for a product saved without them and for a product with options, which
+ * has no single variant; a listener reads such a product's variants again. It is
  * stored in the outbox by the transaction that saves the product, so it exists exactly when the
  * save committed, and fires `seocart_product_saved` after the commit. Doctor's repair of a
  * product's generation marker publishes it too, in the repair's transaction, with

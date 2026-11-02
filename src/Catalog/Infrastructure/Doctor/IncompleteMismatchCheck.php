@@ -22,7 +22,7 @@ defined( 'ABSPATH' ) || exit;
 
 /**
  * Reports and repairs complete products with zero enabled variants at their active generation, or
- * whose default variant has no price in the base currency (doctor check 5).
+ * with an enabled variant of it that has no price in the base currency (doctor check 5).
  *
  * Owns one fact: which complete products are not actually whole. Scoped to `generation_state =
  * complete`: an incomplete product missing a price is the ordinary state of one still being set

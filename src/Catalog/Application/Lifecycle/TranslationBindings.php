@@ -471,8 +471,8 @@ final class TranslationBindings {
 	/**
 	 * Deletes the product a post presents, so the post can present another, when that product holds nothing but the post: through DeleteProduct, which records ProductDeleted.
 	 *
-	 * A product that holds nothing has no variant, so no stock and no ledger entry for the actor to
-	 * be named in; the delete runs on no one's authority.
+	 * A product that holds nothing has no generation of variants, so no stock and no ledger entry for
+	 * the actor to be named in; the delete runs on no one's authority.
 	 *
 	 * @since 0.1.0
 	 *

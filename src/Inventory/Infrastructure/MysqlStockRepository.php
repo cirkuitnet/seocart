@@ -1682,8 +1682,10 @@ final class MysqlStockRepository implements StockRepository {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param list<array<string, mixed>> $rows The rows.
+	 * @param array $rows The rows.
 	 * @return list<array{id: int, variant_id: int, location_id: int, order_id: int}> The allocations.
+	 *
+	 * @phpstan-param list<array<string, mixed>> $rows
 	 */
 	private static function allocationRows( array $rows ): array {
 		return array_map(
@@ -2168,5 +2170,183 @@ final class MysqlStockRepository implements StockRepository {
 	 */
 	public function movableItems( int $locationId, int $afterVariantId, int $limit ): array {
 		return array_map( static fn( array $row ): int => (int) $row['variant_id'], $this->rows( self::MOVABLE_ITEMS, $locationId, $afterVariantId, $limit ) );
+	}
+
+	/**
+	 * The variants among some that have a stock policy, under a shared lock until the commit.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCK_POLICIES = 'SELECT variant_id FROM {stock_policies} WHERE variant_id IN ({list}) ORDER BY variant_id LOCK IN SHARE MODE';
+
+	/**
+	 * The locations among some that exist, under a shared lock until the commit.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCK_LOCATIONS = 'SELECT id FROM {locations} WHERE id IN ({list}) ORDER BY id LOCK IN SHARE MODE';
+
+	/**
+	 * The levels of the items of some variants at some locations, each with its variant's totals at every location: a plain read of items the unit already holds locked.
+	 *
+	 * The unit's CREATE_ITEM_AT upsert has taken the lock of every item it names, so under READ
+	 * COMMITTED a plain read sees each as the unit left it, and no other writer can change it before
+	 * the commit. The read takes every item of the variants named at the locations named, a key
+	 * range in the primary key's order, and lockedLevels() leaves out the ones it was not asked for;
+	 * as a locking read it would lock those too, which a hold taking two of them in turn deadlocks
+	 * against.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCKED_LEVELS = 'SELECT i.variant_id, i.location_id, i.on_hand, i.allocated, i.held,'
+		. ' ( SELECT p.track FROM {stock_policies} p WHERE p.variant_id = i.variant_id ) AS track,'
+		. ' ( SELECT b.backorder_policy FROM {stock_policies} b WHERE b.variant_id = i.variant_id ) AS backorder_policy,'
+		. ' ( SELECT SUM( t.on_hand ) FROM {stock_items} t WHERE t.variant_id = i.variant_id ) AS variant_on_hand,'
+		. ' ( SELECT SUM( a.on_hand - a.allocated - a.held ) FROM {stock_items} a WHERE a.variant_id = i.variant_id ) AS variant_available'
+		. ' FROM {stock_items} i WHERE i.variant_id IN ({list}) AND i.location_id IN ({list}) ORDER BY i.variant_id, i.location_id';
+
+	/**
+	 * The step between two ids a multi-row insert gives its rows, which a server in a cluster may set above one.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const AUTO_INCREMENT_STEP = 'SELECT @@SESSION.auto_increment_increment AS step';
+
+	/**
+	 * The step between the ids of a multi-row insert's rows, read once.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int|null
+	 */
+	private ?int $autoIncrementStep = null;
+
+	/**
+	 * Locks the stock policies of some variants and returns the variants that have one.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $variantIds The variants, ascending.
+	 * @return list<int> The variants that have a stock policy, ascending.
+	 *
+	 * @phpstan-param list<int> $variantIds
+	 */
+	public function lockPolicies( array $variantIds ): array {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return array_map( static fn( array $row ): int => (int) $row['variant_id'], $this->rows( self::LOCK_POLICIES, $variantIds ) );
+	}
+
+	/**
+	 * Locks some locations and returns those that exist.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $locationIds The locations, ascending.
+	 * @return list<int> The locations that exist, ascending.
+	 *
+	 * @phpstan-param list<int> $locationIds
+	 */
+	public function lockLocations( array $locationIds ): array {
+		$this->requireTransaction( __FUNCTION__ );
+
+		return array_map( static fn( array $row ): int => (int) $row['id'], $this->rows( self::LOCK_LOCATIONS, $locationIds ) );
+	}
+
+	/**
+	 * Creates the items that do not exist yet, at zero, taking every item's lock: CREATE_ITEM_AT for many rows.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $items Each item's variant and location, ascending.
+	 *
+	 * @phpstan-param list<array{0: int, 1: int}> $items
+	 */
+	public function createItemsAt( array $items ): void {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$this->insertRows( self::CREATE_ITEM_AT, array_map( static fn( array $item ): array => array( $item[0], $item[1] ), $items ) );
+	}
+
+	/**
+	 * Reads the level of each item named, whose lock the transaction holds, with its variant's totals.
+	 *
+	 * One plain read takes every item of the variants named at the locations named, and the levels
+	 * of the items named are kept; it locks none of them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $items Each item's variant and location.
+	 * @return list<StockLevel> The levels of the items that exist, ascending.
+	 *
+	 * @phpstan-param list<array{0: int, 1: int}> $items
+	 */
+	public function lockedLevels( array $items ): array {
+		$this->requireTransaction( __FUNCTION__ );
+
+		if ( array() === $items ) {
+			return array();
+		}
+
+		$named  = array_flip( array_map( static fn( array $item ): string => $item[0] . ':' . $item[1], $items ) );
+		$levels = array();
+
+		foreach ( $this->rows( self::LOCKED_LEVELS, array_values( array_unique( array_column( $items, 0 ) ) ), array_values( array_unique( array_column( $items, 1 ) ) ) ) as $row ) {
+			if ( isset( $named[ $row['variant_id'] . ':' . $row['location_id'] ] ) ) {
+				$levels[] = self::level( $row );
+			}
+		}
+
+		return $levels;
+	}
+
+	/**
+	 * Appends a ledger entry for each of several changes: APPEND_LEDGER for many rows.
+	 *
+	 * A multi-row insert whose rows are known before it runs takes its ids in one go, each the
+	 * step after the one before, the first of them the one the connection reports.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array        $rows          Each entry's variant, location, change and on_hand after it.
+	 * @param LedgerReason $reason        Why.
+	 * @param string       $actorType     `user` or `system`.
+	 * @param int|null     $actorId       The user, or null.
+	 * @param string|null  $correlationId The request's correlation id, or null.
+	 * @return list<int> The id of each entry, in the order of the rows.
+	 *
+	 * @phpstan-param list<array{0: int, 1: int, 2: int, 3: int}> $rows
+	 */
+	public function appendLedgerRows( array $rows, LedgerReason $reason, string $actorType, ?int $actorId, ?string $correlationId ): array {
+		$this->requireTransaction( __FUNCTION__ );
+
+		$ids = array();
+
+		foreach ( array_chunk( $rows, self::ROWS_PER_INSERT ) as $chunk ) {
+			$values = array();
+
+			foreach ( $chunk as $row ) {
+				$values[] = array( $row[0], $row[1], $row[2], $row[3], $reason->value, 0, $actorType, $actorId ?? 0, $correlationId ?? '' );
+			}
+
+			$this->insertRows( self::APPEND_LEDGER, $values );
+
+			$first = $this->db->lastInsertId();
+			$step  = $this->autoIncrementStep ??= (int) ( $this->rows( self::AUTO_INCREMENT_STEP )[0]['step'] ?? 1 );
+
+			foreach ( array_keys( $chunk ) as $index ) {
+				$ids[] = $first + $index * $step;
+			}
+		}
+
+		return $ids;
 	}
 }

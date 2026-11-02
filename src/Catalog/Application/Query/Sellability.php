@@ -16,6 +16,7 @@ use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\Sellability as SellabilityRule;
 use SEOCart\Catalog\Domain\SellabilityFacts;
 use SEOCart\Catalog\Domain\SellabilityReason;
+use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Support\Locale;
 
 defined( 'ABSPATH' ) || exit;
@@ -26,8 +27,10 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: how a reader gets a verdict. It reads every variant's facts with the
  * repository's one fetch and judges each with the domain's one rule, so a REST response, a cart
  * and a checkout all see the same verdict for the same variant. A variant no row has is
- * `unknown_variant`. A post with no variant to judge, because no product is bound to it or its
- * product has none yet, gets the rule's verdict on that without a fetch.
+ * `unknown_variant`. A product may be sold when any of its variants may: its verdict is
+ * `sellable` then, and otherwise the reason of its first variant. A post with no variant to judge,
+ * because no product is bound to it or its product has none yet, gets the rule's verdict on that
+ * without a fetch.
  *
  * A verdict in a locale judges the product's post in that locale, which a product without one
  * does not have: it is `not_translated` there. Without a locale, the product's source post is
@@ -115,22 +118,41 @@ final class Sellability {
 	}
 
 	/**
-	 * Returns the verdict on the default variant of a post's product, or on the post itself when there is no variant to judge.
+	 * Returns the verdict on a post's product: `sellable` when any variant of the generation it publishes may be sold, else the first variant's reason, or the verdict on the post itself when there is no variant to judge.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Every variant of the published generation, not the default variant alone.
 	 *
 	 * @param Product|null $product        The product bound to the post, as loaded, or null when none is.
 	 * @param bool         $canReadPrivate Whether the reader may read private products.
 	 * @param Locale|null  $locale         Optional. The locale of the post, or null for the product's source post. Default null.
-	 * @return SellabilityReason The verdict: from the one fetch when the product has a default variant, one query; otherwise none.
+	 * @return SellabilityReason The verdict: from the one fetch when the product has a variant, one query; otherwise none.
 	 */
 	public function ofProduct( ?Product $product, bool $canReadPrivate, ?Locale $locale = null ): SellabilityReason {
-		$variantId = $product?->defaultVariant()?->id();
+		$variantIds = array_values( array_filter( array_map( static fn( Variant $variant ): ?int => $variant->id(), $product?->variants() ?? array() ) ) );
 
-		if ( null === $variantId ) {
+		if ( array() === $variantIds ) {
 			return SellabilityRule::withoutVariant( $product?->generation() );
 		}
 
-		return $this->of( array( $variantId ), $canReadPrivate, $locale )[ $variantId ];
+		return self::verdictOnProduct( $this->of( $variantIds, $canReadPrivate, $locale ) );
+	}
+
+	/**
+	 * Returns the verdict on a product from the verdicts on its variants: the first that sells, else the first.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param non-empty-array<int, SellabilityReason> $verdicts The verdict on each variant, in the variants' order.
+	 * @return SellabilityReason The verdict on the product.
+	 */
+	public static function verdictOnProduct( array $verdicts ): SellabilityReason {
+		foreach ( $verdicts as $verdict ) {
+			if ( $verdict->sells() ) {
+				return $verdict;
+			}
+		}
+
+		return reset( $verdicts );
 	}
 }

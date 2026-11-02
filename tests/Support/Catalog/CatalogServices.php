@@ -20,6 +20,8 @@ use SEOCart\Catalog\Application\Lifecycle\TranslationGroups;
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
+use SEOCart\Inventory\Application\LocationDirectory;
+use SEOCart\Inventory\Application\SetStockLevels;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Platform\Localization\PostLocales;
@@ -56,6 +58,8 @@ final readonly class CatalogServices {
 	 * @param TranslationBindings    $bindings   The commands that link, unlink and promote posts.
 	 * @param TranslationGroups      $groups     What keeps the bindings in step with translation groups.
 	 * @param PostLocales            $locales    The locale port every service shares.
+	 * @param SetStockLevels|null    $stockLevels Optional. The unit that applies stock cells. Default none.
+	 * @param LocationDirectory|null $locations   Optional. The stock locations. Default none.
 	 */
 	public function __construct(
 		public MysqlProductRepository $products,
@@ -68,7 +72,9 @@ final readonly class CatalogServices {
 		public PostLifecycle $lifecycle,
 		public TranslationBindings $bindings,
 		public TranslationGroups $groups,
-		public PostLocales $locales
+		public PostLocales $locales,
+		public ?SetStockLevels $stockLevels = null,
+		public ?LocationDirectory $locations = null
 	) {
 	}
 

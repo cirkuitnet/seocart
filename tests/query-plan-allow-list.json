@@ -22,9 +22,9 @@
 			"reason": "Doctor's stock check looks for hold rows whose stock item is gone, which no reclaim can give back, so it reads every hold row by design; each row's item is found by its primary key. The table holds only live checkout holds and expired ones the sweep has yet to reclaim. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
 		},
 		{
-			"id": "ce19c78854a4",
-			"statement": "SELECT p.id FROM {prefix}seocart_products p LEFT JOIN {prefix}seocart_variants v ON v.product_id = p.id AND v.combination_hash = ? LEFT JOIN {prefix}seocart_variant_prices vp ON vp.variant_id = v.id AND vp.currency = ? WHERE p.generation_state = ? AND ( p.enabled_variant_count = ? OR v.id IS NULL OR vp.id IS NULL ) ORDER BY p.id LIMIT ?",
-			"reason": "Doctor's check for a complete product that is not actually whole starts from every complete product, found by the generation_state index, looking for zero enabled variants or a missing base-currency price; about half of a real catalog is complete, so the index legitimately hands back thousands of candidate rows before the LEFT JOINs narrow them. The default variant and its price are each then found by their own unique key. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
+			"id": "1c90da1679b0",
+			"statement": "SELECT p.id FROM {prefix}seocart_products p LEFT JOIN {prefix}seocart_variants v ON v.product_id = p.id AND v.generation = p.active_variant_generation AND v.is_enabled = ? LEFT JOIN {prefix}seocart_variant_prices vp ON vp.variant_id = v.id AND vp.currency = ? WHERE p.generation_state = ? AND ( p.enabled_variant_count = ? OR vp.id IS NULL ) GROUP BY p.id ORDER BY p.id LIMIT ?",
+			"reason": "Doctor's check for a complete product that is not actually whole starts from every complete product, found by the generation_state index, looking for zero enabled variants or an enabled variant of the active generation without a base-currency price; about half of a real catalog is complete, so the index legitimately hands back thousands of candidate rows before the LEFT JOINs narrow them. Each product's enabled variants of its active generation are then found by the product_generation index and each one's price by its unique key, and a product with several such variants is reported once. On the medium dataset, where every product is complete, MariaDB estimates all of them (10044 rows) and MySQL about half of them by the index (4830 to 5021 of 10000 rows), at the rule's 5000, so MySQL breaks the rule on some runs and keeps it narrowly on others, and the entry holds on both servers. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
 		},
 		{
 			"id": "873c08c669e1",
@@ -45,8 +45,7 @@
 		{
 			"id": "471508706270",
 			"statement": "SELECT v.id FROM {prefix}seocart_variants v JOIN {prefix}seocart_products p ON p.id = v.product_id AND v.id > ? ORDER BY v.id LIMIT ?",
-			"servers": [ "mariadb" ],
-			"reason": "MariaDB only. Doctor's missing-stock-item check pages the variant ids by the primary key from its cursor, each product joined by its own primary key, and stops at its LIMIT. MariaDB estimates the whole range past the cursor without the LIMIT (9944 of 10000 rows on the medium dataset); MySQL keeps the rule (4937 rows)."
+			"reason": "Doctor's missing-stock-item check pages the variant ids by the primary key from its cursor, each product joined by its own primary key, and stops at its LIMIT. Neither server counts the LIMIT in its estimate of the range past the first page's cursor of 0: MariaDB estimates the whole table (14973 of the medium dataset's 15000 variants, a thousand of its products having six each) and MySQL about half of it (7489), which kept the rule at 4937 of 10000 rows before products had options and breaks it now, so the entry holds on both servers. It runs from `wp seocart doctor`, never on a request a shopper or a merchant makes."
 		},
 		{
 			"id": "f6631d83dcb2",

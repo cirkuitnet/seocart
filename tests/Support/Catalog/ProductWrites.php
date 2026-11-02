@@ -25,6 +25,8 @@ use SEOCart\Catalog\Infrastructure\MysqlCatalogSearch;
 use SEOCart\Catalog\Infrastructure\MysqlPriceProjections;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
+use SEOCart\Inventory\Application\LocationDirectory;
+use SEOCart\Inventory\Application\SetStockLevels;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Database\Database;
@@ -107,11 +109,21 @@ final class ProductWrites {
 	}
 
 	/**
+	 * The currencies a product written in a test may be priced in: the base currency and one other.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<string>
+	 */
+	public const OFFERED_CURRENCIES = array( CatalogTestCase::BASE_CURRENCY, 'EUR' );
+
+	/**
 	 * Builds the product write and the product lifecycle over one connection, sharing one post gateway, one stock service and one publisher.
 	 *
 	 * The lifecycle's units of work run on the given transaction manager, the connection itself
 	 * unless a test gives another, such as one that refuses as a closed schema gate does. The
-	 * product write always runs on the connection.
+	 * product write always runs on the connection. It offers the currencies OFFERED_CURRENCIES names,
+	 * so a variant's prices need no exchange rate.
 	 *
 	 * @since 0.1.0
 	 *
@@ -164,7 +176,8 @@ final class ProductWrites {
 			$ids,
 			$base,
 			$report,
-			$container->get( Authorizer::class )
+			$container->get( Authorizer::class ),
+			static fn(): array => array_map( static fn( string $code ): Currency => Currency::of( $code ), self::OFFERED_CURRENCIES )
 		);
 
 		$reconciler = new Reconciler( $products, $transactions, $locales, $clock, $ids );
@@ -183,7 +196,9 @@ final class ProductWrites {
 			new PostLifecycle( $products, $groups, $bindings, $delete, $stock, $transactions, $posts, $locales, static fn(): EventPublisher => $events, $clock, $report, $debug ),
 			$bindings,
 			$groups,
-			$locales
+			$locales,
+			$container->get( SetStockLevels::class ),
+			$container->get( LocationDirectory::class )
 		);
 	}
 

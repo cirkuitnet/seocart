@@ -15,6 +15,7 @@ use SEOCart\Catalog\Application\Projection\PriceProjections;
 use SEOCart\Catalog\Application\Search\CatalogSearch;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Domain\CatalogError;
+use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Authorization\Actor;
@@ -191,7 +192,10 @@ final class DeleteProduct {
 
 				$this->stock->deleteVariants( array_keys( $skus ), $actor );
 
-				$product->markDeleted( array_values( $skus ), $this->clock->now() );
+				// The event names the SKUs merchants gave, never the placeholder of a variant whose SKU another variant took.
+				$given = array_filter( $skus, static fn( string $sku ): bool => ! str_starts_with( $sku, Variant::NO_SKU_PREFIX ) );
+
+				$product->markDeleted( array_values( $given ), $this->clock->now() );
 
 				$this->events->publish( ...$product->releaseEvents() );
 			},

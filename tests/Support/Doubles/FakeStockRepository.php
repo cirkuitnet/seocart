@@ -1357,4 +1357,93 @@ final class FakeStockRepository implements StockRepository {
 
 		return array_slice( $variants, 0, $limit );
 	}
+
+	/**
+	 * Answers the variants among some that have an item.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $variantIds The variants.
+	 * @return list<int> Those with an item.
+	 *
+	 * @phpstan-param list<int> $variantIds
+	 */
+	public function lockPolicies( array $variantIds ): array {
+		$this->write( 'lockPolicies:' . implode( ',', $variantIds ) );
+
+		return array_values( array_filter( $variantIds, fn( int $variantId ): bool => isset( $this->items[ $variantId ] ) ) );
+	}
+
+	/**
+	 * Answers the locations among some that exist: the one location.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $locationIds The locations.
+	 * @return list<int> Those that exist.
+	 *
+	 * @phpstan-param list<int> $locationIds
+	 */
+	public function lockLocations( array $locationIds ): array {
+		$this->write( 'lockLocations:' . implode( ',', $locationIds ) );
+
+		return array_values( array_filter( $locationIds, static fn( int $locationId ): bool => self::LOCATION === $locationId ) );
+	}
+
+	/**
+	 * Records the upsert of several items.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $items The items.
+	 *
+	 * @phpstan-param list<array{0: int, 1: int}> $items
+	 */
+	public function createItemsAt( array $items ): void {
+		$this->write( 'createItemsAt:' . implode( ',', array_map( static fn( array $item ): string => $item[0] . '@' . $item[1], $items ) ) );
+	}
+
+	/**
+	 * Answers the levels of the items at the one location.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array $items The items.
+	 * @return list<StockLevel> Their levels.
+	 *
+	 * @phpstan-param list<array{0: int, 1: int}> $items
+	 */
+	public function lockedLevels( array $items ): array {
+		$this->write( 'lockedLevels:' . count( $items ) );
+
+		$levels = array();
+
+		foreach ( $items as $item ) {
+			$level = self::LOCATION === $item[1] ? $this->level( $item[0] ) : null;
+
+			if ( null !== $level ) {
+				$levels[] = $level;
+			}
+		}
+
+		return $levels;
+	}
+
+	/**
+	 * Appends a ledger entry for each row.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array        $rows          The entries.
+	 * @param LedgerReason $reason        Why.
+	 * @param string       $actorType     `user` or `system`.
+	 * @param int|null     $actorId       The user, or null.
+	 * @param string|null  $correlationId The correlation id, or null.
+	 * @return list<int> The ids.
+	 *
+	 * @phpstan-param list<array{0: int, 1: int, 2: int, 3: int}> $rows
+	 */
+	public function appendLedgerRows( array $rows, LedgerReason $reason, string $actorType, ?int $actorId, ?string $correlationId ): array {
+		return array_map( fn( array $row ): int => $this->appendLedger( $row[0], $row[1], $row[2], $row[3], $reason, $actorType, $actorId, $correlationId ), $rows );
+	}
 }

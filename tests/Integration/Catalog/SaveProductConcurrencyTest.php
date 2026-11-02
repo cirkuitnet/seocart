@@ -24,6 +24,8 @@ use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Error\ErrorDefinition;
 use SEOCart\Tests\Support\Catalog\ProductWrites;
 use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
+use SEOCart\Tests\Support\Catalog\SavesVariantSets;
+use SEOCart\Tests\Support\Catalog\VariantSets;
 
 /**
  * Two saves of one product on two real connections: they take turns on the product's lock and at
@@ -51,6 +53,8 @@ use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
  * @since 0.1.0
  */
 final class SaveProductConcurrencyTest extends ProductWriteTestCase {
+
+	use SavesVariantSets;
 
 	/**
 	 * Tests that a second save's relock waits for the first save's window to commit, and that a reader sees `updating` while that window is open.
@@ -339,5 +343,70 @@ final class SaveProductConcurrencyTest extends ProductWriteTestCase {
 		global $wpdb;
 
 		return $wpdb->posts;
+	}
+
+	/**
+	 * Tests that a second save of a product with options waits at its relock for the first one's window, and then reads the variant set the first committed.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_second_save_of_a_variant_set_waits_and_applies_to_the_firsts_result(): void {
+		$b      = $this->secondConnection();
+		$six    = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'COF' ) );
+		$relock = ProductWrites::markStatement( $this->db, $six->productId );
+		$sizes  = array( '250g', '1kg', '2kg' );
+
+		add_action(
+			'save_post_' . ProductCapabilities::POST_TYPE,
+			function () use ( $b, $relock ): void {
+				$b->query( 'START TRANSACTION' );
+				$b->queryAsync( $relock );
+
+				$this->awaitWaiting( $b, $relock, 'updating' );
+			}
+		);
+
+		$first = $this->save(
+			$six->postId,
+			array( 'post_title' => 'First writer' ),
+			array(
+				'options'  => VariantSets::options( $sizes ),
+				'variants' => VariantSets::variants( 'COF', $sizes ),
+			)
+		);
+
+		$this->assertSame( 1, $b->reap(), 'The second save\'s relock went on once the first window committed.' );
+		$this->assertSame( '9', $b->fetchValue( sprintf( 'SELECT COUNT(*) FROM `%s` WHERE product_id = %d AND generation = 1 AND is_enabled = 1', $this->db->table( CatalogTables::VARIANTS ), $six->productId ) ), 'The second save reads the set the first committed.' );
+
+		$b->query( 'ROLLBACK' );
+
+		$this->assertCount( 9, $first->variantIds );
+	}
+
+	/**
+	 * Tests that the statement that publishes a generation refuses when the product publishes another one than the window loaded: a write that took none of the product's locks.
+	 *
+	 * Planted violation: in MysqlProductRepository::PUBLISH_GENERATION, drop the condition on the
+	 * generation; the save then publishes over the other write, and the test fails.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_publication_refuses_a_generation_moved_meanwhile(): void {
+		$b   = $this->secondConnection();
+		$six = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'COF' ) );
+
+		$this->beforeStatement(
+			'/^UPDATE `[^`]+seocart_products` SET source_post_id = NULLIF/',
+			function () use ( $six ): void {
+				// A direct write in the window's own transaction: the only one that can reach the locked row.
+				$this->db->execute( 'UPDATE %i SET active_variant_generation = active_variant_generation + 7 WHERE id = %d', $this->db->table( CatalogTables::PRODUCTS ), $six->productId );
+			}
+		);
+
+		$failure = $this->saveFailure( fn() => $this->saveSet( $six->postId, VariantSets::options( array( '250g', '1kg', '2kg' ) ), VariantSets::variants( 'COF', array( '250g', '1kg', '2kg' ) ) ) );
+
+		$this->assertInstanceOf( CodedException::class, $failure );
+		$this->assertSame( CatalogError::WriteConflict, $failure->errorCode() );
+		$this->assertSame( array( 'complete', 1, 6, 6 ), $this->committedGeneration( $b, $six->productId ), 'Nothing of the refused window stands.' );
 	}
 }

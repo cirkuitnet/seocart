@@ -138,7 +138,7 @@ final class SellabilityQueryTest extends TestCase {
 			array( new ProductPostBinding( 42, Locale::of( 'en_US' ), new \DateTimeImmutable( '2026-09-01 00:00:00' ) ) ),
 			$generation,
 			null === $variantId ? 0 : 1,
-			null === $variantId ? null : Variant::stored( $variantId, '00000000-0000-4000-8000-000000000070', Sku::of( 'SKU-1' ), Variant::defaultCombinationHash(), 1, true, null, null )
+			null === $variantId ? array() : array( Variant::stored( $variantId, '00000000-0000-4000-8000-000000000070', Sku::of( 'SKU-1' ), Variant::defaultCombinationHash(), 1, true, null, null ) )
 		);
 	}
 }

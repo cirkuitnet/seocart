@@ -17,6 +17,7 @@ use SEOCart\Catalog\Domain\Event\ProductDeleted;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Catalog\Domain\SellabilityReason;
+use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\Doctor\MissingSourceCheck;
 use SEOCart\Catalog\Infrastructure\Migrations\CreateCatalogTables;
@@ -38,6 +39,8 @@ use SEOCart\Platform\Kernel\Container;
 use SEOCart\Platform\Logging\LogsTable;
 use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
 use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
+use SEOCart\Tests\Support\Catalog\SavesVariantSets;
+use SEOCart\Tests\Support\Catalog\VariantSets;
 use SEOCart\Tests\Support\Inventory\StockTables;
 use SEOCart\Tests\Support\KernelContainer;
 use SEOCart\Tests\Support\SecondConnection;
@@ -114,6 +117,8 @@ use SEOCart\Tests\Support\SecondConnection;
  * @since 0.1.0
  */
 final class LifecycleTest extends ProductWriteTestCase {
+
+	use SavesVariantSets;
 
 	/**
 	 * Hooks the product lifecycle in the kernel's place.
@@ -921,6 +926,36 @@ final class LifecycleTest extends ProductWriteTestCase {
 			'The newer generation\'s stock was not written off.'
 		);
 
+		$this->assertSame( array(), $this->reports );
+	}
+
+	/**
+	 * Tests that the deleted event names the SKUs merchants gave: a variant whose SKU another variant took stays
+	 * stored under a placeholder, and a listener would otherwise read the placeholder as a SKU.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_deleted_event_names_no_placeholder(): void {
+		$b        = $this->secondConnection();
+		$saved    = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'DEL' ) );
+		$variants = VariantSets::variants( 'DEL' );
+
+		// The variant of 250 g whole bean takes the SKU of 250 g filter, which the set leaves out.
+		$variants[0]['sku'] = $variants[1]['sku'];
+
+		unset( $variants[1] );
+
+		$this->saveSet( $saved->postId, VariantSets::options(), array_values( $variants ) );
+
+		$stored = array_column( $this->committedVariants( $b, $saved->productId ), 'sku' );
+
+		$this->assertCount( 1, array_filter( $stored, static fn( string $sku ): bool => str_starts_with( $sku, Variant::NO_SKU_PREFIX ) ), 'The variant left out is stored under a placeholder.' );
+
+		wp_delete_post( $saved->postId, true );
+
+		$payload = $b->fetchValue( sprintf( "SELECT payload_json FROM `%s` WHERE event_name = '%s'", $this->db->table( OutboxTable::NAME ), ProductDeleted::eventName() ) );
+
+		$this->assertSame( array_column( array_values( $variants ), 'sku' ), json_decode( (string) $payload, true )['p']['skus'] ?? null );
 		$this->assertSame( array(), $this->reports );
 	}
 

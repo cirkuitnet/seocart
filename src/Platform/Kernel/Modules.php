@@ -95,6 +95,7 @@ use SEOCart\Inventory\Application\InventoryError;
 use SEOCart\Inventory\Application\InventorySettings;
 use SEOCart\Inventory\Application\LocationDirectory;
 use SEOCart\Inventory\Application\Locations;
+use SEOCart\Inventory\Application\SetStockLevels;
 use SEOCart\Inventory\Application\StockService;
 use SEOCart\Inventory\Application\Transfers;
 use SEOCart\Inventory\Domain\Event\StockAdjusted;
@@ -1004,7 +1005,8 @@ final class Modules {
 				$c->get( IdGenerator::class ),
 				self::baseCurrency( $c ),
 				$c->get( Reporter::class ),
-				$c->get( Authorizer::class )
+				$c->get( Authorizer::class ),
+				static fn(): array => $c->get( CurrencyTerms::class )->offered()
 			)
 		);
 		$container->bind(
@@ -1016,10 +1018,13 @@ final class Modules {
 				$c->get( Sellability::class ),
 				$c->get( PostGateway::class ),
 				$c->get( ErrorTranslator::class ),
-				array( $c->get( Reporter::class ), 'unexpected' )
+				array( $c->get( Reporter::class ), 'unexpected' ),
+				static fn(): SetStockLevels => $c->get( SetStockLevels::class ),
+				static fn(): StockService => $c->get( StockService::class ),
+				static fn(): LocationDirectory => $c->get( LocationDirectory::class )
 			)
 		);
-		$container->bind( ProductEditorPanel::class, static fn( Container $c ): ProductEditorPanel => new ProductEditorPanel( SEOCART_PLUGIN_FILE, self::baseCurrency( $c ), $c->get( PostLocales::class ) ) );
+		$container->bind( ProductEditorPanel::class, static fn( Container $c ): ProductEditorPanel => new ProductEditorPanel( SEOCART_PLUGIN_FILE, self::baseCurrency( $c ), $c->get( PostLocales::class ), static fn(): array => $c->get( CurrencyTerms::class )->offered() ) );
 		$container->bind(
 			Reconciler::class,
 			static fn( Container $c ): Reconciler => new Reconciler( $c->get( ProductRepository::class ), $c->get( TransactionManager::class ), $c->get( PostLocales::class ), $c->get( Clock::class ), $c->get( IdGenerator::class ) )
@@ -1311,6 +1316,7 @@ final class Modules {
 				$c->get( MysqlLocationRepository::class )
 			)
 		);
+		$container->bind( SetStockLevels::class, static fn( Container $c ): SetStockLevels => new SetStockLevels( $c->get( StockRepository::class ), $c->get( TransactionManager::class ), $c->get( EventPublisher::class ), $c->get( Clock::class ), $c->get( CorrelationId::class ) ) );
 		$container->bind(
 			Locations::class,
 			static fn( Container $c ): Locations => new Locations(

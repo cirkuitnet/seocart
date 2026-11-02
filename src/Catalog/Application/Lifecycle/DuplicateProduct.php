@@ -18,9 +18,14 @@ use SEOCart\Catalog\Application\ProductWrite\CommerceInput;
 use SEOCart\Catalog\Application\ProductWrite\ProductSave;
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Application\ProductWrite\SaveResult;
+use SEOCart\Catalog\Application\ProductWrite\VariantFields;
 use SEOCart\Catalog\Domain\CatalogError;
+use SEOCart\Catalog\Domain\OptionAxis;
+use SEOCart\Catalog\Domain\OptionValue;
+use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\Sku;
 use SEOCart\Catalog\Domain\Variant;
+use SEOCart\Catalog\Domain\VariantPrice;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Support\Error\CodedException;
@@ -28,21 +33,28 @@ use SEOCart\Support\Error\CodedException;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Makes a copy of a product: a new draft post, a new product with a new default variant, a new SKU and a new stock item.
+ * Makes a copy of a product: a new draft post, a new product with new variants, new SKUs and new stock items.
  *
  * Owns one fact: what a copy of a product is. It is saved through SaveProduct, as a first save of
  * a new post, so it is bound, stored and settled like any other product, and its stock item is
  * created at zero. The post takes the original's title, content, excerpt and featured image, as a
- * draft, with no slug of its own until it is published; the variant takes its price, its
- * compare-at price and its weight. The copy is `complete` when the original has a price, and
- * cannot be sold until it is published. The copy's post is in the language of the original's
- * source post, while the site still publishes in it, and in no translation group: a copy is a
- * product of its own, never a translation of the original.
+ * draft, with no slug of its own until it is published. A product is copied with its option axes
+ * and values, when it has any, and every variant of the generation it publishes that its options
+ * still admit and that has a SKU, each with its state, weight and prices, each price on its basis,
+ * in one save: the one variant of a product without options is such a variant, under no options.
+ * A variant without a SKU, whose SKU another of the original's variants took, is left out rather
+ * than given a SKU of the copy's making: it is disabled, it keeps the original's carts, orders and
+ * stock, which a copy has none of, and it has no SKU of the merchant's to derive one from. The
+ * copy is `complete` when the original is whole, and cannot be sold until it is published. The
+ * copy's post is in the language of the original's source post, while the site still publishes in
+ * it, and in no translation group: a copy is a product of its own, never a translation of the
+ * original.
  *
- * The SKU is the original's with `-copy`, then `-copy-2` up to `-copy-9`, each tried in turn while
- * another variant holds it; the original's part is shortened when the suffix would take the SKU
- * past its length. When all nine are taken, the copy fails with `catalog.sku_taken`. A try that
- * fails rolls back whole, its post included. A product without a variant is copied without one.
+ * Each SKU is the original's with `-copy`, then `-copy-2` up to `-copy-9`, every variant taking the
+ * same suffix in a try, each try one save, tried in turn while another variant holds one of them;
+ * the original's part is shortened when the suffix would take a SKU past its length. When all
+ * nine are taken, the copy fails with `catalog.sku_taken`. A try that fails rolls back whole, its
+ * post included. A product without a variant is copied without one.
  *
  * Like the editor's save, it gives the new post the original's categories, brands and tags once
  * the copy is durable, outside its transaction, as the product endpoint writes terms; then it
@@ -153,19 +165,22 @@ final class DuplicateProduct {
 			$fields['post_author'] = $actor->userId();
 		}
 
-		$variant = $original->defaultVariant();
-		$locale  = $original->bindingOf( $postId )?->locale();
-		$locale  = null !== $locale && $this->locales->publishesIn( $locale ) ? $locale : null;
+		$locale = $original->bindingOf( $postId )?->locale();
+		$locale = null !== $locale && $this->locales->publishesIn( $locale ) ? $locale : null;
 
-		if ( null === $variant ) {
+		// Only the post is left to copy; axes are kept even when the generation they publish has no variant.
+		if ( array() === $original->variants() && $original->options()->isEmpty() ) {
 			return $this->saved( new ProductSave( null, $fields, null, $actor, null, $locale ), $postId );
 		}
 
-		$sku = '';
+		$sku   = '';
+		$named = self::copiedVariants( $original )[0] ?? null;
 
-		foreach ( self::skus( $variant->sku() ) as $sku ) {
+		for ( $copy = 1; $copy <= self::COPIES; ++$copy ) {
+			$sku = null === $named ? '' : self::copied( $named->sku(), $copy );
+
 			try {
-				return $this->saved( new ProductSave( null, $fields, self::commerce( $variant, $sku ), $actor, null, $locale ), $postId );
+				return $this->saved( new ProductSave( null, $fields, self::options( $original, $copy ), $actor, null, $locale ), $postId );
 			} catch ( CodedException $refused ) {
 				if ( CatalogError::SkuTaken !== $refused->errorCode() ) {
 					throw $refused;
@@ -196,46 +211,99 @@ final class DuplicateProduct {
 	}
 
 	/**
-	 * Returns the commerce fields a copy's variant takes from the original's, with its own SKU.
+	 * Returns the variants of a product a copy of it carries: those its options still admit that have a SKU.
 	 *
-	 * @since 0.1.0
+	 * A variant the options no longer admit, one whose value was removed, and a variant without a
+	 * SKU, are left out of the copy.
 	 *
-	 * @param Variant $variant The original's default variant.
-	 * @param string  $sku     The copy's SKU.
-	 * @return CommerceInput The fields.
+	 * @since 0.2.0
+	 *
+	 * @param Product $original The original.
+	 * @return list<Variant> The variants, in the original's order.
 	 */
-	private static function commerce( Variant $variant, string $sku ): CommerceInput {
-		$price  = $variant->basePrice();
-		$values = array(
-			CommerceFields::SKU          => $sku,
-			CommerceFields::WEIGHT_GRAMS => $variant->weightGrams(),
-		);
-
-		if ( null !== $price ) {
-			$values[ CommerceFields::PRICE_MINOR ]      = $price->priceMinor();
-			$values[ CommerceFields::CURRENCY ]         = $price->currency()->code();
-			$values[ CommerceFields::COMPARE_AT_MINOR ] = $price->compareAtMinor();
-		}
-
-		return CommerceInput::fromArray( $values );
+	private static function copiedVariants( Product $original ): array {
+		return array_values( array_filter( $original->variants(), static fn( Variant $variant ): bool => $variant->hasSku() && $original->options()->admits( $variant->selection() ) ) );
 	}
 
 	/**
-	 * Returns the SKUs a copy tries, in order: the original's with `-copy`, then `-copy-2` to `-copy-9`.
+	 * Returns the options and the variant set of a copy of a product, every SKU with one suffix: no options and one variant for a product without options.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
-	 * @param Sku $original The original's SKU.
-	 * @return list<string> The SKUs, each within the length a SKU may have.
+	 * @param Product $original The original.
+	 * @param int     $copy     Which try: 1 for `-copy`, 2 to 9 for `-copy-2` to `-copy-9`.
+	 * @return CommerceInput The fields.
 	 */
-	private static function skus( Sku $original ): array {
-		$skus = array();
+	private static function options( Product $original, int $copy ): CommerceInput {
+		$options  = array_map(
+			static fn( OptionAxis $axis ): array => array(
+				VariantFields::KEY      => $axis->key,
+				VariantFields::LABEL    => $axis->label,
+				VariantFields::POSITION => $axis->position,
+				VariantFields::VALUES   => array_map(
+					static fn( OptionValue $value ): array => array(
+						VariantFields::KEY      => $value->key,
+						VariantFields::LABEL    => $value->label,
+						VariantFields::POSITION => $value->position,
+						VariantFields::IMAGE_ID => $value->imageAttachmentId,
+						VariantFields::SWATCH   => $value->swatchHex,
+					),
+					$axis->values
+				),
+			),
+			$original->options()->axes
+		);
+		$variants = array();
 
-		for ( $copy = 1; $copy <= self::COPIES; ++$copy ) {
-			$suffix = 1 === $copy ? '-copy' : '-copy-' . $copy;
-			$skus[] = mb_substr( $original->toString(), 0, Sku::MAX_LENGTH - strlen( $suffix ), 'UTF-8' ) . $suffix;
+		foreach ( self::copiedVariants( $original ) as $variant ) {
+			$combination = array();
+
+			foreach ( $variant->selection()->pairs() as $axis => $value ) {
+				$combination[] = array(
+					VariantFields::AXIS  => (string) $axis,
+					VariantFields::VALUE => $value,
+				);
+			}
+
+			$variants[] = array(
+				VariantFields::COMBINATION   => $combination,
+				CommerceFields::SKU          => self::copied( $variant->sku(), $copy ),
+				VariantFields::ENABLED       => $variant->isEnabled(),
+				VariantFields::POSITION      => $variant->position(),
+				CommerceFields::WEIGHT_GRAMS => $variant->weightGrams(),
+				VariantFields::PRICES        => array_map(
+					static fn( VariantPrice $price ): array => array(
+						CommerceFields::CURRENCY         => $price->currency()->code(),
+						CommerceFields::PRICE_MINOR      => $price->priceMinor(),
+						CommerceFields::COMPARE_AT_MINOR => $price->compareAtMinor(),
+						VariantFields::AMOUNT_BASIS      => $price->amountBasis(),
+					),
+					$variant->prices()
+				),
+			);
 		}
 
-		return $skus;
+		return CommerceInput::fromArray(
+			array(
+				VariantFields::OPTIONS  => $options,
+				VariantFields::VARIANTS => $variants,
+			)
+		);
+	}
+
+	/**
+	 * Returns the SKU a copy's variant tries: the original's with `-copy`, or `-copy-2` to `-copy-9`.
+	 *
+	 * @since 0.1.0
+	 * @since 0.2.0 One try's SKU, of any variant.
+	 *
+	 * @param Sku $original The original's SKU.
+	 * @param int $copy     Which try: 1 for `-copy`, 2 to 9 for `-copy-2` to `-copy-9`.
+	 * @return string The SKU, within the length a SKU may have.
+	 */
+	private static function copied( Sku $original, int $copy ): string {
+		$suffix = 1 === $copy ? '-copy' : '-copy-' . $copy;
+
+		return mb_substr( $original->toString(), 0, Sku::MAX_LENGTH - strlen( $suffix ), 'UTF-8' ) . $suffix;
 	}
 }

@@ -21,11 +21,14 @@ use SEOCart\Platform\Cli\Doctor\RepairResult;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Reports `variants` and `variant_prices` rows whose product no longer exists (doctor check 8), and the derived rows of a product gone, which `--repair` deletes.
+ * Reports `variants` and `variant_prices` rows whose product no longer exists, option rows whose parent is gone and option values whose image is gone (doctor check 8), and the derived rows of a product gone, which `--repair` deletes.
  *
  * Owns one fact: which commerce rows outlived their product. Variants and prices are never
  * repaired: a variant id may already be on a ledger row, so deleting one here could break that
- * history. A sort price or a search document of a product that no longer exists is derived and
+ * history. Option axes, values and the values a variant selects are reported, never repaired: a
+ * product's deletion removes them in its own transaction, so one left over is a fault to look
+ * at. An option value whose image attachment was deleted shows no image; nothing clears it, and
+ * it is reported so a merchant can pick another. A sort price or a search document of a product that no longer exists is derived and
  * joins nothing: a
  * projection that read the product before its deletion committed may have written it after, and
  * `--repair` deletes it. A product id is never given again, so its rows stay orphans until then.
@@ -161,6 +164,27 @@ final class OrphanCommerceRowCheck implements Repairable {
 			);
 		}
 
+		$options = $this->products->orphanOptionRows( self::LIMIT + 1 );
+
+		foreach ( array(
+			'axes'       => array( 'option axis', 'option axes', 'id', 'whose product no longer exists. Never repaired.' ),
+			'values'     => array( 'option value', 'option values', 'id', 'whose axis no longer exists. Never repaired.' ),
+			'selections' => array( 'option value selected by a variant', 'option values selected by variants', 'option_value_id', 'whose variant or value no longer exists. Never repaired.' ),
+			'images'     => array( 'option value', 'option values', 'id', 'whose image attachment no longer exists: they show no image until another is picked. Never repaired.' ),
+		) as $kind => list( $one, $many, $column, $why ) ) {
+			$rows = $options[ $kind ];
+
+			if ( array() !== $rows ) {
+				$findings[] = sprintf(
+					'Reported: %1$s %2$s%3$s %4$s',
+					1 === count( $rows ) ? $one : $many,
+					implode( ', ', array_map( static fn( array $row ): int => $row[ $column ], array_slice( $rows, 0, self::LIMIT ) ) ),
+					count( $rows ) > self::LIMIT ? ' and more' : '',
+					$why
+				);
+			}
+		}
+
 		$this->pricedGone = self::productsOf( $this->products->orphanPriceProjections( self::LIMIT + 1 ) );
 
 		if ( array() !== $this->pricedGone ) {
@@ -174,7 +198,7 @@ final class OrphanCommerceRowCheck implements Repairable {
 		}
 
 		if ( array() === $findings ) {
-			return CheckResult::pass( self::NAME, 'Every variant, price, sort price and search document still has a product.' );
+			return CheckResult::pass( self::NAME, 'Every variant, price, option, sort price and search document still has its parent, and every option value its image.' );
 		}
 
 		return CheckResult::fail( self::NAME, sprintf( '%d kind%s of orphan commerce row found.', count( $findings ), 1 === count( $findings ) ? '' : 's' ), $findings );

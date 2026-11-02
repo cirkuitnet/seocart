@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Performance;
 
+use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Platform\Cli\Doctor\Check;
 use SEOCart\Platform\Cli\Doctor\Doctor;
 use SEOCart\Platform\DataRegistry\OwnedData;
@@ -63,7 +64,7 @@ final class ReferenceSeedTest extends DatabaseTestCase {
 	 *
 	 * @var string
 	 */
-	private const SMALL_DIGEST = '7049d16e939906e10c5dd0f51ec22ad6b66b907ca031704ddaaa6d23c9b394d3';
+	private const SMALL_DIGEST = '998114037b49fd1425f1503eeda9d068aaf2147864ddfc5f0b64fa1c86084358';
 
 	/**
 	 * The seed of the test, once it wrote.
@@ -172,7 +173,9 @@ final class ReferenceSeedTest extends DatabaseTestCase {
 		$currency = (string) Kernel::container()->get( SettingsStore::class )->value( InternationalSettings::BASE_CURRENCY );
 		$rows     = $this->write( $currency )['rows'];
 
-		$this->assertSame( array( 200, 300, 300, 200, 200, 200, 200 ), array( $rows['products'], $rows['posts'], $rows['product_posts'], $rows['variants'], $rows['variant_prices'], $rows['stock_policies'], $rows['stock_items'] ) );
+		// Every tenth product has six variants, five of them more, each with an item at both locations; every twentieth prices them in a second currency.
+		$this->assertSame( array( 200, 300, 300, 300, 360, 300, 420 ), array( $rows['products'], $rows['posts'], $rows['product_posts'], $rows['variants'], $rows['variant_prices'], $rows['stock_policies'], $rows['stock_items'] ) );
+		$this->assertSame( array( 40, 100, 240 ), array( $rows[ CatalogTables::OPTION_AXES ], $rows[ CatalogTables::OPTION_VALUES ], $rows[ CatalogTables::VARIANT_OPTION_VALUES ] ) );
 		$this->assertGreaterThan( 200, $rows['stock_ledger'] );
 		$this->assertGreaterThan( 0, $rows['stock_holds'] );
 		$this->assertSame( Dataset::Small->carts(), $rows['carts'] );

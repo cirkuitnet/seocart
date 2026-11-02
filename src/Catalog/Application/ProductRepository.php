@@ -15,7 +15,9 @@ use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Catalog\Domain\SellabilityFacts;
+use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Catalog\Domain\VariantPrice;
+use SEOCart\Catalog\Domain\VariantSelection;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Locale;
 
@@ -87,17 +89,24 @@ interface ProductRepository {
 	public function findByVariant( int $variantId ): ?Product;
 
 	/**
-	 * Writes a product with its bindings, its default variant and that variant's base-currency price, and gives it its ids.
+	 * Writes a product with its bindings, its options, the variants of the generation it publishes and their prices, and gives it its ids.
 	 *
 	 * A new product is created with its marker; a stored one keeps the marker it has. Bindings
-	 * the product gained are added. A base price the variant no longer has is removed. Run it
-	 * inside the caller's transaction: it writes several rows.
+	 * the product gained are added. Options it no longer has are removed with the selections of
+	 * their values; a variant its set left out is disabled; a price a variant no longer has is
+	 * removed. A stored product's generation is published, with its counts, by one statement that
+	 * applies only while the product still publishes the generation it was loaded with, after
+	 * every row of the set is written. Run it inside the caller's transaction: it writes several
+	 * rows, and nothing of it is visible before the commit.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The options, every variant of the set, and the conditional publication.
 	 *
-	 * @throws \SEOCart\Support\Error\CodedException With Domain\CatalogError::SkuTaken when another variant
-	 *         holds the SKU, never as a duplicate-key error of the database; a DatabaseException for
-	 *         any other failure, a post already bound to another product among them.
+	 * @throws \SEOCart\Support\Error\CodedException With Domain\CatalogError::SkuTaken when another product's
+	 *         variant holds a SKU of the set, naming the combination, never as a duplicate-key error of the
+	 *         database; Domain\CatalogError::SkuDuplicate when two variants of the set hold one;
+	 *         Domain\CatalogError::WriteConflict when another generation is published meanwhile; a
+	 *         DatabaseException for any other failure, a post already bound to another product among them.
 	 *
 	 * @param Product $product The product.
 	 */
@@ -246,6 +255,20 @@ interface ProductRepository {
 	 * @return list<int> The variants' ids, ascending, of every generation.
 	 */
 	public function lockVariants( int $productId ): array;
+
+	/**
+	 * Loads the variants a product holds for some combinations, each with every price: one statement.
+	 *
+	 * A consistent read: a product's variants and prices are written only under its lock, which a
+	 * caller that goes on to write them holds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int                             $productId  The product's id.
+	 * @param array<string, VariantSelection> $selections The combinations, by hash; at least one.
+	 * @return list<Variant> The variants that exist, each with its selection.
+	 */
+	public function variantsOfCombinations( int $productId, array $selections ): array;
 
 	/**
 	 * Deletes a product's rows, children first: its variants' prices, its variants, its bindings, then the product itself.
@@ -446,10 +469,11 @@ interface ProductRepository {
 	public function boundPostBindings( int $afterId, int $limit ): array;
 
 	/**
-	 * Lists products at their active generation with zero enabled variants, or whose default
-	 * variant has no price in the base currency (doctor check 5).
+	 * Lists complete products with zero enabled variants in the generation they publish, or with
+	 * an enabled variant of it that has no price in the base currency (doctor check 5).
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Every enabled variant of the published generation.
 	 *
 	 * @param string $baseCurrency The store's base currency code.
 	 * @param int    $afterId      Only products above this id.
@@ -510,6 +534,19 @@ interface ProductRepository {
 	 * @return list<array{product_id: int, locale: string}> The orphans, by product and locale.
 	 */
 	public function orphanSearchDocuments( int $limit ): array;
+
+	/**
+	 * Lists the option rows whose parent is gone, and the option values whose image attachment is gone (doctor check 8): four reads.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit The most to list of each kind.
+	 * @return array<string, list<array<string, int>>> The axes whose product is gone, the values whose axis is gone, the
+	 *         selections whose variant or value is gone, and the values whose attachment is gone.
+	 *
+	 * @phpstan-return array{axes: list<array{id: int, product_id: int}>, values: list<array{id: int, axis_id: int}>, selections: list<array{variant_id: int, option_value_id: int}>, images: list<array{id: int, image_attachment_id: int}>}
+	 */
+	public function orphanOptionRows( int $limit ): array;
 
 	/**
 	 * Counts products marked `incomplete` (doctor check 10).

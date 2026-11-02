@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Catalog\Interfaces\Admin;
 
 use SEOCart\Catalog\Application\ProductWrite\CommerceFields;
+use SEOCart\Catalog\Application\ProductWrite\VariantFields;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Interfaces\Rest\ProductCommerceSchema;
 use SEOCart\Platform\Authorization\ProductCapabilities;
@@ -116,6 +117,15 @@ final class ProductEditorPanel {
 	private PostLocales $locales;
 
 	/**
+	 * Returns the currencies the store offers, its base currency among them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var callable(): list<Currency>
+	 */
+	private $offeredCurrencies;
+
+	/**
 	 * Creates the panel. Reads nothing.
 	 *
 	 * @since 0.1.0
@@ -123,13 +133,16 @@ final class ProductEditorPanel {
 	 * @param string      $pluginFile   The main plugin file.
 	 * @param callable    $baseCurrency Returns the store's base currency (a Currency).
 	 * @param PostLocales $locales      Names the languages a new translation's link may ask for.
+	 * @param callable    $offered      Returns the currencies the store offers (a list of Currency), the base among them.
 	 *
-	 * @phpstan-param callable(): Currency $baseCurrency
+	 * @phpstan-param callable(): Currency       $baseCurrency
+	 * @phpstan-param callable(): list<Currency> $offered
 	 */
-	public function __construct( string $pluginFile, callable $baseCurrency, PostLocales $locales ) {
-		$this->pluginFile   = $pluginFile;
-		$this->baseCurrency = $baseCurrency;
-		$this->locales      = $locales;
+	public function __construct( string $pluginFile, callable $baseCurrency, PostLocales $locales, callable $offered ) {
+		$this->pluginFile        = $pluginFile;
+		$this->baseCurrency      = $baseCurrency;
+		$this->locales           = $locales;
+		$this->offeredCurrencies = $offered;
 	}
 
 	/**
@@ -167,8 +180,9 @@ final class ProductEditorPanel {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array<string, mixed> The post type, the property, the panel's title, the base currency, the fields, the verdicts' sentences,
-	 *                              and the two fields of a new translation's first save with the locale of each language code.
+	 * @return array<string, mixed> The post type, the property, the panel's title, the base currency and every currency the store offers,
+	 *                              the fields, the option axes' and the variants' lists with the fields of their items, the verdicts'
+	 *                              sentences, and the two fields of a new translation's first save with the locale of each language code.
 	 */
 	public function settings(): array {
 		$base   = ( $this->baseCurrency )();
@@ -196,7 +210,15 @@ final class ProductEditorPanel {
 				'code'     => $base->code(),
 				'exponent' => $base->exponent(),
 			),
+			'currencies'  => array_map(
+				static fn( Currency $currency ): array => array(
+					'code'     => $currency->code(),
+					'exponent' => $currency->exponent(),
+				),
+				( $this->offeredCurrencies )()
+			),
 			'fields'      => $fields,
+			'lists'       => array_map( static fn( FieldSpec $declaration ): array => self::field( $declaration ), array_values( VariantFields::all() ) ),
 			'sellability' => array(
 				'name'    => ProductCommerceSchema::SELLABILITY,
 				'label'   => $sellability,
@@ -233,16 +255,18 @@ final class ProductEditorPanel {
 	 * @since 0.1.0
 	 *
 	 * @param FieldSpec $field The field.
-	 * @return array<string, mixed> Its name, its label, the kind of control it takes, and its bounds.
+	 * @return array<string, mixed> Its name, its label, the kind of control it takes, and its bounds; a list also its most items and the fields of an item.
 	 */
 	private static function field( FieldSpec $field ): array {
-		if ( in_array( $field->name(), self::AMOUNTS, true ) ) {
-			$kind = 'amount';
-		} else {
-			$kind = FieldType::Integer === $field->type() ? 'integer' : 'text';
-		}
+		$kind = match ( true ) {
+			in_array( $field->name(), self::AMOUNTS, true ) => 'amount',
+			FieldType::Integer === $field->type()           => 'integer',
+			FieldType::Boolean === $field->type()           => 'boolean',
+			FieldType::ObjectList === $field->type()        => 'list',
+			default                                         => 'text',
+		};
 
-		return array(
+		$described = array(
 			'name'     => $field->name(),
 			'label'    => ( $field->label() )(),
 			'kind'     => $kind,
@@ -250,6 +274,13 @@ final class ProductEditorPanel {
 			'maxChars' => $field->maxLength(),
 			'minimum'  => $field->minimum(),
 		);
+
+		if ( FieldType::ObjectList === $field->type() ) {
+			$described['maxItems'] = $field->maxItems();
+			$described['fields']   = array_map( static fn( FieldSpec $member ): array => self::field( $member ), $field->fields() );
+		}
+
+		return $described;
 	}
 
 	/**

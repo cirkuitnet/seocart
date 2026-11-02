@@ -198,6 +198,23 @@ final class ScriptedProductRepository implements ProductRepository {
 	}
 
 	/**
+	 * Not used by the product write of a product on its first generation, which is all this double holds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Always.
+	 *
+	 * @param int   $productId  Unused.
+	 * @param array $selections Unused.
+	 * @return never
+	 *
+	 * @phpstan-param array<string, \SEOCart\Catalog\Domain\VariantSelection> $selections
+	 */
+	public function variantsOfCombinations( int $productId, array $selections ): never {
+		throw new \LogicException( 'A first generation has no earlier one to read.' );
+	}
+
+	/**
 	 * Not used by the product write.
 	 *
 	 * @since 0.1.0
@@ -235,9 +252,13 @@ final class ScriptedProductRepository implements ProductRepository {
 	public function save( Product $product ): void {
 		$this->write( 'repository.save' );
 
-		$variant = $product->defaultVariant();
+		$ids = array();
 
-		$product->identify( $product->id() ?? 90, null === $variant ? null : ( $variant->id() ?? 91 ) );
+		foreach ( $product->variants() as $index => $variant ) {
+			$ids[ $variant->combinationHash() ] = $variant->id() ?? 91 + $index;
+		}
+
+		$product->identify( $product->id() ?? 90, $ids );
 	}
 
 	/**
@@ -715,5 +736,24 @@ final class ScriptedProductRepository implements ProductRepository {
 	 */
 	public function promoteSource( int $productId, int $fromPostId, ?int $toPostId ): never {
 		throw new \LogicException( 'The product write in these tests changes no binding.' );
+	}
+
+	/**
+	 * Answers that no option row is orphaned.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit Unused.
+	 * @return array<string, list<array<string, int>>> Four empty lists.
+	 *
+	 * @phpstan-return array{axes: list<array{id: int, product_id: int}>, values: list<array{id: int, axis_id: int}>, selections: list<array{variant_id: int, option_value_id: int}>, images: list<array{id: int, image_attachment_id: int}>}
+	 */
+	public function orphanOptionRows( int $limit ): array {
+		return array(
+			'axes'       => array(),
+			'values'     => array(),
+			'selections' => array(),
+			'images'     => array(),
+		);
 	}
 }

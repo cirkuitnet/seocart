@@ -580,4 +580,104 @@ final class MysqlProductRepositoryTest extends CatalogTestCase {
 
 		return $this->db->lastInsertId();
 	}
+
+	/**
+	 * Tests that a product without options loads in three statements, and one with options in five, whatever the number of its variants.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_product_loads_in_three_statements_and_one_with_options_in_five(): void {
+		$plain   = $this->storedProduct( 'LOAD-PLAIN' );
+		$options = $this->storedProductWithOptions( 'LOAD-OPT' );
+		$loaded  = null;
+
+		$this->assertQueryCount( 3, $this->captureQueries( fn() => $this->products->find( (int) $plain->id() ) ), 'A product without options' );
+		$this->assertQueryCount(
+			5,
+			$this->captureQueries(
+				function () use ( $options, &$loaded ): void {
+					$loaded = $this->products->find( (int) $options->id() );
+				}
+			),
+			'A product with options'
+		);
+		$this->assertCount( 6, $loaded?->variants() ?? array() );
+		$this->assertSame( array( 'size', 'grind' ), array_map( static fn( $axis ): string => $axis->key, $loaded?->options()->axes ?? array() ) );
+		$this->assertSame( '250 g / Whole bean', $loaded?->variants()[0]->label() );
+		$this->assertSame( 'grind=whole, size=250g', $loaded->variants()[0]->selection()->toString() );
+	}
+
+	/**
+	 * Tests that a set of six variants with options is written by one statement per kind of row: axes, values, variants, their ids, their option values and their prices.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_set_is_written_by_one_multi_row_statement_per_kind(): void {
+		$product = null;
+		$log     = $this->captureQueries(
+			function () use ( &$product ): void {
+				$product = $this->storedProductWithOptions( 'MULTI' );
+			}
+		);
+		$writes  = array();
+
+		foreach ( array( 'option_axes', 'option_values', 'variants', 'variant_option_values', 'variant_prices' ) as $table ) {
+			$writes[ $table ] = $log->matching( '/^INSERT (IGNORE )?INTO `[^`]+seocart_' . $table . '`/' )->sqls();
+		}
+
+		$this->assertCount( 1, $writes['option_axes'] );
+		$this->assertSame( 2, substr_count( $writes['option_axes'][0], 'UTC_TIMESTAMP(), UTC_TIMESTAMP() )' ), 'Both axes.' );
+		$this->assertCount( 1, $writes['option_values'] );
+		$this->assertSame( 5, substr_count( $writes['option_values'][0], 'UTC_TIMESTAMP(), UTC_TIMESTAMP() )' ), 'Every value.' );
+		$this->assertCount( 1, $writes['variants'] );
+		$this->assertSame( 6, substr_count( $writes['variants'][0], 'UTC_TIMESTAMP(), UTC_TIMESTAMP() )' ), 'Every variant.' );
+		$this->assertCount( 1, $writes['variant_option_values'] );
+		$this->assertSame( 11, substr_count( $writes['variant_option_values'][0], 'UNION ALL' ), 'Twelve selections: each variant on each axis.' );
+		$this->assertCount( 1, $writes['variant_prices'] );
+		$this->assertSame( 6, substr_count( $writes['variant_prices'][0], 'UTC_TIMESTAMP(), UTC_TIMESTAMP() )' ), 'Every price.' );
+		$this->assertCount( 1, $log->matching( '/^SELECT id, combination_hash, sku FROM `[^`]+seocart_variants` WHERE product_id/' )->sqls(), 'The new variants\' ids are read once.' );
+		$this->assertCount( 6, $product?->variants() ?? array() );
+	}
+
+	/**
+	 * Tests that deleting a product deletes its option axes, values and the values its variants select, of every generation.
+	 *
+	 * Planted violation: in MysqlProductRepository::delete(), leave the selections; they outlive
+	 * the product, and the test fails.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_delete_removes_the_option_rows(): void {
+		$product = $this->storedProductWithOptions( 'DELETE-OPT' );
+		$ids     = implode( ', ', array_map( static fn( Variant $variant ): int => (int) $variant->id(), $product->variants() ) );
+
+		$this->db->transaction(
+			function () use ( $product ): void {
+				$locked = $this->products->lock( (int) $product->id() );
+
+				$this->assertNotNull( $locked );
+				$this->products->delete( $locked );
+			}
+		);
+
+		$this->assertSame( '0', $this->db->fetchValue( 'SELECT COUNT(*) FROM %i WHERE product_id = %d', $this->catalogTable( CatalogTables::OPTION_AXES ), (int) $product->id() ) );
+		$this->assertSame( '0', $this->db->fetchValue( 'SELECT COUNT(*) FROM %i', $this->catalogTable( CatalogTables::OPTION_VALUES ) ) );
+		$this->assertSame( '0', $this->db->fetchValue( 'SELECT COUNT(*) FROM %i WHERE variant_id IN ( ' . $ids . ' )', $this->catalogTable( CatalogTables::VARIANT_OPTION_VALUES ) ) );
+		$this->assertSame( '0', $this->db->fetchValue( 'SELECT COUNT(*) FROM %i WHERE product_id = %d', $this->catalogTable( CatalogTables::VARIANTS ), (int) $product->id() ) );
+	}
+
+	/**
+	 * Tests that lockVariants() locks the variants of every generation of a product, not only the published one.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_lock_variants_takes_every_generation(): void {
+		$product = $this->storedProductWithOptions( 'LOCK-GEN' );
+
+		$this->db->execute( 'UPDATE %i SET generation = 2 WHERE id = %d', $this->catalogTable( CatalogTables::VARIANTS ), (int) $product->variants()[0]->id() );
+
+		$locked = $this->db->transaction( fn(): array => $this->products->lockVariants( (int) $product->id() ) );
+
+		$this->assertCount( 6, $locked );
+	}
 }

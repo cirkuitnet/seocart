@@ -23,7 +23,10 @@ defined( 'ABSPATH' ) || exit;
  * reported to a client. A SKU another variant
  * holds is a conflict (409), so a client can tell it from a SKU that is malformed. A duplicate
  * key in storage never reaches a client as a database error: the repository translates the SKU
- * key into `catalog.sku_taken`. Codes the catalog only reports, never raises, are not rows here.
+ * key into `catalog.sku_taken`, with the combination of the variant that asked for it in the
+ * error's details, so an editor can mark the row. A variant set that cannot be saved as given is
+ * refused before anything is written, with what makes it so: the combination, the counts and their
+ * limits, the currency. Codes the catalog only reports, never raises, are not rows here.
  *
  * It lives beside the domain that raises most of its codes. Declaring it calls no WordPress
  * function: each message is a closure around a literal translation call, which runs only when
@@ -41,9 +44,10 @@ enum CatalogError: string implements ErrorCode {
 	case SkuTaken = 'catalog.sku_taken';
 
 	/**
-	 * The SKU is empty, too long, or holds a control or formatting character.
+	 * The SKU is empty, too long, holds a control or formatting character, or starts with "~", which marks a variant whose SKU another variant took; or a variant that is new or enabled was given none.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 A leading "~", and a variant without a SKU.
 	 */
 	case SkuInvalid = 'catalog.sku_invalid';
 
@@ -53,6 +57,69 @@ enum CatalogError: string implements ErrorCode {
 	 * @since 0.1.0
 	 */
 	case CurrencyNotBase = 'catalog.currency_not_base';
+
+	/**
+	 * A variant's price was given in a currency the store does not offer.
+	 *
+	 * @since 0.2.0
+	 */
+	case CurrencyNotOffered = 'catalog.currency_not_offered';
+
+	/**
+	 * A variant was given two prices in one currency.
+	 *
+	 * @since 0.2.0
+	 */
+	case PriceDuplicate = 'catalog.price_duplicate';
+
+	/**
+	 * A product was given more option axes, or more option values in all, than a product may have.
+	 *
+	 * @since 0.2.0
+	 */
+	case TooManyOptions = 'catalog.too_many_options';
+
+	/**
+	 * An option axis or value was given a key, a label, a position, an image or a swatch it may not have, or two axes, or two values of an axis, one key.
+	 *
+	 * @since 0.2.0
+	 */
+	case OptionInvalid = 'catalog.option_invalid';
+
+	/**
+	 * A variant's combination does not name every option axis of the product once, with one of its values.
+	 *
+	 * @since 0.2.0
+	 */
+	case CombinationInvalid = 'catalog.combination_invalid';
+
+	/**
+	 * Two variants of one save name the same combination.
+	 *
+	 * @since 0.2.0
+	 */
+	case CombinationDuplicate = 'catalog.combination_duplicate';
+
+	/**
+	 * A save gave a product more variants than one save may write.
+	 *
+	 * @since 0.2.0
+	 */
+	case TooManyVariants = 'catalog.too_many_variants';
+
+	/**
+	 * Two variants of one save were given one SKU; SKUs are compared without regard to case.
+	 *
+	 * @since 0.2.0
+	 */
+	case SkuDuplicate = 'catalog.sku_duplicate';
+
+	/**
+	 * A save gave the single SKU, price and weight of a product without options together with a list of variants, or for a product with options.
+	 *
+	 * @since 0.2.0
+	 */
+	case VariantsAmbiguous = 'catalog.variants_ambiguous';
 
 	/**
 	 * WordPress refused to write the product's post, or its database refused the update (`db_update_error`),
@@ -176,14 +243,15 @@ enum CatalogError: string implements ErrorCode {
 				static fn(): string =>
 					/* translators: %1$s: The SKU another product already uses. */
 					__( 'Another product already uses the SKU "%1$s".', 'seocart' ),
-				array( 'sku' )
+				array( 'sku' ),
+				details: array( 'combination' )
 			),
 			new ErrorDefinition(
 				self::SkuInvalid,
 				400,
 				static fn(): string =>
 					/* translators: %1$s: The SKU as it was given. */
-					__( 'The SKU "%1$s" is not valid: a SKU has 1 to 64 characters and no control characters.', 'seocart' ),
+					__( 'The SKU "%1$s" is not valid: a SKU has 1 to 64 characters, no control characters and no leading "~", and a new or enabled variant must have one.', 'seocart' ),
 				array( 'sku' )
 			),
 			new ErrorDefinition(
@@ -193,6 +261,75 @@ enum CatalogError: string implements ErrorCode {
 					/* translators: 1: The currency the price was given in, such as EUR. 2: The store's base currency, such as USD. */
 					__( 'A product price must be in the store\'s base currency, %2$s, not %1$s.', 'seocart' ),
 				array( 'currency', 'base_currency' )
+			),
+			new ErrorDefinition(
+				self::CurrencyNotOffered,
+				400,
+				static fn(): string =>
+					/* translators: %1$s: The currency the price was given in, such as EUR. */
+					__( 'The store does not offer %1$s, so a variant cannot have a price in it.', 'seocart' ),
+				array( 'currency' )
+			),
+			new ErrorDefinition(
+				self::PriceDuplicate,
+				400,
+				static fn(): string =>
+					/* translators: 1: A variant's combination, such as size=250g, grind=whole. 2: A currency, such as EUR. */
+					__( 'The variant %1$s was given two prices in %2$s; a variant has one price per currency.', 'seocart' ),
+				array( 'combination', 'currency' )
+			),
+			new ErrorDefinition(
+				self::TooManyOptions,
+				400,
+				static fn(): string =>
+					/* translators: 1: The number of option axes given. 2: The number of option values given, in all. 3: The most axes a product may have. 4: The most values a product may have, in all. */
+					__( 'A product may have at most %3$s option axes and %4$s option values in all; %1$s axes and %2$s values were given.', 'seocart' ),
+				array( 'axes', 'values', 'most_axes', 'most_values' )
+			),
+			new ErrorDefinition(
+				self::OptionInvalid,
+				400,
+				static fn(): string =>
+					/* translators: 1: What was refused, such as axis key, value label or swatch. 2: The value given, or the key of what it names. */
+					__( 'The option\'s %1$s "%2$s" is not valid: a key has 1 to 32 lower-case letters, digits, "-" or "_" and is used once; a label has 1 to 100 characters; a swatch is written #rrggbb in lower case; a position and an image ID are not negative.', 'seocart' ),
+				array( 'field', 'value' )
+			),
+			new ErrorDefinition(
+				self::CombinationInvalid,
+				400,
+				static fn(): string =>
+					/* translators: %1$s: A variant's combination as given, such as size=250g, grind=whole. */
+					__( 'The combination "%1$s" is not one of the product\'s: a variant names every option axis of the product once, with one of that axis\'s values.', 'seocart' ),
+				array( 'combination' )
+			),
+			new ErrorDefinition(
+				self::CombinationDuplicate,
+				400,
+				static fn(): string =>
+					/* translators: %1$s: A variant's combination, such as size=250g, grind=whole. */
+					__( 'Two variants were given the combination "%1$s"; a product has one variant per combination.', 'seocart' ),
+				array( 'combination' )
+			),
+			new ErrorDefinition(
+				self::TooManyVariants,
+				400,
+				static fn(): string =>
+					/* translators: 1: The number of variants given. 2: The most variants one save may write. */
+					__( 'A save may write at most %2$s variants of a product; %1$s were given.', 'seocart' ),
+				array( 'count', 'limit' )
+			),
+			new ErrorDefinition(
+				self::SkuDuplicate,
+				400,
+				static fn(): string =>
+					/* translators: 1: The SKU. 2: The combinations of the variants that were given it. */
+					__( 'The SKU "%1$s" was given to more than one variant (%2$s); a SKU names one variant.', 'seocart' ),
+				array( 'sku', 'combinations' )
+			),
+			new ErrorDefinition(
+				self::VariantsAmbiguous,
+				400,
+				static fn(): string => __( 'Give a product\'s variants either as the single SKU, price and weight of a product without options, or as the list of variants, not both; a product with options takes the list.', 'seocart' )
 			),
 			new ErrorDefinition(
 				self::PostRejected,

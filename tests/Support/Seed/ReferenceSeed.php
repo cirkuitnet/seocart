@@ -17,6 +17,7 @@ use SEOCart\Catalog\Application\Projection\StockSummary;
 use SEOCart\Catalog\Application\Search\ProductIndexDocument;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\Variant;
+use SEOCart\Catalog\Domain\VariantSelection;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Inventory\Domain\LedgerReason;
@@ -116,6 +117,9 @@ final class ReferenceSeed {
 		CatalogTables::PRODUCT_POSTS,
 		CatalogTables::VARIANTS,
 		CatalogTables::VARIANT_PRICES,
+		CatalogTables::OPTION_AXES,
+		CatalogTables::OPTION_VALUES,
+		CatalogTables::VARIANT_OPTION_VALUES,
 		CatalogTables::PRICE_PROJECTIONS,
 		CatalogTables::SEARCH_INDEX,
 		InventoryTables::POLICIES,
@@ -126,6 +130,49 @@ final class ReferenceSeed {
 		CartTables::LINES,
 		PromotionTables::PROMOTIONS,
 	);
+
+	/**
+	 * Every how many products one has options: a size of two values by a grind of three, six variants, each with an item at both locations.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const OPTIONED_EVERY = 10;
+
+	/**
+	 * The options of a product that has them: each axis's key and label, and each value's key and label.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, array{0: string, 1: array<string, string>}>
+	 */
+	private const OPTIONS = array(
+		'size'  => array(
+			'Size',
+			array(
+				'250g' => '250 g',
+				'1kg'  => '1 kg',
+			),
+		),
+		'grind' => array(
+			'Grind',
+			array(
+				'whole'    => 'Whole bean',
+				'filter'   => 'Filter',
+				'espresso' => 'Espresso',
+			),
+		),
+	);
+
+	/**
+	 * The second currency half the products with options are priced in.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const SECOND_CURRENCY = 'EUR';
 
 	/**
 	 * The most rows one INSERT writes.
@@ -249,7 +296,14 @@ final class ReferenceSeed {
 
 		$db->transaction(
 			function () use ( $db, $now, $location, &$counts ): void {
-				foreach ( $this->rows( $now, $location ) as list( $table, $rows ) ) {
+				// The second location, where the variants of a product with options have an item too.
+				$db->execute(
+					"INSERT INTO %i ( uuid, name, active, fulfils_online, offers_pickup, priority, created_at, updated_at ) VALUES ( %s, 'Seeded second location', 1, 1, 0, 2, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6) )",
+					self::tableName( $db, InventoryTables::LOCATIONS ),
+					'00000000-0000-4000-8000-00000000a002'
+				);
+
+				foreach ( $this->rows( $now, $location, $db->lastInsertId() ) as list( $table, $rows ) ) {
 					self::insert( $db, self::tableName( $db, $table ), $rows );
 
 					$counts[ $table ] += count( $rows );
@@ -294,7 +348,7 @@ final class ReferenceSeed {
 	public function digest( \DateTimeImmutable $now ): string {
 		$hash = hash_init( 'sha256' );
 
-		foreach ( $this->rows( $now, 1 ) as list( $table, $rows ) ) {
+		foreach ( $this->rows( $now, 1, 2 ) as list( $table, $rows ) ) {
 			hash_update( $hash, $table . "\n" . (string) wp_json_encode( $rows ) . "\n" );
 		}
 
@@ -370,13 +424,20 @@ final class ReferenceSeed {
 	 * @since 0.1.0
 	 * @since 0.2.0 The location of the stock.
 	 *
-	 * @param \DateTimeImmutable $now        The anchor instant, UTC.
-	 * @param int                $locationId The store's default location, where the stock is.
+	 * @param \DateTimeImmutable $now              The anchor instant, UTC.
+	 * @param int                $locationId       The store's default location, where the stock is.
+	 * @param int                $secondLocationId Another location, where the variants of a product with options have an item too.
 	 * @return \Generator<int, array{0: string, 1: list<array<string, int|string|null>>}> Each chunk: the table's key in TABLES, and its rows.
 	 */
-	public function rows( \DateTimeImmutable $now, int $locationId ): \Generator {
+	public function rows( \DateTimeImmutable $now, int $locationId, int $secondLocationId ): \Generator {
 		$random   = new \Random\Randomizer( new \Random\Engine\Mt19937( $this->rngSeed ) );
 		$products = $this->dataset->products();
+		$ids      = array(
+			'variant' => $products,
+			'price'   => $products,
+			'axis'    => 0,
+			'value'   => 0,
+		);
 		$anchor   = $now->getTimestamp();
 		$hash     = Variant::defaultCombinationHash();
 		$reasons  = LedgerReason::merchant();
@@ -430,6 +491,7 @@ final class ReferenceSeed {
 				'position'         => 0,
 				'created_at'       => $created,
 				'updated_at'       => $created,
+				'label'            => null,
 			);
 
 			$price = $random->getInt( 99, 99999 );
@@ -482,7 +544,13 @@ final class ReferenceSeed {
 			$held = $onHand < 2 ? 0 : ( 0 === $random->getInt( 0, 4 ) ? 2 : 1 );
 
 			// The one item, at the one location that ships online orders: for sale is what no hold takes.
-			$buffers[ CatalogTables::PRODUCTS ][ $productRow ]['stock_summary'] = StockSummary::of( array( $product => max( 0, $onHand - $held ) ) );
+			$forSale = array( $product => max( 0, $onHand - $held ) );
+
+			if ( 0 === $product % self::OPTIONED_EVERY ) {
+				$forSale += $this->options( $buffers, $product, $productRow, $price, $created, array( $locationId, $secondLocationId ), $ids );
+			}
+
+			$buffers[ CatalogTables::PRODUCTS ][ $productRow ]['stock_summary'] = StockSummary::of( $forSale );
 
 			for ( $hold = 0; $hold < $held; $hold++ ) {
 				// Half the holds are live; the others expired within the period the sweep is allowed.
@@ -563,6 +631,151 @@ final class ReferenceSeed {
 				yield array( $table, $rows );
 			}
 		}
+	}
+
+	/**
+	 * Gives a product its options and six variants: the first combination takes the variant the product already has, the five others new rows; each variant an item at both locations, the others at zero.
+	 *
+	 * Half of them price each variant in a second currency too. The products row's counts and the
+	 * first variant's combination and label are set here.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, array<array<string, mixed>>> $buffers    The rows being buffered, by table.
+	 * @param int                                        $product    The product, whose variant has its id.
+	 * @param int|string                                 $productRow The key of the product's row in its buffer.
+	 * @param int                                        $price      The first variant's base price.
+	 * @param string                                     $created    When the product was created.
+	 * @param array{0: int, 1: int}                      $locations  The two locations.
+	 * @param array<string, int>                         $ids        The last id given of each kind of row: variant, price, axis and value.
+	 * @return array<int, int> The units for sale of each new variant, by id: none.
+	 */
+	private function options( array &$buffers, int $product, int|string $productRow, int $price, string $created, array $locations, array &$ids ): array {
+		$values = array();
+
+		foreach ( self::OPTIONS as $axisKey => list( $axisLabel, $labels ) ) {
+			$axisId = ++$ids['axis'];
+
+			$buffers[ CatalogTables::OPTION_AXES ][] = array(
+				'id'         => $axisId,
+				'product_id' => $product,
+				'axis_key'   => $axisKey,
+				'label'      => $axisLabel,
+				'position'   => count( $values ),
+				'created_at' => $created,
+				'updated_at' => $created,
+			);
+
+			foreach ( array_keys( $labels ) as $position => $valueKey ) {
+				$values[ $axisKey ][ $valueKey ] = array( $axisId, ++$ids['value'] );
+
+				$buffers[ CatalogTables::OPTION_VALUES ][] = array(
+					'id'                  => $ids['value'],
+					'axis_id'             => $axisId,
+					'value_key'           => $valueKey,
+					'label'               => $labels[ $valueKey ],
+					'position'            => $position,
+					'image_attachment_id' => null,
+					'swatch_hex'          => null,
+					'created_at'          => $created,
+					'updated_at'          => $created,
+				);
+			}
+		}
+
+		$first    = array_key_last( $buffers[ CatalogTables::VARIANTS ] );
+		$template = $buffers[ CatalogTables::VARIANTS ][ $first ];
+		$forSale  = array();
+		$position = 0;
+
+		foreach ( array_keys( self::OPTIONS['size'][1] ) as $size ) {
+			foreach ( array_keys( self::OPTIONS['grind'][1] ) as $grind ) {
+				$pairs   = array(
+					'size'  => $size,
+					'grind' => $grind,
+				);
+				$label   = self::OPTIONS['size'][1][ $size ] . ' / ' . self::OPTIONS['grind'][1][ $grind ];
+				$variant = 0 === $position ? $product : ++$ids['variant'];
+
+				if ( 0 === $position ) {
+					$buffers[ CatalogTables::VARIANTS ][ $first ]['combination_hash'] = VariantSelection::of( $pairs )->hash();
+					$buffers[ CatalogTables::VARIANTS ][ $first ]['label']            = $label;
+				} else {
+					$buffers[ CatalogTables::VARIANTS ][] = array(
+						'id'               => $variant,
+						'uuid'             => sprintf( '00000000-0000-4000-9000-%012d', $variant ),
+						'sku'              => self::sku( $product ) . '-' . $position,
+						'combination_hash' => VariantSelection::of( $pairs )->hash(),
+						'position'         => $position,
+						'label'            => $label,
+					) + $template;
+
+					$buffers[ CatalogTables::VARIANT_PRICES ][] = array(
+						'id'               => ++$ids['price'],
+						'variant_id'       => $variant,
+						'currency'         => $this->baseCurrency,
+						'amount_basis'     => 'net',
+						'price_minor'      => $price + 100 * $position,
+						'compare_at_minor' => null,
+						'created_at'       => $created,
+						'updated_at'       => $created,
+					);
+
+					$buffers[ InventoryTables::POLICIES ][] = array(
+						'variant_id'          => $variant,
+						'track'               => 1,
+						'backorder_policy'    => 'no',
+						'low_stock_threshold' => null,
+						'updated_at'          => $created . '.000000',
+					);
+
+					$forSale[ $variant ] = 0;
+				}
+
+				if ( 0 === $product % ( 2 * self::OPTIONED_EVERY ) ) {
+					$buffers[ CatalogTables::VARIANT_PRICES ][] = array(
+						'id'               => ++$ids['price'],
+						'variant_id'       => $variant,
+						'currency'         => self::SECOND_CURRENCY,
+						'amount_basis'     => 'gross',
+						'price_minor'      => $price + 100 * $position + 50,
+						'compare_at_minor' => null,
+						'created_at'       => $created,
+						'updated_at'       => $created,
+					);
+				}
+
+				foreach ( $locations as $at => $location ) {
+					if ( 0 === $position && 0 === $at ) {
+						continue;
+					}
+
+					$buffers[ InventoryTables::ITEMS ][] = array(
+						'variant_id'  => $variant,
+						'location_id' => $location,
+						'on_hand'     => 0,
+						'allocated'   => 0,
+						'held'        => 0,
+						'updated_at'  => $created . '.000000',
+					);
+				}
+
+				foreach ( $pairs as $axisKey => $valueKey ) {
+					$buffers[ CatalogTables::VARIANT_OPTION_VALUES ][] = array(
+						'variant_id'      => $variant,
+						'option_value_id' => $values[ $axisKey ][ $valueKey ][1],
+						'axis_id'         => $values[ $axisKey ][ $valueKey ][0],
+					);
+				}
+
+				++$position;
+			}
+		}
+
+		$buffers[ CatalogTables::PRODUCTS ][ $productRow ]['variant_count']         = $position;
+		$buffers[ CatalogTables::PRODUCTS ][ $productRow ]['enabled_variant_count'] = $position;
+
+		return $forSale;
 	}
 
 	/**
@@ -789,7 +1002,7 @@ final class ReferenceSeed {
 		return array(
 			'product_id'      => $product,
 			'locale'          => $locale,
-			'search_document' => ( new ProductIndexDocument( $product, Locale::of( $locale ), (string) $post['post_title'], (string) $post['post_excerpt'], array( self::sku( $product ) ) ) )->text(),
+			'search_document' => ( new ProductIndexDocument( $product, Locale::of( $locale ), (string) $post['post_title'], (string) $post['post_excerpt'], self::skus( $product ) ) )->text(),
 			'created_at'      => $date,
 			'updated_at'      => $date . '.000000',
 		);
@@ -805,6 +1018,28 @@ final class ReferenceSeed {
 	 */
 	private static function sku( int $product ): string {
 		return sprintf( 'SEED-%06d', $product );
+	}
+
+	/**
+	 * Returns the SKUs of a seeded product's variants, in their order: its first variant's, then, for a product with options, its other variants'.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $product The product.
+	 * @return list<string> Such as `SEED-000010`, `SEED-000010-1` to `SEED-000010-5`.
+	 */
+	private static function skus( int $product ): array {
+		$skus = array( self::sku( $product ) );
+
+		if ( 0 === $product % self::OPTIONED_EVERY ) {
+			$variants = count( self::OPTIONS['size'][1] ) * count( self::OPTIONS['grind'][1] );
+
+			for ( $position = 1; $position < $variants; ++$position ) {
+				$skus[] = self::sku( $product ) . '-' . $position;
+			}
+		}
+
+		return $skus;
 	}
 
 	/**

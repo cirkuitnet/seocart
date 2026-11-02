@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Catalog\Interfaces\Rest;
 
 use SEOCart\Catalog\Application\ProductWrite\CommerceFields;
+use SEOCart\Catalog\Application\ProductWrite\VariantFields;
 use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Catalog\Domain\SellabilityReason;
@@ -26,7 +27,9 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: the wire shape of the `seocart` object. It is the default variant's id, which a
  * client only reads and names in a cart line; the commerce fields a save writes,
- * CommerceFields unchanged; the two that place the post among the product's posts, one per
+ * CommerceFields unchanged, the single variant of a product without options; the option axes and
+ * the whole variant set, VariantFields', sent in the `edit` context only, each variant with its
+ * id, its label and its verdict read only and its stock cells; the two that place the post among the product's posts, one per
  * language: `locale`, the language the post presents the product in, and `translation_of`, the
  * post it translates, which a post's first save may give to join that post's product; then two a
  * client only reads: `sellability`, the verdict on the default variant for the requesting user,
@@ -103,7 +106,7 @@ final class ProductCommerceSchema {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return list<FieldSpec> The default variant's id, the commerce fields a save writes, the two translation fields, then the two a client only reads.
+	 * @return list<FieldSpec> The default variant's id, the commerce fields a save writes, the options and the variants, the two translation fields, then the two a client only reads.
 	 */
 	public static function fields(): array {
 		return array_merge(
@@ -118,6 +121,7 @@ final class ProductCommerceSchema {
 				),
 			),
 			array_values( CommerceFields::all() ),
+			array_values( VariantFields::all() ),
 			array(
 				new FieldSpec(
 					name: self::LOCALE,
@@ -158,14 +162,15 @@ final class ProductCommerceSchema {
 	}
 
 	/**
-	 * Returns the names of the fields a client may write: the commerce fields a save writes, and the two translation fields.
+	 * Returns the names of the fields a client may write: the commerce fields a save writes, the options and the variants, and the two translation fields.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The options and the variants.
 	 *
 	 * @return list<string> The names.
 	 */
 	public static function writable(): array {
-		return array_merge( array_keys( CommerceFields::all() ), self::translation() );
+		return array_merge( array_keys( CommerceFields::all() ), array_keys( VariantFields::all() ), self::translation() );
 	}
 
 	/**
@@ -188,10 +193,10 @@ final class ProductCommerceSchema {
 	 */
 	public static function property(): array {
 		return JsonSchemaCompiler::restObjectProperty(
-			'The product\'s commerce data: the default variant\'s id, SKU, price, compare-at price and weight, the post\'s place among the product\'s posts in each language, and whether it may be sold.',
+			'The product\'s commerce data: the default variant\'s id, SKU, price, compare-at price and weight, the option axes and the variants with their prices and stock, the post\'s place among the product\'s posts in each language, and whether it may be sold.',
 			self::fields(),
-			array( self::VARIANT_ID, self::SELLABILITY, self::GENERATION_STATE ),
-			array( self::GENERATION_STATE )
+			array_merge( array( self::VARIANT_ID, self::SELLABILITY, self::GENERATION_STATE ), VariantFields::readOnly() ),
+			array( VariantFields::OPTIONS, VariantFields::VARIANTS, self::GENERATION_STATE )
 		);
 	}
 }

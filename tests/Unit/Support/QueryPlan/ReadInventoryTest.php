@@ -40,7 +40,7 @@ use SEOCart\Tests\Unit\TestSupport\TemporaryPluginDirectory;
  * a heredoc or an interpolated SELECT unread; accept a statement built in steps, or refuse only one
  * built with `.=`; stop looking for a statement's extension at the first closure that follows it, or
  * read only the function's own tokens; match a head by its beginning for the Catalog repository's
- * reads (the twelve constants must be complete statements).
+ * reads (the twenty-six constants must be complete statements).
  *
  * @since 0.2.0
  */
@@ -950,11 +950,11 @@ final class ReadInventoryTest extends TestCase {
 	}
 
 	/**
-	 * Tests that the Catalog repository holds twelve complete statements, matched in full: no read of it is built in steps or ends open.
+	 * Tests that the Catalog repository holds twenty-six complete statements, matched in full: no read of it is built in steps or ends open.
 	 *
 	 * @since 0.2.0
 	 */
-	public function test_the_catalogs_product_repository_holds_twelve_complete_statements(): void {
+	public function test_the_catalogs_product_repository_holds_twenty_six_complete_statements(): void {
 		$heads = ReadInventory::of( dirname( __DIR__, 4 ) . '/src/Catalog' );
 		$class = 'SEOCart\Catalog\Infrastructure\MysqlProductRepository::';
 		$pages = array(
@@ -972,7 +972,7 @@ final class ReadInventoryTest extends TestCase {
 			}
 		}
 
-		$this->assertCount( 12, array_filter( array_keys( $heads ), static fn( string $name ): bool => str_starts_with( $name, $class ) ), 'The repository\'s constants that hold a statement are these twelve.' );
+		$this->assertCount( 28, array_filter( array_keys( $heads ), static fn( string $name ): bool => str_starts_with( $name, $class ) ), 'The repository\'s constants that hold a statement are these twenty-eight.' );
 
 		foreach ( $pages as $page ) {
 			$first = $heads[ $class . $page . '_FROM_START' ] ?? array();

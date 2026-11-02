@@ -18,8 +18,16 @@ use SEOCart\Cart\Infrastructure\MysqlCartRepository;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Application\Search\SearchQuery;
 use SEOCart\Catalog\Domain\CatalogError;
+use SEOCart\Catalog\Domain\OptionAxis;
+use SEOCart\Catalog\Domain\OptionMatrix;
+use SEOCart\Catalog\Domain\OptionValue;
+use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Catalog\Domain\Sku;
+use SEOCart\Catalog\Domain\Variant;
+use SEOCart\Catalog\Domain\VariantInput;
+use SEOCart\Catalog\Domain\VariantPrice;
+use SEOCart\Catalog\Domain\VariantSelection;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\Jobs\RepriceProjections;
 use SEOCart\Catalog\Infrastructure\MysqlCatalogSearch;
@@ -31,6 +39,7 @@ use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
+use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Domain\LocationInUse;
 use SEOCart\Inventory\Domain\Transfer;
 use SEOCart\Inventory\Domain\TransferState;
@@ -298,9 +307,11 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$this->assertSame( 10000, self::$written['rows']['products'] );
 		$this->assertSame( 15000, self::$written['rows']['posts'] );
 		$this->assertSame( 15000, self::$written['rows']['product_posts'] );
-		$this->assertSame( 10000, self::$written['rows']['variants'] );
-		$this->assertSame( 10000, self::$written['rows']['variant_prices'] );
-		$this->assertSame( 10000, self::$written['rows'][ InventoryTables::ITEMS ] );
+		// A thousand products have options of 2 × 3: five more variants each, an item at both locations for each of their six, a second currency for half of them.
+		$this->assertSame( 15000, self::$written['rows']['variants'] );
+		$this->assertSame( 18000, self::$written['rows']['variant_prices'] );
+		$this->assertSame( 21000, self::$written['rows'][ InventoryTables::ITEMS ] );
+		$this->assertSame( array( 2000, 5000, 12000 ), array( self::$written['rows'][ CatalogTables::OPTION_AXES ], self::$written['rows'][ CatalogTables::OPTION_VALUES ], self::$written['rows'][ CatalogTables::VARIANT_OPTION_VALUES ] ) );
 		$this->assertGreaterThan( 10000, self::$written['rows'][ InventoryTables::LEDGER ] );
 		$this->assertGreaterThanOrEqual( QueryPlan::LARGE_TABLE, self::$written['rows'][ InventoryTables::HOLDS ], 'The holds are too few for the search of the sweep to be judged.' );
 		$this->assertSame( Dataset::Medium->carts(), self::$written['rows'][ CartTables::CARTS ] );
@@ -521,19 +532,19 @@ final class QueryPlanTest extends DatabaseTestCase {
 		// Doctor's total of the units at deactivated locations, which a seeded store has none of.
 		$stock->locationUnits( array( self::$secondLocation ) );
 
-		// The list of locations, read past the object cache, and the location reads of doctor and of the upgrade.
+		// The list of locations, read past the object cache: the seed's two and the one above; and the location reads of doctor and of the upgrade.
 		$locations = new MysqlLocationRepository( $db );
 
 		wp_cache_delete( MysqlLocationRepository::CACHE_KEY, MysqlLocationRepository::CACHE_GROUP );
 
-		$this->assertCount( 2, $locations->all() );
+		$this->assertCount( 3, $locations->all() );
 		$this->assertTrue( $locations->any() );
 		$locations->defaultWithoutAddress();
 
 		// The list of locations' reads: the records with their pickup hours, and each location's
 		// units on hand and open allocations. Then the stock list of a page, and what refers to the
 		// second location, which a deletion of it reads: the default is refused before that read.
-		$this->assertCount( 2, $locations->records() );
+		$this->assertCount( 3, $locations->records() );
 		$stock->locationTotals( array( $location, self::$secondLocation ) );
 		$stock->stockList( $page );
 		$this->assertSame( LocationInUse::Transfers, $stock->locationUse( self::$secondLocation ), 'The second location\'s items are all at zero, with no stock history; the planted transfers name it.' );
@@ -569,9 +580,10 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$stock->openAllocationLocationsByOrder( StockProjectionCheck::ORDERS_SCANNED );
 		$transfers->ordersWithOpenTransfer( array( 4998, 4999, 5000 ) );
 
-		// A cursor near the end of the table: doctor's own reverse check pages from 0, so this is
-		// the only place a real cursor reaches MysqlStockRepository::ITEM_VARIANT_IDS.
-		$stock->itemVariantIds( Dataset::Medium->products() - 1000, 20 );
+		// A cursor near the end of the table, past the variants the products with options added:
+		// doctor's own reverse check pages from 0, so this is the only place a real cursor reaches
+		// MysqlStockRepository::ITEM_VARIANT_IDS.
+		$stock->itemVariantIds( self::lastId( CatalogTables::VARIANTS ) - 1000, 20 );
 
 		// The translation-group check's own read of every bound post: its first page, no cursor,
 		// then a page part-way through the table. SeedVerifier's doctor run never reaches it,
@@ -591,6 +603,9 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$products->invalidSourceBindings( $lateProduct, 20 );
 		$products->unboundPostIds( $latePost, 20 );
 		$products->incompleteMismatchIds( self::$baseCurrency, $lateProduct, 20 );
+
+		// Doctor's reads of the option rows whose parent is gone, and of the values whose image is gone.
+		$products->orphanOptionRows( 20 );
 
 		// The rate limiter's one read: the count of a client's current window, by its primary key.
 		( new TableRateLimiter( $db ) )->peek( 'cart.write', ClientIdentity::ofClient( '192.0.2.1', 0, 'query plans' ), 60 );
@@ -670,6 +685,22 @@ final class QueryPlanTest extends DatabaseTestCase {
 					$stock->lockItemsOf( $expired );
 					$stock->lockAdjustable( $expired, self::$secondLocation );
 
+					// The stock cells' unit: the shared locks of its variants' policies and of its locations, the
+					// locked levels of its items, and the step between the ids of its ledger entries.
+					$stock->lockPolicies( array( 4990, 5000 ) );
+					$stock->lockLocations( array( $location, self::$secondLocation ) );
+					$stock->lockedLevels( array( array( 4990, $location ), array( 5000, $location ), array( 5000, self::$secondLocation ) ) );
+					$stock->appendLedgerRows( array( array( 5000, $location, 0, 0 ) ), LedgerReason::Recount, 'user', 1, null );
+
+					// A save of a product with options under its lock: a value added, so the axes are read back and the
+					// new variants' SKUs are looked for and their ids read back; then a save that finds the product's
+					// generation moved by a write that took no lock, which reads whether the product still exists.
+					$this->saveWithOptions( $db, $products, 5000 );
+					$this->saveWithOptions( $db, $products, 4990, true );
+
+					// A save that gives a product its former axes and no prices, which reads the prices of the rows it finds.
+					$this->restoreWithoutPrices( $products, 4980 );
+
 					// Doctor's repair of a store without a default: this store has one, so it marks nothing.
 					$this->assertNull( $locations->markLowestActiveDefault() );
 
@@ -677,9 +708,10 @@ final class QueryPlanTest extends DatabaseTestCase {
 					$this->assertNotNull( $locations->lockRecord( self::SECOND_LOCATION_UUID ) );
 					$this->assertTrue( $locations->moveDefault( self::$secondLocation ) );
 
-					// The upgrade's pages of the earlier rows, each from a cursor near the end of its table.
+					// The upgrade's pages of the earlier rows, each from a cursor near the end of its table: the
+					// items' by variant, past the variants the products with options added.
 					foreach ( array(
-						InventoryTables::ITEMS       => Dataset::Medium->products() - 1000,
+						InventoryTables::ITEMS       => self::lastId( CatalogTables::VARIANTS ) - 1000,
 						InventoryTables::HOLDS       => self::lastId( InventoryTables::HOLDS ) - 1000,
 						InventoryTables::ALLOCATIONS => 0,
 						InventoryTables::LEDGER      => self::lastId( InventoryTables::LEDGER ) - 1000,
@@ -708,9 +740,10 @@ final class QueryPlanTest extends DatabaseTestCase {
 					// A declined order's release: the lock of its reserved promotion uses, then the release.
 					( new PromotionUsage( $promotions, $db ) )->release( 1 );
 
-					// The catalog's write path: the mark, then a save that gives the product the SKU of
-					// another, so that the repository looks up the variant holding it.
-					$product = $products->findByVariant( 5000 );
+					// The catalog's write path on a product without options and with a second post: the mark,
+					// then a save that gives the product the SKU of another, so that the repository looks up the
+					// variant holding it.
+					$product = $products->findByVariant( 4998 );
 					$variant = null === $product ? null : $product->defaultVariant();
 
 					$this->assertNotNull( $product );
@@ -728,7 +761,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 					// A change of the product's posts: its second post locked with it, a binding refused
 					// because the post presents it already, and the source handed over to the second post.
 					$source = (int) $product->sourcePostId();
-					$second = $this->seed()->secondPostId( 5000 );
+					$second = $this->seed()->secondPostId( 4998 );
 
 					$this->assertArrayHasKey( (int) $product->id(), $products->lockWithPost( $second, (int) $product->id() ) );
 
@@ -813,6 +846,120 @@ final class QueryPlanTest extends DatabaseTestCase {
 	}
 
 	/**
+	 * Saves a seeded product with options, a third size added, under its lock, inside the caller's transaction.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Database               $db       The connection whose transaction holds the product's lock.
+	 * @param MysqlProductRepository $products The repository.
+	 * @param int                    $product  A seeded product with options.
+	 * @param bool                   $moved    Optional. Whether its generation is moved first, on the same connection, so the save is refused. Default false.
+	 */
+	private function saveWithOptions( Database $db, MysqlProductRepository $products, int $product, bool $moved = false ): void {
+		$base   = Currency::of( self::$baseCurrency );
+		$loaded = $products->lock( $product );
+
+		$this->assertNotNull( $loaded );
+		$this->assertCount( 6, $loaded->variants(), 'The seeded product has its six variants.' );
+
+		$axes    = $loaded->options()->axes;
+		$axes[0] = OptionAxis::of( $axes[0]->key, $axes[0]->label, $axes[0]->position, array_merge( $axes[0]->values, array( OptionValue::of( '2kg', '2 kg', 2 ) ) ) );
+		$inputs  = array();
+
+		foreach ( array( '250g', '1kg', '2kg' ) as $size ) {
+			foreach ( array( 'whole', 'filter', 'espresso' ) as $grind ) {
+				$inputs[] = new VariantInput(
+					sprintf( '00000000-0000-4000-a000-%012d', $product * 100 + count( $inputs ) ),
+					VariantSelection::of(
+						array(
+							'size'  => $size,
+							'grind' => $grind,
+						)
+					),
+					Sku::of( sprintf( 'QP-%d-%s-%s', $product, $size, $grind ) ),
+					prices: array( VariantPrice::net( $base, 1000 ) )
+				);
+			}
+		}
+
+		$loaded->applyOptions( OptionMatrix::of( $axes ) );
+		$loaded->applyVariants( $inputs, array( $base ), $base, Product::MAX_SYNC_VARIANTS );
+
+		if ( $moved ) {
+			$db->execute( 'UPDATE %i SET active_variant_generation = active_variant_generation + 5 WHERE id = %d', $db->table( CatalogTables::PRODUCTS ), $product );
+		}
+
+		try {
+			$products->save( $loaded );
+
+			$this->assertFalse( $moved, 'A save over a moved generation was taken.' );
+		} catch ( CodedException $refused ) {
+			$this->assertTrue( $moved );
+			$this->assertSame( CatalogError::WriteConflict, $refused->errorCode() );
+		}
+	}
+
+	/**
+	 * Saves a seeded product with options under an axis more, then gives it its former axes and no prices, each under its lock, inside the caller's transaction.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param MysqlProductRepository $products The repository.
+	 * @param int                    $product  A seeded product with options.
+	 */
+	private function restoreWithoutPrices( MysqlProductRepository $products, int $product ): void {
+		$base   = Currency::of( self::$baseCurrency );
+		$loaded = $products->lock( $product );
+
+		$this->assertNotNull( $loaded );
+		$this->assertCount( 6, $loaded->variants(), 'The seeded product has its six variants.' );
+
+		$former = $loaded->options();
+		$inputs = array_map(
+			static fn( Variant $variant ): VariantInput => new VariantInput( $variant->uuid(), $variant->selection(), $variant->sku() ),
+			$loaded->variants()
+		);
+		$axes   = $former->axes;
+		$axes[] = OptionAxis::of( 'roast', 'Roast', count( $axes ), array( OptionValue::of( 'dark', 'Dark', 0 ) ) );
+
+		$loaded->applyOptions( OptionMatrix::of( $axes ) );
+		$loaded->applyVariants(
+			array(
+				new VariantInput(
+					sprintf( '00000000-0000-4000-b000-%012d', $product ),
+					VariantSelection::of(
+						array(
+							'size'  => '250g',
+							'grind' => 'whole',
+							'roast' => 'dark',
+						)
+					),
+					Sku::of( sprintf( 'QP-%d-roast', $product ) )
+				),
+			),
+			array( $base ),
+			$base,
+			Product::MAX_SYNC_VARIANTS
+		);
+		$products->save( $loaded );
+
+		$moved = $products->lock( $product );
+
+		$this->assertNotNull( $moved );
+
+		$outside = $moved->possiblySuperseded( array_map( static fn( VariantInput $input ): VariantSelection => $input->selection, $inputs ) );
+
+		$this->assertCount( 6, $outside );
+
+		$moved->loadSuperseded( $products->variantsOfCombinations( $product, $outside ) );
+		$moved->applyOptions( $former );
+		$moved->applyVariants( $inputs, array( $base ), $base, Product::MAX_SYNC_VARIANTS );
+		$products->save( $moved );
+
+		$this->assertNotNull( $moved->variants()[0]->basePrice(), 'The variant found its row\'s price.' );
+	}
+
+	/**
 	 * Returns the statements a call sends, as the server receives them.
 	 *
 	 * @since 0.2.0
@@ -864,7 +1011,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Gives the seeded store a second active location, with an item at zero there for one variant in thirty: what a second location has before stock is moved to it.
+	 * Gives the seeded store another active location, with an item at zero there for one variant in thirty: what a new location has before stock is moved to it.
 	 *
 	 * The items have no ledger, as an item at zero created by a first adjustment has none until
 	 * it counts a unit, so doctor stays clean.
@@ -885,7 +1032,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$location = $db->lastInsertId();
 		$items    = $db->table( InventoryTables::ITEMS );
 
-		$db->execute( 'INSERT INTO %i ( variant_id, location_id, on_hand, allocated, held, updated_at ) SELECT variant_id, %d, 0, 0, 0, updated_at FROM %i WHERE MOD( variant_id, 30 ) = 0', $items, $location, $items );
+		$db->execute( 'INSERT INTO %i ( variant_id, location_id, on_hand, allocated, held, updated_at ) SELECT variant_id, %d, 0, 0, 0, MAX( updated_at ) FROM %i WHERE MOD( variant_id, 30 ) = 0 GROUP BY variant_id', $items, $location, $items );
 		$db->execute( 'ANALYZE TABLE %i', $items );
 		wp_cache_delete( MysqlLocationRepository::CACHE_KEY, MysqlLocationRepository::CACHE_GROUP );
 

@@ -96,12 +96,17 @@ final class Statement {
 	/**
 	 * Returns the statement's shape: the statement without its values.
 	 *
+	 * A list of values has one shape whatever its length: an IN list's, and a FIELD list's after its
+	 * first argument, which pairs each row with the place of its value in the list the IN names.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 A FIELD list's values.
 	 *
 	 * @return string The shape.
 	 */
 	public function shape(): string {
 		$shape = (string) preg_replace( '/\bIN\s*\(\s*\?(?:\s*,\s*\?)*\s*\)/i', 'IN ( ?+ )', $this->valueless() );
+		$shape = (string) preg_replace( '/\bFIELD\s*\(\s*([\w.`]+)\s*,\s*\?(?:\s*,\s*\?)*\s*\)/i', 'FIELD( $1, ?+ )', $shape );
 
 		return trim( (string) preg_replace( '/\s+/', ' ', $shape ) );
 	}

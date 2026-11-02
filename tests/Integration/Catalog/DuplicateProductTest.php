@@ -18,6 +18,7 @@ use SEOCart\Catalog\Domain\GenerationState;
 use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Domain\Sku;
+use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\ProductTaxonomies;
 use SEOCart\Inventory\Domain\LedgerReason;
@@ -27,6 +28,8 @@ use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Catalog\CreatesTerms;
 use SEOCart\Tests\Support\Catalog\ProductWrites;
 use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
+use SEOCart\Tests\Support\Catalog\SavesVariantSets;
+use SEOCart\Tests\Support\Catalog\VariantSets;
 
 /**
  * A copy of a product is a new draft product with its own variant, its own SKU and its own stock item at zero.
@@ -45,11 +48,20 @@ use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
  *   reported as another path's write, and the first test fails.
  * - In DuplicateProduct::saved(), drop the copyTerms() call: the copy has no categories, brand or
  *   tags, and test_a_copy_keeps_the_originals_categories_brands_and_tags fails.
+ * - In DuplicateProduct::duplicate(), save a product without options through its flat fields, its
+ *   SKU, base price and weight: the copy is enabled, net and has no price in another currency, and
+ *   test_a_copy_of_a_product_without_options_keeps_its_state_basis_and_rows fails.
+ * - In DuplicateProduct::options(), leave out the cast of the axis key: the copy of a product whose
+ *   axis key is digits alone fails with an InvalidArgumentException.
+ * - In DuplicateProduct::duplicate(), return early for any product without a variant: the copy of a
+ *   product with axes and no variant in its generation has no axes.
  *
  * @since 0.1.0
  * @since 0.2.0 A copy keeps its original's terms.
  */
 final class DuplicateProductTest extends ProductWriteTestCase {
+
+	use SavesVariantSets;
 
 	use CreatesTerms;
 
@@ -289,5 +301,153 @@ final class DuplicateProductTest extends ProductWriteTestCase {
 		$this->trackPost( $copy->postId );
 
 		return $copy;
+	}
+
+	/**
+	 * Tests that a product with options is copied with its options and its six variants, new SKUs, in one save.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_product_with_options_is_copied_with_its_variants_in_one_save(): void {
+		$b        = $this->secondConnection();
+		$original = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'COF' ) );
+		$copy     = $this->copy( $original );
+		$variants = $this->committedVariants( $b, $copy->productId );
+
+		$this->assertNotSame( $original->productId, $copy->productId );
+		$this->assertSame( array_keys( $original->variantIds ), array_keys( $copy->variantIds ), 'The copy has the same combinations.' );
+		$this->assertSame( array_map( static fn( array $variant ): string => $variant['sku'] . '-copy', VariantSets::variants( 'COF' ) ), array_column( $variants, 'sku' ) );
+		$this->assertSame( array( 'complete', 1, 6, 6 ), $this->committedGeneration( $b, $copy->productId ) );
+		$this->assertSame( 1, $this->committedSaves( $b, $copy->productId ), 'One save.' );
+		$this->assertSame( 2, $this->committedCount( $b, CatalogTables::OPTION_AXES, 'product_id = ' . $copy->productId ) );
+		$this->assertSame( 12, $this->committedCount( $b, CatalogTables::VARIANT_PRICES, 'variant_id IN ( ' . implode( ', ', $copy->variantIds ) . ' )' ) );
+	}
+
+	/**
+	 * Tests that a copy of a product with axes and no variant in the generation it publishes keeps the axes.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_copy_of_a_product_with_axes_and_no_variant_keeps_the_axes(): void {
+		$b        = $this->secondConnection();
+		$original = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'AXES' ) );
+		$sizes    = array( VariantSets::options()[0] );
+
+		// Other axis keys, given alone: the generation moves, and no variant of the last one is admitted.
+		$this->save( $original->postId, array(), array( 'options' => $sizes ) );
+
+		$this->assertSame( array(), $this->products->find( $original->productId )?->variants() );
+
+		$copy    = $this->copy( $original );
+		$options = $this->products->find( $copy->productId )?->options();
+
+		$this->assertSame( array( 'size' ), $options?->axisKeys(), 'The copy lost the axes.' );
+		$this->assertSame( 2, $options->valueCount() );
+		$this->assertSame( array(), $copy->variantIds, 'The copy has a variant the original does not publish.' );
+		$this->assertSame( 0, $this->committedCount( $b, CatalogTables::VARIANTS, 'product_id = ' . $copy->productId ) );
+	}
+
+	/**
+	 * Tests that a product whose axis keys and value keys are digits alone is copied with them.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_product_whose_keys_are_digits_alone_is_copied_with_them(): void {
+		$b        = $this->secondConnection();
+		$original = $this->saveSet( null, VariantSets::digitOptions(), VariantSets::digitVariants( 'DIGITS' ) );
+		$copy     = $this->copy( $original );
+
+		$this->assertSame( array_keys( $original->variantIds ), array_keys( $copy->variantIds ), 'The copy has the same combinations.' );
+		$this->assertSame( array( 'DIGITS-500-copy', 'DIGITS-1000-copy' ), array_column( $this->committedVariants( $b, $copy->productId ), 'sku' ) );
+		$this->assertSame( 2, $this->committedCount( $b, CatalogTables::OPTION_AXES, 'product_id = ' . $copy->productId ) );
+	}
+
+	/**
+	 * Tests that a copy of a product without options keeps the variant's state, every price on its basis and its weight, under its own SKU, in one save.
+	 *
+	 * A copy that enabled the variant would put on sale, once published, what the merchant disabled.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_copy_of_a_product_without_options_keeps_its_state_basis_and_rows(): void {
+		$b        = $this->secondConnection();
+		$original = $this->savedOnGrossPrices( 'OFF-1', false );
+
+		$this->assertSame( array( 'incomplete', 1, 1, 0 ), $this->committedGeneration( $b, $original->productId ) );
+
+		$copy = $this->copy( $original );
+
+		$this->assertSame( array( 'incomplete', 1, 1, 0 ), $this->committedGeneration( $b, $copy->productId ), 'The state and the counts.' );
+		$this->assertSame( array( 'EUR:gross:999', 'USD:gross:1234:2000' ), $this->committedPrices( $b, (int) $copy->variantId ), 'Every price, on its basis.' );
+		$this->assertSame(
+			array(
+				(int) $copy->variantId => array(
+					'generation' => 1,
+					'enabled'    => 0,
+					'sku'        => 'OFF-1-copy',
+					'hash'       => Variant::defaultCombinationHash(),
+					'label'      => null,
+				),
+			),
+			$this->committedVariants( $b, $copy->productId )
+		);
+		$this->assertSame( '7', $b->fetchValue( sprintf( 'SELECT weight_grams FROM `%s` WHERE id = %d', $this->catalogTable( CatalogTables::VARIANTS ), (int) $copy->variantId ) ) );
+		$this->assertSame( 0, $this->committedCount( $b, CatalogTables::OPTION_AXES, 'product_id = ' . $copy->productId ), 'It has no options.' );
+		$this->assertSame( 1, $this->committedStockItems( $b, (int) $copy->variantId ) );
+		$this->assertSame( 1, $this->committedSaves( $b, $copy->productId ), 'One save.' );
+		$this->assertSame( array( 'EUR:gross:999', 'USD:gross:1234:2000' ), $this->committedPrices( $b, (int) $original->variantId ), 'The original changed.' );
+	}
+
+	/**
+	 * Tests that an enabled product without options on gross prices is copied `complete`, and that the suffixes still number its SKU on those prices.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_whole_product_without_options_is_copied_whole_on_its_prices(): void {
+		$b        = $this->secondConnection();
+		$original = $this->savedOnGrossPrices( 'ON-1' );
+		$first    = $this->copy( $original );
+		$second   = $this->copy( $original );
+
+		$this->assertSame( array( 'complete', 1, 1, 1 ), $this->committedGeneration( $b, $first->productId ) );
+		$this->assertSame( SellabilityReason::NotPublished, $first->sellability );
+		$this->assertSame( array( 'Taxed coffee', 'ON-1-copy', '1234' ), $this->committedProduct( $b, $first ) );
+		$this->assertSame( array( 'Taxed coffee', 'ON-1-copy-2', '1234' ), $this->committedProduct( $b, $second ) );
+		$this->assertSame( array( 'EUR:gross:999', 'USD:gross:1234:2000' ), $this->committedPrices( $b, (int) $second->variantId ) );
+	}
+
+	/**
+	 * Tests that a copy leaves out a variant whose SKU another variant took, so it never carries the placeholder as a SKU.
+	 *
+	 * Planted violation: in DuplicateProduct::copiedVariants(), keep every variant the options
+	 * admit; the copy is then refused for the placeholder's SKU, or carries it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_copy_leaves_out_a_variant_without_a_sku(): void {
+		$b        = $this->secondConnection();
+		$original = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'DUP' ) );
+		$variants = VariantSets::variants( 'DUP' );
+		$left     = VariantSets::hash(
+			array(
+				'size'  => '250g',
+				'grind' => 'filter',
+			)
+		);
+
+		// The variant of 250 g whole bean takes the SKU of 250 g filter, which the set leaves out.
+		$variants[0]['sku'] = $variants[1]['sku'];
+
+		unset( $variants[1] );
+
+		$this->saveSet( $original->postId, VariantSets::options(), array_values( $variants ) );
+
+		$copy   = $this->copy( $original );
+		$copied = $this->committedVariants( $b, $copy->productId );
+
+		$this->assertArrayNotHasKey( $left, $copy->variantIds, 'The variant without a SKU is left out.' );
+		$this->assertSame( array_map( static fn( array $variant ): string => $variant['sku'] . '-copy', array_values( $variants ) ), array_column( $copied, 'sku' ) );
+		$this->assertSame( array(), array_filter( array_column( $copied, 'sku' ), static fn( string $sku ): bool => str_contains( $sku, '~' ) ), 'No SKU of the copy is a placeholder\'s.' );
+		$this->assertSame( array( 'complete', 1, 5, 5 ), $this->committedGeneration( $b, $copy->productId ) );
 	}
 }

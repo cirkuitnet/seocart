@@ -1211,8 +1211,8 @@ final class CatalogDoctorTest extends CatalogTestCase {
 
 		$row4Post = $this->unboundPost();
 
-		// Zero enabled variants, otherwise whole (a stock item, a price): the ruled gap, reported
-		// but never repaired, since Product::settle() does not weigh is_enabled on its own.
+		// Zero enabled variants, otherwise whole (a stock item, a price): settle() weighs the enabled
+		// variants, so the repair marks it incomplete.
 		$row5Product = $this->storedProduct( 'SKU-ROW5B' );
 		$this->db->transaction( fn () => $this->stock->createItems( array( (int) $row5Product->defaultVariant()?->id() ) ) );
 		$this->db->execute( 'UPDATE %i SET is_enabled = 0, updated_at = UTC_TIMESTAMP() WHERE product_id = %d', $this->catalogTable( CatalogTables::VARIANTS ), (int) $row5Product->id() );
@@ -1287,11 +1287,11 @@ final class CatalogDoctorTest extends CatalogTestCase {
 			// repair never reaches it, and it gets no stock item.
 			$this->assertArrayNotHasKey( $row8Variant, $this->stock->levels( array( $row8Variant ) ) );
 
-			// Reported, still failing: 1, 2, 5 (zero enabled variants, the ruled gap), 8, the
-			// reverse line.
+			// Reported, still failing: 1, 2, 8, the reverse line. Row 5's zero enabled variants is
+			// repaired: a product needs an enabled variant to be whole.
 			$this->assertFalse( $secondByName['no_binding'] ?? true );
 			$this->assertFalse( $secondByName['missing_source'] ?? true );
-			$this->assertFalse( $secondByName['incomplete_mismatch'] ?? true, 'Zero enabled variants, otherwise whole, is never repaired: settle() does not weigh it.' );
+			$this->assertTrue( $secondByName['incomplete_mismatch'] ?? false, 'Zero enabled variants, otherwise whole, is settled incomplete: settle() weighs the enabled variants.' );
 			$this->assertFalse( $secondByName['orphan_commerce_rows'] ?? true );
 			$this->assertFalse( $secondByName['orphan_stock_item'] ?? true );
 
@@ -1667,5 +1667,74 @@ final class CatalogDoctorTest extends CatalogTestCase {
 	 */
 	private function databaseNow(): \DateTimeImmutable {
 		return new \DateTimeImmutable( (string) $this->db->fetchValue( 'SELECT UTC_TIMESTAMP(6)' ), new \DateTimeZone( 'UTC' ) );
+	}
+
+	/**
+	 * Tests row 5 over a product with options: silent when every enabled variant of the published generation has its base price, a disabled one without a price included.
+	 *
+	 * Planted violation: in MysqlProductRepository, join the scan to the variant of the empty
+	 * combination, as before options; the product with options has none, and is reported.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_row_5_is_silent_on_a_whole_product_with_options(): void {
+		$product  = $this->storedProductWithOptions( 'OPT-SILENT' );
+		$variants = $product->variants();
+		$disabled = (int) $variants[5]->id();
+		$check    = new IncompleteMismatchCheck( $this->products, static fn(): Currency => Currency::of( self::BASE_CURRENCY ), $this->newSettler() );
+
+		$this->assertTrue( $check->run()->passed, 'A whole product with options is not a finding.' );
+
+		$this->db->execute( 'UPDATE %i SET is_enabled = 0 WHERE id = %d', $this->catalogTable( CatalogTables::VARIANTS ), $disabled );
+		$this->db->execute( 'UPDATE %i SET enabled_variant_count = 5 WHERE id = %d', $this->catalogTable( CatalogTables::PRODUCTS ), (int) $product->id() );
+		$this->db->execute( 'DELETE FROM %i WHERE variant_id = %d', $this->catalogTable( CatalogTables::VARIANT_PRICES ), $disabled );
+
+		$this->assertTrue( $check->run()->passed, 'A disabled variant may lack a price.' );
+	}
+
+	/**
+	 * Tests row 5 over a product with options: an enabled variant without its base price is reported, and the repair settles the product incomplete.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_row_5_reports_an_enabled_variant_without_its_base_price(): void {
+		$product   = $this->storedProductWithOptions( 'OPT-LOUD' );
+		$productId = (int) $product->id();
+		$check     = new IncompleteMismatchCheck( $this->products, static fn(): Currency => Currency::of( self::BASE_CURRENCY ), $this->newSettler() );
+
+		$this->db->execute( 'DELETE FROM %i WHERE variant_id = %d', $this->catalogTable( CatalogTables::VARIANT_PRICES ), (int) $product->variants()[2]->id() );
+
+		$result = $check->run();
+
+		$this->assertFalse( $result->passed );
+		$this->assertSame( array( $productId ), $this->extractIds( $result->findings[0] ), 'Reported once, whatever the number of variants it has.' );
+		$this->assertCount( 1, $check->repair()->changes );
+		$this->assertSame( GenerationState::Incomplete, $this->productRowState( $productId ) );
+	}
+
+	/**
+	 * Tests that doctor names option rows whose parent is gone, and an option value whose image attachment is gone.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_orphan_option_rows_and_a_missing_image_are_reported(): void {
+		$product = $this->storedProductWithOptions( 'OPT-ORPHAN' );
+		$axis    = (int) $this->db->fetchValue( 'SELECT id FROM %i WHERE product_id = %d ORDER BY id LIMIT 1', $this->catalogTable( CatalogTables::OPTION_AXES ), (int) $product->id() );
+		$value   = (int) $this->db->fetchValue( 'SELECT id FROM %i WHERE axis_id = %d ORDER BY id LIMIT 1', $this->catalogTable( CatalogTables::OPTION_VALUES ), $axis );
+		$check   = new OrphanCommerceRowCheck( $this->products, new MysqlPriceProjections( $this->db ), new MysqlCatalogSearch( $this->db ) );
+
+		$this->assertTrue( $check->run()->passed, (string) wp_json_encode( $check->run()->findings ) );
+
+		$this->db->execute( "INSERT INTO %i ( product_id, axis_key, label, position, created_at, updated_at ) VALUES ( 999991, 'gone', 'Gone', 0, UTC_TIMESTAMP(), UTC_TIMESTAMP() )", $this->catalogTable( CatalogTables::OPTION_AXES ) );
+		$orphanAxis = $this->db->lastInsertId();
+		$this->db->execute( "INSERT INTO %i ( axis_id, value_key, label, position, created_at, updated_at ) VALUES ( 999992, 'gone', 'Gone', 0, UTC_TIMESTAMP(), UTC_TIMESTAMP() )", $this->catalogTable( CatalogTables::OPTION_VALUES ) );
+		$orphanValue = $this->db->lastInsertId();
+		$this->db->execute( 'UPDATE %i SET image_attachment_id = 999993 WHERE id = %d', $this->catalogTable( CatalogTables::OPTION_VALUES ), $value );
+
+		$findings = implode( "\n", $check->run()->findings );
+
+		$this->assertStringContainsString( 'option axis ' . $orphanAxis . ' whose product no longer exists', $findings );
+		$this->assertStringContainsString( 'option value ' . $orphanValue . ' whose axis no longer exists', $findings );
+		$this->assertStringContainsString( 'option value ' . $value . ' whose image attachment no longer exists', $findings );
 	}
 }

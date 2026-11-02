@@ -477,7 +477,7 @@ final class SaveProductTest extends TestCase {
 				array( new ProductPostBinding( self::POST, Locale::of( 'en_US' ), new \DateTimeImmutable( '2026-09-01 00:00:00' ) ) ),
 				GenerationState::Complete,
 				1,
-				Variant::stored( 70, '00000000-0000-4000-8000-000000000070', Sku::of( 'SKU-1' ), Variant::defaultCombinationHash(), 1, true, 250, VariantPrice::net( $usd, 1999 ) )
+				array( Variant::stored( 70, '00000000-0000-4000-8000-000000000070', Sku::of( 'SKU-1' ), Variant::defaultCombinationHash(), 1, true, 250, VariantPrice::net( $usd, 1999 ) ) )
 			)
 		);
 	}
@@ -524,7 +524,8 @@ final class SaveProductTest extends TestCase {
 			function ( string $code, array $context ): void {
 				$this->reports[] = array( $code, $context );
 			},
-			new Authorizer( new CapabilityDeclaration() )
+			new Authorizer( new CapabilityDeclaration() ),
+			static fn(): array => array( Currency::of( 'USD' ) )
 		);
 	}
 

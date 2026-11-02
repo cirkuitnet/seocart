@@ -19,14 +19,18 @@ use SEOCart\Support\Schema\Privacy;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Declares the commerce fields of a product save: the default variant's SKU, price, compare-at price, currency and weight.
+ * Declares the commerce fields of a variant: its SKU, price, compare-at price, currency and weight; given flat, of the single variant of a product without options.
  *
  * Owns one fact: what each commerce field is on the wire. CommerceInput checks a save's values
  * against these declarations, and the REST fields of the product's endpoint are compiled from
- * the same ones, so neither restates a type or a bound. Prices are in minor units of the
- * store's base currency; a price may be null, which leaves the product incomplete, and so may
- * the compare-at price and the weight. Declarations are data: building them calls no WordPress
- * function and translates nothing.
+ * the same ones, so neither restates a type or a bound. VariantFields composes these very
+ * instances into each entry of a variant set, so the single variant and every variant of a
+ * product with options are one declaration; all() builds them once. The SKU alone differs in a
+ * variant set, where a variant whose SKU another variant took has none: listedSku() is the same
+ * declaration, null allowed. Prices are in minor units of
+ * their currency, the store's base currency for the single variant; a price may be null, which
+ * leaves that variant without it, and so may the compare-at price and the weight. Declarations are
+ * data: building them calls no WordPress function and translates nothing.
  *
  * @since 0.1.0
  */
@@ -99,26 +103,67 @@ final class CommerceFields {
 	public const AMOUNT_MAX_MINOR = 9007199254740991;
 
 	/**
+	 * The declarations, built once, so a variant set composes the very instances.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, FieldSpec>|null
+	 */
+	private static ?array $all = null;
+
+	/**
+	 * The SKU as an entry of a variant set carries it, built once.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var FieldSpec|null
+	 */
+	private static ?FieldSpec $listedSku = null;
+
+	/**
 	 * Returns every commerce field, in wire order.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The same instances on every call.
 	 *
 	 * @return array<string, FieldSpec> The declarations, keyed by wire name.
 	 */
 	public static function all(): array {
+		self::$all ??= self::build();
+
+		return self::$all;
+	}
+
+	/**
+	 * Returns the SKU as an entry of a variant set carries it: the single variant's declaration, null allowed.
+	 *
+	 * A variant whose SKU another of its product's variants took has none: it is read as null, and
+	 * given null it keeps none and stays disabled. The single variant always has one.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return FieldSpec The declaration, the same instance on every call.
+	 */
+	public static function listedSku(): FieldSpec {
+		self::$listedSku ??= self::sku( true );
+
+		return self::$listedSku;
+	}
+
+	/**
+	 * Builds the declarations.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, FieldSpec> The declarations, keyed by wire name.
+	 */
+	private static function build(): array {
 		$fields = array(
-			new FieldSpec(
-				name: self::SKU,
-				type: FieldType::String,
-				description: 'The stock-keeping unit of the product\'s default variant, unique in the store without regard to case.',
-				label: static fn(): string => __( 'SKU', 'seocart' ),
-				example: 'TSHIRT-RED-L',
-				max_length: Sku::MAX_LENGTH
-			),
+			self::sku( false ),
 			new FieldSpec(
 				name: self::PRICE_MINOR,
 				type: FieldType::Integer,
-				description: 'The price of the default variant in minor units of the store\'s base currency; null removes it, which leaves the product incomplete.',
+				description: 'The variant\'s price in minor units of its currency; null for none, which given flat leaves the product incomplete.',
 				label: static fn(): string => __( 'Price', 'seocart' ),
 				example: 1999,
 				nullable: true,
@@ -129,7 +174,7 @@ final class CommerceFields {
 			new FieldSpec(
 				name: self::CURRENCY,
 				type: FieldType::String,
-				description: 'The ISO 4217 code of the price\'s currency, which must be the store\'s base currency.',
+				description: 'The ISO 4217 code of the price\'s currency: the store\'s base currency given flat, any currency the store offers in a variant\'s prices.',
 				label: static fn(): string => __( 'Currency', 'seocart' ),
 				example: 'USD',
 				max_length: 3,
@@ -138,7 +183,7 @@ final class CommerceFields {
 			new FieldSpec(
 				name: self::COMPARE_AT_MINOR,
 				type: FieldType::Integer,
-				description: 'The price the default variant is compared with, in minor units of the same currency; null for none.',
+				description: 'The price the variant is compared with, in minor units of the same currency; null for none.',
 				label: static fn(): string => __( 'Compare-at price', 'seocart' ),
 				example: 2499,
 				nullable: true,
@@ -149,7 +194,7 @@ final class CommerceFields {
 			new FieldSpec(
 				name: self::WEIGHT_GRAMS,
 				type: FieldType::Integer,
-				description: 'The weight of the default variant in grams; null for none.',
+				description: 'The variant\'s weight in grams; null for none.',
 				label: static fn(): string => __( 'Weight (g)', 'seocart' ),
 				example: 250,
 				nullable: true,
@@ -165,5 +210,27 @@ final class CommerceFields {
 		}
 
 		return $keyed;
+	}
+
+	/**
+	 * Builds the SKU's declaration: the single variant's, or an entry's of a variant set, which may be null.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param bool $listed Whether it is an entry's of a variant set.
+	 * @return FieldSpec The declaration.
+	 */
+	private static function sku( bool $listed ): FieldSpec {
+		return new FieldSpec(
+			name: self::SKU,
+			type: FieldType::String,
+			description: $listed
+				? 'The variant\'s stock-keeping unit, unique in the store without regard to case; null for a variant that has none since another variant took its SKU, which stays disabled until it is given one.'
+				: 'The variant\'s stock-keeping unit, unique in the store without regard to case; given flat, of the single variant of a product without options.',
+			label: static fn(): string => __( 'SKU', 'seocart' ),
+			example: 'TSHIRT-RED-L',
+			nullable: $listed,
+			max_length: Sku::MAX_LENGTH
+		);
 	}
 }

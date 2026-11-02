@@ -15,15 +15,20 @@ use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Application\ProductRepository;
 use SEOCart\Catalog\Application\UpdatingMark;
 use SEOCart\Catalog\Domain\GenerationState;
+use SEOCart\Catalog\Domain\OptionAxis;
+use SEOCart\Catalog\Domain\OptionMatrix;
+use SEOCart\Catalog\Domain\OptionValue;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\ProductPostBinding;
 use SEOCart\Catalog\Domain\SellabilityFacts;
 use SEOCart\Catalog\Domain\Sku;
 use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Catalog\Domain\VariantPrice;
+use SEOCart\Catalog\Domain\VariantSelection;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Exception\DuplicateKey;
+use SEOCart\Platform\Database\ModuleStatements;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Locale;
@@ -31,7 +36,7 @@ use SEOCart\Support\Locale;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Stores products in `products`, `product_posts`, `variants` and `variant_prices`, through Database.
+ * Stores products in `products`, `product_posts`, `variants`, `variant_prices` and the option tables, through Database.
  *
  * Owns one fact: how the Product aggregate maps onto the catalog's rows, and the one query the
  * sellability rule is fed by. It is the only class that reads or writes `generation_state`, and
@@ -42,6 +47,15 @@ defined( 'ABSPATH' ) || exit;
  * row lock first, as a save's window does, reads the product with locking reads, then removes its
  * rows children first.
  *
+ * A product loads with the variants of the generation it publishes, each with every price
+ * authored for it, in one statement; a product with options, or without a variant, also loads
+ * its axes with their values in one, and the values its variants select in one. A save writes the
+ * whole set of variants as one multi-row statement whatever their number, through the
+ * `product_combination` key, and publishes their generation by one conditional statement on the
+ * generation it loaded, after every row of the set is written, so no reader outside the
+ * transaction ever sees part of a set. A multi-row statement holds at most ROWS_PER_STATEMENT
+ * rows; a longer set is sent in as many statements.
+ *
  * Every statement that locks catalog rows takes them in one order, whichever path sends it:
  *
  * 1. `products` rows, in ascending order of id when there are several: a save's mark and relock,
@@ -49,20 +63,28 @@ defined( 'ABSPATH' ) || exit;
  *    lock it, and only then read the post's binding again with a locking read;
  * 2. `product_posts` rows: the bindings a locking load reads, and every binding written, always
  *    under its product's row lock, so a binding read under that lock stays as read;
- * 3. `variants` and `variant_prices` rows: the default variant a locking load reads,
- *    lockVariants(), a save's variant and price writes, and delete();
+ * 3. `variants`, `variant_prices` and the option rows: the variants and options a locking load
+ *    reads, lockVariants(), a save's writes, and delete();
  * 4. the inventory's rows, which its own service locks, after the catalog's.
  *
  * A binding that moved to another product between lockWithPost()'s plain read and its lock is
  * followed to that product, whose row is then locked out of that order; the unit of work's
  * deadlock retry covers that rare case, and a locking read decides every time.
  *
- * A SKU collision is the `sku` key doing its job. When a variant write breaks a unique key, a
- * locking read asks whether another variant holds the SKU; a locking read sees the newest
- * committed row, whatever this transaction's snapshot is. If one does, the failure is
- * `catalog.sku_taken`; any other duplicate is a fault and stays the database's.
+ * A SKU is one variant's in the whole store, in the table's collation. Before a save writes a SKU
+ * a variant did not have, one locking read finds every variant that holds one of the SKUs it
+ * writes: one of another product makes the save `catalog.sku_taken`, naming the combination that
+ * asked for it; one of the same product, of another combination and any generation, is released
+ * first by giving it a tombstone, `~` and its UUID, which no SKU a merchant gives may look like:
+ * the variant then has no SKU (Variant::hasSku()) until it is given one. So two of a product's
+ * variants can swap their SKUs in one save. A variant written meanwhile with one of the SKUs breaks
+ * the `sku` key, or leaves its row unwritten, and is answered the same way after a second read.
+ * Two SKUs of one save that only the collation finds equal, such as two that differ by an accent,
+ * break the key with no holder in sight: `catalog.sku_duplicate`, as two equal SKUs are before the
+ * window.
  *
- * A price is read and written in the store's base currency, which is asked for when it is needed.
+ * A price is read and written per currency; the store's base currency, which is asked for when it
+ * is needed, picks each variant's base price.
  *
  * @since 0.1.0
  */
@@ -221,25 +243,25 @@ final class MysqlProductRepository implements ProductRepository {
 	private const BOUND_POST_BINDINGS = 'SELECT post_id, product_id, locale FROM %i WHERE post_id > %d ORDER BY post_id LIMIT %d';
 
 	/**
-	 * The scan of doctor's fifth check up to the cursor: complete products with their default variant and its base price.
+	 * The scan of doctor's fifth check up to the cursor: complete products with the enabled variants of the generation they publish, and each one's base price.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
 	private const INCOMPLETE_MISMATCH_SCAN = ' FROM %i p'
-		. ' LEFT JOIN %i v ON v.product_id = p.id AND v.combination_hash = %s'
+		. ' LEFT JOIN %i v ON v.product_id = p.id AND v.generation = p.active_variant_generation AND v.is_enabled = 1'
 		. ' LEFT JOIN %i vp ON vp.variant_id = v.id AND vp.currency = %s'
 		. ' WHERE p.generation_state = %s';
 
 	/**
-	 * What the fifth check's scan asks of those products, and its paging: no enabled variant, no default variant or no base price.
+	 * What the fifth check's scan asks of those products, and its paging: no enabled variant, or an enabled variant without a base price; one row per product.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
-	private const INCOMPLETE_MISMATCH_FILTER = ' AND ( p.enabled_variant_count = 0 OR v.id IS NULL OR vp.id IS NULL ) ORDER BY p.id LIMIT %d';
+	private const INCOMPLETE_MISMATCH_FILTER = ' AND ( p.enabled_variant_count = 0 OR vp.id IS NULL ) GROUP BY p.id ORDER BY p.id LIMIT %d';
 
 	/**
 	 * The first page of the complete products that are not whole: see keysetPage().
@@ -285,6 +307,374 @@ final class MysqlProductRepository implements ProductRepository {
 	 * @var string
 	 */
 	private const VARIANT_IDS = 'SELECT v.id' . self::VARIANT_IDS_SCAN . ' AND v.id > %d ORDER BY v.id LIMIT %d';
+
+	/**
+	 * The most rows one multi-row statement writes or names.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const ROWS_PER_STATEMENT = 100;
+
+	/**
+	 * The variants of the generation a product publishes, each with every price authored for it: a row per variant and price.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const VARIANTS_OF_GENERATION = 'SELECT' . self::VARIANTS_WITH_PRICES . ' WHERE v.product_id = %d AND v.generation = %d ORDER BY v.position, v.id, vp.currency';
+
+	/**
+	 * The variants a product holds for some combinations, each with every price authored for it: a row per variant and price.
+	 *
+	 * A consistent read: the product's variants and prices are written only under its lock, which
+	 * the window holds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const VARIANTS_OF_COMBINATIONS = 'SELECT' . self::VARIANTS_WITH_PRICES . ' WHERE v.product_id = %d AND v.combination_hash IN ({list}) ORDER BY v.position, v.id, vp.currency';
+
+	/**
+	 * What a read of variants with every price sends after its SELECT, up to its WHERE.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const VARIANTS_WITH_PRICES = ' v.id, v.uuid, v.sku, v.combination_hash, v.generation, v.is_enabled, v.weight_grams, v.position, v.label,'
+		. ' vp.currency, vp.amount_basis, vp.price_minor, vp.compare_at_minor'
+		. ' FROM {variants} v LEFT JOIN {variant_prices} vp ON vp.variant_id = v.id';
+
+	/**
+	 * VARIANTS_OF_GENERATION as a locking read, which a load under the product's lock sends.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCKED_VARIANTS_OF_GENERATION = self::VARIANTS_OF_GENERATION . self::LOCKING;
+
+	/**
+	 * A product's option axes, each with its values, in order: a row per value, or one for an axis without a value.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const OPTIONS_OF_PRODUCT = 'SELECT a.axis_key, a.label AS axis_label, a.position AS axis_position,'
+		. ' ov.value_key, ov.label AS value_label, ov.position AS value_position, ov.image_attachment_id, ov.swatch_hex'
+		. ' FROM {option_axes} a LEFT JOIN {option_values} ov ON ov.axis_id = a.id'
+		. ' WHERE a.product_id = %d ORDER BY a.position, a.axis_key, ov.position, ov.value_key';
+
+	/**
+	 * OPTIONS_OF_PRODUCT as a locking read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCKED_OPTIONS_OF_PRODUCT = self::OPTIONS_OF_PRODUCT . self::LOCKING;
+
+	/**
+	 * The option values some variants select, by their keys.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const SELECTIONS_OF_VARIANTS = 'SELECT j.variant_id, a.axis_key, ov.value_key'
+		. ' FROM {variant_option_values} j JOIN {option_values} ov ON ov.id = j.option_value_id JOIN {option_axes} a ON a.id = j.axis_id'
+		. ' WHERE j.variant_id IN ({list})';
+
+	/**
+	 * SELECTIONS_OF_VARIANTS as a locking read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LOCKED_SELECTIONS_OF_VARIANTS = self::SELECTIONS_OF_VARIANTS . self::LOCKING;
+
+	/**
+	 * The variants that hold any of some SKUs, in the table's collation, with the first of the SKUs each holds: a locking read.
+	 *
+	 * It reads the sku index alone, whose records the write's duplicate key has just locked, and
+	 * none of the rows: MariaDB refuses a locking read of a row committed after the transaction's
+	 * snapshot (error 1020), which another product's holder may be. OWN_VARIANTS says which
+	 * holders are the product's.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const SKU_HOLDERS = 'SELECT id, FIELD( sku, {list} ) AS wanted FROM {variants} WHERE sku IN ({list}) ORDER BY id LOCK IN SHARE MODE';
+
+	/**
+	 * A product's variants of every generation, each with the place of the SKU it holds among some SKUs, in the table's collation, or 0.
+	 *
+	 * A consistent read: the product's variants are written only under its lock, which the window
+	 * holds. Another product's variants are not read here; one that holds a SKU of the set refuses
+	 * the write with the table's duplicate key, and SKU_HOLDERS names it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const OWN_VARIANTS = 'SELECT id, combination_hash, sku, FIELD( sku, {list} ) AS wanted FROM {variants} WHERE product_id = %d ORDER BY id';
+
+
+	/**
+	 * Releases the SKUs of some of a product's variants by giving each the placeholder of a variant without a SKU: Variant::NO_SKU_PREFIX and its UUID.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const RELEASE_SKUS = "UPDATE {variants} SET sku = CONCAT( '" . Variant::NO_SKU_PREFIX . "', uuid ), updated_at = UTC_TIMESTAMP() WHERE product_id = %d AND id IN ({list})";
+
+	/**
+	 * Whether a row an upsert of a product's variants met is that product's variant of that combination; any other row is left as it is.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const OWN_COMBINATION = 'product_id = VALUES( product_id ) AND combination_hash = VALUES( combination_hash )';
+
+	/**
+	 * Writes a stored variant of a product, named by its id, whose key is met first: one of the generation loaded, or of an earlier one whose combination the set gives again.
+	 *
+	 * A row met through another key is another variant's: every column keeps its value, so the row
+	 * of the set is left unwritten, which the read of the generation afterwards finds. A SKU another
+	 * variant holds is refused with the table's duplicate key. `updated_at` is assigned first, so it
+	 * compares the stored values: an unchanged row keeps it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const UPSERT_VARIANT = 'INSERT INTO {variants} ( id, uuid, product_id, sku, combination_hash, generation, is_enabled, weight_grams, position, label, created_at, updated_at )'
+		. " VALUES ( NULLIF( %d, 0 ), %s, %d, %s, %s, %d, %d, NULLIF( %d, -1 ), %d, NULLIF( %s, '' ), UTC_TIMESTAMP(), UTC_TIMESTAMP() )"
+		. ' ON DUPLICATE KEY UPDATE'
+		. ' updated_at = IF( ' . self::OWN_COMBINATION . ' AND NOT ( CAST( sku AS BINARY ) <=> CONVERT( VALUES( sku ) USING binary ) AND generation <=> VALUES( generation )'
+		. ' AND is_enabled <=> VALUES( is_enabled ) AND weight_grams <=> VALUES( weight_grams ) AND position <=> VALUES( position )'
+		. ' AND CAST( label AS BINARY ) <=> CONVERT( VALUES( label ) USING binary ) ), UTC_TIMESTAMP(), updated_at ),'
+		. ' sku = IF( ' . self::OWN_COMBINATION . ', VALUES( sku ), sku ),'
+		. ' generation = IF( ' . self::OWN_COMBINATION . ', VALUES( generation ), generation ),'
+		. ' is_enabled = IF( ' . self::OWN_COMBINATION . ', VALUES( is_enabled ), is_enabled ),'
+		. ' weight_grams = IF( ' . self::OWN_COMBINATION . ', VALUES( weight_grams ), weight_grams ),'
+		. ' position = IF( ' . self::OWN_COMBINATION . ', VALUES( position ), position ),'
+		. ' label = IF( ' . self::OWN_COMBINATION . ', VALUES( label ), label )';
+
+	/**
+	 * Inserts a new variant of a product. A SKU another variant holds is refused with the table's duplicate key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const INSERT_VARIANT = 'INSERT INTO {variants} ( uuid, product_id, sku, combination_hash, generation, is_enabled, weight_grams, position, label, created_at, updated_at )'
+		. " VALUES ( %s, %d, %s, %s, %d, %d, NULLIF( %d, -1 ), %d, NULLIF( %s, '' ), UTC_TIMESTAMP(), UTC_TIMESTAMP() )";
+
+	/**
+	 * The ids, combinations and SKUs of a product's variants of one generation, on the `product_generation` key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const VARIANTS_AT_GENERATION = 'SELECT id, combination_hash, sku FROM {variants} WHERE product_id = %d AND generation = %d';
+
+	/**
+	 * Disables the variants of a product's generation that a save's set leaves out.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DISABLE_LEFT_OUT = 'UPDATE {variants} SET is_enabled = 0, updated_at = UTC_TIMESTAMP() WHERE product_id = %d AND generation = %d AND is_enabled = 1 AND id NOT IN ({list})';
+
+	/**
+	 * Writes a product's option axis, or its label and position.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const UPSERT_AXIS = 'INSERT INTO {option_axes} ( product_id, axis_key, label, position, created_at, updated_at ) VALUES ( %d, %s, %s, %d, UTC_TIMESTAMP(), UTC_TIMESTAMP() )'
+		. ' ON DUPLICATE KEY UPDATE updated_at = IF( CAST( label AS BINARY ) <=> CONVERT( VALUES( label ) USING binary ) AND position <=> VALUES( position ), updated_at, UTC_TIMESTAMP() ),'
+		. ' label = VALUES( label ), position = VALUES( position )';
+
+	/**
+	 * The ids of a product's option axes, by key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const AXIS_IDS = 'SELECT id, axis_key FROM {option_axes} WHERE product_id = %d';
+
+	/**
+	 * Writes an option value of an axis, or its label, position, image and swatch.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const UPSERT_VALUE = 'INSERT INTO {option_values} ( axis_id, value_key, label, position, image_attachment_id, swatch_hex, created_at, updated_at )'
+		. " VALUES ( %d, %s, %s, %d, NULLIF( %d, 0 ), NULLIF( %s, '' ), UTC_TIMESTAMP(), UTC_TIMESTAMP() )"
+		. ' ON DUPLICATE KEY UPDATE updated_at = IF( CAST( label AS BINARY ) <=> CONVERT( VALUES( label ) USING binary ) AND position <=> VALUES( position )'
+		. ' AND image_attachment_id <=> VALUES( image_attachment_id ) AND swatch_hex <=> VALUES( swatch_hex ), updated_at, UTC_TIMESTAMP() ),'
+		. ' label = VALUES( label ), position = VALUES( position ), image_attachment_id = VALUES( image_attachment_id ), swatch_hex = VALUES( swatch_hex )';
+
+	/**
+	 * Deletes the selections of the option values a product keeps no more, `axis_key=value_key` not among those given.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DELETE_SELECTIONS_OF_VALUES = "DELETE j FROM {variant_option_values} j JOIN {option_values} ov ON ov.id = j.option_value_id JOIN {option_axes} a ON a.id = ov.axis_id WHERE a.product_id = %d AND CONCAT( a.axis_key, '=', ov.value_key ) NOT IN ({list})";
+
+	/**
+	 * Deletes the option values a product keeps no more, `axis_key=value_key` not among those given.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DELETE_VALUES = "DELETE ov FROM {option_values} ov JOIN {option_axes} a ON a.id = ov.axis_id WHERE a.product_id = %d AND CONCAT( a.axis_key, '=', ov.value_key ) NOT IN ({list})";
+
+	/**
+	 * Deletes the option axes a product keeps no more, their values deleted first.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DELETE_AXES = 'DELETE FROM {option_axes} WHERE product_id = %d AND axis_key NOT IN ({list})';
+
+	/**
+	 * Writes the option values some variants select, found by their keys; a selection there already is left as it is.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const INSERT_SELECTIONS = 'INSERT IGNORE INTO {variant_option_values} ( variant_id, option_value_id, axis_id ) SELECT t.variant_id, ov.id, a.id'
+		. ' FROM ( SELECT %d AS variant_id, CONVERT( %s USING ascii ) COLLATE ascii_bin AS axis_key, CONVERT( %s USING ascii ) COLLATE ascii_bin AS value_key ) AS t'
+		. ' JOIN {option_axes} a ON a.product_id = %d AND a.axis_key = t.axis_key'
+		. ' JOIN {option_values} ov ON ov.axis_id = a.id AND ov.value_key = t.value_key';
+
+	/**
+	 * Writes a variant's price in one currency. `updated_at` is assigned first, so it compares the stored values: an unchanged price keeps it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const UPSERT_PRICE = 'INSERT INTO {variant_prices} ( variant_id, currency, amount_basis, price_minor, compare_at_minor, created_at, updated_at )'
+		. ' VALUES ( %d, %s, %s, %d, NULLIF( %d, -1 ), UTC_TIMESTAMP(), UTC_TIMESTAMP() )'
+		. ' ON DUPLICATE KEY UPDATE updated_at = IF( CAST( amount_basis AS BINARY ) <=> CONVERT( VALUES( amount_basis ) USING binary ) AND price_minor <=> VALUES( price_minor )'
+		. ' AND compare_at_minor <=> VALUES( compare_at_minor ), updated_at, UTC_TIMESTAMP() ),'
+		. ' amount_basis = VALUES( amount_basis ), price_minor = VALUES( price_minor ), compare_at_minor = VALUES( compare_at_minor )';
+
+	/**
+	 * Deletes the prices of some variants that are not among the `(variant_id, currency)` pairs given.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DELETE_OTHER_PRICES = 'DELETE FROM {variant_prices} WHERE variant_id IN ({list}) AND ( variant_id, currency ) NOT IN ( {pairs} )';
+
+	/**
+	 * Publishes the generation a save wrote, with its counts, only while the product still publishes the generation the save loaded.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const PUBLISH_GENERATION = 'UPDATE {products} SET source_post_id = NULLIF( %d, 0 ), active_variant_generation = %d, variant_count = %d, enabled_variant_count = %d,'
+		. ' updated_at = ' . self::NEXT_INSTANT . ' WHERE id = %d AND active_variant_generation = %d';
+
+	/**
+	 * Whether a product's row exists, after its generation could not be published.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const PRODUCT_EXISTS = 'SELECT id FROM {products} WHERE id = %d';
+
+	/**
+	 * Deletes the option values some variants select.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DELETE_SELECTIONS_OF_VARIANTS = 'DELETE FROM {variant_option_values} WHERE variant_id IN ({list})';
+
+	/**
+	 * Deletes the option values of a product's axes.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DELETE_VALUES_OF_PRODUCT = 'DELETE ov FROM {option_values} ov JOIN {option_axes} a ON a.id = ov.axis_id WHERE a.product_id = %d';
+
+	/**
+	 * Deletes a product's option axes.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DELETE_AXES_OF_PRODUCT = 'DELETE FROM {option_axes} WHERE product_id = %d';
+
+	/**
+	 * The option axes whose product no longer exists (doctor check 8).
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ORPHAN_AXES = 'SELECT a.id, a.product_id FROM {option_axes} a LEFT JOIN {products} p ON p.id = a.product_id WHERE p.id IS NULL ORDER BY a.id LIMIT %d';
+
+	/**
+	 * The option values whose axis no longer exists (doctor check 8).
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ORPHAN_VALUES = 'SELECT ov.id, ov.axis_id FROM {option_values} ov LEFT JOIN {option_axes} a ON a.id = ov.axis_id WHERE a.id IS NULL ORDER BY ov.id LIMIT %d';
+
+	/**
+	 * The selections whose variant or value no longer exists (doctor check 8).
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ORPHAN_SELECTIONS = 'SELECT j.variant_id, j.option_value_id FROM {variant_option_values} j LEFT JOIN {variants} v ON v.id = j.variant_id LEFT JOIN {option_values} ov ON ov.id = j.option_value_id'
+		. ' WHERE v.id IS NULL OR ov.id IS NULL ORDER BY j.variant_id, j.option_value_id LIMIT %d';
+
+	/**
+	 * The option values whose image attachment no longer exists (doctor check 8): `%i` is the site's posts table.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const VALUES_WITHOUT_IMAGE = "SELECT ov.id, ov.image_attachment_id FROM {option_values} ov LEFT JOIN %i wp ON wp.ID = ov.image_attachment_id AND wp.post_type = 'attachment'"
+		. ' WHERE ov.image_attachment_id IS NOT NULL AND wp.ID IS NULL ORDER BY ov.id LIMIT %d';
 
 	/**
 	 * The connection.
@@ -368,28 +758,41 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
-	 * Writes a product with its bindings, its default variant and that variant's base-currency price, and gives it its ids.
+	 * Writes a product with its bindings, its options, its variants and their prices, and gives it its ids.
+	 *
+	 * A stored product's statements come in this order: its bindings; its options, when they
+	 * changed; the SKUs to release; the variants of the set; their ids, when the set has new ones;
+	 * the variants it leaves out, disabled; the option values they select; their prices; and last,
+	 * the product's row, which publishes the set's generation with its counts only while the
+	 * product still publishes the generation it was loaded with.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Every variant of the set, the options, and the conditional publication.
 	 *
-	 * @throws CodedException With CatalogError::SkuTaken when another variant holds the SKU, or
-	 *                        CatalogError::ProductNotFound when a stored product's row is gone.
+	 * @throws CodedException With CatalogError::SkuTaken when another product's variant holds a SKU of the set,
+	 *                        CatalogError::SkuDuplicate when two of its variants hold one, or CatalogError::WriteConflict
+	 *                        when the product publishes another generation than the one it was loaded with.
 	 *
 	 * @param Product $product The product.
 	 */
 	public function save( Product $product ): void {
-		$id     = $product->id();
-		$stored = null !== $id;
+		$id = $product->id();
 
 		if ( null === $id ) {
 			$id = $this->insertProduct( $product );
-		} else {
-			$this->updateProduct( $id, $product );
+
+			$this->addBindings( $id, $product, false );
+			$product->identify( $id, $this->writeVariants( $id, $product ) );
+
+			return;
 		}
 
-		$this->addBindings( $id, $product, $stored );
+		$this->addBindings( $id, $product, true );
 
-		$product->identify( $id, $this->writeDefaultVariant( $id, $product ) );
+		$ids = $this->writeVariants( $id, $product );
+
+		$this->publishGeneration( $id, $product );
+		$product->identify( $id, $ids );
 	}
 
 	/**
@@ -602,7 +1005,27 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
-	 * Deletes a product's rows, children first: its variants' prices, its variants, its bindings, then the product itself.
+	 * Loads the variants a product holds for some combinations, each with every price: one statement.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int                             $productId  The product's id.
+	 * @param array<string, VariantSelection> $selections The combinations, by hash; at least one.
+	 * @return list<Variant> The variants that exist, each with its selection.
+	 */
+	public function variantsOfCombinations( int $productId, array $selections ): array {
+		$rows = $this->rows( self::VARIANTS_OF_COMBINATIONS, $productId, array_keys( $selections ) );
+		$made = array();
+
+		foreach ( $rows as $row ) {
+			$made[ (int) $row['id'] ] = $selections[ (string) $row['combination_hash'] ];
+		}
+
+		return $this->variantsOf( $rows, $made );
+	}
+
+	/**
+	 * Deletes a product's rows, children first: the option values its variants select, its variants' prices, its option values and axes, its variants, its bindings, then the product itself.
 	 *
 	 * Fails with CatalogError::ProductNotFound when the product's row is gone.
 	 *
@@ -634,11 +1057,19 @@ final class MysqlProductRepository implements ProductRepository {
 		$variantIds = array_keys( $skus );
 
 		if ( array() !== $variantIds ) {
+			$this->write( self::DELETE_SELECTIONS_OF_VARIANTS, $variantIds );
 			$this->db->execute(
 				'DELETE FROM %i WHERE variant_id IN ( ' . implode( ', ', array_fill( 0, count( $variantIds ), '%d' ) ) . ' )',
 				$this->table( CatalogTables::VARIANT_PRICES ),
 				...$variantIds
 			);
+		}
+
+		// The options go whether or not a variant selects them: a product keeps its axes while it has no variant.
+		$this->write( self::DELETE_VALUES_OF_PRODUCT, $productId );
+		$this->write( self::DELETE_AXES_OF_PRODUCT, $productId );
+
+		if ( array() !== $variantIds ) {
 			$this->db->execute( 'DELETE FROM %i WHERE product_id = %d', $this->table( CatalogTables::VARIANTS ), $productId );
 		}
 
@@ -1101,13 +1532,15 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
-	 * Lists complete products at their active generation with zero enabled variants, or whose
-	 * default variant has no price in the base currency (doctor check 5).
+	 * Lists complete products with zero enabled variants in the generation they publish, or with
+	 * an enabled variant of it that has no price in the base currency (doctor check 5).
 	 *
 	 * Scoped to `generation_state = 'complete'`: an incomplete product missing a price is the
-	 * ordinary, expected state of a product still being set up, not a finding.
+	 * ordinary, expected state of a product still being set up, not a finding. A disabled variant
+	 * may lack a price.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Every enabled variant of the published generation, not the default variant alone.
 	 *
 	 * @param string $baseCurrency The store's base currency code.
 	 * @param int    $afterId      Only products above this id.
@@ -1122,7 +1555,6 @@ final class MysqlProductRepository implements ProductRepository {
 				array(
 					$this->table( CatalogTables::PRODUCTS ),
 					$this->table( CatalogTables::VARIANTS ),
-					Variant::defaultCombinationHash(),
 					$this->table( CatalogTables::VARIANT_PRICES ),
 					$baseCurrency,
 					GenerationState::Complete->value,
@@ -1262,6 +1694,36 @@ final class MysqlProductRepository implements ProductRepository {
 				'locale'     => (string) $row['locale'],
 			),
 			$rows
+		);
+	}
+
+	/**
+	 * Lists the option rows whose parent is gone, and the option values whose image attachment is gone (doctor check 8).
+	 *
+	 * Each read walks its table in order and stops at the limit; a row's parent is found by its
+	 * primary key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $limit The most to list of each kind.
+	 * @return array<string, list<array<string, int>>> The four lists, as ProductRepository::orphanOptionRows() says.
+	 *
+	 * @phpstan-return array{axes: list<array{id: int, product_id: int}>, values: list<array{id: int, axis_id: int}>, selections: list<array{variant_id: int, option_value_id: int}>, images: list<array{id: int, image_attachment_id: int}>}
+	 */
+	public function orphanOptionRows( int $limit ): array {
+		$pairs = static fn( array $rows, string $first, string $second ): array => array_map(
+			static fn( array $row ): array => array(
+				$first  => (int) $row[ $first ],
+				$second => (int) $row[ $second ],
+			),
+			$rows
+		);
+
+		return array(
+			'axes'       => $pairs( $this->rows( self::ORPHAN_AXES, $limit ), 'id', 'product_id' ),
+			'values'     => $pairs( $this->rows( self::ORPHAN_VALUES, $limit ), 'id', 'axis_id' ),
+			'selections' => $pairs( $this->rows( self::ORPHAN_SELECTIONS, $limit ), 'variant_id', 'option_value_id' ),
+			'images'     => $pairs( $this->rows( self::VALUES_WITHOUT_IMAGE, $this->postsTable(), $limit ), 'id', 'image_attachment_id' ),
 		);
 	}
 
@@ -1473,9 +1935,15 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
-	 * Loads a product, its bindings and its default variant with that variant's base-currency price.
+	 * Loads a product, its bindings, the variants of the generation it publishes with their prices, and its options.
+	 *
+	 * A product without options loads in three statements: its row, its bindings, and its
+	 * variants with their prices. One with options loads in five: its axes with their values, and
+	 * the values its variants select. One without a variant reads its axes too, in four, since a
+	 * product may keep axes while it publishes no variant.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Every variant of the published generation, with every price, and the options.
 	 *
 	 * @param int  $productId The product's id.
 	 * @param bool $locking   Optional. Whether every read is a locking read, the product's row first. Default false.
@@ -1504,6 +1972,17 @@ final class MysqlProductRepository implements ProductRepository {
 			);
 		}
 
+		$variants   = $this->rows( $locking ? self::LOCKED_VARIANTS_OF_GENERATION : self::VARIANTS_OF_GENERATION, $productId, (int) $row['active_variant_generation'] );
+		$hasOptions = array() === $variants;
+
+		foreach ( $variants as $variant ) {
+			$hasOptions = $hasOptions || Variant::defaultCombinationHash() !== (string) $variant['combination_hash'];
+		}
+
+		// A product with options, or without a variant, which may keep options from a set it no longer publishes.
+		$options    = $hasOptions ? $this->loadOptions( $productId, $locking ) : OptionMatrix::none();
+		$selections = $hasOptions && array() !== $variants ? $this->loadSelections( array_values( array_unique( array_map( 'intval', array_column( $variants, 'id' ) ) ) ), $locking ) : array();
+
 		return Product::stored(
 			(int) $row['id'],
 			(string) $row['uuid'],
@@ -1511,50 +1990,130 @@ final class MysqlProductRepository implements ProductRepository {
 			$bindings,
 			GenerationState::fromStored( (string) $row['generation_state'] ),
 			(int) $row['active_variant_generation'],
-			$this->loadDefaultVariant( $productId, $lock )
+			$this->variantsOf( $variants, $selections ),
+			$options
 		);
 	}
 
 	/**
-	 * Loads a product's default variant with its base-currency price.
+	 * Builds variants from their rows, a row per variant and price, with the selection each makes.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
-	 * @param int    $productId The product's id.
-	 * @param string $lock      What ends the read: LOCKING for a locking read, or nothing.
-	 * @return Variant|null The variant, or null when the product has none.
+	 * @param array                        $rows       The rows, a variant's rows together.
+	 * @param array<int, VariantSelection> $selections The selection of each variant with options, by id.
+	 * @return list<Variant> The variants, in the rows' order.
+	 *
+	 * @phpstan-param list<array<string, mixed>> $rows
 	 */
-	private function loadDefaultVariant( int $productId, string $lock ): ?Variant {
-		$base = $this->baseCurrency();
-		$row  = $this->db->fetchRow(
-			'SELECT v.id, v.uuid, v.sku, v.combination_hash, v.generation, v.is_enabled, v.weight_grams, vp.currency, vp.amount_basis, vp.price_minor, vp.compare_at_minor'
-				. ' FROM %i v LEFT JOIN %i vp ON vp.variant_id = v.id AND vp.currency = %s'
-				. ' WHERE v.product_id = %d AND v.combination_hash = %s' . $lock,
-			$this->table( CatalogTables::VARIANTS ),
-			$this->table( CatalogTables::VARIANT_PRICES ),
-			$base->code(),
-			$productId,
-			Variant::defaultCombinationHash()
-		);
+	private function variantsOf( array $rows, array $selections ): array {
+		$base     = $this->baseCurrency();
+		$variants = array();
+		$prices   = array();
 
-		if ( null === $row ) {
-			return null;
+		foreach ( $rows as $row ) {
+			$id = (int) $row['id'];
+
+			$variants[ $id ] ??= $row;
+			$prices[ $id ]   ??= array();
+
+			if ( null !== $row['price_minor'] ) {
+				$prices[ $id ][] = VariantPrice::stored( Currency::of( (string) $row['currency'] ), (int) $row['price_minor'], self::intOrNull( $row['compare_at_minor'] ), (string) $row['amount_basis'] );
+			}
 		}
 
-		$price = null === $row['price_minor']
-			? null
-			: VariantPrice::stored( $base, (int) $row['price_minor'], self::intOrNull( $row['compare_at_minor'] ), (string) $row['amount_basis'] );
+		$built = array();
 
-		return Variant::stored(
-			(int) $row['id'],
-			(string) $row['uuid'],
-			Sku::of( (string) $row['sku'] ),
-			(string) $row['combination_hash'],
-			(int) $row['generation'],
-			1 === (int) $row['is_enabled'],
-			self::intOrNull( $row['weight_grams'] ),
-			$price
-		);
+		foreach ( $variants as $id => $row ) {
+			$basePrice = null;
+			$others    = array();
+
+			foreach ( $prices[ $id ] as $price ) {
+				if ( $price->currency()->equals( $base ) ) {
+					$basePrice = $price;
+				} else {
+					$others[] = $price;
+				}
+			}
+
+			$built[] = Variant::stored(
+				$id,
+				(string) $row['uuid'],
+				Sku::of( (string) $row['sku'] ),
+				(string) $row['combination_hash'],
+				(int) $row['generation'],
+				1 === (int) $row['is_enabled'],
+				self::intOrNull( $row['weight_grams'] ),
+				$basePrice,
+				$selections[ $id ] ?? null,
+				(int) $row['position'],
+				null === $row['label'] ? null : (string) $row['label'],
+				$others
+			);
+		}
+
+		return $built;
+	}
+
+
+	/**
+	 * Loads a product's option axes with their values: one statement.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int  $productId The product's id.
+	 * @param bool $locking   Whether the read is a locking read.
+	 * @return OptionMatrix The axes; the empty matrix for a product without options.
+	 */
+	private function loadOptions( int $productId, bool $locking ): OptionMatrix {
+		$axes   = array();
+		$values = array();
+
+		foreach ( $this->rows( $locking ? self::LOCKED_OPTIONS_OF_PRODUCT : self::OPTIONS_OF_PRODUCT, $productId ) as $row ) {
+			$key = (string) $row['axis_key'];
+
+			$axes[ $key ]   ??= $row;
+			$values[ $key ] ??= array();
+
+			if ( null !== $row['value_key'] ) {
+				$values[ $key ][] = OptionValue::of(
+					(string) $row['value_key'],
+					(string) $row['value_label'],
+					(int) $row['value_position'],
+					self::intOrNull( $row['image_attachment_id'] ),
+					null === $row['swatch_hex'] ? null : (string) $row['swatch_hex']
+				);
+			}
+		}
+
+		$built = array();
+
+		foreach ( $axes as $key => $row ) {
+			$built[] = OptionAxis::of( (string) $key, (string) $row['axis_label'], (int) $row['axis_position'], $values[ $key ] );
+		}
+
+		return OptionMatrix::of( $built );
+	}
+
+	/**
+	 * Loads the option values some variants select: one statement.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $variantIds The variants.
+	 * @param bool  $locking    Whether the read is a locking read.
+	 * @return array<int, VariantSelection> The selection of each variant that selects a value, by id.
+	 *
+	 * @phpstan-param list<int> $variantIds
+	 */
+	private function loadSelections( array $variantIds, bool $locking ): array {
+		$pairs = array();
+
+		foreach ( $this->rows( $locking ? self::LOCKED_SELECTIONS_OF_VARIANTS : self::SELECTIONS_OF_VARIANTS, $variantIds ) as $row ) {
+			$pairs[ (int) $row['variant_id'] ][ (string) $row['axis_key'] ] = (string) $row['value_key'];
+		}
+
+		return array_map( static fn( array $selected ): VariantSelection => VariantSelection::of( $selected ), $pairs );
 	}
 
 	/**
@@ -1584,32 +2143,40 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
-	 * Updates a stored product's row, leaving its marker alone.
+	 * Publishes the generation a save wrote, with its counts and its source post: one conditional statement.
 	 *
-	 * @since 0.1.0
+	 * It changes the row only while the product still publishes the generation it was loaded with,
+	 * so a generation moved meanwhile, by a write that did not take the product's locks, is never
+	 * overwritten. The row always changes when it matches, because `updated_at` only moves forward.
 	 *
-	 * @throws CodedException With CatalogError::ProductNotFound when the row is gone.
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException With CatalogError::WriteConflict when the product publishes another generation by now,
+	 *                        or CatalogError::ProductNotFound when its row is gone.
 	 *
 	 * @param int     $productId The product's id.
 	 * @param Product $product   The product.
 	 */
-	private function updateProduct( int $productId, Product $product ): void {
-		// The row always changes, because updated_at only moves forward: no changed row means no row.
-		$changed = $this->db->execute(
-			'UPDATE %i SET source_post_id = ' . self::placeholder( $product->sourcePostId() ) . ', active_variant_generation = %d, variant_count = %d, enabled_variant_count = %d, updated_at = ' . self::NEXT_INSTANT . ' WHERE id = %d',
-			...self::given(
-				$this->table( CatalogTables::PRODUCTS ),
-				$product->sourcePostId(),
-				$product->activeGeneration(),
-				$product->variantCount(),
-				$product->enabledVariantCount(),
-				$productId
-			)
+	private function publishGeneration( int $productId, Product $product ): void {
+		$changed = $this->write(
+			self::PUBLISH_GENERATION,
+			$product->sourcePostId() ?? 0,
+			$product->activeGeneration(),
+			$product->variantCount(),
+			$product->enabledVariantCount(),
+			$productId,
+			$product->loadedGeneration()
 		);
 
-		if ( 1 !== $changed ) {
+		if ( 1 === $changed ) {
+			return;
+		}
+
+		if ( array() === $this->rows( self::PRODUCT_EXISTS, $productId ) ) {
 			CodedException::raise( CatalogError::ProductNotFound, array( 'product_id' => $productId ) );
 		}
+
+		CodedException::raise( CatalogError::WriteConflict, array( 'post_id' => (int) $product->sourcePostId() ) );
 	}
 
 	/**
@@ -1653,152 +2220,590 @@ final class MysqlProductRepository implements ProductRepository {
 	}
 
 	/**
-	 * Writes a product's default variant and its base-currency price.
+	 * Writes a product's options when they changed, its set of variants, the option values they select and their prices, and returns their ids.
 	 *
-	 * @since 0.1.0
+	 * The set is every variant the product publishes but those it leaves out, which are disabled
+	 * where they stand. A SKU the set gives a variant that did not have it is first released by any
+	 * other variant of the product; the stored variants are then written by one statement and the
+	 * new ones by another, and their ids read back when the set has new ones. Another product's SKU
+	 * refuses the write with the table's duplicate key before its holder is read under a lock, so a
+	 * holder committed after the window's snapshot is named on MariaDB as on MySQL.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException With CatalogError::SkuTaken or CatalogError::SkuDuplicate, as save() says.
 	 *
 	 * @param int     $productId The product's id.
 	 * @param Product $product   The product.
-	 * @return int|null The variant's id, or null when the product has none.
+	 * @return array<string, int> The id of each variant of the set, by combination hash.
 	 */
-	private function writeDefaultVariant( int $productId, Product $product ): ?int {
-		$variant = $product->defaultVariant();
-
-		if ( null === $variant ) {
-			return null;
+	private function writeVariants( int $productId, Product $product ): array {
+		if ( $product->optionsChanged() ) {
+			$this->writeOptions( $productId, $product->options(), $product->loadedOptions() );
 		}
 
-		$variantId = $variant->id();
+		$leftOut = array_map( static fn( Variant $variant ): string => $variant->combinationHash(), $product->leftOutVariants() );
+		$set     = array_values( array_filter( $product->variants(), static fn( Variant $variant ): bool => ! in_array( $variant->combinationHash(), $leftOut, true ) ) );
+		$ids     = array();
 
-		if ( null === $variantId ) {
-			$this->translatingSkuCollision(
-				$variant->sku(),
-				0,
-				fn(): int => $this->db->execute(
-					'INSERT INTO %i ( uuid, product_id, sku, combination_hash, generation, is_enabled, weight_grams, position, created_at, updated_at )'
-						. ' VALUES ( %s, %d, %s, %s, %d, %d, ' . self::placeholder( $variant->weightGrams() ) . ', 0, UTC_TIMESTAMP(), UTC_TIMESTAMP() )',
-					...self::given(
-						$this->table( CatalogTables::VARIANTS ),
-						$variant->uuid(),
-						$productId,
-						$variant->sku()->toString(),
-						$variant->combinationHash(),
-						$variant->generation(),
-						$variant->isEnabled() ? 1 : 0,
-						$variant->weightGrams()
-					)
-				)
-			);
+		if ( array() !== $set ) {
+			$this->releaseSkus( $productId, $set, $product->loadedVariants() );
 
-			$variantId = $this->db->lastInsertId();
-		} else {
-			$weight = self::placeholder( $variant->weightGrams() );
+			$known = array_values( array_filter( $set, static fn( Variant $variant ): bool => null !== $variant->id() ) );
+			$new   = array_values( array_filter( $set, static fn( Variant $variant ): bool => null === $variant->id() ) );
 
-			// A row whose values are all unchanged is left alone, so its updated_at keeps saying when it last changed.
-			$this->translatingSkuCollision(
-				$variant->sku(),
-				$variantId,
-				fn(): int => $this->db->execute(
-					'UPDATE %i SET sku = %s, generation = %d, is_enabled = %d, weight_grams = ' . $weight . ', updated_at = UTC_TIMESTAMP()'
-						. ' WHERE id = %d AND NOT ( CAST( sku AS BINARY ) <=> CAST( %s AS BINARY ) AND generation <=> %d AND is_enabled <=> %d AND weight_grams <=> ' . $weight . ' )',
-					...self::given(
-						$this->table( CatalogTables::VARIANTS ),
-						$variant->sku()->toString(),
-						$variant->generation(),
-						$variant->isEnabled() ? 1 : 0,
-						$variant->weightGrams(),
-						$variantId,
-						$variant->sku()->toString(),
-						$variant->generation(),
-						$variant->isEnabled() ? 1 : 0,
-						$variant->weightGrams()
-					)
-				)
-			);
+			try {
+				if ( array() !== $known ) {
+					$this->upsertVariants( $productId, $known );
+				}
+
+				if ( array() !== $new ) {
+					$this->insertVariants( $productId, $new );
+				}
+			} catch ( DuplicateKey $duplicate ) {
+				$this->refuseSkuCollision( $productId, $set );
+			}
+
+			$ids = $this->idsOf( $productId, $product->activeGeneration(), $set );
 		}
 
-		$this->writeBasePrice( $variantId, $variant->basePrice(), null !== $variant->id() );
+		if ( array() !== $leftOut ) {
+			$this->write( self::DISABLE_LEFT_OUT, $productId, $product->activeGeneration(), array_merge( array( 0 ), array_values( $ids ) ) );
+		}
 
-		return $variantId;
+		if ( ! $product->options()->isEmpty() && array() !== $set ) {
+			$this->writeSelections( $productId, $set, $ids );
+		}
+
+		$this->writePrices( $set, $ids, $product );
+
+		return $ids;
 	}
 
 	/**
-	 * Writes a variant's base-currency price row, or removes it when the variant has no price.
+	 * Writes a product's whole set of option axes and values, removing the ones it no longer has, with the selections of the values removed.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
-	 * @param int               $variantId The variant's id.
-	 * @param VariantPrice|null $price     The price, or null for none.
-	 * @param bool              $stored    Whether the variant was stored before, so a row may exist.
+	 * @param int          $productId The product's id.
+	 * @param OptionMatrix $desired   The axes and values the product has now.
+	 * @param OptionMatrix $loaded    The axes and values it had when it was loaded.
 	 */
-	private function writeBasePrice( int $variantId, ?VariantPrice $price, bool $stored ): void {
-		$table = $this->table( CatalogTables::VARIANT_PRICES );
+	private function writeOptions( int $productId, OptionMatrix $desired, OptionMatrix $loaded ): void {
+		$axes   = array_map( static fn( OptionAxis $axis ): string => $axis->key, $desired->axes );
+		$values = self::valueKeys( $desired );
 
-		if ( null === $price ) {
-			if ( $stored ) {
-				$this->db->execute( 'DELETE FROM %i WHERE variant_id = %d AND currency = %s', $table, $variantId, $this->baseCurrency()->code() );
-			}
+		// The empty key is never an option's, so a list that keeps nothing still names a value.
+		if ( array() !== array_diff( self::valueKeys( $loaded ), $values ) ) {
+			$this->write( self::DELETE_SELECTIONS_OF_VALUES, $productId, array_merge( array( '' ), $values ) );
+			$this->write( self::DELETE_VALUES, $productId, array_merge( array( '' ), $values ) );
+		}
 
+		if ( array() !== array_diff( array_map( static fn( OptionAxis $axis ): string => $axis->key, $loaded->axes ), $axes ) ) {
+			$this->write( self::DELETE_AXES, $productId, array_merge( array( '' ), $axes ) );
+		}
+
+		if ( $desired->isEmpty() ) {
 			return;
 		}
 
-		$compareAt = self::placeholder( $price->compareAtMinor() );
+		$this->writeRows( self::UPSERT_AXIS, array_map( static fn( OptionAxis $axis ): array => array( $productId, $axis->key, $axis->label, $axis->position ), $desired->axes ) );
 
-		// updated_at is assigned first, so it compares the stored values before they are overwritten: an unchanged price keeps it.
-		$this->db->execute(
-			'INSERT INTO %i ( variant_id, currency, amount_basis, price_minor, compare_at_minor, created_at, updated_at )'
-				. ' VALUES ( %d, %s, %s, %d, ' . $compareAt . ', UTC_TIMESTAMP(), UTC_TIMESTAMP() )'
-				. ' ON DUPLICATE KEY UPDATE updated_at = IF( CAST( amount_basis AS BINARY ) <=> CAST( %s AS BINARY ) AND price_minor <=> %d AND compare_at_minor <=> ' . $compareAt . ', updated_at, UTC_TIMESTAMP() ),'
-				. ' amount_basis = %s, price_minor = %d, compare_at_minor = ' . $compareAt,
-			...self::given(
-				$table,
-				$variantId,
-				$price->currency()->code(),
-				$price->amountBasis(),
-				$price->priceMinor(),
-				$price->compareAtMinor(),
-				$price->amountBasis(),
-				$price->priceMinor(),
-				$price->compareAtMinor(),
-				$price->amountBasis(),
-				$price->priceMinor(),
-				$price->compareAtMinor()
+		if ( 0 === $desired->valueCount() ) {
+			return;
+		}
+
+		$axisIds = array_column( $this->rows( self::AXIS_IDS, $productId ), 'id', 'axis_key' );
+		$rows    = array();
+
+		foreach ( $desired->axes as $axis ) {
+			foreach ( $axis->values as $value ) {
+				$rows[] = array( (int) $axisIds[ $axis->key ], $value->key, $value->label, $value->position, $value->imageAttachmentId ?? 0, $value->swatchHex ?? '' );
+			}
+		}
+
+		$this->writeRows( self::UPSERT_VALUE, $rows );
+	}
+
+	/**
+	 * Releases the SKUs the set gives its variants from every other variant of the product that holds one, of any generation.
+	 *
+	 * Sends nothing when no variant of the set is new or given another SKU than it had.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int       $productId The product's id.
+	 * @param Variant[] $set       The variants written.
+	 * @param Variant[] $loaded    The variants as storage holds them for this write.
+	 *
+	 * @phpstan-param list<Variant> $set
+	 * @phpstan-param list<Variant> $loaded
+	 */
+	private function releaseSkus( int $productId, array $set, array $loaded ): void {
+		$stored = array();
+
+		foreach ( $loaded as $variant ) {
+			$stored[ $variant->combinationHash() ] = $variant->sku()->toString();
+		}
+
+		$moved = array_filter( $set, static fn( Variant $variant ): bool => null === $variant->id() || ( $stored[ $variant->combinationHash() ] ?? null ) !== $variant->sku()->toString() );
+
+		if ( array() === $moved ) {
+			return;
+		}
+
+		$skus    = array_map( static fn( Variant $variant ): string => $variant->sku()->toString(), $set );
+		$release = array();
+
+		foreach ( $this->rows( self::OWN_VARIANTS, $skus, $productId ) as $row ) {
+			$wantedBy = $set[ (int) $row['wanted'] - 1 ] ?? null;
+
+			if ( null !== $wantedBy && (string) $row['combination_hash'] !== $wantedBy->combinationHash() ) {
+				$release[] = (int) $row['id'];
+			}
+		}
+
+		if ( array() !== $release ) {
+			$this->write( self::RELEASE_SKUS, $productId, $release );
+		}
+	}
+
+	/**
+	 * Writes the stored variants of a set: one statement for every ROWS_PER_STATEMENT of them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int       $productId The product's id.
+	 * @param Variant[] $set       The variants, each with an id.
+	 *
+	 * @phpstan-param list<Variant> $set
+	 */
+	private function upsertVariants( int $productId, array $set ): void {
+		$this->writeRows(
+			self::UPSERT_VARIANT,
+			array_map(
+				static fn( Variant $variant ): array => array(
+					(int) $variant->id(),
+					$variant->uuid(),
+					$productId,
+					$variant->sku()->toString(),
+					$variant->combinationHash(),
+					$variant->generation(),
+					$variant->isEnabled() ? 1 : 0,
+					$variant->weightGrams() ?? -1,
+					$variant->position(),
+					$variant->label() ?? '',
+				),
+				$set
 			)
 		);
 	}
 
 	/**
-	 * Runs a variant write, and turns a unique-key failure caused by the SKU into `catalog.sku_taken`.
+	 * Inserts the new variants of a set: one statement for every ROWS_PER_STATEMENT of them.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 *
-	 * @throws CodedException|DuplicateKey With CatalogError::SkuTaken when another variant holds the SKU;
-	 *                                    the DuplicateKey itself when another unique key refused the row.
+	 * @throws DuplicateKey When another variant holds a SKU of the set.
 	 *
-	 * @param Sku      $sku       The SKU being written.
-	 * @param int      $variantId The id of the variant being written, or 0 for a new one.
-	 * @param callable $write     Sends the statement.
+	 * @param int       $productId The product's id.
+	 * @param Variant[] $set       The new variants.
 	 *
-	 * @phpstan-param callable(): int $write
+	 * @phpstan-param list<Variant> $set
 	 */
-	private function translatingSkuCollision( Sku $sku, int $variantId, callable $write ): void {
-		try {
-			$write();
-		} catch ( DuplicateKey $duplicate ) {
-			// A locking read sees the newest committed row, even where this transaction's snapshot is older.
-			$holder = $this->db->fetchValue(
-				'SELECT id FROM %i WHERE sku = %s AND id <> %d LIMIT 1 LOCK IN SHARE MODE',
-				$this->table( CatalogTables::VARIANTS ),
-				$sku->toString(),
-				$variantId
-			);
+	private function insertVariants( int $productId, array $set ): void {
+		$this->writeRows(
+			self::INSERT_VARIANT,
+			array_map(
+				static fn( Variant $variant ): array => array(
+					$variant->uuid(),
+					$productId,
+					$variant->sku()->toString(),
+					$variant->combinationHash(),
+					$variant->generation(),
+					$variant->isEnabled() ? 1 : 0,
+					$variant->weightGrams() ?? -1,
+					$variant->position(),
+					$variant->label() ?? '',
+				),
+				$set
+			)
+		);
+	}
 
-			if ( null === $holder ) {
-				throw $duplicate;
+	/**
+	 * Returns the ids of a set's variants by combination hash: those it knew, and the new ones read back from their generation, each checked to hold its SKU.
+	 *
+	 * A new variant the upsert left unwritten, or wrote without its SKU, met a variant that holds
+	 * that SKU; the save is refused as it would be had the key refused it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException With CatalogError::SkuTaken or CatalogError::SkuDuplicate for a variant left unwritten.
+	 *
+	 * @param int       $productId  The product's id.
+	 * @param int       $generation The generation the set was written at.
+	 * @param Variant[] $set        The variants.
+	 * @return array<string, int> The ids, by combination hash.
+	 *
+	 * @phpstan-param list<Variant> $set
+	 */
+	private function idsOf( int $productId, int $generation, array $set ): array {
+		$ids = array();
+
+		foreach ( $set as $variant ) {
+			if ( null !== $variant->id() ) {
+				$ids[ $variant->combinationHash() ] = $variant->id();
+			}
+		}
+
+		if ( count( $ids ) === count( $set ) ) {
+			return $ids;
+		}
+
+		$written = array();
+
+		foreach ( $this->rows( self::VARIANTS_AT_GENERATION, $productId, $generation ) as $row ) {
+			$written[ (string) $row['combination_hash'] ] = $row;
+		}
+
+		foreach ( $set as $variant ) {
+			$row = $written[ $variant->combinationHash() ] ?? null;
+
+			if ( null === $row || (string) $row['sku'] !== $variant->sku()->toString() ) {
+				$this->refuseSkuCollision( $productId, $set );
 			}
 
-			CodedException::raise( CatalogError::SkuTaken, array( 'sku' => $sku->toString() ) );
+			$ids[ $variant->combinationHash() ] = (int) $row['id'];
 		}
+
+		return $ids;
+	}
+
+	/**
+	 * Writes the option values the set's variants select, found by key: a selection there already is left as it is.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int                $productId The product's id.
+	 * @param Variant[]          $set       The variants.
+	 * @param array<string, int> $ids       Their ids, by combination hash.
+	 *
+	 * @phpstan-param list<Variant> $set
+	 */
+	private function writeSelections( int $productId, array $set, array $ids ): void {
+		$rows = array();
+
+		foreach ( $set as $variant ) {
+			foreach ( $variant->selection()->pairs() as $axis => $value ) {
+				$rows[] = array( $ids[ $variant->combinationHash() ], $axis, $value );
+			}
+		}
+
+		foreach ( array_chunk( $rows, self::ROWS_PER_STATEMENT ) as $chunk ) {
+			// The rows' values come first, then the product the axes are looked up in.
+			$this->write( ModuleStatements::forDerivedRows( self::INSERT_SELECTIONS, count( $chunk ) ), ...array_merge( array_merge( ...$chunk ), array( $productId ) ) );
+		}
+	}
+
+	/**
+	 * Writes the prices of the set's variants, and deletes the stored prices a variant no longer has.
+	 *
+	 * Every price of the set is written by one statement, an unchanged one keeping its time. A
+	 * variant loses a price when its set of currencies lost one against what storage holds for it, a
+	 * variant of an earlier generation the save brings back as any other; a new variant has none to lose.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Variant[]          $set     The variants.
+	 * @param array<string, int> $ids     Their ids, by combination hash.
+	 * @param Product            $product The product.
+	 *
+	 * @phpstan-param list<Variant> $set
+	 */
+	private function writePrices( array $set, array $ids, Product $product ): void {
+		$stored = array();
+
+		foreach ( $product->loadedVariants() as $variant ) {
+			$stored[ $variant->combinationHash() ] = self::currenciesOf( $variant );
+		}
+
+		$rows    = array();
+		$replace = array();
+
+		foreach ( $set as $variant ) {
+			$hash = $variant->combinationHash();
+			$id   = $ids[ $hash ];
+
+			foreach ( $variant->prices() as $price ) {
+				$rows[] = array( $id, $price->currency()->code(), $price->amountBasis(), $price->priceMinor(), $price->compareAtMinor() ?? -1 );
+			}
+
+			if ( isset( $stored[ $hash ] ) && array() !== array_diff( $stored[ $hash ], self::currenciesOf( $variant ) ) ) {
+				$replace[ $id ] = self::currenciesOf( $variant );
+			}
+		}
+
+		$this->writeRows( self::UPSERT_PRICE, $rows );
+
+		foreach ( array_chunk( $replace, self::ROWS_PER_STATEMENT, true ) as $chunk ) {
+			$kept = array();
+
+			foreach ( $chunk as $id => $currencies ) {
+				foreach ( $currencies as $currency ) {
+					$kept[] = array( $id, $currency );
+				}
+			}
+
+			// A pair no price has, so a list that keeps nothing still names one.
+			$kept = array() === $kept ? array( array( 0, '' ) ) : $kept;
+
+			$this->write(
+				str_replace( '{pairs}', implode( ', ', array_fill( 0, count( $kept ), '( %d, %s )' ) ), self::DELETE_OTHER_PRICES ),
+				array_keys( $chunk ),
+				...array_merge( ...$kept )
+			);
+		}
+	}
+
+	/**
+	 * Reads every variant, of any product, that holds one of the SKUs of a set, each with the variant of the set that asked for it and its combination when it is the product's: a locking read and a read of the product's variants.
+	 *
+	 * A locking read sees the newest committed rows, whatever this transaction's snapshot is. The
+	 * product's own variants are written only under its lock, so its consistent read names them all.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int       $productId The product's id.
+	 * @param Variant[] $set       The variants.
+	 * @return list<array{id: int, own_combination: string|null, wanted_by: Variant}> The holders, by id; another product's has no combination here.
+	 *
+	 * @phpstan-param list<Variant> $set
+	 */
+	private function skuHolders( int $productId, array $set ): array {
+		$skus    = array_map( static fn( Variant $variant ): string => $variant->sku()->toString(), $set );
+		$own     = array();
+		$holders = array();
+
+		foreach ( $this->rows( self::OWN_VARIANTS, $skus, $productId ) as $row ) {
+			$own[ (int) $row['id'] ] = (string) $row['combination_hash'];
+		}
+
+		foreach ( $this->rows( self::SKU_HOLDERS, $skus, $skus ) as $row ) {
+			$wantedBy = $set[ (int) $row['wanted'] - 1 ] ?? null;
+
+			if ( null === $wantedBy ) {
+				continue;
+			}
+
+			$holders[] = array(
+				'id'              => (int) $row['id'],
+				'own_combination' => $own[ (int) $row['id'] ] ?? null,
+				'wanted_by'       => $wantedBy,
+			);
+		}
+
+		return $holders;
+	}
+
+	/**
+	 * Refuses a set whose write met a SKU held by another variant: `catalog.sku_taken` when another product's variant holds it, `catalog.sku_duplicate` when another variant of the set does.
+	 *
+	 * With no holder in sight, the set gives one SKU twice as the table's collation compares them,
+	 * where the check before the window, which folds ASCII letters only, saw two, such as two that
+	 * differ by an accent. No other key of the table can refuse a variant of the set: the window
+	 * holds the product's lock, the ids and stored rows it writes by are the product's as read under
+	 * it, and what it inserts has a UUID minted for it: the one set that carries a stored variant's
+	 * UUID, made from options given alone, names that variant only by the combination its row stands
+	 * for, so the variant is found and written by its id. The refusal then names a variant that has
+	 * a SKU: only those can collide, and a client is never told a placeholder.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException The refusal.
+	 *
+	 * @param int       $productId The product's id.
+	 * @param Variant[] $set       The variants written.
+	 * @return never
+	 *
+	 * @phpstan-param list<Variant> $set
+	 */
+	private function refuseSkuCollision( int $productId, array $set ): never {
+		foreach ( $this->skuHolders( $productId, $set ) as $holder ) {
+			if ( null === $holder['own_combination'] ) {
+				self::raiseSkuTaken( $holder['wanted_by'] );
+			}
+
+			if ( $holder['own_combination'] !== $holder['wanted_by']->combinationHash() ) {
+				self::raiseSkuDuplicate( $holder['wanted_by'], $set, $holder['own_combination'] );
+			}
+		}
+
+		$pair = self::lookalikes( $set ) ?? array( array_values( array_filter( $set, static fn( Variant $variant ): bool => $variant->hasSku() ) )[0] ?? $set[0], null );
+
+		self::raiseSkuDuplicate( $pair[0], $set, $pair[1] );
+	}
+
+	/**
+	 * Returns a variant of a set whose SKU reads as an earlier one's once case and accents are set aside, with that one's combination hash: the pair a refusal names.
+	 *
+	 * The table's collation finds more SKUs equal than this does; when it finds none, the caller
+	 * names a variant of the set alone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Variant[] $set The variants.
+	 * @return array{0: Variant, 1: string}|null The later variant and the earlier one's combination hash, or null.
+	 *
+	 * @phpstan-param list<Variant> $set
+	 */
+	private static function lookalikes( array $set ): ?array {
+		$seen = array();
+
+		foreach ( $set as $variant ) {
+			$folded = mb_strtolower( remove_accents( $variant->sku()->toString(), 'en_US' ), 'UTF-8' );
+
+			if ( isset( $seen[ $folded ] ) ) {
+				return array( $variant, $seen[ $folded ] );
+			}
+
+			$seen[ $folded ] = $variant->combinationHash();
+		}
+
+		return null;
+	}
+
+	/**
+	 * Raises `catalog.sku_taken` for a variant of a set, with its combination in the details.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException Always.
+	 *
+	 * @param Variant $variant The variant whose SKU another product's variant holds.
+	 * @return never
+	 */
+	private static function raiseSkuTaken( Variant $variant ): never {
+		$combination = array();
+
+		foreach ( $variant->selection()->pairs() as $axis => $value ) {
+			$combination[] = array(
+				'axis'  => (string) $axis,
+				'value' => $value,
+			);
+		}
+
+		CodedException::raise( CatalogError::SkuTaken, array( 'sku' => $variant->sku()->toString() ), array( 'combination' => $combination ) );
+	}
+
+	/**
+	 * Raises `catalog.sku_duplicate` for a variant of a set and the other variant that holds its SKU.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException Always.
+	 *
+	 * @param Variant     $variant The variant.
+	 * @param Variant[]   $set     The set.
+	 * @param string|null $holder  The combination hash of the variant that holds the SKU, or null when it is not known.
+	 * @return never
+	 *
+	 * @phpstan-param list<Variant> $set
+	 */
+	private static function raiseSkuDuplicate( Variant $variant, array $set, ?string $holder ): never {
+		$combinations = array( $variant->selection()->toString() );
+
+		foreach ( $set as $other ) {
+			if ( $other->combinationHash() === $holder ) {
+				$combinations[] = $other->selection()->toString();
+			}
+		}
+
+		CodedException::raise(
+			CatalogError::SkuDuplicate,
+			array(
+				'sku'          => $variant->sku()->toString(),
+				'combinations' => implode( '; ', $combinations ),
+			)
+		);
+	}
+
+	/**
+	 * Returns the `axis_key=value_key` of every value of a matrix.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param OptionMatrix $matrix The matrix.
+	 * @return list<string> The keys.
+	 */
+	private static function valueKeys( OptionMatrix $matrix ): array {
+		$keys = array();
+
+		foreach ( $matrix->axes as $axis ) {
+			foreach ( $axis->values as $value ) {
+				$keys[] = $axis->key . '=' . $value->key;
+			}
+		}
+
+		return $keys;
+	}
+
+	/**
+	 * Returns the currencies a variant has prices in.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Variant $variant The variant.
+	 * @return list<string> The currency codes.
+	 */
+	private static function currenciesOf( Variant $variant ): array {
+		return array_map( static fn( VariantPrice $price ): string => $price->currency()->code(), $variant->prices() );
+	}
+
+	/**
+	 * Sends a one-row statement for several rows: one statement for every ROWS_PER_STATEMENT rows, nothing for none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $statement A one-row insert constant of this class.
+	 * @param array  $rows      Each row's values, in placeholder order.
+	 *
+	 * @phpstan-param list<list<mixed>> $rows
+	 */
+	private function writeRows( string $statement, array $rows ): void {
+		foreach ( array_chunk( $rows, self::ROWS_PER_STATEMENT ) as $chunk ) {
+			$this->write( ModuleStatements::forRows( $statement, count( $chunk ) ), ...array_merge( ...$chunk ) );
+		}
+	}
+
+	/**
+	 * Sends a statement of this class that changes rows, its table tokens and lists expanded.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $statement One of this class's constants with table tokens.
+	 * @param mixed  ...$values Its values, in placeholder order; a `{list}` takes a list.
+	 * @return int The rows affected.
+	 */
+	private function write( string $statement, mixed ...$values ): int {
+		list( $sql, $arguments ) = ModuleStatements::expand( $statement, $values, CatalogTables::names(), array( $this->db, 'table' ), 'catalog' );
+
+		return $this->db->execute( $sql, ...$arguments );
+	}
+
+	/**
+	 * Sends a query of this class, its table tokens and lists expanded.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $statement One of this class's constants with table tokens.
+	 * @param mixed  ...$values Its values, in placeholder order; a `{list}` takes a list.
+	 * @return list<array<string, mixed>> The rows.
+	 */
+	private function rows( string $statement, mixed ...$values ): array {
+		list( $sql, $arguments ) = ModuleStatements::expand( $statement, $values, CatalogTables::names(), array( $this->db, 'table' ), 'catalog' );
+
+		return $this->db->fetchAll( $sql, ...$arguments );
 	}
 
 	/**

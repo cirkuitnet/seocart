@@ -832,4 +832,87 @@ interface StockRepository {
 	 * @return list<int> The variants, ascending.
 	 */
 	public function movableItems( int $locationId, int $afterVariantId, int $limit ): array;
+
+	/**
+	 * Locks the stock policies of some variants, under a shared lock until the commit, and returns the variants that have one: one locking read.
+	 *
+	 * Taken before any of the variants' items, so no policy is deleted while its items are set.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param int[] $variantIds The variants, ascending.
+	 * @return list<int> The variants among them that have a stock policy, ascending.
+	 *
+	 * @phpstan-param list<int> $variantIds
+	 */
+	public function lockPolicies( array $variantIds ): array;
+
+	/**
+	 * Locks some locations, under a shared lock until the commit, and returns those that exist: one locking read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param int[] $locationIds The locations, ascending.
+	 * @return list<int> The locations among them that exist, ascending.
+	 *
+	 * @phpstan-param list<int> $locationIds
+	 */
+	public function lockLocations( array $locationIds ): array;
+
+	/**
+	 * Creates the items that do not exist yet, at zero, and takes the lock of every item named, in the order given: one upsert for every hundred.
+	 *
+	 * The upsert takes an item's exclusive lock whether it inserts the row or finds it, as
+	 * createItemAt() does for one, so the items must be given in the lock order.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param array $items Each item's variant and location, ascending.
+	 *
+	 * @phpstan-param list<array{0: int, 1: int}> $items
+	 */
+	public function createItemsAt( array $items ): void;
+
+	/**
+	 * Reads the level of each item named, whose lock the transaction already holds, with its variant's totals at every location: one plain read, which locks nothing.
+	 *
+	 * The caller has taken every item's lock, as createItemsAt() does, so under READ COMMITTED the
+	 * read sees each item as the transaction left it and no other writer can change it meanwhile.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param array $items Each item's variant and location.
+	 * @return list<StockLevel> The level of each item that exists, ascending by variant and location.
+	 *
+	 * @phpstan-param list<array{0: int, 1: int}> $items
+	 */
+	public function lockedLevels( array $items ): array;
+
+	/**
+	 * Appends a ledger entry for each of several changes of on_hand, all for one reason and one actor: one insert for every hundred.
+	 *
+	 * Each change follows, in the same transaction, the statement that holds its item's lock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param array        $rows          Each entry's variant, location, change and on_hand after it.
+	 * @param LedgerReason $reason        Why.
+	 * @param string       $actorType     `user` or `system`.
+	 * @param int|null     $actorId       The user, or null.
+	 * @param string|null  $correlationId The request's correlation id, or null.
+	 * @return list<int> The id of each entry, in the order of the rows.
+	 *
+	 * @phpstan-param list<array{0: int, 1: int, 2: int, 3: int}> $rows
+	 */
+	public function appendLedgerRows( array $rows, LedgerReason $reason, string $actorType, ?int $actorId, ?string $correlationId ): array;
 }

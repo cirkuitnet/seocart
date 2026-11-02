@@ -19,23 +19,25 @@ use SEOCart\Tests\Support\QueryPlan\Statement;
 /**
  * Which entries hold on which server, in the committed list and as the loader reads `servers`.
  *
- * MariaDB estimates two cursor reads over their whole range, without the LIMIT that ends them,
- * and so breaks the query-plan rule where MySQL keeps it. Their entries hold on MariaDB only: an
- * entry for every server would be stale on MySQL, and the MySQL run would fail on it.
+ * MariaDB estimates the hold sweep's cursor read over its whole range, without the LIMIT that
+ * ends it, and so breaks the query-plan rule where MySQL keeps it. Its entry holds on MariaDB
+ * only: an entry for every server would be stale on MySQL, and the MySQL run would fail on it.
+ * Doctor's page of the variant ids was the second such read until the variants outgrew the rule
+ * on MySQL too; its entry holds on both servers.
  *
  * Planted violations, each shown red and removed: in tests/query-plan-allow-list.json, scope a
- * third entry to MariaDB; in AllowList::load(), keep an entry scoped to other servers.
+ * second entry to MariaDB; in AllowList::load(), keep an entry scoped to other servers.
  *
  * @since 0.2.0
  */
 final class AllowListTest extends TestCase {
 
 	/**
-	 * Tests that the committed list scopes exactly the two reads MariaDB misjudges to MariaDB, each with its reason, and nothing to MySQL alone.
+	 * Tests that the committed list scopes exactly the one read MariaDB alone misjudges to MariaDB, with its reason, and nothing to MySQL alone.
 	 *
 	 * @since 0.2.0
 	 */
-	public function test_the_committed_list_scopes_exactly_two_reads_to_mariadb(): void {
+	public function test_the_committed_list_scopes_exactly_one_read_to_mariadb(): void {
 		$file    = dirname( __DIR__, 4 ) . '/' . AllowList::FILE;
 		$mariadb = AllowList::load( $file, ServerKind::MariaDB );
 		$mysql   = AllowList::load( $file, ServerKind::MySQL );
@@ -43,7 +45,7 @@ final class AllowListTest extends TestCase {
 
 		sort( $only );
 
-		$this->assertSame( array( '471508706270', 'e17d9305aac4' ), $only, 'The MariaDB-only entries are not exactly the hold sweep\'s page and doctor\'s variant ids.' );
+		$this->assertSame( array( 'e17d9305aac4' ), $only, 'The MariaDB-only entry is not exactly the hold sweep\'s page.' );
 		$this->assertSame( array(), array_keys( array_diff_key( $mysql, $mariadb ) ), 'An entry holds on MySQL alone.' );
 
 		foreach ( $only as $id ) {

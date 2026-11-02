@@ -64,11 +64,29 @@ An internal error carries a generic message and empty details: it is a code mark
 - Values: `current_version`
 - Details: `totals`, beside the values
 
+## `catalog.combination_duplicate`
+
+- HTTP status: 400
+- Message: Two variants were given the combination "{combination}"; a product has one variant per combination.
+- Values: `combination`
+
+## `catalog.combination_invalid`
+
+- HTTP status: 400
+- Message: The combination "{combination}" is not one of the product's: a variant names every option axis of the product once, with one of that axis's values.
+- Values: `combination`
+
 ## `catalog.currency_not_base`
 
 - HTTP status: 400
 - Message: A product price must be in the store's base currency, {base_currency}, not {currency}.
 - Values: `currency`, `base_currency`
+
+## `catalog.currency_not_offered`
+
+- HTTP status: 400
+- Message: The store does not offer {currency}, so a variant cannot have a price in it.
+- Values: `currency`
 
 ## `catalog.currency_unsupported`
 
@@ -94,6 +112,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The site does not publish in {locale}.
 - Values: `locale`
 
+## `catalog.option_invalid`
+
+- HTTP status: 400
+- Message: The option's {field} "{value}" is not valid: a key has 1 to 32 lower-case letters, digits, "-" or "_" and is used once; a label has 1 to 100 characters; a swatch is written #rrggbb in lower case; a position and an image ID are not negative.
+- Values: `field`, `value`
+
 ## `catalog.order_unavailable`
 
 - HTTP status: 400
@@ -117,6 +141,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 400
 - Message: WordPress did not save the product's post ({wordpress_code}), so nothing was saved. db_update_error: the database refused the update, as it does when another request changed the post meanwhile: save it again.
 - Values: `wordpress_code`
+
+## `catalog.price_duplicate`
+
+- HTTP status: 400
+- Message: The variant {combination} was given two prices in {currency}; a variant has one price per currency.
+- Values: `combination`, `currency`
 
 ## `catalog.price_range_invalid`
 
@@ -142,10 +172,16 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: A search may hold at most {most} words, in valid UTF-8 text.
 - Values: `most`
 
+## `catalog.sku_duplicate`
+
+- HTTP status: 400
+- Message: The SKU "{sku}" was given to more than one variant ({combinations}); a SKU names one variant.
+- Values: `sku`, `combinations`
+
 ## `catalog.sku_invalid`
 
 - HTTP status: 400
-- Message: The SKU "{sku}" is not valid: a SKU has 1 to 64 characters and no control characters.
+- Message: The SKU "{sku}" is not valid: a SKU has 1 to 64 characters, no control characters and no leading "~", and a new or enabled variant must have one.
 - Values: `sku`
 
 ## `catalog.sku_taken`
@@ -153,6 +189,7 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 409
 - Message: Another product already uses the SKU "{sku}".
 - Values: `sku`
+- Details: `combination`, beside the values
 
 ## `catalog.source_binding_kept`
 
@@ -165,6 +202,24 @@ An internal error carries a generic message and empty details: it is a code mark
 - HTTP status: 404
 - Message: No {filter} has the slug "{slug}".
 - Values: `filter`, `slug`
+
+## `catalog.too_many_options`
+
+- HTTP status: 400
+- Message: A product may have at most {most_axes} option axes and {most_values} option values in all; {axes} axes and {values} values were given.
+- Values: `axes`, `values`, `most_axes`, `most_values`
+
+## `catalog.too_many_variants`
+
+- HTTP status: 400
+- Message: A save may write at most {limit} variants of a product; {count} were given.
+- Values: `count`, `limit`
+
+## `catalog.variants_ambiguous`
+
+- HTTP status: 400
+- Message: Give a product's variants either as the single SKU, price and weight of a product without options, or as the list of variants, not both; a product with options takes the list.
+- Values: none
 
 ## `catalog.write_conflict`
 

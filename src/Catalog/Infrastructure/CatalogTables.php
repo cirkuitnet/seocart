@@ -21,16 +21,17 @@ use SEOCart\Platform\Database\Schema\TableDefinition;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Declares `products`, `product_posts`, `variants` and `variant_prices`, and the two tables derived from them, `product_price_projections` and `product_search_index`.
+ * Declares `products`, `product_posts`, `variants`, `variant_prices`, the option tables `option_axes`, `option_values` and `variant_option_values`, and the two tables derived from them, `product_price_projections` and `product_search_index`.
  *
  * Owns one fact: the shape of the catalog's storage. The migration that creates the tables and
  * the data registry that lists them call these factories, so each table is declared once. The
  * keys are the invariants: one binding per product per locale, one product per source post, a
- * SKU used once in the store (in the table's collation, so without regard to case) and one price
- * row per variant and currency. `products.updated_at` keeps microseconds, so a statement that
- * rewrites the generation marker always changes the row and reports it. `variant_prices` holds
- * money and is classified `financial`, as are the price projections; the others hold nothing
- * personal. The rows of all six live as long as the product they belong to and are removed by the
+ * SKU used once in the store (in the table's collation, so without regard to case), one price
+ * row per variant and currency, one axis per product and key, one value per axis and key, and one
+ * selected value per variant and value. `products.updated_at` keeps microseconds, so a statement
+ * that rewrites the generation marker always changes the row and reports it. `variant_prices`
+ * holds money and is classified `financial`, as are the price projections; the others hold nothing
+ * personal. The rows of all nine live as long as the product they belong to and are removed by the
  * service that deletes it. The two derived tables are rebuilt from the others by the catalog's
  * commands, never read as the truth of a price or a word.
  *
@@ -93,6 +94,33 @@ final class CatalogTables {
 	public const SEARCH_INDEX = 'product_search_index';
 
 	/**
+	 * The unprefixed name of the option axes table.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const OPTION_AXES = 'option_axes';
+
+	/**
+	 * The unprefixed name of the option values table.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const OPTION_VALUES = 'option_values';
+
+	/**
+	 * The unprefixed name of the table of the option values each variant stands for.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const VARIANT_OPTION_VALUES = 'variant_option_values';
+
+	/**
 	 * The owning module, as every declaration names it.
 	 *
 	 * @since 0.1.0
@@ -111,15 +139,37 @@ final class CatalogTables {
 	private const RETENTION = 'entity_lifetime';
 
 	/**
-	 * Returns the six declarations, parents before children, the derived tables last.
+	 * Returns the nine declarations, parents before children, the derived tables last.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The price projections and the search index.
+	 * @since 0.2.0 The price projections, the search index and the three option tables.
 	 *
-	 * @return list<TableDefinition> `products`, `product_posts`, `variants`, `variant_prices`, `product_price_projections`, `product_search_index`.
+	 * @return list<TableDefinition> `products`, `product_posts`, `variants`, `variant_prices`, `option_axes`, `option_values`,
+	 *                               `variant_option_values`, `product_price_projections`, `product_search_index`.
 	 */
 	public static function all(): array {
-		return array( self::products(), self::productPosts(), self::variants(), self::variantPrices(), self::priceProjections(), self::searchIndex() );
+		return array(
+			self::products(),
+			self::productPosts(),
+			self::variants(),
+			self::variantPrices(),
+			self::optionAxes(),
+			self::optionValues(),
+			self::variantOptionValues(),
+			self::priceProjections(),
+			self::searchIndex(),
+		);
+	}
+
+	/**
+	 * Returns the unprefixed names of the nine tables, which a statement names as tokens such as `{variants}`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> The names, in the order all() declares them.
+	 */
+	public static function names(): array {
+		return array( self::PRODUCTS, self::PRODUCT_POSTS, self::VARIANTS, self::VARIANT_PRICES, self::OPTION_AXES, self::OPTION_VALUES, self::VARIANT_OPTION_VALUES, self::PRICE_PROJECTIONS, self::SEARCH_INDEX );
 	}
 
 	/**
@@ -164,7 +214,7 @@ final class CatalogTables {
 			),
 			self::RETENTION,
 			array(
-				'products -> variants'      => 'Deleting a product removes its variants first, in the same transaction. A product with no variant is incomplete.',
+				'products -> variants'      => 'Deleting a product removes its variants, the option values they select and its option axes and values first, in the same transaction. A product with no enabled variant is incomplete.',
 				'products -> product_posts' => 'Deleting the source post deletes the product; deleting any other binding removes that binding only. A product with no binding at all is reported by doctor, never repaired: whether one may be deleted waits for order history. A product whose source binding is missing or invalid is reported for a person to decide, never repaired. A non-source binding whose post is gone is deleted by doctor --repair. A post written by a path that never bound one is bound, inline by the lifecycle or by doctor --repair when it was not, to a new, incomplete product.',
 			)
 		);
@@ -233,6 +283,7 @@ final class CatalogTables {
 				new ColumnSpec( 'position', 'int unsigned', $public, 'Where the variant sorts among its product\'s.', defaultValue: '0' ),
 				new ColumnSpec( 'created_at', 'datetime', $public, 'When the variant was created, UTC.' ),
 				new ColumnSpec( 'updated_at', 'datetime', $public, 'When the row last changed, UTC.' ),
+				self::variantLabel(),
 			),
 			array( 'id' ),
 			array(
@@ -248,6 +299,135 @@ final class CatalogTables {
 				'variants -> variant_prices' => 'Deleting a variant removes its prices. A variant without a price in the base currency leaves its product incomplete.',
 				'variants -> products'       => 'A variant whose product no longer exists is reported by doctor, never repaired: the variant id may already be on a ledger row.',
 				'variants -> stock items'    => 'Deleting a variant removes its stock item; its stock ledger rows are kept. A variant without a stock item is given one at zero by doctor --repair. A stock item whose variant no longer exists is reported by doctor, never repaired: deleting it would write a tombstone to the stock ledger.',
+			)
+		);
+	}
+
+	/**
+	 * Declares `variants.label`: the variant's option values, by their labels in axis order.
+	 *
+	 * The variants declaration ends with it, and the migration that adds it to a store installed
+	 * before it adds this same column.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return ColumnSpec The column.
+	 */
+	public static function variantLabel(): ColumnSpec {
+		return new ColumnSpec( 'label', 'varchar(255)', Classification::Public, 'The labels of the option values the variant stands for, in the order of their axes, such as "250 g / Whole bean"; NULL for a product without options.', nullable: true );
+	}
+
+	/**
+	 * Declares `option_axes`: the option axes of a product, such as Size or Grind.
+	 *
+	 * An axis's key is fixed when the axis is created and is part of every combination hash of the
+	 * product's variants; its label is the name a shopper reads and may change.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return TableDefinition The declaration.
+	 */
+	public static function optionAxes(): TableDefinition {
+		$public = Classification::Public;
+
+		return new TableDefinition(
+			self::OPTION_AXES,
+			self::MODULE,
+			'Holds the option axes of each product, such as Size or Grind: the axis\'s fixed key, which its variants\' combinations are built from, its label and its place among the product\'s axes.',
+			MutationPattern::Config,
+			array(
+				new ColumnSpec( 'id', 'bigint unsigned', $public, 'Surrogate key.', autoIncrement: true ),
+				new ColumnSpec( 'product_id', 'bigint unsigned', $public, 'The product the axis belongs to.' ),
+				new ColumnSpec( 'axis_key', 'varchar(32)', $public, 'The axis\'s key: lower-case letters, digits, "-" and "_"; fixed once the axis exists, and part of the combination hash of every variant of the product.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'label', 'varchar(100)', $public, 'The axis\'s name as a shopper reads it, such as Size, in the language of the product\'s source post.' ),
+				new ColumnSpec( 'position', 'int unsigned', $public, 'Where the axis sorts among its product\'s.', defaultValue: '0' ),
+				new ColumnSpec( 'created_at', 'datetime', $public, 'When the axis was created, UTC.' ),
+				new ColumnSpec( 'updated_at', 'datetime', $public, 'When the row last changed, UTC.' ),
+			),
+			array( 'id' ),
+			array(
+				IndexSpec::unique( 'product_axis', array( 'product_id', 'axis_key' ), 'A product has one axis per key; also finds a product\'s axes.' ),
+			),
+			array(),
+			self::RETENTION,
+			array(
+				'option_axes -> products' => 'Deleting a product deletes its axes in the same transaction. An axis whose product no longer exists is reported by doctor, never repaired.',
+			)
+		);
+	}
+
+	/**
+	 * Declares `option_values`: the values of an option axis, such as 250 g and 1 kg.
+	 *
+	 * A value's key is fixed when the value is created and is part of the combination hash of every
+	 * variant that selects it; its label, position, image and swatch may change.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return TableDefinition The declaration.
+	 */
+	public static function optionValues(): TableDefinition {
+		$public = Classification::Public;
+
+		return new TableDefinition(
+			self::OPTION_VALUES,
+			self::MODULE,
+			'Holds the values of each option axis, such as 250 g and 1 kg: the value\'s fixed key, its label, its place among the axis\'s values, and the image and colour swatch a shopper picks it by.',
+			MutationPattern::Config,
+			array(
+				new ColumnSpec( 'id', 'bigint unsigned', $public, 'Surrogate key.', autoIncrement: true ),
+				new ColumnSpec( 'axis_id', 'bigint unsigned', $public, 'The axis the value belongs to.' ),
+				new ColumnSpec( 'value_key', 'varchar(32)', $public, 'The value\'s key: lower-case letters, digits, "-" and "_"; fixed once the value exists, and part of the combination hash of every variant that selects it.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'label', 'varchar(100)', $public, 'The value\'s name as a shopper reads it, such as 250 g, in the language of the product\'s source post.' ),
+				new ColumnSpec( 'position', 'int unsigned', $public, 'Where the value sorts among its axis\'s.', defaultValue: '0' ),
+				new ColumnSpec( 'image_attachment_id', 'bigint unsigned', $public, 'The Media Library attachment that shows the value; NULL for none. Nothing clears it when the attachment is deleted: doctor reports a value whose attachment is gone.', nullable: true ),
+				new ColumnSpec( 'swatch_hex', 'char(7)', $public, 'The colour that shows the value, as #rrggbb in lower case; NULL for none.', nullable: true, collation: 'ascii_bin' ),
+				new ColumnSpec( 'created_at', 'datetime', $public, 'When the value was created, UTC.' ),
+				new ColumnSpec( 'updated_at', 'datetime', $public, 'When the row last changed, UTC.' ),
+			),
+			array( 'id' ),
+			array(
+				IndexSpec::unique( 'axis_value', array( 'axis_id', 'value_key' ), 'An axis has one value per key; also finds an axis\'s values.' ),
+			),
+			array(),
+			self::RETENTION,
+			array(
+				'option_values -> option_axes' => 'Deleting an axis deletes its values in the same transaction. A value whose axis no longer exists is reported by doctor, never repaired.',
+				'option_values -> attachments' => 'A value whose image attachment no longer exists shows no image and is reported by doctor; nothing clears the column.',
+			)
+		);
+	}
+
+	/**
+	 * Declares `variant_option_values`: the option value a variant selects on each axis of its product.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return TableDefinition The declaration.
+	 */
+	public static function variantOptionValues(): TableDefinition {
+		$public = Classification::Public;
+
+		return new TableDefinition(
+			self::VARIANT_OPTION_VALUES,
+			self::MODULE,
+			'Holds, for each variant of a product with options, the option value it selects on each of the product\'s axes.',
+			MutationPattern::MutableTransactional,
+			array(
+				new ColumnSpec( 'variant_id', 'bigint unsigned', $public, 'The variant.' ),
+				new ColumnSpec( 'option_value_id', 'bigint unsigned', $public, 'The value it selects.' ),
+				new ColumnSpec( 'axis_id', 'bigint unsigned', $public, 'The axis of the value, so the value a variant selects on an axis is found by key.' ),
+			),
+			array( 'variant_id', 'option_value_id' ),
+			array(),
+			array(
+				IndexSpec::key( 'option_value', array( 'option_value_id' ), 'Finds the variants that select a value, when the value is deleted and for doctor.' ),
+				IndexSpec::key( 'variant_axis', array( 'variant_id', 'axis_id' ), 'Finds the value a variant selects on an axis.' ),
+			),
+			self::RETENTION,
+			array(
+				'variant_option_values -> variants'      => 'Deleting a product deletes its variants\' rows here in the same transaction. A row whose variant no longer exists is reported by doctor, never repaired.',
+				'variant_option_values -> option_values' => 'Deleting a value deletes the rows that select it in the same transaction. A row whose value no longer exists is reported by doctor, never repaired.',
 			)
 		);
 	}

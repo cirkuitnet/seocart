@@ -12,10 +12,15 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Support\Catalog;
 
 use SEOCart\Catalog\Domain\GenerationState;
+use SEOCart\Catalog\Domain\OptionAxis;
+use SEOCart\Catalog\Domain\OptionMatrix;
+use SEOCart\Catalog\Domain\OptionValue;
 use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\Sku;
 use SEOCart\Catalog\Domain\Variant;
+use SEOCart\Catalog\Domain\VariantInput;
 use SEOCart\Catalog\Domain\VariantPrice;
+use SEOCart\Catalog\Domain\VariantSelection;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\Migrations\CreateCatalogTables;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
@@ -228,6 +233,39 @@ abstract class CatalogTestCase extends DatabaseTestCase {
 	 */
 	protected function storedProduct( string $sku = 'SKU-1', string $status = 'publish' ): Product {
 		$product = $this->boundProduct( $sku, 1999, $status );
+
+		$this->products->save( $product );
+		$this->assertTrue( $this->products->leaveUpdating( (int) $product->id(), GenerationState::Complete ), 'The fixture product did not leave `updating`.' );
+
+		return $product;
+	}
+
+	/**
+	 * Stores a whole product with options as a successful save leaves it: two sizes by three grinds, each variant priced in the base currency, `complete`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $prefix The SKUs' prefix.
+	 * @return Product The product as stored, with its ids.
+	 */
+	protected function storedProductWithOptions( string $prefix ): Product {
+		$base    = Currency::of( self::BASE_CURRENCY );
+		$product = Product::firstBinding( $this->ids->generate(), $this->post(), Locale::of( self::LOCALE ), null, new \DateTimeImmutable( '2026-09-25 10:00:00', new \DateTimeZone( 'UTC' ) ) );
+		$inputs  = array();
+
+		foreach ( VariantSets::combinations() as $pairs ) {
+			$inputs[] = new VariantInput( $this->ids->generate(), VariantSelection::of( $pairs ), Sku::of( $prefix . '-' . implode( '-', $pairs ) ), prices: array( VariantPrice::net( $base, 1000 ) ) );
+		}
+
+		$product->applyOptions(
+			OptionMatrix::of(
+				array(
+					OptionAxis::of( 'size', 'Size', 0, array_map( static fn( string $key, int $at ): OptionValue => OptionValue::of( $key, VariantSets::LABELS[ $key ], $at ), VariantSets::SIZES, array_keys( VariantSets::SIZES ) ) ),
+					OptionAxis::of( 'grind', 'Grind', 1, array_map( static fn( string $key, int $at ): OptionValue => OptionValue::of( $key, VariantSets::LABELS[ $key ], $at ), VariantSets::GRINDS, array_keys( VariantSets::GRINDS ) ) ),
+				)
+			)
+		);
+		$product->applyVariants( $inputs, array( $base ), $base, Product::MAX_SYNC_VARIANTS );
 
 		$this->products->save( $product );
 		$this->assertTrue( $this->products->leaveUpdating( (int) $product->id(), GenerationState::Complete ), 'The fixture product did not leave `updating`.' );

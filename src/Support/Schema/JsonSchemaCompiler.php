@@ -41,8 +41,9 @@ defined( 'ABSPATH' ) || exit;
  *   required when its header is, as the API document says.
  * - restObjectProperty(), one object-valued property of a WordPress core-shaped REST resource,
  *   such as a post type's: `context` on the property and on each of its properties, `readonly`
- *   on the ones a client cannot write, `additionalProperties: false`, and no `required` at all,
- *   because such a resource is written by partial updates.
+ *   on the ones a client cannot write, a field inside a list of objects among them, named by its
+ *   dotted path, `additionalProperties: false`, and no `required` at all on the property's own
+ *   fields, because such a resource is written by partial updates.
  *
  * In the four JSON dialects a nullable field has the type list [type, "null"]; none of them uses
  * the `nullable` keyword of OpenAPI 3.0. A uuid is a string with `format: uuid` in all four.
@@ -180,16 +181,20 @@ final class JsonSchemaCompiler {
 	 * a `readonly` property when it derives a route's arguments from the schema, and validates a
 	 * written object against its properties. So the property and each of its properties carry
 	 * their contexts, `view` and `edit` (a property in $edit_only has `edit` alone), each name in
-	 * $read_only is `readonly`, and a written object with any other key is refused. No field may
-	 * be required: a client updates such a resource by sending only what it changes.
+	 * $read_only is `readonly`, and a written object with any other key is refused. A name in
+	 * $read_only may be a dotted path into a list of objects, such as `variants.label`, which marks
+	 * that field of each item `readonly`: a client may send it back with the rest of the item, and
+	 * it is ignored. No field of the property may be required: a client updates such a resource by
+	 * sending only what it changes.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Dotted paths into lists of objects among the read-only names.
 	 *
-	 * @throws SchemaException When a field is required, or a listed name is not one of the fields.
+	 * @throws SchemaException When a field is required, or a listed name or path is not one of the fields.
 	 *
 	 * @param string      $description The property's machine description.
 	 * @param FieldSpec[] $fields      Its fields, in the order they are sent.
-	 * @param string[]    $read_only   The names of the fields a client cannot write.
+	 * @param string[]    $read_only   The names of the fields a client cannot write, or their dotted paths inside a list.
 	 * @param string[]    $edit_only   The names of the fields sent in the `edit` context only.
 	 * @return array<string, mixed> The property's schema.
 	 *
@@ -215,8 +220,17 @@ final class JsonSchemaCompiler {
 			$properties[ $field->name() ] = $property;
 		}
 
+		foreach ( $read_only as $name ) {
+			$path = explode( '.', $name );
+			$top  = array_shift( $path );
+
+			if ( array() !== $path ) {
+				$properties[ $top ] = isset( $properties[ $top ] ) ? self::readOnlyAt( $properties[ $top ], $path ) : null;
+			}
+		}
+
 		foreach ( array_merge( $read_only, $edit_only ) as $name ) {
-			if ( ! isset( $properties[ $name ] ) ) {
+			if ( ! isset( $properties[ explode( '.', $name )[0] ] ) ) {
 				SchemaException::raise( 'The name %1$s is listed as read-only or edit-only, but it is not one of the fields.', $name );
 			}
 		}
@@ -228,6 +242,36 @@ final class JsonSchemaCompiler {
 			'properties'           => $properties,
 			'additionalProperties' => false,
 		);
+	}
+
+	/**
+	 * Marks a field of a list of objects read only, by its path from the list, through lists inside it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, mixed> $property The list's keywords.
+	 * @param string[]             $path     The names leading from the list's items to the field.
+	 * @return array<string, mixed>|null The list's keywords with the field marked, or null when the path names no field.
+	 *
+	 * @phpstan-param list<string> $path
+	 */
+	private static function readOnlyAt( array $property, array $path ): ?array {
+		$name    = (string) array_shift( $path );
+		$members = $property['items']['properties'] ?? null;
+
+		if ( ! is_array( $members ) || ! isset( $members[ $name ] ) || ! is_array( $members[ $name ] ) ) {
+			return null;
+		}
+
+		$member = array() === $path ? array( 'readonly' => true ) + $members[ $name ] : self::readOnlyAt( $members[ $name ], $path );
+
+		if ( null === $member ) {
+			return null;
+		}
+
+		$property['items']['properties'][ $name ] = $member;
+
+		return $property;
 	}
 
 	/**

@@ -14,6 +14,9 @@ namespace SEOCart\Tests\Support\Catalog;
 use SEOCart\Catalog\Application\ProductWrite\SaveProduct;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
+use SEOCart\Inventory\Application\LocationDirectory;
+use SEOCart\Inventory\Application\SetStockLevels;
+use SEOCart\Inventory\Application\StockService;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
 use SEOCart\Platform\Authorization\CapabilityInstaller;
 use SEOCart\Platform\Authorization\ProductCapabilities;
@@ -104,6 +107,8 @@ abstract class ProductRestTestCase extends ProductWriteTestCase {
 	 * Installs the roles, builds the controller and a REST server that serves it, and acts as an administrator.
 	 *
 	 * @since 0.1.0
+	 *
+	 * @throws \LogicException Only from the controller's stock closures, when the services were built without the stock unit or the locations.
 	 */
 	public function set_up(): void {
 		parent::set_up();
@@ -128,7 +133,10 @@ abstract class ProductRestTestCase extends ProductWriteTestCase {
 			),
 			function ( \Throwable $failure ): void {
 				$this->failures[] = $failure;
-			}
+			},
+			fn(): SetStockLevels => $this->services->stockLevels ?? throw new \LogicException( 'The services were built without the stock unit.' ),
+			fn(): StockService => $this->services->stock,
+			fn(): LocationDirectory => $this->services->locations ?? throw new \LogicException( 'The services were built without the locations.' )
 		);
 
 		add_action(

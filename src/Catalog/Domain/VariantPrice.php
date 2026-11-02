@@ -21,9 +21,10 @@ defined( 'ABSPATH' ) || exit;
  * One authored price of a variant: an amount in minor units, an optional compare-at amount, the currency and the basis.
  *
  * Owns one fact: what an authored price holds. Amounts are integers of the currency's minor
- * unit and never negative. The basis says whether the amount includes tax: `net` or `gross`.
- * Prices are authored `net` for now; a stored `gross` row reads back as written. A price in
- * another currency than the store's base is refused by Product, which knows the base.
+ * unit and never negative. The basis says whether the amount includes tax: `net` or `gross`. A
+ * price in another currency than the store's base is authored only through a variant's whole
+ * set of prices, in a currency the store offers; the single price of a product without options
+ * stays in the base currency. Product checks both, since it knows the base.
  *
  * @since 0.1.0
  */
@@ -125,6 +126,20 @@ final class VariantPrice {
 	}
 
 	/**
+	 * Returns a price authored with tax included.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Currency $currency       The currency.
+	 * @param int      $priceMinor     The price, in minor units, 0 or more.
+	 * @param int|null $compareAtMinor Optional. The compare-at price, in minor units, 0 or more. Default null.
+	 * @return self The price.
+	 */
+	public static function gross( Currency $currency, int $priceMinor, ?int $compareAtMinor = null ): self {
+		return new self( $currency, $priceMinor, $compareAtMinor, self::GROSS );
+	}
+
+	/**
 	 * Returns a price as it was stored.
 	 *
 	 * @since 0.1.0
@@ -181,5 +196,17 @@ final class VariantPrice {
 	 */
 	public function amountBasis(): string {
 		return $this->amountBasis;
+	}
+
+	/**
+	 * Returns the price on the basis of the one it takes the place of: a save that names no basis does not move it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param VariantPrice|null $stored The price it takes the place of, or null when there is none.
+	 * @return self The price, or this one when it takes the place of none.
+	 */
+	public function onBasisOf( ?self $stored ): self {
+		return null === $stored ? $this : new self( $this->currency, $this->priceMinor, $this->compareAtMinor, $stored->amountBasis );
 	}
 }

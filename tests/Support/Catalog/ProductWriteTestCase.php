@@ -251,7 +251,7 @@ abstract class ProductWriteTestCase extends CatalogTestCase {
 	}
 
 	/**
-	 * Reads the checksum of each of the four catalog tables, as a second connection sees them.
+	 * Reads the checksum of each of the catalog's tables of a product's rows, as a second connection sees them.
 	 *
 	 * @since 0.1.0
 	 *
@@ -263,7 +263,7 @@ abstract class ProductWriteTestCase extends CatalogTestCase {
 	protected function catalogChecksums( SecondConnection $b ): array {
 		$sums = array();
 
-		foreach ( array( CatalogTables::PRODUCTS, CatalogTables::PRODUCT_POSTS, CatalogTables::VARIANTS, CatalogTables::VARIANT_PRICES ) as $table ) {
+		foreach ( array( CatalogTables::PRODUCTS, CatalogTables::PRODUCT_POSTS, CatalogTables::VARIANTS, CatalogTables::VARIANT_PRICES, CatalogTables::OPTION_AXES, CatalogTables::OPTION_VALUES, CatalogTables::VARIANT_OPTION_VALUES ) as $table ) {
 			$sums[ $table ] = (string) ( $b->fetchRow( sprintf( 'CHECKSUM TABLE `%s`', $this->db->table( $table ) ) )['Checksum'] ?? '' );
 		}
 

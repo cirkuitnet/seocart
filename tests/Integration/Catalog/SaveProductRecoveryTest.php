@@ -22,6 +22,8 @@ use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Catalog\ProductWrites;
 use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
+use SEOCart\Tests\Support\Catalog\SavesVariantSets;
+use SEOCart\Tests\Support\Catalog\VariantSets;
 
 /**
  * The recovery proofs.
@@ -42,6 +44,8 @@ use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
  * @since 0.1.0
  */
 final class SaveProductRecoveryTest extends ProductWriteTestCase {
+
+	use SavesVariantSets;
 
 	/**
 	 * Tests that a first save a listener fails leaves no post, no row and no event.
@@ -240,5 +244,61 @@ final class SaveProductRecoveryTest extends ProductWriteTestCase {
 		$this->assertSame( SellabilityReason::Updating, $this->verdict( (int) $saved->variantId ) );
 		$this->assertSame( array( 'Saved product', 'SKU-1', '1999' ), $this->committedProduct( $b, $saved ) );
 		$this->assertSame( 1, $this->committedSaves( $b, $saved->productId ) );
+	}
+
+	/**
+	 * Tests that a failure after the next generation's variants are written and before it is published leaves the product `updating` meanwhile, nothing of the next generation visible to another connection, the old generation whole, and puts the marker back.
+	 *
+	 * Planted violation: in MysqlProductRepository::save(), publish the generation before the
+	 * variants are written; at the failure the variants are not written yet, and the test fails.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_failure_before_the_generation_is_published_leaves_the_old_one_whole(): void {
+		$b    = $this->secondConnection();
+		$six  = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'COF' ) );
+		$sums = $this->catalogChecksums( $b );
+		$sent = array();
+		$seen = array();
+
+		add_filter(
+			'query',
+			static function ( string $query ) use ( &$sent ): string {
+				$sent[] = $query;
+
+				return $query;
+			}
+		);
+
+		$this->beforeStatement(
+			'/^UPDATE `[^`]+seocart_products` SET source_post_id = NULLIF/',
+			function () use ( $b, $six, &$sent, &$seen ): void {
+				$seen = array(
+					'variants written' => array() !== preg_grep( '/^INSERT INTO `[^`]+seocart_variants`/', $sent ),
+					'marker'           => $this->committedMarker( $b, $six->productId )[0],
+					'published'        => $this->committedGeneration( $b, $six->productId ),
+					'next generation'  => $this->committedCount( $b, CatalogTables::VARIANTS, sprintf( 'product_id = %d AND generation = 2', $six->productId ) ),
+				);
+
+				throw new \RuntimeException( 'The window fails before its generation is published.' );
+			}
+		);
+
+		$failure = $this->saveFailure( fn() => $this->saveSet( $six->postId, VariantSets::options( VariantSets::SIZES, VariantSets::GRINDS, array( 'dark' ) ), VariantSets::variants( 'ROAST', VariantSets::SIZES, VariantSets::GRINDS, array( 'dark' ) ) ) );
+
+		$this->assertInstanceOf( \RuntimeException::class, $failure );
+		$this->assertSame(
+			array(
+				'variants written' => true,
+				'marker'           => 'updating',
+				'published'        => array( 'updating', 1, 6, 6 ),
+				'next generation'  => 0,
+			),
+			$seen,
+			'Meanwhile the product is updating, and no row of the next generation is visible.'
+		);
+		$this->assertSame( 'complete', $this->committedMarker( $b, $six->productId )[0], 'The marker is put back on a refused window.' );
+		$this->assertSame( array_diff_key( $sums, array( CatalogTables::PRODUCTS => true ) ), array_diff_key( $this->catalogChecksums( $b ), array( CatalogTables::PRODUCTS => true ) ), 'The old generation is whole; only the marker moved, and came back.' );
+		$this->assertSame( array( 'complete', 1, 6, 6 ), $this->committedGeneration( $b, $six->productId ) );
 	}
 }
