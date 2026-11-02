@@ -581,7 +581,7 @@ product_snapshot() {
 	status=$(as_admin GET "/wp/v2/seocart-products/$product_id?context=edit" '')
 	expect_status "$status" 200 'reading the product'
 	answer title/raw status seocart/sku seocart/price_minor
-	db_rows "SELECT * FROM {px}seocart_variants WHERE id = $variant_id"
+	db_rows "SELECT id, uuid, product_id, sku, combination_hash, generation, is_enabled, weight_grams, position, created_at, updated_at FROM {px}seocart_variants WHERE id = $variant_id"
 	db_rows "SELECT * FROM {px}seocart_variant_prices WHERE variant_id = $variant_id"
 	db_rows "SELECT variant_id, on_hand, allocated, held FROM {px}seocart_stock_items WHERE variant_id = $variant_id"
 	db_rows "SELECT delta, on_hand_after, reason FROM {px}seocart_stock_ledger WHERE variant_id = $variant_id ORDER BY id"
