@@ -18,6 +18,7 @@ use SEOCart\Order\Application\UnreconciledMoney;
 use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\IntentTransitions;
+use SEOCart\Payment\Domain\OfflinePaymentEvidence;
 use SEOCart\Payment\Domain\PaymentIntent;
 use SEOCart\Payment\Domain\PaymentRepository;
 use SEOCart\Payment\Domain\VoidReason;
@@ -262,6 +263,25 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 	public const OPEN_INTENTS = "SELECT gateway_id, mode, COUNT(*) AS open, SUM( status <> 'authorized' ) AS waiting, "
 		. "MAX( IF( status <> 'authorized', TIMESTAMPDIFF( SECOND, updated_at, UTC_TIMESTAMP(6) ), NULL ) ) AS waited_seconds "
 		. 'FROM {payment_intents} WHERE status IN ({list}) GROUP BY gateway_id, mode ORDER BY gateway_id, mode';
+
+	/**
+	 * A gateway's authorized intents created more than some days ago, by the database clock, counted: on the status index.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const AUTHORIZED_OLDER_THAN = "SELECT COUNT(*) AS waiting FROM {payment_intents} WHERE status = 'authorized' AND gateway_id = %s AND created_at < UTC_TIMESTAMP(6) - INTERVAL %d DAY";
+
+	/**
+	 * What a person stated of a payment received offline, beside the ledger row of its capture, whose intent, order and actor it takes: one row per ledger row. '' stands for no reference and no note.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const INSERT_OFFLINE_PAYMENT = 'INSERT INTO {offline_payments} ( transaction_id, intent_id, order_id, received_on, reference, note, actor_type, actor_id, created_at ) '
+		. "SELECT ledger.id, ledger.intent_id, ledger.order_id, %s, NULLIF( %s, '' ), NULLIF( %s, '' ), ledger.actor_type, ledger.actor_id, UTC_TIMESTAMP(6) FROM {payment_transactions} ledger WHERE ledger.id = %d";
 
 	/**
 	 * A page of intents by the primary key, after the last id of the page before, each with what its applied, approved ledger rows add up to by operation, in both currencies.
@@ -734,6 +754,37 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 			),
 			$this->statements->rows( self::OPEN_INTENTS, IntentTransitions::values( IntentStatus::open() ) )
 		);
+	}
+
+	/**
+	 * Records what a person stated of a payment received offline, beside the ledger row of its capture.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When the ledger row is not there to stand beside, which the caller's transaction rolls back.
+	 *
+	 * @param int                    $transactionId The ledger row of the capture, appended in this transaction.
+	 * @param OfflinePaymentEvidence $evidence      The day the money arrived, its reference and a note.
+	 */
+	public function insertOfflinePayment( int $transactionId, OfflinePaymentEvidence $evidence ): void {
+		$this->statements->requireTransaction( __METHOD__ );
+
+		if ( 1 !== $this->statements->execute( self::INSERT_OFFLINE_PAYMENT, $evidence->receivedOn, $evidence->reference ?? '', $evidence->note ?? '', $transactionId ) ) {
+			throw new \LogicException( sprintf( 'The ledger row %d a payment received offline was to be recorded beside is not there.', $transactionId ) );
+		}
+	}
+
+	/**
+	 * Counts a gateway's authorized intents created more than some days ago, by the database clock.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $gatewayId The gateway.
+	 * @param int    $days      How many days.
+	 * @return int How many.
+	 */
+	public function authorizedOlderThan( string $gatewayId, int $days ): int {
+		return (int) ( $this->statements->rows( self::AUTHORIZED_OLDER_THAN, $gatewayId, $days )[0]['waiting'] ?? 0 );
 	}
 
 	/**

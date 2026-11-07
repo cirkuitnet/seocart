@@ -201,4 +201,27 @@ interface PaymentRepository {
 	 *         database's clock; null when none waits.
 	 */
 	public function openIntents(): array;
+
+	/**
+	 * Records what a person stated of a payment received offline, beside the ledger row of its capture, in the transaction that appended the row.
+	 *
+	 * The intent, the order and who recorded it are the ledger row's own.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int                    $transactionId The ledger row of the capture, appended in this transaction.
+	 * @param OfflinePaymentEvidence $evidence      The day the money arrived, its reference and a note.
+	 */
+	public function insertOfflinePayment( int $transactionId, OfflinePaymentEvidence $evidence ): void;
+
+	/**
+	 * Counts a gateway's authorized intents created more than some days ago, by the database's clock: for an offline payment method, the orders still waiting for their money past the wait it allows.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $gatewayId The gateway.
+	 * @param int    $days      How many days, at least 1.
+	 * @return int How many.
+	 */
+	public function authorizedOlderThan( string $gatewayId, int $days ): int;
 }

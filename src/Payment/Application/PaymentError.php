@@ -22,7 +22,10 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: how a refused payment operation is reported. A capture or a void is refused,
  * wherever it can be, before the gateway is asked; one the gateway refused, or did not answer, is
  * reported `payment.operation_declined` or `payment.gateway_no_answer`, and asking again sends the
- * same request, which the gateway answers once. A refused result was refused in
+ * same request, which the gateway answers once. A payment received for an offline payment method
+ * is recorded with what a person states of it, which is checked before the gateway is asked
+ * (`payment.evidence_missing`, `payment.evidence_rejected`), and a provider's capture is refused
+ * such a statement (`payment.evidence_unexpected`). A refused result was refused in
  * the database, by the conditional update's WHERE clause, and its ledger row goes back with the
  * savepoint it was written in: a fact that cannot be reconciled is not recorded, and a gateway's
  * retry meets the same answer. A duplicate and a mismatch are not errors but outcomes, which the
@@ -85,6 +88,27 @@ enum PaymentError: string implements ErrorCode {
 	 * @since 0.2.0
 	 */
 	case NotVoidable = 'payment.not_voidable';
+
+	/**
+	 * A payment received for an offline payment method is recorded with the day it arrived, and none was given. Nothing was written.
+	 *
+	 * @since 0.2.0
+	 */
+	case EvidenceMissing = 'payment.evidence_missing';
+
+	/**
+	 * What was stated of a payment received offline cannot be recorded: a day that is not a calendar day or is after today, or a reference or a note holding what reads as a card number. Nothing was written.
+	 *
+	 * @since 0.2.0
+	 */
+	case EvidenceRejected = 'payment.evidence_rejected';
+
+	/**
+	 * A payment captured through its provider was given what is stated only of a payment received offline: the provider's capture is the evidence. Nothing was asked of the provider.
+	 *
+	 * @since 0.2.0
+	 */
+	case EvidenceUnexpected = 'payment.evidence_unexpected';
 
 	/**
 	 * The payment has a gateway result that did not match its order, which a person must reconcile first.
@@ -340,6 +364,27 @@ enum PaymentError: string implements ErrorCode {
 					/* translators: %1$s: The payment's status, for example captured. */
 					__( 'This void was not made: the payment is %1$s. A void releases only an authorization the gateway still holds, and a captured payment is given back by a refund.', 'seocart' ),
 				array( 'status' )
+			),
+			new ErrorDefinition(
+				self::EvidenceMissing,
+				422,
+				static fn(): string => __( 'A payment received for an offline payment method is recorded with the day it arrived: give received_on, as YYYY-MM-DD. Nothing was recorded.', 'seocart' )
+			),
+			new ErrorDefinition(
+				self::EvidenceRejected,
+				422,
+				static fn(): string =>
+					/* translators: %1$s: The field that cannot be recorded: received_on, reference or note. */
+					__( 'The %1$s given cannot be recorded: received_on is a calendar day, as YYYY-MM-DD, no later than today, and a reference or a note never holds what reads as a card number. Nothing was recorded.', 'seocart' ),
+				array( 'field' )
+			),
+			new ErrorDefinition(
+				self::EvidenceUnexpected,
+				422,
+				static fn(): string =>
+					/* translators: %1$s: The field given: received_on, reference or note. */
+					__( 'This payment is captured through its provider, whose capture is the evidence: %1$s is given only for a payment received for an offline payment method. Nothing was asked of the provider.', 'seocart' ),
+				array( 'field' )
 			),
 			new ErrorDefinition(
 				self::Unreconciled,

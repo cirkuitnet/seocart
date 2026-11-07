@@ -20,10 +20,11 @@ use SEOCart\Platform\Database\Schema\TableDefinition;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Declares the two tables of the payment module: the intents, and the ledger of what gateways reported.
+ * Declares the two tables of the payment module: the intents, and the ledger of what gateways reported; and, beside the ledger, what a person stated of each payment received offline.
  *
  * Owns one fact: the shape of the payment tables. The migration that creates them and the data
- * registry that lists them call the same factories.
+ * registry that lists them call the same factories; the payments received offline have a
+ * migration of their own (offlinePayments()).
  *
  * The ledger is the truth about money; an intent's authorized, captured and refunded amounts are
  * its projection, written in the same transaction as each row that moves them. Every amount is a
@@ -52,6 +53,15 @@ final class PaymentTables {
 	 * @var string
 	 */
 	public const TRANSACTIONS = 'payment_transactions';
+
+	/**
+	 * The unprefixed name of the table of payments received offline: what a person stated of each.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const OFFLINE_PAYMENTS = 'offline_payments';
 
 	/**
 	 * The name of the ledger's claim key, which records each outcome a provider reports for its object of an operation once: the name it has had since the ledger was created, before the outcome joined it.
@@ -103,18 +113,70 @@ final class PaymentTables {
 	}
 
 	/**
-	 * Returns the unprefixed names of every table of the payment module: these two, the webhook receipts, the refund tables and the refund claims.
+	 * Returns the unprefixed names of every table of the payment module: these two, the webhook receipts, the refund tables, the refund claims and the payments received offline.
 	 *
 	 * The tables the module's statements may name, in the order the data registry lists them; each
 	 * migration still creates only its own.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The webhook receipts.
+	 * @since 0.2.0 The webhook receipts, and the payments received offline.
 	 *
 	 * @return list<string> The names.
 	 */
 	public static function moduleNames(): array {
-		return array_merge( self::names(), WebhookReceiptTables::names(), RefundTables::names(), RefundClaimTables::names() );
+		return array_merge( self::names(), WebhookReceiptTables::names(), RefundTables::names(), RefundClaimTables::names(), array( self::OFFLINE_PAYMENTS ) );
+	}
+
+	/**
+	 * Declares `offline_payments`: what a person recorded of a payment received outside any provider, one row beside the ledger row it evidences.
+	 *
+	 * The ledger keeps ids and amounts and is shared with every provider's rows; what a person
+	 * writes about a payment received by bank transfer, cheque or cash, which may name the payer,
+	 * is kept here, classified as personal data and destroyed on erasure, while the ledger row stays.
+	 * The row is written in the transaction that writes its ledger row, never before or after it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return TableDefinition The declaration.
+	 */
+	public static function offlinePayments(): TableDefinition {
+		return new TableDefinition(
+			self::OFFLINE_PAYMENTS,
+			self::MODULE,
+			'Records what a person stated when recording a payment received outside any provider, for an offline payment method: the day it arrived and its reference, one row per ledger row of the capture.',
+			MutationPattern::AppendOnly,
+			array(
+				self::id( 'Surrogate key, internal only.' ),
+				new ColumnSpec( 'transaction_id', 'bigint unsigned', Classification::Public, 'The ledger row of the capture the payment received was recorded as.' ),
+				new ColumnSpec( 'intent_id', 'bigint unsigned', Classification::Public, 'The intent the payment was received for, the ledger row\'s.' ),
+				new ColumnSpec( 'order_id', 'bigint unsigned', Classification::Public, 'The intent\'s order, the ledger row\'s.' ),
+				new ColumnSpec( 'received_on', 'date', Classification::Public, 'The day the money arrived, as the person who recorded it stated it; never after the day it was recorded.' ),
+				new ColumnSpec( 'reference', 'varchar(191)', Classification::Pii, 'The reference the payment came with, such as a transfer\'s reference or a cheque\'s number, which may name the payer; NULL when none was given. Refused when it holds a card number.', nullable: true, erasure: ColumnSpec::ERASE_DESTROY ),
+				new ColumnSpec( 'note', 'text', Classification::Pii, 'What the person who recorded the payment wrote about it; NULL when nothing. Refused when it holds a card number.', nullable: true, erasure: ColumnSpec::ERASE_DESTROY ),
+				new ColumnSpec( 'actor_type', 'varchar(16)', Classification::Public, 'user for a person acting in person, system for a process acting on a user\'s authority, as the ledger row\'s.', collation: 'ascii_bin' ),
+				new ColumnSpec(
+					'actor_id',
+					'bigint unsigned',
+					Classification::Pii,
+					'The WordPress user who recorded the payment received, as the ledger row\'s.',
+					nullable: true,
+					erasure: ColumnSpec::ERASE_RETAIN,
+					retainedBecause: 'The record keeps who stated the payment received for as long as the order is kept, as the ledger does; the user id identifies no one once the user is erased.'
+				),
+				self::createdAt( 'When the payment received was recorded, UTC, from the database clock.' ),
+			),
+			array( 'id' ),
+			array(
+				IndexSpec::unique( 'transaction_id', array( 'transaction_id' ), 'One record per ledger row: a capture recorded once is stated once.' ),
+			),
+			array(
+				IndexSpec::key( 'intent_id', array( 'intent_id' ), 'An intent\'s payments received, for the orders admin.' ),
+			),
+			self::FINANCIAL,
+			array(
+				'payment_transactions -> offline_payments' => 'Written in the transaction that appends the capture\'s ledger row, and never changed or deleted apart from the intent\'s order.',
+			)
+		);
 	}
 
 	/**

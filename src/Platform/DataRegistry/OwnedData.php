@@ -39,6 +39,7 @@ use SEOCart\Payment\Application\GatewaySettingsDeclaration;
 use SEOCart\Payment\Infrastructure\Migrations\AddIntentMode;
 use SEOCart\Payment\Infrastructure\Migrations\AddRefundClaimRequest;
 use SEOCart\Payment\Infrastructure\Migrations\AddRefundClaimSettlement;
+use SEOCart\Payment\Infrastructure\Migrations\CreateOfflinePayments;
 use SEOCart\Payment\Infrastructure\Migrations\CreatePaymentTables;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundClaimTable;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundTables;
@@ -119,6 +120,7 @@ final class OwnedData {
 			new Contribution( tables: PromotionTables::all(), migrations: array( new CreatePromotionTables() ) ),
 			new Contribution( tables: RefundTables::all(), migrations: array( new CreateRefundTables() ) ),
 			new Contribution( tables: RefundClaimTables::all(), migrations: array( new CreateRefundClaimTable(), new AddRefundClaimRequest(), new AddRefundClaimSettlement() ) ),
+			new Contribution( tables: array( PaymentTables::offlinePayments() ), migrations: array( new CreateOfflinePayments() ) ),
 		);
 	}
 }

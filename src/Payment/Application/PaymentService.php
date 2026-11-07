@@ -44,6 +44,8 @@ use SEOCart\Payment\Domain\IntentRef;
 use SEOCart\Payment\Domain\IntentStatus;
 use SEOCart\Payment\Domain\IntentTransitions;
 use SEOCart\Payment\Domain\NothingDue;
+use SEOCart\Payment\Domain\OfflineMethod;
+use SEOCart\Payment\Domain\OfflinePaymentEvidence;
 use SEOCart\Payment\Domain\PaymentIntent;
 use SEOCart\Payment\Domain\PaymentRepository;
 use SEOCart\Payment\Domain\Projection;
@@ -53,6 +55,7 @@ use SEOCart\Platform\Authorization\Authorizer;
 use SEOCart\Platform\Database\RetryPolicy;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\EventPublisher;
+use SEOCart\Platform\Logging\CardNumbers;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Support\Clock;
 use SEOCart\Support\Currency;
@@ -647,8 +650,14 @@ final class PaymentService {
 	 * rest. One capture per intent: the provider is sent the same key, whatever the amount, so a
 	 * capture asked again after its answer was lost is the same capture.
 	 *
+	 * For an offline payment method the capture is the payment received, and what a person states of
+	 * it (the day it arrived, its reference, a note) may be given: it is checked as the capture
+	 * operation checks it, before the gateway is asked, and recorded beside the capture's ledger row
+	 * in the transaction that appends the row. Nothing requires it of a caller other than a person's
+	 * (capturePayment()).
+	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 Takes an amount, and refuses while the schema gate is closed.
+	 * @since 0.2.0 Takes an amount, and what was stated of a payment received offline; refuses while the schema gate is closed.
 	 *
 	 * @throws \LogicException            Inside a transaction, before any statement.
 	 * @throws \InvalidArgumentException An amount of nothing, before any statement.
@@ -657,38 +666,54 @@ final class PaymentService {
 	 *                                    gate is closed, before any read; `payment.intent_not_found`;
 	 *                                    `payment.not_capturable` when the intent is not authorized, with its status and,
 	 *                                    as details, what it captured and its currency, so a capture asked again reads as
-	 *                                    done; `payment.unreconciled` when it has a result a person must reconcile,
-	 *                                    written since the order's money was last cleared;
+	 *                                    done; `payment.evidence_unexpected` for a statement given with a provider's
+	 *                                    payment, and `payment.evidence_rejected` for one dated after today or holding a
+	 *                                    card number; `payment.unreconciled` when it has a result a person must
+	 *                                    reconcile, written since the order's money was last cleared;
 	 *                                    `payment.capture_exceeds_authorized`; `payment.operation_unsupported`, also for
 	 *                                    a capture of less where the matrix does not declare it;
 	 *                                    `payment.gateway_unavailable`; and what applying the capture raises.
 	 *
-	 * @param string   $intentUuid  The intent.
-	 * @param Actor    $actor       Who captures it.
-	 * @param int|null $amountMinor Optional. What to capture, in minor units of the intent's currency. Default null:
-	 *                              everything authorized.
+	 * @param string                      $intentUuid  The intent.
+	 * @param Actor                       $actor       Who captures it.
+	 * @param int|null                    $amountMinor Optional. What to capture, in minor units of the intent's currency.
+	 *                                                 Default null: everything authorized.
+	 * @param OfflinePaymentEvidence|null $evidence    Optional. What is stated of a payment received offline. Default
+	 *                                                 null, nothing.
 	 * @return Application What applying the capture did.
 	 */
-	public function capture( string $intentUuid, Actor $actor, ?int $amountMinor = null ): Application {
-		return $this->applyInOwnTransaction( $this->askCapture( $intentUuid, $actor, $amountMinor ), $actor );
+	public function capture( string $intentUuid, Actor $actor, ?int $amountMinor = null, ?OfflinePaymentEvidence $evidence = null ): Application {
+		$stated = null === $evidence ? null : array(
+			OfflinePaymentEvidence::RECEIVED_ON => $evidence->receivedOn,
+			OfflinePaymentEvidence::REFERENCE   => $evidence->reference,
+			OfflinePaymentEvidence::NOTE        => $evidence->note,
+		);
+
+		return $this->recordCapture( $this->askCapture( $intentUuid, $actor, $amountMinor, $stated ), $actor, $evidence );
 	}
 
 	/**
 	 * Asks the gateway to capture an authorized intent, outside any transaction, and returns its answer unapplied: capture()'s checks and call.
 	 *
 	 * Refuses, before the gateway is asked, what capture() refuses; throws GatewayUnavailable when
-	 * the gateway has no answer.
+	 * the gateway has no answer. What a person stated of a payment received offline is checked
+	 * right after the intent's state (requireEvidence()), so a statement that cannot be recorded
+	 * writes nothing and asks nothing.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @throws \InvalidArgumentException An amount of nothing, before any statement.
 	 *
-	 * @param string   $intentUuid  The intent.
-	 * @param Actor    $actor       Who captures it.
-	 * @param int|null $amountMinor What to capture, in minor units; null for everything authorized.
+	 * @param string                          $intentUuid  The intent.
+	 * @param Actor                           $actor       Who captures it.
+	 * @param int|null                        $amountMinor What to capture, in minor units; null for everything authorized.
+	 * @param array<string, string|null>|null $stated      Optional. What was stated of the payment received, by the
+	 *                                                     capture operation's input names, each null when not given;
+	 *                                                     null for a caller that states nothing and is held to
+	 *                                                     nothing. Default null.
 	 * @return GatewayResult The gateway's answer.
 	 */
-	private function askCapture( string $intentUuid, Actor $actor, ?int $amountMinor ): GatewayResult {
+	private function askCapture( string $intentUuid, Actor $actor, ?int $amountMinor, ?array $stated = null ): GatewayResult {
 		$this->requireNoTransaction( 'capture' );
 
 		if ( null !== $amountMinor && $amountMinor < 1 ) {
@@ -706,6 +731,10 @@ final class PaymentService {
 			self::refuseNotCapturable( $intent );
 		}
 
+		if ( null !== $stated ) {
+			$this->requireEvidence( $intent, $stated );
+		}
+
 		$this->refuseUnreconciled( $intent );
 
 		$amount = null === $amountMinor ? $intent->authorized : Money::of( $amountMinor, $intent->amount->currency() );
@@ -713,6 +742,113 @@ final class PaymentService {
 		$this->requireCapturable( $intent, $amount );
 
 		return $this->gateways->get( $intent->gatewayId, $intent->mode )->capture( new CaptureRequest( $intent->uuid, $intent->providerIntentId, $amount, $intent->mode ) );
+	}
+
+	/**
+	 * Refuses what was stated of a payment received when it cannot be recorded, before the gateway is asked: nothing is written and nothing asked.
+	 *
+	 * A payment of an offline payment method is recorded with the day it arrived: a calendar day,
+	 * written YYYY-MM-DD, no later than today by the store's clock, in UTC. Its reference and its
+	 * note are no longer than the table keeps, and never hold what reads as a card number, which the
+	 * store never keeps. A provider's capture is its own evidence: nothing is stated with it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `payment.evidence_unexpected`, naming the first field given, for a provider's payment;
+	 *                        `payment.evidence_missing` for an offline payment given no day; and
+	 *                        `payment.evidence_rejected`, naming the field, for one that cannot be recorded.
+	 *
+	 * @param PaymentIntent              $intent The intent, authorized.
+	 * @param array<string, string|null> $stated What was stated, by field name, each null when not given.
+	 */
+	private function requireEvidence( PaymentIntent $intent, array $stated ): void {
+		$given = array_filter( $stated, static fn( ?string $value ): bool => null !== $value );
+
+		if ( ! OfflineMethod::isOffline( $intent->gatewayId ) ) {
+			if ( array() !== $given ) {
+				CodedException::raise( PaymentError::EvidenceUnexpected, array( 'field' => (string) array_key_first( $given ) ) );
+			}
+
+			return;
+		}
+
+		$receivedOn = $given[ OfflinePaymentEvidence::RECEIVED_ON ] ?? CodedException::raise( PaymentError::EvidenceMissing );
+		$reference  = $given[ OfflinePaymentEvidence::REFERENCE ] ?? null;
+		$note       = $given[ OfflinePaymentEvidence::NOTE ] ?? null;
+		$invalid    = OfflinePaymentEvidence::invalidField( $receivedOn, $reference, $note );
+
+		if ( null === $invalid && ( new OfflinePaymentEvidence( $receivedOn ) )->isAfter( $this->clock->now() ) ) {
+			$invalid = OfflinePaymentEvidence::RECEIVED_ON;
+		}
+
+		// The card number check of a refund's note: a reference or a note is kept as long as the order is.
+		$texts = array(
+			OfflinePaymentEvidence::REFERENCE => $reference,
+			OfflinePaymentEvidence::NOTE      => $note,
+		);
+
+		foreach ( $texts as $field => $text ) {
+			if ( null === $invalid && null !== $text && CardNumbers::contains( $text ) ) {
+				$invalid = $field;
+			}
+		}
+
+		if ( null !== $invalid ) {
+			CodedException::raise( PaymentError::EvidenceRejected, array( 'field' => $invalid ) );
+		}
+	}
+
+	/**
+	 * Applies a capture's answer in a transaction of its own, and records what was stated of the payment received beside its ledger row, in the same transaction.
+	 *
+	 * The statement is recorded only with the ledger row it evidences: when the capture was applied
+	 * now, never for a duplicate of a capture recorded before, or an answer kept for a person. A
+	 * crash before the transaction commits leaves neither; the same capture asked again sends the
+	 * same key, and the gateway answers the same capture.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayResult               $result   The gateway's answer to the capture.
+	 * @param Actor                       $actor    Who captures.
+	 * @param OfflinePaymentEvidence|null $evidence What was stated of the payment received; null for nothing.
+	 * @return Application What applying the answer did.
+	 */
+	private function recordCapture( GatewayResult $result, Actor $actor, ?OfflinePaymentEvidence $evidence ): Application {
+		if ( null === $evidence ) {
+			return $this->applyInOwnTransaction( $result, $actor );
+		}
+
+		return $this->tx->transaction(
+			function () use ( $result, $actor, $evidence ): Application {
+				$applied = $this->applyGatewayResult( $result, $actor );
+
+				if ( ApplicationKind::Applied === $applied->kind && Operation::Capture === $applied->operation && null !== $applied->transactionId ) {
+					$this->payments->insertOfflinePayment( $applied->transactionId, $evidence );
+				}
+
+				return $applied;
+			},
+			RetryPolicy::deadlocks()
+		);
+	}
+
+	/**
+	 * Reads what the capture operation's input states of a payment received, by field name: each field null when it is not given, or empty.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, mixed> $input The prepared input.
+	 * @return array<string, string|null> The day it arrived, its reference and a note.
+	 */
+	private static function stated( array $input ): array {
+		$stated = array();
+
+		foreach ( array( OfflinePaymentEvidence::RECEIVED_ON, OfflinePaymentEvidence::REFERENCE, OfflinePaymentEvidence::NOTE ) as $field ) {
+			$value            = $input[ $field ] ?? null;
+			$stated[ $field ] = is_string( $value ) && '' !== $value ? $value : null;
+		}
+
+		return $stated;
 	}
 
 	/**
@@ -902,23 +1038,35 @@ final class PaymentService {
 	 * refused `payment.not_capturable` with what was captured, which a client reads as done; one
 	 * racing another of the same payment meets its ledger row and is answered `duplicate`.
 	 *
+	 * A payment of an offline payment method is the payment received, recorded by a person with the
+	 * day it arrived, which is required here (`payment.evidence_missing`), and optionally its
+	 * reference and a note, kept beside the capture's ledger row; a provider's payment is refused
+	 * them. Each is decided before the gateway is asked.
+	 *
 	 * @since 0.2.0
 	 *
-	 * @throws CodedException What capture() refuses; `payment.gateway_no_answer` when the gateway did not answer, and
+	 * @throws CodedException What capture() refuses; `payment.evidence_missing`; `payment.gateway_no_answer` when the gateway did not answer, and
 	 *                        nothing was recorded; `payment.operation_declined` when it refused, raised once its
 	 *                        answer is recorded; `payment.not_capturable` when the payment moved on meanwhile;
 	 *                        `payment.unreconciled` when the gateway answered what a person must reconcile.
 	 *
-	 * @param array<string, mixed> $input The prepared input: intent_uuid, and optionally amount_minor.
+	 * @param array<string, mixed> $input The prepared input: intent_uuid, and optionally amount_minor; and, for a payment
+	 *                                    received for an offline payment method, received_on, and optionally reference
+	 *                                    and note.
 	 * @param Actor                $actor Who captures.
 	 * @return array<string, mixed> The payment as the capture left it, keyed by wire name.
 	 */
 	public function capturePayment( array $input, Actor $actor ): array {
 		$uuid   = (string) $input['intent_uuid'];
 		$amount = isset( $input['amount_minor'] ) ? (int) $input['amount_minor'] : null;
-		$result = self::answered( fn(): GatewayResult => $this->askCapture( $uuid, $actor, $amount ) );
+		$stated = self::stated( $input );
+		$result = self::answered( fn(): GatewayResult => $this->askCapture( $uuid, $actor, $amount, $stated ) );
 
-		return $this->operationAnswer( $result, $this->applyInOwnTransaction( $result, $actor ), Operation::Capture );
+		// askCapture() refused any statement that cannot be recorded, and any given with a provider's payment.
+		$day      = $stated[ OfflinePaymentEvidence::RECEIVED_ON ];
+		$evidence = null === $day ? null : new OfflinePaymentEvidence( $day, $stated[ OfflinePaymentEvidence::REFERENCE ], $stated[ OfflinePaymentEvidence::NOTE ] );
+
+		return $this->operationAnswer( $result, $this->recordCapture( $result, $actor, $evidence ), Operation::Capture );
 	}
 
 	/**

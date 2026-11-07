@@ -24,7 +24,10 @@
  *   then the void settled through SettlePlacement.
  * - `capture` and `void`: the capture or the void operation's service, for the request's
  *   `intent_uuid`, as `wp seocart payment capture|void` runs it for the request's `user_id`, who is
- *   granted both capabilities; a void gives the request's `reason`.
+ *   granted both capabilities; a void gives the request's `reason`. A capture passes on what the
+ *   request states of a payment received offline: `received_on`, `reference` and `note`, when
+ *   given; and the request's `die_at_transaction` kills it with SIGKILL as its first transaction
+ *   begins, which for a capture is once the gateway answered and before anything is recorded.
  * - `capture-and-die`: a capture whose process the gateway kills with SIGKILL once the provider
  *   made the capture and remembered it, before anything is recorded.
  *   For these three, a request's `provider_file` makes the gateway a FileProviderGateway that
@@ -104,9 +107,14 @@ $seocart_probe_db      = new Database(
 
 add_filter(
 	'query',
-	static function ( string $query ) use ( &$seocart_probe_commits ): string {
+	static function ( string $query ) use ( &$seocart_probe_commits, $seocart_probe_request ): string {
 		if ( 'COMMIT' === $query ) {
 			++$seocart_probe_commits;
+		}
+
+		if ( 'START TRANSACTION' === $query && true === ( $seocart_probe_request['die_at_transaction'] ?? false ) ) {
+			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.system_calls_exec -- No posix extension on every host: the shell kills the process.
+			exec( 'kill -9 ' . getmypid() );
 		}
 
 		return $query;
@@ -175,7 +183,7 @@ try {
 		);
 		$seocart_probe_outcome = array( 'answer_json' => (string) wp_json_encode( $seocart_probe_kernel->get( PaymentService::class )->voidPayment( $seocart_probe_input, Actor::system( 'cli', $seocart_probe_user ) ) ) );
 	} elseif ( 'settle' !== $argv[2] ) {
-		$seocart_probe_input   = array( 'intent_uuid' => (string) ( $seocart_probe_request['intent_uuid'] ?? '' ) );
+		$seocart_probe_input   = array( 'intent_uuid' => (string) ( $seocart_probe_request['intent_uuid'] ?? '' ) ) + array_intersect_key( $seocart_probe_request, array_flip( array( 'received_on', 'reference', 'note' ) ) );
 		$seocart_probe_outcome = array( 'answer_json' => (string) wp_json_encode( $seocart_probe_kernel->get( PaymentService::class )->capturePayment( $seocart_probe_input, Actor::system( 'cli', $seocart_probe_user ) ) ) );
 	} else {
 		$seocart_probe_intent = $wpdb->get_row(

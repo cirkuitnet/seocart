@@ -23,6 +23,7 @@ use SEOCart\Order\Application\OrderOperations;
 use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Payment\Domain\ApplicationKind;
 use SEOCart\Payment\Domain\IntentStatus;
+use SEOCart\Payment\Domain\OfflinePaymentEvidence;
 use SEOCart\Payment\Domain\Refund\RefundReason;
 use SEOCart\Payment\Domain\VoidReason;
 use SEOCart\Platform\Authorization\AuthorizationError;
@@ -52,7 +53,9 @@ defined( 'ABSPATH' ) || exit;
  *   the claim's state is one, as a claim that has ended is refused.
  * - `payment.capture_payment`: `POST seocart/v1/payments/{intent_uuid}/captures`,
  *   `seocart/capture-payment`, `wp seocart payment capture <intent_uuid>`; everything authorized, or
- *   an amount where the gateway declares partial captures.
+ *   an amount where the gateway declares partial captures. For an offline payment method it records
+ *   the payment received, with the day it arrived (`received_on`), and optionally its `reference`
+ *   and a `note`; a capture through a provider takes none of them.
  * - `payment.void_payment`: `POST seocart/v1/payments/{intent_uuid}/voids`, `seocart/void-payment`,
  *   `wp seocart payment void <intent_uuid> --reason=<reason>`; an authorized payment, released.
  *
@@ -393,7 +396,7 @@ final class PaymentOperations {
 		return new OperationDefinition(
 			id: self::CAPTURE_PAYMENT,
 			label: static fn(): string => __( 'Capture a payment', 'seocart' ),
-			summary: 'Captures an authorized payment through its gateway, everything authorized or, where the gateway declares partial captures, the amount given, the gateway releasing the rest; a payment is captured once, so a capture asked again after it was made is refused with payment.not_capturable and what was captured, and one whose answer was lost is asked again with the same request, which the gateway carries out once.',
+			summary: 'Captures an authorized payment through its gateway, everything authorized or, where the gateway declares partial captures, the amount given, the gateway releasing the rest; a payment is captured once, so a capture asked again after it was made is refused with payment.not_capturable and what was captured, and one whose answer was lost is asked again with the same request, which the gateway carries out once. For an offline payment method, such as a bank transfer, the capture records the payment received, with the day it arrived and, optionally, its reference and a note.',
 			input: array(
 				self::intentUuid(),
 				new FieldSpec(
@@ -405,6 +408,32 @@ final class PaymentOperations {
 					minimum: 1,
 					privacy: Privacy::Financial
 				),
+				new FieldSpec(
+					name: OfflinePaymentEvidence::RECEIVED_ON,
+					type: FieldType::String,
+					description: 'For a payment of an offline payment method, the day the money arrived, as YYYY-MM-DD, no later than today: required for such a payment, and refused for one captured through a provider.',
+					label: static fn(): string => __( 'Received on', 'seocart' ),
+					example: '2026-11-07',
+					max_length: OfflinePaymentEvidence::DAY_LENGTH
+				),
+				new FieldSpec(
+					name: OfflinePaymentEvidence::REFERENCE,
+					type: FieldType::String,
+					description: 'For a payment of an offline payment method, the reference it came with, such as a transfer\'s reference or a cheque\'s number; refused for a payment captured through a provider, and when it holds what reads as a card number.',
+					label: static fn(): string => __( 'Reference', 'seocart' ),
+					example: 'Cheque 000123',
+					max_length: OfflinePaymentEvidence::REFERENCE_MAX_LENGTH,
+					privacy: Privacy::Pii
+				),
+				new FieldSpec(
+					name: OfflinePaymentEvidence::NOTE,
+					type: FieldType::String,
+					description: 'For a payment of an offline payment method, what the person recording it writes about it; refused for a payment captured through a provider, and when it holds what reads as a card number.',
+					label: static fn(): string => __( 'Note', 'seocart' ),
+					example: 'Paid at the counter.',
+					max_length: OfflinePaymentEvidence::NOTE_MAX_LENGTH,
+					privacy: Privacy::Pii
+				),
 			),
 			output: self::payment(),
 			capability: self::CAPTURE_CAPABILITY,
@@ -413,6 +442,9 @@ final class PaymentOperations {
 				AuthorizationError::Denied,
 				PaymentError::IntentNotFound,
 				PaymentError::NotCapturable,
+				PaymentError::EvidenceMissing,
+				PaymentError::EvidenceRejected,
+				PaymentError::EvidenceUnexpected,
 				PaymentError::Unreconciled,
 				PaymentError::CaptureExceedsAuthorized,
 				PaymentError::OperationUnsupported,
