@@ -170,7 +170,8 @@ final class PaymentBudgetTest extends PlacementTestCase {
 	public function test_an_offline_capture_and_void_cost_their_budget(): void {
 		( new CreateOfflinePayments() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
 
-		// The installation record every store that takes orders has, autoloaded: a live payment's call reads Safe Mode from it, at no cost.
+		// The installation record every store that takes orders has, autoloaded: a live payment's call reads Safe Mode from it, at no
+		// cost. Without it the read finds no record and costs a statement more than a store pays: 19, not 18.
 		( new BootOption( $this->db, $this->reporter() ) )->mutate( static fn(): BootRecord => KernelTestCase::installedRecord( KernelTestCase::codeHead() ) );
 
 		$person  = $this->userGranted( PaymentService::CAPTURE_CAPABILITY, PaymentService::VOID_CAPABILITY );

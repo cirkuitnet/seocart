@@ -476,7 +476,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
-	 * Builds the plugin with the suite's doubles under the gateway, registers the gateway, and configures it in test mode.
+	 * Builds the plugin with the suite's doubles under the gateway, registers the gateway, and configures it in the suite's mode (suiteMode()).
 	 *
 	 * @since 0.2.0
 	 */
@@ -508,7 +508,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 
 		// Asked once here, so a gateway the plugin refused fails every test with the refusal as its cause.
 		$this->descriptor();
-		$this->configure( Mode::Test );
+		$this->configure( $this->suiteMode() );
 	}
 
 	/**
@@ -619,7 +619,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 			Rule::MatrixMatchesBehaviour,
 			function ( Rule $rule ): void {
 				foreach ( $this->cells() as $cell ) {
-					$this->configure( Mode::Test, self::accountOf( $cell ) );
+					$this->configure( $this->suiteMode(), self::accountOf( $cell ) );
 					$this->begin( 'rule02-cell-' . self::cellName( $cell ) );
 					$this->exerciseCell( $rule, $cell );
 					$this->end();
@@ -664,7 +664,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 
 				foreach ( array_values( array_unique( array_merge( self::LAUNCH_CURRENCIES, $descriptor->matrix->currencies() ) ) ) as $code ) {
 					foreach ( $countries as $country ) {
-						$this->configure( Mode::Test, $country );
+						$this->configure( $this->suiteMode(), $country );
 
 						$currency = Currency::of( $code );
 						$offered  = $this->gateways()->availableMode( $this->gatewayId(), Money::of( self::PRICE * self::UNITS, $currency ), 'US', 'storefront' );
@@ -925,7 +925,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 					$this->assertNotSame( array(), $deliveries, $rule->message() . sprintf( 'the gateway declares webhooks, and there is no recorded delivery in %s/%s to read.', $tape->directory(), Tape::WEBHOOKS ) );
 				}
 
-				$this->configure( Mode::Test, null, true );
+				$this->configure( $this->suiteMode(), null, true );
 
 				$kinds = array();
 
@@ -1023,7 +1023,9 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 				$placed = $this->place( $rule, Scenario::Approve, $cell );
 				$this->capture( $placed['intent_uuid'] );
 				$this->refundAll( $placed, $cell, false );
-				$this->place( $rule, Scenario::Decline, $cell );
+
+				// A decline's answer is logged too, by a gateway that can refuse an authorization; another approval's, by one that cannot.
+				$this->place( $rule, is_string( $this->tokens()[ Scenario::Decline->value ] ?? null ) ? Scenario::Decline : Scenario::Approve, $cell );
 
 				$this->end();
 
@@ -1631,14 +1633,39 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
-	 * Returns the gateway, as the plugin resolves it for a test-mode payment.
+	 * Returns the gateway, as the plugin resolves it for a payment in the suite's mode.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @return PaymentGateway The gateway.
 	 */
 	protected function gateway(): PaymentGateway {
-		return $this->gateways()->get( $this->gatewayId(), Mode::Test );
+		return $this->gateways()->get( $this->gatewayId(), $this->suiteMode() );
+	}
+
+	/**
+	 * Returns the mode the suite configures the gateway in, resolves it in and opens its payments in: test, so that no provider is ever called live from a test.
+	 *
+	 * A gateway that declares no host calls no provider, so for one with no test mode, such as an
+	 * offline payment method, live is a formality, and the suite uses it. A gateway that declares a
+	 * host and no test mode fails the test.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return Mode Test when the gateway declares it; live for a gateway that calls nothing and declares no test mode.
+	 */
+	protected function suiteMode(): Mode {
+		$descriptor = $this->descriptor();
+
+		if ( in_array( Mode::Test, $descriptor->modes, true ) ) {
+			return Mode::Test;
+		}
+
+		if ( array() !== $descriptor->hosts ) {
+			self::fail( sprintf( 'A gateway that calls a provider must declare test mode for the conformance suite, and %s declares a host and no test mode.', $descriptor->id ) );
+		}
+
+		return Mode::Live;
 	}
 
 	/**
@@ -1682,7 +1709,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	protected function firstCell( Rule $rule, string $operation = Operations::AUTHORIZE ): MatrixRow {
 		foreach ( $this->cells() as $cell ) {
 			if ( $cell->supports( $operation ) && in_array( $cell->currency->code(), self::SELLABLE, true ) ) {
-				$this->configure( Mode::Test, self::accountOf( $cell ) );
+				$this->configure( $this->suiteMode(), self::accountOf( $cell ) );
 
 				return $cell;
 			}
@@ -2351,11 +2378,12 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$orders   = $this->kernel->get( Orders::class );
 		$payments = $this->payments();
 		$gateway  = $this->gatewayId();
+		$mode     = $this->suiteMode();
 		$uuid     = (string) $this->db->transaction(
-			static function () use ( $orders, $payments, $document, $gateway ): string {
+			static function () use ( $orders, $payments, $document, $gateway, $mode ): string {
 				$order = $orders->insert( $document, Actor::user( 0 ) );
 
-				return $payments->createIntent( $order->id, $gateway, Mode::Test, $document->totals->grandTotal, $document->totals->baseGrandTotal, $order->conversionContextId )->uuid;
+				return $payments->createIntent( $order->id, $gateway, $mode, $document->totals->grandTotal, $document->totals->baseGrandTotal, $order->conversionContextId )->uuid;
 			}
 		);
 
