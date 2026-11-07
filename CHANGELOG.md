@@ -16,7 +16,7 @@ This is the platform foundation and the two proofs built on it: a product with i
 and money through one calculation pipeline to a placed, paid and partially refundable
 order. **There is no storefront yet:** a shopper reaches the cart and checkout only
 through the Store API (`seocart/store/v1`), payment goes through a stand-in gateway, and
-the only admin surface is the product editor's panel. The plugin registers the store
+the only admin surface is the product editor's Product data area. The plugin registers the store
 settings route (`GET` and `PATCH`), the stock adjustment route, ability and command, the
 product route at `wp/v2/seocart-products`, the Store API's cart, checkout and order-status
 routes, the `wp seocart` maintenance commands, three Site Health tests and its own
@@ -187,7 +187,7 @@ seocart jobs run` and from a short tick on admin requests; `wp seocart jobs stat
 - The block editor saves a product's title, content, SKU, price, compare-at price and
   weight in one request: `wp/v2/seocart-products` is served by the plugin's own posts
   controller, which adds a `seocart` object to product responses (with the product's sale
-  status), and a Commerce panel in the product editor edits it. Autosaves and restoring a
+  status), and the Product data area in the product editor edits it. Autosaves and restoring a
   revision never touch the commerce fields.
 - A product post created by a path the plugin doesn't own (`wp post create`, an import, a duplicator, another plugin) becomes an incomplete product that can't be sold until it is saved through the product editor or the REST API. Trashing a product releases its checkout holds, and deleting its post deletes the product, its commerce rows and its stock item while keeping the stock ledger, or refuses the delete when that can't be done cleanly, for example while an order holds its stock. If the product can't be changed after WordPress has deleted the post, the product is kept and `wp seocart doctor` reports it.
 - `wp seocart doctor` also checks the catalog: products with no post, product posts with no product, bindings to deleted posts, variants with no stock item, stock items with no variant, saves left unfinished and other orphaned rows, plus third-party callbacks on the product save and delete hooks and, with a multilingual plugin, product posts whose binding disagrees with their translation group. `wp seocart doctor --repair` fixes what is structural and fully recoverable, then runs the checks again; it never changes a price, a variant, a product's source post or the stock ledger.
@@ -224,6 +224,7 @@ seocart jobs run` and from a short tick on admin requests; `wp seocart jobs stat
 - A cart now says which of its items can no longer be bought in the quantity wanted, and how many are left: every cart answer of the Store API lists them, judged against the stock when it is built. The items stay in the cart, and the order is still checked against stock when it is placed.
 - The `seocart_stock_reserved` and `seocart_stock_reservation_released` actions reach their listeners through the event outbox, like the other stock actions: at least once, after the response or sometimes from a later background run, and never inside the request that took the hold or gave it back.
 - A product can have option axes, such as size and grind, whose values combine into its variants, each with its own SKU, weight, price in each currency the store offers and stock at each location, all saved in one request.
+- The product editor has a full-width Product data area under the content, with pricing per currency, inventory by location, shipping and the variant grid, all saved with the post in one request; the sidebar keeps a read-only product summary.
 
 ### Fixed
 
