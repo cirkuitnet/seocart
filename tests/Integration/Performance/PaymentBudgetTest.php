@@ -23,9 +23,12 @@ use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Kernel\BootOption;
+use SEOCart\Platform\Kernel\BootRecord;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 use SEOCart\Tests\Support\CreatesUsers;
 use SEOCart\Tests\Support\GrantsCapabilities;
+use SEOCart\Tests\Support\KernelTestCase;
 use SEOCart\Tests\Support\Performance\ReferenceCarts;
 use SEOCart\Tests\Support\Pricing\Inputs;
 use SEOCart\Tests\Support\QueryLog;
@@ -119,6 +122,19 @@ final class PaymentBudgetTest extends PlacementTestCase {
 	private const RESUME = 36;
 
 	/**
+	 * Removes the installation record a test planted.
+	 *
+	 * @since 0.2.0
+	 */
+	public function tear_down(): void {
+		global $wpdb;
+
+		$wpdb->delete( $wpdb->options, array( 'option_name' => BootOption::NAME ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- Removes the record the offline test planted.
+
+		parent::tear_down();
+	}
+
+	/**
 	 * Tests the capture and the void, each of an accepted order.
 	 *
 	 * @since 0.2.0
@@ -153,6 +169,9 @@ final class PaymentBudgetTest extends PlacementTestCase {
 	 */
 	public function test_an_offline_capture_and_void_cost_their_budget(): void {
 		( new CreateOfflinePayments() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+
+		// The installation record every store that takes orders has, autoloaded: a live payment's call reads Safe Mode from it, at no cost.
+		( new BootOption( $this->db, $this->reporter() ) )->mutate( static fn(): BootRecord => KernelTestCase::installedRecord( KernelTestCase::codeHead() ) );
 
 		$person  = $this->userGranted( PaymentService::CAPTURE_CAPABILITY, PaymentService::VOID_CAPABILITY );
 		$capture = $this->placeCartA( 'offline', OfflineMethod::BankTransfer->value );

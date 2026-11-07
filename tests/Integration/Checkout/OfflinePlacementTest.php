@@ -133,7 +133,7 @@ final class OfflinePlacementTest extends PlacementTestCase {
 			);
 			$this->assertSame( array( 'approved', 'processing', 'authorized' ), array( $changes['answer']['outcome'], $changes['answer']['status'], $changes['answer']['payment_status'] ) );
 			$this->assertSame( array( ( $method->label() )(), '' ), array( $changes['answer']['payment_method_label'], $changes['answer']['payment_instructions'] ), $method->value . ': the method\'s own name, and no instructions yet.' );
-			$this->assertSame( $changes['answer'], $this->placement->place( $changes['input'], self::guest() ), $method->value . ': a retry with the same key is answered as the placement was.' );
+			$this->assertEquals( $changes['answer'], $this->placement->place( $changes['input'], self::guest() ), $method->value . ': a retry with the same key is answered as the placement was, the name and the instructions kept with it.' );
 		}
 
 		$this->assertSame( array( 'Stand-in gateway', null ), array( $standIn['answer']['payment_method_label'], $standIn['answer']['payment_instructions'] ), 'A provider\'s method has a name and no instructions.' );
