@@ -385,6 +385,7 @@ final class ReferenceSeed {
 			PromotionTables::USAGE               => 'Only an order uses a promotion, and there are no orders yet.',
 		) + array_fill_keys( OrderTables::names(), 'The dataset has no orders yet: placing orders is a workload of its own.' )
 			+ array_fill_keys( PaymentTables::names(), 'A payment is made for an order, and the dataset has no orders yet.' )
+			+ array( PaymentTables::OFFLINE_PAYMENTS => 'A payment received offline is recorded for a paid order, and the dataset has no orders yet; its one statement writes it beside its ledger row, found by the row\'s id.' )
 			+ array_fill_keys( RefundTables::names(), 'A refund gives back part of a paid order, and the dataset has no orders yet.' )
 			+ array_fill_keys( RefundClaimTables::names(), 'A refund is claimed before the gateway is asked for it, and the dataset has no orders yet; doctor\'s search for claims never settled reads it by its state and age.' )
 			+ array_fill_keys( WebhookReceiptTables::names(), 'A receipt records an event a payment provider delivered, and the dataset has no payments yet. Every statement reads it by a key; the query-plan run records receipts of its own to judge them.' )
