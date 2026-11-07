@@ -202,6 +202,13 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 		// actor it reads by the row's id.
 		$db->transaction( static fn() => ( new MysqlPaymentRepository( $db, $ids ) )->insertOfflinePayment( (int) $captured->transactionId, new OfflinePaymentEvidence( '2026-01-02', 'TRF 1', 'Received.' ) ) );
 
+		// The read inside that record, the capture's ledger row by its primary key: the SELECT of
+		// MysqlPaymentRepository::INSERT_OFFLINE_PAYMENT, cut from the statement and sent alone, as the INSERT reads it.
+		$insert                   = MysqlPaymentRepository::INSERT_OFFLINE_PAYMENT;
+		list( $read, $arguments ) = MysqlPaymentRepository::expand( substr( $insert, (int) strpos( $insert, 'SELECT ' ) ), array( '2026-01-02', 'TRF 1', 'Received.', (int) $captured->transactionId ), fn( string $name ): string => $this->table( $name ) );
+
+		$db->fetchRow( $read, ...$arguments );
+
 		// A refund's reads: of the order, its intent with its unreconciled rows, and what earlier refunds returned of its lines,
 		// its components and its shipping; then another refund the gateway answers with the first, whose duplicate reads the
 		// first document before it is refused. The line's uuid is the test's read.
