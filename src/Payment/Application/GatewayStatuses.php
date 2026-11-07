@@ -15,6 +15,7 @@ namespace SEOCart\Payment\Application;
 defined( 'ABSPATH' ) || exit;
 
 use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Payment\Domain\OfflineMethod;
 use SEOCart\Payment\Domain\PaymentRepository;
 use SEOCart\Platform\Settings\SettingsError;
 use SEOCart\Support\Error\CodedException;
@@ -26,7 +27,9 @@ use SEOCart\Support\Error\CodedException;
  * registry, the switch and Safe Mode from the boot record the site has loaded, its credentials'
  * state from its settings document's stored text (no credential is opened), and the open
  * payments of every gateway from one statement, read once and shared by every status this
- * reader gives. Writes nothing.
+ * reader gives. For an offline payment method it also counts the payments that have waited for
+ * their money longer than the method's wait (awaitingPastTheWait()), only for a method with
+ * authorized payments open. Writes nothing.
  *
  * @since 0.2.0
  */
@@ -175,6 +178,55 @@ final class GatewayStatuses {
 	 */
 	public function refused(): array {
 		return $this->gateways->refused();
+	}
+
+	/**
+	 * Counts, for each registered offline payment method, the payments still authorized, the money not yet received, that were placed longer ago than the days of the method's wait.
+	 *
+	 * A reminder, not a deadline: nothing ends such a payment by itself. The wait is the method's
+	 * `wait_days` setting, read only for a method with authorized payments open (openIntents());
+	 * a method whose settings cannot be read is left out, as its status says it cannot be read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException When the settings store fails for another reason than a stored value it cannot hold.
+	 *
+	 * @return array<string, array{waiting: int, wait_days: int}> By gateway id, for each offline payment method with
+	 *                                                            authorized payments open: how many waited past the
+	 *                                                            wait, and its days.
+	 */
+	public function awaitingPastTheWait(): array {
+		$authorized = array();
+
+		foreach ( $this->openIntents() as $row ) {
+			$authorized[ $row['gateway_id'] ] = ( $authorized[ $row['gateway_id'] ] ?? 0 ) + $row['open'] - $row['waiting'];
+		}
+
+		$registered = array_flip( $this->gateways->ids() );
+		$late       = array();
+
+		foreach ( OfflineMethod::ids() as $gatewayId ) {
+			if ( ! isset( $registered[ $gatewayId ] ) || 0 === ( $authorized[ $gatewayId ] ?? 0 ) ) {
+				continue;
+			}
+
+			try {
+				$days = (int) $this->gateways->context( $gatewayId )->settings( Mode::Live )->value( OfflineMethod::WAIT_DAYS );
+			} catch ( CodedException $unread ) {
+				if ( SettingsError::StoredValueInvalid !== $unread->errorCode() ) {
+					throw $unread;
+				}
+
+				continue;
+			}
+
+			$late[ $gatewayId ] = array(
+				'waiting'   => $this->payments->authorizedOlderThan( $gatewayId, $days ),
+				'wait_days' => $days,
+			);
+		}
+
+		return $late;
 	}
 
 	/**

@@ -21,7 +21,7 @@ use SEOCart\Platform\Cli\Doctor\Check;
 use SEOCart\Platform\Cli\Doctor\CheckResult;
 
 /**
- * Reports the gateways whose open payments nothing can settle now: a gateway not registered, one that no longer has the payments' mode, one whose credentials for it are missing or unreadable, and live payments while Safe Mode is on.
+ * Reports the gateways whose open payments nothing can settle now: a gateway not registered, one that no longer has the payments' mode, one whose credentials for it are missing or unreadable, and live payments while Safe Mode is on; and the payments of an offline payment method that have waited for their money past the method's wait.
  *
  * Owns one fact: when doctor and Site Health call the store's gateways unfit for the payments they
  * hold. The open payments (created, waiting for the customer or the gateway, or authorized) are
@@ -30,7 +30,10 @@ use SEOCart\Platform\Cli\Doctor\CheckResult;
  * reason is a warning; it is critical when one of those payments has waited for its gateway's
  * answer, unchanged, longer than WAITED_SECONDS, since nothing settles it until a person acts, but
  * for Safe Mode, which a person ends. A gateway an operator switched off is no finding: its open
- * payments go on. It prints gateway ids, modes and counts, never a setting's value.
+ * payments go on. An offline payment method's payments placed longer ago than the days of its
+ * wait, the money still not recorded as received, are a reminder, a warning that never turns
+ * critical: nothing ends them by itself, and the merchant records the payment or voids it. It
+ * prints gateway ids, modes and counts, never a setting's value.
  *
  * @since 0.2.0
  */
@@ -104,29 +107,35 @@ final class GatewaysCheck implements Check {
 	}
 
 	/**
-	 * Checks that every gateway with open payments can be asked about them.
+	 * Checks that every gateway with open payments can be asked about them, and that no offline payment has waited for its money past its method's wait.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @return CheckResult Passed when each can; failed with a `Critical:` or `Warning:` line per gateway and mode that cannot.
+	 * @return CheckResult Passed when each can and none has; failed with a `Critical:` or `Warning:` line per gateway and
+	 *                     mode that cannot, and a `Warning:` line per offline payment method with payments past its wait.
 	 */
 	public function run(): CheckResult {
 		$findings = $this->findings();
+		$late     = $this->lateFindings();
 
-		if ( array() === $findings ) {
+		if ( array() === $findings && array() === $late ) {
 			return CheckResult::pass( self::NAME, $this->summary() );
 		}
 
-		$open = 0;
+		$headlines = array();
 
-		foreach ( $findings as $finding ) {
-			$open += $finding['open'];
+		if ( array() !== $findings ) {
+			$headlines[] = sprintf( '%d of the gateways\' open payments cannot be settled now.', array_sum( array_column( $findings, 'open' ) ) );
+		}
+
+		if ( array() !== $late ) {
+			$headlines[] = sprintf( '%d payments of offline payment methods have waited for their money past the method\'s wait.', array_sum( array_column( $late, 'open' ) ) );
 		}
 
 		return CheckResult::fail(
 			self::NAME,
-			sprintf( '%d of the gateways\' open payments cannot be settled now.', $open ),
-			array_map( static fn( array $finding ): string => ( self::CRITICAL === $finding['status'] ? 'Critical: ' : 'Warning: ' ) . $finding['detail'], $findings )
+			implode( ' ', $headlines ),
+			array_map( static fn( array $finding ): string => ( self::CRITICAL === $finding['status'] ? 'Critical: ' : 'Warning: ' ) . $finding['detail'], array_merge( $findings, $late ) )
 		);
 	}
 
@@ -139,15 +148,20 @@ final class GatewaysCheck implements Check {
 	 */
 	public function siteHealthTest(): array {
 		$findings = $this->findings();
+		$late     = $this->lateFindings();
 
-		if ( array() === $findings ) {
+		if ( array() === $findings && array() === $late ) {
 			$status      = 'good';
 			$label       = __( 'SEOCart can ask each gateway about its open payments', 'seocart' );
 			$description = '<p>' . esc_html( $this->summary() ) . '</p>';
+		} elseif ( array() === $findings ) {
+			$status      = self::RECOMMENDED;
+			$label       = __( 'Some payments have waited for their money longer than their payment method allows', 'seocart' );
+			$description = implode( '', array_map( static fn( array $finding ): string => '<p>' . esc_html( $finding['detail'] ) . '</p>', $late ) );
 		} else {
 			$status      = $findings[0]['status'];
 			$label       = self::CRITICAL === $status ? __( 'Payments are waiting for a gateway SEOCart cannot ask', 'seocart' ) : __( 'Some open payments wait for a gateway SEOCart cannot ask', 'seocart' );
-			$description = implode( '', array_map( static fn( array $finding ): string => '<p>' . esc_html( $finding['detail'] ) . '</p>', $findings ) );
+			$description = implode( '', array_map( static fn( array $finding ): string => '<p>' . esc_html( $finding['detail'] ) . '</p>', array_merge( $findings, $late ) ) );
 		}
 
 		return array(
@@ -197,6 +211,40 @@ final class GatewaysCheck implements Check {
 		}
 
 		return array_merge( $critical, $warnings );
+	}
+
+	/**
+	 * Lists the offline payment methods with payments that have waited for their money longer than the method's wait: a reminder, never critical.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<array{status: string, open: int, detail: string}> The findings; none when no such payment has.
+	 */
+	private function lateFindings(): array {
+		$late = array();
+
+		foreach ( $this->statuses->awaitingPastTheWait() as $gatewayId => $wait ) {
+			if ( 0 === $wait['waiting'] ) {
+				continue;
+			}
+
+			$late[] = array(
+				'status' => self::RECOMMENDED,
+				'open'   => $wait['waiting'],
+				'detail' => sprintf(
+					/* translators: 1: A number of payments. 2: An offline payment method's id, such as bank_transfer. */
+					_n( '%1$d %2$s payment has waited for its money longer than the method allows: record the payment received with wp seocart payment capture, or void it.', '%1$d %2$s payments have waited for their money longer than the method allows: record each payment received with wp seocart payment capture, or void it.', $wait['waiting'], 'seocart' ),
+					$wait['waiting'],
+					$gatewayId
+				) . ' ' . sprintf(
+					/* translators: %d: The days an offline payment method allows a payment to wait for its money, its wait_days setting. */
+					_n( 'The method allows %d day.', 'The method allows %d days.', $wait['wait_days'], 'seocart' ),
+					$wait['wait_days']
+				),
+			);
+		}
+
+		return $late;
 	}
 
 	/**

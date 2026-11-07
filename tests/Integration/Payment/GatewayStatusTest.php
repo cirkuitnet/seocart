@@ -114,6 +114,9 @@ final class GatewayStatusTest extends RefundTestCase {
 
 		$this->assertQueryCount( 1, $log->forTable( $this->table( PaymentTables::INTENTS ) ), 'The open payments of every gateway' );
 		$this->assertSame( array( ...OfflineMethod::ids(), StubGateway::ID, 'second' ), array_map( static fn( GatewayStatus $status ): string => $status->id, $all ) );
+
+		$byId = array_combine( array_map( static fn( GatewayStatus $status ): string => $status->id, $all ), $all );
+
 		$this->assertSame(
 			array(
 				'id'             => 'second',
@@ -139,9 +142,13 @@ final class GatewayStatusTest extends RefundTestCase {
 				'open_intents'   => 2,
 				'webhook_events' => array(),
 			),
-			$all[1]->toArray()
+			$byId['second']->toArray()
 		);
-		$this->assertSame( array( 'test', 'test', array( 'test' => 'configured' ), 1 ), array( $all[0]->toArray()['mode'], $all[0]->toArray()['effective_mode'], $all[0]->toArray()['credentials'], $all[0]->openIntents ), 'The stand-in needs no credential.' );
+
+		$standIn = $byId[ StubGateway::ID ];
+
+		$this->assertSame( array( 'test', 'test', array( 'test' => 'configured' ), 1 ), array( $standIn->toArray()['mode'], $standIn->toArray()['effective_mode'], $standIn->toArray()['credentials'], $standIn->openIntents ), 'The stand-in needs no credential.' );
+		$this->assertSame( array( 'live', 'live', array( 'live' => 'configured' ), 0 ), array( $byId['bank_transfer']->toArray()['mode'], $byId['bank_transfer']->toArray()['effective_mode'], $byId['bank_transfer']->toArray()['credentials'], $byId['bank_transfer']->openIntents ), 'An offline method needs no credential, and is configured by its defaults.' );
 		$this->assertSame( array( 'gone' => 1 ), $gone, 'A gateway gone with open payments is counted.' );
 
 		GatewayKernel::alterStored( 'second', Mode::Live, 'secret_key', static fn( string $sealed ): string => substr( $sealed, 0, -12 ) . str_repeat( 'A', 12 ) );
@@ -189,8 +196,9 @@ final class GatewayStatusTest extends RefundTestCase {
 				'hosts'          => 'api.second.example',
 				'open_intents'   => 1,
 			),
-			$command->items[1]
+			self::lastRowOf( $command, 'second' )
 		);
+		$this->assertSame( array( ...OfflineMethod::ids(), StubGateway::ID, 'second' ), array_column( $command->items, 'id' ), 'A table each, the store\'s own methods first.' );
 		$this->assertContains( 'Refused: second, from no plugin (duplicate): A gateway of this id is registered already.', $command->lines );
 
 		$this->assertSame( GatewayCommand::EXIT_OK, $command->run( array( 'status', 'second' ), array( 'format' => 'json' ) ) );
@@ -202,10 +210,10 @@ final class GatewayStatusTest extends RefundTestCase {
 		$this->assertSame( GatewayCommand::EXIT_OK, $command->run( array( 'disable', 'second' ) ) );
 		$this->assertSame( 'Disabled second: it takes no new payment. Its 1 open payment is still captured, voided, refunded and reconciled through it.', $command->last() );
 		$command->run( array( 'status' ) );
-		$this->assertSame( 'no', $command->items[3]['enabled'] );
+		$this->assertSame( 'no', self::lastRowOf( $command, 'second' )['enabled'] );
 		$this->assertSame( GatewayCommand::EXIT_OK, $command->run( array( 'enable', 'second' ) ) );
 		$command->run( array( 'status' ) );
-		$this->assertSame( 'yes', $command->items[5]['enabled'] );
+		$this->assertSame( 'yes', self::lastRowOf( $command, 'second' )['enabled'] );
 
 		$this->assertSame( GatewayCommand::EXIT_FAILED, $command->run( array( 'disable', 'gone' ) ) );
 		$this->assertStringStartsWith( 'payment.gateway_unavailable:', $command->last() );
@@ -312,5 +320,20 @@ final class GatewayStatusTest extends RefundTestCase {
 				GatewayKernel::name( 'second', Mode::Live, GatewayDescriptor::ACCOUNT_COUNTRY ) => 'US',
 			)
 		);
+	}
+
+	/**
+	 * Returns the last table row the command printed for a gateway.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayCommandRecorder $command   The command.
+	 * @param string                 $gatewayId The gateway.
+	 * @return array<string, string|int> The row; empty when none was printed.
+	 */
+	private static function lastRowOf( GatewayCommandRecorder $command, string $gatewayId ): array {
+		$rows = array_values( array_filter( $command->items, static fn( array $item ): bool => $gatewayId === ( $item['id'] ?? null ) ) );
+
+		return $rows[ count( $rows ) - 1 ] ?? array();
 	}
 }

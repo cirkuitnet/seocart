@@ -35,9 +35,11 @@ use SEOCart\Support\Error\ErrorDefinition;
  *
  * Owns one fact: the command's contract with an operator.
  *
- * - `status [<gateway>]` prints each registered gateway's state (GatewayStatus), a table each, then the
- *   registrations refused in this request with their reasons, and the gateways that open payments
- *   name but that are not registered. It never prints a setting's value. Exits 0.
+ * - `status [<gateway>]` prints each registered gateway's state (GatewayStatus), a table each, then,
+ *   for each offline payment method, how many of its payments have waited for their money past its
+ *   wait (`Awaiting payment:`), the registrations refused in this request with their reasons, and
+ *   the gateways that open payments name but that are not registered. It never prints a setting's
+ *   value. Exits 0.
  * - `disable <gateway>` switches a registered gateway off: it takes no new payment, and its open
  *   payments are still captured, voided, refunded and reconciled. `enable <gateway>` switches it
  *   on again; a switch left by a gateway since removed can be cleared too. Each is one conditional
@@ -305,14 +307,20 @@ final class GatewayCommand {
 		$refused  = null === $gatewayId ? $this->statuses->refused() : array();
 		$gone     = null === $gatewayId ? $this->statuses->unregistered() : array();
 		$reasons  = array() === $gone ? array() : $this->statuses->refusalReasons();
+		$late     = $this->statuses->awaitingPastTheWait();
+
+		if ( null !== $gatewayId ) {
+			$late = array_intersect_key( $late, array( $gatewayId => true ) );
+		}
 
 		if ( 'json' === $format ) {
 			$this->say(
 				(string) wp_json_encode(
 					array(
-						'gateways'     => array_map( static fn( GatewayStatus $status ): array => $status->toArray(), $statuses ),
-						'refused'      => array_map( static fn( RefusedRegistration $refusal ): array => $refusal->toArray(), $refused ),
-						'unregistered' => (object) $gone,
+						'gateways'           => array_map( static fn( GatewayStatus $status ): array => $status->toArray(), $statuses ),
+						'refused'            => array_map( static fn( RefusedRegistration $refusal ): array => $refusal->toArray(), $refused ),
+						'unregistered'       => (object) $gone,
+						'awaiting_past_wait' => (object) $late,
 					)
 				)
 			);
@@ -322,6 +330,12 @@ final class GatewayCommand {
 
 		foreach ( $statuses as $status ) {
 			( $this->display )( self::row( $status ), 'table' );
+		}
+
+		foreach ( $late as $id => $wait ) {
+			if ( 0 < $wait['waiting'] ) {
+				$this->say( sprintf( 'Awaiting payment: %1$s, %2$d past the wait of %3$d days.', $id, $wait['waiting'], $wait['wait_days'] ) );
+			}
 		}
 
 		foreach ( $refused as $refusal ) {
