@@ -1750,7 +1750,9 @@ final class Modules {
 				static function ( FieldSpec ...$fields ) use ( $c ): void {
 					$c->get( Redactor::class )->declareFields( ...$fields );
 				},
-				$c->get( GatewaySwitches::class )
+				$c->get( GatewaySwitches::class ),
+				// The offline payment methods are the store's own, registered on every site.
+				\SEOCart\Payment\Infrastructure\Gateway\OfflineGateway::all()
 			)
 		);
 		$container->bind( GatewayStatuses::class, static fn( Container $c ): GatewayStatuses => new GatewayStatuses( $c->get( Gateways::class ), $c->get( PaymentRepository::class ) ) );

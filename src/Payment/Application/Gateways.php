@@ -39,9 +39,10 @@ use SEOCart\Support\Schema\FieldSpec;
  *
  * Owns one fact: which gateways the store has, and which of them may be used now. The list is built
  * the first time something asks for a gateway, once per request, and never on a request that asks
- * for none: the stand-in gateway is registered first, where the site allows it (stubAllowed()),
- * then the action GatewayRegistry::ACTION is fired with this registry, so each gateway plugin
- * registers its own. A registration is checked (register()) and a refused one is logged, never
+ * for none: the store's own gateways are registered first, the offline payment methods on every
+ * site, then the stand-in gateway, where the site allows it (stubAllowed()), then the action
+ * GatewayRegistry::ACTION is fired with this registry, so each gateway plugin registers its own.
+ * A registration is checked (register()) and a refused one is logged, never
  * fatal, and kept for the request with its reason (refused()); a gateway's settings fields join
  * the log's redaction as it is accepted. Every registration, accepted or refused, is matched to
  * the plugin it was loaded from (pluginOf()), so a screen can name the plugin of a gateway, and of
@@ -103,7 +104,16 @@ final class Gateways implements GatewayRegistry {
 	private const QUOTED_VALIDATIONS = array( GatewayDescriptor::class, CapabilityMatrix::class, MatrixRow::class, OutboundHost::class );
 
 	/**
-	 * The stand-in gateway, registered first where the site allows it; null where it does not.
+	 * The store's own gateways, registered first, on every site: the offline payment methods.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<PaymentGateway>
+	 */
+	private array $own;
+
+	/**
+	 * The stand-in gateway, registered after the store's own where the site allows it; null where it does not.
 	 *
 	 * @since 0.2.0
 	 *
@@ -238,12 +248,16 @@ final class Gateways implements GatewayRegistry {
 	 * @param callable            $report   Receives a report code (string) and its context (array).
 	 * @param callable            $redact   Receives an accepted gateway's settings fields (FieldSpec ...), for the log's redaction.
 	 * @param GatewaySwitches     $switches The operators' kill switches and Safe Mode.
+	 * @param PaymentGateway[]    $own      Optional. The store's own gateways, registered first on every site: the offline
+	 *                                      payment methods. Default none.
 	 *
 	 * @phpstan-param callable(string): GatewayContext              $contexts
 	 * @phpstan-param callable(string, array<string, mixed>): void $report
 	 * @phpstan-param callable(FieldSpec ...): void                $redact
+	 * @phpstan-param list<PaymentGateway>                         $own
 	 */
-	public function __construct( ?PaymentGateway $stub, callable $contexts, callable $report, callable $redact, GatewaySwitches $switches ) {
+	public function __construct( ?PaymentGateway $stub, callable $contexts, callable $report, callable $redact, GatewaySwitches $switches, array $own = array() ) {
+		$this->own      = $own;
 		$this->stub     = $stub;
 		$this->contexts = \Closure::fromCallable( $contexts );
 		$this->report   = \Closure::fromCallable( $report );
@@ -778,7 +792,7 @@ final class Gateways implements GatewayRegistry {
 	}
 
 	/**
-	 * Builds the list, once: the stand-in first, where the site allows it, then whatever the registration action registers.
+	 * Builds the list, once: the store's own gateways first, then the stand-in, where the site allows it, then whatever the registration action registers.
 	 *
 	 * A gateway plugin whose listener throws is reported, and the gateways registered so far stay.
 	 *
@@ -793,6 +807,10 @@ final class Gateways implements GatewayRegistry {
 		$this->building = true;
 
 		try {
+			foreach ( $this->own as $gateway ) {
+				$this->register( $gateway );
+			}
+
 			if ( null !== $this->stub ) {
 				$this->register( $this->stub );
 			}

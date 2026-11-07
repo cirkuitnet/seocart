@@ -42,7 +42,8 @@ which a payment intent and the ledger record: the label in lower-case snake_case
 `Authorize.Net` is `authorize_net`), or the one `--gateway-id=<id>` names. SEOCart's contract
 refuses an id that does not start with a letter, holds anything but lower-case letters, digits and
 single underscores, or is longer than 32 characters, and the generator refuses it first, as it
-refuses `stub`, the id of the stand-in gateway SEOCart registers itself. The
+refuses `stub`, the id of the stand-in gateway SEOCart registers itself, and `bank_transfer`,
+`cheque` and `cash_on_delivery`, the ids of its offline payment methods. The
 extension is pinned to the commit the SEOCart checkout is at.
 
 The walkthrough generates a payments extension labelled `Example`. It ran on the development

@@ -54,6 +54,7 @@ use SEOCart\Payment\Domain\Refund\Refund;
 use SEOCart\Payment\Domain\Refund\RefundLineRequest;
 use SEOCart\Payment\Domain\Refund\RefundRequest;
 use SEOCart\Payment\Domain\VoidReason;
+use SEOCart\Payment\Infrastructure\Gateway\OfflineGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Payment\Infrastructure\WebhookReceiptTables;
 use SEOCart\Platform\Authorization\Actor;
@@ -1244,7 +1245,8 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 			static function ( FieldSpec ...$fields ) use ( $c ): void {
 				$c->get( Redactor::class )->declareFields( ...$fields );
 			},
-			$c->get( GatewaySwitches::class )
+			$c->get( GatewaySwitches::class ),
+			OfflineGateway::all()
 		);
 	}
 

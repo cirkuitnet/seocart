@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Unit\Payment\Conformance;
 use Brain\Monkey;
 use PHPUnit\Framework\TestCase;
 use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Payment\Infrastructure\Gateway\OfflineGateway;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Tests\Conformance\Payment\DeclarationRules;
 use SEOCart\Tests\Conformance\Payment\InertContext;
@@ -21,7 +22,7 @@ use SEOCart\Tests\Conformance\Payment\NetworkCalls;
 use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGateway;
 
 /**
- * Holds the stand-in, the reference gateway and, when SEOCART_EXTENSION_PATH names an extension, every gateway it registers to rules 4 and 15.
+ * Holds the stand-in, the offline payment methods, the reference gateway and, when SEOCART_EXTENSION_PATH names an extension, every gateway it registers to rules 4 and 15.
  *
  * Rule 4: no property or parameter of the contract's classes or the gateway's own is named like
  * card data. Rule 15: describe() calls no WordPress function. An extension's gateways are read
@@ -103,6 +104,10 @@ final class DeclarationConformanceTest extends TestCase {
 			'stand-in'  => array( new StubGateway(), array() ),
 			'reference' => array( new ReferenceGateway( new InertContext( ReferenceGateway::ID ) ), array() ),
 		);
+
+		foreach ( OfflineGateway::all() as $offline ) {
+			$gateways[ $offline->describe()->id ] = array( $offline, array() );
+		}
 
 		$root = rtrim( (string) getenv( 'SEOCART_EXTENSION_PATH' ), '/' );
 

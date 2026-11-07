@@ -376,13 +376,13 @@ final class StubGateway implements PaymentGateway {
 	public const UNKNOWN_EVENT = 'unknown_type';
 
 	/**
-	 * The currencies the stub takes.
+	 * The currencies the stub takes: those of every gateway SEOCart registers itself.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var list<string>
 	 */
-	private const CURRENCIES = array( 'USD', 'GBP', 'EUR' );
+	private const CURRENCIES = CoreGatewayCurrencies::LAUNCH;
 
 	/**
 	 * What the answer about an intent the gateway has no record of is named with, before the intent's uuid.

@@ -16,6 +16,7 @@ use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use RuntimeException;
 use SEOCart\Contracts\Payment\GatewayDescriptor;
+use SEOCart\Payment\Domain\OfflineMethod;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Tools\Packaging\PluginPackage;
 use SplFileInfo;
@@ -193,6 +194,13 @@ final class Skeleton {
 			throw new InvalidArgumentException(
 				( null === $gatewayId ? "The label \"{$label}\" gives the gateway id \"{$gateway_id}\", which is" : "The gateway id \"{$gateway_id}\" is" )
 				. ' the stand-in gateway\'s id: SEOCart registers that gateway itself and would refuse a second gateway of that id. Name another with --gateway-id=<id>.'
+			);
+		}
+
+		if ( OfflineMethod::isOffline( $gateway_id ) ) {
+			throw new InvalidArgumentException(
+				( null === $gatewayId ? "The label \"{$label}\" gives the gateway id \"{$gateway_id}\", which is" : "The gateway id \"{$gateway_id}\" is" )
+				. ' the id of one of SEOCart\'s offline payment methods: SEOCart registers that gateway itself and would refuse a second gateway of that id. Name another with --gateway-id=<id>.'
 			);
 		}
 

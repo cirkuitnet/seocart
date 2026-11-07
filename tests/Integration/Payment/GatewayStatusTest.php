@@ -18,6 +18,7 @@ use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Payment\Application\GatewayStatus;
 use SEOCart\Payment\Application\GatewayStatuses;
 use SEOCart\Payment\Application\Gateways;
+use SEOCart\Payment\Domain\OfflineMethod;
 use SEOCart\Payment\Domain\PaymentRepository;
 use SEOCart\Payment\Infrastructure\Cli\GatewayCommand;
 use SEOCart\Payment\Infrastructure\Doctor\GatewaysCheck;
@@ -112,7 +113,7 @@ final class GatewayStatusTest extends RefundTestCase {
 		);
 
 		$this->assertQueryCount( 1, $log->forTable( $this->table( PaymentTables::INTENTS ) ), 'The open payments of every gateway' );
-		$this->assertSame( array( StubGateway::ID, 'second' ), array_map( static fn( GatewayStatus $status ): string => $status->id, $all ) );
+		$this->assertSame( array( ...OfflineMethod::ids(), StubGateway::ID, 'second' ), array_map( static fn( GatewayStatus $status ): string => $status->id, $all ) );
 		$this->assertSame(
 			array(
 				'id'             => 'second',
