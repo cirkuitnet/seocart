@@ -1180,15 +1180,16 @@ final class Modules {
 	}
 
 	/**
-	 * The catalog module's hooks: the product post type, registered on every request's `init`; the product's lifecycle, on every request; and in the admin the product editor's panel.
+	 * The catalog module's hooks: the product post type, registered on every request's `init`; the product's lifecycle, on every request; and in the admin the product editor's script and stylesheet.
 	 *
 	 * The registration callback is the registration itself, which loads its own file and the
 	 * capability map, builds nothing from the container and sends no query. The lifecycle's three
 	 * callbacks are on every request, because a product post may be written, trashed or deleted
 	 * by any request, a cron run that empties the trash included; each returns before it builds
 	 * anything unless the post is a product post. `pre_delete_post` runs last, and leaves alone a
-	 * delete an earlier callback has already decided. The panel is enqueued on
-	 * `enqueue_block_editor_assets`, which only the admin fires, and only for the product editor.
+	 * delete an earlier callback has already decided. The editor's script is enqueued on
+	 * `enqueue_block_editor_assets` and its stylesheet on `enqueue_block_assets`, hooked on admin requests
+	 * only, and each only for the product editor.
 	 *
 	 * @since 0.1.0
 	 *
@@ -1205,6 +1206,12 @@ final class Modules {
 				'enqueue_block_editor_assets',
 				static function () use ( $container ): void {
 					$container->get( ProductEditorPanel::class )->enqueue();
+				}
+			);
+			add_action(
+				'enqueue_block_assets',
+				static function () use ( $container ): void {
+					$container->get( ProductEditorPanel::class )->enqueueStyles();
 				}
 			);
 		}

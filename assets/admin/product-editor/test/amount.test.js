@@ -1,7 +1,14 @@
 /**
  * Internal dependencies
  */
-import { formatAmount, parseAmount, parseWholeNumber } from '../amount';
+import {
+	currencyName,
+	currencySymbol,
+	formatAmount,
+	formatMoney,
+	parseAmount,
+	parseWholeNumber,
+} from '../amount';
 
 describe( 'parseAmount', () => {
 	it( 'reads an amount into minor units, padding the decimal places', () => {
@@ -60,5 +67,48 @@ describe( 'parseWholeNumber', () => {
 		expect( parseWholeNumber( '2.5' ) ).toBeUndefined();
 		expect( parseWholeNumber( '-3' ) ).toBeUndefined();
 		expect( parseWholeNumber( 'ten' ) ).toBeUndefined();
+	} );
+} );
+
+describe( 'formatMoney', () => {
+	it( 'writes an amount with its currency and its own decimal places', () => {
+		expect(
+			formatMoney( 1800, { code: 'USD', exponent: 2 }, 'en-US' )
+		).toBe( '$18.00' );
+		expect(
+			formatMoney( 1200, { code: 'JPY', exponent: 0 }, 'en-US' )
+		).toBe( '¥1,200' );
+		expect(
+			formatMoney( 5490, { code: 'EUR', exponent: 2 }, 'de-DE' )
+		).toBe( '54,90\u00a0€' );
+	} );
+
+	it( 'is exact at the largest amount a price may be', () => {
+		expect(
+			formatMoney(
+				Number.MAX_SAFE_INTEGER,
+				{ code: 'USD', exponent: 2 },
+				'en-US'
+			)
+		).toBe( '$90,071,992,547,409.91' );
+	} );
+
+	it( 'writes nothing for no amount', () => {
+		expect(
+			formatMoney( null, { code: 'USD', exponent: 2 }, 'en-US' )
+		).toBe( '' );
+	} );
+} );
+
+describe( 'currencySymbol', () => {
+	it( 'writes a currency’s symbol', () => {
+		expect( currencySymbol( 'USD', 'en-US' ) ).toBe( '$' );
+		expect( currencySymbol( 'EUR', 'de-DE' ) ).toBe( '€' );
+	} );
+} );
+
+describe( 'currencyName', () => {
+	it( 'names a currency', () => {
+		expect( currencyName( 'USD', 'en-US' ) ).toBe( 'US Dollar' );
 	} );
 } );

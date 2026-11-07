@@ -112,6 +112,34 @@ test.describe( 'expectNoAccessibilityViolations()', () => {
 		expect( message ).toContain( 'image-alt' );
 	} );
 
+	test( 'reaches into an iframe, and only into the region included there', async ( {
+		page,
+	} ) => {
+		const inner = fixturePage( CLEAN_REGION + BROKEN_REGION ).replace(
+			/"/g,
+			'&quot;'
+		);
+
+		await page.setContent(
+			fixturePage(
+				`<iframe title="Canvas" srcdoc="${ inner }"></iframe>`
+			)
+		);
+
+		await expectNoAccessibilityViolations( page, {
+			frame: 'iframe',
+			include: '#clean',
+		} );
+
+		const message = await failureOf(
+			expectNoAccessibilityViolations( page, {
+				frame: 'iframe',
+				include: '#broken',
+			} )
+		);
+		expect( message ).toContain( 'image-alt' );
+	} );
+
 	test( 'skips a disabled rule and nothing else', async ( { page } ) => {
 		await page.setContent( fixturePage( BROKEN_REGION ) );
 

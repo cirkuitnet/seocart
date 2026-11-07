@@ -267,7 +267,12 @@ its payload.
   (`src/Catalog/Infrastructure/ProductPostType.php`). Title, content, excerpt, image, permalink,
   revisions and the block editor all come from WordPress. The post type serves REST at
   `wp/v2/seocart-products`, through a controller that saves the post and the product's commerce
-  data in one request.
+  data in one request. The editor shows that commerce data in a full-width Product data area under
+  the content: a locked block, `seocart/product-data`, that the post type's template places and the
+  editor's script (`assets/admin/product-editor/`) keeps last on every product, with nothing to save
+  of its own. It edits the `seocart` object of the post's REST resource through the editor's entity,
+  so a save is still that one request, and the block leaves a bare comment in `post_content`, which
+  renders nothing and stays there when the plugin is removed. The sidebar keeps a read-only summary.
 - **Categories, brands and tags are WordPress taxonomies** on that post type, `seocart_category`
   (a tree), `seocart_brand` and `seocart_tag` (`src/Catalog/Infrastructure/ProductTaxonomies.php`).
   WordPress keeps their terms, their term counts and their term screens under the Products menu,

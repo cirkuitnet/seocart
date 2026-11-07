@@ -291,7 +291,7 @@ enum CatalogError: string implements ErrorCode {
 				400,
 				static fn(): string =>
 					/* translators: 1: What was refused, such as axis key, value label or swatch. 2: The value given, or the key of what it names. */
-					__( 'The option\'s %1$s "%2$s" is not valid: a key has 1 to 32 lower-case letters, digits, "-" or "_" and is used once; a label has 1 to 100 characters; a swatch is written #rrggbb in lower case; a position and an image ID are not negative.', 'seocart' ),
+					__( 'The option\'s %1$s "%2$s" is not valid: a key has 1 to 32 lower-case letters, digits, "-" or "_" and is used once; a label has 1 to 100 characters; a swatch is written #rrggbb in lower case; a position is not negative; an image is a file of the media library.', 'seocart' ),
 				array( 'field', 'value' )
 			),
 			new ErrorDefinition(

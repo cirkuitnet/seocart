@@ -1,6 +1,6 @@
 <?php
 /**
- * ProductEditorPanel: the commerce panel of the product editor, and what it is given
+ * ProductEditorPanel: the Product data area of the product editor, and what it is given
  *
  * @package SEOCart
  * @since   0.1.0
@@ -11,10 +11,14 @@ declare( strict_types=1 );
 
 namespace SEOCart\Catalog\Interfaces\Admin;
 
+use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Catalog\Application\ProductWrite\CommerceFields;
 use SEOCart\Catalog\Application\ProductWrite\VariantFields;
 use SEOCart\Catalog\Domain\SellabilityReason;
+use SEOCart\Catalog\Infrastructure\ProductPostType;
 use SEOCart\Catalog\Interfaces\Rest\ProductCommerceSchema;
+use SEOCart\Inventory\Application\InventoryOperations;
+use SEOCart\Inventory\Application\LocationOperations;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Support\Currency;
@@ -24,21 +28,23 @@ use SEOCart\Support\Schema\FieldType;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Enqueues the product editor's commerce panel on the product editor, and nowhere else.
+ * Enqueues the product editor's script and stylesheet on the product editor, and nowhere else.
  *
- * Owns one fact: what the panel is given. The panel edits the `seocart` object of the product's
- * REST resource through the editor's own entity, so the block editor sends it in the same
- * request as the title and the content. Everything it shows comes from here, from the
- * declarations: each writable commerce field with its label, the base currency with its number
- * of decimal places, so an amount the merchant types becomes minor units without a float, a
- * plain sentence for every verdict, and what a new translation's first save sends: the fields in
- * which it names the post it translates and its locale, which the panel reads from the
- * multilingual plugin's link, and the locale of each language code such a link may name. The currency is not a field of the panel: a price is always in
- * the base currency.
+ * Owns one fact: what the script is given. The script registers the Product data block and edits
+ * the `seocart` object of the product's REST resource through the editor's own entity, so the
+ * block editor sends it in the same request as the title and the content. Everything it shows
+ * comes from here, from the declarations: the option axes' and the variants' fields with their
+ * labels and bounds, the currencies the store offers with their numbers of decimal places, so an
+ * amount the merchant types becomes minor units without a float, where it reads the locations and
+ * the stock and whether the user may, a plain sentence for every verdict, and what a new
+ * translation's first save sends: the fields in which it names the post it translates and its
+ * locale, which the script reads from the multilingual plugin's link, and the locale of each
+ * language code such a link may name.
  *
- * The script is enqueued on `enqueue_block_editor_assets` only when the screen edits a product,
- * so every other screen, the post editor included, loads none of its bytes. A checkout without a
- * build enqueues nothing.
+ * The script is enqueued on `enqueue_block_editor_assets` and the stylesheet on
+ * `enqueue_block_assets`, from which WordPress copies it into the editor's canvas, each only when
+ * the screen edits a product, so every other screen, the post editor included, loads none of
+ * their bytes. A checkout without a build enqueues nothing.
  *
  * @since 0.1.0
  */
@@ -79,6 +85,15 @@ final class ProductEditorPanel {
 	 * @var string
 	 */
 	private const ASSET = 'build/admin/product-editor.asset.json';
+
+	/**
+	 * The compiled stylesheet, relative to the plugin's directory; the build writes its right-to-left copy beside it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const STYLESHEET = 'build/admin/style-product-editor.css';
 
 	/**
 	 * The commerce fields that hold an amount in minor units of the base currency.
@@ -146,23 +161,18 @@ final class ProductEditorPanel {
 	}
 
 	/**
-	 * Enqueues the panel when the block editor edits a product. Hooked to `enqueue_block_editor_assets`.
+	 * Enqueues the script when the block editor edits a product. Hooked to `enqueue_block_editor_assets`.
 	 *
 	 * @since 0.1.0
 	 */
 	public function enqueue(): void {
-		$screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
+		$asset = $this->buildOnTheProductEditor();
 
-		if ( ! $screen instanceof \WP_Screen || ProductCapabilities::POST_TYPE !== $screen->post_type ) {
+		if ( null === $asset ) {
 			return;
 		}
 
 		$directory = plugin_dir_path( $this->pluginFile );
-		$asset     = is_readable( $directory . self::ASSET ) ? wp_json_file_decode( $directory . self::ASSET, array( 'associative' => true ) ) : null;
-
-		if ( ! is_array( $asset ) ) {
-			return;
-		}
 
 		wp_enqueue_script(
 			self::HANDLE,
@@ -176,24 +186,53 @@ final class ProductEditorPanel {
 	}
 
 	/**
+	 * Enqueues the stylesheet when the block editor edits a product. Hooked to `enqueue_block_assets`, which WordPress also fires to collect what the editor's canvas loads.
+	 *
+	 * @since 0.2.0
+	 */
+	public function enqueueStyles(): void {
+		$asset = $this->buildOnTheProductEditor();
+
+		if ( null === $asset ) {
+			return;
+		}
+
+		wp_enqueue_style( self::HANDLE, plugins_url( self::STYLESHEET, $this->pluginFile ), array(), (string) ( $asset['version'] ?? '' ) );
+		wp_style_add_data( self::HANDLE, 'rtl', 'replace' );
+	}
+
+	/**
+	 * Returns the build's list of the script's dependencies and version, when the screen edits a product and a build exists.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<mixed>|null The list, or null on any other screen and in a checkout without a build.
+	 */
+	private function buildOnTheProductEditor(): ?array {
+		$screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
+
+		if ( ! $screen instanceof \WP_Screen || ProductCapabilities::POST_TYPE !== $screen->post_type ) {
+			return null;
+		}
+
+		$file  = plugin_dir_path( $this->pluginFile ) . self::ASSET;
+		$asset = is_readable( $file ) ? wp_json_file_decode( $file, array( 'associative' => true ) ) : null;
+
+		return is_array( $asset ) ? $asset : null;
+	}
+
+	/**
 	 * Returns what the panel is given.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array<string, mixed> The post type, the property, the panel's title, the base currency and every currency the store offers,
-	 *                              the fields, the option axes' and the variants' lists with the fields of their items, the verdicts'
-	 *                              sentences, and the two fields of a new translation's first save with the locale of each language code.
+	 * @return array<string, mixed> The post type, the property, the block, the base currency and every currency the store offers, the
+	 *                              option axes' and the variants' lists with the fields of their items, where the stock is read and
+	 *                              whether the user may, the verdicts' sentences, and the two fields of a new translation's first
+	 *                              save with the locale of each language code.
 	 */
 	public function settings(): array {
-		$base   = ( $this->baseCurrency )();
-		$fields = array();
-
-		foreach ( CommerceFields::all() as $name => $field ) {
-			if ( CommerceFields::CURRENCY !== $name ) {
-				$fields[] = self::field( $field );
-			}
-		}
-
+		$base        = ( $this->baseCurrency )();
 		$sellability = null;
 
 		foreach ( ProductCommerceSchema::fields() as $field ) {
@@ -205,7 +244,7 @@ final class ProductEditorPanel {
 		return array(
 			'postType'    => ProductCapabilities::POST_TYPE,
 			'property'    => ProductCommerceSchema::PROPERTY,
-			'title'       => __( 'Commerce', 'seocart' ),
+			'block'       => ProductPostType::AREA_BLOCK,
 			'currency'    => array(
 				'code'     => $base->code(),
 				'exponent' => $base->exponent(),
@@ -217,8 +256,13 @@ final class ProductEditorPanel {
 				),
 				( $this->offeredCurrencies )()
 			),
-			'fields'      => $fields,
 			'lists'       => array_map( static fn( FieldSpec $declaration ): array => self::field( $declaration ), array_values( VariantFields::all() ) ),
+			'stock'       => array(
+				'canManage'     => current_user_can( InventoryOperations::CAPABILITY ),
+				'locationsPath' => RestBinding::NAMESPACE . LocationOperations::ROUTE,
+				'stockPath'     => RestBinding::NAMESPACE . LocationOperations::STOCK_ROUTE,
+				'mostListed'    => LocationOperations::MOST_LISTED_VARIANTS,
+			),
 			'sellability' => array(
 				'name'    => ProductCommerceSchema::SELLABILITY,
 				'label'   => $sellability,
@@ -250,7 +294,7 @@ final class ProductEditorPanel {
 	}
 
 	/**
-	 * Describes one field for the panel.
+	 * Describes one field for the script.
 	 *
 	 * @since 0.1.0
 	 *
@@ -273,6 +317,7 @@ final class ProductEditorPanel {
 			'nullable' => $field->isNullable(),
 			'maxChars' => $field->maxLength(),
 			'minimum'  => $field->minimum(),
+			'maximum'  => $field->maximum(),
 		);
 
 		if ( FieldType::ObjectList === $field->type() ) {

@@ -5,9 +5,9 @@
  * Covers: the front page and one ordinary published post, both logged out and logged in as an
  * administrator (the admin bar must not pull plugin assets either), and three non-plugin admin
  * screens: the dashboard, the edit-post screen for an ordinary post, and General Settings. The
- * plugin's first admin screen is the product editor, whose Commerce panel is one script; its
- * ceiling is read from budget.json's rules through fileBudgetBytes(), the way
- * bin/check-asset-budget.js reads them for the build, never restated here.
+ * plugin's first admin screen is the product editor, whose Product data area is one script and
+ * one stylesheet; their ceilings are read from budget.json's rules through fileBudgetBytes(), the
+ * way bin/check-asset-budget.js reads them for the build, never restated here.
  */
 
 import { test, expect } from '../fixtures';
@@ -132,7 +132,7 @@ test.describe( 'Asset byte budgets', () => {
 		);
 	} );
 
-	test( 'the product editor loads only the Commerce panel, within its budget', async ( {
+	test( 'the product editor loads only the Product data area, within its budgets', async ( {
 		admin,
 		assetBytes,
 		pluginBasePath,
@@ -165,15 +165,21 @@ test.describe( 'Asset byte budgets', () => {
 		// eslint-disable-next-line no-console
 		console.log( description );
 
-		expect( files, description ).toEqual( [ 'admin/product-editor.js' ] );
+		expect( [ ...new Set( files ) ].sort(), description ).toEqual( [
+			'admin/product-editor.js',
+			'admin/style-product-editor.css',
+		] );
 
 		report.hits.forEach( ( hit, index ) => {
 			expect( budgets[ index ], description ).toBeDefined();
-			expect( hit.bytes, description ).toBeGreaterThan( 0 );
 			expect( hit.bytes, description ).toBeLessThanOrEqual(
 				budgets[ index ] ?? 0
 			);
 		} );
+		expect(
+			report.hits.some( ( hit ) => hit.bytes > 0 ),
+			description
+		).toBe( true );
 	} );
 
 	test( 'General Settings (options-general.php) loads no plugin bytes', async ( {

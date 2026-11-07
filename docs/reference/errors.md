@@ -115,7 +115,7 @@ An internal error carries a generic message and empty details: it is a code mark
 ## `catalog.option_invalid`
 
 - HTTP status: 400
-- Message: The option's {field} "{value}" is not valid: a key has 1 to 32 lower-case letters, digits, "-" or "_" and is used once; a label has 1 to 100 characters; a swatch is written #rrggbb in lower case; a position and an image ID are not negative.
+- Message: The option's {field} "{value}" is not valid: a key has 1 to 32 lower-case letters, digits, "-" or "_" and is used once; a label has 1 to 100 characters; a swatch is written #rrggbb in lower case; a position is not negative; an image is a file of the media library.
 - Values: `field`, `value`
 
 ## `catalog.order_unavailable`

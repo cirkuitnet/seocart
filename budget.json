@@ -1,5 +1,5 @@
 {
-	"$comment": "Gzipped byte ceilings per compiled file, checked by bin/check-asset-budget.js on every build. The first matching rule wins; an asset that matches no rule fails the build. The JavaScript and block CSS ceilings come from the performance budgets for the plugin's own storefront assets and for its admin screens. Those budgets are per template, so a per-file ceiling equal to them is the loosest bound that can still catch a regression; the Playwright byte fixture enforces the per-template totals and reads this file rather than restating the numbers. The admin CSS ceiling is a starting value to calibrate against the first real screen. Raising any ceiling is a reviewed change that says why.",
+	"$comment": "Gzipped byte ceilings per compiled file, checked by bin/check-asset-budget.js on every build. The first matching rule wins; an asset that matches no rule fails the build. The JavaScript and block CSS ceilings come from the performance budgets for the plugin's own storefront assets and for its admin screens. Those budgets are per template, so a per-file ceiling equal to them is the loosest bound that can still catch a regression; the Playwright byte fixture enforces the per-template totals and reads this file rather than restating the numbers. The admin CSS ceiling is calibrated against the first real screen, the product editor, whose stylesheet is about 1.8 KB gzipped: the controls bring their own styles from WordPress, so a screen's file holds only its layout, and 8 KB leaves room for a larger screen while still catching a component library copied into the bundle. Raising any ceiling is a reviewed change that says why.",
 	"rules": [
 		{
 			"pattern": "blocks/checkout/**/*.js",
@@ -23,7 +23,7 @@
 		},
 		{
 			"pattern": "admin/**/*.css",
-			"maxGzipBytes": 51200
+			"maxGzipBytes": 8192
 		}
 	]
 }

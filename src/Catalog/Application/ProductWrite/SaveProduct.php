@@ -174,6 +174,15 @@ final class SaveProduct {
 	public const LOCK_TTL_SECONDS = 60;
 
 	/**
+	 * The post type of a file in WordPress's media library, which an option value's image is.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const IMAGE_POST_TYPE = 'attachment';
+
+	/**
 	 * Stores and loads products.
 	 *
 	 * @since 0.1.0
@@ -493,7 +502,7 @@ final class SaveProduct {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @throws CodedException What Product::refuseOptions() and Product::refuseVariants() throw.
+	 * @throws CodedException What Product::refuseOptions(), refuseImages() and Product::refuseVariants() throw.
 	 *
 	 * @param array<string, mixed> $set     The options and variants the save gives.
 	 * @param Product|null         $product The product as read, or null for a first save.
@@ -505,10 +514,46 @@ final class SaveProduct {
 
 		if ( null !== $set['options'] ) {
 			Product::refuseOptions( $set['options'] );
+			$this->refuseImages( $set['options'], $product?->options() );
 		}
 
 		if ( null !== $set['variants'] ) {
 			Product::refuseVariants( $options, $set['variants'], ( $this->offeredCurrencies )(), Product::MAX_SYNC_VARIANTS, $product?->storedVariantsUnder( $options ) ?? array() );
+		}
+	}
+
+	/**
+	 * Refuses, before anything is written, an option value given an image that is no attachment of the site.
+	 *
+	 * Only an image a value is given anew is judged. The one a value already has is kept as it is,
+	 * even once its attachment is deleted, so a product read and sent back still saves.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException With CatalogError::OptionInvalid, its field `image`.
+	 *
+	 * @param OptionMatrix      $given  The options the save gives.
+	 * @param OptionMatrix|null $stored The product's options as read, or null for a first save.
+	 */
+	private function refuseImages( OptionMatrix $given, ?OptionMatrix $stored ): void {
+		foreach ( $given->axes as $axis ) {
+			foreach ( $axis->values as $value ) {
+				$image = $value->imageAttachmentId;
+
+				if ( null === $image || $stored?->axis( $axis->key )?->value( $value->key )?->imageAttachmentId === $image ) {
+					continue;
+				}
+
+				if ( self::IMAGE_POST_TYPE !== $this->posts->postTypeOf( $image ) ) {
+					CodedException::raise(
+						CatalogError::OptionInvalid,
+						array(
+							'field' => 'image',
+							'value' => (string) $image,
+						)
+					);
+				}
+			}
 		}
 	}
 

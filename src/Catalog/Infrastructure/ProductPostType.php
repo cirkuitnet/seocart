@@ -27,7 +27,8 @@ defined( 'ABSPATH' ) || exit;
  * class loads only when a REST server is built. It supports no custom fields, so its editor offers no box
  * where commerce data could be written to post meta; it is left out of WordPress's export, which
  * would carry the post without its variants, prices and stock; and deleting a user deletes none
- * of it.
+ * of it. A new product's editor starts with the Product data block, whose script registers it and
+ * keeps it in place; the template is a literal, so the registration reads nothing for it.
  *
  * register() runs on every request's `init`: it only fills WordPress's in-memory registry, with
  * the post type and the product taxonomies (ProductTaxonomies), and loads this file,
@@ -55,6 +56,15 @@ final class ProductPostType {
 	 * @var list<string>
 	 */
 	public const SUPPORTS = array( 'title', 'editor', 'excerpt', 'thumbnail', 'revisions', 'author' );
+
+	/**
+	 * The block that hosts the Product data area in the product editor, which only the editor's script registers.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const AREA_BLOCK = 'seocart/product-data';
 
 	/**
 	 * Registers the post type, then its taxonomies. Hooked to `init`.
@@ -93,6 +103,8 @@ final class ProductPostType {
 				),
 				'can_export'            => false,
 				'delete_with_user'      => false,
+				'template'              => array( array( self::AREA_BLOCK ) ),
+				'template_lock'         => false,
 			),
 			ProductCapabilities::registrationArguments()
 		);

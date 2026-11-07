@@ -137,6 +137,7 @@ final class KernelWiringTest extends WP_UnitTestCase {
 			$hooks[] = 'admin_post_seocart_safe_mode @10 ' . self::MODULES;
 			$hooks[] = 'admin_post_seocart_retry_migration @10 ' . self::MODULES;
 			$hooks[] = 'enqueue_block_editor_assets @10 ' . self::MODULES;
+			$hooks[] = 'enqueue_block_assets @10 ' . self::MODULES;
 		}
 
 		if ( 'admin' === $context || 'cli' === $context ) {

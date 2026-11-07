@@ -23,6 +23,8 @@ const WCAG_22_AA_TAGS = [
 export interface AccessibilityCheckOptions {
 	/** CSS selectors of the regions to scan. Default: the whole page. */
 	include?: string | string[];
+	/** The CSS selector of the iframe the `include` selectors are inside, such as the block editor's canvas. */
+	frame?: string;
 	/** CSS selectors of regions to leave out, for markup this plugin does not own. */
 	exclude?: string | string[];
 	/** axe rule ids to skip. Each use needs a comment at the call site saying why. */
@@ -65,12 +67,16 @@ export async function expectNoAccessibilityViolations(
 ): Promise< void > {
 	let builder = new AxeBuilder( { page } ).withTags( [ ...WCAG_22_AA_TAGS ] );
 
+	const { frame } = options;
+
 	for ( const selector of toList( options.include ) ) {
 		await expect(
-			page.locator( selector ),
+			frame
+				? page.frameLocator( frame ).locator( selector )
+				: page.locator( selector ),
 			`Accessibility scan scope "${ selector }" matches no element`
 		).not.toHaveCount( 0 );
-		builder = builder.include( selector );
+		builder = builder.include( frame ? [ frame, selector ] : selector );
 	}
 	for ( const selector of toList( options.exclude ) ) {
 		builder = builder.exclude( selector );

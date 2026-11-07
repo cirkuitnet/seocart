@@ -55,6 +55,57 @@ export function formatAmount( minor, exponent ) {
 }
 
 /**
+ * Writes an amount in minor units as money, for a figure a merchant reads and does not edit.
+ *
+ * The amount reaches the number formatter as the exact digits formatAmount() wrote, never as a
+ * floating-point number.
+ *
+ * @param {number|null|undefined}            minor    The amount in minor units, or nothing.
+ * @param {{code: string, exponent: number}} currency The currency.
+ * @param {string|undefined}                 locale   The locale to write it for.
+ * @return {string} The money, such as `$18.00` or `54,90 €`; empty for nothing.
+ */
+export function formatMoney( minor, { code, exponent }, locale ) {
+	const digits = formatAmount( minor, exponent );
+
+	return digits === ''
+		? ''
+		: new Intl.NumberFormat( locale, {
+				style: 'currency',
+				currency: code,
+				minimumFractionDigits: exponent,
+				maximumFractionDigits: exponent,
+			} ).format( digits );
+}
+
+/**
+ * Writes a currency's symbol, which a price field shows beside the amount.
+ *
+ * @param {string}           code   The currency's code.
+ * @param {string|undefined} locale The locale to write it for.
+ * @return {string} The symbol, such as `$`, or the code of a currency that has none.
+ */
+export function currencySymbol( code, locale ) {
+	return new Intl.NumberFormat( locale, {
+		style: 'currency',
+		currency: code,
+	} )
+		.formatToParts( 0 )
+		.find( ( { type } ) => type === 'currency' ).value;
+}
+
+/**
+ * Names a currency in a language, for a merchant who may not know its code.
+ *
+ * @param {string}           code   The currency's code.
+ * @param {string|undefined} locale The locale to name it in.
+ * @return {string} The name, such as `US Dollar`.
+ */
+export function currencyName( code, locale ) {
+	return new Intl.DisplayNames( locale, { type: 'currency' } ).of( code );
+}
+
+/**
  * Reads the text a merchant typed as a whole number, such as a weight in grams.
  *
  * @param {string} text What the merchant typed.

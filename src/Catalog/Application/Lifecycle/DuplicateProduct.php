@@ -173,14 +173,15 @@ final class DuplicateProduct {
 			return $this->saved( new ProductSave( null, $fields, null, $actor, null, $locale ), $postId );
 		}
 
-		$sku   = '';
-		$named = self::copiedVariants( $original )[0] ?? null;
+		$sku     = '';
+		$named   = self::copiedVariants( $original )[0] ?? null;
+		$options = $this->copiedOptions( $original );
 
 		for ( $copy = 1; $copy <= self::COPIES; ++$copy ) {
 			$sku = null === $named ? '' : self::copied( $named->sku(), $copy );
 
 			try {
-				return $this->saved( new ProductSave( null, $fields, self::options( $original, $copy ), $actor, null, $locale ), $postId );
+				return $this->saved( new ProductSave( null, $fields, self::options( $original, $options, $copy ), $actor, null, $locale ), $postId );
 			} catch ( CodedException $refused ) {
 				if ( CatalogError::SkuTaken !== $refused->errorCode() ) {
 					throw $refused;
@@ -230,29 +231,12 @@ final class DuplicateProduct {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param Product $original The original.
-	 * @param int     $copy     Which try: 1 for `-copy`, 2 to 9 for `-copy-2` to `-copy-9`.
+	 * @param Product                    $original The original.
+	 * @param list<array<string, mixed>> $options  The copy's options, as copiedOptions() gives them.
+	 * @param int                        $copy     Which try: 1 for `-copy`, 2 to 9 for `-copy-2` to `-copy-9`.
 	 * @return CommerceInput The fields.
 	 */
-	private static function options( Product $original, int $copy ): CommerceInput {
-		$options  = array_map(
-			static fn( OptionAxis $axis ): array => array(
-				VariantFields::KEY      => $axis->key,
-				VariantFields::LABEL    => $axis->label,
-				VariantFields::POSITION => $axis->position,
-				VariantFields::VALUES   => array_map(
-					static fn( OptionValue $value ): array => array(
-						VariantFields::KEY      => $value->key,
-						VariantFields::LABEL    => $value->label,
-						VariantFields::POSITION => $value->position,
-						VariantFields::IMAGE_ID => $value->imageAttachmentId,
-						VariantFields::SWATCH   => $value->swatchHex,
-					),
-					$axis->values
-				),
-			),
-			$original->options()->axes
-		);
+	private static function options( Product $original, array $options, int $copy ): CommerceInput {
 		$variants = array();
 
 		foreach ( self::copiedVariants( $original ) as $variant ) {
@@ -288,6 +272,38 @@ final class DuplicateProduct {
 				VariantFields::OPTIONS  => $options,
 				VariantFields::VARIANTS => $variants,
 			)
+		);
+	}
+
+	/**
+	 * Returns the option axes of a copy of a product, as a save gives them.
+	 *
+	 * A value keeps its image while the attachment exists. One deleted since is left out: the copy's
+	 * save would refuse it as an image the value is given anew.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Product $original The original.
+	 * @return list<array<string, mixed>> Each axis with its values.
+	 */
+	private function copiedOptions( Product $original ): array {
+		return array_map(
+			fn( OptionAxis $axis ): array => array(
+				VariantFields::KEY      => $axis->key,
+				VariantFields::LABEL    => $axis->label,
+				VariantFields::POSITION => $axis->position,
+				VariantFields::VALUES   => array_map(
+					fn( OptionValue $value ): array => array(
+						VariantFields::KEY      => $value->key,
+						VariantFields::LABEL    => $value->label,
+						VariantFields::POSITION => $value->position,
+						VariantFields::IMAGE_ID => null !== $value->imageAttachmentId && SaveProduct::IMAGE_POST_TYPE === $this->posts->postTypeOf( $value->imageAttachmentId ) ? $value->imageAttachmentId : null,
+						VariantFields::SWATCH   => $value->swatchHex,
+					),
+					$axis->values
+				),
+			),
+			$original->options()->axes
 		);
 	}
 

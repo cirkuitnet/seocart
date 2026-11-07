@@ -1,0 +1,505 @@
+/**
+ * The product editor's Product data area and summary panel.
+ *
+ * WordPress copies this file into the editor's canvas, where the theme's styles apply and the admin's
+ * do not, so the area sets its own font and size and the theme's margins are taken off its elements.
+ */
+
+.wp-block-seocart-product-data.wp-block-seocart-product-data {
+	box-sizing: border-box;
+	max-width: none;
+	margin-block: 32px 0;
+	margin-inline: 0;
+}
+
+.seocart-area {
+	border: 1px solid #e0e0e0;
+	background: #f0f0f1;
+	color: #1e1e1e;
+	font-family:
+		-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans,
+		Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+	font-size: 13px;
+	line-height: 1.4;
+}
+
+.seocart-area *,
+.seocart-area *::before,
+.seocart-area *::after {
+	box-sizing: border-box;
+}
+
+.seocart-area h2,
+.seocart-area h3,
+.seocart-area h4,
+.seocart-area p,
+.seocart-area ul {
+	margin: 0;
+	padding: 0;
+	font-family: inherit;
+	letter-spacing: normal;
+}
+
+.seocart-area ul {
+	list-style: none;
+}
+
+.seocart-area-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	min-height: 44px;
+	padding: 4px 8px 4px 16px;
+	border-bottom: 1px solid #e0e0e0;
+	background: #f6f7f7;
+}
+
+.seocart-area-bar h2 {
+	font-size: 13px;
+	font-weight: 600;
+	line-height: 1.4;
+}
+
+.seocart-area-toggle svg {
+	transition: transform 0.1s;
+	transform: rotate(180deg);
+}
+
+.seocart-area-toggle.is-collapsed svg {
+	transform: none;
+}
+
+.seocart-area-inner {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	max-width: 980px;
+	margin: 0 auto;
+	padding: clamp(12px, 3vw, 24px);
+}
+
+.seocart-area-inner[hidden] {
+	display: none;
+}
+
+.seocart-area-translation {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px 16px;
+	padding: 16px;
+}
+
+.seocart-card.seocart-card {
+	border-radius: 8px;
+	box-shadow: none;
+	border: 1px solid #e0e0e0;
+	background: #fff;
+}
+
+.seocart-card-title {
+	font-size: 13px;
+	font-weight: 600;
+	line-height: 1.4;
+}
+
+.seocart-card-body {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.seocart-help {
+	color: #646970;
+	font-size: 12px;
+}
+
+.seocart-muted {
+	color: #646970;
+}
+
+.seocart-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.seocart-stack b,
+.seocart-stack strong {
+	font-weight: 600;
+}
+
+.seocart-bar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	gap: 8px 16px;
+}
+
+.seocart-card-body.seocart-bar {
+	flex-direction: row;
+}
+
+.seocart-variant-select {
+	flex: 0 1 240px;
+	min-width: 160px;
+}
+
+.seocart-bar .seocart-total {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	margin-inline-start: auto;
+}
+
+.seocart-total b {
+	font-size: 15px;
+	font-variant-numeric: tabular-nums;
+}
+
+.seocart-table-wrap {
+	position: relative;
+	overflow-x: auto;
+	border: 1px solid #e0e0e0;
+	border-radius: 4px;
+}
+
+.seocart-card-table .seocart-table-wrap {
+	border: 0;
+	border-radius: 0 0 8px 8px;
+}
+
+.seocart-table.seocart-table {
+	width: 100%;
+	margin: 0;
+	border: 0;
+	border-collapse: collapse;
+	font-size: 13px;
+}
+
+.seocart-table th,
+.seocart-table td {
+	padding: 8px 12px;
+	border: 0;
+	border-bottom: 1px solid #f0f0f1;
+	text-align: start;
+	vertical-align: middle;
+	font-weight: 400;
+}
+
+.seocart-table thead th {
+	border-bottom-color: #e0e0e0;
+	color: #1e1e1e;
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	white-space: nowrap;
+}
+
+.seocart-table tfoot td {
+	border-top: 1px solid #e0e0e0;
+	border-bottom: 0;
+	font-weight: 600;
+}
+
+.seocart-table tbody tr:last-child th,
+.seocart-table tbody tr:last-child td {
+	border-bottom: 0;
+}
+
+.seocart-table .seocart-num {
+	font-variant-numeric: tabular-nums;
+	text-align: end;
+}
+
+.seocart-table .seocart-num input {
+	text-align: end;
+}
+
+.seocart-table .components-base-control {
+	min-width: 88px;
+}
+
+.seocart-amount-field {
+	position: relative;
+}
+
+.seocart-affix {
+	position: absolute;
+	z-index: 1;
+	inset-block-start: 0;
+	inset-inline-start: 8px;
+	color: #646970;
+	line-height: 32px;
+	pointer-events: none;
+}
+
+.seocart-amount-field input[type="text"] {
+	padding-inline-start: 36px;
+}
+
+.seocart-table .seocart-sku {
+	min-width: 200px;
+}
+
+.seocart-sku input {
+	font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+.seocart-table .components-checkbox-control {
+	min-width: 0;
+}
+
+.seocart-table input[type="text"] {
+	min-height: 32px;
+	height: 32px;
+}
+
+.seocart-pricing .seocart-amount-field {
+	width: 132px;
+	margin-inline-start: auto;
+}
+
+.seocart-locations .components-base-control {
+	width: 96px;
+	min-width: 0;
+	margin-inline-start: auto;
+}
+
+.seocart-table .seocart-variant-name {
+	font-weight: 500;
+	white-space: nowrap;
+}
+
+.seocart-variant-grid tr.is-disabled .seocart-variant-name {
+	color: #646970;
+}
+
+.seocart-segmented {
+	display: inline-flex;
+	flex-wrap: nowrap;
+}
+
+.seocart-segmented .components-button + .components-button {
+	margin-inline-start: -1px;
+}
+
+.seocart-badge {
+	display: inline-block;
+	padding: 2px 8px;
+	border-radius: 2px;
+	background: #f0f0f1;
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+.seocart-badge.is-warning {
+	background: #fcf0d6;
+}
+
+.seocart-badge.is-error {
+	background: #fbe7e8;
+}
+
+.seocart-badge.is-info {
+	background: #e5f1f8;
+}
+
+.seocart-one-variant {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	gap: 8px 16px;
+}
+
+.seocart-one-variant .components-base-control:first-child {
+	flex: 0 1 280px;
+}
+
+.seocart-weight {
+	max-width: 180px;
+}
+
+.seocart-loading {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.seocart-policy {
+	margin-block-start: 4px;
+}
+
+.seocart-available {
+	display: inline-flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 6px;
+}
+
+.seocart-available-button.seocart-available-button {
+	font-variant-numeric: tabular-nums;
+	font-weight: 600;
+}
+
+.seocart-axes {
+	border: 1px solid #e0e0e0;
+	border-radius: 4px;
+}
+
+.seocart-axis {
+	padding: 12px;
+	border-top: 1px solid #e0e0e0;
+}
+
+.seocart-axis:first-child {
+	border-top: 0;
+}
+
+.seocart-axis-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.seocart-axis-values {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-block-start: 6px;
+}
+
+.seocart-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 24px;
+	padding: 0 8px;
+	border-radius: 2px;
+	background: #f0f0f1;
+	font-size: 12px;
+}
+
+.seocart-axis-editor {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 12px;
+	margin-block-start: 12px;
+}
+
+.seocart-axis.seocart-axis-editor {
+	margin-block-start: 0;
+}
+
+.seocart-axis-remove,
+.seocart-axis-editor > .components-button {
+	align-self: flex-start;
+}
+
+.seocart-add-option {
+	align-self: flex-start;
+}
+
+.seocart-add-value {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	gap: 8px;
+}
+
+.seocart-add-value .components-base-control {
+	flex: 0 1 280px;
+}
+
+.seocart-value-image {
+	display: inline-flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+
+.seocart-value-image img {
+	display: block;
+	width: 32px;
+	height: 32px;
+	border-radius: 2px;
+	object-fit: cover;
+}
+
+.seocart-swatch {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.seocart-swatch-chip {
+	display: inline-block;
+	flex: none;
+	width: 16px;
+	height: 16px;
+	border: 1px solid #949494;
+	border-radius: 2px;
+}
+
+.seocart-grid-tools .components-base-control {
+	flex: 0 1 200px;
+}
+
+.seocart-grid-tools .seocart-segmented {
+	margin-inline-start: auto;
+}
+
+.seocart-needs {
+	color: #8a2424;
+}
+
+.seocart-retired {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 12px;
+	border: 1px solid #e0e0e0;
+	border-radius: 4px;
+	background: #f6f7f7;
+}
+
+.seocart-retired h4 {
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.seocart-facts {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+	margin: 0;
+}
+
+.seocart-fact {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 8px 12px;
+	border-radius: 4px;
+	background: #f0f0f1;
+}
+
+.seocart-fact dt {
+	color: #50575e;
+	font-size: 12px;
+}
+
+.seocart-fact dd {
+	margin: 0;
+	font-variant-numeric: tabular-nums;
+	font-weight: 600;
+}
+
+.seocart-product-summary-sale {
+	margin: 12px 0 0;
+}

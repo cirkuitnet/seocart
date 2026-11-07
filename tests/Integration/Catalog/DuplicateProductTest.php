@@ -15,6 +15,8 @@ use SEOCart\Catalog\Application\Lifecycle\DuplicateProduct;
 use SEOCart\Catalog\Application\ProductWrite\SaveResult;
 use SEOCart\Catalog\Domain\CatalogError;
 use SEOCart\Catalog\Domain\GenerationState;
+use SEOCart\Catalog\Domain\OptionValue;
+use SEOCart\Catalog\Domain\Product;
 use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Catalog\Domain\SellabilityReason;
 use SEOCart\Catalog\Domain\Sku;
@@ -321,6 +323,30 @@ final class DuplicateProductTest extends ProductWriteTestCase {
 		$this->assertSame( 1, $this->committedSaves( $b, $copy->productId ), 'One save.' );
 		$this->assertSame( 2, $this->committedCount( $b, CatalogTables::OPTION_AXES, 'product_id = ' . $copy->productId ) );
 		$this->assertSame( 12, $this->committedCount( $b, CatalogTables::VARIANT_PRICES, 'variant_id IN ( ' . implode( ', ', $copy->variantIds ) . ' )' ) );
+	}
+
+	/**
+	 * Tests that a copy keeps a value's image while its attachment exists, and leaves out one whose attachment was deleted, which a save refuses as a new image.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_copy_keeps_a_values_image_and_leaves_out_one_whose_attachment_is_gone(): void {
+		$kept    = $this->post( 'inherit', 'attachment' );
+		$gone    = $this->post( 'inherit', 'attachment' );
+		$options = VariantSets::options();
+
+		$options[0]['values'][0]['image_id'] = $kept;
+		$options[0]['values'][1]['image_id'] = $gone;
+
+		$original = $this->saveSet( null, $options, VariantSets::variants( 'PIC' ) );
+
+		wp_delete_attachment( $gone, true );
+
+		$copy   = $this->copy( $original );
+		$images = static fn( ?Product $product ): array => array_map( static fn( OptionValue $value ): ?int => $value->imageAttachmentId, $product?->options()->axis( 'size' )->values ?? array() );
+
+		$this->assertSame( array( $kept, null ), $images( $this->products->find( $copy->productId ) ) );
+		$this->assertSame( array( $kept, $gone ), $images( $this->products->find( $original->productId ) ), 'The original keeps its own.' );
 	}
 
 	/**

@@ -19,7 +19,7 @@ WP-CLI: products with variants and prices, stock, a cart and a checkout through 
 orders, payments through a stub gateway, promotion codes and prices in more than one currency.
 Refunds are in the code, but no route or command reaches them yet. There are no storefront
 blocks, no payment gateway (the plugin ships only a stub that answers from a script) and no
-admin screen of its own beyond the product editor panel. Do not install it on a production
+admin screen of its own beyond the product editor's Product data area. Do not install it on a production
 site.
 
 The architecture is decided. The developer documentation is in [docs/](docs/README.md), and
