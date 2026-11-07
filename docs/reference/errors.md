@@ -409,6 +409,24 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: A capture of {requested} would take more than the {authorized} authorized; nothing was asked of the payment gateway.
 - Values: `authorized`, `requested`
 
+## `payment.evidence_missing`
+
+- HTTP status: 422
+- Message: A payment received for an offline payment method is recorded with the day it arrived: give received_on, as YYYY-MM-DD. Nothing was recorded.
+- Values: none
+
+## `payment.evidence_rejected`
+
+- HTTP status: 422
+- Message: The {field} given cannot be recorded: received_on is a calendar day, as YYYY-MM-DD, no later than today, and a reference or a note never holds what reads as a card number. Nothing was recorded.
+- Values: `field`
+
+## `payment.evidence_unexpected`
+
+- HTTP status: 422
+- Message: This payment is captured through its provider, whose capture is the evidence: {field} is given only for a payment received for an offline payment method. Nothing was asked of the provider.
+- Values: `field`
+
 ## `payment.gateway_no_answer`
 
 - HTTP status: 502

@@ -478,11 +478,11 @@ Lowers the flag of an order holding money a person must reconcile, with the note
 
 ## `seocart/capture-payment`
 
-Captures an authorized payment through its gateway, everything authorized or, where the gateway declares partial captures, the amount given, the gateway releasing the rest; a payment is captured once, so a capture asked again after it was made is refused with payment.not_capturable and what was captured, and one whose answer was lost is asked again with the same request, which the gateway carries out once.
+Captures an authorized payment through its gateway, everything authorized or, where the gateway declares partial captures, the amount given, the gateway releasing the rest; a payment is captured once, so a capture asked again after it was made is refused with payment.not_capturable and what was captured, and one whose answer was lost is asked again with the same request, which the gateway carries out once. For an offline payment method, such as a bank transfer, the capture records the payment received, with the day it arrived and, optionally, its reference and a note.
 
 - Operation: `payment.capture_payment`
 - Capability: `seocart_capture_payments`
-- Error codes: `authorization.denied` (403), `payment.intent_not_found` (404), `payment.not_capturable` (409), `payment.unreconciled` (409), `payment.capture_exceeds_authorized` (409), `payment.operation_unsupported` (409), `payment.gateway_unavailable` (503), `payment.gateway_no_answer` (502), `payment.operation_declined` (402), `store.unavailable` (503)
+- Error codes: `authorization.denied` (403), `payment.intent_not_found` (404), `payment.not_capturable` (409), `payment.evidence_missing` (422), `payment.evidence_rejected` (422), `payment.evidence_unexpected` (422), `payment.unreconciled` (409), `payment.capture_exceeds_authorized` (409), `payment.operation_unsupported` (409), `payment.gateway_unavailable` (503), `payment.gateway_no_answer` (502), `payment.operation_declined` (402), `store.unavailable` (503)
 - Annotations: readonly `false`, destructive `true`, idempotent `true`
 - Exposed to agents: no
 
@@ -490,6 +490,9 @@ Captures an authorized payment through its gateway, everything authorized or, wh
 
 - `intent_uuid` (required): The public identifier of the payment, as its order's payment record names it. A uuid.
 - `amount_minor`: What to capture, in minor units of the payment's currency: at most what was authorized, and less only where the payment's gateway declares partial captures; when absent, everything authorized. An integer of at least 1.
+- `received_on`: For a payment of an offline payment method, the day the money arrived, as YYYY-MM-DD, no later than today: required for such a payment, and refused for one captured through a provider. Text of at most 10 characters.
+- `reference`: For a payment of an offline payment method, the reference it came with, such as a transfer's reference or a cheque's number; refused for a payment captured through a provider, and when it holds what reads as a card number. Text of at most 191 characters. Personal data.
+- `note`: For a payment of an offline payment method, what the person recording it writes about it; refused for a payment captured through a provider, and when it holds what reads as a card number. Text of at most 500 characters. Personal data.
 
 ### Output
 

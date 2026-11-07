@@ -4,7 +4,70 @@
 
 A payment gateway declares, in its `describe()`, what it can do: the operations it supports in each currency, for a provider account of each country, how its provider keeps idempotency keys, and the external services it calls. SEOCart refuses an operation the gateway's matrix does not declare before any request reaches the provider, and offers the gateway at checkout only where its matrix declares `authorize`. A gateway plugin publishes the same page of its own gateway as `docs/capabilities.md`, generated with `php ../seocart/bin/generate-docs.php --plugin=.` from its root.
 
-SEOCart itself registers one gateway, the stand-in, on a site that is not in production, or on one whose `wp-config.php` defines `SEOCART_STUB_GATEWAY` as `true`.
+SEOCart itself registers its three offline payment methods, bank transfer, cheque and cash on delivery, on every site, and the stand-in gateway on a site that is not in production, or on one whose `wp-config.php` defines `SEOCART_STUB_GATEWAY` as `true`. These gateways take payments in `USD`, `GBP` and `EUR` only: a store that sells in another currency cannot offer them.
+
+## Bank transfer (`bank_transfer`)
+
+- Written against the payment contract 0.2.0.
+- Modes: live.
+- Settings: `label`, `instructions`, `wait_days`.
+- External services: none: it calls no external service.
+
+### Capability matrix
+
+| Currency | Account country | `authorize` | `capture` | `partial_capture` | `multi_capture` | `void` | `refund` | `partial_refund` | `off_session` | `sca` | `query` | `query_refund` | `webhooks` |
+| -------- | --------------- | ----------- | --------- | ----------------- | --------------- | ------ | -------- | ---------------- | ------------- | ----- | ------- | -------------- | ---------- |
+| EUR      | any             | yes         | yes       | no                | no              | yes    | yes      | yes              | no            | no    | yes     | yes            | no         |
+| GBP      | any             | yes         | yes       | no                | no              | yes    | yes      | yes              | no            | no    | yes     | yes            | no         |
+| USD      | any             | yes         | yes       | no                | no              | yes    | yes      | yes              | no            | no    | yes     | yes            | no         |
+
+### Idempotency
+
+| Key retention | Searchable by the store's references | Search delay |
+| ------------- | ------------------------------------ | ------------ |
+| no key        | yes                                  | 0 seconds    |
+
+## Cheque (`cheque`)
+
+- Written against the payment contract 0.2.0.
+- Modes: live.
+- Settings: `label`, `instructions`, `wait_days`.
+- External services: none: it calls no external service.
+
+### Capability matrix
+
+| Currency | Account country | `authorize` | `capture` | `partial_capture` | `multi_capture` | `void` | `refund` | `partial_refund` | `off_session` | `sca` | `query` | `query_refund` | `webhooks` |
+| -------- | --------------- | ----------- | --------- | ----------------- | --------------- | ------ | -------- | ---------------- | ------------- | ----- | ------- | -------------- | ---------- |
+| EUR      | any             | yes         | yes       | no                | no              | yes    | yes      | yes              | no            | no    | yes     | yes            | no         |
+| GBP      | any             | yes         | yes       | no                | no              | yes    | yes      | yes              | no            | no    | yes     | yes            | no         |
+| USD      | any             | yes         | yes       | no                | no              | yes    | yes      | yes              | no            | no    | yes     | yes            | no         |
+
+### Idempotency
+
+| Key retention | Searchable by the store's references | Search delay |
+| ------------- | ------------------------------------ | ------------ |
+| no key        | yes                                  | 0 seconds    |
+
+## Cash on delivery (`cash_on_delivery`)
+
+- Written against the payment contract 0.2.0.
+- Modes: live.
+- Settings: `label`, `instructions`, `wait_days`.
+- External services: none: it calls no external service.
+
+### Capability matrix
+
+| Currency | Account country | `authorize` | `capture` | `partial_capture` | `multi_capture` | `void` | `refund` | `partial_refund` | `off_session` | `sca` | `query` | `query_refund` | `webhooks` |
+| -------- | --------------- | ----------- | --------- | ----------------- | --------------- | ------ | -------- | ---------------- | ------------- | ----- | ------- | -------------- | ---------- |
+| EUR      | any             | yes         | yes       | no                | no              | yes    | yes      | yes              | no            | no    | yes     | yes            | no         |
+| GBP      | any             | yes         | yes       | no                | no              | yes    | yes      | yes              | no            | no    | yes     | yes            | no         |
+| USD      | any             | yes         | yes       | no                | no              | yes    | yes      | yes              | no            | no    | yes     | yes            | no         |
+
+### Idempotency
+
+| Key retention | Searchable by the store's references | Search delay |
+| ------------- | ------------------------------------ | ------------ |
+| no key        | yes                                  | 0 seconds    |
 
 ## Stand-in gateway (`stub`)
 
