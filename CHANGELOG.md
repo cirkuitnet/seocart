@@ -15,8 +15,8 @@ under `[Unreleased]`. The release process moves those entries under the new vers
 This is the platform foundation and the two proofs built on it: a product with its stock,
 and money through one calculation pipeline to a placed, paid and partially refundable
 order. **There is no storefront yet:** a shopper reaches the cart and checkout only
-through the Store API (`seocart/store/v1`), payment goes through a stand-in gateway, and
-the only admin surface is the product editor's Product data area. The plugin registers the store
+through the Store API (`seocart/store/v1`), payment is by bank transfer, cheque or cash on
+delivery, which the merchant records as received, and the only admin surface is the product editor's Product data area. The plugin registers the store
 settings route (`GET` and `PATCH`), the stock adjustment route, ability and command, the
 product route at `wp/v2/seocart-products`, the Store API's cart, checkout and order-status
 routes, the `wp seocart` maintenance commands, three Site Health tests and its own
