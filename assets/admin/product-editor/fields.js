@@ -74,6 +74,18 @@ export function useSaveLock( name, locked ) {
 }
 
 /**
+ * Says why the area keeps the product from being saved.
+ *
+ * @return {string} The sentence.
+ */
+export function lockedMessage() {
+	return __(
+		'The Product data area has something to put right before the product can be saved.',
+		'seocart'
+	);
+}
+
+/**
  * Refuses to save the product while the area holds a lock, whatever asked for the save: the
  * editor's `editor.preSavePost` filter.
  *
@@ -87,12 +99,7 @@ export function useSaveLock( name, locked ) {
  */
 export function refuseSavingWhileLocked( edits, options ) {
 	if ( held.size > 0 && ! options?.isAutosave ) {
-		throw new Error(
-			__(
-				'The Product data area has something to put right before the product can be saved.',
-				'seocart'
-			)
-		);
+		throw new Error( lockedMessage() );
 	}
 
 	return edits;

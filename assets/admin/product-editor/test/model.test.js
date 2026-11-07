@@ -26,6 +26,7 @@ import {
 	parseSwatch,
 	priceIn,
 	priceShown,
+	saveLocked,
 	seocartEdit,
 	skusFromPrefix,
 	stockAt,
@@ -1033,6 +1034,123 @@ describe( 'needsPrice', () => {
 		expect( needsPrice( kept, base ) ).toBe( false );
 		expect( needsPrice( back, base ) ).toBe( true );
 		expect( needsSku( back ) ).toBe( true );
+	} );
+} );
+
+describe( 'saveLocked', () => {
+	const base = 'USD';
+
+	/**
+	 * Builds what the area shows of the 2 x 2 product once its entries are changed.
+	 *
+	 * @param {Function} change Gives a row's entry from the row and its index.
+	 * @return {Object} What the area shows.
+	 */
+	function changed( change ) {
+		const saved = readOfFourVariants();
+		const { axes, rows } = areaState( saved, undefined, LIMIT );
+
+		return areaState(
+			saved,
+			seocartEdit( saved, undefined, axes, rows.map( change ), LIMIT ),
+			LIMIT
+		);
+	}
+
+	/**
+	 * Builds an option of sixteen values.
+	 *
+	 * @param {string} key The option's key.
+	 * @return {Object} The option.
+	 */
+	const sixteen = ( key ) => ( {
+		key,
+		label: key,
+		values: Array.from( { length: 16 }, ( _, index ) => ( {
+			key: `${ key }-${ index }`,
+			label: `${ key } ${ index }`,
+		} ) ),
+	} );
+
+	it( 'locks nothing while the area holds no edit, though a variant as read has no SKU', () => {
+		const saved = readOfFourVariants();
+
+		saved.variants[ 0 ].sku = null;
+
+		const state = areaState( saved, undefined, LIMIT );
+
+		expect( needsSku( state.rows[ 0 ] ) ).toBe( true );
+		expect( state.edited ).toBe( false );
+		expect( saveLocked( state, base ) ).toBe( false );
+	} );
+
+	it( 'locks a save of options that make too many variants, which would send the options alone', () => {
+		const saved = {
+			options: [ sixteen( 'size' ) ],
+			variants: matrixOf( namedAxes( [ sixteen( 'size' ) ] ) ).map(
+				( combination, index ) =>
+					readVariant( combination, {
+						variant_id: 100 + index,
+						sku: `SKU-${ index }`,
+					} )
+			),
+		};
+		const axes = namedAxes( [ sixteen( 'size' ), sixteen( 'colour' ) ] );
+		const edits = seocartEdit( saved, undefined, axes, [], LIMIT );
+		const state = areaState( saved, edits, LIMIT );
+
+		expect( edits ).toEqual( { options: axes } );
+		expect( state.tooMany ).toBe( true );
+		expect( state.rows ).toEqual( [] );
+		expect( saveLocked( state, base ) ).toBe( true );
+	} );
+
+	it( 'locks a save while a variant needs a SKU, until it has one', () => {
+		const skuOfFirst = ( sku ) => ( row, index ) =>
+			index === 0 ? withSku( row.entry, sku ) : row.entry;
+
+		expect( saveLocked( changed( skuOfFirst( '' ) ), base ) ).toBe( true );
+		expect( saveLocked( changed( skuOfFirst( 'OTHER' ) ), base ) ).toBe(
+			false
+		);
+	} );
+
+	it( 'locks a save while a variant on sale has lost its price in the base currency, until it has one or is disabled', () => {
+		const taken = ( row ) =>
+			withPrice( row.entry, row.read, base, null, base );
+		const first = ( entryOf ) => ( row, index ) =>
+			index === 0 ? entryOf( row ) : row.entry;
+
+		expect( saveLocked( changed( first( taken ) ), base ) ).toBe( true );
+		expect(
+			saveLocked(
+				changed(
+					first( ( row ) =>
+						withPrice( taken( row ), row.read, base, 1900, base )
+					)
+				),
+				base
+			)
+		).toBe( false );
+		expect(
+			saveLocked(
+				changed(
+					first( ( row ) =>
+						withEnabled( taken( row ), row.read, false )
+					)
+				),
+				base
+			)
+		).toBe( false );
+	} );
+
+	it( 'locks nothing on a translation post, whose area edits none of it', () => {
+		const state = changed( ( row, index ) =>
+			index === 0 ? withSku( row.entry, '' ) : row.entry
+		);
+
+		expect( saveLocked( state, base, undefined ) ).toBe( true );
+		expect( saveLocked( state, base, 12 ) ).toBe( false );
 	} );
 } );
 

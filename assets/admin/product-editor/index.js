@@ -9,7 +9,8 @@
  * currencies the store offers with their decimal places, and a sentence for every verdict.
  *
  * While the area locks saving, a save asked for some other way, such as the one WordPress makes
- * for a draft's preview beside a meta box, is refused.
+ * for a draft's preview beside a meta box, is refused. The lock the area's lists hold is held by the
+ * editor's plugin, which the code editor leaves in place, and not by the block, which it takes away.
  *
  * On a new post opened from a multilingual plugin's "add translation" link, the first save also
  * names the post it translates and the locale of the language the link asks for, in the fields
@@ -42,6 +43,7 @@ import { registerPlugin } from '@wordpress/plugins';
  * Internal dependencies
  */
 import { ProductDataArea } from './area';
+import { useAreaSaveLock } from './area-model';
 import { refuseSavingWhileLocked } from './fields';
 import { useKeepArea } from './keep-area';
 import { settings } from './settings';
@@ -143,13 +145,14 @@ function useFirstSaveOfATranslation() {
 }
 
 /**
- * What the script adds to the editor besides the block.
+ * What the script adds to the editor besides the block, in the visual editor and in the code editor.
  *
  * @return {Element} The panel.
  */
 function ProductEditor() {
 	useKeepArea( settings.block );
 	useFirstSaveOfATranslation();
+	useAreaSaveLock();
 
 	return <ProductSummaryPanel />;
 }

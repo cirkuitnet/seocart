@@ -323,6 +323,60 @@ async function holdSaveAnswer( page: Page ) {
 }
 
 /**
+ * Answers the next save of a product with a server error, once let through: the request never reaches
+ * the site, which stores nothing, and the editor goes on saving until the answer is let through.
+ *
+ * @param page The page.
+ * @return A promise of the save having been sent, and the function that answers it with the error and
+ *         waits for the editor to have the answer.
+ */
+async function failSaveAnswer( page: Page ) {
+	let reached = () => {};
+	let letThrough = () => {};
+	const sent = new Promise< void >( ( resolve ) => {
+		reached = () => resolve();
+	} );
+	const released = new Promise< void >( ( resolve ) => {
+		letThrough = () => resolve();
+	} );
+	let holding = true;
+
+	await page.route(
+		( url ) => restRoute( url.href ).startsWith( `/wp/v2/${ REST_BASE }/` ),
+		async ( route: Route ) => {
+			if (
+				! holding ||
+				[ 'GET', 'OPTIONS' ].includes( route.request().method() )
+			) {
+				return route.fallback();
+			}
+
+			holding = false;
+			reached();
+			await released;
+
+			return route.fulfill( {
+				status: 500,
+				contentType: 'application/json',
+				body: JSON.stringify( {
+					code: 'internal_server_error',
+					message: 'The site could not save the product.',
+					data: { status: 500 },
+				} ),
+			} );
+		}
+	);
+
+	return {
+		sent,
+		async fail() {
+			letThrough();
+			await expect.poll( () => isSaving( page ) ).toBe( false );
+		},
+	};
+}
+
+/**
  * Whether the editor is saving the post.
  *
  * @param page The page.
@@ -334,6 +388,21 @@ async function isSaving( page: Page ): Promise< boolean > {
 			( window as unknown as EditorWindow ).wp.data
 				.select( 'core/editor' )
 				.isSavingPost() as boolean
+	);
+}
+
+/**
+ * Whether saving the post is locked.
+ *
+ * @param page The page.
+ * @return Whether it is.
+ */
+async function isSavingLocked( page: Page ): Promise< boolean > {
+	return page.evaluate(
+		() =>
+			( window as unknown as EditorWindow ).wp.data
+				.select( 'core/editor' )
+				.isPostSavingLocked() as boolean
 	);
 }
 
@@ -377,6 +446,23 @@ async function saveInCodeEditor( page: Page ): Promise< Request[] > {
 	await areaReady( page );
 
 	return writes;
+}
+
+/**
+ * Presses Ctrl+S in the code editor, already open, while saving is locked, and waits for the editor to
+ * be done with it: a save the key began would have sent its request by then. The code editor stays.
+ *
+ * @param page The page.
+ * @return What each write request the key sent carried of the product; none when the save was refused.
+ */
+async function refusedInCodeEditor( page: Page ): Promise< unknown[] > {
+	const { writes, stop } = recordWrites( page );
+
+	await page.keyboard.press( 'ControlOrMeta+s' );
+	await expect.poll( () => isSaving( page ) ).toBe( false );
+	stop();
+
+	return writes.map( ( request ) => request.postDataJSON()?.seocart ?? null );
 }
 
 /**
@@ -544,6 +630,30 @@ function sixVariants( prefix: string, locations: Location[] ) {
 				} ) ),
 			} ) )
 		),
+	};
+}
+
+/**
+ * What a product sells, as stored: whether it can be sold, and each variant's label, state, prices and units.
+ *
+ * @param record The product, in the `edit` context.
+ * @return Its sellability and its variants.
+ */
+function onSale( record: ProductRecord ) {
+	return {
+		sellability: record.seocart.sellability,
+		variants: ( record.seocart.variants ?? [] ).map( ( variant ) => ( {
+			label: variant.label,
+			enabled: variant.enabled,
+			prices: variant.prices?.map(
+				( { currency, price_minor: minor } ) =>
+					`${ currency } ${ minor }`
+			),
+			units: ( variant.stock ?? [] ).reduce(
+				( units, { on_hand: onHand } ) => units + onHand,
+				0
+			),
+		} ) ),
 	};
 }
 
@@ -1790,6 +1900,241 @@ test.describe( 'Product editor', () => {
 		).toEqual( [ 1900 ] );
 	} );
 
+	test( 'a variant left without its price or its SKU locks saving in the visual editor, and putting it back releases the lock', async ( {
+		admin,
+		page,
+		requestUtils,
+	} ) => {
+		const prefix = `LOCKED${ Date.now() }`;
+		const { id } = await createProduct( requestUtils, {
+			title: 'A product whose price and SKU are taken away',
+			seocart: sixVariants( prefix, [] ),
+		} );
+
+		await admin.editPost( id );
+		await areaReady( page );
+
+		const area = areaOf( page );
+		const save = page.getByRole( 'button', { name: 'Save', exact: true } );
+
+		for ( const [ name, waiting, stored ] of [
+			[
+				`Price in USD of ${ VARIANTS[ 0 ] }`,
+				'1 variant needs a price in USD, or to be disabled, before this product can be saved.',
+				'18.00',
+			],
+			[
+				`SKU of ${ VARIANTS[ 0 ] }`,
+				'1 variant needs a SKU before this product can be saved.',
+				`${ prefix }-${ SIZES[ 0 ][ 0 ] }-${ GRINDS[ 0 ][ 0 ] }`,
+			],
+		] ) {
+			const field = area.getByRole( 'textbox', { name } );
+
+			// Left, so that the field holds no lock of its own: the lock is the one the area's lists hold.
+			await field.fill( '' );
+			await field.press( 'Tab' );
+			await expect( area.getByText( waiting ) ).toBeVisible();
+			await expect( save ).toBeDisabled();
+			await expect
+				.poll( () => isSavingLocked( page ), `${ name } taken away` )
+				.toBe( true );
+
+			await field.fill( stored );
+			await expect( area.getByText( waiting ) ).toHaveCount( 0 );
+			await expect
+				.poll( () => isSavingLocked( page ), `${ name } put back` )
+				.toBe( false );
+		}
+	} );
+
+	test( 'a variant on sale whose price in the base currency is taken away cannot be saved from the code editor either, until a price is typed', async ( {
+		admin,
+		page,
+		requestUtils,
+	} ) => {
+		const { id } = await createProduct( requestUtils, {
+			title: 'A product whose price is taken away before the code editor',
+			seocart: sixVariants( `UNPRICEDCODE${ Date.now() }`, [] ),
+		} );
+		const stored = onSale( await readProduct( requestUtils, id ) );
+
+		await admin.editPost( id );
+		await areaReady( page );
+
+		const save = page.getByRole( 'button', { name: 'Save', exact: true } );
+		const price = areaOf( page ).getByRole( 'textbox', {
+			name: `Price in USD of ${ VARIANTS[ 0 ] }`,
+		} );
+		const waiting = areaOf( page ).getByText(
+			'1 variant needs a price in USD, or to be disabled, before this product can be saved.'
+		);
+		const locked = page.locator( '.components-notice' ).filter( {
+			hasText:
+				'The Product data area has something to put right before the product can be saved.',
+		} );
+
+		await price.fill( '' );
+		await price.press( 'Tab' );
+		await expect( waiting ).toBeVisible();
+		await expect( locked ).toHaveCount( 0 );
+		// Soft, so that a lock that does not hold still shows what Ctrl+S in the code editor then saves.
+		await expect.soft( save ).toBeDisabled();
+
+		const { writes, stop } = recordWrites( page );
+
+		try {
+			// The code editor takes the area away; the lock stays, held by the editor's plugin.
+			await openCodeEditor( page );
+			expect(
+				await refusedInCodeEditor( page ),
+				'Ctrl+S in the code editor saved a variant without its price.'
+			).toEqual( [] );
+			await expect( save ).toBeDisabled();
+			expect( await isSavingLocked( page ) ).toBe( true );
+			// The code editor shows none of the area's cards, so a notice says why the product is not saved.
+			await expect( locked ).toBeVisible();
+			expect( onSale( await readProduct( requestUtils, id ) ) ).toEqual(
+				stored
+			);
+
+			await leaveVisualEditor( page, requestUtils );
+			await areaReady( page );
+			await expect( waiting ).toBeVisible();
+			await expect( locked ).toHaveCount( 0 );
+			await expect( save ).toBeDisabled();
+			expect( await isSavingLocked( page ) ).toBe( true );
+
+			await price.fill( '19.00' );
+			await expect( waiting ).toHaveCount( 0 );
+			await saveProduct( page );
+		} finally {
+			stop();
+			await leaveVisualEditor( page, requestUtils );
+		}
+
+		expect(
+			writes,
+			'A save went through before the price was typed.'
+		).toHaveLength( 1 );
+
+		const saved = await readProduct( requestUtils, id );
+
+		expect( saved.seocart.sellability ).toBe( 'sellable' );
+		expect(
+			saved.seocart.variants
+				?.find( ( { label } ) => label === VARIANTS[ 0 ] )
+				?.prices?.map( ( { price_minor: minor } ) => minor )
+		).toEqual( [ 1900 ] );
+	} );
+
+	test( 'options that make too many variants cannot be saved from the code editor either, and removing the option that crossed the limit releases the lock', async ( {
+		admin,
+		page,
+		requestUtils,
+	} ) => {
+		test.setTimeout( 180_000 );
+
+		const prefix = `SIXTEEN${ Date.now() }`;
+		const sizes = Array.from( { length: 16 }, ( _, index ) => [
+			`s${ index + 1 }`,
+			`S${ index + 1 }`,
+		] );
+		const { id } = await createProduct( requestUtils, {
+			title: 'A product of sixteen sizes',
+			seocart: {
+				options: [
+					{
+						key: 'size',
+						label: 'Size',
+						values: sizes.map( ( [ key, label ] ) => ( {
+							key,
+							label,
+						} ) ),
+					},
+				],
+				variants: sizes.map( ( [ key ], index ) => ( {
+					combination: [ { axis: 'size', value: key } ],
+					sku: `${ prefix }-${ key }`,
+					enabled: true,
+					prices: [ { currency: 'USD', price_minor: 1000 + index } ],
+					stock: [
+						{
+							location_uuid: locations[ 0 ].location_uuid,
+							on_hand: 5,
+							expected_on_hand: 0,
+						},
+					],
+				} ) ),
+			},
+		} );
+		const stored = onSale( await readProduct( requestUtils, id ) );
+
+		expect( stored.sellability ).toBe( 'sellable' );
+		expect( stored.variants ).toHaveLength( 16 );
+		expect(
+			stored.variants.reduce(
+				( units, variant ) => units + variant.units,
+				0
+			)
+		).toBe( 80 );
+
+		await admin.editPost( id );
+		await areaReady( page );
+
+		const area = areaOf( page );
+		const save = page.getByRole( 'button', { name: 'Save', exact: true } );
+		const tooMany = area.getByText(
+			'These options make 256 variants, and a product can have at most 250. Remove some values to save.'
+		);
+
+		await addOption(
+			page,
+			'Colour',
+			Array.from( { length: 16 }, ( _, index ) => `C${ index + 1 }` )
+		);
+		await expect( area.getByText( '256 of 250 variants' ) ).toBeVisible();
+		await expect( tooMany ).toBeVisible();
+		// Soft, so that a lock that does not hold still shows what Ctrl+S in the code editor then saves.
+		await expect.soft( save ).toBeDisabled();
+
+		const { writes, stop } = recordWrites( page );
+
+		try {
+			// A save now would send the options alone, and the site would take every variant off sale.
+			await openCodeEditor( page );
+			expect(
+				await refusedInCodeEditor( page ),
+				'Ctrl+S in the code editor saved options that make too many variants.'
+			).toEqual( [] );
+			await expect( save ).toBeDisabled();
+			expect( await isSavingLocked( page ) ).toBe( true );
+			expect( onSale( await readProduct( requestUtils, id ) ) ).toEqual(
+				stored
+			);
+
+			await leaveVisualEditor( page, requestUtils );
+			await areaReady( page );
+			await expect( tooMany ).toBeVisible();
+			expect( await isSavingLocked( page ) ).toBe( true );
+
+			await area.getByRole( 'button', { name: 'Edit Colour' } ).click();
+			await area
+				.getByRole( 'button', { name: 'Remove the option Colour' } )
+				.click();
+			await expect( tooMany ).toHaveCount( 0 );
+			await expect.poll( () => isSavingLocked( page ) ).toBe( false );
+		} finally {
+			stop();
+			await leaveVisualEditor( page, requestUtils );
+		}
+
+		expect( writes ).toHaveLength( 0 );
+		expect( onSale( await readProduct( requestUtils, id ) ) ).toEqual(
+			stored
+		);
+	} );
+
 	test( 'a price or a weight erased with Backspace keeps the product from saving, Ctrl+S too, until it is typed again', async ( {
 		admin,
 		page,
@@ -2367,6 +2712,98 @@ test.describe( 'Product editor', () => {
 			).toHaveLength( 0 );
 			expect( await storedPrices( requestUtils, id ) ).toEqual( [
 				3500,
+			] );
+		} finally {
+			await leaveVisualEditor( page, requestUtils );
+		}
+	} );
+
+	test( 'a price erased while a save of it fails goes back to the price the last successful save stored, which the next save keeps', async ( {
+		admin,
+		page,
+		requestUtils,
+	} ) => {
+		const { id } = await createProduct( requestUtils, {
+			title: 'A product whose second save fails',
+			seocart: {
+				variants: [
+					{
+						combination: [],
+						sku: `FAILED${ Date.now() }`,
+						enabled: true,
+						prices: [ { currency: 'USD', price_minor: 2000 } ],
+					},
+				],
+			},
+		} );
+
+		await admin.editPost( id );
+		await areaReady( page );
+
+		const field = areaOf( page ).getByRole( 'textbox', {
+			name: 'Price in USD',
+			exact: true,
+		} );
+		// The prices the editor holds for the product's one variant, its edits over the record.
+		const edited = () =>
+			page.evaluate(
+				( [ postType, postId ] ) => {
+					const record = ( window as unknown as EditorWindow ).wp.data
+						.select( 'core' )
+						.getEditedEntityRecord(
+							'postType',
+							postType,
+							postId
+						) as ProductRecord;
+
+					return record.seocart.variants?.[ 0 ]?.prices?.map(
+						( { price_minor: minor } ) => minor
+					);
+				},
+				[ POST_TYPE, id ] as const
+			);
+
+		try {
+			// 25.00 typed and saved: the last save that succeeds.
+			await field.fill( '25.00' );
+			await saveProduct( page );
+			expect( await storedPrices( requestUtils, id ) ).toEqual( [
+				2500,
+			] );
+
+			// 30.00 typed and saved with Ctrl+S, and erased while the save runs; the save fails.
+			await field.fill( '30.00' );
+
+			const answer = await failSaveAnswer( page );
+
+			await page.keyboard.press( 'ControlOrMeta+s' );
+			await answer.sent;
+			await field.press( 'ControlOrMeta+a' );
+			await field.press( 'Backspace' );
+			await expect( field ).toHaveValue( '' );
+			await answer.fail();
+			await expect(
+				page.locator( '.components-notice.is-error' )
+			).toContainText( 'Updating failed' );
+			expect( await storedPrices( requestUtils, id ) ).toEqual( [
+				2500,
+			] );
+
+			// The field was there when the save failed, so it holds the price the last successful save
+			// stored, not the one the failed save carried. Had the code editor taken it away before the
+			// failure, nothing would bring that back: the next save would store the 30.00 the failed
+			// request carried, a known limit this test does not take.
+			expect(
+				await edited(),
+				'The emptied field after the failure'
+			).toEqual( [ 2500 ] );
+
+			// The next save, from the code editor, which takes the emptied field away, keeps that price.
+			await openCodeEditor( page );
+			await saveInCodeEditor( page );
+			await expect( field ).toHaveValue( '25.00' );
+			expect( await storedPrices( requestUtils, id ) ).toEqual( [
+				2500,
 			] );
 		} finally {
 			await leaveVisualEditor( page, requestUtils );

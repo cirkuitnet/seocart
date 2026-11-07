@@ -11,8 +11,6 @@
 /* eslint-disable import/no-unresolved, import/no-extraneous-dependencies */
 import { Button, Path, SVG } from '@wordpress/components';
 import { useInstanceId } from '@wordpress/compose';
-import { useSelect } from '@wordpress/data';
-import { store as editorStore } from '@wordpress/editor';
 import { useCallback, useRef, useState } from '@wordpress/element';
 import { __ } from '@wordpress/i18n';
 /* eslint-enable import/no-unresolved, import/no-extraneous-dependencies */
@@ -20,34 +18,12 @@ import { __ } from '@wordpress/i18n';
 /**
  * Internal dependencies
  */
-import { selectRecord, useAreaModel } from './area-model';
-import { useSaveLock } from './fields';
+import { useAreaModel, useSourcePost } from './area-model';
 import { InventoryCard } from './inventory-card';
-import { needsPrice, needsSku } from './model';
 import { OptionsCard } from './options-card';
 import { PricingCard } from './pricing-card';
-import { settings } from './settings';
 import { ShippingCard } from './shipping-card';
 import { useStock } from './stock';
-import { translatedPost } from './translation';
-
-/**
- * Finds the post a translation's commerce data is edited on.
- *
- * @return {number|undefined} The source post's id, or the post an "add translation" link names on a new post; none on a source post.
- */
-function useSourcePost() {
-	return useSelect( ( select ) => {
-		const { saved } = selectRecord( select );
-
-		return (
-			saved?.[ settings.translation.field ] ??
-			( select( editorStore ).isEditedPostNew()
-				? translatedPost( window.location.search )
-				: undefined )
-		);
-	}, [] );
-}
 
 /**
  * What a translation post shows instead of the cards.
@@ -92,20 +68,8 @@ function Cards() {
 	const stock = useStock( saved?.variants );
 	const [ chosenKey, setChosenKey ] = useState( null );
 	const inventorySelect = useRef();
-	const { rows, tooMany, edited } = state;
+	const { rows } = state;
 	const row = rows.find( ( { key } ) => key === chosenKey ) ?? rows[ 0 ];
-
-	// A save these lists would be refused for waits until the merchant has put them right.
-	useSaveLock(
-		'seocart-variants',
-		edited &&
-			( tooMany ||
-				rows.some(
-					( each ) =>
-						needsSku( each ) ||
-						needsPrice( each, settings.currency.code )
-				) )
-	);
 
 	const showStock = useCallback( ( key ) => {
 		setChosenKey( key );
