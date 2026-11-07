@@ -714,8 +714,11 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 					$expected[ $partly['order_id'] ] = array( array( 'authorize', $total ), array( 'capture', $total - 1 ) );
 				}
 
-				$declined                          = $this->place( $rule, Scenario::Decline, $cell );
-				$expected[ $declined['order_id'] ] = array( array( 'authorize', $total ) );
+				// A gateway that can refuse an authorization reports the amount of its decline too.
+				if ( is_string( $this->tokens()[ Scenario::Decline->value ] ?? null ) ) {
+					$declined                          = $this->place( $rule, Scenario::Decline, $cell );
+					$expected[ $declined['order_id'] ] = array( array( 'authorize', $total ) );
+				}
 
 				$this->end();
 
@@ -842,9 +845,11 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 				// A declined authorization is answered declined; one awaiting the customer, nothing or pending.
 				$this->begin( 'rule08-query-answers-' . self::cellName( $cell ) );
 
-				$declined = $this->place( $rule, Scenario::Decline, $cell );
-				$answer   = $this->queried( $declined['intent_uuid'], $cell );
-				$this->assertTrue( null !== $answer && Operation::Authorize === $answer->operation && Outcome::Declined === $answer->outcome && 'expired' !== $answer->errorCode, $rule->message() . sprintf( 'query() of an authorization the provider declined answered %s, not that decline.', null === $answer ? 'nothing' : self::describeResult( $answer ) ) );
+				if ( is_string( $this->tokens()[ Scenario::Decline->value ] ?? null ) ) {
+					$declined = $this->place( $rule, Scenario::Decline, $cell );
+					$answer   = $this->queried( $declined['intent_uuid'], $cell );
+					$this->assertTrue( null !== $answer && Operation::Authorize === $answer->operation && Outcome::Declined === $answer->outcome && 'expired' !== $answer->errorCode, $rule->message() . sprintf( 'query() of an authorization the provider declined answered %s, not that decline.', null === $answer ? 'nothing' : self::describeResult( $answer ) ) );
+				}
 
 				if ( is_string( $this->tokens()[ Scenario::Pending->value ] ?? null ) ) {
 					$deciding = $this->place( $rule, Scenario::Pending, $cell );
