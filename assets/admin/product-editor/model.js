@@ -395,6 +395,30 @@ export function needsPrice( row, base ) {
 }
 
 /**
+ * Tells whether the area keeps the product from being saved.
+ *
+ * It does while a save would send the area's lists and one of them waits for the merchant: options
+ * that make more variants than a product may have, whose save would name none of them; a variant
+ * without a SKU; or one without a price in the base currency. A card says each in words. A
+ * translation post edits none of it, its area being a way to the post its product is edited on.
+ *
+ * @param {Object}           state    What the area shows, as `areaState()` builds it.
+ * @param {string}           base     The base currency's code.
+ * @param {number|undefined} [source] The post a translation's product is edited on, when the post is a translation.
+ * @return {boolean} True while saving waits.
+ */
+export function saveLocked( state, base, source ) {
+	return (
+		! source &&
+		state.edited &&
+		( state.tooMany ||
+			state.rows.some(
+				( row ) => needsSku( row ) || needsPrice( row, base )
+			) )
+	);
+}
+
+/**
  * Gives an entry a SKU, or takes it away.
  *
  * @param {Object} entry The entry.

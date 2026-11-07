@@ -1,5 +1,6 @@
 /**
- * The area's hold on the editor: what the record says, and the one way anything in the area is changed.
+ * The area's hold on the editor: what the record says, the one way anything in the area is changed,
+ * and the lock on saving that its lists hold.
  */
 
 /**
@@ -11,17 +12,23 @@ import { store as coreStore } from '@wordpress/core-data';
 import { useDispatch, useRegistry, useSelect } from '@wordpress/data';
 import { store as editorStore } from '@wordpress/editor';
 import { useCallback, useEffect, useMemo, useState } from '@wordpress/element';
+import { store as noticesStore } from '@wordpress/notices';
 import { addQueryArgs } from '@wordpress/url';
 /* eslint-enable import/no-unresolved, import/no-extraneous-dependencies */
 
 /**
  * Internal dependencies
  */
-import { areaState, offSaleOnSave, seocartEdit } from './model';
+import { lockedMessage, useSaveLock } from './fields';
+import { areaState, offSaleOnSave, saveLocked, seocartEdit } from './model';
 import { declaration, settings } from './settings';
+import { translatedPost } from './translation';
 
 /** The most variants a product may have, as declared. */
 export const LIMIT = declaration( 'variants' ).maxItems;
+
+/** The notice the code editor shows while the area's lists keep the product from being saved. */
+const LOCKED_NOTICE = 'seocart-area-locked';
 
 /**
  * Reads the post the editor edits, its `seocart` object as read, and the edit of it.
@@ -45,6 +52,69 @@ export function selectRecord( select ) {
 			settings.property
 		],
 	};
+}
+
+/**
+ * Finds the post a translation's commerce data is edited on.
+ *
+ * @return {number|undefined} The source post's id, or the post an "add translation" link names on a new post; none on a source post.
+ */
+export function useSourcePost() {
+	return useSelect( ( select ) => {
+		const { saved } = selectRecord( select );
+
+		return (
+			saved?.[ settings.translation.field ] ??
+			( select( editorStore ).isEditedPostNew()
+				? translatedPost( window.location.search )
+				: undefined )
+		);
+	}, [] );
+}
+
+/**
+ * Keeps the product from being saved while the area's lists wait for the merchant, as `saveLocked()`
+ * says of the record as edited.
+ *
+ * The editor's plugin holds it, since the plugin stays in the code editor, which takes the area away
+ * with everything in it: a lock the area held would go with it, and the save it kept back would go
+ * through. It judges the edit alone, never the re-read the area asks for, which only says what a
+ * save takes off sale. The code editor shows none of the cards that say what waits, so there a
+ * notice says why the product cannot be saved, for as long as the lock holds.
+ */
+export function useAreaSaveLock() {
+	const { saved, edits } = useSelect( selectRecord, [] );
+	const source = useSourcePost();
+	const inCodeEditor = useSelect(
+		( select ) => select( editorStore ).getEditorMode() === 'text',
+		[]
+	);
+	const { createErrorNotice, removeNotice } = useDispatch( noticesStore );
+	const locked = useMemo(
+		() =>
+			saveLocked(
+				areaState( saved, edits, LIMIT ),
+				settings.currency.code,
+				source
+			),
+		[ saved, edits, source ]
+	);
+
+	// A save these lists would be refused for waits until the merchant has put them right.
+	useSaveLock( 'seocart-variants', locked );
+
+	useEffect( () => {
+		if ( ! locked || ! inCodeEditor ) {
+			return undefined;
+		}
+
+		createErrorNotice( lockedMessage(), {
+			id: LOCKED_NOTICE,
+			isDismissible: false,
+		} );
+
+		return () => removeNotice( LOCKED_NOTICE );
+	}, [ locked, inCodeEditor, createErrorNotice, removeNotice ] );
 }
 
 /**
