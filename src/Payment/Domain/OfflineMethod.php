@@ -49,6 +49,33 @@ enum OfflineMethod: string {
 	case CashOnDelivery = 'cash_on_delivery';
 
 	/**
+	 * The setting that holds the name shoppers see for a method; empty for the method's own name.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LABEL = 'label';
+
+	/**
+	 * The setting that holds what the shopper is told to do to pay.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const INSTRUCTIONS = 'instructions';
+
+	/**
+	 * The setting that holds how many days an order may wait for its payment before the merchant is reminded of it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const WAIT_DAYS = 'wait_days';
+
+	/**
 	 * Returns the method's name for people, as a closure around a literal translation call, run only when a screen shows it.
 	 *
 	 * @since 0.2.0

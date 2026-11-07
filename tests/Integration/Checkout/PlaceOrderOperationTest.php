@@ -89,7 +89,7 @@ final class PlaceOrderOperationTest extends PlacementTestCase {
 		$sent = $this->place( $body, 'attempt-1' );
 
 		$this->assertSame( 200, $sent['status'], (string) wp_json_encode( $sent['body'] ) );
-		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status', 'transfer_days', 'next_action' ), array_keys( $sent['body'] ) );
+		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status', 'transfer_days', 'next_action', 'payment_method_label', 'payment_instructions' ), array_keys( $sent['body'] ) );
 		$this->assertNull( $sent['body']['next_action'], 'An approved shopper has nothing to do.' );
 		$this->assertSame( array( 'approved', 'processing', 'authorized' ), array( $sent['body']['outcome'], $sent['body']['status'], $sent['body']['payment_status'] ) );
 		$this->assertStringContainsString( 'no-store', $sent['headers']['Cache-Control'] ?? '' );

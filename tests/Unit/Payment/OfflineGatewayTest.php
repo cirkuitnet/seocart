@@ -103,9 +103,9 @@ final class OfflineGatewayTest extends TestCase {
 			$this->assertSame( array(), $descriptor->secrets() );
 			$this->assertSame(
 				array(
-					OfflineGateway::LABEL        => '',
-					OfflineGateway::INSTRUCTIONS => '',
-					OfflineGateway::WAIT_DAYS    => OfflineGateway::WAIT_DAYS_DEFAULT,
+					OfflineMethod::LABEL        => '',
+					OfflineMethod::INSTRUCTIONS => '',
+					OfflineMethod::WAIT_DAYS    => OfflineGateway::WAIT_DAYS_DEFAULT,
 				),
 				array_combine(
 					array_map( static fn( FieldSpec $field ): string => $field->name(), $descriptor->settings ),

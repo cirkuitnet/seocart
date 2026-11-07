@@ -61,40 +61,13 @@ defined( 'ABSPATH' ) || exit;
  *
  * It has one mode, live: a mode is a set of credentials, and an offline method has none. While
  * Safe Mode is on it is not offered, and its open payments wait until Safe Mode ends. Its settings,
- * each with a default, are the name shoppers see (LABEL), the instructions they are given
- * (INSTRUCTIONS) and the days an order may wait for its payment before the merchant is reminded
- * (WAIT_DAYS). It sets up no webhook and reads none.
+ * each with a default, are the name shoppers see, the instructions they are given and the days an
+ * order may wait for its payment before the merchant is reminded (OfflineMethod::LABEL,
+ * INSTRUCTIONS and WAIT_DAYS). It sets up no webhook and reads none.
  *
  * @since 0.2.0
  */
 final class OfflineGateway implements PaymentGateway {
-
-	/**
-	 * The setting that holds the name shoppers see; empty for the method's own name.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @var string
-	 */
-	public const LABEL = 'label';
-
-	/**
-	 * The setting that holds what the shopper is told to do to pay.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @var string
-	 */
-	public const INSTRUCTIONS = 'instructions';
-
-	/**
-	 * The setting that holds how many days an order may wait for its payment before the merchant is reminded of it.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @var string
-	 */
-	public const WAIT_DAYS = 'wait_days';
 
 	/**
 	 * The longest name shoppers see, in characters.
@@ -350,7 +323,7 @@ final class OfflineGateway implements PaymentGateway {
 	private static function settings(): array {
 		return array(
 			new FieldSpec(
-				name: self::LABEL,
+				name: OfflineMethod::LABEL,
 				type: FieldType::String,
 				description: 'The name shoppers see for the payment method; empty for the method\'s own name.',
 				label: static fn(): string => __( 'Name shown to shoppers', 'seocart' ),
@@ -359,7 +332,7 @@ final class OfflineGateway implements PaymentGateway {
 				max_length: self::LABEL_MAX_LENGTH
 			),
 			new FieldSpec(
-				name: self::INSTRUCTIONS,
+				name: OfflineMethod::INSTRUCTIONS,
 				type: FieldType::String,
 				description: 'What the shopper is told to do to pay, in plain text, shown once the order is placed: where to send the money and what to quote with it, or a word on paying the courier.',
 				label: static fn(): string => __( 'Instructions', 'seocart' ),
@@ -369,7 +342,7 @@ final class OfflineGateway implements PaymentGateway {
 				privacy: Privacy::Public
 			),
 			new FieldSpec(
-				name: self::WAIT_DAYS,
+				name: OfflineMethod::WAIT_DAYS,
 				type: FieldType::Integer,
 				description: 'How many days an order may wait for its payment before doctor and Site Health remind the merchant of it.',
 				label: static fn(): string => __( 'Days to wait for the payment', 'seocart' ),

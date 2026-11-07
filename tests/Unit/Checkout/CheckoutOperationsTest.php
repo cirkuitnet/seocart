@@ -183,7 +183,7 @@ final class CheckoutOperationsTest extends TestCase {
 		$this->assertSame( array( 'cart_version', 'grand_total_minor', 'currency', 'payment_data', 'idempotency_key' ), array_keys( $input ) );
 		$this->assertFalse( $input['idempotency_key']->isRequired() );
 		$this->assertSame( Privacy::Secret, self::byName( $input['payment_data']->fields() )['payment_token']->privacy() );
-		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status', 'transfer_days', 'next_action' ), array_keys( $output ) );
+		$this->assertSame( array( 'order_uuid', 'order_number', 'order_key', 'cart_version', 'outcome', 'status', 'payment_status', 'transfer_days', 'next_action', 'payment_method_label', 'payment_instructions' ), array_keys( $output ) );
 		$this->assertTrue( $output['transfer_days']->isNullable() );
 		$this->assertContains( 'stock.routing_refused', $codes );
 		$this->assertContains( 'stock.no_fulfilling_location', $codes );

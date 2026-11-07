@@ -362,6 +362,22 @@ final class CheckoutOperations {
 					self::paymentStatus( 'How far the order is paid once the placement settled.' ),
 					self::transferDays( 'The extra days the shopper is told bringing the order\'s items together adds to delivery, kept with the order; null when the order needs no transfer.' ),
 					self::nextAction(),
+					new FieldSpec(
+						name: 'payment_method_label',
+						type: FieldType::String,
+						description: 'The name of the payment method the order is paid by, as shoppers are shown it; null when nothing was due.',
+						label: static fn(): string => __( 'Payment method', 'seocart' ),
+						example: 'Bank transfer',
+						nullable: true
+					),
+					new FieldSpec(
+						name: 'payment_instructions',
+						type: FieldType::String,
+						description: 'For a payment method paid outside any provider, such as a bank transfer, what the shopper is told to do to pay, in plain text, as the merchant wrote it; empty when the merchant wrote none, and null for any other payment method.',
+						label: static fn(): string => __( 'Payment instructions', 'seocart' ),
+						example: 'Pay by transfer to account 12345678, quoting your order number.',
+						nullable: true
+					),
 				)
 			),
 			capability: null,

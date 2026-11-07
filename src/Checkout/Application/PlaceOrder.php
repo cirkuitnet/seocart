@@ -43,7 +43,9 @@ use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Application\PaymentError;
+use SEOCart\Payment\Application\PaymentMethodPresentations;
 use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Domain\OfflineMethod;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Isolation;
 use SEOCart\Platform\Database\RetryPolicy;
@@ -254,8 +256,9 @@ final class PlaceOrder {
 	 * @param Actor                $actor Who places the order.
 	 * @return array<string, mixed> The placement, by wire name: the order's uuid, number and access
 	 *                              key, the cart's version, the outcome, the order's status and
-	 *                              payment status, the extra days a transfer adds, and what the
-	 *                              shopper must do while they must act.
+	 *                              payment status, the extra days a transfer adds, what the
+	 *                              shopper must do while they must act, and the payment method's
+	 *                              name, with an offline payment method's instructions.
 	 */
 	public function place( array $input, Actor $actor ): array {
 		$key = (string) ( $input['idempotency_key'] ?? '' );
@@ -461,16 +464,20 @@ final class PlaceOrder {
 		$this->carts->bindOrder( $cart->id, $order->id );
 		$this->sessions->storeQuotes( $cart->id, $version, new FrozenQuotes( $calculation->selectedShippingRate(), $calculation->taxQuoteFingerprint() ) );
 
+		// The payment method as the shopper is shown it, read from the settings availability read before: an offline method's instructions until the payment is received, which it is not yet.
+		$method = null === $intent ? null : ( new PaymentMethodPresentations( $this->gateways ) )->of( $intent->gatewayId );
 		$record = array(
-			'order_uuid'     => $order->uuid,
-			'order_number'   => $order->orderNumber,
-			'order_key'      => $order->accessKey,
-			'cart_version'   => $version,
-			'outcome'        => PlacementOutcome::Pending->value,
-			'status'         => OrderStatus::PendingPayment->value,
-			'payment_status' => PaymentStatus::Unpaid->value,
-			'transfer_days'  => $routing->transferLeadDays,
-			'next_action'    => null,
+			'order_uuid'           => $order->uuid,
+			'order_number'         => $order->orderNumber,
+			'order_key'            => $order->accessKey,
+			'cart_version'         => $version,
+			'outcome'              => PlacementOutcome::Pending->value,
+			'status'               => OrderStatus::PendingPayment->value,
+			'payment_status'       => PaymentStatus::Unpaid->value,
+			'transfer_days'        => $routing->transferLeadDays,
+			'next_action'          => null,
+			'payment_method_label' => $method?->label,
+			'payment_instructions' => null !== $method && OfflineMethod::isOffline( $method->id ) ? $method->instructions : null,
 		);
 
 		$this->keys->complete( $claim->id, $order->id, KeptAnswer::seal( $record, $token, $key ) );
