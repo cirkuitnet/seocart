@@ -1781,6 +1781,8 @@ final class Modules {
 				$c->get( Authorizer::class ),
 				$c->get( IdGenerator::class ),
 				$c->get( Clock::class ),
+				// The store's calendar day is read in the time zone the site is set to.
+				static fn(): \DateTimeZone => wp_timezone(),
 				$c->get( CorrelationId::class ),
 				$c->get( Reporter::class )
 			)

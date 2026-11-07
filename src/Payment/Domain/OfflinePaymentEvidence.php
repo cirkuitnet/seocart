@@ -20,7 +20,7 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: what a statement of a payment received offline holds. The day is a calendar day,
  * written YYYY-MM-DD; a reference and a note are optional, never empty, and no longer than the
- * table that keeps them holds. Whether the day is after today, and whether a reference or a note
+ * table that keeps them holds. Whether the day is after the store's today, and whether a reference or a note
  * holds a card number, the payment service decides before the payment is recorded. The names and
  * lengths are the capture operation's inputs (PaymentOperations::capturePayment()), which a unit
  * test holds equal to these.
@@ -157,14 +157,15 @@ final readonly class OfflinePaymentEvidence {
 	}
 
 	/**
-	 * Tells whether the money arrived after a day: after today, given today.
+	 * Tells whether the money arrived after today, today being the calendar day of an instant in the store's time zone.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param \DateTimeImmutable $now The instant whose day, in UTC, the day the money arrived is compared with.
-	 * @return bool True when the day the money arrived is later.
+	 * @param \DateTimeImmutable $now      The instant whose day, in the store's time zone, the day the money arrived is compared with.
+	 * @param \DateTimeZone      $timeZone The store's time zone, in which the day is read.
+	 * @return bool True when the day the money arrived is later than the store's today.
 	 */
-	public function isAfter( \DateTimeImmutable $now ): bool {
-		return strcmp( $this->receivedOn, $now->setTimezone( new \DateTimeZone( 'UTC' ) )->format( self::DAY_FORMAT ) ) > 0;
+	public function isAfter( \DateTimeImmutable $now, \DateTimeZone $timeZone ): bool {
+		return strcmp( $this->receivedOn, $now->setTimezone( $timeZone )->format( self::DAY_FORMAT ) ) > 0;
 	}
 }

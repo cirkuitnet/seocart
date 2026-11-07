@@ -246,6 +246,7 @@ abstract class PaymentTestCase extends OrderTestCase {
 			new Authorizer( new CapabilityDeclaration() ),
 			$ids,
 			FrozenClock::at( self::NOW ),
+			static fn(): \DateTimeZone => new \DateTimeZone( 'UTC' ),
 			$this->correlation,
 			$this->reporter()
 		);

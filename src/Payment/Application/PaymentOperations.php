@@ -428,7 +428,7 @@ final class PaymentOperations {
 				new FieldSpec(
 					name: 'received_on',
 					type: FieldType::String,
-					description: 'For a payment of an offline payment method, the day the money arrived, as YYYY-MM-DD, no later than today: required for such a payment, and refused for one captured through a provider.',
+					description: 'For a payment of an offline payment method, the day the money arrived, as YYYY-MM-DD, no later than today in the store\'s time zone: required for such a payment, and refused for one captured through a provider.',
 					label: static fn(): string => __( 'Received on', 'seocart' ),
 					example: '2026-11-07',
 					max_length: self::DAY_LENGTH

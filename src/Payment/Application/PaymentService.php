@@ -351,6 +351,15 @@ final class PaymentService {
 	private Clock $clock;
 
 	/**
+	 * Says which time zone the store's calendar days are read in, such as the day a payment was received.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var \Closure(): \DateTimeZone
+	 */
+	private \Closure $storeTimeZone;
+
+	/**
 	 * The request's correlation id, which a ledger row and its events share.
 	 *
 	 * @since 0.1.0
@@ -372,32 +381,35 @@ final class PaymentService {
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 Takes the gateway registry in place of the one gateway, and a reporter.
+	 * @since 0.2.0 Takes the gateway registry in place of the one gateway, a reporter, and the store's time zone.
 	 *
-	 * @param PaymentRepository  $payments    The statements.
-	 * @param Gateways           $gateways    The gateways.
-	 * @param Orders             $orders      The orders the payments are for.
-	 * @param TransactionManager $tx          The unit of work.
-	 * @param EventPublisher     $events      Publishes the events.
-	 * @param Authorizer         $authorizer  Checks capabilities.
-	 * @param IdGenerator        $ids         Mints intent uuids.
-	 * @param Clock              $clock       Says when an event happened.
-	 * @param CorrelationId      $correlation The request's correlation id.
-	 * @param callable           $report      Receives a report code (string) and its context (array).
+	 * @param PaymentRepository  $payments      The statements.
+	 * @param Gateways           $gateways      The gateways.
+	 * @param Orders             $orders        The orders the payments are for.
+	 * @param TransactionManager $tx            The unit of work.
+	 * @param EventPublisher     $events        Publishes the events.
+	 * @param Authorizer         $authorizer    Checks capabilities.
+	 * @param IdGenerator        $ids           Mints intent uuids.
+	 * @param Clock              $clock         Says when an event happened.
+	 * @param callable           $storeTimeZone Answers the store's time zone, in which a day is read as the store reads it.
+	 * @param CorrelationId      $correlation   The request's correlation id.
+	 * @param callable           $report        Receives a report code (string) and its context (array).
 	 *
+	 * @phpstan-param callable(): \DateTimeZone $storeTimeZone
 	 * @phpstan-param callable(string, array<string, mixed>): void $report
 	 */
-	public function __construct( PaymentRepository $payments, Gateways $gateways, Orders $orders, TransactionManager $tx, EventPublisher $events, Authorizer $authorizer, IdGenerator $ids, Clock $clock, CorrelationId $correlation, callable $report ) {
-		$this->payments    = $payments;
-		$this->gateways    = $gateways;
-		$this->orders      = $orders;
-		$this->tx          = $tx;
-		$this->events      = $events;
-		$this->authorizer  = $authorizer;
-		$this->ids         = $ids;
-		$this->clock       = $clock;
-		$this->correlation = $correlation;
-		$this->report      = \Closure::fromCallable( $report );
+	public function __construct( PaymentRepository $payments, Gateways $gateways, Orders $orders, TransactionManager $tx, EventPublisher $events, Authorizer $authorizer, IdGenerator $ids, Clock $clock, callable $storeTimeZone, CorrelationId $correlation, callable $report ) {
+		$this->payments      = $payments;
+		$this->gateways      = $gateways;
+		$this->orders        = $orders;
+		$this->tx            = $tx;
+		$this->events        = $events;
+		$this->authorizer    = $authorizer;
+		$this->ids           = $ids;
+		$this->clock         = $clock;
+		$this->storeTimeZone = \Closure::fromCallable( $storeTimeZone );
+		$this->correlation   = $correlation;
+		$this->report        = \Closure::fromCallable( $report );
 	}
 
 	/**
@@ -667,7 +679,7 @@ final class PaymentService {
 	 *                                    `payment.not_capturable` when the intent is not authorized, with its status and,
 	 *                                    as details, what it captured and its currency, so a capture asked again reads as
 	 *                                    done; `payment.evidence_unexpected` for a statement given with a provider's
-	 *                                    payment, and `payment.evidence_rejected` for one dated after today or holding a
+	 *                                    payment, and `payment.evidence_rejected` for one dated after the store's today or holding a
 	 *                                    card number; `payment.unreconciled` when it has a result a person must
 	 *                                    reconcile, written since the order's money was last cleared;
 	 *                                    `payment.capture_exceeds_authorized`; `payment.operation_unsupported`, also for
@@ -748,9 +760,11 @@ final class PaymentService {
 	 * Refuses what was stated of a payment received when it cannot be recorded, before the gateway is asked: nothing is written and nothing asked.
 	 *
 	 * A payment of an offline payment method is recorded with the day it arrived: a calendar day,
-	 * written YYYY-MM-DD, no later than today by the store's clock, in UTC. Its reference and its
-	 * note are no longer than the table keeps, and never hold what reads as a card number, which the
-	 * store never keeps. A provider's capture is its own evidence: nothing is stated with it.
+	 * written YYYY-MM-DD, no later than the store's today: the calendar day, in the store's time zone,
+	 * of the clock's instant, so a store east of UTC can record a payment received today before UTC's
+	 * midnight. Its reference and its note are no longer than the table keeps, and never hold what
+	 * reads as a card number, which the store never keeps. A provider's capture is its own evidence:
+	 * nothing is stated with it.
 	 *
 	 * @since 0.2.0
 	 *
@@ -777,7 +791,7 @@ final class PaymentService {
 		$note       = $given[ OfflinePaymentEvidence::NOTE ] ?? null;
 		$invalid    = OfflinePaymentEvidence::invalidField( $receivedOn, $reference, $note );
 
-		if ( null === $invalid && ( new OfflinePaymentEvidence( $receivedOn ) )->isAfter( $this->clock->now() ) ) {
+		if ( null === $invalid && ( new OfflinePaymentEvidence( $receivedOn ) )->isAfter( $this->clock->now(), ( $this->storeTimeZone )() ) ) {
 			$invalid = OfflinePaymentEvidence::RECEIVED_ON;
 		}
 

@@ -523,6 +523,46 @@ final class OfflineMethodsTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Tests that the day a payment was received is judged in the time zone the site is set to: a day after the store's today is refused and the store's today is recorded, whichever side of UTC's midnight the store is.
+	 *
+	 * The zone is chosen from the hour it is now in UTC so that the store's day always differs from
+	 * UTC's: from 10:00 UTC, UTC+14 is already on UTC's next day; before it, UTC-12 is still on
+	 * UTC's previous day.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_payment_received_is_judged_on_the_days_of_the_stores_time_zone(): void {
+		$ahead    = (int) gmdate( 'G' ) >= 10;
+		$zone     = $ahead ? 'Etc/GMT-14' : 'Etc/GMT+12';
+		$today    = $this->databaseDay( $ahead ? 1 : -1 );
+		$tomorrow = $this->databaseDay( $ahead ? 2 : 0 );
+		$recorded = $this->placeOffline();
+		$refused  = $this->placeOffline( 'cheque' );
+		$before   = get_option( 'timezone_string', '' );
+		$failure  = null;
+
+		update_option( 'timezone_string', $zone );
+
+		try {
+			$answer = $this->payments()->capturePayment( self::received( $recorded, $today, 'store day' ), $this->person );
+
+			try {
+				$this->payments()->capturePayment( self::received( $refused, $tomorrow, 'store day' ), $this->person );
+			} catch ( CodedException $refusal ) {
+				$failure = array( $refusal->errorCode()->value, $refusal->context() );
+			}
+		} finally {
+			update_option( 'timezone_string', $before );
+		}
+
+		$this->assertSame( array( 'applied', 'captured' ), array( $answer['outcome'], $answer['status'] ), $zone );
+		$this->assertSame( array( 'payment.evidence_rejected', array( 'field' => 'received_on' ) ), $failure, $zone );
+		$this->assertSame( array( $today ), array_column( $this->evidenceRows( $recorded['order_id'] ), 'received_on' ) );
+		$this->assertSame( array(), $this->evidenceRows( $refused['order_id'] ) );
+		$this->assertSame( 'authorized', $this->intentStatus( $refused['intent_uuid'] ) );
+	}
+
+	/**
 	 * Tests each statement that cannot be recorded: refused before anything is written or asked of the gateway, an offline payment's and a provider's alike.
 	 *
 	 * @since 0.2.0

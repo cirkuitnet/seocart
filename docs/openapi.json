@@ -2617,7 +2617,7 @@
                                     "received_on": {
                                         "type": "string",
                                         "maxLength": 10,
-                                        "description": "For a payment of an offline payment method, the day the money arrived, as YYYY-MM-DD, no later than today: required for such a payment, and refused for one captured through a provider.",
+                                        "description": "For a payment of an offline payment method, the day the money arrived, as YYYY-MM-DD, no later than today in the store's time zone: required for such a payment, and refused for one captured through a provider.",
                                         "examples": [
                                             "2026-11-07"
                                         ]
