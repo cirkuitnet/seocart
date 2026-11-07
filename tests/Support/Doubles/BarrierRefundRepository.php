@@ -343,10 +343,11 @@ final class BarrierRefundRepository implements RefundRepository {
 	 * @param int        $transactionId Its ledger row.
 	 * @param string     $actorType     `user` or `system`.
 	 * @param int|null   $actorId       The user, or null.
+	 * @param bool       $offline       Whether the money went back outside any provider.
 	 * @return int|null The refund's id, or null.
 	 */
-	public function insertRefund( RefundPlan $plan, int $transactionId, string $actorType, ?int $actorId ): ?int {
-		return $this->inner->insertRefund( $plan, $transactionId, $actorType, $actorId );
+	public function insertRefund( RefundPlan $plan, int $transactionId, string $actorType, ?int $actorId, bool $offline ): ?int {
+		return $this->inner->insertRefund( $plan, $transactionId, $actorType, $actorId, $offline );
 	}
 
 	/**

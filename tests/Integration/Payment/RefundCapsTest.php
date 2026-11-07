@@ -112,6 +112,7 @@ final class RefundCapsTest extends RefundTestCase {
 				$first->baseShipping->minorUnits(),
 				0,
 				'customer_return',
+				0,
 				'user',
 				0,
 				499,

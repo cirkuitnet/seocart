@@ -286,15 +286,17 @@ final class MysqlRefundRepository implements RefundRepository {
 	 *
 	 * A refund that returns no shipping in a currency passes that currency's cap, `%d = 0 OR …`:
 	 * it adds nothing to what was returned, and the stored shipping is read only for a refund that
-	 * asks for it. Nothing refunds fees yet, so fee_minor is 0. 0 stands for no actor.
+	 * asks for it. Nothing refunds fees yet, so fee_minor is 0. 0 stands for no actor. is_offline is
+	 * 1 for a refund of an offline payment method, whose money went back outside any provider.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Whether the money went back outside any provider.
 	 *
 	 * @var string
 	 */
 	public const INSERT_REFUND = 'INSERT INTO {refunds} ( uuid, order_id, intent_id, transaction_id, conversion_context_id, total_minor, shipping_minor, tax_minor, fee_minor, '
 		. 'currency, base_currency, base_total_minor, base_shipping_minor, base_tax_minor, base_fee_minor, reason_code, is_offline, actor_type, actor_id, created_at ) SELECT '
-		. '%s, %d, %d, %d, %d, %d, %d, %d, 0, %s, %s, %d, %d, %d, 0, %s, 0, %s, NULLIF( %d, 0 ), UTC_TIMESTAMP(6) FROM DUAL '
+		. '%s, %d, %d, %d, %d, %d, %d, %d, 0, %s, %s, %d, %d, %d, 0, %s, %d, %s, NULLIF( %d, 0 ), UTC_TIMESTAMP(6) FROM DUAL '
 		. 'WHERE ( %d = 0 OR COALESCE( ( SELECT SUM( returned.shipping_minor ) FROM {refunds} returned WHERE returned.order_id = %d ), 0 ) + %d <= %d ) '
 		. 'AND ( %d = 0 OR COALESCE( ( SELECT SUM( returned.base_shipping_minor ) FROM {refunds} returned WHERE returned.order_id = %d ), 0 ) + %d <= %d )';
 
@@ -717,14 +719,16 @@ final class MysqlRefundRepository implements RefundRepository {
 	 * Inserts the refund's document, while the shipping stays within what the order stored.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Whether the money went back outside any provider.
 	 *
 	 * @param RefundPlan $plan          The refund.
 	 * @param int        $transactionId The ledger row of the gateway's refund.
 	 * @param string     $actorType     `user` or `system`.
 	 * @param int|null   $actorId       The user who refunds, or null.
+	 * @param bool       $offline       Whether the money went back outside any provider.
 	 * @return int|null The refund's id; null when the shipping's cap refused it.
 	 */
-	public function insertRefund( RefundPlan $plan, int $transactionId, string $actorType, ?int $actorId ): ?int {
+	public function insertRefund( RefundPlan $plan, int $transactionId, string $actorType, ?int $actorId, bool $offline ): ?int {
 		$this->statements->requireTransaction( __METHOD__ );
 
 		$order      = $plan->order;
@@ -751,6 +755,7 @@ final class MysqlRefundRepository implements RefundRepository {
 			$baseNet,
 			$total->base->tax()->minorUnits(),
 			$plan->reasonCode,
+			$offline ? 1 : 0,
 			$actorType,
 			$actorId ?? 0,
 			// WHERE: no shipping, or the shipping returned before, with this refund's, within the stored shipping, in each currency.

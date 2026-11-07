@@ -233,14 +233,16 @@ interface RefundRepository {
 	 * Inserts the refund's document, while the shipping the order's refunds returned, with this one's, stays within the stored shipping.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Whether the money went back outside any provider.
 	 *
 	 * @param RefundPlan $plan          The refund.
 	 * @param int        $transactionId The ledger row of the gateway's refund.
 	 * @param string     $actorType     `user` or `system`.
 	 * @param int|null   $actorId       The user who refunds, or null.
+	 * @param bool       $offline       Whether the money went back outside any provider: a refund of an offline payment method.
 	 * @return int|null The refund's id; null when the shipping's cap refused it.
 	 */
-	public function insertRefund( RefundPlan $plan, int $transactionId, string $actorType, ?int $actorId ): ?int;
+	public function insertRefund( RefundPlan $plan, int $transactionId, string $actorType, ?int $actorId, bool $offline ): ?int;
 
 	/**
 	 * Inserts the refund's lines, in one statement; sends nothing when it returns no line.

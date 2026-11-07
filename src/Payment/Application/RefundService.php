@@ -31,6 +31,7 @@ use SEOCart\Order\Domain\StoredTaxComponent;
 use SEOCart\Payment\Domain\Application;
 use SEOCart\Payment\Domain\ApplicationKind;
 use SEOCart\Payment\Domain\Event\RefundRecorded;
+use SEOCart\Payment\Domain\OfflineMethod;
 use SEOCart\Payment\Domain\Refund\ClaimRequest;
 use SEOCart\Payment\Domain\Refund\ClaimState;
 use SEOCart\Payment\Domain\Refund\ProviderRefundKind;
@@ -1891,7 +1892,8 @@ final class RefundService {
 	private function writeDocument( RefundPlan $plan, int $transactionId, Actor $actor ): Refund {
 		list( $actorType, $actorId ) = self::actorOf( $actor );
 
-		$refundId = $this->refunds->insertRefund( $plan, $transactionId, $actorType, $actorId ) ?? CodedException::raise( PaymentError::Unreconciled );
+		// A refund of an offline payment method is money returned outside any provider, and its document says so.
+		$refundId = $this->refunds->insertRefund( $plan, $transactionId, $actorType, $actorId, OfflineMethod::isOffline( $plan->intent->gatewayId ) ) ?? CodedException::raise( PaymentError::Unreconciled );
 
 		$this->refunds->insertLines( $refundId, $plan );
 
