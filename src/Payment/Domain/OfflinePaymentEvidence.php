@@ -21,7 +21,9 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: what a statement of a payment received offline holds. The day is a calendar day,
  * written YYYY-MM-DD; a reference and a note are optional, never empty, and no longer than the
  * table that keeps them holds. Whether the day is after today, and whether a reference or a note
- * holds a card number, the payment service decides before the payment is recorded.
+ * holds a card number, the payment service decides before the payment is recorded. The names and
+ * lengths are the capture operation's inputs (PaymentOperations::capturePayment()), which a unit
+ * test holds equal to these.
  *
  * @since 0.2.0
  */

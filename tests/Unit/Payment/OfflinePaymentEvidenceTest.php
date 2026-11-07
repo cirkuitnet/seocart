@@ -12,7 +12,9 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Payment;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Payment\Application\PaymentOperations;
 use SEOCart\Payment\Domain\OfflinePaymentEvidence;
+use SEOCart\Support\Schema\Privacy;
 
 /**
  * A statement of a payment received offline holds a calendar day written YYYY-MM-DD, and an optional reference and note of the lengths the table keeps; whether the day is after today is judged in UTC.
@@ -55,6 +57,28 @@ final class OfflinePaymentEvidenceTest extends TestCase {
 		$this->expectException( \InvalidArgumentException::class );
 
 		new OfflinePaymentEvidence( '2026-11-07', null, '' );
+	}
+
+	/**
+	 * Tests that the capture operation declares the statement's fields by the names the service reads and with the lengths the statement and its table keep.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_capture_declares_what_a_statement_holds(): void {
+		$declared = array();
+
+		foreach ( PaymentOperations::capturePayment()->input() as $field ) {
+			$declared[ $field->name() ] = array( $field->maxLength(), $field->privacy() );
+		}
+
+		$this->assertSame(
+			array(
+				OfflinePaymentEvidence::RECEIVED_ON => array( OfflinePaymentEvidence::DAY_LENGTH, Privacy::Public ),
+				OfflinePaymentEvidence::REFERENCE   => array( OfflinePaymentEvidence::REFERENCE_MAX_LENGTH, Privacy::Pii ),
+				OfflinePaymentEvidence::NOTE        => array( OfflinePaymentEvidence::NOTE_MAX_LENGTH, Privacy::Pii ),
+			),
+			array_intersect_key( $declared, array_flip( array( OfflinePaymentEvidence::RECEIVED_ON, OfflinePaymentEvidence::REFERENCE, OfflinePaymentEvidence::NOTE ) ) )
+		);
 	}
 
 	/**

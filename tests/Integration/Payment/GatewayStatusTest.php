@@ -332,7 +332,7 @@ final class GatewayStatusTest extends RefundTestCase {
 	 * @return array<string, string|int> The row; empty when none was printed.
 	 */
 	private static function lastRowOf( GatewayCommandRecorder $command, string $gatewayId ): array {
-		$rows = array_values( array_filter( $command->items, static fn( array $item ): bool => $gatewayId === ( $item['id'] ?? null ) ) );
+		$rows = array_values( array_filter( $command->items, static fn( array $item ): bool => $item['id'] === $gatewayId ) );
 
 		return $rows[ count( $rows ) - 1 ] ?? array();
 	}

@@ -125,11 +125,11 @@ final class GatewaysCheck implements Check {
 		$headlines = array();
 
 		if ( array() !== $findings ) {
-			$headlines[] = sprintf( '%d of the gateways\' open payments cannot be settled now.', array_sum( array_column( $findings, 'open' ) ) );
+			$headlines[] = sprintf( '%d of the gateways\' open payments cannot be settled now.', self::paymentsOf( $findings ) );
 		}
 
 		if ( array() !== $late ) {
-			$headlines[] = sprintf( '%d payments of offline payment methods have waited for their money past the method\'s wait.', array_sum( array_column( $late, 'open' ) ) );
+			$headlines[] = sprintf( '%d payments of offline payment methods have waited for their money past the method\'s wait.', self::paymentsOf( $late ) );
 		}
 
 		return CheckResult::fail(
@@ -137,6 +137,24 @@ final class GatewaysCheck implements Check {
 			implode( ' ', $headlines ),
 			array_map( static fn( array $finding ): string => ( self::CRITICAL === $finding['status'] ? 'Critical: ' : 'Warning: ' ) . $finding['detail'], array_merge( $findings, $late ) )
 		);
+	}
+
+	/**
+	 * Counts the payments some findings are about.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param list<array{status: string, open: int, detail: string}> $findings The findings.
+	 * @return int How many payments.
+	 */
+	private static function paymentsOf( array $findings ): int {
+		$payments = 0;
+
+		foreach ( $findings as $finding ) {
+			$payments += $finding['open'];
+		}
+
+		return $payments;
 	}
 
 	/**

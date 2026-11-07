@@ -23,7 +23,6 @@ use SEOCart\Order\Application\OrderOperations;
 use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Payment\Domain\ApplicationKind;
 use SEOCart\Payment\Domain\IntentStatus;
-use SEOCart\Payment\Domain\OfflinePaymentEvidence;
 use SEOCart\Payment\Domain\Refund\RefundReason;
 use SEOCart\Payment\Domain\VoidReason;
 use SEOCart\Platform\Authorization\AuthorizationError;
@@ -170,6 +169,24 @@ final class PaymentOperations {
 	 * @var int
 	 */
 	public const PROVIDER_REFUND_MAX_LENGTH = 191;
+
+	/**
+	 * The length of the day a payment received offline arrived, written YYYY-MM-DD, as a capture takes it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const DAY_LENGTH = 10;
+
+	/**
+	 * The longest reference a payment received offline is recorded with, in characters: what its record holds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const REFERENCE_MAX_LENGTH = 191;
 
 	/**
 	 * The id of the capture.
@@ -409,29 +426,29 @@ final class PaymentOperations {
 					privacy: Privacy::Financial
 				),
 				new FieldSpec(
-					name: OfflinePaymentEvidence::RECEIVED_ON,
+					name: 'received_on',
 					type: FieldType::String,
 					description: 'For a payment of an offline payment method, the day the money arrived, as YYYY-MM-DD, no later than today: required for such a payment, and refused for one captured through a provider.',
 					label: static fn(): string => __( 'Received on', 'seocart' ),
 					example: '2026-11-07',
-					max_length: OfflinePaymentEvidence::DAY_LENGTH
+					max_length: self::DAY_LENGTH
 				),
 				new FieldSpec(
-					name: OfflinePaymentEvidence::REFERENCE,
+					name: 'reference',
 					type: FieldType::String,
 					description: 'For a payment of an offline payment method, the reference it came with, such as a transfer\'s reference or a cheque\'s number; refused for a payment captured through a provider, and when it holds what reads as a card number.',
 					label: static fn(): string => __( 'Reference', 'seocart' ),
 					example: 'Cheque 000123',
-					max_length: OfflinePaymentEvidence::REFERENCE_MAX_LENGTH,
+					max_length: self::REFERENCE_MAX_LENGTH,
 					privacy: Privacy::Pii
 				),
 				new FieldSpec(
-					name: OfflinePaymentEvidence::NOTE,
+					name: 'note',
 					type: FieldType::String,
 					description: 'For a payment of an offline payment method, what the person recording it writes about it; refused for a payment captured through a provider, and when it holds what reads as a card number.',
 					label: static fn(): string => __( 'Note', 'seocart' ),
 					example: 'Paid at the counter.',
-					max_length: OfflinePaymentEvidence::NOTE_MAX_LENGTH,
+					max_length: self::NOTE_MAX_LENGTH,
 					privacy: Privacy::Pii
 				),
 			),

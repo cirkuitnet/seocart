@@ -136,7 +136,7 @@ final class StatementsTest extends TestCase {
 			}
 		}
 
-		$this->assertEqualsCanonicalizing( array_merge( array( PaymentTables::TRANSACTIONS, RefundClaimTables::CLAIM_LINES ), RefundTables::names() ), $appendOnly, 'The ledger, the refunds and what each claim asked are declared append-only.' );
+		$this->assertEqualsCanonicalizing( array_merge( array( PaymentTables::TRANSACTIONS, RefundClaimTables::CLAIM_LINES, PaymentTables::OFFLINE_PAYMENTS ), RefundTables::names() ), $appendOnly, 'The ledger, the refunds, what each claim asked and what was stated of each payment received offline are declared append-only.' );
 
 		$changes = array();
 
