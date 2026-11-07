@@ -21,6 +21,8 @@ use SEOCart\Payment\Application\RefundCapPolicy;
 use SEOCart\Payment\Application\RefundService;
 use SEOCart\Payment\Domain\Application;
 use SEOCart\Payment\Domain\IntentRef;
+use SEOCart\Payment\Domain\OfflineMethod;
+use SEOCart\Payment\Domain\OfflinePaymentEvidence;
 use SEOCart\Payment\Domain\Refund\RefundLineRequest;
 use SEOCart\Payment\Domain\Refund\RefundRequest;
 use SEOCart\Payment\Domain\Refund\RequestKey;
@@ -31,6 +33,7 @@ use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Payment\Infrastructure\MysqlRefundRepository;
 use SEOCart\Payment\Infrastructure\Jobs\WebhookReceiptRetention;
 use SEOCart\Payment\Infrastructure\Migrations\CanonicalizeProviderReferences;
+use SEOCart\Payment\Infrastructure\Migrations\CreateOfflinePayments;
 use SEOCart\Payment\Infrastructure\Migrations\CreateWebhookReceipts;
 use SEOCart\Payment\Infrastructure\MysqlWebhookReceipts;
 use SEOCart\Payment\Infrastructure\PaymentTables;
@@ -64,7 +67,8 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  * Every SELECT the payment module's source writes is sent, explained and judged by the query-plan rule.
  *
  * The payment module's reads run over a PlanRecorder: the locked reads of an approval and a
- * duplicate's read of the first row, a capture's plain reads, a refund's reads, its key's claim and
+ * duplicate's read of the first row, a capture's plain reads and the record of a payment received
+ * offline beside its ledger row, the payments of an offline method past its wait, a refund's reads, its key's claim and
  * its duplicate's read of the first document, the read of a refund's claim, what a user asked in
  * the last 24 hours under the user's lock row, reconciliation's stale intents, a resume's read of
  * one intent, a claim read back with what it asked, and every line of doctor's payment check, the
@@ -101,6 +105,7 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 		}
 
 		( new CreateWebhookReceipts() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+		( new CreateOfflinePayments() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
 	}
 
 	/**
@@ -191,7 +196,11 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 		} while ( null !== $cursor );
 
 		// A capture's plain reads of the intent and of its unreconciled rows.
-		$payments->capture( $intent->uuid, $this->userWithRole() );
+		$captured = $payments->capture( $intent->uuid, $this->userWithRole() );
+
+		// What a person stated of a payment received offline, beside the capture's ledger row, whose intent, order and
+		// actor it reads by the row's id.
+		$db->transaction( static fn() => ( new MysqlPaymentRepository( $db, $ids ) )->insertOfflinePayment( (int) $captured->transactionId, new OfflinePaymentEvidence( '2026-01-02', 'TRF 1', 'Received.' ) ) );
 
 		// A refund's reads: of the order, its intent with its unreconciled rows, and what earlier refunds returned of its lines,
 		// its components and its shipping; then another refund the gateway answers with the first, whose duplicate reads the
@@ -245,6 +254,9 @@ final class PaymentQueryPlanTest extends PaymentTestCase {
 
 		// The open intents of every gateway, counted once for the gateways' status and doctor's gateways check.
 		( new MysqlPaymentRepository( $db, $ids ) )->openIntents();
+
+		// An offline payment method's payments authorized longer ago than its wait, counted for the same two.
+		( new MysqlPaymentRepository( $db, $ids ) )->authorizedOlderThan( OfflineMethod::BankTransfer->value, 7 );
 
 		// Every line of doctor's payment check, which reads the order tables through the order repository, the refund
 		// claims never settled and the webhook receipts; and the results applied to nothing of the orders still flagged,

@@ -15,8 +15,13 @@ use SEOCart\Checkout\Application\ResumePayment;
 use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Payment\Domain\OfflineMethod;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
+use SEOCart\Payment\Infrastructure\Migrations\CreateOfflinePayments;
 use SEOCart\Payment\Infrastructure\PaymentTables;
+use SEOCart\Platform\Database\Schema\DdlGenerator;
+use SEOCart\Platform\Database\Schema\SchemaVerifier;
+use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 use SEOCart\Tests\Support\CreatesUsers;
@@ -33,6 +38,11 @@ use SEOCart\Tests\Support\QueryLog;
  *   order's locks, the ledger row, the capture, the order's payment amounts, its event and the
  *   outbox.
  * - A void through its operation, of an accepted order: the same shape, with the void.
+ * - A payment received for an offline payment method, recorded through the capture operation with
+ *   the day it arrived and its reference: a capture's statements, the method's settings document,
+ *   read once on a cold cache, and the record of what was stated, beside the capture's ledger row.
+ * - A void of an offline payment method's promise: a void's statements, and the method's settings
+ *   document, read once on a cold cache.
  * - The end of a shopper's time to act, the one stale intent of a run: the page of stale intents,
  *   the void's reads, then the placement's settlement of the void, with the order's cancellation,
  *   the hold, the uses and the cart given back, the hold's release one outbox insert of its own,
@@ -71,6 +81,24 @@ final class PaymentBudgetTest extends PlacementTestCase {
 	 * @var int
 	 */
 	private const VOID = 16;
+
+	/**
+	 * The statements of a payment received for Cart A's order paid by bank transfer, recorded through the capture operation with what a person stated of it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const OFFLINE_CAPTURE = 18;
+
+	/**
+	 * The statements of a void of Cart A's order paid by bank transfer, through its operation.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const OFFLINE_VOID = 17;
 
 	/**
 	 * The statements of a reconciliation run that voids Cart A's payment, its shopper's time to act ended, and settles the void.
@@ -119,6 +147,48 @@ final class PaymentBudgetTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Tests a payment received recorded for an order paid by bank transfer, and a void of another, each of an accepted order.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_offline_capture_and_void_cost_their_budget(): void {
+		( new CreateOfflinePayments() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+
+		$person  = $this->userGranted( PaymentService::CAPTURE_CAPABILITY, PaymentService::VOID_CAPABILITY );
+		$capture = $this->placeCartA( 'offline', OfflineMethod::BankTransfer->value );
+		$void    = $this->placeCartA( 'offline', OfflineMethod::BankTransfer->value );
+		$service = $this->kernelOver( $this->db, $this->tokens )->get( PaymentService::class );
+		$day     = (string) $this->db->fetchValue( "SELECT DATE_FORMAT( UTC_DATE() - INTERVAL 1 DAY, '%Y-%m-%d' )" );
+
+		$captured = $this->measured(
+			'offline capture',
+			fn() => $service->capturePayment(
+				array(
+					'intent_uuid' => $capture,
+					'received_on' => $day,
+					'reference'   => 'TRF 000123',
+				),
+				$person
+			),
+			$person->userId()
+		);
+		$voided   = $this->measured(
+			'offline void',
+			fn() => $service->voidPayment(
+				array(
+					'intent_uuid' => $void,
+					'reason'      => 'customer_request',
+				),
+				$person
+			),
+			$person->userId()
+		);
+
+		$this->assertQueryCount( self::OFFLINE_CAPTURE, $captured, 'a payment received recorded' );
+		$this->assertQueryCount( self::OFFLINE_VOID, $voided, 'a void of a promise to pay' );
+	}
+
+	/**
 	 * Tests the end of a shopper's time to act, and a resume that settles the provider's approval.
 	 *
 	 * @since 0.2.0
@@ -149,17 +219,21 @@ final class PaymentBudgetTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Places Cart A, with a payment token, and returns its intent's uuid.
+	 * Places Cart A, with a payment token, through the stand-in or another payment method, and returns its intent's uuid.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string $paymentToken The stub's script.
+	 * @param string $paymentToken The stub's script; any word for a method that reads none.
+	 * @param string $method       Optional. The payment method. Default the stand-in.
 	 * @return string The intent's uuid.
 	 */
-	private function placeCartA( string $paymentToken ): string {
+	private function placeCartA( string $paymentToken, string $method = StubGateway::ID ): string {
 		$variant = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+		$cart    = $this->readyCart( self::quantities( ReferenceCarts::cartA( $variant ) ) );
 
-		$this->readyCart( self::quantities( ReferenceCarts::cartA( $variant ) ) );
+		if ( StubGateway::ID !== $method ) {
+			$this->writeCheckout( $cart->version, $method );
+		}
 
 		$answer = $this->placement->place( $this->placeInput( 'budget-' . $variant, $paymentToken ), self::guest() );
 

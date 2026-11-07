@@ -11,8 +11,14 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Payment;
 
+use SEOCart\Contracts\Payment\CaptureRequest;
+use SEOCart\Contracts\Payment\Mode;
+use SEOCart\Payment\Application\Gateways;
+use SEOCart\Payment\Domain\OfflineMethod;
+use SEOCart\Payment\Infrastructure\Gateway\OfflineGateway;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Tests\Support\Payment\GatewayKernel;
 use SEOCart\Tests\Support\Payment\RefundOrders;
 use SEOCart\Tests\Support\Payment\RefundTestCase;
 use SEOCart\Tests\Support\QueryLog;
@@ -61,6 +67,15 @@ final class RefundQueryBudgetTest extends RefundTestCase {
 	private const FIRST = 38;
 
 	/**
+	 * The statements of an order's first refund, as FIRST's, of an order paid by bank transfer, on a cold cache: FIRST's and the method's settings document.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const OFFLINE_FIRST = 39;
+
+	/**
 	 * What a refund that leaves the payment status as it is saves: the status change's event and PaymentStatusChanged.
 	 *
 	 * @since 0.2.0
@@ -101,6 +116,62 @@ final class RefundQueryBudgetTest extends RefundTestCase {
 		$this->assertQueryCount( self::FIRST, $one, 'a refund of one line and the shipping' );
 		$this->assertQueryCount( self::FIRST, $three, 'a refund of three lines and the shipping' );
 		$this->assertQueryCount( self::FIRST - self::STATUS_UNCHANGED, $later, 'a later refund of three lines, the payment status unchanged' );
+	}
+
+	/**
+	 * Tests that the first refund of an order paid by bank transfer costs FIRST's statements and the method's settings, read once on a cold cache, and the same on a warm one as FIRST.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_offline_payments_first_refund_costs_one_read_more_on_a_cold_cache(): void {
+		$manager        = $this->userWithRole( 'seocart_manager' );
+		$gateways       = GatewayKernel::over( $this->db, $this->reporter(), $this->publisherOver( $this->db ) )->get( Gateways::class );
+		$this->payments = $this->paymentsWith( $this->db, $this->ids, $gateways );
+		$this->refunds  = $this->refundsOver( $this->db, $this->ids, $this->gateway, null, null, null, $gateways );
+
+		list( $cold ) = $this->offlineRefundsOf( $manager, true );
+		list( $warm ) = $this->offlineRefundsOf( $manager, false );
+
+		$this->assertQueryCount( self::OFFLINE_FIRST, $cold, 'an offline payment\'s first refund, the method\'s settings read' );
+		$this->assertQueryCount( self::FIRST, $warm, 'the same, the settings cached' );
+	}
+
+	/**
+	 * Places an order of one line paid by bank transfer, received, and logs the statements of its first refund, of one unit and the shipping, and of a second.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Actor $actor Who refunds.
+	 * @param bool  $cold  Whether the object cache is flushed before the first refund.
+	 * @return array{0: QueryLog, 1: QueryLog} Each refund's statements.
+	 */
+	private function offlineRefundsOf( Actor $actor, bool $cold ): array {
+		$document = RefundOrders::priced( array( RefundOrders::line( 'tee', '12.34', 3, 'standard', variantId: 701 ) ) );
+		$placed   = $this->db->transaction(
+			function () use ( $document ): array {
+				$inserted = $this->orders->insert( $document, Actor::user( 0 ) );
+
+				return array( $inserted, $this->payments->createIntent( $inserted->id, OfflineMethod::BankTransfer->value, Mode::Live, $document->totals->grandTotal, $document->totals->baseGrandTotal, $inserted->conversionContextId ) );
+			}
+		);
+
+		list( $order, $intent ) = $placed;
+
+		$this->deliver( $this->payments->authorize( $intent->uuid, array(), $order->uuid, $order->orderNumber ) );
+		$this->deliver( ( new OfflineGateway( OfflineMethod::BankTransfer ) )->capture( new CaptureRequest( $intent->uuid, (string) $this->intentRow( $intent->uuid )['provider_intent_id'], $document->totals->grandTotal, Mode::Live ) ) );
+
+		$units  = array_fill_keys( $this->lineUuids( $order->id ), 1 );
+		$first  = $this->input( $order->uuid, $units, true, 'offline-first-' . $order->uuid );
+		$second = $this->input( $order->uuid, $units, false, 'offline-second-' . $order->uuid );
+
+		if ( $cold ) {
+			wp_cache_flush();
+		}
+
+		return array(
+			$this->captureQueries( fn() => $this->refunds->refundOrder( $first, $actor ) )->matching( self::STATEMENTS ),
+			$this->captureQueries( fn() => $this->refunds->refundOrder( $second, $actor ) )->matching( self::STATEMENTS ),
+		);
 	}
 
 	/**

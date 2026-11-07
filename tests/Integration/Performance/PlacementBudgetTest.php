@@ -19,6 +19,7 @@ use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Contracts\Payment\Outcome;
 use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Payment\Domain\OfflineMethod;
 use SEOCart\Payment\Domain\Webhook\ReceiptResult;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
@@ -179,6 +180,20 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	);
 
 	/**
+	 * The statements of each part of a placement of Cart A paid by bank transfer: Cart A's, and the method's settings document, read once on a cold cache before the first unit, which the answer's name and instructions then find cached.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array{before: int, first: int, between: int, second: int}
+	 */
+	private const CART_A_OFFLINE = array(
+		'before'  => 11,
+		'first'   => 33,
+		'between' => 1,
+		'second'  => 34,
+	);
+
+	/**
 	 * The statements of each part of a placement of Cart B whose plan brings one line to the order's location: that line's units are all at a warehouse that ships no online orders, the other nine lines' at the default location, the order's. One source: one transfer requested, and the order's record of it.
 	 *
 	 * @since 0.2.0
@@ -268,6 +283,28 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		$parts = $this->measure( 'Cart A' );
 
 		$this->assertWithin( self::CART_A, $parts, 'Cart A' );
+	}
+
+	/**
+	 * Tests that placing Cart A paid by bank transfer costs Cart A's statements and the method's settings, read once, cold.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_placing_cart_a_paid_by_bank_transfer_costs_one_read_more(): void {
+		$standIn = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+
+		$this->readyCart( self::quantities( ReferenceCarts::cartA( $standIn ) ) );
+
+		$cartA   = $this->measure( 'Cart A' );
+		$variant = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+		$cart    = $this->readyCart( self::quantities( ReferenceCarts::cartA( $variant ) ) );
+
+		$this->writeCheckout( $cart->version, OfflineMethod::BankTransfer->value );
+
+		$parts = $this->measure( 'Cart A, bank transfer' );
+
+		$this->assertSame( self::CART_A_OFFLINE, $parts, 'Cart A, bank transfer' );
+		$this->assertSame( array( 1, 0, 0, 0 ), array_values( array_map( static fn( int $offline, int $standIn ): int => $offline - $standIn, $parts, $cartA ) ), 'The method\'s settings, read once before the first unit, and nothing more.' );
 	}
 
 	/**
