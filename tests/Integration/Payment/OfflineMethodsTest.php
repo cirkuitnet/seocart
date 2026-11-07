@@ -20,7 +20,6 @@ use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Application\ClaimStatement;
 use SEOCart\Payment\Application\Gateways;
-use SEOCart\Payment\Application\GatewaySettingsDeclaration;
 use SEOCart\Payment\Application\GatewaySwitches;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentOperations;
@@ -31,7 +30,6 @@ use SEOCart\Payment\Domain\Refund\RefundLineRequest;
 use SEOCart\Payment\Domain\Refund\RefundRequest;
 use SEOCart\Payment\Infrastructure\Cli\GatewayCommand;
 use SEOCart\Payment\Infrastructure\Doctor\GatewaysCheck;
-use SEOCart\Payment\Infrastructure\Gateway\OfflineGateway;
 use SEOCart\Payment\Infrastructure\MysqlPaymentRepository;
 use SEOCart\Payment\Infrastructure\Migrations\CreateOfflinePayments;
 use SEOCart\Payment\Infrastructure\PaymentTables;
@@ -46,6 +44,7 @@ use SEOCart\Platform\Kernel\BootOption;
 use SEOCart\Platform\Kernel\BootRecord;
 use SEOCart\Platform\Kernel\Container;
 use SEOCart\Platform\Kernel\SafeMode;
+use SEOCart\Platform\Settings\SettingsService;
 use SEOCart\Support\Clock;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Checkout\PlacementKernel;
@@ -322,9 +321,27 @@ final class OfflineMethodsTest extends PlacementTestCase {
 	 * @since 0.2.0
 	 */
 	public function test_a_payment_past_the_wait_is_a_reminder_and_nothing_moves(): void {
-		$descriptor = ( new OfflineGateway( OfflineMethod::BankTransfer ) )->describe();
+		$operator = $this->userGranted( SettingsService::SECRETS_CAPABILITY );
+		$file     = (string) wp_tempnam( 'seocart-offline-wait' );
 
-		GatewayKernel::writeDocument( $this->kernel, $descriptor, array( GatewaySettingsDeclaration::storedName( 'bank_transfer', Mode::Live, OfflineMethod::WAIT_DAYS ) => 3 ) );
+		// The wait set as a merchant sets it: a file only its owner can read, given to the configure command.
+		file_put_contents( $file, (string) wp_json_encode( array( OfflineMethod::WAIT_DAYS => 3 ) ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- A test's own temporary file.
+		chmod( $file, 0600 ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- configure reads only a file its owner alone can read.
+
+		try {
+			$configured = ( new GatewayCommandRecorder( $this->kernel ) )->run(
+				array( 'configure', 'bank_transfer' ),
+				array(
+					'mode'      => Mode::Live->value,
+					'from-file' => $file,
+				),
+				$operator->userId()
+			);
+		} finally {
+			wp_delete_file( $file );
+		}
+
+		$this->assertSame( GatewayCommand::EXIT_OK, $configured );
 
 		$late   = $this->placeOffline();
 		$recent = $this->placeOffline();

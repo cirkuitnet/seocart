@@ -304,7 +304,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		$parts = $this->measure( 'Cart A, bank transfer' );
 
 		$this->assertSame( self::CART_A_OFFLINE, $parts, 'Cart A, bank transfer' );
-		$this->assertSame( array( 1, 0, 0, 0 ), array_values( array_map( static fn( int $offline, int $standIn ): int => $offline - $standIn, $parts, $cartA ) ), 'The method\'s settings, read once before the first unit, and nothing more.' );
+		$this->assertSame( array( 1, 0, 0, 0 ), array_map( static fn( int $offline, int $standIn ): int => $offline - $standIn, $parts, $cartA ), 'The method\'s settings, read once before the first unit, and nothing more.' );
 	}
 
 	/**
