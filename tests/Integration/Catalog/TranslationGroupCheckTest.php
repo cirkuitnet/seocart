@@ -12,14 +12,19 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Catalog;
 
 use SEOCart\Catalog\Application\ProductWrite\SaveResult;
+use SEOCart\Catalog\Domain\Event\ProductDeleted;
 use SEOCart\Catalog\Domain\ReportCode;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Catalog\Infrastructure\Doctor\TranslationGroupCheck;
+use SEOCart\Catalog\Interfaces\Rest\ProductCommerceSchema;
+use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Platform\Database\LockMode;
 use SEOCart\Platform\Database\LockService;
+use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Platform\Localization\PostLocales;
 use SEOCart\Support\Locale;
 use SEOCart\Tests\Support\Catalog\ProductRestTestCase;
+use SEOCart\Tests\Support\Catalog\VariantSets;
 use SEOCart\Tests\Support\Doubles\SeveralLocales;
 
 /**
@@ -212,6 +217,52 @@ final class TranslationGroupCheckTest extends ProductRestTestCase {
 	}
 
 	/**
+	 * Tests that a translation moved into another product's group, off a product that holds
+	 * commerce data, stays bound to that product as a reported conflict until the product's source
+	 * post is reconciled, which unlinks it; the post's own next reconciliation, which its next write
+	 * or doctor's unbound-post repair runs, then binds it to the product of the group it was moved
+	 * into; and the product keeps every variant, price and unit it had, and is not deleted.
+	 *
+	 * Planted violation, confirmed to fail this test: skip the loop over the unlinks in
+	 * TranslationGroups::apply(), and the post stays bound to the product whose group it left.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_translation_moved_off_a_product_with_commerce_data_is_unlinked_when_the_source_is_reconciled_then_joins_its_new_group(): void {
+		$owner  = $this->productOfTwoVariants();
+		$other  = $this->savedProduct( 'SKU-OTHER', 'Trousers' );
+		$german = $this->post();
+
+		$this->link( $owner, $german, 'de_DE' );
+
+		$rows    = $this->commerceRows( $owner->productId );
+		$deleted = $this->deletions();
+
+		$this->assertCount( 2, $rows[ CatalogTables::VARIANTS ] );
+		$this->assertCount( 2, $rows[ CatalogTables::VARIANT_PRICES ] );
+		$this->assertCount( 2, $rows[ InventoryTables::ITEMS ] );
+
+		// The merchant puts the German post in the other product's group, which the setup tells nobody.
+		$this->locales->assign( $german, Locale::of( 'de_DE' ), $other->postId );
+		$this->services->groups->reconcile( $german );
+
+		$this->assertSame( $owner->productId, $this->products->findByPost( $german )?->id(), 'The post was moved off a product that holds commerce data.' );
+		$this->assertSame( array( ReportCode::TranslationConflict->value ), array_values( array_unique( array_column( $this->reports, 'code' ) ) ) );
+
+		$this->services->groups->reconcile( $owner->postId );
+
+		$this->assertNull( $this->products->findByPost( $german ), 'Reconciling the source post left the post bound to the product whose group it left.' );
+		$this->assertSame( $rows, $this->commerceRows( $owner->productId ), 'Unlinking the post changed a variant, a price or a unit.' );
+
+		$this->services->groups->reconcile( $german );
+
+		$this->assertSame( $other->productId, $this->products->findByPost( $german )?->id(), 'The post did not join the group it was moved into.' );
+		$this->assertSame( 'de_DE', $this->products->findByPost( $german )->bindingOf( $german )?->locale()->toString() );
+		$this->assertSame( $rows, $this->commerceRows( $owner->productId ), 'The product changed a variant, a price or a unit.' );
+		$this->assertSame( $deleted, $this->deletions(), 'A product was deleted.' );
+	}
+
+	/**
 	 * Tests that a post whose group's owner is another product is reported even when the post
 	 * keeps exactly the locale the plugin currently gives it: the owner mismatch alone is enough,
 	 * with no separate locale disagreement to also catch it.
@@ -344,6 +395,72 @@ final class TranslationGroupCheckTest extends ProductRestTestCase {
 	private function link( SaveResult $saved, int $postId, string $locale ): void {
 		$this->locales->assign( $postId, Locale::of( $locale ), $saved->postId );
 		$this->services->bindings->link( $saved->productId, $postId, Locale::of( $locale ) );
+	}
+
+	/**
+	 * Saves a published product of one size in two grinds, each variant priced in the base currency and stocked at the default location, through the REST server.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return SaveResult The save that created its post.
+	 */
+	private function productOfTwoVariants(): SaveResult {
+		$saved    = $this->save(
+			null,
+			array(
+				'post_title'  => 'Coffee',
+				'post_status' => 'publish',
+			)
+		);
+		$location = (string) $this->db->fetchValue( 'SELECT uuid FROM %i WHERE id = %d', $this->db->table( InventoryTables::LOCATIONS ), $this->defaultLocation );
+		$grinds   = array( 'whole', 'filter' );
+		$response = $this->request(
+			'PUT',
+			'/' . $saved->postId,
+			array(
+				ProductCommerceSchema::PROPERTY => array(
+					'options'  => VariantSets::options( array( '250g' ), $grinds ),
+					'variants' => VariantSets::withStock( VariantSets::variants( 'COF', array( '250g' ), $grinds, array(), false ), array( $location ) ),
+				),
+			)
+		);
+
+		$this->assertSame( 200, $response->get_status(), (string) wp_json_encode( $response->get_data() ) );
+
+		return $saved;
+	}
+
+	/**
+	 * Takes every row of a product's options and variants whole: its axes and their values, its variants, the values they select, their prices and their stock items.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $productId The product.
+	 * @return array<string, list<array<string, mixed>>> The rows, by table.
+	 */
+	private function commerceRows( int $productId ): array {
+		$axes     = $this->db->table( CatalogTables::OPTION_AXES );
+		$variants = $this->db->table( CatalogTables::VARIANTS );
+
+		return array(
+			CatalogTables::OPTION_AXES           => $this->db->fetchAll( 'SELECT * FROM %i WHERE product_id = %d ORDER BY id', $axes, $productId ),
+			CatalogTables::OPTION_VALUES         => $this->db->fetchAll( 'SELECT o.* FROM %i o JOIN %i a ON a.id = o.axis_id WHERE a.product_id = %d ORDER BY o.id', $this->db->table( CatalogTables::OPTION_VALUES ), $axes, $productId ),
+			CatalogTables::VARIANTS              => $this->db->fetchAll( 'SELECT * FROM %i WHERE product_id = %d ORDER BY id', $variants, $productId ),
+			CatalogTables::VARIANT_OPTION_VALUES => $this->db->fetchAll( 'SELECT s.* FROM %i s JOIN %i v ON v.id = s.variant_id WHERE v.product_id = %d ORDER BY s.variant_id, s.option_value_id', $this->db->table( CatalogTables::VARIANT_OPTION_VALUES ), $variants, $productId ),
+			CatalogTables::VARIANT_PRICES        => $this->db->fetchAll( 'SELECT p.* FROM %i p JOIN %i v ON v.id = p.variant_id WHERE v.product_id = %d ORDER BY p.variant_id, p.currency', $this->db->table( CatalogTables::VARIANT_PRICES ), $variants, $productId ),
+			InventoryTables::ITEMS               => $this->db->fetchAll( 'SELECT i.* FROM %i i JOIN %i v ON v.id = i.variant_id WHERE v.product_id = %d ORDER BY i.variant_id, i.location_id', $this->db->table( InventoryTables::ITEMS ), $variants, $productId ),
+		);
+	}
+
+	/**
+	 * Counts the ProductDeleted events published so far.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return int The count.
+	 */
+	private function deletions(): int {
+		return (int) $this->db->fetchValue( 'SELECT COUNT(*) FROM %i WHERE event_name = %s', $this->db->table( OutboxTable::NAME ), ProductDeleted::eventName() );
 	}
 
 	/**
