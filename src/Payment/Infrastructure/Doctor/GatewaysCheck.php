@@ -117,26 +117,25 @@ final class GatewaysCheck implements Check {
 	public function run(): CheckResult {
 		$findings = $this->findings();
 		$late     = $this->lateFindings();
+		$lines    = array_map( static fn( array $finding ): string => ( self::CRITICAL === $finding['status'] ? 'Critical: ' : 'Warning: ' ) . $finding['detail'], array_merge( $findings, $late ) );
 
-		if ( array() === $findings && array() === $late ) {
-			return CheckResult::pass( self::NAME, $this->summary() );
+		// A payment past its method's wait is an ordinary state, a reminder: it never fails the check on its own.
+		if ( array() === $findings ) {
+			return CheckResult::pass( self::NAME, $this->summary(), $lines );
 		}
 
-		$headlines = array();
-
-		if ( array() !== $findings ) {
-			$headlines[] = sprintf( '%d of the gateways\' open payments cannot be settled now.', self::paymentsOf( $findings ) );
-		}
+		$headline = sprintf( '%d of the gateways\' open payments cannot be settled now.', self::paymentsOf( $findings ) );
 
 		if ( array() !== $late ) {
-			$headlines[] = sprintf( '%d payments of offline payment methods have waited for their money past the method\'s wait.', self::paymentsOf( $late ) );
+			$waiting   = self::paymentsOf( $late );
+			$headline .= ' ' . sprintf(
+				/* translators: %d: A number of payments of offline payment methods. */
+				_n( '%d payment of an offline payment method has waited for its money past the method\'s wait.', '%d payments of offline payment methods have waited for their money past the method\'s wait.', $waiting, 'seocart' ),
+				$waiting
+			);
 		}
 
-		return CheckResult::fail(
-			self::NAME,
-			implode( ' ', $headlines ),
-			array_map( static fn( array $finding ): string => ( self::CRITICAL === $finding['status'] ? 'Critical: ' : 'Warning: ' ) . $finding['detail'], array_merge( $findings, $late ) )
-		);
+		return CheckResult::fail( self::NAME, $headline, $lines );
 	}
 
 	/**

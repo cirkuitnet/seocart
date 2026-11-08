@@ -355,8 +355,13 @@ final class OfflineMethodsTest extends PlacementTestCase {
 		$doctor  = $kernel->get( GatewaysCheck::class )->run();
 		$command = new GatewayCommandRecorder( $kernel );
 
-		$this->assertFalse( $doctor->passed );
+		$this->assertTrue( $doctor->passed, 'A payment past its wait is a reminder: doctor passes.' );
 		$this->assertSame( array( 'Warning: 1 bank_transfer payment has waited for its money longer than the method allows: record the payment received with wp seocart payment capture, or void it. The method allows 3 days.' ), $doctor->findings, 'A reminder, never critical, of the late payment alone.' );
+
+		$health = $kernel->get( GatewaysCheck::class )->siteHealthTest();
+
+		$this->assertSame( 'recommended', $health['status'], 'Site Health recommends, and never calls the late payment critical.' );
+		$this->assertStringContainsString( 'bank_transfer', $health['description'] );
 		$this->assertSame( GatewayCommand::EXIT_OK, $command->run( array( 'status' ) ) );
 		$this->assertContains( 'Awaiting payment: bank_transfer, 1 past the wait of 3 days.', $command->lines );
 		$this->assertSame( GatewayCommand::EXIT_OK, $command->run( array( 'status', 'cheque' ), array( 'format' => 'json' ) ) );
@@ -374,6 +379,30 @@ final class OfflineMethodsTest extends PlacementTestCase {
 		$this->payments()->capturePayment( self::received( $late, $this->databaseDay( 0 ), 'late' ), $this->person );
 
 		$this->assertTrue( $this->kernelOver( $this->db, $this->tokens )->get( GatewaysCheck::class )->run()->passed, 'Once the late payment is received, doctor passes again.' );
+	}
+
+	/**
+	 * Tests that doctor, failing for a gateway it cannot ask, still counts the payments past their wait, in the singular and the plural.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_failing_gateway_check_counts_the_payments_past_their_wait_in_its_headline(): void {
+		$first    = $this->placeOffline();
+		$second   = $this->placeOffline();
+		$stranded = $this->placeOffline( 'cheque' );
+
+		// The cheque's gateway is gone: its payment cannot be settled now, which fails the check.
+		$this->db->execute( "UPDATE %i SET gateway_id = 'gone' WHERE uuid = %s", $this->table( PaymentTables::INTENTS ), $stranded['intent_uuid'] );
+
+		$headline = fn(): string => $this->kernelOver( $this->db, $this->tokens )->get( GatewaysCheck::class )->run()->summary;
+
+		$this->db->execute( 'UPDATE %i SET created_at = created_at - INTERVAL 8 DAY WHERE uuid = %s', $this->table( PaymentTables::INTENTS ), $first['intent_uuid'] );
+
+		$this->assertSame( '1 of the gateways\' open payments cannot be settled now. 1 payment of an offline payment method has waited for its money past the method\'s wait.', $headline() );
+
+		$this->db->execute( 'UPDATE %i SET created_at = created_at - INTERVAL 8 DAY WHERE uuid = %s', $this->table( PaymentTables::INTENTS ), $second['intent_uuid'] );
+
+		$this->assertSame( '1 of the gateways\' open payments cannot be settled now. 2 payments of offline payment methods have waited for their money past the method\'s wait.', $headline() );
 	}
 
 	/**
