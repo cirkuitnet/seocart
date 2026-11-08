@@ -18,6 +18,8 @@ use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Payment\Application\GatewayContext;
 use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Application\RefusedRegistration;
+use SEOCart\Payment\Domain\OfflineMethod;
+use SEOCart\Payment\Infrastructure\Gateway\OfflineGateway;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
@@ -39,6 +41,8 @@ use SEOCart\Tests\Support\Payment\TestGateways;
  * - in Gateways::refuse(), log the refusal and keep nothing: refused() is then empty;
  * - in GatewayDescriptor::checkSettings(), drop `webhook_endpoint` from the names the plugin
  *   keeps: `manual`, which declares it, is registered.
+ * - in Gateways::build(), register the store's own gateways through register() as any plugin's:
+ *   the offline methods answer the plugin `seocart`, where the store is installed under it.
  *
  * @since 0.2.0
  */
@@ -175,13 +179,47 @@ final class RefusedRegistrationTest extends DatabaseTestCase {
 	}
 
 	/**
+	 * Tests that the store's own payment methods belong to no plugin even where the store's files load from the plugin `seocart`, while a gateway a plugin registers keeps that plugin's slug.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_stores_own_payment_methods_belong_to_no_plugin(): void {
+		global $wp_plugin_paths;
+
+		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- The test links the checkout as the plugin seocart, as an ordinary install has it, and tear_down() puts the list back.
+		$wp_plugin_paths[ wp_normalize_path( WP_PLUGIN_DIR . '/seocart' ) ] = wp_normalize_path( (string) realpath( dirname( __DIR__, 3 ) ) );
+
+		$this->assertStringStartsWith( 'seocart/', plugin_basename( (string) ( new \ReflectionClass( OfflineGateway::class ) )->getFileName() ), 'The store\'s own classes load from the plugin seocart here, as on an ordinary install.' );
+
+		$gateways = $this->gateways( OfflineGateway::all() );
+
+		add_action(
+			GatewayRegistry::ACTION,
+			static function ( GatewayRegistry $registry ): void {
+				$registry->register( new DeclaredGateway( DeclaredGateway::descriptor( 'fixture', array( Mode::Test ), array() ) ) );
+			}
+		);
+
+		$this->assertSame( array( ...OfflineMethod::ids(), StubGateway::ID, 'fixture' ), $gateways->ids() );
+
+		foreach ( OfflineMethod::ids() as $id ) {
+			$this->assertNull( $gateways->pluginOf( $id ), sprintf( 'The store\'s own payment method %s belongs to no plugin.', $id ) );
+		}
+
+		$this->assertSame( self::PLUGIN, $gateways->pluginOf( 'fixture' ), 'A gateway a plugin registers keeps the plugin\'s slug.' );
+	}
+
+	/**
 	 * Returns the registry, with the stand-in and no gateway context: no gateway here is called.
 	 *
 	 * @since 0.2.0
 	 *
+	 * @param PaymentGateway[] $own Optional. The store's own gateways. Default none.
+	 *
+	 * @phpstan-param list<PaymentGateway> $own
 	 * @return Gateways The registry, not yet built.
 	 */
-	private function gateways(): Gateways {
+	private function gateways( array $own = array() ): Gateways {
 		return new Gateways(
 			new StubGateway(),
 			static function ( string $gatewayId ): GatewayContext {
@@ -190,7 +228,8 @@ final class RefusedRegistrationTest extends DatabaseTestCase {
 			$this->reporter(),
 			static function (): void {
 			},
-			TestGateways::switches()
+			TestGateways::switches(),
+			$own
 		);
 	}
 

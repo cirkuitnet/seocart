@@ -46,7 +46,7 @@ use SEOCart\Support\Schema\FieldSpec;
  * fatal, and kept for the request with its reason (refused()); a gateway's settings fields join
  * the log's redaction as it is accepted. Every registration, accepted or refused, is matched to
  * the plugin it was loaded from (pluginOf()), so a screen can name the plugin of a gateway, and of
- * a refusal.
+ * a refusal; the store's own gateways belong to no plugin, wherever the store is installed.
  *
  * - get() resolves the gateway of an intent: registered, still declaring the intent's mode, not
  *   asked for a live call while Safe Mode is on, and its credentials for the mode open; or
@@ -185,7 +185,7 @@ final class Gateways implements GatewayRegistry {
 	private array $settings = array();
 
 	/**
-	 * The slug of the plugin each registered gateway was loaded from, by id; null for one loaded from no plugin.
+	 * The slug of the plugin each registered gateway was loaded from, by id; null for one loaded from no plugin, and for the store's own.
 	 *
 	 * @since 0.2.0
 	 *
@@ -328,8 +328,18 @@ final class Gateways implements GatewayRegistry {
 	 * @param PaymentGateway $gateway The gateway.
 	 */
 	public function register( PaymentGateway $gateway ): void {
-		$plugin = self::pluginOfFile( (string) ( new \ReflectionClass( $gateway ) )->getFileName() );
+		$this->admit( $gateway, self::pluginOfFile( (string) ( new \ReflectionClass( $gateway ) )->getFileName() ) );
+	}
 
+	/**
+	 * Checks a gateway and keeps it, or refuses it, as register() describes, under the plugin it is said to come from.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param PaymentGateway $gateway The gateway.
+	 * @param string|null    $plugin  The slug of its plugin; null for one that belongs to none.
+	 */
+	private function admit( PaymentGateway $gateway, ?string $plugin ): void {
 		if ( ! $this->building ) {
 			$this->refuse( get_class( $gateway ), $plugin, 'late', 'A gateway registers while the registration action runs.' );
 
@@ -507,7 +517,7 @@ final class Gateways implements GatewayRegistry {
 	 * @throws CodedException `payment.gateway_unavailable` with the reason `not_registered`.
 	 *
 	 * @param string $gatewayId The gateway's id.
-	 * @return string|null The slug; null when the class comes from no plugin.
+	 * @return string|null The slug; null when the class comes from no plugin, and for the store's own gateways, such as the offline methods.
 	 */
 	public function pluginOf( string $gatewayId ): ?string {
 		$this->registered( $gatewayId );
@@ -808,7 +818,8 @@ final class Gateways implements GatewayRegistry {
 
 		try {
 			foreach ( $this->own as $gateway ) {
-				$this->register( $gateway );
+				// The store's own gateways belong to no plugin, whatever directory the store is installed in.
+				$this->admit( $gateway, null );
 			}
 
 			if ( null !== $this->stub ) {
