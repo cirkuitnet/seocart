@@ -44,6 +44,10 @@ const MARKER = `<!-- wp:${ BLOCK } /-->`;
 /** A currency the site sells in besides its base currency, if any: SEOCART_E2E_CURRENCY names it. */
 const SECOND_CURRENCY = ( process.env.SEOCART_E2E_CURRENCY ?? '' ).trim();
 
+/** What the area says when something in it keeps the product from being saved. */
+const LOCKED_SENTENCE =
+	'The Product data area has something to put right before the product can be saved.';
+
 /** The sizes and the grinds of the product a test builds or creates, and each one's key. */
 const SIZES = [
 	[ '250-g', '250 g' ],
@@ -120,6 +124,11 @@ type EditorWindow = Window & {
 			};
 		};
 	};
+};
+
+/** The editor's request function, as the page offers it. */
+type ApiFetchWindow = Window & {
+	wp: { apiFetch: ( options: object ) => Promise< unknown > };
 };
 
 /**
@@ -207,6 +216,21 @@ async function currentPostId( page: Page ): Promise< number > {
 }
 
 /**
+ * The type of the post the editor shows.
+ *
+ * @param page The page.
+ * @return The type.
+ */
+async function currentPostType( page: Page ): Promise< string > {
+	return page.evaluate(
+		() =>
+			( window as unknown as EditorWindow ).wp.data
+				.select( 'core/editor' )
+				.getCurrentPostType() as string
+	);
+}
+
+/**
  * Waits for the editor to have settled: the block in place, the stock read.
  *
  * @param page The page.
@@ -243,6 +267,56 @@ function recordWrites( page: Page ) {
 }
 
 /**
+ * The prices a write to a product carries, in minor units: only the rows a merchant changed name them.
+ *
+ * @param request The write.
+ * @return The prices.
+ */
+function pricesSent( request: Request ): number[] {
+	return (
+		(
+			request.postDataJSON()?.seocart?.variants as
+				VariantRecord[] | undefined
+		 )?.flatMap(
+			( { prices } ) =>
+				prices?.map( ( { price_minor: minor } ) => minor ) ?? []
+		) ?? []
+	);
+}
+
+/**
+ * Sends a request through the editor's own function, as a script on the page would, and says how it
+ * ended.
+ *
+ * @param page The page.
+ * @param path The request's path.
+ * @param data The request's data.
+ * @return The error's message when the request was refused or failed; null when it was answered.
+ */
+async function sendFromPage(
+	page: Page,
+	path: string,
+	data: Record< string, unknown >
+): Promise< string | null > {
+	return page.evaluate(
+		async ( request ) => {
+			try {
+				await ( window as unknown as ApiFetchWindow ).wp.apiFetch( {
+					path: request.path,
+					method: 'POST',
+					data: request.data,
+				} );
+
+				return null;
+			} catch ( error ) {
+				return ( error as Error ).message ?? 'failed';
+			}
+		},
+		{ path, data }
+	);
+}
+
+/**
  * Waits for the editor to be neither saving nor holding a change to save: a save asked for has had
  * its answer, or there was nothing to save.
  *
@@ -270,6 +344,100 @@ async function untilSaved( page: Page ): Promise< void > {
 async function saveProduct( page: Page ): Promise< void > {
 	await page.getByRole( 'button', { name: 'Save', exact: true } ).click();
 	await untilSaved( page );
+}
+
+/**
+ * The panel of changes waiting that WordPress opens from the Save button when the post is not the only
+ * entity with one waiting: a block theme's template that opening it for editing left changed, a pattern
+ * edited beside the product. It has a Save button of its own.
+ *
+ * @param page The page.
+ * @return A locator of the panel.
+ */
+function savePanelOf( page: Page ): Locator {
+	return page.locator(
+		'.entities-saved-states__panel, .editor-entities-saved-states__panel'
+	);
+}
+
+/**
+ * Whether the panel of changes waiting has opened, given a moment to.
+ *
+ * @param page The page.
+ * @return Whether it has.
+ */
+async function savePanelOpened( page: Page ): Promise< boolean > {
+	return savePanelOf( page )
+		.getByText( 'Are you ready to save?' )
+		.waitFor( { timeout: 2000 } )
+		.then(
+			() => true,
+			() => false
+		);
+}
+
+/**
+ * Saves a published product through the editor's button, and through the panel of changes waiting when
+ * WordPress shows it, and waits for the answer.
+ *
+ * The product must be listed and ticked in the panel. When no panel comes, the button has saved the product.
+ *
+ * @param page  The page.
+ * @param title The product's title, as the panel lists it.
+ */
+async function saveThroughPanelIfShown(
+	page: Page,
+	title: string
+): Promise< void > {
+	const panel = savePanelOf( page );
+
+	await page
+		.locator( '.editor-header' )
+		.getByRole( 'button', { name: 'Save', exact: true } )
+		.click();
+
+	if ( await savePanelOpened( page ) ) {
+		await expect(
+			panel.getByRole( 'checkbox', { name: title } )
+		).toBeChecked();
+		await panel
+			.getByRole( 'button', { name: 'Save', exact: true } )
+			.click();
+	}
+
+	await untilSaved( page );
+}
+
+/**
+ * Presses the Save of a product whose saving is locked, as a merchant does with the mouse, and the Save
+ * of the panel of changes waiting that it opens. The button is dimmed, not disabled, so it can be pressed.
+ *
+ * @param page  The page.
+ * @param title The product's title, as the panel lists it.
+ */
+async function pressSaveWhileLocked(
+	page: Page,
+	title: string
+): Promise< void > {
+	const panel = savePanelOf( page );
+	const box = await page
+		.locator( '.editor-header' )
+		.getByRole( 'button', { name: 'Save', exact: true } )
+		.boundingBox();
+
+	if ( ! box ) {
+		throw new Error( 'The editor has no Save button.' );
+	}
+
+	await page.mouse.click( box.x + box.width / 2, box.y + box.height / 2 );
+	expect(
+		await savePanelOpened( page ),
+		'The Save opened no panel of the changes waiting.'
+	).toBe( true );
+	await expect(
+		panel.getByRole( 'checkbox', { name: title } )
+	).toBeChecked();
+	await panel.getByRole( 'button', { name: 'Save', exact: true } ).click();
 }
 
 /**
@@ -323,6 +491,60 @@ async function holdSaveAnswer( page: Page ) {
 }
 
 /**
+ * Answers the next save of a product with a server error, once let through: the request never reaches
+ * the site, which stores nothing, and the editor goes on saving until the answer is let through.
+ *
+ * @param page The page.
+ * @return A promise of the save having been sent, and the function that answers it with the error and
+ *         waits for the editor to have the answer.
+ */
+async function failSaveAnswer( page: Page ) {
+	let reached = () => {};
+	let letThrough = () => {};
+	const sent = new Promise< void >( ( resolve ) => {
+		reached = () => resolve();
+	} );
+	const released = new Promise< void >( ( resolve ) => {
+		letThrough = () => resolve();
+	} );
+	let holding = true;
+
+	await page.route(
+		( url ) => restRoute( url.href ).startsWith( `/wp/v2/${ REST_BASE }/` ),
+		async ( route: Route ) => {
+			if (
+				! holding ||
+				[ 'GET', 'OPTIONS' ].includes( route.request().method() )
+			) {
+				return route.fallback();
+			}
+
+			holding = false;
+			reached();
+			await released;
+
+			return route.fulfill( {
+				status: 500,
+				contentType: 'application/json',
+				body: JSON.stringify( {
+					code: 'internal_server_error',
+					message: 'The site could not save the product.',
+					data: { status: 500 },
+				} ),
+			} );
+		}
+	);
+
+	return {
+		sent,
+		async fail() {
+			letThrough();
+			await expect.poll( () => isSaving( page ) ).toBe( false );
+		},
+	};
+}
+
+/**
  * Whether the editor is saving the post.
  *
  * @param page The page.
@@ -334,6 +556,21 @@ async function isSaving( page: Page ): Promise< boolean > {
 			( window as unknown as EditorWindow ).wp.data
 				.select( 'core/editor' )
 				.isSavingPost() as boolean
+	);
+}
+
+/**
+ * Whether saving the post is locked.
+ *
+ * @param page The page.
+ * @return Whether it is.
+ */
+async function isSavingLocked( page: Page ): Promise< boolean > {
+	return page.evaluate(
+		() =>
+			( window as unknown as EditorWindow ).wp.data
+				.select( 'core/editor' )
+				.isPostSavingLocked() as boolean
 	);
 }
 
@@ -377,6 +614,23 @@ async function saveInCodeEditor( page: Page ): Promise< Request[] > {
 	await areaReady( page );
 
 	return writes;
+}
+
+/**
+ * Presses Ctrl+S in the code editor, already open, while saving is locked, and waits for the editor to
+ * be done with it: a save the key began would have sent its request by then. The code editor stays.
+ *
+ * @param page The page.
+ * @return What each write request the key sent carried of the product; none when the save was refused.
+ */
+async function refusedInCodeEditor( page: Page ): Promise< unknown[] > {
+	const { writes, stop } = recordWrites( page );
+
+	await page.keyboard.press( 'ControlOrMeta+s' );
+	await expect.poll( () => isSaving( page ) ).toBe( false );
+	stop();
+
+	return writes.map( ( request ) => request.postDataJSON()?.seocart ?? null );
 }
 
 /**
@@ -447,6 +701,65 @@ async function leaveVisualEditor(
 			},
 		},
 	} );
+}
+
+/**
+ * Opens the product's template in the editor, through the Template panel of the sidebar: the editor then
+ * shows the template, not the product, and its Save lists the product among the changes waiting.
+ *
+ * @param page The page.
+ */
+async function editTemplate( page: Page ): Promise< void > {
+	const settings = page.getByRole( 'button', {
+		name: 'Settings',
+		exact: true,
+	} );
+
+	// The template editor greets the merchant with a guide the first time; the guide is dismissed beforehand.
+	await page.evaluate( () => {
+		const preferences = (
+			window as unknown as EditorWindow
+		 ).wp.data.dispatch( 'core/preferences' );
+
+		preferences.set( 'core/edit-post', 'welcomeGuideTemplate', false );
+		preferences.set( 'core', 'welcomeGuideTemplate', false );
+	} );
+
+	if ( ( await settings.getAttribute( 'aria-pressed' ) ) !== 'true' ) {
+		await settings.click();
+	}
+
+	// The sidebar shows the block's tab while the area has the focus.
+	await page.getByRole( 'tab', { name: 'Product', exact: true } ).click();
+	await page.getByRole( 'button', { name: 'Template options' } ).click();
+	await page.getByRole( 'menuitem', { name: 'Edit template' } ).click();
+	await expect.poll( () => currentPostType( page ) ).toBe( 'wp_template' );
+}
+
+/**
+ * Opens the synced pattern in the product's content in the editor, through the block's toolbar: the
+ * editor then shows the pattern, not the product.
+ *
+ * @param page The page.
+ */
+async function editPattern( page: Page ): Promise< void > {
+	await page.evaluate( () => {
+		const { select, dispatch } = ( window as unknown as EditorWindow ).wp
+			.data;
+		const block = (
+			select( 'core/block-editor' ).getBlocks() as Array< {
+				name: string;
+				clientId: string;
+			} >
+		 ).find( ( { name } ) => name === 'core/block' );
+
+		dispatch( 'core/block-editor' ).selectBlock( block?.clientId );
+	} );
+	await page
+		.getByRole( 'toolbar', { name: 'Block tools' } )
+		.getByRole( 'button', { name: 'Edit original' } )
+		.click();
+	await expect.poll( () => currentPostType( page ) ).toBe( 'wp_block' );
 }
 
 /**
@@ -544,6 +857,30 @@ function sixVariants( prefix: string, locations: Location[] ) {
 				} ) ),
 			} ) )
 		),
+	};
+}
+
+/**
+ * What a product sells, as stored: whether it can be sold, and each variant's label, state, prices and units.
+ *
+ * @param record The product, in the `edit` context.
+ * @return Its sellability and its variants.
+ */
+function onSale( record: ProductRecord ) {
+	return {
+		sellability: record.seocart.sellability,
+		variants: ( record.seocart.variants ?? [] ).map( ( variant ) => ( {
+			label: variant.label,
+			enabled: variant.enabled,
+			prices: variant.prices?.map(
+				( { currency, price_minor: minor } ) =>
+					`${ currency } ${ minor }`
+			),
+			units: ( variant.stock ?? [] ).reduce(
+				( units, { on_hand: onHand } ) => units + onHand,
+				0
+			),
+		} ) ),
 	};
 }
 
@@ -1790,6 +2127,542 @@ test.describe( 'Product editor', () => {
 		).toEqual( [ 1900 ] );
 	} );
 
+	test( 'a variant left without its price or its SKU locks saving in the visual editor, and putting it back releases the lock', async ( {
+		admin,
+		page,
+		requestUtils,
+	} ) => {
+		const prefix = `LOCKED${ Date.now() }`;
+		const { id } = await createProduct( requestUtils, {
+			title: 'A product whose price and SKU are taken away',
+			seocart: sixVariants( prefix, [] ),
+		} );
+
+		await admin.editPost( id );
+		await areaReady( page );
+
+		const area = areaOf( page );
+		const save = page.getByRole( 'button', { name: 'Save', exact: true } );
+
+		for ( const [ name, waiting, stored ] of [
+			[
+				`Price in USD of ${ VARIANTS[ 0 ] }`,
+				'1 variant needs a price in USD, or to be disabled, before this product can be saved.',
+				'18.00',
+			],
+			[
+				`SKU of ${ VARIANTS[ 0 ] }`,
+				'1 variant needs a SKU before this product can be saved.',
+				`${ prefix }-${ SIZES[ 0 ][ 0 ] }-${ GRINDS[ 0 ][ 0 ] }`,
+			],
+		] ) {
+			const field = area.getByRole( 'textbox', { name } );
+
+			// Left, so that the field holds no lock of its own: the lock is the one the area's lists hold.
+			await field.fill( '' );
+			await field.press( 'Tab' );
+			await expect( area.getByText( waiting ) ).toBeVisible();
+			await expect( save ).toBeDisabled();
+			await expect
+				.poll( () => isSavingLocked( page ), `${ name } taken away` )
+				.toBe( true );
+
+			await field.fill( stored );
+			await expect( area.getByText( waiting ) ).toHaveCount( 0 );
+			await expect
+				.poll( () => isSavingLocked( page ), `${ name } put back` )
+				.toBe( false );
+		}
+	} );
+
+	test( 'a variant on sale whose price in the base currency is taken away cannot be saved from the code editor either, until a price is typed', async ( {
+		admin,
+		page,
+		requestUtils,
+	} ) => {
+		const { id } = await createProduct( requestUtils, {
+			title: 'A product whose price is taken away before the code editor',
+			seocart: sixVariants( `UNPRICEDCODE${ Date.now() }`, [] ),
+		} );
+		const stored = onSale( await readProduct( requestUtils, id ) );
+
+		await admin.editPost( id );
+		await areaReady( page );
+
+		const save = page.getByRole( 'button', { name: 'Save', exact: true } );
+		const price = areaOf( page ).getByRole( 'textbox', {
+			name: `Price in USD of ${ VARIANTS[ 0 ] }`,
+		} );
+		const waiting = areaOf( page ).getByText(
+			'1 variant needs a price in USD, or to be disabled, before this product can be saved.'
+		);
+		const locked = page.locator( '.components-notice' ).filter( {
+			hasText:
+				'The Product data area has something to put right before the product can be saved.',
+		} );
+
+		await price.fill( '' );
+		await price.press( 'Tab' );
+		await expect( waiting ).toBeVisible();
+		await expect( locked ).toHaveCount( 0 );
+		// Soft, so that a lock that does not hold still shows what Ctrl+S in the code editor then saves.
+		await expect.soft( save ).toBeDisabled();
+
+		const { writes, stop } = recordWrites( page );
+
+		try {
+			// The code editor takes the area away; the lock stays, held by the editor's plugin.
+			await openCodeEditor( page );
+			expect(
+				await refusedInCodeEditor( page ),
+				'Ctrl+S in the code editor saved a variant without its price.'
+			).toEqual( [] );
+			await expect( save ).toBeDisabled();
+			expect( await isSavingLocked( page ) ).toBe( true );
+			// The code editor shows none of the area's cards, so a notice says why the product is not saved.
+			await expect( locked ).toBeVisible();
+			expect( onSale( await readProduct( requestUtils, id ) ) ).toEqual(
+				stored
+			);
+
+			await leaveVisualEditor( page, requestUtils );
+			await areaReady( page );
+			await expect( waiting ).toBeVisible();
+			await expect( locked ).toHaveCount( 0 );
+			await expect( save ).toBeDisabled();
+			expect( await isSavingLocked( page ) ).toBe( true );
+
+			await price.fill( '19.00' );
+			await expect( waiting ).toHaveCount( 0 );
+			await saveProduct( page );
+		} finally {
+			stop();
+			await leaveVisualEditor( page, requestUtils );
+		}
+
+		expect(
+			writes,
+			'A save went through before the price was typed.'
+		).toHaveLength( 1 );
+
+		const saved = await readProduct( requestUtils, id );
+
+		expect( saved.seocart.sellability ).toBe( 'sellable' );
+		expect(
+			saved.seocart.variants
+				?.find( ( { label } ) => label === VARIANTS[ 0 ] )
+				?.prices?.map( ( { price_minor: minor } ) => minor )
+		).toEqual( [ 1900 ] );
+	} );
+
+	test( 'options that make too many variants cannot be saved from the code editor either, and removing the option that crossed the limit releases the lock', async ( {
+		admin,
+		page,
+		requestUtils,
+	} ) => {
+		test.setTimeout( 180_000 );
+
+		const prefix = `SIXTEEN${ Date.now() }`;
+		const sizes = Array.from( { length: 16 }, ( _, index ) => [
+			`s${ index + 1 }`,
+			`S${ index + 1 }`,
+		] );
+		const { id } = await createProduct( requestUtils, {
+			title: 'A product of sixteen sizes',
+			seocart: {
+				options: [
+					{
+						key: 'size',
+						label: 'Size',
+						values: sizes.map( ( [ key, label ] ) => ( {
+							key,
+							label,
+						} ) ),
+					},
+				],
+				variants: sizes.map( ( [ key ], index ) => ( {
+					combination: [ { axis: 'size', value: key } ],
+					sku: `${ prefix }-${ key }`,
+					enabled: true,
+					prices: [ { currency: 'USD', price_minor: 1000 + index } ],
+					stock: [
+						{
+							location_uuid: locations[ 0 ].location_uuid,
+							on_hand: 5,
+							expected_on_hand: 0,
+						},
+					],
+				} ) ),
+			},
+		} );
+		const stored = onSale( await readProduct( requestUtils, id ) );
+
+		expect( stored.sellability ).toBe( 'sellable' );
+		expect( stored.variants ).toHaveLength( 16 );
+		expect(
+			stored.variants.reduce(
+				( units, variant ) => units + variant.units,
+				0
+			)
+		).toBe( 80 );
+
+		await admin.editPost( id );
+		await areaReady( page );
+
+		const area = areaOf( page );
+		const save = page.getByRole( 'button', { name: 'Save', exact: true } );
+		const tooMany = area.getByText(
+			'These options make 256 variants, and a product can have at most 250. Remove some values to save.'
+		);
+		const locked = page.locator( '.components-notice' ).filter( {
+			hasText:
+				'The Product data area has something to put right before the product can be saved.',
+		} );
+
+		await addOption(
+			page,
+			'Colour',
+			Array.from( { length: 16 }, ( _, index ) => `C${ index + 1 }` )
+		);
+		await expect( area.getByText( '256 of 250 variants' ) ).toBeVisible();
+		await expect( tooMany ).toBeVisible();
+		await expect( locked ).toHaveCount( 0 );
+		// Soft, so that a lock that does not hold still shows what Ctrl+S in the code editor then saves.
+		await expect.soft( save ).toBeDisabled();
+
+		const { writes, stop } = recordWrites( page );
+
+		try {
+			// A save now would send the options alone, and the site would take every variant off sale.
+			await openCodeEditor( page );
+			expect(
+				await refusedInCodeEditor( page ),
+				'Ctrl+S in the code editor saved options that make too many variants.'
+			).toEqual( [] );
+			await expect( save ).toBeDisabled();
+			expect( await isSavingLocked( page ) ).toBe( true );
+			// The code editor shows none of the area's cards, so a notice says why the product is not saved.
+			await expect( locked ).toBeVisible();
+			expect( onSale( await readProduct( requestUtils, id ) ) ).toEqual(
+				stored
+			);
+
+			await leaveVisualEditor( page, requestUtils );
+			await areaReady( page );
+			await expect( tooMany ).toBeVisible();
+			await expect( locked ).toHaveCount( 0 );
+			expect( await isSavingLocked( page ) ).toBe( true );
+
+			await area.getByRole( 'button', { name: 'Edit Colour' } ).click();
+			await area
+				.getByRole( 'button', { name: 'Remove the option Colour' } )
+				.click();
+			await expect( tooMany ).toHaveCount( 0 );
+			await expect.poll( () => isSavingLocked( page ) ).toBe( false );
+		} finally {
+			stop();
+			await leaveVisualEditor( page, requestUtils );
+		}
+
+		expect( writes ).toHaveLength( 0 );
+		expect( onSale( await readProduct( requestUtils, id ) ) ).toEqual(
+			stored
+		);
+	} );
+
+	// The editor shows another post when the merchant edits the product's template, or a synced pattern in
+	// its content, from the product; the editor's Save lists the product among the changes waiting.
+	for ( const [ route, open, withPattern ] of [
+		[ 'template', editTemplate, false ],
+		[ 'synced pattern', editPattern, true ],
+	] as const ) {
+		test( `a variant on sale whose price is taken away is not saved by the panel of changes waiting while the editor shows the product’s ${ route }, and a price typed back releases the lock`, async ( {
+			admin,
+			page,
+			requestUtils,
+		} ) => {
+			const pattern = withPattern
+				? await requestUtils.rest< { id: number } >( {
+						method: 'POST',
+						path: '/wp/v2/blocks',
+						data: {
+							status: 'publish',
+							title: `A pattern in a product ${ Date.now() }`,
+							content:
+								'<!-- wp:paragraph --><p>Some words</p><!-- /wp:paragraph -->',
+						},
+					} )
+				: undefined;
+			const title = `A product whose price is taken away before its ${ route }`;
+			const { id } = await createProduct( requestUtils, {
+				title,
+				seocart: sixVariants( `UNPRICEDOTHER${ Date.now() }`, [] ),
+				...( pattern
+					? {
+							content: `${ MARKER }<!-- wp:block {"ref":${ pattern.id }} /-->`,
+						}
+					: {} ),
+			} );
+			const stored = onSale( await readProduct( requestUtils, id ) );
+
+			await admin.editPost( id );
+			await areaReady( page );
+
+			const save = page
+				.locator( '.editor-header' )
+				.getByRole( 'button', { name: 'Save', exact: true } );
+			const price = areaOf( page ).getByRole( 'textbox', {
+				name: `Price in USD of ${ VARIANTS[ 0 ] }`,
+			} );
+			const waiting = areaOf( page ).getByText(
+				'1 variant needs a price in USD, or to be disabled, before this product can be saved.'
+			);
+			const refused = page
+				.locator( '.components-snackbar, .components-notice' )
+				.filter( {
+					hasText:
+						'The Product data area has something to put right before the product can be saved.',
+				} )
+				.first();
+
+			await price.fill( '' );
+			await price.press( 'Tab' );
+			await expect( waiting ).toBeVisible();
+			await expect.poll( () => isSavingLocked( page ) ).toBe( true );
+
+			if ( route === 'template' ) {
+				// The refusal is at the editor's requests, so a script on the page meets it too, whichever
+				// way the route is spelt; and it is for the locked product alone.
+				const other = await createProduct( requestUtils, {
+					title: 'Another product, which nothing locks',
+					seocart: sixVariants( `NOTLOCKED${ Date.now() }`, [] ),
+				} );
+				const probe = recordWrites( page );
+
+				for ( const path of [
+					`/wp/v2/${ REST_BASE }/${ id }`,
+					`?rest_route=/wp/v2/${ REST_BASE }/${ id }`,
+				] ) {
+					expect(
+						await sendFromPage( page, path, {
+							seocart: { variants: [] },
+						} ),
+						`The write to ${ path } was not refused.`
+					).toBe( LOCKED_SENTENCE );
+				}
+
+				expect( probe.writes ).toHaveLength( 0 );
+				expect(
+					await sendFromPage(
+						page,
+						`/wp/v2/${ REST_BASE }/${ other.id }`,
+						{ title: 'Another product, renamed', seocart: {} }
+					),
+					'The write to another product was refused.'
+				).toBeNull();
+				expect(
+					probe.writes.map( ( request ) =>
+						restRoute( request.url() )
+					)
+				).toEqual( [ `/wp/v2/${ REST_BASE }/${ other.id }` ] );
+				probe.stop();
+				expect(
+					onSale( await readProduct( requestUtils, id ) )
+				).toEqual( stored );
+			}
+
+			const { writes, stop } = recordWrites( page );
+
+			try {
+				// The editor now shows the other post; the product is still among the changes waiting to be saved.
+				await open( page );
+				// Soft, so that a lock that does not hold still shows what the editor's Save then sends.
+				await expect.soft( save ).toBeDisabled();
+				expect(
+					await isSavingLocked( page ),
+					`The lock was released while the editor shows the ${ route }.`
+				).toBe( true );
+
+				await page.keyboard.press( 'ControlOrMeta+s' );
+				await expect.poll( () => isSaving( page ) ).toBe( false );
+				expect( writes ).toHaveLength( 0 );
+				expect(
+					onSale( await readProduct( requestUtils, id ) )
+				).toEqual( stored );
+
+				// The Save is dimmed, not disabled, and the panel it opens saves the product without asking
+				// whether saving is locked: the write is refused at the request, with the sentence.
+				await pressSaveWhileLocked( page, title );
+				await expect( refused ).toBeVisible();
+				expect( writes ).toHaveLength( 0 );
+				expect(
+					onSale( await readProduct( requestUtils, id ) )
+				).toEqual( stored );
+
+				// Back to the product, which still waits for a price.
+				await page
+					.getByRole( 'button', { name: 'Back', exact: true } )
+					.click();
+				await expect
+					.poll( () => currentPostType( page ) )
+					.toBe( POST_TYPE );
+				await areaReady( page );
+				await expect( waiting ).toBeVisible();
+				await expect( save ).toBeDisabled();
+				expect( await isSavingLocked( page ) ).toBe( true );
+
+				await price.fill( '19.00' );
+				await expect( waiting ).toHaveCount( 0 );
+				await expect.poll( () => isSavingLocked( page ) ).toBe( false );
+				await saveThroughPanelIfShown( page, title );
+			} finally {
+				stop();
+
+				if ( pattern ) {
+					await requestUtils.rest( {
+						method: 'DELETE',
+						path: `/wp/v2/blocks/${ pattern.id }`,
+						params: { force: true },
+					} );
+				}
+			}
+
+			// The zero before the release shows that nothing went through before the price was typed. After
+			// it, WordPress's panel can send the product twice, so at least one write is looked for, and
+			// each carries the price.
+			expect( writes.length ).toBeGreaterThanOrEqual( 1 );
+			expect( writes.map( pricesSent ) ).toEqual(
+				writes.map( () => [ 1900 ] )
+			);
+
+			const saved = await readProduct( requestUtils, id );
+
+			expect( saved.seocart.sellability ).toBe( 'sellable' );
+			expect(
+				saved.seocart.variants
+					?.find( ( { label } ) => label === VARIANTS[ 0 ] )
+					?.prices?.map( ( { price_minor: minor } ) => minor )
+			).toEqual( [ 1900 ] );
+		} );
+	}
+
+	test( 'a variant on sale whose price is taken away is not saved with a synced pattern edited beside it, which is saved', async ( {
+		admin,
+		page,
+		requestUtils,
+	} ) => {
+		const pattern = await requestUtils.rest< { id: number } >( {
+			method: 'POST',
+			path: '/wp/v2/blocks',
+			data: {
+				status: 'publish',
+				title: `A pattern edited beside a product ${ Date.now() }`,
+				content:
+					'<!-- wp:paragraph --><p>Some words</p><!-- /wp:paragraph -->',
+			},
+		} );
+		const title =
+			'A product whose price is taken away beside an edited pattern';
+		const { id } = await createProduct( requestUtils, {
+			title,
+			seocart: sixVariants( `UNPRICEDBESIDE${ Date.now() }`, [] ),
+			content: `${ MARKER }<!-- wp:block {"ref":${ pattern.id }} /-->`,
+		} );
+		const stored = onSale( await readProduct( requestUtils, id ) );
+
+		await admin.editPost( id );
+		await areaReady( page );
+
+		// The pattern is edited from the product, and the editor goes back to the product.
+		await editPattern( page );
+		await page.evaluate( ( ref ) => {
+			( window as unknown as EditorWindow ).wp.data
+				.dispatch( 'core' )
+				.editEntityRecord( 'postType', 'wp_block', ref, {
+					content:
+						'<!-- wp:paragraph --><p>Changed words</p><!-- /wp:paragraph -->',
+				} );
+		}, pattern.id );
+		await page.getByRole( 'button', { name: 'Back', exact: true } ).click();
+		await expect.poll( () => currentPostType( page ) ).toBe( POST_TYPE );
+		await areaReady( page );
+
+		const price = areaOf( page ).getByRole( 'textbox', {
+			name: `Price in USD of ${ VARIANTS[ 0 ] }`,
+		} );
+		const waiting = areaOf( page ).getByText(
+			'1 variant needs a price in USD, or to be disabled, before this product can be saved.'
+		);
+		const refused = page
+			.locator( '.components-snackbar, .components-notice' )
+			.filter( {
+				hasText:
+					'The Product data area has something to put right before the product can be saved.',
+			} )
+			.first();
+
+		await price.fill( '' );
+		await price.press( 'Tab' );
+		await expect( waiting ).toBeVisible();
+		await expect.poll( () => isSavingLocked( page ) ).toBe( true );
+
+		const { writes, stop } = recordWrites( page );
+
+		try {
+			// The Save opens the panel of the two changes waiting: its Save writes the pattern, and the
+			// product's write is refused at the request.
+			await pressSaveWhileLocked( page, title );
+			await expect( refused ).toBeVisible();
+			await expect
+				.poll(
+					async () =>
+						(
+							await requestUtils.rest< {
+								content: { raw: string };
+							} >( {
+								path: `/wp/v2/blocks/${ pattern.id }`,
+								params: { context: 'edit' },
+							} )
+						).content.raw
+				)
+				.toContain( 'Changed words' );
+			expect( writes ).toHaveLength( 0 );
+			expect( onSale( await readProduct( requestUtils, id ) ) ).toEqual(
+				stored
+			);
+			expect( await isSavingLocked( page ) ).toBe( true );
+
+			await price.fill( '19.00' );
+			await expect( waiting ).toHaveCount( 0 );
+			await expect.poll( () => isSavingLocked( page ) ).toBe( false );
+			await saveThroughPanelIfShown( page, title );
+		} finally {
+			stop();
+			await requestUtils.rest( {
+				method: 'DELETE',
+				path: `/wp/v2/blocks/${ pattern.id }`,
+				params: { force: true },
+			} );
+		}
+
+		// The zero before the release shows that nothing went through before the price was typed. After it,
+		// WordPress's panel can send the product twice, so at least one write is looked for, and each
+		// carries the price.
+		expect( writes.length ).toBeGreaterThanOrEqual( 1 );
+		expect( writes.map( pricesSent ) ).toEqual(
+			writes.map( () => [ 1900 ] )
+		);
+
+		const saved = await readProduct( requestUtils, id );
+
+		expect( saved.seocart.sellability ).toBe( 'sellable' );
+		expect(
+			saved.seocart.variants
+				?.find( ( { label } ) => label === VARIANTS[ 0 ] )
+				?.prices?.map( ( { price_minor: minor } ) => minor )
+		).toEqual( [ 1900 ] );
+	} );
+
 	test( 'a price or a weight erased with Backspace keeps the product from saving, Ctrl+S too, until it is typed again', async ( {
 		admin,
 		page,
@@ -2367,6 +3240,104 @@ test.describe( 'Product editor', () => {
 			).toHaveLength( 0 );
 			expect( await storedPrices( requestUtils, id ) ).toEqual( [
 				3500,
+			] );
+		} finally {
+			await leaveVisualEditor( page, requestUtils );
+		}
+	} );
+
+	test( 'a price erased while a save of it fails goes back to the price the last successful save stored, and the post has nothing left to save', async ( {
+		admin,
+		page,
+		requestUtils,
+	} ) => {
+		const { id } = await createProduct( requestUtils, {
+			title: 'A product whose second save fails',
+			seocart: {
+				variants: [
+					{
+						combination: [],
+						sku: `FAILED${ Date.now() }`,
+						enabled: true,
+						prices: [ { currency: 'USD', price_minor: 2000 } ],
+					},
+				],
+			},
+		} );
+
+		await admin.editPost( id );
+		await areaReady( page );
+
+		const field = areaOf( page ).getByRole( 'textbox', {
+			name: 'Price in USD',
+			exact: true,
+		} );
+		// The prices the editor holds for the product's one variant, its edits over the record.
+		const edited = () =>
+			page.evaluate(
+				( [ postType, postId ] ) => {
+					const record = ( window as unknown as EditorWindow ).wp.data
+						.select( 'core' )
+						.getEditedEntityRecord(
+							'postType',
+							postType,
+							postId
+						) as ProductRecord;
+
+					return record.seocart.variants?.[ 0 ]?.prices?.map(
+						( { price_minor: minor } ) => minor
+					);
+				},
+				[ POST_TYPE, id ] as const
+			);
+
+		try {
+			// 25.00 typed and saved: the last save that succeeds.
+			await field.fill( '25.00' );
+			await saveProduct( page );
+			expect( await storedPrices( requestUtils, id ) ).toEqual( [
+				2500,
+			] );
+
+			// 30.00 typed and saved with Ctrl+S, and erased while the save runs; the save fails.
+			await field.fill( '30.00' );
+
+			const answer = await failSaveAnswer( page );
+
+			await page.keyboard.press( 'ControlOrMeta+s' );
+			await answer.sent;
+			await field.press( 'ControlOrMeta+a' );
+			await field.press( 'Backspace' );
+			await expect( field ).toHaveValue( '' );
+			await answer.fail();
+			await expect(
+				page.locator( '.components-notice.is-error' )
+			).toContainText( 'Updating failed' );
+			expect( await storedPrices( requestUtils, id ) ).toEqual( [
+				2500,
+			] );
+
+			// The field was there when the save failed, so it holds the price the last successful save
+			// stored, not the one the failed save carried. Had the code editor taken it away before the
+			// failure, nothing would bring that back: the next save would store the 30.00 the failed
+			// request carried, a known limit this test does not take.
+			expect(
+				await edited(),
+				'The emptied field after the failure'
+			).toEqual( [ 2500 ] );
+
+			// That price is the stored one, so the edit is dropped and nothing is left to save: a save
+			// from the code editor, which takes the field away, sends no request. The check above is the
+			// one that holds the price; this one shows the post is clean.
+			expect( ( await editorState( page ) ).dirty ).toBe( false );
+			await openCodeEditor( page );
+			expect(
+				await saveInCodeEditor( page ),
+				'A save after the failure sent a request though the post equals the stored product.'
+			).toHaveLength( 0 );
+			await expect( field ).toHaveValue( '25.00' );
+			expect( await storedPrices( requestUtils, id ) ).toEqual( [
+				2500,
 			] );
 		} finally {
 			await leaveVisualEditor( page, requestUtils );

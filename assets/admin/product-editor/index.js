@@ -8,8 +8,15 @@
  * plugin prints before this script and from the record: the fields and their labels, the
  * currencies the store offers with their decimal places, and a sentence for every verdict.
  *
- * While the area locks saving, a save asked for some other way, such as the one WordPress makes
- * for a draft's preview beside a meta box, is refused.
+ * While the area locks saving, the Save button is dimmed, Ctrl+S sends nothing, and a save asked for
+ * some other way, such as the one WordPress makes for a draft's preview beside a meta box, is refused.
+ * The lock the area's lists hold is held by the editor's plugin, which the code editor leaves in
+ * place, and not by the block, which it takes away; and it is kept while the editor shows the
+ * product's template or a pattern. The dimmed button can still be pressed, and the panel it opens
+ * for the changes waiting saves the product without asking whether saving is locked, as it does
+ * from the product's own editor with a pattern changed beside it. So the write itself is refused,
+ * at the editor's requests: one to the product's route that carries the area's lists, while the
+ * lock is held.
  *
  * On a new post opened from a multilingual plugin's "add translation" link, the first save also
  * names the post it translates and the locale of the language the link asks for, in the fields
@@ -28,9 +35,14 @@ import {
 	store as blockEditorStore,
 	useBlockProps,
 } from '@wordpress/block-editor';
+import apiFetch from '@wordpress/api-fetch';
 import { registerBlockType } from '@wordpress/blocks';
 import { store as coreStore } from '@wordpress/core-data';
-import { useDispatch, useSelect } from '@wordpress/data';
+import {
+	select as registrySelect,
+	useDispatch,
+	useSelect,
+} from '@wordpress/data';
 import { store as editorStore } from '@wordpress/editor';
 import { useEffect } from '@wordpress/element';
 import { addFilter } from '@wordpress/hooks';
@@ -42,8 +54,10 @@ import { registerPlugin } from '@wordpress/plugins';
  * Internal dependencies
  */
 import { ProductDataArea } from './area';
-import { refuseSavingWhileLocked } from './fields';
+import { useAreaSaveLock } from './area-model';
+import { isHeld, lockedMessage, refuseSavingWhileLocked } from './fields';
 import { useKeepArea } from './keep-area';
+import { refusingLockedWrites } from './model';
 import { settings } from './settings';
 import { ProductSummaryPanel } from './summary';
 import { translatedPost, translationLocale } from './translation';
@@ -143,7 +157,7 @@ function useFirstSaveOfATranslation() {
 }
 
 /**
- * What the script adds to the editor besides the block.
+ * What the script adds to the editor besides the block, in the visual editor and in the code editor.
  *
  * @return {Element} The panel.
  */
@@ -155,17 +169,56 @@ function ProductEditor() {
 }
 
 /**
- * The plugin, on the product editor only.
+ * Holds the area's lock on saving over a product.
  *
- * @return {Element|null} What it adds.
+ * @param {Object} props          The component's props.
+ * @param {string} props.postType The product's type.
+ * @param {number} props.postId   The product's id.
+ * @return {null} Nothing.
+ */
+function ProductSaveLock( { postType, postId } ) {
+	useAreaSaveLock( postType, postId );
+
+	return null;
+}
+
+/**
+ * The product the editor showed, kept for the page: the editor mounts its plugins again when it
+ * shows another post, so the plugin cannot keep it.
+ *
+ * @type {{postType: string, postId: number}|undefined}
+ */
+let product;
+
+/**
+ * The plugin, on the product editor only, and its lock on saving wherever the editor is once it has
+ * shown the product: the lock dims the Save button of the template editor and of a pattern, and its
+ * notice says why, while the refusal at the request (`refusingLockedWrites()`) keeps their panel of
+ * changes waiting from saving the product.
+ *
+ * @return {Element} What it adds.
  */
 function ProductEditorPlugin() {
-	const postType = useSelect(
-		( select ) => select( editorStore ).getCurrentPostType(),
-		[]
-	);
+	const { postType, postId } = useSelect( ( select ) => {
+		const editor = select( editorStore );
 
-	return postType === settings.postType ? <ProductEditor /> : null;
+		return {
+			postType: editor.getCurrentPostType(),
+			postId: editor.getCurrentPostId(),
+		};
+	}, [] );
+	const shown = postType === settings.postType;
+
+	if ( shown ) {
+		product = { postType, postId };
+	}
+
+	return (
+		<>
+			{ product && <ProductSaveLock { ...product } /> }
+			{ shown && <ProductEditor /> }
+		</>
+	);
 }
 
 registerPlugin( 'seocart-product-editor', { render: ProductEditorPlugin } );
@@ -174,4 +227,23 @@ addFilter(
 	'editor.preSavePost',
 	'seocart/product-editor/save-lock',
 	refuseSavingWhileLocked
+);
+
+apiFetch.use(
+	refusingLockedWrites(
+		isHeld,
+		// The product the editor showed, and its route once the editor knows the post type's.
+		() => {
+			const base = product
+				? registrySelect( coreStore ).getEntityConfig(
+						'postType',
+						product.postType
+					)?.baseURL
+				: undefined;
+
+			return base && `${ base }/${ product.postId }`;
+		},
+		settings.property,
+		lockedMessage
+	)
 );

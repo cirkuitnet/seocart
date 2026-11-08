@@ -26,6 +26,8 @@ import {
 	parseSwatch,
 	priceIn,
 	priceShown,
+	refusingLockedWrites,
+	saveLocked,
 	seocartEdit,
 	skusFromPrefix,
 	stockAt,
@@ -1036,6 +1038,123 @@ describe( 'needsPrice', () => {
 	} );
 } );
 
+describe( 'saveLocked', () => {
+	const base = 'USD';
+
+	/**
+	 * Builds what the area shows of the 2 x 2 product once its entries are changed.
+	 *
+	 * @param {Function} change Gives a row's entry from the row and its index.
+	 * @return {Object} What the area shows.
+	 */
+	function changed( change ) {
+		const saved = readOfFourVariants();
+		const { axes, rows } = areaState( saved, undefined, LIMIT );
+
+		return areaState(
+			saved,
+			seocartEdit( saved, undefined, axes, rows.map( change ), LIMIT ),
+			LIMIT
+		);
+	}
+
+	/**
+	 * Builds an option of sixteen values.
+	 *
+	 * @param {string} key The option's key.
+	 * @return {Object} The option.
+	 */
+	const sixteen = ( key ) => ( {
+		key,
+		label: key,
+		values: Array.from( { length: 16 }, ( _, index ) => ( {
+			key: `${ key }-${ index }`,
+			label: `${ key } ${ index }`,
+		} ) ),
+	} );
+
+	it( 'locks nothing while the area holds no edit, though a variant as read has no SKU', () => {
+		const saved = readOfFourVariants();
+
+		saved.variants[ 0 ].sku = null;
+
+		const state = areaState( saved, undefined, LIMIT );
+
+		expect( needsSku( state.rows[ 0 ] ) ).toBe( true );
+		expect( state.edited ).toBe( false );
+		expect( saveLocked( state, base ) ).toBe( false );
+	} );
+
+	it( 'locks a save of options that make too many variants, which would send the options alone', () => {
+		const saved = {
+			options: [ sixteen( 'size' ) ],
+			variants: matrixOf( namedAxes( [ sixteen( 'size' ) ] ) ).map(
+				( combination, index ) =>
+					readVariant( combination, {
+						variant_id: 100 + index,
+						sku: `SKU-${ index }`,
+					} )
+			),
+		};
+		const axes = namedAxes( [ sixteen( 'size' ), sixteen( 'colour' ) ] );
+		const edits = seocartEdit( saved, undefined, axes, [], LIMIT );
+		const state = areaState( saved, edits, LIMIT );
+
+		expect( edits ).toEqual( { options: axes } );
+		expect( state.tooMany ).toBe( true );
+		expect( state.rows ).toEqual( [] );
+		expect( saveLocked( state, base ) ).toBe( true );
+	} );
+
+	it( 'locks a save while a variant needs a SKU, until it has one', () => {
+		const skuOfFirst = ( sku ) => ( row, index ) =>
+			index === 0 ? withSku( row.entry, sku ) : row.entry;
+
+		expect( saveLocked( changed( skuOfFirst( '' ) ), base ) ).toBe( true );
+		expect( saveLocked( changed( skuOfFirst( 'OTHER' ) ), base ) ).toBe(
+			false
+		);
+	} );
+
+	it( 'locks a save while a variant on sale has lost its price in the base currency, until it has one or is disabled', () => {
+		const taken = ( row ) =>
+			withPrice( row.entry, row.read, base, null, base );
+		const first = ( entryOf ) => ( row, index ) =>
+			index === 0 ? entryOf( row ) : row.entry;
+
+		expect( saveLocked( changed( first( taken ) ), base ) ).toBe( true );
+		expect(
+			saveLocked(
+				changed(
+					first( ( row ) =>
+						withPrice( taken( row ), row.read, base, 1900, base )
+					)
+				),
+				base
+			)
+		).toBe( false );
+		expect(
+			saveLocked(
+				changed(
+					first( ( row ) =>
+						withEnabled( taken( row ), row.read, false )
+					)
+				),
+				base
+			)
+		).toBe( false );
+	} );
+
+	it( 'locks nothing on a translation post, whose area edits none of it', () => {
+		const state = changed( ( row, index ) =>
+			index === 0 ? withSku( row.entry, '' ) : row.entry
+		);
+
+		expect( saveLocked( state, base, undefined ) ).toBe( true );
+		expect( saveLocked( state, base, 12 ) ).toBe( false );
+	} );
+} );
+
 describe( 'changing an entry', () => {
 	const base = 'USD';
 	const entry = { combination: [], enabled: true };
@@ -1364,5 +1483,214 @@ describe( 'fromPrice', () => {
 		expect(
 			fromPrice( { variants: [ priced( 50, true, 'EUR' ) ] }, 'USD' )
 		).toBeNull();
+	} );
+} );
+
+describe( 'refusingLockedWrites', () => {
+	const BASE = '/wp/v2/seocart-products';
+	const write = {
+		method: 'PUT',
+		path: `${ BASE }/17`,
+		data: { id: 17, seocart: { variants: [] } },
+	};
+	const through = ( options, held = true ) => {
+		const next = jest.fn( () => 'sent' );
+		const middleware = refusingLockedWrites(
+			() => held,
+			() => `${ BASE }/17`,
+			'seocart',
+			() => 'Locked.'
+		);
+
+		const answer = middleware( options, next );
+
+		// A refusal the case does not await is not left unhandled: it would stop the run, not fail the case.
+		if ( answer instanceof Promise ) {
+			answer.catch( () => {} );
+		}
+
+		return { next, answer };
+	};
+
+	it( 'refuses a write of the area to the locked product while a lock is held, with the sentence', async () => {
+		const { next, answer } = through( write );
+
+		await expect( answer ).rejects.toThrow( 'Locked.' );
+		expect( next ).not.toHaveBeenCalled();
+	} );
+
+	it( 'lets the same write through when no lock is held', () => {
+		const { next, answer } = through( write, false );
+
+		expect( answer ).toBe( 'sent' );
+		expect( next ).toHaveBeenCalledWith( write );
+	} );
+
+	it( 'refuses a POST, and the route the site serves as rest_route, or as a whole URL', async () => {
+		for ( const options of [
+			{ ...write, method: 'POST' },
+			{ ...write, path: undefined, url: `/?rest_route=${ BASE }/17` },
+			{
+				...write,
+				path: undefined,
+				url: `/?rest_route=${ encodeURIComponent( BASE + '/17' ) }&_locale=user`,
+			},
+			{
+				...write,
+				path: undefined,
+				url: `https://example.test/wp-json${ BASE }/17?context=edit`,
+			},
+			{ ...write, path: `${ BASE }/17?_locale=user` },
+		] ) {
+			const { next, answer } = through( options );
+
+			await expect( answer ).rejects.toThrow( 'Locked.' );
+			expect( next ).not.toHaveBeenCalled();
+		}
+	} );
+
+	it( 'lets a write to another product through', () => {
+		for ( const path of [
+			`${ BASE }/18`,
+			`${ BASE }/170`,
+			`${ BASE }/1`,
+		] ) {
+			const { next, answer } = through( { ...write, path } );
+
+			expect( answer ).toBe( 'sent' );
+			expect( next ).toHaveBeenCalledTimes( 1 );
+		}
+
+		const { next, answer } = through( {
+			...write,
+			path: undefined,
+			url: `/?rest_route=${ BASE }/18`,
+		} );
+
+		expect( answer ).toBe( 'sent' );
+		expect( next ).toHaveBeenCalledTimes( 1 );
+	} );
+
+	it( 'refuses a write whose JSON body carries the area, as it does one whose data does', async () => {
+		const { next, answer } = through( {
+			method: 'PUT',
+			path: `${ BASE }/17`,
+			body: JSON.stringify( { id: 17, seocart: { variants: [] } } ),
+		} );
+
+		await expect( answer ).rejects.toThrow( 'Locked.' );
+		expect( next ).not.toHaveBeenCalled();
+	} );
+
+	it( 'lets a body through that is not JSON, or carries none of the area', () => {
+		for ( const body of [
+			'not json',
+			'',
+			JSON.stringify( { id: 17, title: 'A title' } ),
+			JSON.stringify( [ 'seocart' ] ),
+			JSON.stringify( null ),
+		] ) {
+			const { next, answer } = through( {
+				method: 'PUT',
+				path: `${ BASE }/17`,
+				body,
+			} );
+
+			expect( answer ).toBe( 'sent' );
+			expect( next ).toHaveBeenCalledTimes( 1 );
+		}
+	} );
+
+	it( 'matches the path of the request before its URL', async () => {
+		// The path names the locked product, the URL another route: the path is where the request goes.
+		const { next, answer } = through( {
+			...write,
+			path: `${ BASE }/17`,
+			url: '/wp-json/wp/v2/posts/17',
+		} );
+
+		await expect( answer ).rejects.toThrow( 'Locked.' );
+		expect( next ).not.toHaveBeenCalled();
+
+		// And the converse: the path names another route, the URL the locked product.
+		const other = through( {
+			...write,
+			path: '/wp/v2/posts/17',
+			url: `/wp-json${ BASE }/17`,
+		} );
+
+		expect( other.answer ).toBe( 'sent' );
+	} );
+
+	it( 'lets a read through', () => {
+		const { next, answer } = through( { path: `${ BASE }/17` } );
+
+		expect( answer ).toBe( 'sent' );
+		expect( next ).toHaveBeenCalledTimes( 1 );
+	} );
+
+	it( 'lets an autosave through, and any other route', () => {
+		for ( const path of [
+			`${ BASE }/17/autosaves`,
+			BASE,
+			'/wp/v2/posts/17',
+			'/wp/v2/seocart-productsx/17',
+			'/wp/v2/blocks/17',
+		] ) {
+			const { next, answer } = through( { ...write, path } );
+
+			expect( answer ).toBe( 'sent' );
+			expect( next ).toHaveBeenCalledTimes( 1 );
+		}
+	} );
+
+	it( 'lets a write that carries none of the area through', () => {
+		const { next, answer } = through( {
+			...write,
+			data: { id: 17, title: 'A title', content: '' },
+		} );
+
+		expect( answer ).toBe( 'sent' );
+		expect( next ).toHaveBeenCalledTimes( 1 );
+	} );
+
+	it( 'reads the property it is given, as data and as a JSON body, and not another', async () => {
+		const middleware = refusingLockedWrites(
+			() => true,
+			() => `${ BASE }/17`,
+			'commerce',
+			() => 'Locked.'
+		);
+		const next = jest.fn( () => 'sent' );
+
+		for ( const options of [
+			{ ...write, data: { commerce: { variants: [] } } },
+			{
+				method: 'PUT',
+				path: `${ BASE }/17`,
+				body: JSON.stringify( { commerce: {} } ),
+			},
+		] ) {
+			await expect( middleware( options, next ) ).rejects.toThrow(
+				'Locked.'
+			);
+		}
+
+		// A write that names the area under another name is not what it reads.
+		expect( middleware( write, next ) ).toBe( 'sent' );
+		expect( next ).toHaveBeenCalledTimes( 1 );
+	} );
+
+	it( 'lets everything through before the locked product’s route is known', () => {
+		const next = jest.fn( () => 'sent' );
+
+		expect(
+			refusingLockedWrites(
+				() => true,
+				() => undefined,
+				'seocart',
+				() => 'Locked.'
+			)( write, next )
+		).toBe( 'sent' );
 	} );
 } );

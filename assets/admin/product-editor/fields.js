@@ -35,6 +35,15 @@ import { LOCALE } from './settings';
 const held = new Set();
 
 /**
+ * Tells whether the area holds a lock on saving now.
+ *
+ * @return {boolean} True while it does.
+ */
+export function isHeld() {
+	return held.size > 0;
+}
+
+/**
  * Keeps the product from being saved while a condition holds: by its Save button, and by a preview,
  * which saves a draft whenever an autosave may run.
  *
@@ -74,6 +83,18 @@ export function useSaveLock( name, locked ) {
 }
 
 /**
+ * Says why the area keeps the product from being saved.
+ *
+ * @return {string} The sentence.
+ */
+export function lockedMessage() {
+	return __(
+		'The Product data area has something to put right before the product can be saved.',
+		'seocart'
+	);
+}
+
+/**
  * Refuses to save the product while the area holds a lock, whatever asked for the save: the
  * editor's `editor.preSavePost` filter.
  *
@@ -86,13 +107,8 @@ export function useSaveLock( name, locked ) {
  * @return {Object} The edits, unchanged.
  */
 export function refuseSavingWhileLocked( edits, options ) {
-	if ( held.size > 0 && ! options?.isAutosave ) {
-		throw new Error(
-			__(
-				'The Product data area has something to put right before the product can be saved.',
-				'seocart'
-			)
-		);
+	if ( isHeld() && ! options?.isAutosave ) {
+		throw new Error( lockedMessage() );
 	}
 
 	return edits;

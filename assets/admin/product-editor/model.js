@@ -395,6 +395,93 @@ export function needsPrice( row, base ) {
 }
 
 /**
+ * Tells whether the area keeps the product from being saved.
+ *
+ * It does while a save would send the area's lists and one of them waits for the merchant: options
+ * that make more variants than a product may have, whose save would name none of them; a variant
+ * without a SKU; or one without a price in the base currency. A card says each in words. A
+ * translation post edits none of it, its area being a way to the post its product is edited on.
+ *
+ * @param {Object}           state    What the area shows, as `areaState()` builds it.
+ * @param {string}           base     The base currency's code.
+ * @param {number|undefined} [source] The post a translation's product is edited on, when the post is a translation.
+ * @return {boolean} True while saving waits.
+ */
+export function saveLocked( state, base, source ) {
+	return (
+		! source &&
+		state.edited &&
+		( state.tooMany ||
+			state.rows.some(
+				( row ) => needsSku( row ) || needsPrice( row, base )
+			) )
+	);
+}
+
+/**
+ * Builds the middleware of the editor's requests that refuses to write the area's lists to the
+ * product while saving is locked.
+ *
+ * The editor saves another entity's changes, and a product that is not the post it shows, without
+ * asking whether saving is locked: the panel that lists the changes waiting does. So the request is
+ * refused where every way of saving meets: a write to that product's own route, which is not an
+ * autosave, and carries the product's commerce property, as its data or as a JSON body. A request
+ * goes where its path points on a WordPress page, whose own middleware makes the URL from it, so the
+ * route is its path, and its URL only when it has no path. Anything else goes through unchanged,
+ * whatever is locked: another product's route, a read, any other write.
+ *
+ * @param {Function} isHeld   Tells whether a lock on saving is held.
+ * @param {Function} routeOf  Gives the locked product's REST route, such as `/wp/v2/seocart-products/17`, or nothing while none is known.
+ * @param {string}   property The name of the product's commerce property, as the plugin declares it.
+ * @param {Function} message  Gives the sentence the refusal carries.
+ * @return {Function} The middleware: ( options, next ) giving next( options ), or a promise rejected with an Error.
+ */
+export function refusingLockedWrites( isHeld, routeOf, property, message ) {
+	/**
+	 * Tells whether a request's body names the area.
+	 *
+	 * @param {Object} options The request.
+	 * @return {boolean} True when its data or its JSON body has the property.
+	 */
+	const carriesArea = ( options ) => {
+		if ( options.data?.[ property ] !== undefined ) {
+			return true;
+		}
+
+		try {
+			return (
+				typeof options.body === 'string' &&
+				JSON.parse( options.body )?.[ property ] !== undefined
+			);
+		} catch {
+			return false;
+		}
+	};
+
+	return ( options, next ) => {
+		const target = options.path ?? options.url ?? '';
+		const [ location, query = '' ] = target.split( '?' );
+		// Whether the site serves pretty REST URLs or `?rest_route=`.
+		const route =
+			new URLSearchParams( query ).get( 'rest_route' ) ??
+			location.replace( /^.*\/wp-json(?=\/)/, '' );
+		const locked = routeOf();
+
+		if (
+			locked &&
+			( options.method ?? 'GET' ).toUpperCase() !== 'GET' &&
+			route.replace( /\/$/, '' ) === locked &&
+			isHeld() &&
+			carriesArea( options )
+		) {
+			return Promise.reject( new Error( message() ) );
+		}
+
+		return next( options );
+	};
+}
+
+/**
  * Gives an entry a SKU, or takes it away.
  *
  * @param {Object} entry The entry.

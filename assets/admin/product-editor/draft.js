@@ -2,8 +2,9 @@
  * What a text field of the area commits of the text a merchant types, keystroke by keystroke and when they leave it.
  *
  * Text is committed as it is typed, as soon as it can be read. A field emptied while the merchant
- * types commits the value it had when they came into it, or the value a save stored since, and its
- * emptiness only when they leave it.
+ * types commits the value the running save carries while one runs, and otherwise the value it had
+ * when they came into it or the value the last successful save since then stored; and its emptiness
+ * only when they leave it.
  * Emptying a price to type another is how a price is retyped: its emptiness committed at once would
  * take the price away, and with it what the merchant set beside it, such as its compare-at price and
  * whether it includes tax, so the price typed next would start again from the price as read. And a
@@ -16,7 +17,9 @@
  *
  * @param {string}   text    The field's text after the keystroke.
  * @param {Function} parse   Reads text: the value, or undefined when it is not one.
- * @param {*}        focused The field's value when the merchant came into it, or the value a save stored since.
+ * @param {*}        focused The value an emptied field keeps: the one the running save carries while one runs, else
+ *                           the field's value when the merchant came into it or the one the last successful save since
+ *                           then stored.
  * @return {*} The value the text reads as; for an emptied field, `focused`, or its emptiness when it had none; undefined
  *             commits nothing, for text that cannot be read.
  */
