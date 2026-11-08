@@ -45,8 +45,10 @@ use SEOCart\Platform\Logging\CardNumbers;
  * status); an id of exactly a shape the test declares (GatewayConformanceCase::publicIdShapes(): a
  * prefix and the number of letters and digits after it, or the least and the most, such as
  * `'pi_' => 24`); a 64-hex digest in a field the test declares
- * (GatewayConformanceCase::publicDigestFields()); the media type of a `content-type` or `accept`
- * header. No public shape passes for a token with a secret's prefix (SECRET_PREFIX), in a field
+ * (GatewayConformanceCase::publicDigestFields()); a whole value that is base64 of SIGNATURE_LEAST to
+ * SIGNATURE_MOST characters in a field the test declares (GatewayConformanceCase::publicSignatureFields(),
+ * such as the signature a provider puts on a public delivery); the media type of a `content-type`
+ * or `accept` header. No public shape passes for a token with a secret's prefix (SECRET_PREFIX), in a field
  * named like a credential (CREDENTIAL_FIELD), or in the query of a redirect's `location`. A field's
  * name is the structure's, not a value: it is checked for a credential, a secret's shape and a card
  * field, and is not held to the token rule, unless it is shaped like a URL: such a name is read as
@@ -228,6 +230,33 @@ final class TapeScrubber {
 	private const DIGEST = '/^[0-9a-f]{64}$/i';
 
 	/**
+	 * A base64 value, as a signature is written: the standard alphabet in whole groups of four, `=` padding at the end only.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const BASE64 = '/^(?:[A-Za-z0-9+\/]{4})*(?:[A-Za-z0-9+\/]{2}==|[A-Za-z0-9+\/]{3}=)?$/D';
+
+	/**
+	 * The fewest characters of a signature: the length from which the token rule reads a value, so a shorter one is never refused and the signature rule has nothing to admit.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const SIGNATURE_LEAST = self::TOKEN_LENGTH;
+
+	/**
+	 * The most characters of a signature: 1024 holds an RSA signature up to a 6144-bit key (1,024 characters of base64), and a longer value is a payload, not a signature.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const SIGNATURE_MOST = 1024;
+
+	/**
 	 * A media type, as a `content-type` or `accept` header names one: words, without digits.
 	 *
 	 * @since 0.2.0
@@ -349,11 +378,13 @@ final class TapeScrubber {
 	 * @param string[]                     $publicDigestFields Optional. The fields whose 64-hex digests are public, such as a delivery's signature header. Default none.
 	 * @param string[]                     $publicCodes        Optional. The provider's enumerated codes a tape may hold, as exact strings. Default none.
 	 * @param string[]                     $publicHeaders      Optional. The response headers a tape keeps beside `content-type`, by name, such as a request id the gateway reads. Default none.
+	 * @param string[]                     $signatureFields    Optional. The fields whose whole value, a base64 signature, is public, such as the signature a provider puts on a public delivery. Default none.
 	 *
 	 * @phpstan-param array<string, int|array{int, int}> $publicIdShapes
 	 * @phpstan-param list<string> $publicDigestFields
 	 * @phpstan-param list<string> $publicCodes
 	 * @phpstan-param list<string> $publicHeaders
+	 * @phpstan-param list<string> $signatureFields
 	 */
 	public function __construct(
 		#[\SensitiveParameter] array $credentials,
@@ -361,7 +392,8 @@ final class TapeScrubber {
 		private array $publicIdShapes = array(),
 		private array $publicDigestFields = array(),
 		private array $publicCodes = array(),
-		array $publicHeaders = array()
+		array $publicHeaders = array(),
+		private array $signatureFields = array()
 	) {
 		$kept = array_merge( array( self::KEPT_RESPONSE_HEADER ), array_map( 'strtolower', $publicHeaders ) );
 
@@ -787,6 +819,10 @@ final class TapeScrubber {
 			$text = (string) preg_replace( self::MEDIA_TYPE, '', $text );
 		}
 
+		if ( $exemptable && ! $credentialField && self::declares( $this->signatureFields, $field ) && self::isSignature( $text ) ) {
+			return;
+		}
+
 		preg_match_all( '/[A-Za-z0-9_\-]{' . self::TOKEN_LENGTH . ',}/', $text, $found );
 
 		foreach ( $found[0] as $token ) {
@@ -842,7 +878,7 @@ final class TapeScrubber {
 			return sprintf( ', in the field %s, named like a credential, where no public shape passes', $field );
 		}
 
-		return ': declare it as a secret setting, or name it in providerSecrets() if the provider issues it; if it is public, declare it in publicCodes(), the shape of its id in publicIdShapes(), or, for a 64-hex digest, its field in publicDigestFields(); a public shape never passes with a secret\'s prefix';
+		return ': declare it as a secret setting, or name it in providerSecrets() if the provider issues it; if it is public, declare it in publicCodes(), the shape of its id in publicIdShapes(), or, for a 64-hex digest, its field in publicDigestFields(), or, for a base64 signature, its field in publicSignatureFields(); a public shape never passes with a secret\'s prefix';
 	}
 
 	/**
@@ -867,7 +903,38 @@ final class TapeScrubber {
 			}
 		}
 
-		return 1 === preg_match( self::DIGEST, $token ) && in_array( strtolower( $field ), array_map( 'strtolower', $this->publicDigestFields ), true );
+		return 1 === preg_match( self::DIGEST, $token ) && self::declares( $this->publicDigestFields, $field );
+	}
+
+	/**
+	 * Tells whether a whole value is a signature: base64 of SIGNATURE_LEAST to SIGNATURE_MOST characters.
+	 *
+	 * The shape is strict: the standard alphabet in whole groups of four, with `=` padding at the
+	 * end only. A value in any other shape, such as one with `_` or `-` or a space, is no
+	 * signature, and a field that holds one is read by the token rule like any other.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $value The value, as it is written.
+	 * @return bool True for a base64 value within the bounds.
+	 */
+	public static function isSignature( string $value ): bool {
+		return strlen( $value ) >= self::SIGNATURE_LEAST && strlen( $value ) <= self::SIGNATURE_MOST && 1 === preg_match( self::BASE64, $value );
+	}
+
+	/**
+	 * Tells whether a test declared a field, by its name in any case.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string[] $declared The names the test declared.
+	 * @param string   $field    The field's name.
+	 * @return bool True when the field is one of them.
+	 *
+	 * @phpstan-param list<string> $declared
+	 */
+	private static function declares( array $declared, string $field ): bool {
+		return in_array( strtolower( $field ), array_map( 'strtolower', $declared ), true );
 	}
 
 	/**

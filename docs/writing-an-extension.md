@@ -519,7 +519,10 @@ long status; an id of exactly a shape the test names in `publicIdShapes()`, a pr
 number of letters and digits after it (`'pi_' => 24`) or the least and the most
 (`'cus_' => array( 14, 24 )`); a
 64-character hexadecimal digest in a field the test names in `publicDigestFields()`, such as a
-delivery's signature header; and the media type of a `Content-Type` or `Accept` header. No public
+delivery's signature header; a whole value in base64 (the standard alphabet in whole groups of
+four, `=` padding at the end) of 20 to 1024 characters in a field the test names in
+`publicSignatureFields()`, such as the signature a provider puts on a public delivery, kept as it
+was recorded; and the media type of a `Content-Type` or `Accept` header. No public
 shape passes for a token with a secret's prefix (`sk_`, `rk_`, `whsec_`, `cs_`, `secret_`,
 `private_`, `token_`, `key_`, `pass_` or `password_`, or `_live_`, `_test_`, `_secret_`,
 `_private_`, `_token_` or `_key_` inside it), in a field named like a credential (`key`, or a name
@@ -546,6 +549,10 @@ protected function publicIdShapes(): array {
 
 protected function publicDigestFields(): array {
 	return array( 'example-signature' );
+}
+
+protected function publicSignatureFields(): array {
+	return array( 'example-signature-base64' );
 }
 
 protected function publicCodes(): array {

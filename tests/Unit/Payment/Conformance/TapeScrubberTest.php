@@ -540,6 +540,146 @@ final class TapeScrubberTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a base64 signature in a field the test declares is kept as it was recorded, in a header, a body field and a committed tape, beside a digest field that is kept as before.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_signature_in_a_declared_field_is_kept_as_recorded(): void {
+		$signature = self::signature( 344 );
+		$digest    = 't=1780315200,v1=' . hash_hmac( 'sha256', 'body', 'key' );
+		$scrubber  = self::signingScrubber();
+		$sent      = array(
+			'mode'      => 'test',
+			'signed_at' => '2026-06-01T12:00:00+00:00',
+			'headers'   => array(
+				'x-signature'         => $signature,
+				'reference-signature' => $digest,
+			),
+			'body'      => (string) json_encode( array( 'signature' => $signature ), JSON_UNESCAPED_SLASHES ),
+		);
+		$written   = $scrubber->delivery( $sent, static fn( array $headers ): array => $headers );
+
+		$this->assertEquals( $sent['headers'], $written['headers'], 'The scrubber sorts the headers; their values are as recorded.' );
+		$this->assertSame( $sent['body'], $written['body'] );
+		$scrubber->scanDelivery( $written, 'The delivery authorized' );
+
+		$this->file = (string) tempnam( sys_get_temp_dir(), 'seocart-tape-' );
+		file_put_contents( $this->file, (string) json_encode( $written ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- A scratch file of the test.
+		$scrubber->scanFile( $this->file );
+	}
+
+	/**
+	 * Tests that a signature is refused in a field the test does not declare, in a digest field, and in a field named like a credential even when declared.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_signature_is_refused_outside_a_declared_field(): void {
+		$signature = self::signature( 344 );
+		$delivery  = static fn( string $header ): array => array(
+			'headers' => array( $header => $signature ),
+			'body'    => '{"id":"evt_1"}',
+		);
+		$body      = array(
+			'headers' => array(),
+			'body'    => (string) json_encode( array( 'signature' => $signature ), JSON_UNESCAPED_SLASHES ),
+		);
+
+		self::signingScrubber()->scanDelivery( $delivery( 'x-signature' ), 'The delivery authorized' );
+		$this->assertRefused( 'The delivery authorized, its header x-signature holds an opaque token', $signature, fn() => self::publicScrubber()->scanDelivery( $delivery( 'x-signature' ), 'The delivery authorized' ) );
+		$this->assertRefused( 'The delivery authorized, its header x-other holds an opaque token', $signature, fn() => self::signingScrubber()->scanDelivery( $delivery( 'x-other' ), 'The delivery authorized' ) );
+		$this->assertRefused( 'The delivery authorized, its header reference-signature holds an opaque token', $signature, fn() => self::signingScrubber()->scanDelivery( $delivery( 'reference-signature' ), 'The delivery authorized' ) );
+		$this->assertRefused( 'The delivery authorized, its body field signature holds an opaque token', $signature, fn() => self::publicScrubber()->scanDelivery( $body, 'The delivery authorized' ) );
+		$this->assertRefused( 'The delivery authorized, its header signing_secret holds an opaque token', $signature, fn() => ( new TapeScrubber( array(), array(), array(), array(), array(), array(), array( 'signing_secret' ) ) )->scanDelivery( $delivery( 'signing_secret' ), 'The delivery authorized' ) );
+	}
+
+	/**
+	 * Returns the values a declared signature field may hold, with whether the recording keeps each one.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string, bool}> The value, and whether the scan lets it through.
+	 */
+	public function signatureValues(): array {
+		$run = str_repeat( 'Ab1C', 6 );
+
+		return array(
+			'a signature of both signs and padding' => array( self::signature( 344 ), true ),
+			'the least, 20 characters'              => array( str_repeat( 'Ab1C', 5 ), true ),
+			'19, which no token rule reads'         => array( substr( str_repeat( 'Ab1C', 5 ), 0, 19 ), true ),
+			'the most, 1024 characters'             => array( str_repeat( 'Ab1C', 256 ), true ),
+			'one group over the most, 1028'         => array( str_repeat( 'Ab1C', 257 ), false ),
+			'padding inside the value'              => array( $run . '==Ab1C', false ),
+			'a length that is no whole group'       => array( $run . 'Zg=', false ),
+			'padding of three'                      => array( $run . 'Z===', false ),
+			'a space inside the value'              => array( $run . ' ' . $run, false ),
+			'a hyphen, as base64url writes it'      => array( $run . '-b1C', false ),
+			'an underscore, as base64url writes it' => array( $run . '_b1C', false ),
+			'a trailing line break'                 => array( $run . "\n", false ),
+			'a 64-hex digest, which is also base64' => array( hash( 'sha256', 'body' ), true ),
+		);
+	}
+
+	/**
+	 * Tests that a declared signature field is kept only for a whole value in base64 of 20 to 1024 characters, in a header and in a body field; any other value is read by the token rule.
+	 *
+	 * A value shorter than 20 characters holds no token, so it is kept as every short value is.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider signatureValues
+	 * @group conformance
+	 *
+	 * @param string $value The value.
+	 * @param bool   $kept  Whether the scan lets it through.
+	 */
+	public function test_a_declared_signature_field_keeps_only_base64_of_the_bounds( string $value, bool $kept ): void {
+		$scrubber = self::signingScrubber();
+		$scan     = array(
+			'its header x-signature'   => array(
+				'headers' => array( 'x-signature' => $value ),
+				'body'    => '{"id":"evt_1"}',
+			),
+			'its body field signature' => array(
+				'headers' => array(),
+				'body'    => (string) json_encode( array( 'signature' => $value ), JSON_UNESCAPED_SLASHES ),
+			),
+		);
+
+		foreach ( $scan as $named => $delivery ) {
+			if ( $kept ) {
+				$scrubber->scanDelivery( $delivery, 'The delivery authorized' );
+				$this->addToAssertionCount( 1 );
+
+				continue;
+			}
+
+			$this->assertRefused( 'The delivery authorized, ' . $named . ' holds an opaque token', $value, fn() => $scrubber->scanDelivery( $delivery, 'The delivery authorized' ) );
+		}
+	}
+
+	/**
+	 * Tests the signature's bounds and shape on their own: 20 to 1024 characters of the standard alphabet in whole groups of four, `=` padding at the end only.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_the_signature_bounds_are_the_token_length_and_1024(): void {
+		$this->assertSame( TapeScrubber::TOKEN_LENGTH, TapeScrubber::SIGNATURE_LEAST );
+		$this->assertSame( 1024, TapeScrubber::SIGNATURE_MOST );
+		$this->assertFalse( TapeScrubber::isSignature( str_repeat( 'Ab1C', 4 ) . 'Ab1' ) );
+		$this->assertTrue( TapeScrubber::isSignature( str_repeat( 'Ab1C', 5 ) ) );
+		$this->assertTrue( TapeScrubber::isSignature( str_repeat( 'Ab1C', 5 ) . 'Zm9=' ) );
+		$this->assertTrue( TapeScrubber::isSignature( str_repeat( 'Ab1C', 255 ) . 'Zg==' ) );
+		$this->assertFalse( TapeScrubber::isSignature( str_repeat( 'Ab1C', 256 ) . 'Zg==' ) );
+		$this->assertFalse( TapeScrubber::isSignature( '' ) );
+	}
+
+	/**
 	 * Tests that a header that carries credentials refuses an exchange that keeps it, and that scrubbing drops it.
 	 *
 	 * @since 0.2.0
@@ -1243,6 +1383,31 @@ final class TapeScrubberTest extends TestCase {
 	 */
 	private static function scrubber(): TapeScrubber {
 		return new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), array(), array(), array(), self::PLANTED_HEADERS );
+	}
+
+	/**
+	 * Builds the scrubber of a test that declares a digest header and two signature fields, a header and a body field.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return TapeScrubber The scrubber.
+	 */
+	private static function signingScrubber(): TapeScrubber {
+		return new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), array(), array( 'reference-signature' ), array(), array(), array( 'x-signature', 'signature' ) );
+	}
+
+	/**
+	 * Builds a base64 value of a length that is a whole number of groups: runs of letters and digits between `+` and `/`, and padding at the end.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $length The length, a multiple of four, 4 or more.
+	 * @return string The value.
+	 */
+	private static function signature( int $length ): string {
+		$unit = str_repeat( 'Ab1Cd2Ef3Gh4', 3 ) . '+Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Yz3/';
+
+		return substr( str_repeat( $unit, (int) ceil( $length / strlen( $unit ) ) ), 0, $length - 4 ) . 'Zg==';
 	}
 
 	/**

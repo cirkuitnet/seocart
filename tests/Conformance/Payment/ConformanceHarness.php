@@ -1372,7 +1372,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 
 		GatewayKernel::writeDocument( $this->kernel, $descriptor, $values );
 
-		$this->scrubber = new TapeScrubber( $this->credentialsToScrub(), $this->providerSecrets(), $this->publicIdShapes(), $this->publicDigestFields(), $this->publicCodes(), $this->publicHeaders() );
+		$this->scrubber = new TapeScrubber( $this->credentialsToScrub(), $this->providerSecrets(), $this->publicIdShapes(), $this->publicDigestFields(), $this->publicCodes(), $this->publicHeaders(), $this->publicSignatureFields() );
 		$this->transport->scrubWith( $this->scrubber );
 		$this->writeTapeSettings( $plain );
 	}
@@ -1437,6 +1437,23 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * @return list<string> The fields' names: a header's, a body field's or a query field's.
 	 */
 	protected function publicDigestFields(): array {
+		return array();
+	}
+
+	/**
+	 * Returns the fields, by name, whose whole value is a public base64 signature, such as the signature a provider puts on a delivery of a public body: none unless the test names them.
+	 *
+	 * A recording refuses an opaque token. A value that is base64 (the standard alphabet, whole
+	 * groups of four, `=` padding) of TapeScrubber::SIGNATURE_LEAST to TapeScrubber::SIGNATURE_MOST
+	 * characters, in a field named here, is kept as it was recorded; any other value in it is read as
+	 * in any other field. Name a field only when the provider's signature over a body that is public
+	 * is no secret: never a field that holds a key, a token or a credential, which no declaration admits.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> The fields' names: a header's, a body field's or a query field's.
+	 */
+	protected function publicSignatureFields(): array {
 		return array();
 	}
 
