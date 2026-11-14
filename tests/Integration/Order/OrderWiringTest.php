@@ -11,8 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Order;
 
+use SEOCart\Customer\Application\Customers;
 use SEOCart\Order\Application\ActorCustomers;
-use SEOCart\Order\Application\NoCustomers;
 use SEOCart\Order\Application\OrderAccessPolicy;
 use SEOCart\Order\Application\Orders;
 use SEOCart\Order\Domain\AccessKeys;
@@ -36,8 +36,8 @@ use SEOCart\Tests\Support\KernelContainer;
  * manager, are resolved before the count: the job queue behind the publisher reads its lock mode
  * when it is built, which is that module's cost, not the order module's.
  *
- * Until the store keeps customer records, the port that says which customer an actor is resolves
- * to NoCustomers, so no order belongs to any actor.
+ * The port that says which customer an actor is resolves to the customer module's Customers, which
+ * reads the customer records.
  *
  * Planted violations, each shown red and removed: in Modules::orderRegister(), leave out the
  * OrderNumberGenerator binding: the service cannot be built; leave out the ActorCustomers
@@ -74,7 +74,7 @@ final class OrderWiringTest extends DatabaseTestCase {
 				ConversionContexts::class   => MysqlConversionContexts::class,
 				OrderStatusRegistry::class  => OrderStatusRegistry::class,
 				Orders::class               => Orders::class,
-				ActorCustomers::class       => NoCustomers::class,
+				ActorCustomers::class       => Customers::class,
 				OrderAccessPolicy::class    => OrderAccessPolicy::class,
 				OrderStatusRead::class      => OrderStatusRead::class,
 			),

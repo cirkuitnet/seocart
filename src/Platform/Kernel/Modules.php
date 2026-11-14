@@ -83,6 +83,9 @@ use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Checkout\Interfaces\Rest\WebhookRoute;
 use SEOCart\Contracts\HttpClient;
 use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Customer\Application\Customers;
+use SEOCart\Customer\Domain\CustomerRepository;
+use SEOCart\Customer\Infrastructure\MysqlCustomerRepository;
 use SEOCart\Interfaces\Operations\AbilitiesAdapter;
 use SEOCart\Interfaces\Operations\CliAdapter;
 use SEOCart\Interfaces\Operations\ErrorTranslator;
@@ -116,7 +119,6 @@ use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
 use SEOCart\Inventory\Infrastructure\MysqlStockRepository;
 use SEOCart\Inventory\Infrastructure\MysqlTransferRepository;
 use SEOCart\Order\Application\ActorCustomers;
-use SEOCart\Order\Application\NoCustomers;
 use SEOCart\Order\Application\OrderAccessPolicy;
 use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Application\Orders;
@@ -502,6 +504,7 @@ final class Modules {
 		self::checkoutRegister( $container );
 		self::pricingRegister( $container );
 		self::orderRegister( $container );
+		self::customerRegister( $container );
 		self::paymentRegister( $container );
 		self::promotionRegister( $container );
 		self::kernelRegister( $container );
@@ -1697,9 +1700,37 @@ final class Modules {
 				$c->get( UnreconciledMoney::class )
 			)
 		);
-		$container->bind( ActorCustomers::class, static fn(): ActorCustomers => new NoCustomers() );
+		$container->bind( ActorCustomers::class, static fn( Container $c ): ActorCustomers => $c->get( Customers::class ) );
 		$container->bind( OrderAccessPolicy::class, static fn( Container $c ): OrderAccessPolicy => new OrderAccessPolicy( $c->get( OrderRepository::class ), $c->get( AccessKeys::class ), $c->get( ActorCustomers::class ) ) );
 		$container->bind( OrderStatusRead::class, static fn( Container $c ): OrderStatusRead => new OrderStatusRead( $c->get( OrderAccessPolicy::class ) ) );
+	}
+
+	/**
+	 * The customer module: the customer records and the service that says which record an actor is, which the order module's ActorCustomers port resolves to.
+	 *
+	 * It adds no hook: a record is created by the placement that asks for it, inside its first unit
+	 * of work, and a link to a user who is gone matches nobody without a hook following the user.
+	 * The service reads a user's registration time through WordPress's user read, which answers the
+	 * authenticated user from the request's cache.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Container $container The container.
+	 */
+	private static function customerRegister( Container $container ): void {
+		$container->bind( CustomerRepository::class, static fn( Container $c ): CustomerRepository => new MysqlCustomerRepository( $c->get( Database::class ) ) );
+		$container->bind(
+			Customers::class,
+			static fn( Container $c ): Customers => new Customers(
+				$c->get( CustomerRepository::class ),
+				$c->get( IdGenerator::class ),
+				static function ( int $userId ): ?string {
+					$user = get_userdata( $userId );
+
+					return $user instanceof \WP_User ? (string) $user->user_registered : null;
+				}
+			)
+		);
 	}
 
 	/**

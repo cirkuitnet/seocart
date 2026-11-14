@@ -13,15 +13,14 @@ namespace SEOCart\Tests\Integration\Order;
 
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
-use SEOCart\Order\Application\ActorCustomers;
 use SEOCart\Order\Domain\InsertedOrder;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Order\Interfaces\StoreApi\OrderStoreOperations;
-use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Kernel\Container;
 use SEOCart\Platform\Kernel\Modules;
 use SEOCart\Support\Clock;
 use SEOCart\Tests\Support\CreatesUsers;
+use SEOCart\Tests\Support\Customer\CustomerRecords;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\KernelContainer;
 use SEOCart\Tests\Support\KernelHooks;
@@ -36,10 +35,9 @@ use Spy_REST_Server;
  *
  * The real Modules::register() and subscribe() serve the production operations on a spy server,
  * over the test's connection and real order tables, the way WordPress serves a request from the
- * web. One service is replaced: the port that says which customer an actor is. The store keeps no
- * customer records yet, so in production no actor is a customer; here it maps the owner's user to
- * the customer the order is placed for, and another user to another customer. A logged-in user
- * signs in as a browser does, with the login cookie and a REST nonce.
+ * web. The customers are real: real WordPress users, each with the customer record a first order
+ * gives them, linked at their own registration time, and the orders placed for those records. A
+ * logged-in user signs in as a browser does, with the login cookie and a REST nonce.
  *
  * Every refusal is `order.not_found`: no such order, an order that is not the caller's, a wrong
  * key and an expired key give the same status, the same headers and the same bytes.
@@ -59,25 +57,8 @@ use Spy_REST_Server;
 final class OrderStatusRouteTest extends OrderTestCase {
 
 	use CreatesUsers;
+	use CustomerRecords;
 	use ServesRequests;
-
-	/**
-	 * The customer the owner's order is placed for.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var int
-	 */
-	private const OWNER = 12;
-
-	/**
-	 * Another customer, whose user does not own the order.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var int
-	 */
-	private const SOMEONE_ELSE = 7;
 
 	/**
 	 * The server.
@@ -89,15 +70,6 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	private Spy_REST_Server $server;
 
 	/**
-	 * The customer each user acts as, by user id; a user not listed is no customer.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @var array<int, int>
-	 */
-	private array $customers = array();
-
-	/**
 	 * The name of every cookie the cart token's transport sent.
 	 *
 	 * @since 0.1.0
@@ -107,20 +79,21 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	private array $cookies = array();
 
 	/**
-	 * Wires the kernel over the test's connection, with the customers double and a recording cookie sender, and boots a spy server.
+	 * Wires the kernel over the test's connection, with a recording cookie sender, creates the customer records' table, and boots a spy server.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The real customer records, in place of a double.
 	 */
 	public function set_up(): void {
 		parent::set_up();
 
 		$this->saveRequestGlobals();
+		$this->createCustomerTable();
 
 		$container = KernelContainer::build(
 			$this->db,
 			$this->reporter(),
 			array(
-				ActorCustomers::class     => fn(): ActorCustomers => $this->customersDouble(),
 				CartTokenTransport::class => fn( Container $c ): CartTokenTransport => new CartTokenTransport(
 					$c->get( Clock::class ),
 					function ( string $name ): void {
@@ -158,37 +131,49 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	}
 
 	/**
-	 * Tests that a logged-in user who is not the order's customer is refused, without a key and with a valid key for another order.
+	 * Tests that a logged-in user who is not the order's customer is refused, without a key and with a valid key for another order: another customer, and an administrator who is no customer.
 	 *
 	 * Written first: an exemption for logged-in users is the shape of both documented
 	 * vulnerabilities the policy exists to prevent. The key of the user's own order still opens
-	 * that order: being logged in neither grants nor withholds anything.
+	 * that order: being logged in neither grants nor withholds anything. An administrator is
+	 * refused like anyone: a capability grants nothing on a storefront route.
 	 *
 	 * Planted violation: in OrderAccessPolicy::grants(), add `if ( is_user_logged_in() ) { return true; }`
 	 * first. The non-owner then reads the order.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Real customer records; an administrator in the same seat.
 	 */
 	public function test_a_logged_in_customer_who_does_not_own_the_order_is_refused_with_or_without_a_key(): void {
-		$order   = $this->place( NewOrders::forTwoLines( 'USD', 'USD', self::OWNER ) );
-		$another = $this->place();
-		$user    = $this->createUser( 'subscriber' );
-
-		$this->customers[ $user ] = self::SOMEONE_ELSE;
+		$owner         = $this->createUser( 'subscriber' );
+		$order         = $this->place( NewOrders::forTwoLines( 'USD', 'USD', $this->plantCustomer( $owner, self::registeredAt( $owner ) ) ) );
+		$someoneElse   = $this->createUser( 'subscriber' );
+		$another       = $this->place( NewOrders::forTwoLines( 'USD', 'USD', $this->plantCustomer( $someoneElse, self::registeredAt( $someoneElse ) ) ) );
+		$administrator = $this->createUser( 'administrator' );
+		$guestOrder    = $this->place();
 
 		$attempts = array(
 			'without a key'             => array(),
 			'with another order\'s key' => array( OrderStoreOperations::KEY_HEADER => $another->accessKey ),
 		);
 
-		foreach ( $attempts as $attempt => $headers ) {
-			$this->assertNotFound( $this->read( $order->uuid, $this->logIn( $user ) + $headers ), "A logged-in user who does not own the order, {$attempt}" );
+		foreach ( array(
+			'another customer'                    => $someoneElse,
+			'an administrator who is no customer' => $administrator,
+		) as $who => $user ) {
+			foreach ( $attempts as $attempt => $headers ) {
+				$this->assertNotFound( $this->read( $order->uuid, $this->logIn( $user ) + $headers ), "{$who}, logged in, {$attempt}" );
+			}
 		}
 
-		$own = $this->read( $another->uuid, $this->logIn( $user ) + array( OrderStoreOperations::KEY_HEADER => $another->accessKey ) );
+		$own = $this->read( $another->uuid, $this->logIn( $someoneElse ) + array( OrderStoreOperations::KEY_HEADER => $another->accessKey ) );
 
 		$this->assertSame( 200, $own['status'], 'A key opens its order to a logged-in user as to a guest.' );
 		$this->assertSame( $another->uuid, $own['body']['uuid'] ?? null );
+
+		$keyed = $this->read( $guestOrder->uuid, $this->logIn( $administrator ) + array( OrderStoreOperations::KEY_HEADER => $guestOrder->accessKey ) );
+
+		$this->assertSame( 200, $keyed['status'], 'A key opens its order to an administrator as to a guest.' );
 	}
 
 	/**
@@ -320,10 +305,8 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	 * @since 0.1.0
 	 */
 	public function test_the_logged_in_customer_reads_the_order_without_a_key(): void {
-		$order = $this->place( NewOrders::forTwoLines( 'USD', 'USD', self::OWNER ) );
 		$user  = $this->createUser( 'subscriber' );
-
-		$this->customers[ $user ] = self::OWNER;
+		$order = $this->place( NewOrders::forTwoLines( 'USD', 'USD', $this->plantCustomer( $user, self::registeredAt( $user ) ) ) );
 
 		$read = $this->read( $order->uuid, $this->logIn( $user ) );
 
@@ -333,7 +316,7 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	}
 
 	/**
-	 * Tests that a key is refused once the database clock reaches its expiry, and works until then.
+	 * Tests that a key is refused once the database clock reaches its expiry, and works until then; the order's customer still reads it.
 	 *
 	 * The expiry is planted with the database clock, never a PHP one.
 	 *
@@ -341,9 +324,11 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	 * expired key then reads the order.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The order's customer reads it once its key has expired.
 	 */
 	public function test_an_expired_key_is_refused(): void {
-		$order = $this->place();
+		$owner = $this->createUser( 'subscriber' );
+		$order = $this->place( NewOrders::forTwoLines( 'USD', 'USD', $this->plantCustomer( $owner, self::registeredAt( $owner ) ) ) );
 		$key   = $this->asGuest() + array( OrderStoreOperations::KEY_HEADER => $order->accessKey );
 
 		$this->expireKey( $order, '+ INTERVAL 1 HOUR' );
@@ -354,6 +339,11 @@ final class OrderStatusRouteTest extends OrderTestCase {
 
 		$this->expireKey( $order, '- INTERVAL 1 SECOND' );
 		$this->assertNotFound( $this->read( $order->uuid, $key ), 'A key a second after it expired' );
+
+		$owned = $this->read( $order->uuid, $this->logIn( $owner ) + array( OrderStoreOperations::KEY_HEADER => $order->accessKey ) );
+
+		$this->assertSame( 200, $owned['status'], 'The order\'s customer reads it, with its expired key or without: ' . (string) wp_json_encode( $owned['body'] ) );
+		$this->assertSame( 200, $this->read( $order->uuid, $this->logIn( $owner ) )['status'] );
 	}
 
 	/**
@@ -564,45 +554,5 @@ final class OrderStatusRouteTest extends OrderTestCase {
 		$this->assertContains( 'Cookie', array_map( 'trim', explode( ',', $read['headers']['Vary'] ?? '' ) ) );
 		$this->assertArrayNotHasKey( 'Set-Cookie', $read['headers'] );
 		$this->assertSame( array(), $read['cookies'], 'The read sent a cookie.' );
-	}
-
-	/**
-	 * Returns the customers double: each user's customer from $customers, read when asked.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return ActorCustomers The double.
-	 */
-	private function customersDouble(): ActorCustomers {
-		return new class( fn( int $user ): ?int => $this->customers[ $user ] ?? null ) implements ActorCustomers {
-
-			/**
-			 * Returns a user's customer.
-			 *
-			 * @var \Closure(int): ?int
-			 */
-			private \Closure $lookup;
-
-			/**
-			 * Creates the double.
-			 *
-			 * @param \Closure $lookup Returns a user's customer.
-			 *
-			 * @phpstan-param \Closure(int): ?int $lookup
-			 */
-			public function __construct( \Closure $lookup ) {
-				$this->lookup = $lookup;
-			}
-
-			/**
-			 * Returns the customer the actor's user is mapped to.
-			 *
-			 * @param Actor $actor The actor.
-			 * @return int|null The customer, or null.
-			 */
-			public function customerOf( Actor $actor ): ?int {
-				return ( $this->lookup )( $actor->userId() );
-			}
-		};
 	}
 }
