@@ -646,6 +646,20 @@ final class ZipCheckerTest extends TestCase {
 	}
 
 	/**
+	 * Tests that an extension's zip may ship a script as written, such as a payment island, in `assets/`; SEOCart's own zip ships its scripts built, and may not.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_extension_zip_may_ship_a_script_as_written(): void {
+		$entries = $this->goodExtensionEntries();
+
+		$entries['seocart-example/assets/island.js'] = "( () => {} )();\n";
+
+		$this->assertSame( array(), ZipChecker::check( $this->zip( $entries, 'seocart-example-0.1.0.zip' ), ZipChecker::DEFAULT_BUDGET_BYTES, ZipChecker::DEFAULT_LIMIT_BYTES, self::LOCK_FILE, PluginPackage::at( $this->extensionRoot() ) ) );
+		$this->assertArrayNotHasKey( 'assets/', PluginPackage::TOP_LEVEL, 'SEOCart ships its scripts built, from build/.' );
+	}
+
+	/**
 	 * Tests that an extension's zip holding tests, a scoped library or a second root file fails, and so does one without its source.
 	 *
 	 * @since 0.2.0
