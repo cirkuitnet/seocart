@@ -79,7 +79,8 @@ final class PluginPackage {
 	/**
 	 * An extension's allow-list, after its main file, which is always required.
 	 *
-	 * No `vendor-scoped/`: an extension bundles no library.
+	 * No `vendor-scoped/`: an extension bundles no library. `assets/` holds files that ship as
+	 * written, such as the script of a payment island.
 	 *
 	 * @since 0.2.0
 	 *
@@ -95,6 +96,7 @@ final class PluginPackage {
 		'templates/'    => false,
 		'languages/'    => false,
 		'build/'        => false,
+		'assets/'       => false,
 	);
 
 	/**
