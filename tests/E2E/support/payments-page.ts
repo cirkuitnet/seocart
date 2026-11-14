@@ -13,12 +13,15 @@
  *
  * - storeRequests() records every request the page sends; expectOnlyHostWrites() fails when any
  *   Store API write is not the host's placement or resume, so an island that writes to the cart
- *   fails the test;
+ *   fails the test, and when the page sent more placements and resumes than the host did, so an
+ *   island that places or resumes by itself fails it too: the page counts the host's own writes
+ *   by the caller of `fetch`, the host's module, in the tab's `sessionStorage`;
  * - expectNoSecretInUrls() fails when a URL or a Store API request carries a secret given, a
  *   provider's handle (`_secret_`) or a card number;
  * - expectRemountOn() counts the island's mounts across a change of the cart;
  * - expectNothingSecretKept() fails when the tab's kept placement holds more than its six members,
- *   or a secret given.
+ *   or any item of the tab's `sessionStorage` or the origin's `localStorage` holds a secret given,
+ *   a provider's handle or a card number.
  *
  * The Store API allows one client five placements and resumes an hour, and every test of a runner
  * would be the same client. forwardClientAddress() makes each test a client of its own: it gives
@@ -251,6 +254,55 @@ export async function servePaymentsPage(
 	return address;
 }
 
+/** The `sessionStorage` item a page counts the host's own placements and resumes in. */
+export const HOST_WRITES_ITEM = 'seocart-fixture:host-writes';
+
+/**
+ * Returns the script that counts, on a page, the writes the host sends itself.
+ *
+ * It wraps `fetch` before any island or the module runs, and counts a POST whose caller, the
+ * frame under the wrapper's own in the stack, is the host's module: an island's own request, or
+ * one the host makes an island's call within, has another caller. The count is kept in the tab's
+ * `sessionStorage`, so it spans the page's loads as the ledger does.
+ *
+ * @param moduleUrl The address of the host's module, as the page loads it.
+ */
+export function hostWriteCounter( moduleUrl: string ): string {
+	return `( () => {
+	const send = window.fetch;
+	window.fetch = function ( ...args ) {
+		const frames = String( new Error().stack )
+			.split( '\\n' )
+			.filter( ( line ) => /:\\d+:\\d+\\)?$/.test( line.trim() ) );
+		const method = String( args[ 1 ]?.method ?? 'GET' ).toUpperCase();
+
+		if ( 'POST' === method && ( frames[ 1 ] ?? '' ).includes( ${ JSON.stringify(
+			moduleUrl
+		) } ) ) {
+			try {
+				const item = ${ JSON.stringify( HOST_WRITES_ITEM ) };
+
+				window.sessionStorage.setItem( item, String( Number( window.sessionStorage.getItem( item ) ) + 1 ) );
+			} catch {}
+		}
+
+		return send.apply( this, args );
+	};
+} )();`;
+}
+
+/**
+ * Returns how many placements and resumes the host sent from the page's tab.
+ *
+ * @param page The fixture page.
+ */
+export function hostWritesSent( page: Page ): Promise< number > {
+	return page.evaluate(
+		( item ) => Number( window.sessionStorage.getItem( item ) ),
+		HOST_WRITES_ITEM
+	);
+}
+
 /**
  * Returns the address of one of the page's island scripts, for a test that adds it later.
  *
@@ -294,6 +346,7 @@ function composePage( options: PaymentsPageOptions, address: string ): string {
 <script>
 window.__seocartPayments = { ready: 0, events: [] };
 document.addEventListener( 'seocart:payments:ready', () => window.__seocartPayments.ready++ );
+${ hostWriteCounter( module ) }
 </script>
 </head>
 <body>
@@ -561,8 +614,10 @@ const KEPT_MEMBERS = [
 ];
 
 /**
- * Fails when the tab keeps more of a placement than its six members, or a secret given: a payment
- * token, a provider's client handle, an order key.
+ * Fails when the tab keeps more of a placement than its six members, or when any item of the tab's
+ * `sessionStorage` or of the origin's `localStorage`, its name or its value, holds a secret given
+ * (a payment token, an order key), a provider's client handle or a card number. The page that
+ * reads the storage must be at the site's origin.
  *
  * @param page    The fixture page.
  * @param secrets The secrets of the test.
@@ -571,24 +626,46 @@ export async function expectNothingSecretKept(
 	page: Page,
 	secrets: string[] = []
 ): Promise< void > {
-	const text = await page.evaluate( () =>
-		window.sessionStorage.getItem( 'seocart:placement' )
+	const kept = await page.evaluate( () => {
+		const items = ( storage: Storage ) =>
+			Array.from( { length: storage.length }, ( _, index ) => {
+				const name = storage.key( index ) ?? '';
+
+				return [ name, storage.getItem( name ) ?? '' ];
+			} );
+
+		return {
+			sessionStorage: items( window.sessionStorage ),
+			localStorage: items( window.localStorage ),
+		};
+	} );
+	const placement = kept.sessionStorage.find(
+		( [ name ] ) => 'seocart:placement' === name
 	);
 
-	if ( null === text ) {
-		return;
+	if ( placement ) {
+		expect(
+			Object.keys( JSON.parse( placement[ 1 ] ) ).sort(),
+			'The tab keeps the placement’s six members and nothing else.'
+		).toEqual( KEPT_MEMBERS );
 	}
 
-	expect(
-		Object.keys( JSON.parse( text ) ).sort(),
-		'The tab keeps the placement’s six members and nothing else.'
-	).toEqual( KEPT_MEMBERS );
+	for ( const [ storage, items ] of Object.entries( kept ) ) {
+		for ( const [ name, value ] of items ) {
+			const text = `${ name } ${ value }`;
 
-	for ( const secret of [ '_secret_', ...secrets ] ) {
-		expect(
-			text.includes( secret ),
-			'The tab keeps a secret with the placement.'
-		).toBe( false );
+			for ( const secret of [ '_secret_', ...secrets ] ) {
+				expect(
+					'' !== secret && text.includes( secret ),
+					`The tab keeps a secret in ${ storage }, in the item "${ name }".`
+				).toBe( false );
+			}
+
+			expect(
+				( text.match( /\d{13,19}/g ) ?? [] ).some( passesLuhn ),
+				`The tab keeps a card number in ${ storage }, in the item "${ name }".`
+			).toBe( false );
+		}
 	}
 }
 
@@ -603,11 +680,18 @@ const FIXTURE_READS = [ `GET ${ STORE_ROUTE }/cart` ];
 
 /**
  * Fails when the page sent the Store API anything but the host's two writes, each with the Store
- * API's header and the placement with its idempotency key, and the fixture's own read of the cart.
+ * API's header and the placement with its idempotency key, and the fixture's own read of the cart;
+ * and when it sent more placements and resumes than the host did itself, as the page counted them
+ * (hostWriteCounter()). The ledger must have been started before the page's first load, and the
+ * page must be at the site's origin.
  *
+ * @param page   The fixture page.
  * @param ledger What the page sent.
  */
-export function expectOnlyHostWrites( ledger: RequestLedger ): void {
+export async function expectOnlyHostWrites(
+	page: Page,
+	ledger: RequestLedger
+): Promise< void > {
 	const description = ledger.describe();
 
 	for ( const entry of ledger.store ) {
@@ -632,6 +716,16 @@ export function expectOnlyHostWrites( ledger: RequestLedger ): void {
 			).toBeTruthy();
 		}
 	}
+
+	const sent = ledger.store.filter( ( entry ) =>
+		HOST_WRITES.includes( `${ entry.method } ${ entry.route }` )
+	).length;
+	const host = await hostWritesSent( page );
+
+	expect(
+		sent,
+		`The page sent ${ sent } placements and resumes, the host ${ host } of them: the others are an island’s own.\n${ description }`
+	).toBe( host );
 }
 
 /**

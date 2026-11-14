@@ -1,13 +1,15 @@
 /**
  * The payment fixture's checks, proved without a site: the request ledger passes the host's two
- * writes and the fixture's read, and flags an island's write to the cart; it prints the payment
- * data's member names and never their values, and names the trusted proxies on a 429; the secret
- * scan finds a secret, a provider's handle and a card number, and passes a page with none; the
- * kept-placement check passes the six members and flags anything more; a client address is one
- * of the documentation range.
+ * writes and the fixture's read, and flags an island's write to the cart and a placement an island
+ * sends itself; it prints the payment data's member names and never their values, and names the
+ * trusted proxies on a 429; the secret scan finds a secret, a provider's handle and a card number,
+ * and passes a page with none; the storage check passes a kept placement of six members, and flags
+ * anything more and a secret in any item of either storage; a client address is one of the
+ * documentation range.
  *
  * The page is set with setContent() at a made-up origin whose every request is answered here, so
- * its requests are same-origin as on the fixture page, and nothing reaches a network.
+ * its requests are same-origin as on the fixture page, and nothing reaches a network. A stand-in
+ * for the host's module sends the host's writes, as the module's own calls of `fetch`.
  */
 
 import { test, expect, type Page } from '@playwright/test';
@@ -16,6 +18,7 @@ import {
 	expectNoSecretInUrls,
 	expectNothingSecretKept,
 	expectOnlyHostWrites,
+	hostWriteCounter,
 	shownBody,
 	storeRequests,
 	storeRouteOf,
@@ -24,6 +27,16 @@ import {
 
 /** The made-up shop. */
 const SHOP = 'https://shop.test/';
+
+/** The stand-in for the host's module, at the address the fixture loads the module from. */
+const HOST_MODULE = `${ SHOP }build/storefront/payments.js`;
+
+/** The stand-in's source: it sends requests as the host does, each a call of `fetch` of its own. */
+const HOST_SOURCE = `window.__hostSend = async ( shop, list ) => {
+	for ( const [ path, method, headers, body ] of list ) {
+		await fetch( shop + path, { method, headers, body } );
+	}
+};`;
 
 /** A published test card number, the only kind a test may carry. */
 const TEST_CARD = '4242424242424242';
@@ -34,8 +47,15 @@ const TEST_CARD = '4242424242424242';
  * @param page The page.
  */
 async function shopPage( page: Page ): Promise< RequestLedger > {
-	await page.route( `${ SHOP }**`, ( route ) =>
-		'document' === route.request().resourceType()
+	await page.route( `${ SHOP }**`, ( route ) => {
+		if ( HOST_MODULE === route.request().url() ) {
+			return route.fulfill( {
+				contentType: 'text/javascript',
+				body: HOST_SOURCE,
+			} );
+		}
+
+		return 'document' === route.request().resourceType()
 			? route.fulfill( {
 					contentType: 'text/html',
 					body: '<!doctype html><title>Shop</title>',
@@ -47,8 +67,8 @@ async function shopPage( page: Page ): Promise< RequestLedger > {
 						: 200,
 					contentType: 'application/json',
 					body: '{}',
-				} )
-	);
+				} );
+	} );
 	await page.goto( SHOP );
 
 	const ledger = storeRequests( page );
@@ -56,6 +76,8 @@ async function shopPage( page: Page ): Promise< RequestLedger > {
 	await page.setContent(
 		'<!doctype html><title>Payment</title><p>Payment</p>'
 	);
+	await page.addScriptTag( { content: hostWriteCounter( HOST_MODULE ) } );
+	await page.addScriptTag( { url: HOST_MODULE } );
 
 	return ledger;
 }
@@ -76,6 +98,30 @@ async function send(
 				await fetch( shop + path, { method, headers, body } );
 			}
 		},
+		{ shop: SHOP, list: requests }
+	);
+}
+
+/**
+ * Sends requests from the stand-in for the host's module, in order.
+ *
+ * @param page     The page.
+ * @param requests Each `[ path, method, headers, body ]`, the path under the shop.
+ */
+async function sendAsHost(
+	page: Page,
+	requests: Array< [ string, string, Record< string, string >, string? ] >
+): Promise< void > {
+	await page.evaluate(
+		( { shop, list } ) =>
+			(
+				window as unknown as {
+					__hostSend: (
+						at: string,
+						sent: typeof list
+					) => Promise< void >;
+				}
+			 ).__hostSend( shop, list ),
 		{ shop: SHOP, list: requests }
 	);
 }
@@ -117,22 +163,22 @@ test.describe( 'The payment fixture’s checks', () => {
 	} ) => {
 		const ledger = await shopPage( page );
 
-		await send( page, HOST );
+		await sendAsHost( page, HOST );
 
 		expect( ledger.store.map( ( entry ) => entry.route ) ).toEqual( [
 			'/seocart/store/v1/cart',
 			'/seocart/store/v1/checkout',
 			'/seocart/store/v1/checkout/resume',
 		] );
-		expectOnlyHostWrites( ledger );
+		await expectOnlyHostWrites( page, ledger );
 		expectNoSecretInUrls( ledger, [ 'an-order-key' ] );
 	} );
 
 	test( 'flag an island’s write to the cart', async ( { page } ) => {
 		const ledger = await shopPage( page );
 
+		await sendAsHost( page, HOST );
 		await send( page, [
-			...HOST,
 			[
 				'?rest_route=/seocart/store/v1/cart/lines',
 				'POST',
@@ -141,8 +187,21 @@ test.describe( 'The payment fixture’s checks', () => {
 			],
 		] );
 
-		expect( () => expectOnlyHostWrites( ledger ) ).toThrow(
+		await expect( expectOnlyHostWrites( page, ledger ) ).rejects.toThrow(
 			/POST \/seocart\/store\/v1\/cart\/lines is neither one of the host's writes/
+		);
+	} );
+
+	test( 'flag a placement an island sends itself, though it carries the header and a key', async ( {
+		page,
+	} ) => {
+		const ledger = await shopPage( page );
+
+		await sendAsHost( page, HOST );
+		await send( page, [ HOST[ 1 ] ] );
+
+		await expect( expectOnlyHostWrites( page, ledger ) ).rejects.toThrow(
+			/The page sent 3 placements and resumes, the host 2 of them/
 		);
 	} );
 
@@ -155,7 +214,7 @@ test.describe( 'The payment fixture’s checks', () => {
 			[ '?rest_route=/seocart/store/v1/checkout', 'POST', HEADERS, '{}' ],
 		] );
 
-		expect( () => expectOnlyHostWrites( keyless ) ).toThrow(
+		await expect( expectOnlyHostWrites( page, keyless ) ).rejects.toThrow(
 			/The placement carried no Idempotency-Key/
 		);
 
@@ -170,7 +229,7 @@ test.describe( 'The payment fixture’s checks', () => {
 			],
 		] );
 
-		expect( () => expectOnlyHostWrites( headless ) ).toThrow(
+		await expect( expectOnlyHostWrites( page, headless ) ).rejects.toThrow(
 			/carried no X-SEOCart-Store header/
 		);
 	} );
@@ -283,6 +342,45 @@ test.describe( 'The payment fixture’s checks', () => {
 		await keep( { ...six, key: 'pi_1_secret_2' } );
 		await expect( expectNothingSecretKept( page ) ).rejects.toThrow(
 			/keeps a secret/
+		);
+	} );
+
+	test( 'flag a secret, a provider’s handle or a card number in any item of either storage', async ( {
+		page,
+	} ) => {
+		await shopPage( page );
+
+		const store = ( storage: string, name: string, value: string ) =>
+			page.evaluate(
+				( item ) => {
+					window.sessionStorage.clear();
+					window.localStorage.clear();
+					( 'local' === item.storage
+						? window.localStorage
+						: window.sessionStorage
+					).setItem( item.name, item.value );
+				},
+				{ storage, name, value }
+			);
+
+		await store( 'local', 'island:state', 'ready' );
+		await expectNothingSecretKept( page, [ 'tok_sandbox_value' ] );
+
+		await store( 'session', 'island:state', 'pi_1_secret_2' );
+		await expect( expectNothingSecretKept( page ) ).rejects.toThrow(
+			/keeps a secret in sessionStorage, in the item "island:state"/
+		);
+
+		await store( 'local', 'island:token', 'tok_sandbox_value' );
+		await expect(
+			expectNothingSecretKept( page, [ 'tok_sandbox_value' ] )
+		).rejects.toThrow(
+			/keeps a secret in localStorage, in the item "island:token"/
+		);
+
+		await store( 'local', 'island:card', `{"number":"${ TEST_CARD }"}` );
+		await expect( expectNothingSecretKept( page ) ).rejects.toThrow(
+			/keeps a card number in localStorage/
 		);
 	} );
 

@@ -683,7 +683,7 @@ test.describe( 'The payment section, as a guest', () => {
 		);
 
 		expect( sent.idempotencyKey ).toMatch( UUID );
-		expectOnlyHostWrites( ledger );
+		await expectOnlyHostWrites( page, ledger );
 		expectNoSecretInUrls( ledger, [ String( order.orderKey ) ] );
 		expect( await keptPlacement( page ) ).toBeNull();
 
@@ -756,7 +756,7 @@ test.describe( 'The payment section, as a guest', () => {
 
 		expect( keys ).toHaveLength( 2 );
 		expect( keys[ 1 ] ).not.toBe( keys[ 0 ] );
-		expectOnlyHostWrites( ledger );
+		await expectOnlyHostWrites( page, ledger );
 	} );
 
 	test( '(5) the island completes the step; reloaded in the middle of it, the host resumes on loading and hands the order over', async ( {
@@ -828,7 +828,7 @@ test.describe( 'The payment section, as a guest', () => {
 			{},
 		] );
 		expect( await keptPlacement( page ) ).toBeNull();
-		expectOnlyHostWrites( ledger );
+		await expectOnlyHostWrites( page, ledger );
 		expectNoSecretInUrls(
 			ledger,
 			[ String( order.orderKey ) ],
@@ -911,7 +911,7 @@ test.describe( 'The payment section, as a guest', () => {
 			{},
 			{ payment_token: 'stub:requires_action' },
 		] );
-		expectOnlyHostWrites( ledger );
+		await expectOnlyHostWrites( page, ledger );
 	} );
 
 	test( '(6) the host sends the shopper to the stand-in’s address, and back on the page the resume approves and the order key comes back', async ( {
@@ -982,7 +982,7 @@ test.describe( 'The payment section, as a guest', () => {
 			{},
 		] );
 		expect( await keptPlacement( page ) ).toBeNull();
-		expectOnlyHostWrites( ledger );
+		await expectOnlyHostWrites( page, ledger );
 		expectNoSecretInUrls( ledger, [ String( order.orderKey ) ] );
 	} );
 
@@ -1229,7 +1229,7 @@ test.describe( 'The payment section, as a guest', () => {
 		await openPage( page, pluginBasePath, { options: { mutate: false } } );
 		await place( page );
 
-		expectOnlyHostWrites( ledger );
+		await expectOnlyHostWrites( page, ledger );
 		expect( ( await awaitPlaced( page ) ).outcome ).toBe( 'approved' );
 		expect(
 			ledger.store.map(
@@ -1404,7 +1404,7 @@ test.describe( 'The payment section, as a guest', () => {
 			);
 
 			expect( read.status() ).toBe( 200 );
-			expectOnlyHostWrites( customerLedger );
+			await expectOnlyHostWrites( page, customerLedger );
 			expectNoSecretInUrls( customerLedger, [
 				String( order.orderKey ),
 				nonce,
