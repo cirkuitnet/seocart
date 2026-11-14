@@ -440,6 +440,27 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
+	 * Tells whether the provider's webhook deliveries carry no signed time: false unless the test says so.
+	 *
+	 * Some providers sign a delivery's body alone, and the time the body states is when the event
+	 * happened, unchanged when the provider sends the delivery again for days. A gateway of such a
+	 * provider refuses no delivery for its age: the store's receipt of the event refuses a replay.
+	 * When the test says so, rule 10's cases of a signed time an hour old and an hour ahead are
+	 * replaced by two that require the delivery, read with the clock an hour later and an hour
+	 * earlier, to read as it does on arrival, with the same kind and event id; its other cases are
+	 * kept. A delivery whose headers hold a time (DeliveryTimes) fails rule 10 under the
+	 * declaration, as the provider may sign it. The declaration is checked by hand, in the pull
+	 * request that adds it, against the provider's documentation of its signature.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return bool True when the provider signs no time.
+	 */
+	protected function deliveriesCarryNoSignedTime(): bool {
+		return false;
+	}
+
+	/**
 	 * Signs a webhook delivery as the provider does; a gateway that declares `webhooks` implements it.
 	 *
 	 * @since 0.2.0
@@ -2372,12 +2393,21 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$headers = (array) $delivery['headers'];
 		$body    = (string) $delivery['body'];
 		$wrong   = 'not_' . TapeScrubber::PUBLISHED_WEBHOOK_SECRET;
-		$cases   = array(
-			'a bad signature'                       => array( $this->signDelivery( $headers, $body, $wrong, $at ), $body, $at->modify( '+1 second' ) ),
-			'a signed time an hour old'             => array( $headers, $body, $at->modify( '+1 hour' ) ),
-			'a signed time an hour ahead'           => array( $headers, $body, $at->modify( '-1 hour' ) ),
-			'a malformed body with a bad signature' => array( $this->signDelivery( $headers, '{"truncated":', $wrong, $at ), '{"truncated":', $at->modify( '+1 second' ) ),
-		);
+		$undated = $this->deliveriesCarryNoSignedTime();
+		$dated   = $undated ? DeliveryTimes::heldIn( $headers, $at ) : null;
+
+		if ( null !== $dated ) {
+			self::fail( $rule->message() . sprintf( 'the test declares that deliveries carry no signed time (deliveriesCarryNoSignedTime()), and the header %1$s of the delivery %2$s holds %3$s: a time in a delivery\'s headers may be signed, and a gateway that reads it refuses a delivery for its age, so the declaration is refused.', $dated[0], $name, $dated[1] ) );
+		}
+
+		$cases = array( 'a bad signature' => array( $this->signDelivery( $headers, $body, $wrong, $at ), $body, $at->modify( '+1 second' ) ) );
+
+		if ( ! $undated ) {
+			$cases['a signed time an hour old']   = array( $headers, $body, $at->modify( '+1 hour' ) );
+			$cases['a signed time an hour ahead'] = array( $headers, $body, $at->modify( '-1 hour' ) );
+		}
+
+		$cases['a malformed body with a bad signature'] = array( $this->signDelivery( $headers, '{"truncated":', $wrong, $at ), '{"truncated":', $at->modify( '+1 second' ) );
 
 		$rejected = array();
 
@@ -2392,6 +2422,14 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->assertNotSame( WebhookReadingKind::Rejected, $first->kind, $rule->message() . sprintf( 'the recorded delivery %1$s was rejected (%2$s) with the published secret.', $name, (string) $first->reason ) );
 		$this->assertSame( $first->eventId, $second->eventId, $rule->message() . sprintf( 'the delivery %s read twice gave two event ids.', $name ) );
 		$this->assertNotNull( $first->eventId, $rule->message() . sprintf( 'the delivery %s was read without its event id.', $name ) );
+
+		foreach ( $undated ? array(
+			'an hour later'   => $at->modify( '+1 hour' ),
+			'an hour earlier' => $at->modify( '-1 hour' ),
+		) : array() as $when => $now ) {
+			$late = $this->read( $rule, $name, 'its signature, with the clock ' . $when, $headers, $body, $now );
+			$this->assertSame( array( $first->kind, $first->eventId ), array( $late->kind, $late->eventId ), $rule->message() . sprintf( 'the test declares that deliveries carry no signed time (deliveriesCarryNoSignedTime()), and the delivery %1$s read with the clock %2$s was answered %3$s (%4$s), not as on arrival, %5$s (%6$s): a delivery that carries no signed time reads the same whenever it comes, and the store\'s receipt refuses a replay.', $name, $when, $late->kind->value, (string) ( $late->eventId ?? $late->reason ), $first->kind->value, (string) $first->eventId ) );
+		}
 
 		if ( WebhookReadingKind::Result === $first->kind ) {
 			$this->assertTrue( null !== $first->result && $this->gatewayId() === $first->result->provider && '' !== $first->result->intentUuid, $rule->message() . sprintf( 'the delivery %s reads as a payment result that is not one of this gateway\'s, about an intent.', $name ) );

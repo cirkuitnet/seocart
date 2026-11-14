@@ -505,6 +505,22 @@ protected function paymentIsOneObject(): bool {
 }
 ```
 
+A provider that signs a delivery's body alone, with no time, and sends a delivery again for days,
+says so in `deliveriesCarryNoSignedTime()`. Rule 10 then reads each delivery with the clock an hour
+later and an hour earlier and requires it to read as it does on arrival, with the same kind and
+event id, where it otherwise requires a delivery an hour old or an hour ahead to be rejected: the
+store's receipt of the event refuses a replay, and a window on the time the body states would
+refuse every late retry. A delivery whose headers hold a time (a `t=` part, a Unix time within ten
+years of its signing, an RFC 3339 or an HTTP date) refuses the declaration, as its provider may
+sign it. The pull request that adds the declaration is checked by hand against the provider's
+documentation of its signature:
+
+```php
+protected function deliveriesCarryNoSignedTime(): bool {
+	return true;
+}
+```
+
 ### Tapes: replay and record
 
 The suite never reaches the provider on a pull request. It replays the provider's answers from
