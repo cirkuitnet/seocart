@@ -151,7 +151,7 @@ final class TapeScrubber {
 	 *
 	 * @var string
 	 */
-	public const LIMIT = 'Rule 14 reads a recording value by value for an opaque token of ' . self::TOKEN_LENGTH . ' characters or more: a secret shorter than that, or one split across values, is beyond that reading, so every credential of the run is a secret setting the gateway declares, replaced in every form it is sent in, and every secret the provider issues is named in its test\'s `providerSecrets()`. A field\'s name is not held to the token rule, as providers name fields with ' . self::TOKEN_LENGTH . ' characters and more, so a secret sent as a field\'s name is beyond it, unless the name is shaped like a URL, which is read as the URL it is, or is a key of a URL\'s query, which is read as a value is. A form-encoded copy of a placeholder the scrub itself wrote passes as that placeholder, which names a declared setting and carries no value: the tape keeps the placeholder\'s text, and a replay has that text where the provider sent the encoded copy. A card number is refused wherever it is, and a card\'s verification code or full number by the name of its field, `cvc`, `cvv`, `cvv2`, `cvc2`, `csc`, `security_code`, `number`, `card_number` or `account_number`, whatever its value: a verification code under any other name is beyond the reading, as three or four digits read as any number. A card\'s `last4`, `exp_month`, `exp_year`, `brand`, `funding` and `country` are kept. A card number encoded twice, such as with `%2520` between its digits, is not read as one, and digits split between a field\'s name and its value, or across two header values, are separate runs. A whole value that is an id of a shape the test declares in `publicIdShapes()` with a letter after its prefix, or a whole 64-hex digest with a letter in it in a field it declares in `publicDigestFields()`, is not read for a card number, and nor is such an id as a whole segment of the path of an http or https URL, as one in ten of a provider\'s ids that hold a run of 13 to 16 digits would pass for one: a card number written in a declared shape is beyond the reading, while a value with digits alone after its prefix and a value that holds an id among other text are read as any other.';
+	public const LIMIT = 'Rule 14 reads a recording value by value for an opaque token of ' . self::TOKEN_LENGTH . ' characters or more: a secret shorter than that, or one split across values, is beyond that reading, so every credential of the run is a secret setting the gateway declares, replaced in every form it is sent in, and every secret the provider issues is named in its test\'s `providerSecrets()`. A field\'s name is not held to the token rule, as providers name fields with ' . self::TOKEN_LENGTH . ' characters and more, so a secret sent as a field\'s name is beyond it, unless the name is shaped like a URL, which is read as the URL it is, or is a key of a URL\'s query, which is read as a value is. A form-encoded copy of a placeholder the scrub itself wrote passes as that placeholder, which names a declared setting and carries no value: the tape keeps the placeholder\'s text, and a replay has that text where the provider sent the encoded copy. A card number is refused wherever it is, and a card\'s verification code or full number by the name of its field, `cvc`, `cvv`, `cvv2`, `cvc2`, `csc`, `security_code`, `number`, `card_number` or `account_number`, whatever its value: a verification code under any other name is beyond the reading, as three or four digits read as any number. A card\'s `last4`, `exp_month`, `exp_year`, `brand`, `funding` and `country` are kept. A card number encoded twice, such as with `%2520` between its digits, is not read as one, and digits split between a field\'s name and its value, or across two header values, are separate runs. A whole value that is an id of a shape the test declares in `publicIdShapes()` with a letter after its prefix, or a whole 64-hex digest with a letter in it in a field it declares in `publicDigestFields()`, is not read for a card number, and nor is such an id as a whole segment of the path of an http or https URL, as one in ten of a provider\'s ids that hold a run of 13 to 16 digits would pass for one: a card number written in a declared shape is beyond the reading, while a value with digits alone after its prefix, a value that holds an id among other text and a field\'s name are read as any other.';
 
 	/**
 	 * The prefix or infix of a secret: a token that has one passes in no public shape.
@@ -828,7 +828,7 @@ final class TapeScrubber {
 		}
 
 		if ( $this->holdsCardNumber( $text, $field, $exemptable && ! $credentialField, $url ) ) {
-			throw new TapeRefused( sprintf( '%s holds a card number: an adapter never asks for card details, and a tape never keeps them.', $where ) );
+			throw new TapeRefused( self::cardNumberIn( $where ) ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- A refusal read in the test's output, never HTML.
 		}
 
 		if ( ! $tokens ) {
@@ -943,6 +943,18 @@ final class TapeScrubber {
 		$read = $exemptable ? $this->withoutIdsOfNoCard( $text, $field, $url ) : $text;
 
 		return CardNumbers::contains( $read ) || CardNumbers::contains( self::asCardsRead( $read ) );
+	}
+
+	/**
+	 * Returns why a part that holds a card number is refused.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $where Where it is, the field included.
+	 * @return string The sentence, naming where and never the value.
+	 */
+	private static function cardNumberIn( string $where ): string {
+		return sprintf( '%s holds a card number: an adapter never asks for card details, and a tape never keeps them.', $where );
 	}
 
 	/**
@@ -1405,7 +1417,8 @@ final class TapeScrubber {
 	 * number, and is not held to the token rule, as providers name fields with TOKEN_LENGTH
 	 * characters and more. A name shaped like a URL is not a provider's word but text that could
 	 * carry anything a value can, so it is read as a URL is: what is not its query under the token
-	 * rule, and each field of its query as a value.
+	 * rule, and each field of its query as a value. A name is then read whole for a card number: the
+	 * declared ids a value may be, which the card rule skips, are values, never a name.
 	 *
 	 * @since 0.2.0
 	 *
@@ -1419,10 +1432,13 @@ final class TapeScrubber {
 	private function scanName( string $name, string $where, bool $exemptable, bool $keyed = false ): void {
 		if ( 1 === preg_match( self::URL, $name ) ) {
 			$this->scanUrl( $name, '', $where, $exemptable, $exemptable );
-			return;
+		} else {
+			$this->scanText( $name, '', $where, $keyed ? $exemptable : true, $keyed );
 		}
 
-		$this->scanText( $name, '', $where, $keyed ? $exemptable : true, $keyed );
+		if ( $this->holdsCardNumber( $name, '', false, false ) ) {
+			throw new TapeRefused( self::cardNumberIn( $where ) ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- A refusal read in the test's output, never HTML.
+		}
 	}
 
 	/**
