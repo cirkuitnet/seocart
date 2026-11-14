@@ -19,6 +19,7 @@ use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGateway;
 use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGatewaySetup;
 use SEOCart\Tests\Conformance\Payment\Reference\Variants\RefusesADeliveryDaysLate;
 use SEOCart\Tests\Conformance\Payment\Reference\Variants\UndatedDeliveries;
+use SEOCart\Tests\Conformance\Payment\Reference\Variants\UndatedSkipsItsSignature;
 use SEOCart\Tests\Conformance\Payment\Reference\Variants\WindowsOnTheBodysDate;
 use SEOCart\Tests\Conformance\Payment\Rule;
 use SEOCart\Tests\Conformance\Payment\RuleFailures;
@@ -30,9 +31,11 @@ use SEOCart\Tests\Conformance\Payment\TapeScrubber;
  * The deliveries are made here, an authorization and an account's update signed with the
  * published secret, as a gateway without a tape has its test make them.
  *
- * Planted violation, shown red and removed: in ConformanceHarness::readsDeliveryRightly(), skip
+ * Planted violations, shown red and removed: in ConformanceHarness::readsDeliveryRightly(), skip
  * the refusal of a delivery whose headers hold a time: the reference gateway's dated deliveries
- * are read under the declaration, and the test of the refusal fails here.
+ * are read under the declaration, and the test of the refusal fails here; keep the case of a bad
+ * signature under the declaration but skip asserting its rejection: the gateway that does not
+ * compare its signature passes, and its test fails here.
  *
  * @group conformance
  * @since 0.2.0
@@ -81,6 +84,15 @@ final class UndatedDeliveriesConformanceTest extends ConformanceHarness {
 	private const DAYS_LATE = 'test_a_gateway_that_refuses_a_delivery_days_late_fails_rule_10_under_the_declaration';
 
 	/**
+	 * The test whose gateway skips its comparison of the signature.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const UNVERIFIED = 'test_a_gateway_that_skips_its_signature_fails_rule_10_under_the_declaration';
+
+	/**
 	 * Tests that rule 10 passes undated deliveries and a gateway that keeps no window, when the test declares it: read an hour later or earlier, each delivery reads as on arrival.
 	 *
 	 * @since 0.2.0
@@ -124,6 +136,15 @@ final class UndatedDeliveriesConformanceTest extends ConformanceHarness {
 	 */
 	public function test_a_gateway_that_refuses_a_delivery_days_late_fails_rule_10_under_the_declaration(): void {
 		$this->assertRuleFails( Rule::WebhooksVerifiedFirst, 'and the delivery authorized read with the clock twenty-nine days later was answered rejected (stale), not as on arrival, result' );
+	}
+
+	/**
+	 * Tests that rule 10 fails, under the declaration, a gateway of undated deliveries that does not compare the signature: the case of a bad signature is kept, and asserted.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_gateway_that_skips_its_signature_fails_rule_10_under_the_declaration(): void {
+		$this->assertRuleFails( Rule::WebhooksVerifiedFirst, 'the delivery authorized with a bad signature was answered result, not rejected.' );
 	}
 
 	/**
@@ -193,8 +214,9 @@ final class UndatedDeliveriesConformanceTest extends ConformanceHarness {
 		$context = $registry->context( ReferenceGateway::ID );
 
 		return match ( $this->getName( false ) ) {
-			self::WINDOWS   => new WindowsOnTheBodysDate( $context ),
-			self::DAYS_LATE => new RefusesADeliveryDaysLate( $context ),
+			self::WINDOWS    => new WindowsOnTheBodysDate( $context ),
+			self::DAYS_LATE  => new RefusesADeliveryDaysLate( $context ),
+			self::UNVERIFIED => new UndatedSkipsItsSignature( $context ),
 			self::DATED   => new ReferenceGateway( $context ),
 			default       => new UndatedDeliveries( $context ),
 		};
