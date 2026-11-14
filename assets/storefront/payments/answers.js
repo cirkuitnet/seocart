@@ -5,7 +5,8 @@
  * Each answer is one of these kinds:
  *
  * - `settled`: an order was placed and the payment came to an outcome the shopper moves on with:
- *   approved, processing, or duplicate (the store had settled it already);
+ *   approved, processing, or duplicate (the store had settled it already) with a payment that
+ *   went through;
  * - `pending`: the placement is still with the gateway, or its request died there; the order
  *   waits as placed until the store learns the outcome;
  * - `acting`: the shopper must act for the payment provider (requires_action);
@@ -18,6 +19,9 @@
  * - `unavailable`: the gateway did not answer; the order may wait as placed;
  * - `server` and `network`: no answer the host can read;
  * - `refused`: anything else the Store API refused, by its code.
+ *
+ * A `duplicate` carries the order's statuses as another path left them, a webhook or the
+ * reconciliation run, whatever it came to: it is read by both (duplicated()).
  */
 
 /**
@@ -25,7 +29,70 @@
  *
  * @type {string[]}
  */
-const SETTLED = [ 'approved', 'processing', 'duplicate' ];
+const SETTLED = [ 'approved', 'processing' ];
+
+/**
+ * The payment statuses of a payment that went through at some point: a `duplicate` with one is
+ * settled, and the shopper moves on to the order, whatever came after it (a refund, a dispute).
+ *
+ * @type {string[]}
+ */
+const TAKEN = [
+	'authorized',
+	'paid',
+	'partially_paid',
+	'partially_refunded',
+	'refunded',
+	'disputed',
+	'terms_pending',
+];
+
+/**
+ * The payment statuses of a payment neither taken nor ended yet.
+ *
+ * @type {string[]}
+ */
+const UNTAKEN = [ 'unpaid', 'pending' ];
+
+/**
+ * What the order's status makes of a `duplicate` whose payment is neither taken nor ended: a
+ * failed order is a decline, a cancelled one a void. Any other order waits.
+ *
+ * @type {Map<string, string>}
+ */
+const ENDED_ORDERS = new Map( [
+	[ 'failed', 'declined' ],
+	[ 'cancelled', 'voided' ],
+] );
+
+/**
+ * Returns the kind of a `duplicate`, a payment another path settled first, from the order's
+ * statuses as that path left them: by the payment status, and for a payment neither taken nor
+ * ended, by the order status. A pair this module does not know is not settled: the order waits.
+ *
+ * @param {Object} body The answer: its `status` and `payment_status`.
+ * @return {string} `settled`, `declined`, `voided` or `pending`.
+ */
+function duplicated( body ) {
+	const payment = body.payment_status;
+
+	if ( TAKEN.includes( payment ) ) {
+		return 'settled';
+	}
+
+	if ( 'failed' === payment ) {
+		return 'declined';
+	}
+
+	if ( 'voided' === payment ) {
+		return 'voided';
+	}
+
+	return (
+		( UNTAKEN.includes( payment ) && ENDED_ORDERS.get( body.status ) ) ||
+		'pending'
+	);
+}
 
 /**
  * The Store API codes that mean the cart changed under the shopper.
@@ -61,6 +128,10 @@ export function classify( { network, status, body } ) {
 
 		if ( SETTLED.includes( outcome ) ) {
 			return 'settled';
+		}
+
+		if ( 'duplicate' === outcome ) {
+			return duplicated( body );
 		}
 
 		if ( 'requires_action' === outcome ) {

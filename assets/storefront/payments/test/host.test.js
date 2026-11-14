@@ -1533,6 +1533,111 @@ describe( 'on loading', () => {
 	} );
 } );
 
+describe( 'answers that must not lose an order', () => {
+	const returnedTo = `https://shop.example/checkout/?seocart_payment=${ UUID }`;
+
+	/**
+	 * The answer of a resume for a payment another path settled first.
+	 *
+	 * @param {string} status        The order's status.
+	 * @param {string} paymentStatus Its payment status.
+	 * @return {Object} The answer.
+	 */
+	const duplicate = ( status, paymentStatus ) => ( {
+		intent_uuid: UUID,
+		outcome: 'duplicate',
+		status,
+		payment_status: paymentStatus,
+	} );
+
+	it.each( [
+		[ 'declined', 'failed', 'failed', 'declined' ],
+		[ 'voided', 'cancelled', 'voided', 'voided' ],
+	] )(
+		'takes a payment the provider %s before the shopper came back as that, never as an order',
+		async ( name, status, paymentStatus, reason ) => {
+			keep( { intentUuid: UUID } );
+
+			const { heard, last } = setUp( {
+				href: returnedTo,
+				cart: { ...CART, version: 4 },
+				answers: [
+					{ status: 200, body: duplicate( status, paymentStatus ) },
+				],
+			} );
+
+			await flush();
+
+			expect( heard.placed ).toEqual( [] );
+			expect( heard.stale.map( ( detail ) => detail.reason ) ).toEqual( [
+				reason,
+			] );
+			expect( last() ).toMatchObject( {
+				phase: 'idle',
+				error: { code: reason },
+			} );
+			expect( stored() ).toBeNull();
+		}
+	);
+
+	it( 'shows the island a payment the provider declined while it acted, and hands nothing over', async () => {
+		const { island, calls } = fakeIsland( 'stub' );
+		const { host, heard, last } = setUp( {
+			islands: [ island ],
+			answers: [
+				{ status: 200, body: acting() },
+				{ status: 200, body: duplicate( 'failed', 'failed' ) },
+			],
+		} );
+
+		await flush();
+		await host.place();
+
+		expect( names( calls ) ).toContain( 'showError' );
+		expect( heard.placed ).toEqual( [] );
+		expect( last().error.code ).toBe( 'declined' );
+	} );
+
+	it( 'hands over a duplicate whose payment went through, and waits on one neither paid nor failed', async () => {
+		keep( { intentUuid: UUID } );
+
+		const paid = setUp( {
+			href: returnedTo,
+			cart: { ...CART, version: 4 },
+			answers: [
+				{ status: 200, body: duplicate( 'processing', 'authorized' ) },
+				{ status: 200, body: placed( 'approved' ) },
+			],
+		} );
+
+		await flush();
+
+		expect( paid.heard.placed ).toEqual( [
+			expect.objectContaining( {
+				outcome: 'duplicate',
+				orderKey: 'k'.repeat( 32 ),
+			} ),
+		] );
+
+		document.body.replaceChildren();
+		keep( { intentUuid: UUID } );
+
+		const unpaid = setUp( {
+			href: returnedTo,
+			cart: { ...CART, version: 4 },
+			answers: [
+				{ status: 200, body: duplicate( 'on_hold', 'unpaid' ) },
+			],
+		} );
+
+		await flush();
+
+		expect( unpaid.heard.placed ).toEqual( [] );
+		expect( unpaid.last().error ).toEqual( { code: 'pending' } );
+		expect( stored() ).not.toBeNull();
+	} );
+} );
+
 describe( 'mintKey', () => {
 	it( 'makes a version 4 uuid without randomUUID(), as on a page served over HTTP', () => {
 		const key = mintKey( {

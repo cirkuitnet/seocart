@@ -13,7 +13,12 @@ describe( 'classify', () => {
 			{ outcome: 'pending' },
 			'pending',
 		],
-		[ 'duplicate', 200, { outcome: 'duplicate' }, 'settled' ],
+		[
+			'a duplicate with no payment status',
+			200,
+			{ outcome: 'duplicate' },
+			'pending',
+		],
 		[ 'requires_action', 200, { outcome: 'requires_action' }, 'acting' ],
 		[ 'a decline replayed', 200, { outcome: 'declined' }, 'declined' ],
 		[ 'a void replayed', 200, { outcome: 'voided' }, 'voided' ],
@@ -65,5 +70,73 @@ describe( 'classify', () => {
 
 	it( 'reads no answer as a network failure', () => {
 		expect( classify( { network: true } ) ).toBe( 'network' );
+	} );
+} );
+
+describe( 'a duplicate, by the order’s statuses', () => {
+	// Every order status the store writes, in the order of each row's kinds below.
+	const ORDERS = [
+		'pending_payment',
+		'awaiting_review',
+		'processing',
+		'on_hold',
+		'preorder',
+		'completed',
+		'cancelled',
+		'failed',
+	];
+	const SETTLED =
+		'settled settled settled settled settled settled settled settled';
+	const WAITING =
+		'pending pending pending pending pending pending voided declined';
+
+	it.each( [
+		[ 'authorized', SETTLED ],
+		[ 'paid', SETTLED ],
+		[ 'partially_paid', SETTLED ],
+		[ 'partially_refunded', SETTLED ],
+		[ 'refunded', SETTLED ],
+		[ 'disputed', SETTLED ],
+		[ 'terms_pending', SETTLED ],
+		[
+			'failed',
+			'declined declined declined declined declined declined declined declined',
+		],
+		[ 'voided', 'voided voided voided voided voided voided voided voided' ],
+		[ 'unpaid', WAITING ],
+		[ 'pending', WAITING ],
+		[
+			'one this module does not know',
+			'pending pending pending pending pending pending pending pending',
+		],
+	] )(
+		'reads a payment status of %s, order status by order status, as: %s',
+		( paymentStatus, kinds ) => {
+			expect(
+				ORDERS.map( ( status ) =>
+					classify( {
+						status: 200,
+						body: {
+							outcome: 'duplicate',
+							status,
+							payment_status: paymentStatus,
+						},
+					} )
+				)
+			).toEqual( kinds.split( ' ' ) );
+		}
+	);
+
+	it( 'waits on an order status it does not know, whatever the payment', () => {
+		expect(
+			classify( {
+				status: 200,
+				body: {
+					outcome: 'duplicate',
+					status: 'archived',
+					payment_status: 'unpaid',
+				},
+			} )
+		).toBe( 'pending' );
 	} );
 } );

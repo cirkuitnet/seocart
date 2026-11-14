@@ -730,12 +730,22 @@ export function createHost( root, options, env ) {
 	/**
 	 * Acts on the resume's answer.
 	 *
+	 * A `duplicate`, a payment another path settled first, is taken by the order's statuses
+	 * (answers.js): a payment that went through hands the order over; a failed payment, or a failed
+	 * order with nothing taken, is a decline, and a voided payment, or a cancelled order with
+	 * nothing taken, a void; any other waits.
+	 *
 	 * @param {Object} response What the resume came to.
 	 * @return {Promise<void>} Once the flow rests.
 	 */
 	async function resumed( response ) {
 		const kind = classify( response );
 		const { body } = response;
+
+		if ( 'pending' === kind && 'duplicate' === body?.outcome ) {
+			// Settled elsewhere, though neither paid nor failed: the order waits.
+			return idle( { code: 'pending' } );
+		}
 
 		if (
 			'acting' === kind ||
