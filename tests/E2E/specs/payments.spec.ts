@@ -1378,8 +1378,13 @@ test.describe( 'The payment section, as a guest', () => {
 
 			const customerLedger = storeRequests( page );
 
+			// The customer's page is the one whose requests a failure prints.
+			ledger = customerLedger;
+
 			await openPage( page, pluginBasePath, { nonce } );
 			await place( page );
+
+			expect( ( await hostState( page ) )?.error ).toBeNull();
 
 			const order = await awaitPlaced( page );
 
