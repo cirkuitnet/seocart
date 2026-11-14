@@ -857,11 +857,15 @@ export function createHost( root, options, env ) {
 	 * A payment to resume (the one a provider sent the shopper back for, or else the one the kept
 	 * placement names) is resumed; once the store settled it, the kept placement is asked again,
 	 * with no payment data, for the order and its key; until it answers with them, the host
-	 * rests with the placement kept, and retry() asks again. A kept placement whose answer was lost is
-	 * dropped without a request while the cart is still at the version it was sent with, since a
-	 * placement that committed moves the version on; otherwise it is asked again, and the answer
-	 * taken as a placement's, except that a step the provider asks for waits for the shopper to
-	 * place again, and a placement the store does not hold is dropped.
+	 * rests with the placement kept, and retry() asks again.
+	 *
+	 * A kept placement whose answer was lost is asked again, with no payment data, once the cart
+	 * has moved past the version it was sent with, which a placement that committed does; the
+	 * answer is taken as a placement's, except that a step the provider asks for waits for the
+	 * shopper to place again, and a placement the store does not hold is dropped. While the cart is
+	 * still at that version the request may never have arrived, or may still be on its way: the
+	 * placement is kept, nothing is sent, and the next placement sends its key, which either places
+	 * for the first time or is answered the order the earlier request placed.
 	 *
 	 * @param {string|null} returned The payment's uuid the page's address carried back, if any.
 	 * @return {Promise<void>} Once the flow rests.
@@ -909,13 +913,8 @@ export function createHost( root, options, env ) {
 			return;
 		}
 
-		if ( ! kept ) {
-			return;
-		}
-
-		if ( cart.version === kept.cartVersion ) {
-			// No placement committed at that version: nothing to ask.
-			keeper.clear();
+		if ( ! kept || cart.version === kept.cartVersion ) {
+			// Nothing kept; or kept, and sent with the next placement.
 			return;
 		}
 

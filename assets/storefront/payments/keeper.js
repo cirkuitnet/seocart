@@ -13,9 +13,16 @@
  * The key is sent again after a network failure, a server error, an unavailable gateway, a
  * placement still in progress or still pending, a session that needs a fresh nonce, too many
  * requests, while the shopper must act, after a reload, and on the shopper's return from a
- * provider's page; each gets the one order's answer back. A settled, declined or voided answer, a
- * cart that changed and a refusal end the key: the next placement gets a fresh one. When the
- * browser keeps no storage, the key lives as long as the page.
+ * provider's page; each gets the one order's answer back.
+ *
+ * A kept placement ends, and the next placement gets a fresh key, only when the store has
+ * answered for it: a settled, declined or voided answer; a stale cart, which is how the store
+ * answers a key it never placed with once the cart has moved on; another refusal. A placement for
+ * another total, currency or gateway replaces it. Nothing else ends it, a reload included: a page
+ * loaded while the cart is still at the kept version cannot tell a request that never arrived
+ * from one still on its way, so the kept key is sent with the next placement, which then either
+ * places for the first time or is answered the order the earlier request placed. The tab's
+ * storage ends with the tab; when the browser keeps no storage, the key lives as long as the page.
  */
 
 /**
@@ -69,9 +76,11 @@ export function keepsKey( kind ) {
  * Tells whether a kept placement is still the one the shopper is placing: the same total in the
  * same currency, by the same gateway.
  *
- * The cart's version is not compared: the placement itself moves it on, so a page reloaded or
- * returned to always reads a newer version than the one kept. A kept placement that never reached
- * the store is answered `cart.version_stale` when sent again, which ends its key.
+ * The cart's version is not compared: a placement that committed moves it on, so a page reloaded
+ * or returned to after one reads a newer version than the one kept. A kept placement sent again
+ * is answered as the store holds it: the order it placed or, when it never reached the store, a
+ * first placement at the version it was kept with and `cart.version_stale` at any other, which
+ * ends its key.
  *
  * @param {Object|null} kept   The kept placement.
  * @param {Object}      inputs The placement that would be made now: amountMinor, currency, gatewayId.

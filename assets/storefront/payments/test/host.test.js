@@ -1421,16 +1421,62 @@ describe( 'on loading', () => {
 		expect( stored() ).toBeNull();
 	} );
 
-	it( 'drops a placement whose answer was lost without a request while the cart is at the version it was sent with', async () => {
+	it( 'keeps a placement whose answer was lost, sending nothing, while the cart is at the version it was sent with; the next placement confirms and sends its key', async () => {
 		keep();
 
-		const { requests, last } = setUp( {} );
+		const { island, calls } = fakeIsland( 'stub' );
+		const { host, requests, heard, last } = setUp( {
+			islands: [ island ],
+			answers: [ { status: 200, body: placed( 'approved' ) } ],
+		} );
 
 		await flush();
 
 		expect( requests ).toEqual( [] );
-		expect( stored() ).toBeNull();
+		expect( stored() ).toMatchObject( { key: 'kept-key', cartVersion: 3 } );
 		expect( last() ).toMatchObject( { phase: 'idle', error: null } );
+
+		// The earlier request may have committed meanwhile: its key is answered its order.
+		await host.place();
+
+		expect( requests.map( ( request ) => request.key ) ).toEqual( [
+			'kept-key',
+		] );
+		expect( requests[ 0 ].body ).toEqual( {
+			cart_version: 3,
+			grand_total_minor: 1999,
+			currency: 'GBP',
+			payment_data: { payment_token: 'stub:approve' },
+		} );
+		expect( names( calls ) ).toEqual( [ 'mount', 'confirm' ] );
+		expect( heard.placed ).toHaveLength( 1 );
+	} );
+
+	it( 'drops a kept placement only once the store answers for it: a stale cart ends its key', async () => {
+		keep();
+
+		const { island } = fakeIsland( 'stub' );
+		const { host, requests, last } = setUp( {
+			islands: [ island ],
+			answers: [
+				{ status: 409, body: { code: 'cart.version_stale' } },
+				{ status: 200, body: placed( 'approved' ) },
+			],
+			onStale: () => ( { ...CART, version: 4 } ),
+		} );
+
+		await flush();
+		await host.place();
+
+		expect( last().error.code ).toBe( 'stale' );
+		expect( stored() ).toBeNull();
+
+		await host.place();
+
+		expect( requests.map( ( request ) => request.key ) ).toEqual( [
+			'kept-key',
+			'key-1',
+		] );
 	} );
 
 	it( 'asks a placement whose answer was lost again, with no payment data, once the cart moved on, and hands the order over', async () => {
