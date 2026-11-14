@@ -536,7 +536,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->key          = SecretsHarness::newEncryptionKey();
 		$this->http         = new HttpWatch();
 		$this->gatewayClock = FrozenClock::at( self::CLOCK );
-		$this->logger       = new AssertingLogger( fn(): array => isset( $this->transport ) ? $this->transport->servedBodies() : array(), $this->publicCodes() );
+		$this->logger       = new AssertingLogger( fn(): array => isset( $this->transport ) ? $this->transport->servedBodies() : array(), $this->publicCodes(), $this->publicIdShapes() );
 		$this->scrubber     = new TapeScrubber( array() );
 		$this->credentials  = new CredentialRequests();
 
@@ -1508,6 +1508,13 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * (TapeScrubber::SECRET_PREFIX), sits in a field named like a credential, or sits in a
 	 * redirect's query.
 	 *
+	 * A value that is, as a whole, an id of a shape named here with a letter in it is not read as
+	 * a card number, in a tape and in a log line, and nor is such an id as a whole segment of the
+	 * path of an http or https URL: a provider's id often holds a run of 13 to 16 digits that passes
+	 * the card number's checksum. For that alone, a shape may have no prefix, such as `'' => 17` for
+	 * ids of 17 letters and digits, while it is shorter than TapeScrubber::TOKEN_LENGTH; a shape with
+	 * no prefix of that length or more is refused, as it would let any opaque token pass.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @return array<string, int|array{int, int}> The shapes, by prefix.
@@ -1518,6 +1525,9 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 
 	/**
 	 * Returns the fields, by name, whose 64-hex digests are public, such as a delivery's signature header: none unless the test names them.
+	 *
+	 * A whole value of 64 hexadecimal digits with a letter in it, in a field named here, is not read
+	 * as a card number either.
 	 *
 	 * @since 0.2.0
 	 *

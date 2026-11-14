@@ -41,6 +41,33 @@ final class AssertingLoggerTest extends TestCase {
 	private const MESSAGE = 'The card was declined by its issuer.';
 
 	/**
+	 * Sixteen digits that pass the card number's checksum: a published test card's.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const DIGITS = '4242424242424242';
+
+	/**
+	 * A provider's id of 17 letters and digits that holds them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const ID = 'A' . self::DIGITS;
+
+	/**
+	 * The shape of the provider's ids the test declares: 17 letters and digits, with no prefix.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, int>
+	 */
+	private const SHAPES = array( '' => 17 );
+
+	/**
 	 * Sets Brain Monkey up, for wp_json_encode().
 	 *
 	 * @since 0.2.0
@@ -141,16 +168,75 @@ final class AssertingLoggerTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a context value that is, as a whole, an id of a declared shape with a letter in it is no card number, though its 16 digits pass the card number's checksum: a logger of a test that declares no shape for it notes one.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_an_id_of_a_declared_shape_with_a_letter_is_no_card_number(): void {
+		$context    = array(
+			'order'   => self::ID,
+			'capture' => array( 'id' => self::ID ),
+		);
+		$declared   = self::logger( array(), self::SHAPES );
+		$undeclared = self::logger();
+
+		foreach ( array( $declared, $undeclared ) as $logger ) {
+			$logger->info( 'gateway.authorized', 'The provider authorized the payment.', $context );
+		}
+
+		$this->assertSame( array(), $declared->violations() );
+		$this->assertSame( array( 'the line gateway.authorized holds a card number' ), $undeclared->violations() );
+	}
+
+	/**
+	 * Returns log lines that hold a declared id's digits other than as a whole context value, each still a card number.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string, array<mixed>}> The message and the context.
+	 */
+	public function idsAmongOtherText(): array {
+		return array(
+			'the id in the message'                     => array( 'Authorized ' . self::ID . '.', array() ),
+			'the id after other text in a value'        => array( 'Authorized.', array( 'order' => 'order-' . self::ID ) ),
+			'a value of the shape that holds no letter' => array( 'Authorized.', array( 'order' => '0' . self::DIGITS ) ),
+			'the digits alone'                          => array( 'Authorized.', array( 'order' => self::DIGITS ) ),
+		);
+	}
+
+	/**
+	 * Tests that the id among other text, in the message or in a value, and a value of the shape with no letter, are still card numbers.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider idsAmongOtherText
+	 * @group conformance
+	 *
+	 * @param string       $message The line's message.
+	 * @param array<mixed> $context The line's context.
+	 */
+	public function test_a_declared_id_among_other_text_is_still_a_card_number( string $message, array $context ): void {
+		$logger = self::logger( array(), self::SHAPES );
+		$logger->info( 'gateway.authorized', $message, $context );
+
+		$this->assertSame( array( 'the line gateway.authorized holds a card number' ), $logger->violations() );
+	}
+
+	/**
 	 * Builds a logger whose gateway was served the answer.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string[] $codes The codes the test declares.
+	 * @param string[]                          $codes  The codes the test declares.
+	 * @param array<int|string, int|array<int>> $shapes Optional. The shapes of the ids the test declares. Default none.
 	 * @return AssertingLogger The logger.
 	 *
 	 * @phpstan-param list<string> $codes
+	 * @phpstan-param array<int|string, int|array{int, int}> $shapes
 	 */
-	private static function logger( array $codes = array() ): AssertingLogger {
-		return new AssertingLogger( static fn(): array => array( self::ANSWER ), $codes );
+	private static function logger( array $codes = array(), array $shapes = array() ): AssertingLogger {
+		return new AssertingLogger( static fn(): array => array( self::ANSWER ), $codes, $shapes );
 	}
 }

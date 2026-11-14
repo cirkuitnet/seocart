@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Support\Doubles;
 
 use SEOCart\Contracts\Logger;
 use SEOCart\Platform\Logging\CardNumbers;
+use SEOCart\Tests\Conformance\Payment\IdShapes;
 
 /**
  * The logger a gateway is given under test: it keeps every line and notes why any of them offends.
@@ -30,6 +31,11 @@ use SEOCart\Platform\Logging\CardNumbers;
  * Each is looked for as whole words in the line read as one text: the message, then each value of
  * the context in order, URL-decoded, HTML-decoded, case-folded and with its whitespace collapsed,
  * so a message logged encoded, in another case, or split across values is found.
+ *
+ * A context value that is, as a whole, an id of a shape the test declares with a letter in it
+ * (GatewayConformanceCase::publicIdShapes(), IdShapes::namesNoCard()) is not read for a card
+ * number: one in ten of a provider's ids that hold a run of 13 to 16 digits would pass for one. The
+ * message, and a value that holds an id among other text, are read as before.
  *
  * It never throws: a gateway could catch the exception and carry on, so a test asks violations().
  *
@@ -53,7 +59,7 @@ final class AssertingLogger implements Logger {
 	 *
 	 * @var string
 	 */
-	public const LIMIT = 'Rule 13 takes for the provider\'s words a value of its answers that has whitespace in it or is one word of letters: a one-word value with `_` or a digit in it is taken for a code or an id, which a log line may carry, and two spellings that differ only by Unicode normalisation are not taken for the same words.';
+	public const LIMIT = 'Rule 13 takes for the provider\'s words a value of its answers that has whitespace in it or is one word of letters: a one-word value with `_` or a digit in it is taken for a code or an id, which a log line may carry, and two spellings that differ only by Unicode normalisation are not taken for the same words. A context value that is, as a whole, an id of a shape the gateway\'s test declares in `publicIdShapes()` with a letter in it is not read for a card number, so a card number written in a declared shape is beyond the reading.';
 
 	/**
 	 * Response bodies shorter than this are not looked for: `{}` or `[]` would be found everywhere.
@@ -110,19 +116,31 @@ final class AssertingLogger implements Logger {
 	private array $codes;
 
 	/**
-	 * Keeps the source of the answers to look for, and the codes a line may carry.
+	 * The shapes of the provider's public ids, by prefix.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param \Closure $answers Returns the response bodies served so far.
-	 * @param string[] $codes   Optional. The provider's enumerated codes a line may carry, such as a status. Default none.
+	 * @var array<int|string, int|array{int, int}>
+	 */
+	private array $idShapes;
+
+	/**
+	 * Keeps the source of the answers to look for, the codes a line may carry and the shapes of the ids it may carry.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param \Closure                          $answers  Returns the response bodies served so far.
+	 * @param string[]                          $codes    Optional. The provider's enumerated codes a line may carry, such as a status. Default none.
+	 * @param array<int|string, int|array<int>> $idShapes Optional. The shapes of the provider's public ids, by prefix, as publicIdShapes() declares them. Default none.
 	 *
 	 * @phpstan-param \Closure(): list<string> $answers
 	 * @phpstan-param list<string> $codes
+	 * @phpstan-param array<int|string, int|array{int, int}> $idShapes
 	 */
-	public function __construct( \Closure $answers, array $codes = array() ) {
-		$this->answers = $answers;
-		$this->codes   = array_map( static fn( string $code ): string => self::normalized( $code ), $codes );
+	public function __construct( \Closure $answers, array $codes = array(), array $idShapes = array() ) {
+		$this->answers  = $answers;
+		$this->codes    = array_map( static fn( string $code ): string => self::normalized( $code ), $codes );
+		$this->idShapes = $idShapes;
 	}
 
 	/**
@@ -260,11 +278,32 @@ final class AssertingLogger implements Logger {
 			}
 		}
 
-		if ( CardNumbers::contains( $text ) ) {
+		if ( CardNumbers::contains( $message . ' ' . (string) wp_json_encode( $this->withoutIdsOfNoCard( $context ) ) ) ) {
 			$findings[] = 'a card number';
 		}
 
 		return $findings;
+	}
+
+	/**
+	 * Returns a context with each value that is, as a whole, an id of a declared shape with a letter in it emptied, for the card rule's reading.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<mixed> $context The context.
+	 * @return array<mixed> The context, those values empty.
+	 */
+	private function withoutIdsOfNoCard( array $context ): array {
+		array_walk_recursive(
+			$context,
+			function ( mixed &$value ): void {
+				if ( is_string( $value ) && IdShapes::namesNoCard( $this->idShapes, $value ) ) {
+					$value = '';
+				}
+			}
+		);
+
+		return $context;
 	}
 
 	/**

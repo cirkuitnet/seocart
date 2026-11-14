@@ -598,6 +598,17 @@ protected function publicHeaders(): array {
 id it logs. A header named there is scanned as every other part is, so a request id of 20 or more
 characters is declared in `publicIdShapes()` too, such as `'req_' => 24`.
 
+A provider's id of letters and digits often holds a run of 13 to 16 digits that passes a card
+number's checksum. A value that is, as a whole, an id of a shape named in `publicIdShapes()` with a
+letter in it is not read as a card number, in a tape or in a log line, and nor is such an id as a
+whole segment of the path of an `http` or `https` URL, such as the id in
+`/v2/checkout/orders/{id}`; a whole 64-character hexadecimal digest with a letter in it in a
+field named in `publicDigestFields()` is not either. A value of digits alone, an id among other
+text (`order-{id}`, a sentence, free text that holds a URL), and a shape not named are read as
+before, and every other check still reads the value. For ids with no prefix, a shape may have
+none while it is shorter than 20 characters, such as `'' => 17`; it lets no opaque token pass,
+and one of 20 or more is refused.
+
 The same `publicCodes()` is rule 13's list of the provider's words a log line may carry: a gateway
 that logs a status from the provider's answer, such as `succeeded`, declares it there. Any other
 text of the answers the gateway was served, an error's message above all, fails rule 13 when a

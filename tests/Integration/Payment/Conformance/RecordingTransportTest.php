@@ -333,6 +333,80 @@ final class RecordingTransportTest extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Tests that a recording keeps a provider's ids of a shape its test declares, whose digits pass the card number's checksum, in a request's URL, an answer's field and the links it holds, and that its tape passes rule 14's rescan; the same ids are refused as card numbers with no shape declared.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_recording_keeps_ids_of_a_declared_shape_that_hold_a_cards_digits(): void {
+		$id    = 'A4242424242424242';
+		$order = self::PROVIDER . '/v2/checkout/orders/' . $id;
+
+		add_filter(
+			'pre_http_request',
+			static function ( mixed $pre, mixed $args, mixed $url ) use ( $id, $order ): mixed {
+				unset( $args );
+
+				if ( false !== $pre || $order !== $url ) {
+					return $pre;
+				}
+
+				return array(
+					'headers'  => array( 'content-type' => 'application/json' ),
+					'body'     => (string) wp_json_encode(
+						array(
+							'id'     => $id,
+							'status' => 'COMPLETED',
+							'links'  => array(
+								array(
+									'href' => $order,
+									'rel'  => 'self',
+								),
+								array(
+									'href' => self::PROVIDER . '/v2/payments/authorizations/' . $id . '/capture',
+									'rel'  => 'capture',
+								),
+							),
+						),
+						JSON_UNESCAPED_SLASHES
+					),
+					'response' => array(
+						'code'    => 200,
+						'message' => 'OK',
+					),
+					'cookies'  => array(),
+					'filename' => null,
+				);
+			},
+			5,
+			3
+		);
+
+		foreach ( array(
+			'declared'   => array( '' => 17 ),
+			'undeclared' => array(),
+		) as $scenario => $shapes ) {
+			$scrubber = new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), $shapes );
+			$recorder = RecordingTransport::recording( new Tape( $this->directory ), $this->tx, $this->watch );
+			$recorder->scrubWith( $scrubber );
+			$recorder->scenario( $scenario );
+			$recorder->send( new OutboundRequest( 'reference-api', 'GET', $order, array( 'Authorization' => 'Bearer ' . self::KEY ), null ), 15 );
+			$recorder->finish();
+
+			if ( 'declared' === $scenario ) {
+				$this->assertSame( array(), $recorder->violations() );
+				$scrubber->scanFile( $this->directory . '/declared/1.json' );
+				$this->assertStringContainsString( $id, (string) file_get_contents( $this->directory . '/declared/1.json' ) );
+				continue;
+			}
+
+			$this->assertStringContainsString( 'Exchange 1 of undeclared, its URL holds a card number', implode( ' ', $recorder->violations() ) );
+			$this->assertFileDoesNotExist( $this->directory . '/undeclared/1.json' );
+		}
+	}
+
+	/**
 	 * Tests that a recording holding a card's verification code is refused and not written, the part and the field named, while one holding the card fields a receipt shows is written.
 	 *
 	 * @since 0.2.0

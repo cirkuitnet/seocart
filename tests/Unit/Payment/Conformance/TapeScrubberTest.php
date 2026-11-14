@@ -484,7 +484,7 @@ final class TapeScrubberTest extends TestCase {
 	}
 
 	/**
-	 * Tests that an id's shape that bounds nothing is refused as a declaration: an empty prefix, no length, or a most below the least.
+	 * Tests that an id's shape that bounds nothing is refused as a declaration: no length, or a most below the least.
 	 *
 	 * @since 0.2.0
 	 *
@@ -493,7 +493,7 @@ final class TapeScrubberTest extends TestCase {
 	public function test_a_shape_that_bounds_nothing_is_refused(): void {
 		$refused = 0;
 
-		foreach ( array( array( '' => 24 ), array( 'pi_' => 0 ), array( 'pi_' => array( 24, 20 ) ) ) as $shapes ) {
+		foreach ( array( array( 'pi_' => 0 ), array( 'pi_' => array( 24, 20 ) ), array( '' => 0 ) ) as $shapes ) {
 			try {
 				new TapeScrubber( array(), array(), $shapes );
 			} catch ( \InvalidArgumentException $invalid ) {
@@ -503,6 +503,168 @@ final class TapeScrubberTest extends TestCase {
 		}
 
 		$this->assertSame( 3, $refused );
+	}
+
+	/**
+	 * Tests that a shape with no prefix is declared only below the token length, where it lets no opaque token pass: one of 17 is taken, one of 20 or reaching 20 is refused in one sentence.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_shape_with_no_prefix_is_declared_only_below_the_token_length(): void {
+		new TapeScrubber( array(), array(), array( '' => 17 ) );
+		new TapeScrubber( array(), array(), array( '' => array( 10, TapeScrubber::TOKEN_LENGTH - 1 ) ) );
+
+		foreach ( array(
+			'20'          => 20,
+			'reaching 20' => array( 17, 20 ),
+		) as $case => $length ) {
+			try {
+				new TapeScrubber( array(), array(), array( '' => $length ) );
+				self::fail( sprintf( 'A shape with no prefix of %s was taken.', $case ) );
+			} catch ( \InvalidArgumentException $invalid ) {
+				$this->assertSame( sprintf( 'A public id\'s shape with no prefix holds fewer than 20 letters and digits, as one of 20 or more would let any opaque token of its length pass, and the shape of %d to 20 without a prefix does not.', is_int( $length ) ? $length : $length[0] ), $invalid->getMessage() );
+			}
+		}
+
+		$token = 'Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op';
+		$this->assertRefused( self::WHERE . ', its response body field handle holds an opaque token', $token, fn() => self::idScrubber()->scanExchange( self::exchangeWith( 'responseBody', '{"handle":"' . $token . '"}' ), self::WHERE ) );
+	}
+
+	/**
+	 * Returns parts that hold a provider's id of 17 letters and digits whose 16 digits pass the card number's checksum, with whether the recorder and rule 14's rescan keep them, under the shape `'' => 17`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{0: Exchange, 1: bool, 2?: string}> The exchange, whether both scans keep it, and what a refusal says after the part's name.
+	 */
+	public function idsHoldingACardsDigits(): array {
+		$card   = '4242424242424242';
+		$id     = 'A' . $card;
+		$links  = '{"id":"' . $id . '","links":[{"href":"https://api.example.com/v2/checkout/orders/' . $id . '","rel":"self"},{"href":"https://api.example.com/v2/payments/authorizations/' . $id . '/capture","rel":"capture"}]}';
+		$read   = static fn( string $url ): Exchange => new Exchange( 'GET', $url, array(), null, 200, array( 'content-type' => 'application/json' ), '{"status":"COMPLETED"}' );
+		$holds  = 'holds a card number';
+		$beside = 'its response body holds, outside every field it was read as, a card number';
+
+		return array(
+			'the id in a field and in the links of an answer' => array( self::exchangeWith( 'responseBody', $links ), true ),
+			'the id as a segment of a request URL'         => array( $read( 'https://api.example.com/v2/checkout/orders/' . $id ), true ),
+			'the id as a segment before an action in a request URL' => array( self::exchangeWith( 'url', 'https://api.example.com/v2/payments/authorizations/' . $id . '/capture' ), true ),
+			'the id in a query and in a form body'         => array( self::exchangeWith( 'url', 'https://api.example.com/v2/orders?id=' . $id )->with( array( 'body' => 'order=' . $id ) ), true ),
+			'the id in a declared response header'         => array( self::exchangeWith( 'responseHeaders', $id ), true ),
+			'17 digits, a value of the shape with no letter' => array( self::exchangeWith( 'responseBody', '{"id":"0' . $card . '"}' ), false, 'its response body field id ' . $holds ),
+			'16 digits, of no declared shape'              => array( self::exchangeWith( 'responseBody', '{"id":"' . $card . '"}' ), false, 'its response body field id ' . $holds ),
+			'an id of an undeclared length'                => array( self::exchangeWith( 'responseBody', '{"id":"AB' . $card . '"}' ), false, 'its response body field id ' . $holds ),
+			'the id after other text in a value'           => array( self::exchangeWith( 'responseBody', '{"ref":"order-' . $id . '"}' ), false, 'its response body field ref ' . $holds ),
+			'the id in a sentence'                         => array( self::exchangeWith( 'responseBody', '{"note":"paid with ' . $id . ' today"}' ), false, 'its response body field note ' . $holds ),
+			'a URL in free text'                           => array( self::exchangeWith( 'responseBody', '{"note":"see https://api.example.com/v2/checkout/orders/' . $id . '"}' ), false, 'its response body field note ' . $holds ),
+			'a segment that holds the id after other text' => array( $read( 'https://api.example.com/v2/checkout/orders/order-' . $id ), false, 'its URL ' . $holds ),
+			'a segment that holds the id after a short word' => array( $read( 'https://api.example.com/v2/checkout/orders/n-' . $id ), false, 'its URL ' . $holds ),
+			'a segment of digits alone'                    => array( $read( 'https://api.example.com/v2/checkout/orders/' . $card ), false, 'its URL ' . $holds ),
+			'a card number in the query of a URL with the id' => array( $read( 'https://api.example.com/v2/checkout/orders/' . $id . '?n=' . $card ), false, 'its URL query field n ' . $holds ),
+			'the id in a field named like a credential'    => array( self::exchangeWith( 'responseBody', '{"client_token":"' . $id . '"}' ), false, 'its response body field client_token ' . $holds ),
+			'the id in the query of a redirect'            => array( self::exchangeWith( 'responseHeaders', array( 'location' => 'https://pay.example.com/r?order=' . $id ) ), false, 'its response header location query field order ' . $holds ),
+			'a dropped card number beside the id'          => array( self::exchangeWith( 'responseBody', '{"id":"' . $id . '","note":"' . $card . '","note":"x"}' ), false, $beside ),
+			'a dropped value that holds the id among other text' => array( self::exchangeWith( 'responseBody', '{"id":"' . $id . '","note":"paid ' . $id . '","note":"x"}' ), false, $beside ),
+		);
+	}
+
+	/**
+	 * Tests that a whole value that is an id of a declared shape with a letter in it is no card number, in a field, a header, a query and as a whole segment of a URL's path, for the recorder and for rule 14's rescan of the file it writes; and that a value of digits alone, an undeclared shape, an id among other text and an id where no public shape passes are read as before.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider idsHoldingACardsDigits
+	 * @group conformance
+	 *
+	 * @param Exchange $sent    The exchange as sent and answered.
+	 * @param bool     $kept    Whether both scans keep it.
+	 * @param string   $because Optional. What each refusal says, after the part's name. Default anything.
+	 */
+	public function test_an_id_of_a_declared_shape_with_a_letter_is_no_card_number( Exchange $sent, bool $kept, string $because = '' ): void {
+		$verdicts = $this->verdicts( self::idScrubber(), $sent );
+
+		$this->assertSame( array( $kept, $kept ), array_values( array_map( static fn( string $verdict ): bool => 'accepted' === $verdict, $verdicts ) ), implode( ' / ', $verdicts ) );
+
+		foreach ( '' === $because ? array() : $verdicts as $verdict ) {
+			$this->assertStringContainsString( $because, $verdict );
+		}
+	}
+
+	/**
+	 * Tests that the same id in a field is a card number to a scrubber whose test declares no shape for it: what the declaration changes.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_an_id_of_no_declared_shape_is_read_as_a_card_number(): void {
+		$verdicts = $this->verdicts( self::scrubber(), self::exchangeWith( 'responseBody', '{"id":"A4242424242424242"}' ) );
+
+		$this->assertSame( array( false, false ), array_values( array_map( static fn( string $verdict ): bool => 'accepted' === $verdict, $verdicts ) ), implode( ' / ', $verdicts ) );
+	}
+
+	/**
+	 * Tests that every other check still reads a value of a declared shape: a credential of the run in that shape is refused as one.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_value_of_a_declared_shape_is_read_by_the_other_checks(): void {
+		$credential = 'A4242424242424242';
+		$scrubber   = new TapeScrubber( array( 'secret_key' => array( $credential ) ), array(), array( '' => 17 ) );
+
+		$this->assertRefused( 'settings.json, the setting merchant holds a credential of the run', $credential, fn() => $scrubber->scanSettings( array( 'merchant' => $credential ), 'settings.json' ) );
+	}
+
+	/**
+	 * Tests that a whole 64-hex digest with a letter in it, whose digits pass the card number's checksum, is no card number in a declared digest field, and is one in another field or among other text in the declared one.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_declared_digest_with_a_letter_is_no_card_number(): void {
+		$digest   = 'ab4242424242424242' . str_repeat( 'cd', 23 );
+		$scrubber = new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), array(), array( 'x-signing' ), array(), self::PLANTED_HEADERS );
+
+		$this->assertSame( 64, strlen( $digest ) );
+		$this->assertSame( array( 'accepted', 'accepted' ), array_values( $this->verdicts( $scrubber, self::exchangeWith( 'responseHeaders', $digest ) ) ) );
+		$this->assertRefused( self::WHERE . ', its response body field digest holds a card number', $digest, fn() => $scrubber->scanExchange( self::exchangeWith( 'responseBody', '{"digest":"' . $digest . '"}' ), self::WHERE ) );
+		$this->assertRefused( self::WHERE . ', its response header x-signing holds a card number', $digest, fn() => $scrubber->scanExchange( self::exchangeWith( 'responseHeaders', 't=1780315200,v1=' . $digest ), self::WHERE ) );
+	}
+
+	/**
+	 * Returns the verdicts of the recorder's scan of an exchange and of rule 14's scan of the tape file written from it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param TapeScrubber $scrubber The scrubber.
+	 * @param Exchange     $sent     The exchange as sent and answered.
+	 * @return array<string, string> `accepted`, or `refused: ` and the refusal, by scan.
+	 */
+	private function verdicts( TapeScrubber $scrubber, Exchange $sent ): array {
+		$clean      = $scrubber->exchange( $sent );
+		$verdicts   = array();
+		$this->file = (string) tempnam( sys_get_temp_dir(), 'seocart-tape-' );
+
+		file_put_contents( $this->file, Tape::encode( $clean->toTape() ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- A scratch file of the test, written as a recording writes it.
+
+		foreach ( array(
+			'the recorder\'s scan'        => fn() => $scrubber->scanExchange( $clean, self::WHERE ),
+			'rule 14\'s scan of the file' => fn() => $scrubber->scanFile( $this->file ),
+		) as $scan => $run ) {
+			try {
+				$run();
+				$verdicts[ $scan ] = 'accepted';
+			} catch ( TapeRefused $refused ) {
+				$verdicts[ $scan ] = 'refused: ' . $refused->getMessage();
+			}
+		}
+
+		return $verdicts;
 	}
 
 	/**
@@ -1515,5 +1677,16 @@ final class TapeScrubberTest extends TestCase {
 	 */
 	private static function publicScrubber(): TapeScrubber {
 		return new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), array( 'pi_' => 24 ), array( 'reference-signature' ), array( 'requires_payment_method' ), self::PLANTED_HEADERS );
+	}
+
+	/**
+	 * Builds the scrubber of a test that declares its provider's ids, 17 letters and digits with no prefix, as a provider names its orders and its captures.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return TapeScrubber The scrubber.
+	 */
+	private static function idScrubber(): TapeScrubber {
+		return new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), array( '' => 17 ), array(), array(), self::PLANTED_HEADERS );
 	}
 }
