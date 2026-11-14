@@ -66,7 +66,8 @@ jobs:
     integration:
         name: PHP ${{ inputs.php || '(development version)' }}, WordPress ${{ inputs.wp }}${{ startsWith(inputs.database, 'mariadb') && ', MariaDB' || '' }}${{ inputs.multisite && ', multisite' || '' }}${{ inputs.script != 'test:integration' && format(', {0}', inputs.script) || '' }}
         runs-on: ubuntu-24.04
-        timeout-minutes: 20
+        # The whole suite takes about 17 minutes on a quick runner and has passed 20 on a slow one.
+        timeout-minutes: 40
         continue-on-error: ${{ inputs.allow-failure }}
         services:
             mysql:
