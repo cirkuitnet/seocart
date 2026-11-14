@@ -18,6 +18,7 @@ use SEOCart\Support\Currency;
 use SEOCart\Support\Money;
 use SEOCart\Tests\Conformance\Payment\CredentialRequests;
 use SEOCart\Tests\Conformance\Payment\Exchange;
+use SEOCart\Tests\Conformance\Payment\ReadRequests;
 use SEOCart\Tests\Conformance\Payment\RequestRules;
 use SEOCart\Tests\Conformance\Payment\Rule;
 
@@ -54,6 +55,15 @@ final class RequestRulesTest extends TestCase {
 	 * @var string
 	 */
 	private const TOKEN_PATH = '/v1/oauth2/token';
+
+	/**
+	 * The single endpoint of a provider that names each request in its body.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const SINGLE_PATH = '/v1/requests';
 
 	/**
 	 * Sets Brain Monkey up, for wp_parse_url().
@@ -317,6 +327,167 @@ final class RequestRulesTest extends TestCase {
 		) as $case => $entry ) {
 			$this->assertSame( 'Credential request 2 of credentialRequests() is not a method in capitals and a path from `/`, such as POST /v1/oauth2/token.', CredentialRequests::refusal( array( $token, $entry ) ), $case );
 		}
+	}
+
+	/**
+	 * Tests that a declared read moves no money, by its method, its path, its host and its body's one key: rules 6 and 12 ask it for no key and take the operation's own request beside it; undeclared, it is a money request without the key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_declared_read_moves_no_money(): void {
+		$read      = self::exchange( 'POST', self::SINGLE_PATH, array(), '{"retrieveIntent":{"id":"ri_1"}}' );
+		$exchanges = array( $read, self::exchange( 'POST', '/v1/intents/ri_1/capture', array( 'idempotency-key' => self::KEY ), 'amount=1000' ) );
+		$reads     = self::reading( 'retrieveIntent' );
+
+		$this->assertSame( array( 2 ), array_keys( RequestRules::moneyRequests( $exchanges, new CredentialRequests(), $reads ) ) );
+		$this->assertNull( RequestRules::keyFailure( 'the capture', $exchanges, self::KEY, new CredentialRequests(), array(), null, $reads ) );
+		$this->assertNull( RequestRules::sentFailure( 'the capture', $exchanges, self::KEY, new CredentialRequests(), array(), null, $reads ) );
+		$this->assertFalse( RequestRules::movesMoney( 'POST', $read->url, new CredentialRequests(), $read->body, $reads ) );
+		$this->assertFalse( RequestRules::movesMoney( 'post', $read->url, new CredentialRequests(), " {\n\"retrieveIntent\" : {}}", $reads ), 'The method in lower case, and the body spaced.' );
+		$this->assertStringStartsWith( Rule::KeysAsRuled->message() . 'request 1 of the capture (POST ' . self::SINGLE_PATH . ') carries ' . self::KEY . ' nowhere', (string) RequestRules::keyFailure( 'the capture', $exchanges, self::KEY, new CredentialRequests() ) );
+	}
+
+	/**
+	 * Tests that a request is a declared read only by its method, its path with its query, a host the gateway declares and a JSON object of the declared key alone as its body.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_only_the_declared_method_path_host_and_body_key_move_no_money(): void {
+		$reads = self::reading( 'retrieveIntent' );
+		$url   = self::HOST . self::SINGLE_PATH;
+
+		foreach ( array(
+			'another method'          => array( 'PUT', $url, '{"retrieveIntent":{}}' ),
+			'another query'           => array( 'POST', $url . '?x=1', '{"retrieveIntent":{}}' ),
+			'an undeclared host'      => array( 'POST', 'https://api.elsewhere.example' . self::SINGLE_PATH, '{"retrieveIntent":{}}' ),
+			'another key'             => array( 'POST', $url, '{"captureIntent":{"id":"ri_1"}}' ),
+			'the key beside another'  => array( 'POST', $url, '{"retrieveIntent":{},"captureIntent":{"id":"ri_1"}}' ),
+			'the key in another case' => array( 'POST', $url, '{"RetrieveIntent":{}}' ),
+			'the key nested'          => array( 'POST', $url, '{"request":{"retrieveIntent":{}}}' ),
+			'a list'                  => array( 'POST', $url, '[{"retrieveIntent":{}}]' ),
+			'a form'                  => array( 'POST', $url, 'retrieveIntent=ri_1' ),
+			'a body that is no JSON'  => array( 'POST', $url, '{"retrieveIntent":' ),
+			'no body'                 => array( 'POST', $url, null ),
+			'an empty object'         => array( 'POST', $url, '{}' ),
+			'the key after a BOM'     => array( 'POST', $url, "\xEF\xBB\xBF" . '{"retrieveIntent":{}}' ),
+		) as $case => list( $method, $at, $body ) ) {
+			$this->assertTrue( RequestRules::movesMoney( $method, $at, new CredentialRequests(), $body, $reads ), $case );
+		}
+	}
+
+	/**
+	 * Tests that a declared read that carries the operation's key, in a header or its body, or names the operation's amount beside its currency, refuses the declaration in rules 6 and 12; one that names the payment otherwise, as a read does, or holds the key inside a longer token, does not.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_declared_read_that_carries_the_key_or_names_the_amount_is_refused(): void {
+		$reads   = self::reading( 'retrieveIntent' );
+		$keyed   = self::exchange( 'POST', '/v1/intents/ri_1/capture', array( 'idempotency-key' => self::KEY ), 'amount=1000' );
+		$amount  = Money::of( 1000, Currency::of( 'USD' ) );
+		$uuid    = (string) strtok( self::KEY, ':' );
+		$refusal = 'the test declares POST ' . self::SINGLE_PATH . ' with the one key retrieveIntent a read in readRequests(), and the capture sent a request it covers that %s: a read moves no money, so the declaration is refused.';
+		$carries = sprintf( $refusal, 'carries the operation\'s key ' . self::KEY );
+		$names   = sprintf( $refusal, 'names the operation\'s amount with its currency, 1000 USD in minor units' );
+
+		foreach ( array(
+			'the key in a header'           => array( array( 'x-reference' => self::KEY ), '{"retrieveIntent":{"id":"ri_1"}}', $carries ),
+			'the key in the body'           => array( array(), '{"retrieveIntent":{"id":"ri_1","reference":"' . self::KEY . '"}}', $carries ),
+			'the amount and the currency'   => array( array(), '{"retrieveIntent":{"id":"ri_1","amount":1000,"currency":"usd"}}', $names ),
+			'a decimal and the currency'    => array( array(), '{"retrieveIntent":{"id":"ri_1","total":{"value":"10.00","currencyCode":"USD"}}}', $names ),
+			'the provider\'s id'            => array( array(), '{"retrieveIntent":{"id":"ri_1"}}', null ),
+			'the intent\'s uuid'            => array( array(), '{"retrieveIntent":{"id":"ri_1","intent_uuid":"' . $uuid . '"}}', null ),
+			'the amount alone'              => array( array(), '{"retrieveIntent":{"id":"ri_1","limit":1000}}', null ),
+			'the currency alone'            => array( array(), '{"retrieveIntent":{"id":"ri_1","currency":"usd"}}', null ),
+			'the key inside a longer token' => array( array(), '{"retrieveIntent":{"id":"ri_1","note":"' . self::KEY . 'x"}}', null ),
+		) as $case => list( $headers, $body, $refused ) ) {
+			$read = self::exchange( 'POST', self::SINGLE_PATH, $headers, $body );
+
+			$this->assertSame( null === $refused ? null : Rule::KeysAsRuled->message() . $refused, RequestRules::keyFailure( 'the capture', array( $read, $keyed ), self::KEY, new CredentialRequests(), array(), $amount, $reads ), $case );
+			$this->assertSame( null === $refused ? null : Rule::EveryCallThroughTheClient->message() . $refused, RequestRules::sentFailure( 'the capture', array( $read, $keyed ), self::KEY, new CredentialRequests(), array(), $amount, $reads ), $case );
+		}
+	}
+
+	/**
+	 * Tests that an operation every one of whose requests is a declared read fails rules 6 and 12: a declaration that covers the money request leaves the operation none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_an_operation_of_declared_reads_only_fails_rules_6_and_12(): void {
+		$reads     = self::reading( 'retrieveIntent', 'captureIntent' );
+		$exchanges = array(
+			self::exchange( 'POST', self::SINGLE_PATH, array(), '{"retrieveIntent":{"id":"ri_1"}}' ),
+			self::exchange( 'POST', self::SINGLE_PATH, array(), '{"captureIntent":{"id":"ri_1"}}' ),
+		);
+
+		$this->assertStringStartsWith( Rule::KeysAsRuled->message() . 'the capture sent 2 requests, and none that moves money', (string) RequestRules::keyFailure( 'the capture', $exchanges, self::KEY, new CredentialRequests(), array(), null, $reads ) );
+		$this->assertStringStartsWith( Rule::EveryCallThroughTheClient->message() . 'the capture sent no request of its own through the HTTP client', (string) RequestRules::sentFailure( 'the capture', $exchanges, self::KEY, new CredentialRequests(), array(), null, $reads ) );
+	}
+
+	/**
+	 * Tests that a declaration of reads is refused, in one sentence, when it names more than ReadRequests::MOST or an entry that is not a method in capitals other than a read's, a path from `/` and a body key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_read_declaration_too_long_or_malformed_is_refused(): void {
+		$read = array(
+			'method'   => 'POST',
+			'path'     => self::SINGLE_PATH,
+			'body_key' => 'retrieveIntent',
+		);
+
+		$this->assertNull( ReadRequests::refusal( array() ) );
+		$this->assertNull( ReadRequests::refusal( array_fill( 0, ReadRequests::MOST, $read ) ) );
+		$this->assertSame( 'The test declares 5 read requests in readRequests(), and a gateway reads in 4 at most: a longer list could hide a request that moves money.', ReadRequests::refusal( array_fill( 0, ReadRequests::MOST + 1, $read ) ) );
+
+		foreach ( array(
+			'a method in lower case'      => array( 'method' => 'post' ) + $read,
+			'a read\'s method'            => array( 'method' => 'GET' ) + $read,
+			'a path from no `/`'          => array( 'path' => 'v1/requests' ) + $read,
+			'a path with a fragment'      => array( 'path' => self::SINGLE_PATH . '#x' ) + $read,
+			'no body key'                 => array(
+				'method' => 'POST',
+				'path'   => self::SINGLE_PATH,
+			),
+			'an empty body key'           => array( 'body_key' => '' ) + $read,
+			'a body key from a digit'     => array( 'body_key' => '1retrieveIntent' ) + $read,
+			'a body key with a space'     => array( 'body_key' => 'retrieve Intent' ) + $read,
+			'a body key of 65 characters' => array( 'body_key' => 'r' . str_repeat( 'e', 64 ) ) + $read,
+			'a string'                    => 'POST /v1/requests retrieveIntent',
+		) as $case => $entry ) {
+			$this->assertSame( 'Read request 2 of readRequests() is not a method in capitals other than GET, HEAD or OPTIONS, a path from `/` and the one top-level key of its JSON body, such as POST /xml/v1/request.api with getTransactionDetailsRequest.', ReadRequests::refusal( array( $read, $entry ) ), $case );
+		}
+	}
+
+	/**
+	 * Returns the reads a test declares, each a POST to the single endpoint of a body key, at the host of the exchanges.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string ...$keys Each read's body key.
+	 * @return ReadRequests The declaration.
+	 */
+	private static function reading( string ...$keys ): ReadRequests {
+		return new ReadRequests(
+			array_map(
+				static fn( string $key ): array => array(
+					'method'   => 'POST',
+					'path'     => self::SINGLE_PATH,
+					'body_key' => $key,
+				),
+				array_values( $keys )
+			),
+			array( 'api.reference.example' )
+		);
 	}
 
 	/**

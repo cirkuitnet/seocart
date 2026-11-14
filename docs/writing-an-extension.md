@@ -454,9 +454,30 @@ protected function credentialRequests(): array {
 }
 ```
 
+A provider with a single endpoint names each request in its JSON body, such as
+`{"getTransactionDetailsRequest": {…}}` sent to `POST /xml/v1/request.api`, so its reads are POSTs
+too. Its test names each read, by its method, its path with its query and the one top-level key of
+its body, in `readRequests()`. A request of that method and path, at a host the gateway declares,
+whose body is a JSON object of that key alone, moves no money: rule 6 asks it for no idempotency
+key, no rule takes it for an operation's own request or looks in its answer for the operation's
+object, and rule 2 never loses its answer. The test names four at most, none a GET, HEAD or
+OPTIONS; a named read that carries the operation's key, or names the operation's amount in a field
+beside its currency in another, fails rules 6 and 12; and an operation whose every request is a
+named read sends none that moves money, which both rules fail. A read names the payment it reads,
+so the provider's id of it is not held against it. The pull request that adds the declaration is
+checked by hand against the provider's documentation of each request:
+
+```php
+protected function readRequests(): array {
+	return array(
+		array( 'method' => 'POST', 'path' => '/xml/v1/request.api', 'body_key' => 'getTransactionDetailsRequest' ),
+	);
+}
+```
+
 Rule 2 refunds once with its answer lost, and asks the refund again. The answer lost is that of
-the next request that can move money, neither a read nor a named credential request, so a gateway
-that reads the payment or asks for a token before it refunds has those answered.
+the next request that can move money, neither a read nor a named credential request or read, so a
+gateway that reads the payment or asks for a token before it refunds has those answered.
 
 A provider that answers a declined payment by creating nothing says so in
 `declineLeavesNoPayment()`: rule 8 then requires `query()` of the declined payment to answer

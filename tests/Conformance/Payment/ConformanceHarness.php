@@ -279,6 +279,15 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	protected CredentialRequests $credentials;
 
 	/**
+	 * The requests the test declares only read though they are POSTs (readRequests()), which move no money.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var ReadRequests
+	 */
+	protected ReadRequests $reads;
+
+	/**
 	 * The credential values of the run, by mode and setting.
 	 *
 	 * @since 0.2.0
@@ -357,6 +366,35 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * @phpstan-return list<array{method: string, path: string}>
 	 */
 	protected function credentialRequests(): array {
+		return array();
+	}
+
+	/**
+	 * Returns the requests with which the gateway only reads though they are POSTs, each a method, a path and the one top-level key of its JSON body: none unless the test names them.
+	 *
+	 * A provider with a single endpoint names each request in its body, such as
+	 * `{"getTransactionDetailsRequest": {…}}` sent to `POST /xml/v1/request.api`, so a read is told
+	 * from a payment by that key alone. A request of a method in capitals and a path with its query
+	 * named here, at a host the gateway declares, whose body is a JSON object of the named key alone,
+	 * moves no money: rule 6 asks it for no idempotency key, no rule takes it for an operation's own
+	 * request or holds its answer for the operation's object, and the lost answer of rule 2 is never
+	 * its own. A test names ReadRequests::MOST at most; a longer list, or an entry that is not a
+	 * method other than GET, HEAD or OPTIONS, a path from `/` and a key, fails the suite's set-up;
+	 * a request the declaration covers that carries the operation's key, or names the operation's
+	 * amount in a field beside its currency in another, fails rules 6 and 12, since a read moves no
+	 * money; and an operation all of whose requests are declared reads sends no request that moves
+	 * money, which both rules fail. A read names the payment it reads, so the provider's id of it is
+	 * not held against it. The suite cannot know what a provider's request does, so the declaration
+	 * is checked by hand, in the pull request that adds it, against the provider's documentation of
+	 * each request.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<int, array<string, string>> The reads, each `array( 'method' => …, 'path' => …, 'body_key' => … )`.
+	 *
+	 * @phpstan-return list<array{method: string, path: string, body_key: string}>
+	 */
+	protected function readRequests(): array {
 		return array();
 	}
 
@@ -543,6 +581,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->logger       = new AssertingLogger( fn(): array => isset( $this->transport ) ? $this->transport->servedBodies() : array(), $this->publicCodes(), $this->publicIdShapes() );
 		$this->scrubber     = new TapeScrubber( array() );
 		$this->credentials  = new CredentialRequests();
+		$this->reads        = new ReadRequests();
 
 		parent::set_up();
 
@@ -563,8 +602,11 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		);
 
 		// Asked once here, so a gateway the plugin refused fails every test with the refusal as its cause.
-		$this->credentials = $this->credentialRequestsOf( $this->descriptor() );
+		$descriptor        = $this->descriptor();
+		$this->credentials = $this->credentialRequestsOf( $descriptor );
+		$this->reads       = $this->readRequestsOf( $descriptor );
 		$this->transport->declareCredentialRequests( $this->credentials );
+		$this->transport->declareReadRequests( $this->reads );
 		$this->configure( $this->suiteMode() );
 	}
 
@@ -584,7 +626,38 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 			self::fail( $refusal );
 		}
 
-		return new CredentialRequests( $declared, array_map( static fn( OutboundHost $host ): string => $host->host, $descriptor->hosts ) );
+		return new CredentialRequests( $declared, self::hostsOf( $descriptor ) );
+	}
+
+	/**
+	 * Returns the reads the test declares, at the hosts the gateway declares, or fails the set-up with why the declaration is refused.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayDescriptor $descriptor The gateway's descriptor.
+	 * @return ReadRequests The declared reads.
+	 */
+	private function readRequestsOf( GatewayDescriptor $descriptor ): ReadRequests {
+		$declared = $this->readRequests();
+		$refusal  = ReadRequests::refusal( $declared );
+
+		if ( null !== $refusal ) {
+			self::fail( $refusal );
+		}
+
+		return new ReadRequests( $declared, self::hostsOf( $descriptor ) );
+	}
+
+	/**
+	 * Returns the hosts a gateway declares, by their names.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayDescriptor $descriptor The gateway's descriptor.
+	 * @return list<string> The hosts.
+	 */
+	private static function hostsOf( GatewayDescriptor $descriptor ): array {
+		return array_map( static fn( OutboundHost $host ): string => $host->host, $descriptor->hosts );
 	}
 
 	/**
@@ -1065,14 +1138,15 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 				$cell        = $this->firstCell( $rule );
 				$calls       = array() !== $this->descriptor()->hosts;
 				$credentials = $this->credentials;
+				$reads       = $this->reads;
 				$this->begin( 'rule12-money-path-' . self::cellName( $cell ) );
 
 				// Each operation's own request, found by its key, not a count: another operation's request through the client would hide one sent another way.
 				$this->eachMoneyOperation(
 					$rule,
 					$cell,
-					static function ( string $what, array $exchanges, string $key, array $names, Money $amount ) use ( $calls, $credentials ): void {
-						$failure = $calls ? RequestRules::sentFailure( $what, $exchanges, $key, $credentials, $names, $amount ) : null;
+					static function ( string $what, array $exchanges, string $key, array $names, Money $amount ) use ( $calls, $credentials, $reads ): void {
+						$failure = $calls ? RequestRules::sentFailure( $what, $exchanges, $key, $credentials, $names, $amount, $reads ) : null;
 
 						if ( null !== $failure ) {
 							self::fail( $failure );
@@ -2423,7 +2497,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * @phpstan-param array<int|string, string> $names
 	 */
 	private function assertKeyed( string $what, array $exchanges, string $key, array $names, Money $amount ): void {
-		$failure = RequestRules::keyFailure( $what, $exchanges, $key, $this->credentials, $names, $amount );
+		$failure = RequestRules::keyFailure( $what, $exchanges, $key, $this->credentials, $names, $amount, $this->reads );
 
 		if ( null !== $failure ) {
 			self::fail( $failure );
@@ -2456,7 +2530,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
-	 * Returns the provider's answers to an operation's requests, those to a declared credential request aside: a token's answer holds none of the operation's objects.
+	 * Returns the provider's answers to an operation's requests, those to a declared credential request or a declared read aside: a token's answer holds none of the operation's objects, and a declared read's names what the provider holds already, not what it made for the operation.
 	 *
 	 * @since 0.2.0
 	 *
@@ -2469,7 +2543,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$answers = array();
 
 		foreach ( $exchanges as $exchange ) {
-			if ( ! $this->credentials->covers( $exchange->method, $exchange->url ) ) {
+			if ( ! $this->credentials->covers( $exchange->method, $exchange->url ) && ! $this->reads->covers( $exchange->method, $exchange->url, $exchange->body ) ) {
 				$answers[] = $exchange->responseBody;
 			}
 		}

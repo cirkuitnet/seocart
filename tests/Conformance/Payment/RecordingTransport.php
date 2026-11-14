@@ -206,6 +206,15 @@ final class RecordingTransport implements Transport {
 	private CredentialRequests $credentials;
 
 	/**
+	 * The reads the gateway's test declares of a provider that reads by POST, which move no money.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var ReadRequests
+	 */
+	private ReadRequests $reads;
+
+	/**
 	 * What went wrong, one sentence each.
 	 *
 	 * @since 0.2.0
@@ -250,6 +259,7 @@ final class RecordingTransport implements Transport {
 		$this->inner       = new WordPressTransport();
 		$this->scrubber    = new TapeScrubber( array() );
 		$this->credentials = new CredentialRequests();
+		$this->reads       = new ReadRequests();
 	}
 
 	/**
@@ -365,6 +375,17 @@ final class RecordingTransport implements Transport {
 	}
 
 	/**
+	 * Gives the transport the reads the gateway's test declares of a provider that reads by POST, whose answers loseNextAnswer() never loses.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param ReadRequests $reads The declared reads.
+	 */
+	public function declareReadRequests( ReadRequests $reads ): void {
+		$this->reads = $reads;
+	}
+
+	/**
 	 * Answers every request from now on with a connection failure, keeping what was sent.
 	 *
 	 * @since 0.2.0
@@ -400,11 +421,11 @@ final class RecordingTransport implements Transport {
 	/**
 	 * Loses the answer to the next request that can move money: the provider answers, and the gateway is told the request timed out.
 	 *
-	 * The request that loses its answer is the next that is neither a read nor a credential request
-	 * the gateway's test declares (RequestRules::movesMoney()): a gateway that reads an order, or
-	 * exchanges its credentials for a token, before it refunds has those answered, and the refund's
-	 * answer lost. A gateway whose operation begins with its money request loses that request's
-	 * answer, as before. A replay loses the answer its tape lost.
+	 * The request that loses its answer is the next that is neither a read, nor a credential request
+	 * nor a read by POST the gateway's test declares (RequestRules::movesMoney()): a gateway that
+	 * reads an order, or exchanges its credentials for a token, before it refunds has those
+	 * answered, and the refund's answer lost. A gateway whose operation begins with its money
+	 * request loses that request's answer, as before. A replay loses the answer its tape lost.
 	 *
 	 * @since 0.2.0
 	 *
@@ -433,7 +454,7 @@ final class RecordingTransport implements Transport {
 			$this->insideTransactions[] = sprintf( 'request %1$d of %2$s was sent at transaction depth %3$d', $number, $this->scenarioName(), $this->tx->depth() );
 		}
 
-		$movesMoney = RequestRules::movesMoney( $request->method, $request->url, $this->credentials );
+		$movesMoney = RequestRules::movesMoney( $request->method, $request->url, $this->credentials, $request->body, $this->reads );
 		$lost       = $this->loseNext && $movesMoney;
 		$answer     = null;
 

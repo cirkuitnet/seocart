@@ -392,12 +392,16 @@ class ReferenceGateway implements PaymentGateway {
 			$headers['Idempotency-Key'] = $this->keyFor( $key );
 		}
 
+		$body = null;
+
 		if ( 'POST' === $method ) {
-			$headers['Content-Type'] = 'application/x-www-form-urlencoded';
+			$encoded                 = $this->encoded( $path, $fields );
+			$headers['Content-Type'] = $encoded[0];
+			$body                    = $encoded[1];
 		}
 
 		try {
-			$response = $this->context->http()->send( new OutboundRequest( self::HOST, $method, $this->url( $path, $mode ), $headers, 'POST' === $method ? http_build_query( $fields ) : null ) );
+			$response = $this->context->http()->send( new OutboundRequest( self::HOST, $method, $this->url( $path, $mode ), $headers, $body ) );
 		} catch ( TransportFailure $failure ) {
 			throw new GatewayUnavailable( 'The reference provider could not be reached.', 0, $failure );
 		}
@@ -410,6 +414,21 @@ class ReferenceGateway implements PaymentGateway {
 		$this->answered( $answer );
 
 		return $answer;
+	}
+
+	/**
+	 * Returns the media type and the body of a POST: the fields as a form.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string               $path   The path, with its query.
+	 * @param array<string, mixed> $fields The fields.
+	 * @return array{string, string} The `Content-Type` and the body.
+	 */
+	protected function encoded( string $path, array $fields ): array {
+		unset( $path );
+
+		return array( 'application/x-www-form-urlencoded', http_build_query( $fields ) );
 	}
 
 	/**

@@ -16,11 +16,12 @@ use SEOCart\Support\Money;
 /**
  * Tells which requests of an operation move money, and whether each carries the operation's idempotency key where a provider reads one.
  *
- * A request that moves money is any request but a read (GET, HEAD or OPTIONS) and but a credential
+ * A request that moves money is any request but a read (GET, HEAD or OPTIONS), but a credential
  * request the gateway's test declares (CredentialRequests), such as the exchange of the gateway's
- * credentials for a token. Its key travels in a header or in the body, as it is, URL-encoded or
- * escaped for JSON; a key in the URL alone does not count, since a URL is logged and cached along
- * the way and no provider dedupes by it.
+ * credentials for a token, and but a read the test declares of a provider that reads by POST
+ * (ReadRequests), told by its body's one key. Its key travels in a header or in the body, as it is,
+ * URL-encoded or escaped for JSON; a key in the URL alone does not count, since a URL is logged and
+ * cached along the way and no provider dedupes by it.
  *
  * @since 0.2.0
  */
@@ -33,20 +34,22 @@ final class RequestRules {
 	 *
 	 * @var list<string>
 	 */
-	private const READS = array( 'GET', 'HEAD', 'OPTIONS' );
+	public const READS = array( 'GET', 'HEAD', 'OPTIONS' );
 
 	/**
-	 * Tells whether a request can move money: it is no read, and no credential request the gateway's test declares.
+	 * Tells whether a request can move money: it is no read, no credential request the gateway's test declares, and no read it declares.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param string             $method      The request's method.
 	 * @param string             $url         The request's whole URL.
 	 * @param CredentialRequests $credentials The credential requests the test declares.
+	 * @param string|null        $body        Optional. The request's body, by which a declared read is told. Default null.
+	 * @param ReadRequests       $reads       Optional. The read requests the test declares. Default none.
 	 * @return bool True when it can.
 	 */
-	public static function movesMoney( string $method, string $url, CredentialRequests $credentials ): bool {
-		return ! in_array( strtoupper( $method ), self::READS, true ) && ! $credentials->covers( $method, $url );
+	public static function movesMoney( string $method, string $url, CredentialRequests $credentials, ?string $body = null, ReadRequests $reads = new ReadRequests() ): bool {
+		return ! in_array( strtoupper( $method ), self::READS, true ) && ! $credentials->covers( $method, $url ) && ! $reads->covers( $method, $url, $body );
 	}
 
 	/**
@@ -56,15 +59,16 @@ final class RequestRules {
 	 *
 	 * @param Exchange[]         $exchanges   The requests of one operation, in order.
 	 * @param CredentialRequests $credentials The credential requests the test declares.
-	 * @return array<int, Exchange> The requests that are neither reads nor declared credential requests.
+	 * @param ReadRequests       $reads       Optional. The read requests the test declares. Default none.
+	 * @return array<int, Exchange> The requests that are neither reads nor declared credential requests nor declared reads.
 	 *
 	 * @phpstan-param list<Exchange> $exchanges
 	 */
-	public static function moneyRequests( array $exchanges, CredentialRequests $credentials ): array {
+	public static function moneyRequests( array $exchanges, CredentialRequests $credentials, ReadRequests $reads = new ReadRequests() ): array {
 		$money = array();
 
 		foreach ( $exchanges as $index => $exchange ) {
-			if ( self::movesMoney( $exchange->method, $exchange->url, $credentials ) ) {
+			if ( self::movesMoney( $exchange->method, $exchange->url, $credentials, $exchange->body, $reads ) ) {
 				$money[ $index + 1 ] = $exchange;
 			}
 		}
@@ -114,6 +118,49 @@ final class RequestRules {
 
 			if ( null !== $amount && self::namesAmount( $exchange, $amount ) ) {
 				return sprintf( $refusal, $declared, $what, 'the operation\'s amount with its currency,', sprintf( '%1$d %2$s in minor units', $amount->minorUnits(), $amount->currency()->code() ) );
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Returns why the test's declaration of reads is refused when a request of an operation that a declared read covers carries the operation's key, or names the operation's amount beside its currency.
+	 *
+	 * A declared read moves no money, so no rule asks it for a key. A request the declaration covers
+	 * that carries the key the operation is sent under, or a field whose whole value is the
+	 * operation's amount beside one whose whole value is its currency, is the operation's money, sent
+	 * as a read: the declaration is refused. Unlike a credential request, a read names the payment it
+	 * reads, by the provider's id of it or the store's, so those are not held against it. The key is
+	 * looked for as a whole token, in any form a key is sent in (names()).
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string       $what      The operation, for the message, such as "the capture".
+	 * @param Exchange[]   $exchanges The requests the operation sent, in order.
+	 * @param string       $key       The operation's key.
+	 * @param ReadRequests $reads     The read requests the test declares.
+	 * @param Money|null   $amount    The operation's amount; null when it is not known.
+	 * @return string|null The refusal, in one sentence; null when no declared read carries the key or names the amount.
+	 *
+	 * @phpstan-param list<Exchange> $exchanges
+	 */
+	private static function moneyInARead( string $what, array $exchanges, string $key, ReadRequests $reads, ?Money $amount ): ?string {
+		$refusal = 'the test declares %1$s a read in readRequests(), and %2$s sent a request it covers that %3$s: a read moves no money, so the declaration is refused.';
+
+		foreach ( $exchanges as $exchange ) {
+			$read = $reads->covering( $exchange->method, $exchange->url, $exchange->body );
+
+			if ( null === $read ) {
+				continue;
+			}
+
+			if ( self::names( $exchange, $key ) ) {
+				return sprintf( $refusal, $read, $what, 'carries the operation\'s key ' . $key );
+			}
+
+			if ( null !== $amount && self::namesAmount( $exchange, $amount ) ) {
+				return sprintf( $refusal, $read, $what, sprintf( 'names the operation\'s amount with its currency, %1$d %2$s in minor units', $amount->minorUnits(), $amount->currency()->code() ) );
 			}
 		}
 
@@ -259,7 +306,7 @@ final class RequestRules {
 	}
 
 	/**
-	 * Returns rule 6's failure for one operation: a request that moves money without its key where a provider reads one, none sent, or a request on a declared credential request's path that names the payment.
+	 * Returns rule 6's failure for one operation: a request that moves money without its key where a provider reads one, none sent, a request on a declared credential request's path that names the payment, or a declared read that carries the key or names the amount.
 	 *
 	 * @since 0.2.0
 	 *
@@ -269,19 +316,20 @@ final class RequestRules {
 	 * @param CredentialRequests $credentials The credential requests the test declares.
 	 * @param array<string>      $names       Optional. What else names the payment, by its value, each described for the message (hiddenMoney()). Default none.
 	 * @param Money|null         $amount      Optional. The operation's amount; null when it is not known. Default null.
+	 * @param ReadRequests       $reads       Optional. The read requests the test declares. Default none.
 	 * @return string|null The failure, beginning with the rule's message; null when every request that moves money carries the key.
 	 *
 	 * @phpstan-param list<Exchange> $exchanges
 	 * @phpstan-param array<int|string, string> $names
 	 */
-	public static function keyFailure( string $what, array $exchanges, string $key, CredentialRequests $credentials, array $names = array(), ?Money $amount = null ): ?string {
-		$hidden = self::hiddenMoney( $what, $exchanges, array( $key => 'the operation\'s key' ) + $names, $credentials, $amount );
+	public static function keyFailure( string $what, array $exchanges, string $key, CredentialRequests $credentials, array $names = array(), ?Money $amount = null, ReadRequests $reads = new ReadRequests() ): ?string {
+		$hidden = self::hiddenMoney( $what, $exchanges, array( $key => 'the operation\'s key' ) + $names, $credentials, $amount ) ?? self::moneyInARead( $what, $exchanges, $key, $reads, $amount );
 
 		if ( null !== $hidden ) {
 			return Rule::KeysAsRuled->message() . $hidden;
 		}
 
-		$money = self::moneyRequests( $exchanges, $credentials );
+		$money = self::moneyRequests( $exchanges, $credentials, $reads );
 
 		if ( array() === $money ) {
 			return Rule::KeysAsRuled->message() . sprintf( '%1$s sent %2$d requests, and none that moves money, so none carries %3$s.', $what, count( $exchanges ), $key );
@@ -312,8 +360,10 @@ final class RequestRules {
 	 * An operation's own request moves money and names the operation's key anywhere, its URL
 	 * included: where the key travels is rule 6's question, whether the request went through the
 	 * client at all is this one's. A count of requests would not tell: one unrelated request through
-	 * the client would hide an operation sent another way. A declared credential request is never
-	 * the operation's own, and a request on its path that names the payment refuses the declaration.
+	 * the client would hide an operation sent another way. A declared credential request or declared
+	 * read is never the operation's own; a request on a declared credential request's path that
+	 * names the payment, or a declared read that carries the key or names the amount, refuses the
+	 * declaration.
 	 *
 	 * @since 0.2.0
 	 *
@@ -323,19 +373,20 @@ final class RequestRules {
 	 * @param CredentialRequests $credentials The credential requests the test declares.
 	 * @param array<string>      $names       Optional. What else names the payment, by its value, each described for the message (hiddenMoney()). Default none.
 	 * @param Money|null         $amount      Optional. The operation's amount; null when it is not known. Default null.
+	 * @param ReadRequests       $reads       Optional. The read requests the test declares. Default none.
 	 * @return string|null The failure, beginning with the rule's message; null when one of them is the operation's own.
 	 *
 	 * @phpstan-param list<Exchange> $exchanges
 	 * @phpstan-param array<int|string, string> $names
 	 */
-	public static function sentFailure( string $what, array $exchanges, string $key, CredentialRequests $credentials, array $names = array(), ?Money $amount = null ): ?string {
-		$hidden = self::hiddenMoney( $what, $exchanges, array( $key => 'the operation\'s key' ) + $names, $credentials, $amount );
+	public static function sentFailure( string $what, array $exchanges, string $key, CredentialRequests $credentials, array $names = array(), ?Money $amount = null, ReadRequests $reads = new ReadRequests() ): ?string {
+		$hidden = self::hiddenMoney( $what, $exchanges, array( $key => 'the operation\'s key' ) + $names, $credentials, $amount ) ?? self::moneyInARead( $what, $exchanges, $key, $reads, $amount );
 
 		if ( null !== $hidden ) {
 			return Rule::EveryCallThroughTheClient->message() . $hidden;
 		}
 
-		foreach ( self::moneyRequests( $exchanges, $credentials ) as $exchange ) {
+		foreach ( self::moneyRequests( $exchanges, $credentials, $reads ) as $exchange ) {
 			if ( self::carriesKey( $exchange, $key ) || self::urlHoldsKey( $exchange, $key ) ) {
 				return null;
 			}

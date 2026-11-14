@@ -28,6 +28,12 @@ namespace SEOCart\Tests\Conformance\Payment\Reference;
  *     POST /v1/oauth2/token             a token for the key, which the reference gateway never asks
  *                                       for; the suite's tests of a gateway that exchanges its
  *                                       credentials first do
+ *     POST /v1/requests                 one request named by the one key of its JSON body:
+ *                                       `retrieveIntent` {id}, `searchIntents` {intent_uuid},
+ *                                       `listRefunds` {intent} or `captureIntent` {id, amount}, as
+ *                                       a provider with a single endpoint takes them; the reference
+ *                                       gateway never sends one, the suite's tests of a gateway that
+ *                                       reads by POST do
  *
  * A POST with an `Idempotency-Key` it has seen is answered with its first answer again. The key
  * is a bearer secret starting `ref_test_` or `ref_live_`; the two modes keep separate state. The
@@ -230,8 +236,13 @@ final class ReferenceProvider {
 			return $this->answered[ $mode ][ $key ];
 		}
 
-		$fields = array();
-		parse_str( $body, $fields );
+		$fields = json_decode( $body, true );
+
+		if ( ! is_array( $fields ) ) {
+			$fields = array();
+			parse_str( $body, $fields );
+		}
+
 		$query = array();
 		parse_str( (string) wp_parse_url( $url, PHP_URL_QUERY ), $query );
 
@@ -266,6 +277,7 @@ final class ReferenceProvider {
 		}
 
 		return match ( $method . ' ' . $path ) {
+			'POST /v1/requests' => $this->requested( $mode, $fields ),
 			'POST /v1/intents' => $this->create( $mode, $fields ),
 			'GET /v1/intents'  => array( 200, array( 'data' => $this->search( $mode, (string) ( $query['intent_uuid'] ?? '' ) ) ) ),
 			'POST /v1/refunds' => $this->refund( $mode, $fields ),
@@ -286,6 +298,29 @@ final class ReferenceProvider {
 				),
 			),
 			default            => self::error( 404, 'no_such_route' ),
+		};
+	}
+
+	/**
+	 * Answers a request of the single endpoint, by the one key of its body, as the request of the same meaning at its own path is answered.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string       $mode    The mode.
+	 * @param array<mixed> $request The decoded body: one key, naming the request, and its fields.
+	 * @return array{0: int, 1: array<string, mixed>} The answer.
+	 */
+	private function requested( string $mode, array $request ): array {
+		$type   = 1 === count( $request ) ? (string) array_key_first( $request ) : '';
+		$fields = is_array( $request[ $type ] ?? null ) ? $request[ $type ] : array();
+		$id     = (string) ( $fields['id'] ?? '' );
+
+		return match ( $type ) {
+			'retrieveIntent' => isset( $this->intents[ $mode ][ $id ] ) ? array( 200, $this->seen( $mode, $id ) ) : self::error( 404, 'no_such_intent' ),
+			'searchIntents'  => array( 200, array( 'data' => $this->search( $mode, (string) ( $fields['intent_uuid'] ?? '' ) ) ) ),
+			'listRefunds'    => array( 200, array( 'data' => $this->refundsOf( $mode, (string) ( $fields['intent'] ?? '' ) ) ) ),
+			'captureIntent'  => $this->capture( $mode, $id, array_diff_key( $fields, array( 'id' => true ) ) ),
+			default          => self::error( 400, 'one_known_request_per_body' ),
 		};
 	}
 
