@@ -20,6 +20,7 @@ use SEOCart\Tests\Conformance\Payment\RecordingTransport;
 use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGateway;
 use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGatewaySetup;
 use SEOCart\Tests\Conformance\Payment\Reference\Variants\ExchangesCredentialsFirst;
+use SEOCart\Tests\Conformance\Payment\Reference\Variants\NamesThePaymentInItsTokenRequest;
 use SEOCart\Tests\Conformance\Payment\Rule;
 use SEOCart\Tests\Conformance\Payment\RuleFailures;
 
@@ -136,7 +137,7 @@ final class CredentialRequestsConformanceTest extends ConformanceHarness {
 	 * @since 0.2.0
 	 */
 	public function test_a_declared_money_path_fails_rule_6(): void {
-		$this->assertRuleFails( Rule::KeysAsRuled, 'the test declares POST /v1/refunds a credential request in credentialRequests(), and the first refund sent money on its path' );
+		$this->assertRuleFails( Rule::KeysAsRuled, 'the test declares POST /v1/refunds a credential request in credentialRequests(), and the first refund sent a request on its path that names the payment, the operation\'s key' );
 	}
 
 	/**
@@ -145,7 +146,25 @@ final class CredentialRequestsConformanceTest extends ConformanceHarness {
 	 * @since 0.2.0
 	 */
 	public function test_a_declared_money_path_fails_rule_12(): void {
-		$this->assertRuleFails( Rule::EveryCallThroughTheClient, 'the test declares POST /v1/refunds a credential request in credentialRequests(), and the first refund sent money on its path' );
+		$this->assertRuleFails( Rule::EveryCallThroughTheClient, 'the test declares POST /v1/refunds a credential request in credentialRequests(), and the first refund sent a request on its path that names the payment, the operation\'s key' );
+	}
+
+	/**
+	 * Tests that rule 6 refuses the declaration of a gateway that sends, on its declared token path, a request without a key that names the payment.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_declared_token_request_that_names_the_payment_fails_rule_6(): void {
+		$this->assertRuleFails( Rule::KeysAsRuled, 'the test declares POST /v1/oauth2/token a credential request in credentialRequests(), and the capture sent a request on its path that names the payment, the provider\'s id of the intent' );
+	}
+
+	/**
+	 * Tests that rule 12 refuses the declaration of a gateway that sends, on its declared token path, a request without a key that names the payment.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_declared_token_request_that_names_the_payment_fails_rule_12(): void {
+		$this->assertRuleFails( Rule::EveryCallThroughTheClient, 'the test declares POST /v1/oauth2/token a credential request in credentialRequests(), and the capture sent a request on its path that names the payment, the provider\'s id of the intent' );
 	}
 
 	/**
@@ -176,7 +195,7 @@ final class CredentialRequestsConformanceTest extends ConformanceHarness {
 	}
 
 	/**
-	 * Builds the gateway that exchanges its credentials first.
+	 * Builds the gateway that exchanges its credentials first; in the tests of a request that names the payment on the token path, the gateway that sends one.
 	 *
 	 * @since 0.2.0
 	 *
@@ -184,7 +203,9 @@ final class CredentialRequestsConformanceTest extends ConformanceHarness {
 	 * @return ReferenceGateway The gateway.
 	 */
 	protected function gatewayOf( GatewayRegistry $registry ): ReferenceGateway {
-		return new ExchangesCredentialsFirst( $registry->context( ReferenceGateway::ID ) );
+		$context = $registry->context( ReferenceGateway::ID );
+
+		return str_starts_with( $this->getName( false ), 'test_a_declared_token_request_that_names_the_payment' ) ? new NamesThePaymentInItsTokenRequest( $context ) : new ExchangesCredentialsFirst( $context );
 	}
 
 	/**

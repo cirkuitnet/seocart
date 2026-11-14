@@ -23,7 +23,7 @@ use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGateway;
  *
  * @since 0.2.0
  */
-final class ExchangesCredentialsFirst extends ReferenceGateway {
+class ExchangesCredentialsFirst extends ReferenceGateway {
 
 	/**
 	 * The method of the token request.

@@ -441,8 +441,10 @@ later), which rule 8 asks about when the test names it.
 A gateway that exchanges its credentials for a token before its money request names that
 request, by its method and its path with its query, in `credentialRequests()`. The request moves
 no money: rule 6 asks it for no idempotency key, and no rule takes it for an operation's own
-request. The test names four at most, and a request on a named path that carries an operation's
-key fails rules 6 and 12:
+request. The test names four at most, and a request on a named path that names the payment (the
+operation's key, the intent's uuid, or the provider's id of the intent or of one of its objects)
+fails rules 6 and 12. The suite cannot know what a provider's endpoint does, so the pull request
+that adds the declaration is checked by hand against the provider's documentation of the request:
 
 ```php
 protected function credentialRequests(): array {

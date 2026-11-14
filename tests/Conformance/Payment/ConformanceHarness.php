@@ -343,8 +343,11 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * gateway declares, carries no money: rule 6 asks it for no idempotency key, no rule takes it for
 	 * an operation's own request, and the lost answer of rule 2 is never its own. A test names
 	 * CredentialRequests::MOST at most; a longer list, or an entry that is not a method and a path
-	 * from `/`, fails the suite's set-up, and a request on a path named here that carries an
-	 * operation's key fails rules 6 and 12, since a credential request moves no money.
+	 * from `/`, fails the suite's set-up, and a request on a path named here that names the payment
+	 * (the operation's key, the intent's uuid, or the provider's id of the intent or of one of its
+	 * objects) fails rules 6 and 12, since a credential request is about no payment. The suite cannot
+	 * know what a provider's endpoint does, so the declaration is checked by hand, in the pull
+	 * request that adds it, against the provider's documentation of the request.
 	 *
 	 * @since 0.2.0
 	 *
@@ -834,14 +837,14 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 				$cell = $this->firstCell( $rule );
 				$this->begin( 'rule06-keys-' . self::cellName( $cell ) );
 
-				$this->eachMoneyOperation( $rule, $cell, fn( string $what, array $exchanges, string $key ) => $this->assertKeyed( $what, $exchanges, $key ) );
+				$this->eachMoneyOperation( $rule, $cell, fn( string $what, array $exchanges, string $key, array $names ) => $this->assertKeyed( $what, $exchanges, $key, $names ) );
 
 				$again   = $this->place( $rule, Scenario::Approve, $cell );
 				$request = $this->captureRequestOf( $again['intent_uuid'] );
 				$first   = $this->during( fn() => $this->gateway()->capture( $request ) );
 				$second  = $this->during( fn() => $this->gateway()->capture( $request ) );
-				$this->assertKeyed( 'a capture', $first, $request->idempotencyKey() );
-				$this->assertKeyed( 'the same capture asked again', $second, $request->idempotencyKey() );
+				$this->assertKeyed( 'a capture', $first, $request->idempotencyKey(), $this->namesOf( $again ) );
+				$this->assertKeyed( 'the same capture asked again', $second, $request->idempotencyKey(), $this->namesOf( $again ) );
 
 				$this->end();
 			}
@@ -1067,8 +1070,8 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 				$this->eachMoneyOperation(
 					$rule,
 					$cell,
-					static function ( string $what, array $exchanges, string $key ) use ( $calls, $credentials ): void {
-						$failure = $calls ? RequestRules::sentFailure( $what, $exchanges, $key, $credentials ) : null;
+					static function ( string $what, array $exchanges, string $key, array $names ) use ( $calls, $credentials ): void {
+						$failure = $calls ? RequestRules::sentFailure( $what, $exchanges, $key, $credentials, $names ) : null;
 
 						if ( null !== $failure ) {
 							self::fail( $failure );
@@ -2014,37 +2017,61 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
-	 * Walks the money path one operation at a time, an authorization, its capture, each refund, a second authorization and its void, and hands each operation's requests and key to a check.
+	 * Walks the money path one operation at a time, an authorization, its capture, each refund, a second authorization and its void, and hands each operation's requests, key and what names its payment to a check.
 	 *
 	 * Each key is the one its request derives (idempotencyKey()), whether or not the provider keeps
 	 * keys: one that does not is searched by it. The walk begins the scenario's requests, so the
-	 * authorization's are every request sent so far.
+	 * authorization's are every request sent so far. What names the payment is read once the
+	 * operation has run (namesOf()).
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param Rule      $rule  The rule.
 	 * @param MatrixRow $cell  The cell.
-	 * @param \Closure  $check Called as (what, requests, key) for each operation.
+	 * @param \Closure  $check Called as (what, requests, key, names) for each operation.
 	 *
-	 * @phpstan-param \Closure(string, list<Exchange>, string): void $check
+	 * @phpstan-param \Closure(string, list<Exchange>, string, array<int|string, string>): void $check
 	 */
 	protected function eachMoneyOperation( Rule $rule, MatrixRow $cell, \Closure $check ): void {
 		$placed = $this->place( $rule, Scenario::Approve, $cell );
 		$uuid   = $placed['intent_uuid'];
-		$check( 'the authorization', $this->transport->exchanges(), $this->authorizationKey( $placed, $cell ) );
+		$check( 'the authorization', $this->transport->exchanges(), $this->authorizationKey( $placed, $cell ), $this->namesOf( $placed ) );
 
 		$key = $this->captureRequestOf( $uuid )->idempotencyKey();
-		$check( 'the capture', $this->during( fn() => $this->capture( $uuid ) ), $key );
+		$check( 'the capture', $this->during( fn() => $this->capture( $uuid ) ), $key, $this->namesOf( $placed ) );
 
 		foreach ( $this->refundSteps( $placed, $cell ) as $step => list( $units, $shipping ) ) {
 			list( $refund, $exchanges ) = $this->refundWatched( $placed, $units, $shipping );
 			$intent                     = $this->intentRow( $uuid );
-			$check( $step, $exchanges, ( new GatewayRefund( $uuid, $intent['provider_intent_id'], $refund->total, $refund->uuid, Mode::Test ) )->idempotencyKey() );
+			$check( $step, $exchanges, ( new GatewayRefund( $uuid, $intent['provider_intent_id'], $refund->total, $refund->uuid, Mode::Test ) )->idempotencyKey(), $this->namesOf( $placed ) );
 		}
 
 		$voided = $this->place( $rule, Scenario::Approve, $cell );
 		$key    = $this->voidRequestOf( $voided['intent_uuid'] )->idempotencyKey();
-		$check( 'the void', $this->during( fn() => $this->void( $voided['intent_uuid'] ) ), $key );
+		$check( 'the void', $this->during( fn() => $this->void( $voided['intent_uuid'] ) ), $key, $this->namesOf( $voided ) );
+	}
+
+	/**
+	 * Returns what names a placed payment, by its value, each described for a message: the intent's uuid, the provider's id of the intent, and each provider object its ledger records.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array{order_uuid: string, order_id: int, intent_uuid: string} $placed The placement.
+	 * @return array<int|string, string> The descriptions, by the value they describe.
+	 */
+	private function namesOf( array $placed ): array {
+		$names  = array( $placed['intent_uuid'] => 'the intent\'s uuid' );
+		$intent = $this->intentRow( $placed['intent_uuid'] )['provider_intent_id'];
+
+		if ( null !== $intent ) {
+			$names[ $intent ] = 'the provider\'s id of the intent';
+		}
+
+		foreach ( $this->db->fetchAll( 'SELECT provider_object_id FROM %i WHERE order_id = %d AND provider_object_id IS NOT NULL ORDER BY id', $this->table( PaymentTables::TRANSACTIONS ), $placed['order_id'] ) as $row ) {
+			$names[ (string) $row['provider_object_id'] ] ??= 'the provider\'s id of an object of the payment';
+		}
+
+		return $names;
 	}
 
 	/**
@@ -2385,14 +2412,16 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string     $what      The operation, for the message.
-	 * @param Exchange[] $exchanges The requests it sent.
-	 * @param string     $key       The key.
+	 * @param string        $what      The operation, for the message.
+	 * @param Exchange[]    $exchanges The requests it sent.
+	 * @param string        $key       The key.
+	 * @param array<string> $names     What else names the payment, by its value (namesOf()).
 	 *
 	 * @phpstan-param list<Exchange> $exchanges
+	 * @phpstan-param array<int|string, string> $names
 	 */
-	private function assertKeyed( string $what, array $exchanges, string $key ): void {
-		$failure = RequestRules::keyFailure( $what, $exchanges, $key, $this->credentials );
+	private function assertKeyed( string $what, array $exchanges, string $key, array $names ): void {
+		$failure = RequestRules::keyFailure( $what, $exchanges, $key, $this->credentials, $names );
 
 		if ( null !== $failure ) {
 			self::fail( $failure );

@@ -213,13 +213,44 @@ final class RequestRulesTest extends TestCase {
 			self::exchange( 'POST', self::TOKEN_PATH, array(), 'grant_type=client_credentials' ),
 			self::exchange( 'POST', '/v1/refunds', array( 'idempotency-key' => self::KEY ), 'amount=1000' ),
 		);
-		$refusal   = 'the test declares POST /v1/refunds a credential request in credentialRequests(), and the refund sent money on its path, a request there carrying the operation\'s key ' . self::KEY . ': a credential request carries no money, so the declaration is refused.';
+		$refusal   = 'the test declares POST /v1/refunds a credential request in credentialRequests(), and the refund sent a request on its path that names the payment, the operation\'s key ' . self::KEY . ': a credential request carries no money, so the declaration is refused.';
 		$inTheUrl  = array( self::exchange( 'PUT', '/v1/refunds', array(), 'key=' . rawurlencode( self::KEY ) ) );
 		$otherWays = (string) RequestRules::keyFailure( 'the refund', $inTheUrl, self::KEY, $declared );
 
 		$this->assertSame( Rule::KeysAsRuled->message() . $refusal, RequestRules::keyFailure( 'the refund', $refunded, self::KEY, $declared ) );
 		$this->assertSame( Rule::EveryCallThroughTheClient->message() . $refusal, RequestRules::sentFailure( 'the refund', $refunded, self::KEY, $declared ) );
 		$this->assertStringContainsString( 'the test declares POST /v1/refunds a credential request', $otherWays, 'A request of another method on the declared path, carrying the key, is money on it too.' );
+	}
+
+	/**
+	 * Tests that a request on a declared credential path that names the payment refuses the declaration in rules 6 and 12, though it carries no key and the operation's keyed request goes elsewhere: a token request names nothing of the payment.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_declared_credential_request_that_names_the_payment_is_refused(): void {
+		$declared = self::declaring( array( 'POST', self::TOKEN_PATH ) );
+		$uuid     = strtok( self::KEY, ':' );
+		$names    = array(
+			$uuid  => 'the intent\'s uuid',
+			'ri_1' => 'the provider\'s id of the intent',
+		);
+		$keyed    = self::exchange( 'POST', '/v1/intents/ri_1/capture', array( 'idempotency-key' => self::KEY ), 'amount=1000' );
+
+		foreach ( array(
+			'the provider\'s id in the body' => array( self::exchange( 'POST', self::TOKEN_PATH, array(), 'grant_type=client_credentials&intent=ri_1' ), 'the provider\'s id of the intent ri_1' ),
+			'the intent\'s uuid in a header' => array( self::exchange( 'POST', self::TOKEN_PATH, array( 'x-reference' => (string) $uuid ), 'grant_type=client_credentials' ), 'the intent\'s uuid ' . $uuid ),
+		) as $case => list( $token, $named ) ) {
+			$refusal = 'the test declares POST ' . self::TOKEN_PATH . ' a credential request in credentialRequests(), and the capture sent a request on its path that names the payment, ' . $named . ': a credential request carries no money, so the declaration is refused.';
+
+			$this->assertSame( Rule::KeysAsRuled->message() . $refusal, RequestRules::keyFailure( 'the capture', array( $token, $keyed ), self::KEY, $declared, $names ), $case );
+			$this->assertSame( Rule::EveryCallThroughTheClient->message() . $refusal, RequestRules::sentFailure( 'the capture', array( $token, $keyed ), self::KEY, $declared, $names ), $case );
+		}
+
+		foreach ( array( 'grant_type=client_credentials', 'grant_type=client_credentials&scope=ri_12' ) as $body ) {
+			$this->assertNull( RequestRules::keyFailure( 'the capture', array( self::exchange( 'POST', self::TOKEN_PATH, array(), $body ), $keyed ), self::KEY, $declared, $names ), $body );
+		}
 	}
 
 	/**

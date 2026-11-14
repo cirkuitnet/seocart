@@ -23,8 +23,8 @@ namespace SEOCart\Tests\Conformance\Payment;
  * descriptor declares.
  *
  * So that a declaration cannot hide a request that moves money, it names MOST requests at most,
- * each a method in capitals and a path from `/` (refusal()), and rules 6 and 12 refuse it when an
- * operation sends money on a declared path (RequestRules::hiddenMoney()).
+ * each a method in capitals and a path from `/` (refusal()), and rules 6 and 12 refuse it when a
+ * request on a declared path names the payment an operation is about (RequestRules::hiddenMoney()).
  *
  * @since 0.2.0
  */

@@ -71,32 +71,67 @@ final class RequestRules {
 	}
 
 	/**
-	 * Returns why the test's declaration of credential requests is refused when an operation sent money on a declared path: a request there that carries the operation's key.
+	 * Returns why the test's declaration of credential requests is refused when a request of an operation on a declared path names the payment: the operation's key, or another of the payment's identifiers.
 	 *
-	 * A declared credential request carries no money, so no rule asks it for a key. A request on
-	 * its path that carries an operation's key, in a header, the body or the URL, is that
-	 * operation's money request, which the declaration would hide.
+	 * A declared credential request carries no money, so no rule asks it for a key. An exchange of
+	 * credentials for a token is about the gateway's account, never about a payment, so a request on
+	 * its path, of any method, whose URL, headers or body name the payment the operation is about
+	 * could move money the declaration would hide, with a key or without one. The suite cannot know
+	 * what a provider's endpoint does; it knows what names the payment. An amount is not compared,
+	 * as its form on the wire is the provider's.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param string             $what        The operation, for the message, such as "the capture".
 	 * @param Exchange[]         $exchanges   The requests the operation sent, in order.
-	 * @param string             $key         The operation's key.
+	 * @param array<string>      $names       What names the payment, by its value: the operation's key first, then such as the intent's uuid and the provider's ids, each described for the message.
 	 * @param CredentialRequests $credentials The credential requests the test declares.
-	 * @return string|null The refusal, in one sentence; null when no request on a declared path carries the key.
+	 * @return string|null The refusal, in one sentence; null when no request on a declared path names the payment.
 	 *
 	 * @phpstan-param list<Exchange> $exchanges
+	 * @phpstan-param array<int|string, string> $names
 	 */
-	public static function hiddenMoney( string $what, array $exchanges, string $key, CredentialRequests $credentials ): ?string {
+	public static function hiddenMoney( string $what, array $exchanges, array $names, CredentialRequests $credentials ): ?string {
 		foreach ( $exchanges as $exchange ) {
 			$declared = $credentials->onPath( $exchange->path() );
 
-			if ( null !== $declared && ( self::carriesKey( $exchange, $key ) || self::urlHoldsKey( $exchange, $key ) ) ) {
-				return sprintf( 'the test declares %1$s a credential request in credentialRequests(), and %2$s sent money on its path, a request there carrying the operation\'s key %3$s: a credential request carries no money, so the declaration is refused.', $declared, $what, $key );
+			if ( null === $declared ) {
+				continue;
+			}
+
+			foreach ( $names as $value => $name ) {
+				if ( self::names( $exchange, (string) $value ) ) {
+					return sprintf( 'the test declares %1$s a credential request in credentialRequests(), and %2$s sent a request on its path that names the payment, %3$s %4$s: a credential request carries no money, so the declaration is refused.', $declared, $what, $name, $value );
+				}
 			}
 		}
 
 		return null;
+	}
+
+	/**
+	 * Tells whether a request names a value in its URL, a header or its body, in any form a key is sent in, as a whole word: `ri_1` is not named by `ri_12`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Exchange $exchange The request.
+	 * @param string   $value    The value.
+	 * @return bool True when it does.
+	 */
+	private static function names( Exchange $exchange, string $value ): bool {
+		if ( '' === $value ) {
+			return false;
+		}
+
+		$text = $exchange->url . "\n" . implode( "\n", $exchange->headers ) . "\n" . (string) $exchange->body;
+
+		foreach ( self::formsOf( $value ) as $form ) {
+			if ( 1 === preg_match( '/(?<![A-Za-z0-9])' . preg_quote( $form, '/' ) . '(?![A-Za-z0-9])/', $text ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -146,7 +181,7 @@ final class RequestRules {
 	}
 
 	/**
-	 * Returns rule 6's failure for one operation: a request that moves money without its key where a provider reads one, none sent, or money sent on a declared credential request's path.
+	 * Returns rule 6's failure for one operation: a request that moves money without its key where a provider reads one, none sent, or a request on a declared credential request's path that names the payment.
 	 *
 	 * @since 0.2.0
 	 *
@@ -154,12 +189,14 @@ final class RequestRules {
 	 * @param Exchange[]         $exchanges   The requests the operation sent, in order.
 	 * @param string             $key         The key the operation's requests carry.
 	 * @param CredentialRequests $credentials The credential requests the test declares.
+	 * @param array<string>      $names       Optional. What else names the payment, by its value, each described for the message (hiddenMoney()). Default none.
 	 * @return string|null The failure, beginning with the rule's message; null when every request that moves money carries the key.
 	 *
 	 * @phpstan-param list<Exchange> $exchanges
+	 * @phpstan-param array<int|string, string> $names
 	 */
-	public static function keyFailure( string $what, array $exchanges, string $key, CredentialRequests $credentials ): ?string {
-		$hidden = self::hiddenMoney( $what, $exchanges, $key, $credentials );
+	public static function keyFailure( string $what, array $exchanges, string $key, CredentialRequests $credentials, array $names = array() ): ?string {
+		$hidden = self::hiddenMoney( $what, $exchanges, array( $key => 'the operation\'s key' ) + $names, $credentials );
 
 		if ( null !== $hidden ) {
 			return Rule::KeysAsRuled->message() . $hidden;
@@ -197,7 +234,7 @@ final class RequestRules {
 	 * included: where the key travels is rule 6's question, whether the request went through the
 	 * client at all is this one's. A count of requests would not tell: one unrelated request through
 	 * the client would hide an operation sent another way. A declared credential request is never
-	 * the operation's own, and money sent on its path refuses the declaration.
+	 * the operation's own, and a request on its path that names the payment refuses the declaration.
 	 *
 	 * @since 0.2.0
 	 *
@@ -205,12 +242,14 @@ final class RequestRules {
 	 * @param Exchange[]         $exchanges   The requests the client carried while the operation ran, in order.
 	 * @param string             $key         The operation's key.
 	 * @param CredentialRequests $credentials The credential requests the test declares.
+	 * @param array<string>      $names       Optional. What else names the payment, by its value, each described for the message (hiddenMoney()). Default none.
 	 * @return string|null The failure, beginning with the rule's message; null when one of them is the operation's own.
 	 *
 	 * @phpstan-param list<Exchange> $exchanges
+	 * @phpstan-param array<int|string, string> $names
 	 */
-	public static function sentFailure( string $what, array $exchanges, string $key, CredentialRequests $credentials ): ?string {
-		$hidden = self::hiddenMoney( $what, $exchanges, $key, $credentials );
+	public static function sentFailure( string $what, array $exchanges, string $key, CredentialRequests $credentials, array $names = array() ): ?string {
+		$hidden = self::hiddenMoney( $what, $exchanges, array( $key => 'the operation\'s key' ) + $names, $credentials );
 
 		if ( null !== $hidden ) {
 			return Rule::EveryCallThroughTheClient->message() . $hidden;
