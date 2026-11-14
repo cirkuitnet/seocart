@@ -125,6 +125,36 @@ final class AnswerRulesTest extends TestCase {
 	}
 
 	/**
+	 * Tests that, for a provider that keeps one object for a payment, an outcome names the object one of its answers names in the declared field, at any depth and after a byte-order mark, and that the payment named elsewhere in an answer about an object of its own fails.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_one_object_per_payment_reads_the_object_from_the_declared_field(): void {
+		$field   = 'transactionResponse.transId';
+		$capture = '{"transactionResponse":{"transId":"60012","refTransId":"60011"}}';
+
+		foreach ( array(
+			'the field, nested'                           => array( '60011', array( '{"transactionResponse":{"transId":"60011"}}' ), true ),
+			'the field, after a byte-order mark'          => array( '60011', array( "\xEF\xBB\xBF" . '{"transactionResponse":{"transId":"60011"}}' ), true ),
+			'the field, a number'                         => array( '60011', array( '{"transactionResponse":{"transId":60011}}' ), true ),
+			'the field of the second answer'              => array( '60011', array( '{"messages":{}}', '{"transactionResponse":{"transId":"60011"}}' ), true ),
+			'no answer'                                   => array( '60011', array(), true ),
+			'the payment, in an answer about its capture' => array( '60011', array( $capture ), false ),
+			'an answer of no field'                       => array( '60011', array( '{"transactionResponse":{"refTransId":"60011"}}' ), false ),
+			'an answer that is no JSON'                   => array( '60011', array( 'transId=60011' ), false ),
+			'no object'                                   => array( null, array( $capture ), false ),
+		) as $case => list( $object, $answers, $kept ) ) {
+			$failure = AnswerRules::ownObjectFailure( Rule::LedgerShape, 'the capture', $object, $answers, $field );
+
+			$this->assertSame( $kept, null === $failure, $case . ': ' . (string) $failure );
+		}
+
+		$this->assertStringContainsString( 'the capture named 60011, which is not the object any of the provider\'s answers to it is about, as its field transactionResponse.transId names it', (string) AnswerRules::ownObjectFailure( Rule::LedgerShape, 'the capture', '60011', array( $capture ), $field ) );
+	}
+
+	/**
 	 * Returns a void of 3000 US cents.
 	 *
 	 * @since 0.2.0

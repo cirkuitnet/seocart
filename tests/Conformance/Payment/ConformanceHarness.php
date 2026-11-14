@@ -434,10 +434,11 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * object of the authorization and of the capture, and of a refund the provider makes by
 	 * cancelling the payment before it settles; the payment ledger still keys each row by its
 	 * operation. When the test says so, rule 1 lets the authorization, the capture and a refund name
-	 * the provider's intent as their object; each object must still be one the provider's answer to
-	 * the operation's own requests holds, and two refunds never name one object. A matrix with a
-	 * cell that declares multi_capture fails the suite's set-up under the declaration, as two
-	 * captures of one object would be one row of the ledger. The declaration is checked by hand, in
+	 * the provider's intent as their object; each object must be the one an answer to the
+	 * operation's own requests names in the field the test declares (objectIdField()), and two
+	 * refunds never name one object. A matrix with a cell that declares multi_capture, or a test that
+	 * names no such field, fails the suite's set-up under the declaration, as two captures of one
+	 * object would be one row of the ledger. The declaration is checked by hand, in
 	 * the pull request that adds it, against the provider's documentation of its transactions.
 	 *
 	 * @since 0.2.0
@@ -446,6 +447,23 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 */
 	protected function paymentIsOneObject(): bool {
 		return false;
+	}
+
+	/**
+	 * Returns the field of the provider's answers that names the object each answer is about, dotted, such as `transactionResponse.transId`: none unless the test names it.
+	 *
+	 * Read where the test declares that the provider keeps one object for a payment
+	 * (paymentIsOneObject()), which it must then name: rule 1 requires each outcome to name the
+	 * object this field of one of the answers to it names (AnswerRules::ownObjectFailure()), so an
+	 * outcome that names the payment while its answer is about an object of its own, such as a
+	 * separate capture, fails. A name is letters, digits, `_` and `-`, its parts joined by `.`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return string The field; empty for none.
+	 */
+	protected function objectIdField(): string {
+		return '';
 	}
 
 	/**
@@ -708,6 +726,10 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	private function declarationRefusal( GatewayDescriptor $descriptor ): ?string {
 		if ( $this->paymentIsOneObject() && self::anyCellDeclares( $descriptor, Operations::MULTI_CAPTURE ) ) {
 			return 'The test declares that the provider keeps one object for a payment (paymentIsOneObject()), and a cell of the gateway\'s matrix declares multi_capture: two captures of one object would be one row of the payment ledger, so the declaration is refused.';
+		}
+
+		if ( $this->paymentIsOneObject() && 1 !== preg_match( '/^[A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-]+)*$/D', $this->objectIdField() ) ) {
+			return 'The test declares that the provider keeps one object for a payment (paymentIsOneObject()), and names in objectIdField() no field of its answers that names the object each is about, dotted, such as transactionResponse.transId: rule 1 reads each outcome\'s object there.';
 		}
 
 		if ( $this->partialRefundsNeedSettlement() && ! self::anyCellDeclares( $descriptor, Operations::PARTIAL_REFUND ) ) {
@@ -2683,8 +2705,10 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	/**
 	 * Fails rule 1 when an outcome does not name its own provider object, and returns the object.
 	 *
-	 * The object may be the provider's intent only where the test declares that the provider keeps
-	 * one object for a payment (paymentIsOneObject()); it is one the provider's answer holds either way.
+	 * Where the test declares that the provider keeps one object for a payment (paymentIsOneObject()),
+	 * the object is the one an answer to the outcome names in the field the test declares
+	 * (objectIdField()), the payment's own or another; otherwise it is one the provider's answer
+	 * holds, and never the provider's intent.
 	 *
 	 * @since 0.2.0
 	 *
@@ -2699,7 +2723,9 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 */
 	private function assertOwnObject( Rule $rule, string $what, array $placed, string $operation, array $exchanges ): string {
 		list( $object ) = $this->ledgerRowOf( $placed['order_id'], $operation );
-		$failure        = AnswerRules::objectFailure( $rule, $what, $object, $this->intentRow( $placed['intent_uuid'] )['provider_intent_id'], $this->answersTo( $exchanges ), $this->paymentIsOneObject() );
+		$failure        = $this->paymentIsOneObject()
+			? AnswerRules::ownObjectFailure( $rule, $what, $object, $this->answersTo( $exchanges ), $this->objectIdField() )
+			: AnswerRules::objectFailure( $rule, $what, $object, $this->intentRow( $placed['intent_uuid'] )['provider_intent_id'], $this->answersTo( $exchanges ), false );
 
 		if ( null !== $failure ) {
 			self::fail( $failure );

@@ -493,16 +493,23 @@ protected function declineLeavesNoPayment(): bool {
 ```
 
 A provider that keeps one object for a payment, which a capture and a void change and answer by its
-own id, says so in `paymentIsOneObject()`: rule 1 then lets the authorization, the capture and a
-refund name the provider's intent as their object, where it otherwise requires an object of their
-own. Each object must still be one the provider's answer to the operation holds, two refunds never
-name one object, and a matrix that declares `multi_capture` refuses the declaration, as two
-captures of one object would be one row of the payment ledger. The pull request that adds the
-declaration is checked by hand against the provider's documentation of its transactions:
+own id, says so in `paymentIsOneObject()`, and names in `objectIdField()` the field of its answers
+that names the object each is about: rule 1 then lets the authorization, the capture and a refund
+name the provider's intent as their object, where it otherwise requires an object of their own.
+Each object must be the one that field of an answer to the operation names, so an answer about an
+object of its own, such as a separate capture that names the payment in another field, refuses an
+outcome that names the payment; two refunds never name one object; and a matrix that declares
+`multi_capture`, or a test that names no field, refuses the declaration, as two captures of one
+object would be one row of the payment ledger. The pull request that adds the declaration is
+checked by hand against the provider's documentation of its transactions:
 
 ```php
 protected function paymentIsOneObject(): bool {
 	return true;
+}
+
+protected function objectIdField(): string {
+	return 'transactionResponse.transId';
 }
 ```
 

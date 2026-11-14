@@ -34,6 +34,10 @@ namespace SEOCart\Tests\Conformance\Payment\Reference;
  *                                       a provider with a single endpoint takes them; the reference
  *                                       gateway never sends one, the suite's tests of a gateway that
  *                                       reads by POST do
+ *     POST /v1/captures                 capture an intent {intent, amount}, answered as a capture
+ *                                       object of its own {id, intent, amount, currency}; the
+ *                                       reference gateway never sends one, the suite's tests of
+ *                                       one object per payment do
  *
  * A POST with an `Idempotency-Key` it has seen is answered with its first answer again. The key
  * is a bearer secret starting `ref_test_` or `ref_live_`; the two modes keep separate state. The
@@ -41,7 +45,9 @@ namespace SEOCart\Tests\Conformance\Payment\Reference;
  * so a cancel finds it approved), `ref_expiring` (waits, and is found cancelled afterwards) and
  * `ref_pending` (waits, and is still processing when asked). A declined intent names the card as a
  * provider's decline does, by its last four digits and its expiry, which a tape keeps.
- * Ids are counted from 1, so a scenario's answers are the same in every run.
+ * Ids are counted from 1, so a scenario's answers are the same in every run. Told to keep one
+ * object for a payment (keepOneObject()), it makes no charge or capture of their own: an intent,
+ * authorized or captured, is answered by its own id alone, which names its charge and its capture.
  *
  * @since 0.2.0
  */
@@ -120,6 +126,24 @@ final class ReferenceProvider {
 	 * @var int
 	 */
 	private int $counter = 0;
+
+	/**
+	 * Whether the provider keeps one object for a payment: it makes no charge and no capture of their own, and names them by the intent's own id.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var bool
+	 */
+	private bool $oneObject = false;
+
+	/**
+	 * Keeps one object for each payment from now on: an intent authorized or captured is answered by its own id, which names its charge and its capture, as a provider whose payment is one transaction answers.
+	 *
+	 * @since 0.2.0
+	 */
+	public function keepOneObject(): void {
+		$this->oneObject = true;
+	}
 
 	/**
 	 * Starts answering. The test's hooks are restored after each test, which removes the filter.
@@ -278,6 +302,7 @@ final class ReferenceProvider {
 
 		return match ( $method . ' ' . $path ) {
 			'POST /v1/requests' => $this->requested( $mode, $fields ),
+			'POST /v1/captures' => $this->captureOfItsOwn( $mode, $fields ),
 			'POST /v1/intents' => $this->create( $mode, $fields ),
 			'GET /v1/intents'  => array( 200, array( 'data' => $this->search( $mode, (string) ( $query['intent_uuid'] ?? '' ) ) ) ),
 			'POST /v1/refunds' => $this->refund( $mode, $fields ),
@@ -299,6 +324,33 @@ final class ReferenceProvider {
 			),
 			default            => self::error( 404, 'no_such_route' ),
 		};
+	}
+
+	/**
+	 * Captures an intent, all or part, and answers the capture as an object of its own: its id, the intent's, its amount and its currency.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string       $mode   The mode.
+	 * @param array<mixed> $fields The form fields: `intent`, and `amount`, optional.
+	 * @return array{0: int, 1: array<string, mixed>} The answer.
+	 */
+	private function captureOfItsOwn( string $mode, array $fields ): array {
+		list( $status, $intent ) = $this->capture( $mode, (string) ( $fields['intent'] ?? '' ), array_diff_key( $fields, array( 'intent' => true ) ) );
+
+		if ( 200 !== $status ) {
+			return array( $status, $intent );
+		}
+
+		return array(
+			200,
+			array(
+				'id'       => (string) $intent['capture'],
+				'intent'   => (string) $intent['id'],
+				'amount'   => (int) $intent['amount_captured'],
+				'currency' => (string) $intent['currency'],
+			),
+		);
 	}
 
 	/**
@@ -345,7 +397,7 @@ final class ReferenceProvider {
 			'currency'            => (string) ( $fields['currency'] ?? '' ),
 			'intent_uuid'         => (string) ( $fields['intent_uuid'] ?? '' ),
 			'order_number'        => (string) ( $fields['order_number'] ?? '' ),
-			'charge'              => 'rch_' . ( ++$this->counter ),
+			'charge'              => $this->oneObject ? $id : 'rch_' . ( ++$this->counter ),
 			'capture'             => null,
 			'decline_code'        => null,
 			'decline_message'     => null,
@@ -412,7 +464,7 @@ final class ReferenceProvider {
 
 		$intent['status']              = 'captured';
 		$intent['amount_captured']     = $amount;
-		$intent['capture']             = 'rcp_' . ( ++$this->counter );
+		$intent['capture']             = $this->oneObject ? $id : 'rcp_' . ( ++$this->counter );
 		$this->intents[ $mode ][ $id ] = $intent;
 
 		return array( 200, self::shown( $intent ) );

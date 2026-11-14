@@ -93,6 +93,63 @@ final class AnswerRules {
 	}
 
 	/**
+	 * Returns why the object an outcome names breaks the contract's object rule for a provider that keeps one object for a payment, or null when it keeps it.
+	 *
+	 * Such a provider answers each operation about the object it changed, the payment's own or a
+	 * refund of its own, and names it in one field of its answer, which the gateway's test declares
+	 * (objectIdField()). The outcome names the object that field of one of the answers to it names:
+	 * an answer that is about another object, such as a capture of its own that names the payment
+	 * in another field, refuses an outcome that names the payment. An answer is read as JSON once a
+	 * leading byte-order mark is taken off; one that is not JSON, or has no value at the field,
+	 * names no object.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Rule        $rule     The rule the failure is reported under.
+	 * @param string      $what     The outcome, for the message, such as "the capture".
+	 * @param string|null $objectId The object the outcome names.
+	 * @param string[]    $answers  The bodies of the provider's answers to the outcome's requests; none for a gateway that calls no service.
+	 * @param string      $field    The field of an answer that names the object it is about, dotted, such as `transactionResponse.transId`.
+	 * @return string|null The failure, beginning with the rule's message; null when the object keeps the rule.
+	 */
+	public static function ownObjectFailure( Rule $rule, string $what, ?string $objectId, array $answers, string $field ): ?string {
+		if ( null === $objectId || '' === $objectId ) {
+			return self::objectFailure( $rule, $what, $objectId, null, $answers, true );
+		}
+
+		foreach ( $answers as $answer ) {
+			if ( self::fieldOf( $answer, $field ) === $objectId ) {
+				return null;
+			}
+		}
+
+		return array() === $answers ? null : $rule->message() . sprintf( '%1$s named %2$s, which is not the object any of the provider\'s answers to it is about, as its field %3$s names it: where the provider keeps one object for a payment (paymentIsOneObject()), an outcome names the object its answer is about.', $what, $objectId, $field );
+	}
+
+	/**
+	 * Returns the value at a dotted field of an answer read as JSON.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $answer The answer's body.
+	 * @param string $field  The field, dotted.
+	 * @return string|null The value, as text; null when the answer is no JSON or the field holds no number or text.
+	 */
+	private static function fieldOf( string $answer, string $field ): ?string {
+		$value = json_decode( str_starts_with( $answer, "\xEF\xBB\xBF" ) ? substr( $answer, 3 ) : $answer, true );
+
+		foreach ( explode( '.', $field ) as $key ) {
+			if ( ! is_array( $value ) || ! array_key_exists( $key, $value ) ) {
+				return null;
+			}
+
+			$value = $value[ $key ];
+		}
+
+		return is_string( $value ) || is_int( $value ) ? (string) $value : null;
+	}
+
+	/**
 	 * Returns an amount as a failure names it.
 	 *
 	 * @since 0.2.0

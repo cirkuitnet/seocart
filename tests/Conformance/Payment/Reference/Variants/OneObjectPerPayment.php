@@ -19,8 +19,10 @@ use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGateway;
 /**
  * Names the provider's intent as the object of the authorization and of the capture, as a gateway does whose provider answers both with the payment's one id, and each refund by its own.
  *
- * A correct gateway of a provider shaped otherwise than the reference's: the suite passes it when
- * its test declares paymentIsOneObject(), and rule 1 fails it when the test does not.
+ * A correct gateway of a provider shaped otherwise than the reference's, when its provider keeps
+ * one object for a payment (ReferenceProvider::keepOneObject()) and answers the authorization and
+ * the capture by the intent's id alone: the suite passes it when its test declares
+ * paymentIsOneObject() and the answers' `id` field, and rule 1 fails it when the test does not.
  *
  * @since 0.2.0
  */
