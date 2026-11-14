@@ -254,13 +254,15 @@ final class PlaceOrderTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Tests that the same request sent twice places one order, and the second is answered with the placement as it stands: before its payment is known, the answer unit of work 1 kept, with the order key it lost; once settled, the first answer, the order key included.
+	 * Tests that the same request sent twice places one order, and the second is answered with the placement as it stands: before its payment is known, the answer unit of work 1 kept, with the order key it lost; once settled, the first answer, the order key included, whatever payment data the retry sends; a request with the key and another total or cart version is refused.
 	 *
 	 * Planted violations:
 	 * - in PlaceOrder::placeInside(), skip $this->keys->complete(): the second request then finds
 	 *   the key claimed and is told `checkout.placement_in_progress`;
-	 * - in PlaceOrder::fingerprint(), hash only the cart's version: a request with another payment
-	 *   token and the same key then gets the first answer instead of `checkout.idempotency_key_reused`;
+	 * - in PlaceOrder::fingerprint(), hash only the currency: a request with the same key and another
+	 *   total then gets the first answer instead of `checkout.idempotency_key_reused`;
+	 * - in PlaceOrder::fingerprint(), hash the payment data again: the retry with another payment
+	 *   token is then refused `checkout.idempotency_key_reused`;
 	 * - in SettlePlacement::settle(), skip $this->keys->settleAnswer(): the retry after the
 	 *   approval is then told `pending`.
 	 *
@@ -348,7 +350,20 @@ final class PlaceOrderTest extends PlacementTestCase {
 		$this->assertSame( 0, $log->matching( '/^(INSERT|UPDATE|DELETE|START TRANSACTION)/' )->count(), 'The replay wrote nothing.' );
 		$this->assertSame( array( 'authorize:0', 'authorize:0' ), $this->gatewayCalls(), 'The replays did not call the gateway.' );
 
-		$this->assertRefused( CheckoutError::IdempotencyKeyReused, fn() => $this->placement->place( array_replace( $input, array( 'payment_data' => array( 'payment_token' => StubGateway::DECLINE ) ) ), self::guest() ) );
+		// The same key, version, total and currency with another token: a retry of the one placement, as a browser that keeps no payment data sends it.
+		$otherToken = array();
+		$tokenLog   = $this->captureQueries(
+			function () use ( $input, &$otherToken ): void {
+				$otherToken = $this->placement->place( array_replace( $input, array( 'payment_data' => array( 'payment_token' => StubGateway::DECLINE ) ) ), self::guest() );
+			}
+		);
+
+		$this->assertEquals( $first, $otherToken, 'Another payment token under the key is answered the placement as it stands.' );
+		$this->assertSame( 0, $tokenLog->matching( '/^(INSERT|UPDATE|DELETE|START TRANSACTION)/' )->count(), 'That retry wrote nothing.' );
+		$this->assertSame( array( 'authorize:0', 'authorize:0' ), $this->gatewayCalls(), 'That retry did not call the gateway.' );
+
+		$this->assertRefused( CheckoutError::IdempotencyKeyReused, fn() => $this->placement->place( array_replace( $input, array( 'grand_total_minor' => $input['grand_total_minor'] + 1 ) ), self::guest() ) );
+		$this->assertRefused( CheckoutError::IdempotencyKeyReused, fn() => $this->placement->place( array_replace( $input, array( 'cart_version' => $input['cart_version'] + 1 ) ), self::guest() ) );
 	}
 
 	/**
