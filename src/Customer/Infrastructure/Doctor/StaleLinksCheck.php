@@ -137,7 +137,8 @@ final class StaleLinksCheck implements Repairable {
 
 			$this->found = array_merge( $this->found, $this->staleOf( $page ) );
 			$after       = end( $page )->customerId;
-		} while ( count( $page ) === self::PAGE );
+			$more        = self::PAGE === count( $page );
+		} while ( $more );
 
 		if ( array() === $this->found ) {
 			return CheckResult::pass( self::NAME, 'Every customer record linked to a user names that user, at the time they registered.' );
