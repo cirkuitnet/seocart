@@ -790,10 +790,13 @@ export function createHost( root, options, env ) {
 	 * order with nothing taken, is a decline, and a voided payment, or a cancelled order with
 	 * nothing taken, a void; any other waits.
 	 *
-	 * @param {Object} response What the resume came to.
+	 * @param {Object}  response What the resume came to.
+	 * @param {boolean} own      Optional. Whether the payment resumed is the one the tab kept; a
+	 *                           refusal of another, such as a forged return address, leaves the
+	 *                           kept placement alone. Default true.
 	 * @return {Promise<void>} Once the flow rests.
 	 */
-	async function resumed( response ) {
+	async function resumed( response, own = true ) {
 		const kind = classify( response );
 		const { body } = response;
 
@@ -812,7 +815,7 @@ export function createHost( root, options, env ) {
 			return idle( { code: 'action_incomplete' } );
 		}
 
-		if ( ! keepsKey( kind ) ) {
+		if ( ! keepsKey( kind ) && ( own || 'refused' !== kind ) ) {
 			keeper.clear();
 		}
 
@@ -901,7 +904,7 @@ export function createHost( root, options, env ) {
 				order = replay.body;
 			}
 
-			await resumed( response );
+			await resumed( response, ! kept || kept.intentUuid === intentUuid );
 
 			return;
 		}

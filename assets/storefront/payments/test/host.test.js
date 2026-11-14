@@ -1748,6 +1748,30 @@ describe( 'answers that must not lose an order', () => {
 			] );
 		}
 	);
+
+	it( 'keeps the tab’s own placement when a return address names a payment that is not this cart’s', async () => {
+		keep( { intentUuid: UUID } );
+
+		const forged = '0192a4b3-ffff-7fff-8fff-ffffffffffff';
+		const { last } = setUp( {
+			href: `https://shop.example/checkout/?seocart_payment=${ forged }`,
+			cart: { ...CART, version: 4 },
+			answers: [
+				{ status: 404, body: { code: 'payment.intent_not_found' } },
+			],
+		} );
+
+		await flush();
+
+		expect( last().error ).toEqual( {
+			code: 'refused',
+			detail: 'payment.intent_not_found',
+		} );
+		expect( stored() ).toMatchObject( {
+			key: 'kept-key',
+			intentUuid: UUID,
+		} );
+	} );
 } );
 
 describe( 'mintKey', () => {
