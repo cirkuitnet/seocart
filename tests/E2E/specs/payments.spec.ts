@@ -13,7 +13,7 @@
  * documentation range in `X-Forwarded-For`, which the site under test trusts from the runner
  * through `SEOCART_TRUSTED_PROXIES` (docs/testing.md).
  *
- * The twenty-two cases:
+ * The twenty-three cases:
  *
  *  1. an island registers once whether its script runs before or after the module; the ready event
  *     fires once; a second island for the same id is refused with a warning;
@@ -58,7 +58,9 @@
  *     takes its step and hands its order over;
  * 22. reloaded after a lost answer, with the asking on loading failed, Place asks the kept placement
  *     under its key, confirming nothing, and hands the order over; never a fresh key for the cart
- *     the order emptied.
+ *     the order emptied;
+ * 23. a placement kept for one shopper is forgotten when another signs in in the same tab: nothing
+ *     is sent with its key, and nothing is handed over.
  *
  * The stand-in answers every step with a redirect to the site's address, and passes its challenge
  * at once when asked again, so the step of a provider's script (`sdk`) is proved by the module's
@@ -222,10 +224,12 @@ const BANK: PaymentMethodConfig = {
  *
  * @param methods The payment methods.
  * @param nonce   Optional. A logged-in shopper's nonce. Default none.
+ * @param shopper Optional. The page's marker for the shopper signed in. Default none.
  */
 function pageConfig(
 	methods: PaymentMethodConfig[],
-	nonce: string | null = null
+	nonce: string | null = null,
+	shopper: string | null = null
 ): PaymentsConfig {
 	return {
 		contract: '0.1.0',
@@ -233,8 +237,40 @@ function pageConfig(
 		returnQueryArg: RETURN_ARG,
 		locale: 'en_GB',
 		...( nonce ? { nonce } : {} ),
+		...( shopper ? { shopper } : {} ),
 		methods,
 	};
+}
+
+/**
+ * Signs a user in on a page, and returns the REST nonce WordPress gives that user's pages.
+ *
+ * @param page     The page.
+ * @param login    The user's login.
+ * @param password The user's password.
+ */
+async function signIn(
+	page: Page,
+	login: string,
+	password: string
+): Promise< string > {
+	await page.goto( `${ home() }wp-login.php` );
+	await page.locator( '#user_login' ).fill( login );
+	await page.locator( '#user_pass' ).fill( password );
+	await Promise.all( [
+		page.waitForURL( /\/wp-admin\// ),
+		page.locator( '#wp-submit' ).click(),
+	] );
+
+	return (
+		await (
+			await page
+				.context()
+				.request.get(
+					`${ home() }wp-admin/admin-ajax.php?action=rest-nonce`
+				)
+		).text()
+	).trim();
 }
 
 /**
@@ -341,6 +377,7 @@ async function readyCart(
  * @param setup.at       Optional. Where each copy of the fake island loads; `before` by default.
  * @param setup.options  Optional. The fake island's options.
  * @param setup.nonce    Optional. A logged-in shopper's nonce.
+ * @param setup.shopper  Optional. The page's marker for the shopper signed in.
  * @return The page's address.
  */
 async function openPage(
@@ -351,6 +388,7 @@ async function openPage(
 		at?: IslandScript[ 'at' ] | IslandScript[ 'at' ][];
 		options?: FakeIslandOptions;
 		nonce?: string;
+		shopper?: string;
 	} = {}
 ): Promise< string > {
 	await page.addInitScript( ( options ) => {
@@ -360,7 +398,11 @@ async function openPage(
 	const address = await servePaymentsPage( page, {
 		baseURL: home(),
 		pluginBasePath,
-		config: pageConfig( setup.methods ?? [ stubMethod() ], setup.nonce ),
+		config: pageConfig(
+			setup.methods ?? [ stubMethod() ],
+			setup.nonce,
+			setup.shopper
+		),
 		islands: [ setup.at ?? 'before' ]
 			.flat()
 			.map( ( at ) => ( { source: FAKE_ISLAND, at } ) ),
@@ -1469,21 +1511,7 @@ test.describe( 'The payment section, as a guest', () => {
 			const address = await forwardClientAddress( context, home() );
 			const page = await context.newPage();
 
-			await page.goto( `${ home() }wp-login.php` );
-			await page.locator( '#user_login' ).fill( login );
-			await page.locator( '#user_pass' ).fill( password );
-			await Promise.all( [
-				page.waitForURL( /\/wp-admin\// ),
-				page.locator( '#wp-submit' ).click(),
-			] );
-
-			const nonce = (
-				await (
-					await context.request.get(
-						`${ home() }wp-admin/admin-ajax.php?action=rest-nonce`
-					)
-				).text()
-			).trim();
+			const nonce = await signIn( page, login, password );
 			const headers = {
 				...STORE_HEADER,
 				'X-Forwarded-For': address,
@@ -1989,5 +2017,110 @@ test.describe( 'The payment section, as a guest', () => {
 		] );
 		expect( await keptPlacement( page ) ).toBeNull();
 		await expectOnlyHostWrites( page, ledger );
+	} );
+
+	test( '(23) a placement kept for one shopper is forgotten when another signs in in the same tab: nothing is sent with its key, and nothing is handed over', async ( {
+		browser,
+		requestUtils,
+		pluginBasePath,
+	} ) => {
+		const admin = await requestUtils.rest< { id: number } >( {
+			path: '/wp/v2/users/me',
+		} );
+		const shoppers: Array< {
+			id: number;
+			login: string;
+			password: string;
+		} > = [];
+
+		for ( const name of [ 'a', 'b' ] ) {
+			const login = `e2e-shopper-${ name }-${ Date.now() }`;
+			const password = randomBytes( 18 ).toString( 'base64url' );
+			const created = await requestUtils.rest< { id: number } >( {
+				method: 'POST',
+				path: '/wp/v2/users',
+				data: {
+					username: login,
+					email: `${ login }@example.com`,
+					password,
+					roles: [ 'subscriber' ],
+				},
+			} );
+
+			shoppers.push( { id: created.id, login, password } );
+		}
+
+		const context = await browser.newContext( {
+			baseURL: home(),
+			ignoreHTTPSErrors: ignoreHTTPSErrors(),
+			storageState: { cookies: [], origins: [] },
+		} );
+
+		try {
+			const address = await forwardClientAddress( context, home() );
+			const page = await context.newPage();
+			const shopperLedger = storeRequests( page );
+			const [ first, second ] = shoppers;
+
+			// The shoppers' tab is the one whose requests a failure prints.
+			ledger = shopperLedger;
+
+			// The first shopper places; the store places the order, and the answer is lost.
+			const nonce = await signIn( page, first.login, first.password );
+
+			await readyCart( context.request, product.variantId, {
+				...STORE_HEADER,
+				'X-Forwarded-For': address,
+				'X-WP-Nonce': nonce,
+			} );
+			await openPage( page, pluginBasePath, {
+				nonce,
+				shopper: `shopper-${ first.id }`,
+			} );
+
+			const lost = await loseNextAnswer( page );
+
+			await place( page );
+
+			expect( lost.order_uuid ).toMatch( UUID );
+			expect( await keptPlacement( page ) ).toMatchObject( {
+				shopper: `shopper-${ first.id }`,
+			} );
+
+			// The first signs out, the cart's cookie untouched, and the second signs in in the tab.
+			const kept = ( await context.cookies() ).filter(
+				( cookie ) => ! cookie.name.startsWith( 'wordpress_' )
+			);
+
+			await context.clearCookies();
+			await context.addCookies( kept );
+			await openPage( page, pluginBasePath, {
+				nonce: await signIn( page, second.login, second.password ),
+				shopper: `shopper-${ second.id }`,
+			} );
+
+			expect( await keptPlacement( page ) ).toBeNull();
+			expect( await placedOrders( page ) ).toEqual( [] );
+			expect(
+				shopperLedger.store.map(
+					( entry ) => `${ entry.method } ${ entry.route }`
+				)
+			).toEqual( [
+				`GET ${ STORE }/cart`,
+				`POST ${ STORE }/checkout`,
+				`GET ${ STORE }/cart`,
+			] );
+			await expectOnlyHostWrites( page, shopperLedger );
+		} finally {
+			await context.close();
+
+			for ( const shopper of shoppers ) {
+				await requestUtils.rest( {
+					method: 'DELETE',
+					path: `/wp/v2/users/${ shopper.id }`,
+					params: { force: true, reassign: admin.id },
+				} );
+			}
+		}
 	} );
 } );
