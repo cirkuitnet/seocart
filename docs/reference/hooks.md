@@ -14,6 +14,15 @@ Whether a request that published events ends its response before delivering them
 - Returning `true`: Ends the response before delivering, so the client never waits for a listener.
 - Returning `false`: Hands the delivery to the job runner instead, as on a server that cannot end a response early.
 
+## `seocart_enqueue_payment_islands`
+
+Fires when a page shows the checkout's payment methods, so a gateway plugin can add the script of its payment island.
+
+- Fires: Once on a page that shows the checkout's payment methods, before its scripts are printed; never on a page that shows none.
+- Listener arguments: `( SEOCart\Checkout\Interfaces\Storefront\PaymentIslands $islands )`
+- Register with: `add_action( 'seocart_enqueue_payment_islands', $callback )`, naming the action as a string: an extension's main file runs before the plugin's classes exist.
+- Since: 0.2.0
+
 ## `seocart_exchange_rate_version_changed`
 
 A rate set was saved as the next version of the store's exchange rates.

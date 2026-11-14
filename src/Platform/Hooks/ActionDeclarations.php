@@ -31,6 +31,7 @@ final class ActionDeclarations {
 	 * @var list<class-string<ActionDeclaration>>
 	 */
 	public const ALL = array(
+		EnqueuePaymentIslandsAction::class,
 		RegisterPaymentGatewaysAction::class,
 	);
 }
