@@ -1,7 +1,10 @@
 /**
  * The payment fixture's checks, proved without a site: the request ledger passes the host's two
- * writes and the fixture's read, and flags an island's write to the cart; the secret scan finds a
- * secret, a provider's handle and a card number, and passes a page with none.
+ * writes and the fixture's read, and flags an island's write to the cart; it prints the payment
+ * data's member names and never their values, and names the trusted proxies on a 429; the secret
+ * scan finds a secret, a provider's handle and a card number, and passes a page with none; the
+ * kept-placement check passes the six members and flags anything more; a client address is one
+ * of the documentation range.
  *
  * The page is set with setContent() at a made-up origin whose every request is answered here, so
  * its requests are same-origin as on the fixture page, and nothing reaches a network.
@@ -9,8 +12,11 @@
 
 import { test, expect, type Page } from '@playwright/test';
 import {
+	clientAddress,
 	expectNoSecretInUrls,
+	expectNothingSecretKept,
 	expectOnlyHostWrites,
+	shownBody,
 	storeRequests,
 	storeRouteOf,
 	type RequestLedger,
@@ -34,7 +40,14 @@ async function shopPage( page: Page ): Promise< RequestLedger > {
 					contentType: 'text/html',
 					body: '<!doctype html><title>Shop</title>',
 				} )
-			: route.fulfill( { contentType: 'application/json', body: '{}' } )
+			: route.fulfill( {
+					// A request whose address says `limited` is answered as a rate-limited one.
+					status: route.request().url().includes( 'limited' )
+						? 429
+						: 200,
+					contentType: 'application/json',
+					body: '{}',
+				} )
 	);
 	await page.goto( SHOP );
 
@@ -208,5 +221,77 @@ test.describe( 'The payment fixture’s checks', () => {
 		expect( () => expectNoSecretInUrls( card, [] ) ).toThrow(
 			/carries a card number/
 		);
+	} );
+
+	test( 'print the payment data’s member names, never their values, and name the trusted proxies on a 429', async ( {
+		page,
+	} ) => {
+		const ledger = await shopPage( page );
+
+		await send( page, [
+			[
+				'?rest_route=/seocart/store/v1/checkout&limited',
+				'POST',
+				{ ...HEADERS, 'Idempotency-Key': 'k' },
+				'{"cart_version":3,"payment_data":{"payment_token":"tok_sandbox_value"}}',
+			],
+		] );
+
+		const printed = ledger.describe();
+
+		expect( printed ).toContain( '"payment_data":["payment_token"]' );
+		expect( printed ).not.toContain( 'tok_sandbox_value' );
+		expect( printed ).toContain( 'SEOCART_TRUSTED_PROXIES' );
+		expect( shownBody( 'not json' ) ).toBe( '(a body that is not JSON)' );
+		expect( shownBody( '{"intent_uuid":"u"}' ) ).toBe(
+			'{"intent_uuid":"u"}'
+		);
+	} );
+
+	test( 'pass a kept placement of six members, and flag one that keeps more or a secret', async ( {
+		page,
+	} ) => {
+		await shopPage( page );
+		await expectNothingSecretKept( page );
+
+		const keep = ( value: object ) =>
+			page.evaluate(
+				( text ) =>
+					window.sessionStorage.setItem( 'seocart:placement', text ),
+				JSON.stringify( value )
+			);
+		const six = {
+			key: 'k',
+			cartVersion: 3,
+			amountMinor: 1999,
+			currency: 'GBP',
+			gatewayId: 'stub',
+			intentUuid: null,
+		};
+
+		await keep( six );
+		await expectNothingSecretKept( page, [ 'tok_sandbox_value' ] );
+
+		await keep( {
+			...six,
+			paymentData: { payment_token: 'tok_sandbox_value' },
+		} );
+		await expect( expectNothingSecretKept( page ) ).rejects.toThrow(
+			/six members and nothing else/
+		);
+
+		await keep( { ...six, key: 'pi_1_secret_2' } );
+		await expect( expectNothingSecretKept( page ) ).rejects.toThrow(
+			/keeps a secret/
+		);
+	} );
+
+	test( 'give each client an address of the documentation range', () => {
+		const first = clientAddress();
+
+		expect( first ).toMatch( /^2001:db8:[0-9a-f]{4}:[0-9a-f]{4}::1$/ );
+		expect(
+			new Set( Array.from( { length: 20 }, clientAddress ) ).size
+		).toBeGreaterThan( 1 );
 	} );
 } );
