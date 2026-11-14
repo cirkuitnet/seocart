@@ -595,6 +595,23 @@ final class TapeScrubberTest extends TestCase {
 	}
 
 	/**
+	 * Tests that the letter of an id of a prefixed shape is looked for after its prefix: digits alone after it are read as a card number, a letter among them is not.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_the_letter_of_a_declared_id_is_looked_for_after_its_prefix(): void {
+		$scrubber = new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), array( 'APP-' => 17 ) );
+		$digits   = $this->verdicts( $scrubber, self::exchangeWith( 'responseBody', '{"app_id":"APP-04242424242424242"}' ) );
+		$letter   = $this->verdicts( $scrubber, self::exchangeWith( 'responseBody', '{"app_id":"APP-A4242424242424242"}' ) );
+
+		$this->assertSame( array( false, false ), array_values( array_map( static fn( string $verdict ): bool => 'accepted' === $verdict, $digits ) ), implode( ' / ', $digits ) );
+		$this->assertStringContainsString( 'its response body field app_id holds a card number', implode( ' / ', $digits ) );
+		$this->assertSame( array( 'accepted', 'accepted' ), array_values( $letter ), implode( ' / ', $letter ) );
+	}
+
+	/**
 	 * Tests that the same id in a field is a card number to a scrubber whose test declares no shape for it: what the declaration changes.
 	 *
 	 * @since 0.2.0

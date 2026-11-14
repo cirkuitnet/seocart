@@ -32,7 +32,7 @@ use SEOCart\Tests\Conformance\Payment\IdShapes;
  * the context in order, URL-decoded, HTML-decoded, case-folded and with its whitespace collapsed,
  * so a message logged encoded, in another case, or split across values is found.
  *
- * A context value that is, as a whole, an id of a shape the test declares with a letter in it
+ * A context value that is, as a whole, an id of a shape the test declares with a letter after its prefix
  * (GatewayConformanceCase::publicIdShapes(), IdShapes::namesNoCard()) is not read for a card
  * number: one in ten of a provider's ids that hold a run of 13 to 16 digits would pass for one. The
  * test is the tape scrubber's, so an id with a secret's prefix, or in a field named like a
@@ -61,7 +61,7 @@ final class AssertingLogger implements Logger {
 	 *
 	 * @var string
 	 */
-	public const LIMIT = 'Rule 13 takes for the provider\'s words a value of its answers that has whitespace in it or is one word of letters: a one-word value with `_` or a digit in it is taken for a code or an id, which a log line may carry, and two spellings that differ only by Unicode normalisation are not taken for the same words. A context value that is, as a whole, an id of a shape the gateway\'s test declares in `publicIdShapes()` with a letter in it is not read for a card number, so a card number written in a declared shape is beyond the reading.';
+	public const LIMIT = 'Rule 13 takes for the provider\'s words a value of its answers that has whitespace in it or is one word of letters: a one-word value with `_` or a digit in it is taken for a code or an id, which a log line may carry, and two spellings that differ only by Unicode normalisation are not taken for the same words. A context value that is, as a whole, an id of a shape the gateway\'s test declares in `publicIdShapes()` with a letter after its prefix is not read for a card number, so a card number written in a declared shape is beyond the reading.';
 
 	/**
 	 * Response bodies shorter than this are not looked for: `{}` or `[]` would be found everywhere.
@@ -288,7 +288,7 @@ final class AssertingLogger implements Logger {
 	}
 
 	/**
-	 * Returns a context with each value that is, as a whole, an id of a declared shape with a letter in it emptied, for the card rule's reading.
+	 * Returns a context with each value that is, as a whole, an id of a declared shape with a letter after its prefix emptied, for the card rule's reading.
 	 *
 	 * @since 0.2.0
 	 *

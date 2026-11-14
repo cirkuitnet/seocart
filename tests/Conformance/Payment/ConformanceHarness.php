@@ -1512,7 +1512,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * (TapeScrubber::SECRET_PREFIX), sits in a field named like a credential, or sits in a
 	 * redirect's query.
 	 *
-	 * A value that is, as a whole, an id of a shape named here with a letter in it is not read as
+	 * A value that is, as a whole, an id of a shape named here with a letter after its prefix is not read as
 	 * a card number, in a tape and in a log line, and nor is such an id as a whole segment of the
 	 * path of an http or https URL: a provider's id often holds a run of 13 to 16 digits that passes
 	 * the card number's checksum. For that alone, a shape may have no prefix, such as `'' => 17` for

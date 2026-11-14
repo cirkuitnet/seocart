@@ -66,41 +66,57 @@ final class IdShapes {
 	 * @phpstan-param array<int|string, int|array{int, int}> $shapes
 	 */
 	public static function matches( array $shapes, string $value ): bool {
-		foreach ( $shapes as $prefix => $length ) {
-			list( $least, $most ) = self::bounds( $length );
-
-			if ( 1 === preg_match( '/^' . preg_quote( (string) $prefix, '/' ) . '[A-Za-z0-9]{' . $least . ',' . $most . '}$/D', $value ) ) {
-				return true;
-			}
-		}
-
-		return false;
+		return self::anyMatches( $shapes, $value, '' );
 	}
 
 	/**
-	 * Tells whether a whole value in a field is an id of one of the shapes with a letter in it, which the card rule does not read as a card number: the one test of it the tape scrubber and rule 13's logger share.
+	 * Tells whether a whole value in a field is an id of one of the shapes with a letter after its prefix, which the card rule does not read as a card number: the one test of it the tape scrubber and rule 13's logger share.
 	 *
 	 * A provider's id of letters and digits often holds a run of 13 to 16 digits, and one such run
-	 * in ten passes the card number's checksum. An id of a declared shape with a letter in it is
-	 * the provider's, not a card number; a value of digits alone is read as one, whatever shape it
-	 * is of, and so is a value that holds an id among other text. Where no public shape passes, a
-	 * value with a secret's prefix or infix (TapeScrubber::SECRET_PREFIX) and a value in a field
-	 * named like a credential (TapeScrubber::CREDENTIAL_FIELD), it is read as one too.
+	 * in ten passes the card number's checksum. An id of a declared shape with a letter in the part
+	 * after its prefix is the provider's, not a card number; a value whose part after the prefix is
+	 * digits alone is read as one, whatever its prefix, and so is a value that holds an id among
+	 * other text. Where no public shape passes, a value with a secret's prefix or infix
+	 * (TapeScrubber::SECRET_PREFIX) and a value in a field named like a credential
+	 * (TapeScrubber::CREDENTIAL_FIELD), it is read as one too.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param array<int|string, int|array<int>> $shapes The shapes, by prefix.
 	 * @param string                            $value  The value.
 	 * @param string                            $field  Optional. The name of the field that holds it; empty for none. Default empty.
-	 * @return bool True for a whole id of a declared shape that holds a letter, where a public shape may pass.
+	 * @return bool True for a whole id of a declared shape with a letter after its prefix, where a public shape may pass.
 	 *
 	 * @phpstan-param array<int|string, int|array{int, int}> $shapes
 	 */
 	public static function namesNoCard( array $shapes, string $value, string $field = '' ): bool {
-		return 1 === preg_match( '/[A-Za-z]/', $value )
-			&& 1 !== preg_match( TapeScrubber::SECRET_PREFIX, $value )
+		return 1 !== preg_match( TapeScrubber::SECRET_PREFIX, $value )
 			&& 1 !== preg_match( TapeScrubber::CREDENTIAL_FIELD, $field )
-			&& self::matches( $shapes, $value );
+			&& self::anyMatches( $shapes, $value, '(?=[A-Za-z0-9]*[A-Za-z])' );
+	}
+
+	/**
+	 * Tells whether a whole value is an id of one of the shapes, the part after its prefix also matching a condition.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<int|string, int|array<int>> $shapes    The shapes, by prefix.
+	 * @param string                            $value     The value.
+	 * @param string                            $condition A look-ahead the part after the prefix must match; empty for none.
+	 * @return bool True when the value, as a whole, is of one of them.
+	 *
+	 * @phpstan-param array<int|string, int|array{int, int}> $shapes
+	 */
+	private static function anyMatches( array $shapes, string $value, string $condition ): bool {
+		foreach ( $shapes as $prefix => $length ) {
+			list( $least, $most ) = self::bounds( $length );
+
+			if ( 1 === preg_match( '/^' . preg_quote( (string) $prefix, '/' ) . $condition . '[A-Za-z0-9]{' . $least . ',' . $most . '}$/D', $value ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**

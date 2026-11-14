@@ -235,6 +235,7 @@ final class AssertingLoggerTest extends TestCase {
 		return array(
 			'an id with a secret\'s prefix'            => array( array( 'sk_' => 16 ), array( 'id' => 'sk_' . self::DIGITS ) ),
 			'an id in a field named like a credential' => array( self::SHAPES, array( 'client_token' => self::ID ) ),
+			'an id with no letter after its prefix'    => array( array( 'APP-' => 17 ), array( 'app_id' => 'APP-0' . self::DIGITS ) ),
 		);
 	}
 
