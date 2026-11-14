@@ -648,7 +648,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 				$gateway = $this->gateway();
 
 				foreach ( $this->cells() as $cell ) {
-					$context = new AvailabilityContext( $cell->currency, Money::of( self::PRICE * self::UNITS, $cell->currency ), 'US', 'storefront', Mode::Test, $this->accountSettings( $cell ) );
+					$context = new AvailabilityContext( $cell->currency, Money::of( self::PRICE * self::UNITS, $cell->currency ), 'US', 'storefront', $this->suiteMode(), $this->accountSettings( $cell ) );
 					$sent    = count( $this->transport->exchanges() );
 					$seen    = $this->http->seen();
 					$queries = $wpdb->num_queries;
@@ -795,7 +795,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 
 				$voided   = $this->place( $rule, Scenario::Approve, $cell );
 				$intent   = $this->intentRow( $voided['intent_uuid'] );
-				$lostVoid = $this->gateway()->void( new VoidRequest( $voided['intent_uuid'], $intent['provider_intent_id'], Money::of( $intent['amount_minor'], $cell->currency ), Mode::Test, VoidReason::CustomerRequest->value ) );
+				$lostVoid = $this->gateway()->void( new VoidRequest( $voided['intent_uuid'], $intent['provider_intent_id'], Money::of( $intent['amount_minor'], $cell->currency ), $this->suiteMode(), VoidReason::CustomerRequest->value ) );
 				$this->void( $voided['intent_uuid'] );
 				$this->assertSame( array( $lostVoid->providerObjectId, $lostVoid->outcome->value ), $this->ledgerRowOf( $voided['order_id'], 'void' ), $rule->message() . 'a void asked again after its answer was lost did not answer the same provider object and outcome.' );
 
@@ -819,7 +819,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 
 				$unseen = $this->openIntent( $cell->currency->code() );
 				$ref    = $this->ref( $unseen );
-				$raw    = $this->gateway()->query( new PaymentQuery( $ref->uuid, null, $ref->amount, Mode::Test ) );
+				$raw    = $this->gateway()->query( new PaymentQuery( $ref->uuid, null, $ref->amount, $this->suiteMode() ) );
 
 				if ( null !== $raw ) {
 					$this->assertTrue( self::saysNotFound( $raw ), $rule->message() . sprintf( 'query() of an intent the provider never saw answered %s: only nothing or a declined authorization `not_found` is true of it.', self::describeResult( $raw ) ) );
@@ -833,7 +833,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 
 				$placed = $this->place( $rule, Scenario::Approve, $cell );
 				$intent = $this->intentRow( $placed['intent_uuid'] );
-				$known  = $this->gateway()->query( new PaymentQuery( $placed['intent_uuid'], $intent['provider_intent_id'], Money::of( $intent['amount_minor'], $cell->currency ), Mode::Test ) );
+				$known  = $this->gateway()->query( new PaymentQuery( $placed['intent_uuid'], $intent['provider_intent_id'], Money::of( $intent['amount_minor'], $cell->currency ), $this->suiteMode() ) );
 				$this->assertFalse( null !== $known && self::saysNotFound( $known ), $rule->message() . 'query() answered not_found for an intent the provider authorized.' );
 
 				$this->end();
@@ -2289,7 +2289,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	private function authorizationKey( array $placed, MatrixRow $cell ): string {
 		$intent = $this->intentRow( $placed['intent_uuid'] );
 
-		return ( new PaymentRequest( $placed['intent_uuid'], Money::of( $intent['amount_minor'], $cell->currency ), null, Mode::Test, $placed['order_uuid'], '', null ) )->idempotencyKey();
+		return ( new PaymentRequest( $placed['intent_uuid'], Money::of( $intent['amount_minor'], $cell->currency ), null, $this->suiteMode(), $placed['order_uuid'], '', null ) )->idempotencyKey();
 	}
 
 	/**
@@ -2433,7 +2433,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	protected function captureRequestOf( string $intentUuid ): CaptureRequest {
 		$intent = $this->intentRow( $intentUuid );
 
-		return new CaptureRequest( $intentUuid, $intent['provider_intent_id'], Money::of( $intent['authorized_minor'], Currency::of( $intent['currency'] ) ), Mode::Test );
+		return new CaptureRequest( $intentUuid, $intent['provider_intent_id'], Money::of( $intent['authorized_minor'], Currency::of( $intent['currency'] ) ), $this->suiteMode() );
 	}
 
 	/**
@@ -2453,8 +2453,8 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$ofIt   = $this->intentRow( $captured['intent_uuid'] );
 		$unseen = $this->ref( $this->openIntent( $cell->currency->code() ) );
 		$asked  = array(
-			'an intent the provider knows' => new GatewayRefund( $captured['intent_uuid'], $ofIt['provider_intent_id'], Money::of( 1, $cell->currency ), $this->seeded->generate(), Mode::Test ),
-			'an intent it never saw'       => new GatewayRefund( $unseen->uuid, null, Money::of( 1, $cell->currency ), $this->seeded->generate(), Mode::Test ),
+			'an intent the provider knows' => new GatewayRefund( $captured['intent_uuid'], $ofIt['provider_intent_id'], Money::of( 1, $cell->currency ), $this->seeded->generate(), $this->suiteMode() ),
+			'an intent it never saw'       => new GatewayRefund( $unseen->uuid, null, Money::of( 1, $cell->currency ), $this->seeded->generate(), $this->suiteMode() ),
 		);
 
 		foreach ( $asked as $of => $never ) {
@@ -2478,7 +2478,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	protected function queried( string $intentUuid, MatrixRow $cell ): ?GatewayResult {
 		$intent = $this->intentRow( $intentUuid );
 
-		return $this->gateway()->query( new PaymentQuery( $intentUuid, $intent['provider_intent_id'], Money::of( $intent['amount_minor'], $cell->currency ), Mode::Test ) );
+		return $this->gateway()->query( new PaymentQuery( $intentUuid, $intent['provider_intent_id'], Money::of( $intent['amount_minor'], $cell->currency ), $this->suiteMode() ) );
 	}
 
 	/**
@@ -2492,7 +2492,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	protected function voidRequestOf( string $intentUuid ): VoidRequest {
 		$intent = $this->intentRow( $intentUuid );
 
-		return new VoidRequest( $intentUuid, $intent['provider_intent_id'], Money::of( $intent['authorized_minor'], Currency::of( $intent['currency'] ) ), Mode::Test, VoidReason::CustomerRequest->value );
+		return new VoidRequest( $intentUuid, $intent['provider_intent_id'], Money::of( $intent['authorized_minor'], Currency::of( $intent['currency'] ) ), $this->suiteMode(), VoidReason::CustomerRequest->value );
 	}
 
 	/**
