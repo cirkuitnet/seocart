@@ -810,7 +810,8 @@ final class PlaceOrder {
 	 * who placed it, which costs nothing to compare, and then still that customer, which costs the
 	 * link's read. Any other actor, a visitor included, gets null after the key's read alone, and is
 	 * then answered from the cart as a request with a new key is, with the same statements: the
-	 * answer cannot tell a key that is someone else's from one never seen.
+	 * answer cannot tell a key that is someone else's from one never seen. Whom the answer is kept
+	 * for is decided before its sealed order key is opened.
 	 *
 	 * @since 0.2.0
 	 *
@@ -831,12 +832,19 @@ final class PlaceOrder {
 			return null;
 		}
 
-		$answer  = KeptAnswer::open( (string) $replay->responseJson, $token, $key );
-		$keptFor = $answer[ self::KEPT_FOR ] ?? null;
+		$kept    = (string) $replay->responseJson;
+		$stored  = json_decode( $kept, true );
+		$keptFor = is_array( $stored ) ? ( $stored[ self::KEPT_FOR ] ?? null ) : null;
+
+		if ( null !== $keptFor && ! $this->isKeptFor( (array) $keptFor, $actor ) ) {
+			return null;
+		}
+
+		$answer = KeptAnswer::open( $kept, $token, $key );
 
 		unset( $answer[ self::KEPT_FOR ] );
 
-		return null === $keptFor || $this->isKeptFor( (array) $keptFor, $actor ) ? $answer : null;
+		return $answer;
 	}
 
 	/**
