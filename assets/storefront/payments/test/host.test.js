@@ -231,7 +231,7 @@ const stored = () =>
  *
  * @param {Object} setup Optional. `methods`, `islands`, `answers`, `cart`, `href`, `onStale`, `nonce`,
  *                       `onWait` (called with the host each time it waits).
- * @return {Object} The host, its page, its requests and what its callbacks heard.
+ * @return {Object} The host, its page, its requests, what its callbacks heard and its clock.
  */
 function setUp( setup = {} ) {
 	let minted = 0;
@@ -259,6 +259,7 @@ function setUp( setup = {} ) {
 		stale: [],
 		waits: [],
 	};
+	const clock = { ms: 0 };
 	const root = document.createElement( 'div' );
 
 	document.body.append( root );
@@ -287,6 +288,7 @@ function setUp( setup = {} ) {
 				heard.waits.push( ms );
 				setup.onWait?.( host );
 			},
+			now: () => clock.ms,
 		}
 	);
 
@@ -296,6 +298,7 @@ function setUp( setup = {} ) {
 		root,
 		requests,
 		heard,
+		clock,
 		last: () => heard.changes.at( -1 ),
 	};
 }
@@ -1635,6 +1638,65 @@ describe( 'answers that must not lose an order', () => {
 		expect( unpaid.heard.placed ).toEqual( [] );
 		expect( unpaid.last().error ).toEqual( { code: 'pending' } );
 		expect( stored() ).not.toBeNull();
+	} );
+
+	it( 'keeps the key when too many requests were sent, sends nothing before Retry-After, and then the same key', async () => {
+		const { island } = fakeIsland( 'stub' );
+		const { host, requests, heard, clock, last } = setUp( {
+			islands: [ island ],
+			answers: [
+				{ network: true },
+				{
+					status: 429,
+					body: { code: 'store_api.rate_limited' },
+					headers: { 'Retry-After': '30' },
+				},
+				{ status: 200, body: placed( 'approved' ) },
+			],
+		} );
+
+		await flush();
+		await host.place();
+		await host.retry();
+
+		expect( last().error ).toEqual( {
+			code: 'rate_limited',
+			detail: 'store_api.rate_limited',
+			retryAfter: 30,
+		} );
+		expect( stored().key ).toBe( 'key-1' );
+
+		clock.ms = 10000;
+
+		expect( await host.retry() ).toBe( false );
+		expect( last().error.retryAfter ).toBe( 20 );
+		expect( requests ).toHaveLength( 2 );
+
+		clock.ms = 30000;
+		await host.retry();
+
+		expect( requests.map( ( request ) => request.key ) ).toEqual( [
+			'key-1',
+			'key-1',
+			'key-1',
+		] );
+		expect( heard.placed ).toHaveLength( 1 );
+	} );
+
+	it( 'keeps the kept placement when asking it on loading is answered too many requests', async () => {
+		keep();
+
+		const { last } = setUp( {
+			cart: { ...CART, version: 4 },
+			answers: [
+				{ status: 429, body: { code: 'store_api.rate_limited' } },
+			],
+		} );
+
+		await flush();
+
+		expect( last().error.code ).toBe( 'rate_limited' );
+		expect( stored() ).toMatchObject( { key: 'kept-key' } );
 	} );
 } );
 

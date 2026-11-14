@@ -163,7 +163,8 @@ function nameOf( thrown ) {
  *
  * @param {HTMLElement} root    The element the methods are shown in.
  * @param {Object}      options The configuration, the cart and the callbacks (see index.js).
- * @param {Object}      env     The page: `window`, the registry, `onRegister` and `wait( ms )`.
+ * @param {Object}      env     The page: `window`, the registry, `onRegister`, `wait( ms )` and,
+ *                              optionally, `now()` in milliseconds (`Date.now` by default).
  * @return {Object} The host: update(), select(), place(), retry(), destroy().
  */
 export function createHost( root, options, env ) {
@@ -199,6 +200,10 @@ export function createHost( root, options, env ) {
 	let lastStep = 'placement';
 	let order = null;
 	let destroyed = false;
+	// When the store asked for no more requests until then (Retry-After), in milliseconds.
+	let notBefore = 0;
+
+	const now = () => ( env.now ?? Date.now )();
 
 	const warn = ( message ) =>
 		scope.console.warn( `seocart.payments: ${ message }` );
@@ -575,6 +580,56 @@ export function createHost( root, options, env ) {
 	}
 
 	/**
+	 * Rests idle with an answer that keeps the key, and the error the checkout words.
+	 *
+	 * Too many requests is told with how long to wait (Retry-After), and nothing is sent before
+	 * then; a session that needs a fresh nonce with its code.
+	 *
+	 * @param {string} kind     The answer's kind: one that keeps the key.
+	 * @param {Object} response What the request came to.
+	 */
+	function rest( kind, response ) {
+		const { body } = response;
+
+		if ( 'session' === kind ) {
+			return idle( { code: 'session_expired', detail: body?.code } );
+		}
+
+		if ( 'rate_limited' === kind ) {
+			notBefore = now() + response.retryAfter * 1000;
+
+			return idle( {
+				...problem( kind, body ),
+				retryAfter: response.retryAfter,
+			} );
+		}
+
+		idle( problem( kind, body ) );
+	}
+
+	/**
+	 * Refuses to send before the moment the store asked for no more requests until, resting idle
+	 * with how many seconds are left.
+	 *
+	 * @return {boolean} True when it refused.
+	 */
+	function tooSoon() {
+		const left = Math.ceil( ( notBefore - now() ) / 1000 );
+
+		if ( left <= 0 ) {
+			return false;
+		}
+
+		idle( {
+			code: 'rate_limited',
+			detail: 'store_api.rate_limited',
+			retryAfter: left,
+		} );
+
+		return true;
+	}
+
+	/**
 	 * Acts on a placement's answer.
 	 *
 	 * @param {Object}  response   What the placement came to.
@@ -644,8 +699,8 @@ export function createHost( root, options, env ) {
 			await refresh( kind, body );
 		}
 
-		if ( 'session' === kind ) {
-			return idle( { code: 'session_expired', detail: body?.code } );
+		if ( keepsKey( kind ) ) {
+			return rest( kind, answer );
 		}
 
 		idle( problem( kind, body ) );
@@ -769,8 +824,8 @@ export function createHost( root, options, env ) {
 			return release( kind, body );
 		}
 
-		if ( 'session' === kind ) {
-			return idle( { code: 'session_expired', detail: body?.code } );
+		if ( keepsKey( kind ) ) {
+			return rest( kind, response );
 		}
 
 		idle( problem( kind, body ) );
@@ -922,7 +977,7 @@ export function createHost( root, options, env ) {
 		 * @return {Promise<boolean>} Whether a placement was sent.
 		 */
 		async place() {
-			if ( destroyed || 'idle' !== phase ) {
+			if ( destroyed || 'idle' !== phase || tooSoon() ) {
 				return false;
 			}
 
@@ -1018,7 +1073,7 @@ export function createHost( root, options, env ) {
 		 * @return {Promise<boolean>} Whether a request was sent.
 		 */
 		async retry() {
-			if ( destroyed || 'idle' !== phase ) {
+			if ( destroyed || 'idle' !== phase || tooSoon() ) {
 				return false;
 			}
 

@@ -19,6 +19,12 @@ describe( 'classify', () => {
 			{ outcome: 'duplicate' },
 			'pending',
 		],
+		[
+			'too many requests',
+			429,
+			{ code: 'store_api.rate_limited' },
+			'rate_limited',
+		],
 		[ 'requires_action', 200, { outcome: 'requires_action' }, 'acting' ],
 		[ 'a decline replayed', 200, { outcome: 'declined' }, 'declined' ],
 		[ 'a void replayed', 200, { outcome: 'voided' }, 'voided' ],

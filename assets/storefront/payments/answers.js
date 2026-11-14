@@ -15,6 +15,7 @@
  * - `stale`: the cart changed since the shopper read it (cart.version_stale,
  *   checkout.totals_changed). Not a payment failure: the island is told nothing;
  * - `session`: the logged-in shopper's nonce is missing or expired; nothing was written;
+ * - `rate_limited`: the shopper sent too many placements and resumes for now; nothing was written;
  * - `in_progress`: another request with the same key is placing the order; wait, and send it again;
  * - `unavailable`: the gateway did not answer; the order may wait as placed;
  * - `server` and `network`: no answer the host can read;
@@ -156,6 +157,10 @@ export function classify( { network, status, body } ) {
 
 	if ( SESSION.includes( code ) ) {
 		return 'session';
+	}
+
+	if ( 'store_api.rate_limited' === code || 429 === status ) {
+		return 'rate_limited';
 	}
 
 	if ( 'checkout.placement_in_progress' === code ) {

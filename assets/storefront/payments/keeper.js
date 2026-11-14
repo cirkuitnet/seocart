@@ -11,11 +11,11 @@
  * none, and is asked again with none. The order's key is never kept either.
  *
  * The key is sent again after a network failure, a server error, an unavailable gateway, a
- * placement still in progress or still pending, a session that needs a fresh nonce, while the
- * shopper must act, after a reload, and on the shopper's return from a provider's page; each gets
- * the one order's answer back. A settled, declined or voided answer, a cart that changed and a
- * refusal end the key: the next placement gets a fresh one. When the browser keeps no storage,
- * the key lives as long as the page.
+ * placement still in progress or still pending, a session that needs a fresh nonce, too many
+ * requests, while the shopper must act, after a reload, and on the shopper's return from a
+ * provider's page; each gets the one order's answer back. A settled, declined or voided answer, a
+ * cart that changed and a refusal end the key: the next placement gets a fresh one. When the
+ * browser keeps no storage, the key lives as long as the page.
  */
 
 /**
@@ -37,6 +37,7 @@ const KEEPING = [
 	'in_progress',
 	'pending',
 	'session',
+	'rate_limited',
 	'acting',
 ];
 

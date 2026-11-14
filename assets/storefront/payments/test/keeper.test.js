@@ -30,6 +30,7 @@ describe( 'keepsKey', () => {
 		'in_progress',
 		'pending',
 		'session',
+		'rate_limited',
 		'acting',
 	] )( 'keeps the key after %s', ( kind ) => {
 		expect( keepsKey( kind ) ).toBe( true );
