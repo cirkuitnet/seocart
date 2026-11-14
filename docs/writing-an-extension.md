@@ -438,6 +438,18 @@ acts before the store's wait for them ends), `expires` (the payment waits, and t
 cancels it once the wait has ended) and `pending` (the provider takes the payment and decides
 later), which rule 8 asks about when the test names it.
 
+A gateway that exchanges its credentials for a token before its money request names that
+request, by its method and its path with its query, in `credentialRequests()`. The request moves
+no money: rule 6 asks it for no idempotency key, and no rule takes it for an operation's own
+request. The test names four at most, and a request on a named path that carries an operation's
+key fails rules 6 and 12:
+
+```php
+protected function credentialRequests(): array {
+	return array( array( 'method' => 'POST', 'path' => '/v1/oauth2/token' ) );
+}
+```
+
 ### Tapes: replay and record
 
 The suite never reaches the provider on a pull request. It replays the provider's answers from

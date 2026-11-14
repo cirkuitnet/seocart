@@ -148,8 +148,20 @@ final readonly class Exchange {
 	 * @return string The path, and `?` and the query when there is one.
 	 */
 	public function path(): string {
-		$path  = (string) wp_parse_url( $this->url, PHP_URL_PATH );
-		$query = wp_parse_url( $this->url, PHP_URL_QUERY );
+		return self::pathOf( $this->url );
+	}
+
+	/**
+	 * Returns a URL's path with its query, as a replay compares it and a credential request is declared.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $url The whole URL.
+	 * @return string The path, and `?` and the query when there is one.
+	 */
+	public static function pathOf( string $url ): string {
+		$path  = (string) wp_parse_url( $url, PHP_URL_PATH );
+		$query = wp_parse_url( $url, PHP_URL_QUERY );
 
 		return ( '' === $path ? '/' : $path ) . ( is_string( $query ) && '' !== $query ? '?' . $query : '' );
 	}

@@ -18,6 +18,7 @@ use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
 use SEOCart\Checkout\Interfaces\Rest\WebhookRoute;
 use SEOCart\Contracts\HttpClient;
+use SEOCart\Contracts\OutboundHost;
 use SEOCart\Contracts\Payment\AvailabilityContext;
 use SEOCart\Contracts\Payment\CaptureRequest;
 use SEOCart\Contracts\Payment\GatewayDescriptor;
@@ -269,6 +270,15 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	protected TapeScrubber $scrubber;
 
 	/**
+	 * The requests the test declares exchange the gateway's credentials for a token (credentialRequests()), which move no money.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var CredentialRequests
+	 */
+	protected CredentialRequests $credentials;
+
+	/**
 	 * The credential values of the run, by mode and setting.
 	 *
 	 * @since 0.2.0
@@ -321,6 +331,28 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * @return array<string, string|NotProducible> By Scenario value: the token, or why the provider cannot produce it.
 	 */
 	protected function tokens(): array {
+		return array();
+	}
+
+	/**
+	 * Returns the requests with which the gateway exchanges its credentials for a token, each a method and a path: none unless the test names them.
+	 *
+	 * A provider that hands out a token for the gateway's credentials, such as with
+	 * `POST /v1/oauth2/token`, has the gateway send that request before its money request. A
+	 * request named here, by its method in capitals and its path with its query, at a host the
+	 * gateway declares, carries no money: rule 6 asks it for no idempotency key, and no rule takes it
+	 * for an operation's own request. A test names
+	 * CredentialRequests::MOST at most; a longer list, or an entry that is not a method and a path
+	 * from `/`, fails the suite's set-up, and a request on a path named here that carries an
+	 * operation's key fails rules 6 and 12, since a credential request moves no money.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<int, array<string, string>> The requests, each `array( 'method' => …, 'path' => … )`.
+	 *
+	 * @phpstan-return list<array{method: string, path: string}>
+	 */
+	protected function credentialRequests(): array {
 		return array();
 	}
 
@@ -487,6 +519,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->gatewayClock = FrozenClock::at( self::CLOCK );
 		$this->logger       = new AssertingLogger( fn(): array => isset( $this->transport ) ? $this->transport->servedBodies() : array(), $this->publicCodes() );
 		$this->scrubber     = new TapeScrubber( array() );
+		$this->credentials  = new CredentialRequests();
 
 		parent::set_up();
 
@@ -507,8 +540,27 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		);
 
 		// Asked once here, so a gateway the plugin refused fails every test with the refusal as its cause.
-		$this->descriptor();
+		$this->credentials = $this->credentialRequestsOf( $this->descriptor() );
 		$this->configure( $this->suiteMode() );
+	}
+
+	/**
+	 * Returns the credential requests the test declares, at the hosts the gateway declares, or fails the set-up with why the declaration is refused.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayDescriptor $descriptor The gateway's descriptor.
+	 * @return CredentialRequests The declared requests.
+	 */
+	private function credentialRequestsOf( GatewayDescriptor $descriptor ): CredentialRequests {
+		$declared = $this->credentialRequests();
+		$refusal  = CredentialRequests::refusal( $declared );
+
+		if ( null !== $refusal ) {
+			self::fail( $refusal );
+		}
+
+		return new CredentialRequests( $declared, array_map( static fn( OutboundHost $host ): string => $host->host, $descriptor->hosts ) );
 	}
 
 	/**
@@ -981,16 +1033,17 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->rule(
 			Rule::EveryCallThroughTheClient,
 			function ( Rule $rule ): void {
-				$cell  = $this->firstCell( $rule );
-				$calls = array() !== $this->descriptor()->hosts;
+				$cell        = $this->firstCell( $rule );
+				$calls       = array() !== $this->descriptor()->hosts;
+				$credentials = $this->credentials;
 				$this->begin( 'rule12-money-path-' . self::cellName( $cell ) );
 
 				// Each operation's own request, found by its key, not a count: another operation's request through the client would hide one sent another way.
 				$this->eachMoneyOperation(
 					$rule,
 					$cell,
-					static function ( string $what, array $exchanges, string $key ) use ( $calls ): void {
-						$failure = $calls ? RequestRules::sentFailure( $what, $exchanges, $key ) : null;
+					static function ( string $what, array $exchanges, string $key ) use ( $calls, $credentials ): void {
+						$failure = $calls ? RequestRules::sentFailure( $what, $exchanges, $key, $credentials ) : null;
 
 						if ( null !== $failure ) {
 							self::fail( $failure );
@@ -1170,7 +1223,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 
 				$this->assertTrue( Operation::Void === $answer->operation && Outcome::Approved === $answer->outcome, $rule->message() . sprintf( 'void is declared for %1$s, and voiding an authorized intent answered %2$s, not an approved void.', self::cellName( $cell ), self::describeResult( $answer ) ) );
 
-				$failure = AnswerRules::voidAmountFailure( $request, $answer ) ?? AnswerRules::objectFailure( $rule, 'the void', $answer->providerObjectId, $request->providerIntentId, array_map( static fn( Exchange $exchange ): string => $exchange->responseBody, $asked ), true );
+				$failure = AnswerRules::voidAmountFailure( $request, $answer ) ?? AnswerRules::objectFailure( $rule, 'the void', $answer->providerObjectId, $request->providerIntentId, $this->answersTo( $asked ), true );
 
 				if ( null !== $failure ) {
 					self::fail( $failure );
@@ -2304,7 +2357,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * @phpstan-param list<Exchange> $exchanges
 	 */
 	private function assertKeyed( string $what, array $exchanges, string $key ): void {
-		$failure = RequestRules::keyFailure( $what, $exchanges, $key );
+		$failure = RequestRules::keyFailure( $what, $exchanges, $key, $this->credentials );
 
 		if ( null !== $failure ) {
 			self::fail( $failure );
@@ -2327,13 +2380,35 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 */
 	private function assertOwnObject( Rule $rule, string $what, array $placed, string $operation, array $exchanges ): string {
 		list( $object ) = $this->ledgerRowOf( $placed['order_id'], $operation );
-		$failure        = AnswerRules::objectFailure( $rule, $what, $object, $this->intentRow( $placed['intent_uuid'] )['provider_intent_id'], array_map( static fn( Exchange $exchange ): string => $exchange->responseBody, $exchanges ), false );
+		$failure        = AnswerRules::objectFailure( $rule, $what, $object, $this->intentRow( $placed['intent_uuid'] )['provider_intent_id'], $this->answersTo( $exchanges ), false );
 
 		if ( null !== $failure ) {
 			self::fail( $failure );
 		}
 
 		return (string) $object;
+	}
+
+	/**
+	 * Returns the provider's answers to an operation's requests, those to a declared credential request aside: a token's answer holds none of the operation's objects.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Exchange[] $exchanges The requests the operation sent.
+	 * @return list<string> The answers' bodies, in order.
+	 *
+	 * @phpstan-param list<Exchange> $exchanges
+	 */
+	private function answersTo( array $exchanges ): array {
+		$answers = array();
+
+		foreach ( $exchanges as $exchange ) {
+			if ( ! $this->credentials->covers( $exchange->method, $exchange->url ) ) {
+				$answers[] = $exchange->responseBody;
+			}
+		}
+
+		return $answers;
 	}
 
 	/**

@@ -25,6 +25,9 @@ namespace SEOCart\Tests\Conformance\Payment\Reference;
  *     POST /v1/refunds                  refund part or all of a capture
  *     GET  /v1/refunds?intent={id}      list an intent's refunds
  *     GET  /v1/account                  the account
+ *     POST /v1/oauth2/token             a token for the key, which the reference gateway never asks
+ *                                       for; the suite's tests of a gateway that exchanges its
+ *                                       credentials first do
  *
  * A POST with an `Idempotency-Key` it has seen is answered with its first answer again. The key
  * is a bearer secret starting `ref_test_` or `ref_live_`; the two modes keep separate state. The
@@ -272,6 +275,14 @@ final class ReferenceProvider {
 				array(
 					'id'      => 'acct_1',
 					'country' => 'US',
+				),
+			),
+			'POST /v1/oauth2/token' => array(
+				200,
+				array(
+					'access_token' => 'rtk_' . ( ++$this->counter ),
+					'token_type'   => 'Bearer',
+					'expires_in'   => 3600,
 				),
 			),
 			default            => self::error( 404, 'no_such_route' ),
