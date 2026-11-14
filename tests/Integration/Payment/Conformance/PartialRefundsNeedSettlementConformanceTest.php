@@ -12,7 +12,10 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Payment\Conformance;
 
 use PHPUnit\Framework\AssertionFailedError;
+use SEOCart\Contracts\Payment\CapabilityMatrix;
+use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Contracts\Payment\GatewayRegistry;
+use SEOCart\Contracts\Payment\MatrixRow;
 use SEOCart\Contracts\Payment\Operations;
 use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Tests\Conformance\Payment\ConformanceHarness;
@@ -78,6 +81,15 @@ final class PartialRefundsNeedSettlementConformanceTest extends ConformanceHarne
 	private const NO_PARTIAL_REFUND = 'test_the_declaration_without_partial_refund_fails_the_set_up';
 
 	/**
+	 * The test whose gateway's matrix declares partial refunds in dollars alone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const MIXED = 'test_rule_2_passes_a_matrix_of_partial_refunds_in_one_currency_under_the_declaration';
+
+	/**
 	 * What the suite's set-up refused, in the test that expects it.
 	 *
 	 * @since 0.2.0
@@ -121,6 +133,16 @@ final class PartialRefundsNeedSettlementConformanceTest extends ConformanceHarne
 	 * @since 0.2.0
 	 */
 	public function test_rule_2_passes_a_part_declined_before_settlement_under_the_declaration(): void {
+		$this->check( Rule::MatrixMatchesBehaviour );
+		$this->addToAssertionCount( 1 );
+	}
+
+	/**
+	 * Tests that rule 2, under the declaration, asks for a part only in the cells that declare partial refunds: a cell of another currency that declares none refuses the part before the gateway, as it must, and refunds the payment whole.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_rule_2_passes_a_matrix_of_partial_refunds_in_one_currency_under_the_declaration(): void {
 		$this->check( Rule::MatrixMatchesBehaviour );
 		$this->addToAssertionCount( 1 );
 	}
@@ -237,6 +259,25 @@ final class PartialRefundsNeedSettlementConformanceTest extends ConformanceHarne
 				 */
 				protected function operations(): array {
 					return array_values( array_diff( parent::operations(), array( Operations::PARTIAL_REFUND ) ) );
+				}
+			},
+			self::MIXED             => new class( $context ) extends RefusesAPartBeforeSettlement {
+
+				/**
+				 * Returns the gateway's declaration with partial refunds in its dollar row alone.
+				 *
+				 * @since 0.2.0
+				 *
+				 * @return GatewayDescriptor The declaration.
+				 */
+				public function describe(): GatewayDescriptor {
+					$described = parent::describe();
+					$rows      = array_map(
+						static fn( MatrixRow $row ): MatrixRow => 'USD' === $row->currency->code() ? $row : new MatrixRow( $row->currency, $row->accountCountry, array_values( array_diff( $row->operations, array( Operations::PARTIAL_REFUND ) ) ) ),
+						$described->matrix->rows
+					);
+
+					return new GatewayDescriptor( $described->id, $described->label, $described->type, $described->contract, $described->modes, $described->settings, new CapabilityMatrix( $rows ), $described->idempotency, $described->hosts );
 				}
 			},
 			default                 => new RefusesAPartBeforeSettlement( $context ),

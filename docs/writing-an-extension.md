@@ -533,9 +533,9 @@ A provider that refunds nothing of a capture before the day's settlement, and ca
 only whole, says so in `partialRefundsNeedSettlement()`: its gateway refunds a captured payment
 whole before it settles and declines a part without asking the provider for it, and no sandbox
 settles in the minutes a recording takes. Every rule that refunds a part and then the rest then
-refunds the payment whole, once, the lost answer of rule 2 included, and rule 2 first asks for
-one unit's refund and requires the gateway's decline, the intent's refunded amount unchanged and
-no request that moves money sent. A matrix that declares no `partial_refund` refuses the
+refunds the payment whole, once, the lost answer of rule 2 included, and rule 2 first asks, in each
+cell that declares `partial_refund`, for one unit's refund and requires the gateway's decline, the
+intent's refunded amount unchanged and no request that moves money sent. A matrix that declares no `partial_refund` refuses the
 declaration, and the run prints one line saying that partial refunds are proved by the gateway's
 live run, which refunds payments an earlier run left to settle. The pull request that adds the
 declaration is checked by hand against the provider's documentation of its refunds:

@@ -495,9 +495,9 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * by cancelling it, and declines a part without asking the provider for it, so the merchant asks
 	 * again once it has settled; no sandbox settles in the minutes a recording takes. When the test
 	 * says so, every rule that refunds a part and then the rest (refundSteps(), refundAll(), the
-	 * lost answer of rule 2 included) refunds the payment whole, once, and rule 2 first asks for one
-	 * unit's refund and requires the gateway's decline, the intent's refunded amount unchanged and
-	 * no request that moves money sent. A matrix none of whose cells declares partial_refund fails
+	 * lost answer of rule 2 included) refunds the payment whole, once, and rule 2 first asks, in each
+	 * cell that declares partial_refund, for one unit's refund and requires the gateway's decline,
+	 * the intent's refunded amount unchanged and no request that moves money sent. A matrix none of whose cells declares partial_refund fails
 	 * the suite's set-up under the declaration, and the run prints one line saying that partial
 	 * refunds are proved by the gateway's live run. The declaration is checked by hand, in the pull
 	 * request that adds it, against the provider's documentation of its refunds.
@@ -2343,7 +2343,8 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 			$this->refusedBeforeAnyRequest( $rule, sprintf( 'partial_refund is not declared for %s', $name ), PaymentError::OperationUnsupported, fn() => $this->refund( $placed['order_uuid'], 1, false ) );
 		}
 
-		if ( $this->partialRefundsNeedSettlement() ) {
+		// A cell that declares no partial refund refused one above, before the gateway: only one that declares it has a part to decline.
+		if ( $this->partialRefundsNeedSettlement() && $cell->supports( Operations::PARTIAL_REFUND ) ) {
 			$this->partDeclinedBeforeSettlement( $rule, $placed, $name );
 		}
 
