@@ -225,6 +225,38 @@ final class AssertingLoggerTest extends TestCase {
 	}
 
 	/**
+	 * Returns declared ids the tape scrubber reads as card numbers, with the shapes declared: one with a secret's prefix, and one in a field named like a credential.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{array<string, int>, array<string, string>}> The shapes and the context.
+	 */
+	public function idsWhereNoPublicShapePasses(): array {
+		return array(
+			'an id with a secret\'s prefix'            => array( array( 'sk_' => 16 ), array( 'id' => 'sk_' . self::DIGITS ) ),
+			'an id in a field named like a credential' => array( self::SHAPES, array( 'client_token' => self::ID ) ),
+		);
+	}
+
+	/**
+	 * Tests that the logger reads as a card number every declared id the tape scrubber reads as one: no public shape passes with a secret's prefix or in a field named like a credential.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider idsWhereNoPublicShapePasses
+	 * @group conformance
+	 *
+	 * @param array<string, int>    $shapes  The shapes the test declares.
+	 * @param array<string, string> $context The line's context.
+	 */
+	public function test_a_declared_id_where_no_public_shape_passes_is_still_a_card_number( array $shapes, array $context ): void {
+		$logger = self::logger( array(), $shapes );
+		$logger->info( 'gateway.authorized', 'Authorized.', $context );
+
+		$this->assertSame( array( 'the line gateway.authorized holds a card number' ), $logger->violations() );
+	}
+
+	/**
 	 * Builds a logger whose gateway was served the answer.
 	 *
 	 * @since 0.2.0

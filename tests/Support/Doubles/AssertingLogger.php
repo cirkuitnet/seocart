@@ -35,7 +35,9 @@ use SEOCart\Tests\Conformance\Payment\IdShapes;
  * A context value that is, as a whole, an id of a shape the test declares with a letter in it
  * (GatewayConformanceCase::publicIdShapes(), IdShapes::namesNoCard()) is not read for a card
  * number: one in ten of a provider's ids that hold a run of 13 to 16 digits would pass for one. The
- * message, and a value that holds an id among other text, are read as before.
+ * test is the tape scrubber's, so an id with a secret's prefix, or in a field named like a
+ * credential, is read for one as it is in a tape. The message, and a value that holds an id among
+ * other text, are read as before.
  *
  * It never throws: a gateway could catch the exception and carry on, so a test asks violations().
  *
@@ -296,8 +298,8 @@ final class AssertingLogger implements Logger {
 	private function withoutIdsOfNoCard( array $context ): array {
 		array_walk_recursive(
 			$context,
-			function ( mixed &$value ): void {
-				if ( is_string( $value ) && IdShapes::namesNoCard( $this->idShapes, $value ) ) {
+			function ( mixed &$value, int|string $field ): void {
+				if ( is_string( $value ) && IdShapes::namesNoCard( $this->idShapes, $value, (string) $field ) ) {
 					$value = '';
 				}
 			}

@@ -979,9 +979,7 @@ final class TapeScrubber {
 	}
 
 	/**
-	 * Tells whether a whole value names no card: an id of a declared shape with a letter in it, or a 64-hex digest with a letter in it in a declared digest field.
-	 *
-	 * An id with a secret's prefix or infix (SECRET_PREFIX) is of no public shape, so it names a card as any value may.
+	 * Tells whether a whole value names no card: an id of a declared shape with a letter in it (IdShapes::namesNoCard(), which rule 13's logger reads too), or a 64-hex digest with a letter in it in a declared digest field.
 	 *
 	 * @since 0.2.0
 	 *
@@ -990,11 +988,7 @@ final class TapeScrubber {
 	 * @return bool True when the card rule does not read it.
 	 */
 	private function namesNoCard( string $value, string $field ): bool {
-		if ( 1 === preg_match( self::SECRET_PREFIX, $value ) ) {
-			return false;
-		}
-
-		return IdShapes::namesNoCard( $this->publicIdShapes, $value ) || ( 1 === preg_match( self::DIGEST, $value ) && 1 === preg_match( '/[a-f]/i', $value ) && self::declares( $this->publicDigestFields, $field ) );
+		return IdShapes::namesNoCard( $this->publicIdShapes, $value, $field ) || ( 1 === preg_match( self::DIGEST, $value ) && 1 === preg_match( '/[a-f]/i', $value ) && self::declares( $this->publicDigestFields, $field ) );
 	}
 
 	/**
