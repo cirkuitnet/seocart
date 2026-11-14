@@ -15,7 +15,8 @@
  * - `mutate`: mount() writes to the cart, as an island must never do;
  * - `delay`: how long confirm() takes, in milliseconds.
  *
- * Every call made to it is recorded in `window.__fakeIsland.calls`, with the context it was given.
+ * Every call made to it is recorded in `window.__fakeIsland.calls`, with what it was given: the
+ * context at a mount, the billing address at a confirmation, the step and the return at an action.
  */
 ( function () {
 	const options = Object.assign(
@@ -114,11 +115,11 @@
 			}
 
 			return {
-				async confirm() {
+				async confirm( given ) {
 					const token =
 						tokens.length > 1 ? tokens.shift() : tokens[ 0 ];
 
-					record.calls.push( { name: 'confirm', token } );
+					record.calls.push( { name: 'confirm', token, given } );
 					await wait( options.delay );
 
 					return { payment_data: { payment_token: token } };

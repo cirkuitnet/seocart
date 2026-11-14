@@ -16,13 +16,25 @@
  *   fails the test;
  * - expectNoSecretInUrls() fails when a URL or a Store API request carries a secret given, a
  *   provider's handle (`_secret_`) or a card number;
- * - expectRemountOn() counts the island's mounts across a change of the cart.
+ * - expectRemountOn() counts the island's mounts across a change of the cart;
+ * - expectNothingSecretKept() fails when the tab's kept placement holds more than its six members,
+ *   or a secret given.
+ *
+ * The Store API allows one client five placements and resumes an hour, and every test of a runner
+ * would be the same client. forwardClientAddress() makes each test a client of its own: it gives
+ * the test's requests to the site an address of the documentation range in `X-Forwarded-For`,
+ * which a disposable site trusts from its runner through `SEOCART_TRUSTED_PROXIES`.
  *
  * It depends on `@playwright/test` alone, so a payment plugin's own browser test imports it from a
  * SEOCart checkout beside its own.
  */
 
-import { expect, type Page, type Request } from '@playwright/test';
+import {
+	expect,
+	type BrowserContext,
+	type Page,
+	type Request,
+} from '@playwright/test';
 
 /** Where the fixture page is served, under the site's home URL. */
 export const FIXTURE_PATH = 'seocart-payments-fixture/';
@@ -48,6 +60,8 @@ export interface PaymentsConfig {
 	restRoot: string;
 	returnQueryArg: string;
 	locale: string;
+	/** A logged-in shopper's REST nonce; absent or null for a guest. */
+	nonce?: string | null;
 	methods: PaymentMethodConfig[];
 }
 
@@ -299,7 +313,10 @@ const root = document.querySelector( '.seocart-payments' );
 const config = readConfig( root );
 
 state.readCart = async () => {
-	const response = await fetch( config.restRoot + 'seocart/store/v1/cart', { credentials: 'same-origin' } );
+	const response = await fetch( config.restRoot + 'seocart/store/v1/cart', {
+		credentials: 'same-origin',
+		headers: config.nonce ? { 'X-WP-Nonce': config.nonce } : {},
+	} );
 	const cart = await response.json();
 
 	return {
@@ -443,11 +460,136 @@ export function storeRequests( page: Page ): RequestLedger {
 							entry.status || 'no answer'
 						}${ entry.storeHeader ? '' : ' (no X-SEOCart-Store)' }${ alias(
 							entry.idempotencyKey
-						) }${ entry.body ? ` ${ entry.body }` : '' }`
+						) }${ entry.body ? ` ${ shownBody( entry.body ) }` : '' }`
 				),
+				...( store.some( ( entry ) => 429 === entry.status )
+					? [
+							'  A 429 means the site counted these tests as one client: declare SEOCART_TRUSTED_PROXIES on it (docs/testing.md).',
+						]
+					: [] ),
 			].join( '\n' );
 		},
 	};
+}
+
+/**
+ * Returns a request's body as the ledger prints it: the payment data's member names, never their
+ * values, which may be a provider's real sandbox tokens.
+ *
+ * @param body The body, as sent.
+ */
+export function shownBody( body: string ): string {
+	let parsed: unknown;
+
+	try {
+		parsed = JSON.parse( body );
+	} catch {
+		return '(a body that is not JSON)';
+	}
+
+	if (
+		! parsed ||
+		'object' !== typeof parsed ||
+		! ( 'payment_data' in parsed )
+	) {
+		return body;
+	}
+
+	const { payment_data: paymentData, ...rest } = parsed as {
+		payment_data: unknown;
+	};
+
+	return JSON.stringify( {
+		...rest,
+		payment_data: Object.keys( ( paymentData ?? {} ) as object ),
+	} );
+}
+
+/**
+ * Returns a fresh client address: one of the IPv6 documentation range, `2001:db8::/32`, which no
+ * real client has.
+ */
+export function clientAddress(): string {
+	const group = () =>
+		Math.floor( Math.random() * 0x10000 )
+			.toString( 16 )
+			.padStart( 4, '0' );
+
+	return `2001:db8:${ group() }:${ group() }::1`;
+}
+
+/**
+ * Makes a browser context a client of its own: its requests to the site carry a fresh address in
+ * `X-Forwarded-For`, which a site counts as the client's when it trusts the runner's address in
+ * `SEOCART_TRUSTED_PROXIES`. Requests to any other origin are left as they are.
+ *
+ * Returns the address, for the requests a test sends through `page.request`, which no route sees.
+ * A page route that lets a request through calls `route.fallback()`, so this route still sees it.
+ *
+ * @param context The browser context.
+ * @param baseURL The site's home URL.
+ */
+export async function forwardClientAddress(
+	context: BrowserContext,
+	baseURL: string
+): Promise< string > {
+	const address = clientAddress();
+	const origin = new URL( baseURL ).origin;
+
+	await context.route(
+		( url ) => url.origin === origin,
+		async ( route ) =>
+			route.fallback( {
+				headers: {
+					...( await route.request().allHeaders() ),
+					'x-forwarded-for': address,
+				},
+			} )
+	);
+
+	return address;
+}
+
+/** The members of the placement the host keeps in the tab's storage, and only those. */
+const KEPT_MEMBERS = [
+	'amountMinor',
+	'cartVersion',
+	'currency',
+	'gatewayId',
+	'intentUuid',
+	'key',
+];
+
+/**
+ * Fails when the tab keeps more of a placement than its six members, or a secret given: a payment
+ * token, a provider's client handle, an order key.
+ *
+ * @param page    The fixture page.
+ * @param secrets The secrets of the test.
+ */
+export async function expectNothingSecretKept(
+	page: Page,
+	secrets: string[] = []
+): Promise< void > {
+	const text = await page.evaluate( () =>
+		window.sessionStorage.getItem( 'seocart:placement' )
+	);
+
+	if ( null === text ) {
+		return;
+	}
+
+	expect(
+		Object.keys( JSON.parse( text ) ).sort(),
+		'The tab keeps the placement’s six members and nothing else.'
+	).toEqual( KEPT_MEMBERS );
+
+	for ( const secret of [ '_secret_', ...secrets ] ) {
+		expect(
+			text.includes( secret ),
+			'The tab keeps a secret with the placement.'
+		).toBe( false );
+	}
 }
 
 /** The host's two writes: the placement and the resume. */
