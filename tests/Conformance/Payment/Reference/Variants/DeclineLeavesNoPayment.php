@@ -26,7 +26,7 @@ use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGateway;
  *
  * @since 0.2.0
  */
-final class DeclineLeavesNoPayment extends ReferenceGateway {
+class DeclineLeavesNoPayment extends ReferenceGateway {
 
 	/**
 	 * Maps an intent the provider answered; a declined one names no provider payment.

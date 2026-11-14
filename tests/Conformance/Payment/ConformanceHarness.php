@@ -2608,6 +2608,9 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	/**
 	 * Rule 8, for a gateway whose test declares that a decline leaves no payment (declineLeavesNoPayment()): query() of the declined payment answers nothing and sends no request.
 	 *
+	 * No request means none through the gateway's client and none through WordPress's HTTP API by
+	 * any other way: the watch on the API (HttpWatch) counts both.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @param Rule      $rule       The rule.
@@ -2616,8 +2619,9 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 */
 	private function assertNothingToAskAbout( Rule $rule, string $intentUuid, MatrixRow $cell ): void {
 		$before = count( $this->transport->exchanges() );
+		$seen   = $this->http->seen();
 		$answer = $this->queried( $intentUuid, $cell );
-		$asked  = count( $this->transport->exchanges() ) - $before;
+		$asked  = max( count( $this->transport->exchanges() ) - $before, $this->http->seen() - $seen );
 
 		if ( null === $answer && 0 === $asked ) {
 			return;

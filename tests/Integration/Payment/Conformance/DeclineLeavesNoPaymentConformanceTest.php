@@ -17,6 +17,7 @@ use SEOCart\Tests\Conformance\Payment\ConformanceHarness;
 use SEOCart\Tests\Conformance\Payment\RecordingTransport;
 use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGateway;
 use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGatewaySetup;
+use SEOCart\Tests\Conformance\Payment\Reference\Variants\AsksAboutItsDeclinePastTheClient;
 use SEOCart\Tests\Conformance\Payment\Reference\Variants\DeclineLeavesNoPayment;
 use SEOCart\Tests\Conformance\Payment\Rule;
 use SEOCart\Tests\Conformance\Payment\RuleFailures;
@@ -55,6 +56,15 @@ final class DeclineLeavesNoPaymentConformanceTest extends ConformanceHarness {
 	private const ASKS = 'test_a_gateway_that_asks_about_its_decline_fails_rule_8_under_the_declaration';
 
 	/**
+	 * The test whose gateway asks the provider about its decline past its client.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const ASKS_PAST = 'test_a_gateway_that_asks_about_its_decline_past_the_client_fails_rule_8_under_the_declaration';
+
+	/**
 	 * Tests that rule 8 passes a decline that leaves no payment, query() answering nothing without a request, when the test declares it.
 	 *
 	 * @since 0.2.0
@@ -83,6 +93,15 @@ final class DeclineLeavesNoPaymentConformanceTest extends ConformanceHarness {
 	}
 
 	/**
+	 * Tests that rule 8 fails, under the declaration, a gateway whose query() asks the provider about the decline past its client, with WordPress's HTTP API directly, and answers nothing.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_gateway_that_asks_about_its_decline_past_the_client_fails_rule_8_under_the_declaration(): void {
+		$this->assertRuleFails( Rule::NotFoundAuthority, 'the test declares that a declined authorization leaves no payment to ask about (declineLeavesNoPayment()), and query() of one answered nothing and sent a request to the provider' );
+	}
+
+	/**
 	 * Says that a decline leaves no payment, but in the test that runs without the declaration.
 	 *
 	 * @since 0.2.0
@@ -104,7 +123,11 @@ final class DeclineLeavesNoPaymentConformanceTest extends ConformanceHarness {
 	protected function gatewayOf( GatewayRegistry $registry ): ReferenceGateway {
 		$context = $registry->context( ReferenceGateway::ID );
 
-		return self::ASKS === $this->getName( false ) ? new ReferenceGateway( $context ) : new DeclineLeavesNoPayment( $context );
+		return match ( $this->getName( false ) ) {
+			self::ASKS      => new ReferenceGateway( $context ),
+			self::ASKS_PAST => new AsksAboutItsDeclinePastTheClient( $context ),
+			default         => new DeclineLeavesNoPayment( $context ),
+		};
 	}
 
 	/**
