@@ -229,7 +229,8 @@ const stored = () =>
 /**
  * Creates a host on a page of its own.
  *
- * @param {Object} setup Optional. `methods`, `islands`, `answers`, `cart`, `href`, `onStale`, `nonce`.
+ * @param {Object} setup Optional. `methods`, `islands`, `answers`, `cart`, `href`, `onStale`, `nonce`,
+ *                       `onWait` (called with the host each time it waits).
  * @return {Object} The host, its page, its requests and what its callbacks heard.
  */
 function setUp( setup = {} ) {
@@ -284,6 +285,7 @@ function setUp( setup = {} ) {
 			onRegister: installed.onRegister,
 			wait: async ( ms ) => {
 				heard.waits.push( ms );
+				setup.onWait?.( host );
 			},
 		}
 	);
@@ -1029,6 +1031,26 @@ describe( 'place()', () => {
 			'mount',
 		] );
 		expect( calls[ 3 ][ 1 ].amountMinor ).toBe( 2999 );
+	} );
+
+	it( 'sends nothing more when destroyed while it waits for a placement in progress', async () => {
+		const { island } = fakeIsland( 'stub' );
+		const { host, requests } = setUp( {
+			islands: [ island ],
+			answers: [
+				{
+					status: 409,
+					body: { code: 'checkout.placement_in_progress' },
+					headers: { 'Retry-After': '2' },
+				},
+			],
+			onWait: ( waiting ) => waiting.destroy(),
+		} );
+
+		await flush();
+		await host.place();
+
+		expect( requests ).toHaveLength( 1 );
 	} );
 } );
 

@@ -562,6 +562,12 @@ export function createHost( root, options, env ) {
 					MAX_WAIT_SECONDS
 				) * 1000
 			);
+
+			// A host destroyed while it waited sends nothing more.
+			if ( destroyed ) {
+				break;
+			}
+
 			response = await api.place( placement );
 		}
 
