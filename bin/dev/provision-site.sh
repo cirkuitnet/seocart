@@ -154,6 +154,11 @@ define( 'WP_DEBUG_DISPLAY', false );
 // developer-only checks recognise it, and wp eval-file needs no extra variable to seed it.
 $(sc_wp_config_disposable_lines "$encryption_key")
 
+// The runner of the browser tests arrives from a private or loopback address and names each test
+// a client of its own in X-Forwarded-For, which only a trusted proxy may do. A real store declares
+// its real proxies alone.
+define( 'SEOCART_TRUSTED_PROXIES', '10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, ::1, fc00::/7' );
+
 // Core updates would make this disposable copy diverge from the shared checkout.
 define( 'AUTOMATIC_UPDATER_DISABLED', true );
 

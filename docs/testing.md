@@ -87,6 +87,23 @@ From many, fast and cheap to few, slow and high in value:
     seed fail them instead; the end-to-end workflow sets it, and passes the seed's output on to
     the suite itself.
 
+- The payment spec, `tests/E2E/specs/payments.spec.ts`, places and resumes many orders, and the
+  Store API allows one client five of those an hour. So each of its tests, and each retry of
+  one, is a client of its own: its requests to the site carry a fresh address of the IPv6
+  documentation range in `X-Forwarded-For`. A site takes that address only from a proxy it
+  trusts, named in the `SEOCART_TRUSTED_PROXIES` constant, so the site under test declares the
+  private and loopback ranges its runner arrives from. `bin/dev/provision-site.sh` writes the
+  constant into every disposable instance, and `.wp-env.json` sets it for wp-env; on another
+  disposable site, set it once:
+
+    ```sh
+    wp --path=<the instance directory> config set SEOCART_TRUSTED_PROXIES '10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, ::1, fc00::/7'
+    ```
+
+    Without it the spec's placements are refused `store_api.rate_limited` after the first few,
+    and the request ledger a failing test prints says so. A real store declares its real proxies
+    alone: anyone a trusted range covers can name their own address.
+
 - There is exactly one cart and checkout flow, so there is one end-to-end journey to
   maintain for it.
 - Accessibility assertions use `@axe-core/playwright` in the same suite and gate on
