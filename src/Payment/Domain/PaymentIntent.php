@@ -25,7 +25,7 @@ defined( 'ABSPATH' ) || exit;
  * amounts are the ledger's projection, written only by the statements that append to it.
  *
  * @since 0.1.0
- * @since 0.2.0 Carries the mode.
+ * @since 0.2.0 Carries the mode, and when it was created.
  */
 final readonly class PaymentIntent {
 
@@ -35,19 +35,20 @@ final readonly class PaymentIntent {
 	 * @since 0.1.0
 	 * @since 0.2.0 The mode was added.
 	 *
-	 * @param int          $id                  The intent's internal id.
-	 * @param string       $uuid                Its public identifier, also the idempotency key its gateway receives.
-	 * @param int          $orderId             The order it pays for.
-	 * @param string       $gatewayId           The gateway it is paid through.
-	 * @param Mode         $mode                The provider mode it was created in.
-	 * @param IntentStatus $status              Its state.
-	 * @param Money        $amount              Its frozen amount, in the order's currency.
-	 * @param Money        $baseAmount          Its frozen amount in the base currency, at the order's rate.
-	 * @param int          $conversionContextId The rate it was frozen at.
-	 * @param Money        $authorized          Authorized so far.
-	 * @param Money        $captured            Captured so far.
-	 * @param Money        $refunded            Refunded so far.
-	 * @param string|null  $providerIntentId    The gateway's reference to it, once the gateway gave one.
+	 * @param int                $id                  The intent's internal id.
+	 * @param string             $uuid                Its public identifier, also the idempotency key its gateway receives.
+	 * @param int                $orderId             The order it pays for.
+	 * @param string             $gatewayId           The gateway it is paid through.
+	 * @param Mode               $mode                The provider mode it was created in.
+	 * @param IntentStatus       $status              Its state.
+	 * @param Money              $amount              Its frozen amount, in the order's currency.
+	 * @param Money              $baseAmount          Its frozen amount in the base currency, at the order's rate.
+	 * @param int                $conversionContextId The rate it was frozen at.
+	 * @param Money              $authorized          Authorized so far.
+	 * @param Money              $captured            Captured so far.
+	 * @param Money              $refunded            Refunded so far.
+	 * @param string|null        $providerIntentId    The gateway's reference to it, once the gateway gave one.
+	 * @param \DateTimeImmutable $createdAt           When it was created, from the database clock: the instant the order was placed.
 	 */
 	public function __construct(
 		public int $id,
@@ -62,7 +63,8 @@ final readonly class PaymentIntent {
 		public Money $authorized,
 		public Money $captured,
 		public Money $refunded,
-		public ?string $providerIntentId
+		public ?string $providerIntentId,
+		public \DateTimeImmutable $createdAt
 	) {
 	}
 }

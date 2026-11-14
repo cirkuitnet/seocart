@@ -77,7 +77,7 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 	 * @var string
 	 */
 	public const LOCK_INTENT = 'SELECT id, uuid, order_id, gateway_id, mode, status, amount_minor, currency, base_amount_minor, base_currency, conversion_context_id, '
-		. 'authorized_minor, captured_minor, refunded_minor, provider_intent_id FROM {payment_intents} WHERE uuid = %s FOR UPDATE';
+		. 'authorized_minor, captured_minor, refunded_minor, provider_intent_id, created_at FROM {payment_intents} WHERE uuid = %s FOR UPDATE';
 
 	/**
 	 * The intent, read without a lock before a gateway call.
@@ -87,7 +87,7 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 	 * @var string
 	 */
 	public const FIND_INTENT = 'SELECT id, uuid, order_id, gateway_id, mode, status, amount_minor, currency, base_amount_minor, base_currency, conversion_context_id, '
-		. 'authorized_minor, captured_minor, refunded_minor, provider_intent_id FROM {payment_intents} WHERE uuid = %s';
+		. 'authorized_minor, captured_minor, refunded_minor, provider_intent_id, created_at FROM {payment_intents} WHERE uuid = %s';
 
 	/**
 	 * When the newest ledger row of an intent that the projection refused was recorded, on the `intent_created` key; NULL when it has none.
@@ -1017,7 +1017,8 @@ final class MysqlPaymentRepository implements PaymentRepository, UnreconciledMon
 			$money( $row['authorized_minor'] ),
 			$money( $row['captured_minor'] ),
 			$money( $row['refunded_minor'] ),
-			null === $row['provider_intent_id'] ? null : (string) $row['provider_intent_id']
+			null === $row['provider_intent_id'] ? null : (string) $row['provider_intent_id'],
+			new \DateTimeImmutable( (string) $row['created_at'], new \DateTimeZone( 'UTC' ) )
 		);
 	}
 }

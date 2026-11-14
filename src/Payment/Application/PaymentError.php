@@ -97,7 +97,7 @@ enum PaymentError: string implements ErrorCode {
 	case EvidenceMissing = 'payment.evidence_missing';
 
 	/**
-	 * What was stated of a payment received offline cannot be recorded: a day that is not a calendar day or is after today, or a reference or a note holding what reads as a card number. Nothing was written.
+	 * What was stated of a payment received offline cannot be recorded: a day that is not a calendar day or is not between the day the order was placed and today, in the store's time zone, or a reference or a note holding what reads as a card number. Nothing was written.
 	 *
 	 * @since 0.2.0
 	 */
@@ -375,7 +375,7 @@ enum PaymentError: string implements ErrorCode {
 				422,
 				static fn(): string =>
 					/* translators: %1$s: The field that cannot be recorded: received_on, reference or note. */
-					__( 'The %1$s given cannot be recorded: received_on is a calendar day, as YYYY-MM-DD, no later than today, and a reference or a note never holds what reads as a card number. Nothing was recorded.', 'seocart' ),
+					__( 'The %1$s given cannot be recorded: received_on is a calendar day, as YYYY-MM-DD, between the day the order was placed and today, in the store\'s time zone, and a reference or a note never holds what reads as a card number. Nothing was recorded.', 'seocart' ),
 				array( 'field' )
 			),
 			new ErrorDefinition(

@@ -178,7 +178,7 @@ final class PaymentBudgetTest extends PlacementTestCase {
 		$capture = $this->placeCartA( 'offline', OfflineMethod::BankTransfer->value );
 		$void    = $this->placeCartA( 'offline', OfflineMethod::BankTransfer->value );
 		$service = $this->kernelOver( $this->db, $this->tokens )->get( PaymentService::class );
-		$day     = (string) $this->db->fetchValue( "SELECT DATE_FORMAT( UTC_DATE() - INTERVAL 1 DAY, '%Y-%m-%d' )" );
+		$day     = (string) $this->db->fetchValue( "SELECT DATE_FORMAT( UTC_DATE(), '%Y-%m-%d' )" );
 
 		$captured = $this->measured(
 			'offline capture',

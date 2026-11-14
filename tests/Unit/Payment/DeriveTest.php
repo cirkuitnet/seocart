@@ -132,7 +132,7 @@ final class DeriveTest extends TestCase {
 	public function test_a_refund_leaves_its_intent_refunded_once_everything_captured_is( int $captured, int $refunded, int $refund, IntentStatus $expected ): void {
 		$eur    = static fn( int $minor ): Money => Money::of( $minor, Currency::of( 'EUR' ) );
 		$before = 0 === $refunded ? IntentStatus::Captured : IntentStatus::PartiallyRefunded;
-		$intent = new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', Mode::Test, $before, $eur( 3080 ), Money::of( 2464, Currency::of( 'USD' ) ), 1, $eur( 3080 ), $eur( $captured ), $eur( $refunded ), null );
+		$intent = new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', Mode::Test, $before, $eur( 3080 ), Money::of( 2464, Currency::of( 'USD' ) ), 1, $eur( 3080 ), $eur( $captured ), $eur( $refunded ), null, new \DateTimeImmutable( '2026-11-07 09:00:00', new \DateTimeZone( 'UTC' ) ) );
 
 		$this->assertSame( $expected, Projection::intentAfterRefund( $intent, $eur( $refund ) ) );
 	}

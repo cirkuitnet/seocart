@@ -679,9 +679,10 @@ final class PaymentService {
 	 *                                    `payment.not_capturable` when the intent is not authorized, with its status and,
 	 *                                    as details, what it captured and its currency, so a capture asked again reads as
 	 *                                    done; `payment.evidence_unexpected` for a statement given with a provider's
-	 *                                    payment, and `payment.evidence_rejected` for one dated after the store's today or holding a
-	 *                                    card number; `payment.unreconciled` when it has a result a person must
-	 *                                    reconcile, written since the order's money was last cleared;
+	 *                                    payment, and `payment.evidence_rejected` for one dated before the day the order was
+	 *                                    placed or after the store's today, or holding a card number; `payment.unreconciled`
+	 *                                    when it has a result a person must reconcile, written since the order's money was
+	 *                                    last cleared;
 	 *                                    `payment.capture_exceeds_authorized`; `payment.operation_unsupported`, also for
 	 *                                    a capture of less where the matrix does not declare it;
 	 *                                    `payment.gateway_unavailable`; and what applying the capture raises.
@@ -760,11 +761,12 @@ final class PaymentService {
 	 * Refuses what was stated of a payment received when it cannot be recorded, before the gateway is asked: nothing is written and nothing asked.
 	 *
 	 * A payment of an offline payment method is recorded with the day it arrived: a calendar day,
-	 * written YYYY-MM-DD, no later than the store's today: the calendar day, in the store's time zone,
-	 * of the clock's instant, so a store east of UTC can record a payment received today before UTC's
-	 * midnight. Its reference and its note are no longer than the table keeps, and never hold what
-	 * reads as a card number, which the store never keeps. A provider's capture is its own evidence:
-	 * nothing is stated with it.
+	 * written YYYY-MM-DD, between the day the order was placed and today, in the store's time zone: the
+	 * calendar days, in that zone, of the intent's creation and of the clock's instant, so a store east
+	 * of UTC can record a payment received today before UTC's midnight, and a payment is never
+	 * recorded as received before the order was placed. Its reference and its note are no longer than
+	 * the table keeps, and never hold what reads as a card number, which the store never keeps. A
+	 * provider's capture is its own evidence: nothing is stated with it.
 	 *
 	 * @since 0.2.0
 	 *
@@ -791,8 +793,14 @@ final class PaymentService {
 		$note       = $given[ OfflinePaymentEvidence::NOTE ] ?? null;
 		$invalid    = OfflinePaymentEvidence::invalidField( $receivedOn, $reference, $note );
 
-		if ( null === $invalid && ( new OfflinePaymentEvidence( $receivedOn ) )->isAfter( $this->clock->now(), ( $this->storeTimeZone )() ) ) {
-			$invalid = OfflinePaymentEvidence::RECEIVED_ON;
+		if ( null === $invalid ) {
+			$timeZone = ( $this->storeTimeZone )();
+			$day      = new OfflinePaymentEvidence( $receivedOn );
+
+			// Between the day the order was placed and the store's today.
+			if ( $day->isAfter( $this->clock->now(), $timeZone ) || $day->isBefore( $intent->createdAt, $timeZone ) ) {
+				$invalid = OfflinePaymentEvidence::RECEIVED_ON;
+			}
 		}
 
 		// The card number check of a refund's note: a reference or a note is kept as long as the order is.

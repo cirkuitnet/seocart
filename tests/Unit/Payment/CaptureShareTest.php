@@ -89,7 +89,7 @@ final class CaptureShareTest extends TestCase {
 	 * @return PaymentIntent The intent.
 	 */
 	private static function intent( int $amount, int $base ): PaymentIntent {
-		return new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', Mode::Test, IntentStatus::Authorized, self::eur( $amount ), Money::of( $base, Currency::of( 'USD' ) ), 1, self::eur( $amount ), self::eur( 0 ), self::eur( 0 ), null );
+		return new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', Mode::Test, IntentStatus::Authorized, self::eur( $amount ), Money::of( $base, Currency::of( 'USD' ) ), 1, self::eur( $amount ), self::eur( 0 ), self::eur( 0 ), null, new \DateTimeImmutable( '2026-11-07 09:00:00', new \DateTimeZone( 'UTC' ) ) );
 	}
 
 	/**

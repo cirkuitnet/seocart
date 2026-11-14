@@ -177,7 +177,7 @@ final class OfflinePlacementTest extends PlacementTestCase {
 		$orderId   = (int) $this->db->fetchValue( 'SELECT id FROM %i WHERE uuid = %s', $this->table( OrderTables::ORDERS ), $orderUuid );
 		$intent    = (string) $this->db->fetchValue( 'SELECT uuid FROM %i WHERE order_id = %d', $this->table( PaymentTables::INTENTS ), $orderId );
 		$person    = $this->userGranted( PaymentService::CAPTURE_CAPABILITY, RefundService::CAPABILITY );
-		$day       = (string) $this->db->fetchValue( "SELECT DATE_FORMAT( UTC_DATE() - INTERVAL 1 DAY, '%Y-%m-%d' )" );
+		$day       = (string) $this->db->fetchValue( "SELECT DATE_FORMAT( UTC_DATE(), '%Y-%m-%d' )" );
 
 		$received = $this->kernel->get( PaymentService::class )->capturePayment(
 			array(

@@ -489,7 +489,7 @@ final class OfflineMethodsTest extends PlacementTestCase {
 	 * @since 0.2.0
 	 */
 	public function test_a_payment_received_is_recorded_with_what_was_stated_in_the_captures_transaction(): void {
-		$placed = $this->placeOffline();
+		$placed = $this->placeOffline( 'bank_transfer', 3 );
 		$day    = $this->databaseDay( -1 );
 		$seen   = null;
 
@@ -527,7 +527,7 @@ final class OfflineMethodsTest extends PlacementTestCase {
 	 * @since 0.2.0
 	 */
 	public function test_a_payment_received_is_recorded_through_the_command(): void {
-		$placed   = $this->placeOffline( 'cheque' );
+		$placed   = $this->placeOffline( 'cheque', 3 );
 		$day      = $this->databaseDay( -2 );
 		$registry = new OperationRegistry();
 
@@ -592,6 +592,47 @@ final class OfflineMethodsTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Tests the earliest day a payment can have been received: the day the order was placed, in the store's time zone, is recorded and the day before it is refused.
+	 *
+	 * Both orders were placed at 23:30 UTC three days ago. At a store on UTC that is the third
+	 * day back; at a store two hours east of UTC it is already the second.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_payment_received_is_judged_from_the_day_the_order_was_placed_in_the_stores_time_zone(): void {
+		$onUtc  = $this->placeOffline( 'bank_transfer', 3 );
+		$eastOf = $this->placeOffline( 'cheque', 3 );
+		$before = get_option( 'timezone_string', '' );
+		$refuse = function ( array $placed, string $day ): ?array {
+			try {
+				$this->payments()->capturePayment( self::received( $placed, $day, 'early' ), $this->person );
+			} catch ( CodedException $refusal ) {
+				return array( $refusal->errorCode()->value, $refusal->context() );
+			}
+
+			return null;
+		};
+
+		$this->assertSame( array( 'payment.evidence_rejected', array( 'field' => 'received_on' ) ), $refuse( $onUtc, $this->databaseDay( -4 ) ), 'The day before the order was placed.' );
+		$this->assertSame( 'applied', $this->payments()->capturePayment( self::received( $onUtc, $this->databaseDay( -3 ), 'placed' ), $this->person )['outcome'], 'The day the order was placed.' );
+
+		update_option( 'timezone_string', 'Etc/GMT-2' );
+
+		try {
+			$this->assertSame( array( 'payment.evidence_rejected', array( 'field' => 'received_on' ) ), $refuse( $eastOf, $this->databaseDay( -3 ) ), 'East of UTC the order was placed on the next day.' );
+
+			$answer = $this->payments()->capturePayment( self::received( $eastOf, $this->databaseDay( -2 ), 'placed' ), $this->person );
+		} finally {
+			update_option( 'timezone_string', $before );
+		}
+
+		$this->assertSame( 'applied', $answer['outcome'] );
+		$this->assertSame( array( $this->databaseDay( -3 ) ), array_column( $this->evidenceRows( $onUtc['order_id'] ), 'received_on' ) );
+		$this->assertSame( array( $this->databaseDay( -2 ) ), array_column( $this->evidenceRows( $eastOf['order_id'] ), 'received_on' ) );
+		$this->assertSame( 'authorize:approved:1,capture:approved:1', $this->ledgerOf( $eastOf['order_id'] ), 'The refused statement asked nothing of the gateway.' );
+	}
+
+	/**
 	 * Tests each statement that cannot be recorded: refused before anything is written or asked of the gateway, an offline payment's and a provider's alike.
 	 *
 	 * @since 0.2.0
@@ -606,6 +647,8 @@ final class OfflineMethodsTest extends PlacementTestCase {
 			'a day that is no day'           => array( $offline, array( 'received_on' => '2025-02-29' ), array( 'payment.evidence_rejected', array( 'field' => 'received_on' ) ) ),
 			'a day written otherwise'        => array( $offline, array( 'received_on' => '2025-2-1' ), array( 'payment.evidence_rejected', array( 'field' => 'received_on' ) ) ),
 			'a day after tomorrow'           => array( $offline, array( 'received_on' => $this->databaseDay( 2 ) ), array( 'payment.evidence_rejected', array( 'field' => 'received_on' ) ) ),
+			'two days before the order'      => array( $offline, array( 'received_on' => $this->databaseDay( -2 ) ), array( 'payment.evidence_rejected', array( 'field' => 'received_on' ) ) ),
+			'a day in the year 0'            => array( $offline, array( 'received_on' => '0000-01-01' ), array( 'payment.evidence_rejected', array( 'field' => 'received_on' ) ) ),
 			'a card number in the reference' => array(
 				$offline,
 				array(
@@ -671,7 +714,7 @@ final class OfflineMethodsTest extends PlacementTestCase {
 	 * @group concurrency
 	 */
 	public function test_a_payment_recorded_again_from_another_connection_reads_as_done(): void {
-		$placed = $this->placeOffline();
+		$placed = $this->placeOffline( 'bank_transfer', 3 );
 		$day    = $this->databaseDay( -1 );
 
 		$this->payments()->capturePayment( self::received( $placed, $day, 'first' ), $this->person );
@@ -691,7 +734,7 @@ final class OfflineMethodsTest extends PlacementTestCase {
 	 * @group concurrency
 	 */
 	public function test_two_people_recording_one_payment_at_once_record_it_once(): void {
-		$placed = $this->placeOffline();
+		$placed = $this->placeOffline( 'bank_transfer', 3 );
 		$day    = $this->databaseDay( -1 );
 		$again  = null;
 
@@ -723,7 +766,7 @@ final class OfflineMethodsTest extends PlacementTestCase {
 	 * @group concurrency
 	 */
 	public function test_a_capture_killed_after_the_gateway_answered_is_recorded_once_when_asked_again(): void {
-		$placed = $this->placeOffline();
+		$placed = $this->placeOffline( 'bank_transfer', 3 );
 		$day    = $this->databaseDay( -1 );
 		$killed = $this->captureProbe( $placed, $day, 'killed', true );
 
@@ -747,10 +790,11 @@ final class OfflineMethodsTest extends PlacementTestCase {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string $method Optional. The method. Default `bank_transfer`.
+	 * @param string $method  Optional. The method. Default `bank_transfer`.
+	 * @param int    $daysAgo Optional. How many days before the database's today, at 23:30 UTC, the payment is made to have been created, so a payment received on an earlier day than today is no earlier than the order was placed. Default 0: created now.
 	 * @return array{order_uuid: string, order_id: int, intent_uuid: string, variant: int, answer: array<string, mixed>} The placement.
 	 */
-	private function placeOffline( string $method = 'bank_transfer' ): array {
+	private function placeOffline( string $method = 'bank_transfer', int $daysAgo = 0 ): array {
 		$variant = $this->sellable();
 		$cart    = $this->readyCart( array( $variant => 1 ) );
 
@@ -760,7 +804,13 @@ final class OfflineMethodsTest extends PlacementTestCase {
 
 		unset( $input['payment_data'] );
 
-		return $this->placed( $variant, $this->placement->place( $input, self::guest() ) );
+		$placed = $this->placed( $variant, $this->placement->place( $input, self::guest() ) );
+
+		if ( $daysAgo > 0 ) {
+			$this->db->execute( "UPDATE %i SET created_at = TIMESTAMP( UTC_DATE() - INTERVAL %d DAY, '23:30:00' ) WHERE uuid = %s", $this->table( PaymentTables::INTENTS ), $daysAgo, $placed['intent_uuid'] );
+		}
+
+		return $placed;
 	}
 
 	/**

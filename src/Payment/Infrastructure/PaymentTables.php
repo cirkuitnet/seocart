@@ -150,7 +150,7 @@ final class PaymentTables {
 				new ColumnSpec( 'transaction_id', 'bigint unsigned', Classification::Public, 'The ledger row of the capture the payment received was recorded as.' ),
 				new ColumnSpec( 'intent_id', 'bigint unsigned', Classification::Public, 'The intent the payment was received for, the ledger row\'s.' ),
 				new ColumnSpec( 'order_id', 'bigint unsigned', Classification::Public, 'The intent\'s order, the ledger row\'s.' ),
-				new ColumnSpec( 'received_on', 'date', Classification::Public, 'The day the money arrived, as the person who recorded it stated it; never after the day it was recorded.' ),
+				new ColumnSpec( 'received_on', 'date', Classification::Public, 'The day the money arrived, as the person who recorded it stated it; never before the day the order was placed or after the day it was recorded.' ),
 				new ColumnSpec( 'reference', 'varchar(191)', Classification::Pii, 'The reference the payment came with, such as a transfer\'s reference or a cheque\'s number, which may name the payer; NULL when none was given. Refused when it holds a card number.', nullable: true, erasure: ColumnSpec::ERASE_DESTROY ),
 				new ColumnSpec( 'note', 'text', Classification::Pii, 'What the person who recorded the payment wrote about it; NULL when nothing. Refused when it holds a card number.', nullable: true, erasure: ColumnSpec::ERASE_DESTROY ),
 				new ColumnSpec( 'actor_type', 'varchar(16)', Classification::Public, 'user for a person acting in person, system for a process acting on a user\'s authority, as the ledger row\'s.', collation: 'ascii_bin' ),

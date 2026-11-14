@@ -93,7 +93,7 @@ final class AmountCheckTest extends TestCase {
 		$order  = new LockedOrder( 7, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8b', '000007', OrderChannel::Storefront, OrderStatus::PendingPayment, PaymentStatus::Unpaid, $eur( 3080 ), $eur( $authorized ), $eur( $paid ), $eur( 0 ), $eur( 3080 - $paid ), $usd( 2464 ), $usd( 0 ), $usd( 0 ), $usd( 0 ), null, 'user', null, null );
 		$amount = Money::of( 3080, Currency::of( $intentCurrency ) );
 		$status = Operation::Authorize === $operation ? IntentStatus::Created : IntentStatus::Authorized;
-		$intent = new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', Mode::Test, $status, $amount, $usd( 2464 ), 1, Money::of( $authorized, $amount->currency() ), Money::zero( $amount->currency() ), Money::zero( $amount->currency() ), null );
+		$intent = new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', Mode::Test, $status, $amount, $usd( 2464 ), 1, Money::of( $authorized, $amount->currency() ), Money::zero( $amount->currency() ), Money::zero( $amount->currency() ), null, new \DateTimeImmutable( '2026-11-07 09:00:00', new \DateTimeZone( 'UTC' ) ) );
 		$result = new GatewayResult( 'stub', $operation, Outcome::Approved, $intent->uuid, Money::of( $minor, Currency::of( $currency ) ), 'stub-x' );
 
 		$this->assertSame( $matches, AmountCheck::accepts( $result, $intent, $order ) );
@@ -108,7 +108,7 @@ final class AmountCheckTest extends TestCase {
 		$eur     = static fn( int $amount ): Money => Money::of( $amount, Currency::of( 'EUR' ) );
 		$usd     = static fn( int $amount ): Money => Money::of( $amount, Currency::of( 'USD' ) );
 		$order   = new LockedOrder( 7, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8b', '000007', OrderChannel::Storefront, OrderStatus::PendingPayment, PaymentStatus::Pending, $eur( 3080 ), $eur( 0 ), $eur( 0 ), $eur( 0 ), $eur( 3080 ), $usd( 2464 ), $usd( 0 ), $usd( 0 ), $usd( 0 ), null, 'user', null, null );
-		$intent  = new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', Mode::Test, IntentStatus::Processing, $eur( 3080 ), $usd( 2464 ), 1, $eur( 0 ), $eur( 0 ), $eur( 0 ), null );
+		$intent  = new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', Mode::Test, IntentStatus::Processing, $eur( 3080 ), $usd( 2464 ), 1, $eur( 0 ), $eur( 0 ), $eur( 0 ), null, new \DateTimeImmutable( '2026-11-07 09:00:00', new \DateTimeZone( 'UTC' ) ) );
 		$accepts = static fn( int $minor ): bool => AmountCheck::accepts( new GatewayResult( 'stub', Operation::Capture, Outcome::Approved, $intent->uuid, $eur( $minor ), 'stub-x' ), $intent, $order );
 
 		$this->assertSame( array( true, false, false ), array( $accepts( 3080 ), $accepts( 3000 ), $accepts( 3081 ) ) );
@@ -122,7 +122,7 @@ final class AmountCheckTest extends TestCase {
 	public function test_an_intent_in_another_base_currency_than_its_order_matches_nothing(): void {
 		$eur    = static fn( int $amount ): Money => Money::of( $amount, Currency::of( 'EUR' ) );
 		$order  = new LockedOrder( 7, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8b', '000007', OrderChannel::Storefront, OrderStatus::PendingPayment, PaymentStatus::Unpaid, $eur( 3080 ), $eur( 0 ), $eur( 0 ), $eur( 0 ), $eur( 3080 ), Money::of( 2464, Currency::of( 'USD' ) ), Money::zero( Currency::of( 'USD' ) ), Money::zero( Currency::of( 'USD' ) ), Money::zero( Currency::of( 'USD' ) ), null, 'user', null, null );
-		$intent = new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', Mode::Test, IntentStatus::Created, $eur( 3080 ), Money::of( 2900, Currency::of( 'GBP' ) ), 1, $eur( 0 ), $eur( 0 ), $eur( 0 ), null );
+		$intent = new PaymentIntent( 11, '01928c3e-7b3c-7d1e-9a2b-3c4d5e6f7a8c', 7, 'stub', Mode::Test, IntentStatus::Created, $eur( 3080 ), Money::of( 2900, Currency::of( 'GBP' ) ), 1, $eur( 0 ), $eur( 0 ), $eur( 0 ), null, new \DateTimeImmutable( '2026-11-07 09:00:00', new \DateTimeZone( 'UTC' ) ) );
 
 		$this->assertFalse( AmountCheck::accepts( new GatewayResult( 'stub', Operation::Authorize, Outcome::Approved, $intent->uuid, $eur( 3080 ), 'stub-x' ), $intent, $order ) );
 	}

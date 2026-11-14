@@ -418,7 +418,7 @@ An internal error carries a generic message and empty details: it is a code mark
 ## `payment.evidence_rejected`
 
 - HTTP status: 422
-- Message: The {field} given cannot be recorded: received_on is a calendar day, as YYYY-MM-DD, no later than today, and a reference or a note never holds what reads as a card number. Nothing was recorded.
+- Message: The {field} given cannot be recorded: received_on is a calendar day, as YYYY-MM-DD, between the day the order was placed and today, in the store's time zone, and a reference or a note never holds what reads as a card number. Nothing was recorded.
 - Values: `field`
 
 ## `payment.evidence_unexpected`

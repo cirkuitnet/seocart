@@ -20,10 +20,10 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: what a statement of a payment received offline holds. The day is a calendar day,
  * written YYYY-MM-DD; a reference and a note are optional, never empty, and no longer than the
- * table that keeps them holds. Whether the day is after the store's today, and whether a reference or a note
- * holds a card number, the payment service decides before the payment is recorded. The names and
- * lengths are the capture operation's inputs (PaymentOperations::capturePayment()), which a unit
- * test holds equal to these.
+ * table that keeps them holds. Whether the day is between the day the order was placed and the
+ * store's today, and whether a reference or a note holds a card number, the payment service
+ * decides before the payment is recorded. The names and lengths are the capture operation's
+ * inputs (PaymentOperations::capturePayment()), which a unit test holds equal to these.
  *
  * @since 0.2.0
  */
@@ -167,5 +167,18 @@ final readonly class OfflinePaymentEvidence {
 	 */
 	public function isAfter( \DateTimeImmutable $now, \DateTimeZone $timeZone ): bool {
 		return strcmp( $this->receivedOn, $now->setTimezone( $timeZone )->format( self::DAY_FORMAT ) ) > 0;
+	}
+
+	/**
+	 * Tells whether the money arrived before the day the order was placed, that day being the calendar day of an instant in the store's time zone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param \DateTimeImmutable $placed   The instant the payment was created, whose day, in the store's time zone, is the first the money can have arrived on.
+	 * @param \DateTimeZone      $timeZone The store's time zone, in which the day is read.
+	 * @return bool True when the day the money arrived is earlier than the day the order was placed.
+	 */
+	public function isBefore( \DateTimeImmutable $placed, \DateTimeZone $timeZone ): bool {
+		return strcmp( $this->receivedOn, $placed->setTimezone( $timeZone )->format( self::DAY_FORMAT ) ) < 0;
 	}
 }

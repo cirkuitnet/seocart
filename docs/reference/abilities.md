@@ -490,7 +490,7 @@ Captures an authorized payment through its gateway, everything authorized or, wh
 
 - `intent_uuid` (required): The public identifier of the payment, as its order's payment record names it. A uuid.
 - `amount_minor`: What to capture, in minor units of the payment's currency: at most what was authorized, and less only where the payment's gateway declares partial captures; when absent, everything authorized. An integer of at least 1.
-- `received_on`: For a payment of an offline payment method, the day the money arrived, as YYYY-MM-DD, no later than today in the store's time zone: required for such a payment, and refused for one captured through a provider. Text of at most 10 characters.
+- `received_on`: For a payment of an offline payment method, the day the money arrived, as YYYY-MM-DD, between the day the order was placed and today, in the store's time zone: required for such a payment, and refused for one captured through a provider. Text of at most 10 characters.
 - `reference`: For a payment of an offline payment method, the reference it came with, such as a transfer's reference or a cheque's number; refused for a payment captured through a provider, and when it holds what reads as a card number. Text of at most 191 characters. Personal data.
 - `note`: For a payment of an offline payment method, what the person recording it writes about it; refused for a payment captured through a provider, and when it holds what reads as a card number. Text of at most 500 characters. Personal data.
 
