@@ -1715,6 +1715,7 @@ describe( 'answers that must not lose an order', () => {
 		clock.ms = 10000;
 
 		expect( await host.retry() ).toBe( false );
+		expect( await host.place() ).toBe( false );
 		expect( last().error.retryAfter ).toBe( 20 );
 		expect( requests ).toHaveLength( 2 );
 
@@ -1729,13 +1730,18 @@ describe( 'answers that must not lose an order', () => {
 		expect( heard.placed ).toHaveLength( 1 );
 	} );
 
-	it( 'keeps the kept placement when asking it on loading is answered too many requests', async () => {
+	it( 'keeps the kept placement when asking it on loading is answered too many requests, and asks again only after Retry-After', async () => {
 		keep();
 
-		const { last } = setUp( {
+		const { host, requests, clock, last } = setUp( {
 			cart: { ...CART, version: 4 },
 			answers: [
-				{ status: 429, body: { code: 'store_api.rate_limited' } },
+				{
+					status: 429,
+					body: { code: 'store_api.rate_limited' },
+					headers: { 'Retry-After': '30' },
+				},
+				{ status: 200, body: placed( 'approved' ) },
 			],
 		} );
 
@@ -1743,6 +1749,19 @@ describe( 'answers that must not lose an order', () => {
 
 		expect( last().error.code ).toBe( 'rate_limited' );
 		expect( stored() ).toMatchObject( { key: 'kept-key' } );
+
+		clock.ms = 29000;
+
+		expect( await host.retry() ).toBe( false );
+		expect( requests ).toHaveLength( 1 );
+
+		clock.ms = 30000;
+		await host.retry();
+
+		expect( requests.map( ( request ) => request.key ) ).toEqual( [
+			'kept-key',
+			'kept-key',
+		] );
 	} );
 
 	it.each( [
