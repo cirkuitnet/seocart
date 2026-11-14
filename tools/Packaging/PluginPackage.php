@@ -103,17 +103,19 @@ final class PluginPackage {
 	 * The files under `assets/` that never ship: those a web server would run as PHP.
 	 *
 	 * `assets/` holds files a web server sends as they are written. A PHP file there would run
-	 * for any request that names it, outside WordPress. The extensions `.php`, `.phtml` and `.phar`
-	 * are matched in any case, as a name's last extension or an inner one, since a server that maps
-	 * handlers by every extension of a name (Apache's AddHandler) runs `island.php.js` as PHP too.
-	 * The builder refuses to ship such a file and the checker fails a zip that holds one; both ask
-	 * refusedFile().
+	 * for any request that names it, outside WordPress, and its source would be served wherever it
+	 * is not run. The extensions some server configuration maps to PHP, or to its source, are
+	 * matched in any case: `.php` and `.php3` to `.php9`, `.phtml`, `.pht`, `.phps`, `.phar` and
+	 * `.inc`, as a name's last extension or an inner one, since a server that maps handlers by every
+	 * extension of a name (Apache's AddHandler) runs `island.php.js` as PHP too. A name that only
+	 * starts with them, such as `php-logo.svg`, ships. The builder refuses to ship such a file and
+	 * the checker fails a zip that holds one; both ask refusedFile().
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
-	public const REFUSED_ASSET = '~^assets/(?:[^/]+/)*[^/]*\.(?:php|phtml|phar)(?:\.[^/]*)?$~i';
+	public const REFUSED_ASSET = '~^assets/(?:[^/]+/)*[^/]*\.(?:php[3-9]?|phtml|pht|phps|phar|inc)(?:\.[^/]*)?$~i';
 
 	/**
 	 * The slug: the single top-level folder inside the zip and the prefix of its file name.
@@ -302,7 +304,7 @@ final class PluginPackage {
 	 */
 	public static function refusedFile( string $relative ): ?string {
 		return 1 === preg_match( self::REFUSED_ASSET, $relative )
-			? 'a web server would run it as PHP, and assets/ ships only files sent as they are written'
+			? 'a web server would run it as PHP, or serve its PHP source, and assets/ ships only files sent as they are written'
 			: null;
 	}
 }

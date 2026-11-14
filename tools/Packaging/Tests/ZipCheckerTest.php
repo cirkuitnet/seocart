@@ -692,6 +692,14 @@ final class ZipCheckerTest extends TestCase {
 			'phtml in capitals, deeper' => array( 'assets/js/Island.PHTML' ),
 			'phar in mixed case'        => array( 'assets/island.pHaR' ),
 			'php as an inner extension' => array( 'assets/island.php.js' ),
+			'pht'                       => array( 'assets/island.pht' ),
+			'php3'                      => array( 'assets/a.php3' ),
+			'php5'                      => array( 'assets/a.php5' ),
+			'php7 in capitals'          => array( 'assets/b.PHP7' ),
+			'php9'                      => array( 'assets/b.php9' ),
+			'phps, the source shown'    => array( 'assets/c.phps' ),
+			'inc, the source served'    => array( 'assets/d.inc' ),
+			'inc as an inner extension' => array( 'assets/d.inc.js' ),
 		);
 	}
 
@@ -704,7 +712,9 @@ final class ZipCheckerTest extends TestCase {
 		$entries = $this->goodExtensionEntries() + array(
 			'seocart-example/assets/php/island.js' => "( () => {} )();\n",
 			'seocart-example/assets/phpinfo.js'    => "( () => {} )();\n",
-			'seocart-example/assets/island.phps'   => "Shown, never run.\n",
+			'seocart-example/assets/php-logo.svg'  => "<svg/>\n",
+			'seocart-example/assets/island.php2'   => "Not a PHP handler's extension.\n",
+			'seocart-example/assets/include.js'    => "( () => {} )();\n",
 			'seocart-example/src/Island.php'       => "<?php\n",
 		);
 
