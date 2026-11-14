@@ -212,7 +212,12 @@ act. The order's key is handed to the checkout once, through `onPlaced()`.
 A kept placement ends, and the next placement gets a fresh key, only when the store has answered
 for it: a settled, declined or voided answer; a stale cart (`cart.version_stale`,
 `checkout.totals_changed`), which is also how the store answers a key it never placed with once the
-cart has moved on; any other refusal. A changed total, currency or payment method replaces it.
+cart has moved on; any other refusal. A placement for another total, currency or payment method
+replaces it, when there is one to make: a cart with nothing to place (at version 0, a cart never
+written or one an order was placed from, or at a zero total while the kept placement had a total to
+pay) never replaces it, and placing sends the kept placement again. While the asking on loading for
+a kept placement has had no verdict from the store (a network failure, a server error, too many
+requests), placing asks it again under its key, as `retry()` does, and the island confirms nothing.
 Nothing else ends it, a reload included; the tab's storage ends with the tab.
 
 ## A page loaded again

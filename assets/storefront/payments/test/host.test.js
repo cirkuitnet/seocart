@@ -1872,6 +1872,79 @@ describe( 'answers that must not lose an order', () => {
 	} );
 } );
 
+describe( 'placing while a placement is kept', () => {
+	it( 'asks the kept placement again under its key, confirming nothing, when the asking on loading found no answer', async () => {
+		keep();
+
+		const { island, calls } = fakeIsland( 'stub' );
+		const { host, requests, heard, last } = setUp( {
+			islands: [ island ],
+			cart: { ...CART, version: 0, amountMinor: 0 },
+			answers: [
+				{ network: true },
+				{ status: 200, body: placed( 'approved' ) },
+			],
+		} );
+
+		await flush();
+
+		expect( last().error ).toEqual( { code: 'network' } );
+
+		await host.place();
+
+		expect( requests.map( ( request ) => request.key ) ).toEqual( [
+			'kept-key',
+			'kept-key',
+		] );
+		expect( requests[ 1 ].body ).toEqual( {
+			cart_version: 3,
+			grand_total_minor: 1999,
+			currency: 'GBP',
+			payment_data: {},
+		} );
+		expect( names( calls ) ).toEqual( [ 'mount' ] );
+		expect( heard.placed ).toEqual( [
+			expect.objectContaining( { orderKey: 'k'.repeat( 32 ) } ),
+		] );
+	} );
+
+	it.each( [
+		[ 'at version 0', { version: 0, amountMinor: 0 } ],
+		[ 'at a zero total', { version: 5, amountMinor: 0 } ],
+	] )(
+		'sends the kept placement, never a fresh key, for a cart %s',
+		async ( name, moved ) => {
+			keep();
+
+			const { island, calls } = fakeIsland( 'stub' );
+			const { host, requests, heard } = setUp( {
+				islands: [ island ],
+				cart: { ...CART, ...moved },
+				answers: [
+					{ status: 200, body: acting() },
+					{ status: 200, body: acting() },
+					{ status: 200, body: resumed( 'approved' ) },
+				],
+			} );
+
+			await flush();
+			await host.place();
+
+			expect( requests.map( ( request ) => request.key ) ).toEqual( [
+				'kept-key',
+				'kept-key',
+				undefined,
+			] );
+			expect( names( calls ) ).toEqual( [
+				'mount',
+				'confirm',
+				'action',
+			] );
+			expect( heard.placed ).toHaveLength( 1 );
+		}
+	);
+} );
+
 describe( 'an island that fails as its step is routed', () => {
 	it( 'takes the step with what the registry read at registration, though the island’s supports throws later', async () => {
 		let armed = false;

@@ -42,7 +42,12 @@ import {
 } from './action';
 import { checkConfig } from './config';
 import { billingOf, contextFor, needsRemount } from './context';
-import { createKeeper, keepsKey, samePlacement } from './keeper';
+import {
+	createKeeper,
+	keepsKey,
+	nothingToPlace,
+	samePlacement,
+} from './keeper';
 import { createStoreApi } from './store-api';
 import { createView } from './view';
 
@@ -1025,14 +1030,26 @@ export function createHost( root, options, env ) {
 
 		/**
 		 * Places the order with the selected method: the island confirms what the form shows now,
-		 * then the placement is sent under the kept key when it is the one kept, or a fresh key.
-		 * A placement already under way is not started again.
+		 * then the placement is sent under the kept key when it is the one kept, or when the cart
+		 * has nothing to place in its stead (nothingToPlace()), and under a fresh key otherwise.
+		 * While the asking on loading for a kept placement has had no verdict from the store,
+		 * placing asks it again under its key, as retry() does, and confirms nothing. A placement
+		 * already under way is not started again.
 		 *
-		 * @return {Promise<boolean>} Whether a placement was sent.
+		 * @return {Promise<boolean>} Whether a request was sent.
 		 */
 		async place() {
 			if ( destroyed || 'idle' !== phase || tooSoon() ) {
 				return false;
+			}
+
+			const kept = keeper.read();
+
+			if ( kept && 'recovery' === lastStep ) {
+				// The store has not answered for the kept placement since the page loaded: it may be
+				// an order. Placing asks for it under its key, and never mints another.
+				await recover( null );
+				return true;
 			}
 
 			const method = methods.get( selected );
@@ -1106,10 +1123,10 @@ export function createHost( root, options, env ) {
 				currency: cart.currency,
 				gatewayId: method.id,
 			};
-			const kept = keeper.read();
-
 			await send(
-				samePlacement( kept, inputs )
+				kept &&
+					( samePlacement( kept, inputs ) ||
+						nothingToPlace( kept, cart ) )
 					? { ...kept, paymentData }
 					: keeper.begin( {
 							cartVersion: cart.version,

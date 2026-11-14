@@ -18,7 +18,8 @@
  * A kept placement ends, and the next placement gets a fresh key, only when the store has
  * answered for it: a settled, declined or voided answer; a stale cart, which is how the store
  * answers a key it never placed with once the cart has moved on; another refusal. A placement for
- * another total, currency or gateway replaces it. Nothing else ends it, a reload included: a page
+ * another total, currency or gateway replaces it, when there is one to make: a cart with nothing to
+ * place never replaces it (nothingToPlace()). Nothing else ends it, a reload included: a page
  * loaded while the cart is still at the kept version cannot tell a request that never arrived
  * from one still on its way, so the kept key is sent with the next placement, which then either
  * places for the first time or is answered the order the earlier request placed. The tab's
@@ -92,6 +93,22 @@ export function samePlacement( kept, inputs ) {
 		kept.amountMinor === inputs.amountMinor &&
 		kept.currency === inputs.currency &&
 		kept.gatewayId === inputs.gatewayId
+	);
+}
+
+/**
+ * Tells whether a cart has nothing to place in a kept placement's stead: a cart the store holds no
+ * lines in, at version 0 (one never written, or one an order was placed from), or one at a zero
+ * total while the kept placement had a total to pay. Such a cart never replaces the kept
+ * placement, which may be an order the store placed: the kept one is sent again instead.
+ *
+ * @param {Object} kept The kept placement.
+ * @param {Object} cart The cart: version, amountMinor.
+ * @return {boolean} True when the kept placement is sent in its stead.
+ */
+export function nothingToPlace( kept, cart ) {
+	return (
+		0 === cart.version || ( 0 === cart.amountMinor && kept.amountMinor > 0 )
 	);
 }
 
