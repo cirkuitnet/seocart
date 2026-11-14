@@ -1826,6 +1826,12 @@ test.describe( 'The payment section, as a guest', () => {
 		} );
 		expect( await keptPlacement( page ) ).toEqual( kept );
 
+		// Placing before the wait has passed sends nothing either.
+		expect(
+			await page.evaluate( () => window.__seocartPayments.host?.place() )
+		).toBe( false );
+		expect( hostWrites( ledger ) ).toHaveLength( 2 );
+
 		// Each retry before the wait has passed sends nothing; the first after it sends the same key.
 		await expect
 			.poll(
