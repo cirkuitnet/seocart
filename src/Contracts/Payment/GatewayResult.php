@@ -31,7 +31,9 @@ defined( 'ABSPATH' ) || exit;
  * deduplicated; the intent's state still refuses to apply it twice. A request for the customer
  * to act, or an answer still pending, carries no object. A void names the provider's cancellation
  * object where the provider makes one, and otherwise the provider's intent: an intent is voided
- * once, so the key stays unique.
+ * once, so the key stays unique. A provider that keeps one object for a payment's authorization,
+ * capture and cancellation names that object for each of them, the ledger's key differing by the
+ * operation.
  *
  * A request for the customer to act may say what they must do (NextAction): the page to go to, or
  * the handle the provider's script in the browser needs. No other answer carries one.
