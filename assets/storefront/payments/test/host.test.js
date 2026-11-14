@@ -491,24 +491,57 @@ describe( 'the methods', () => {
 		expect( root.querySelector( '.seocart-choices' ) ).toBeNull();
 	} );
 
-	it( 'names an island’s error on the console without its message', async () => {
-		const secret = 'pi_1_secret_2';
-		const leaking = fakeIsland( 'stub', {
-			canPay: () => {
-				throw new TypeError( `the key ${ secret } is wrong` );
-			},
-		} );
-		const { scope } = setUp( { islands: [ leaking.island ] } );
+	it.each( [
+		[
+			'its message',
+			() => new TypeError( 'the key pi_1_secret_2 is wrong' ),
+			'TypeError',
+		],
+		[
+			'its code',
+			() => Object.assign( new Error( 'no' ), { code: 'pi_1_secret_2' } ),
+			'Error',
+		],
+		[
+			'a name that is no error class’s',
+			() => Object.assign( new Error( 'no' ), { name: 'pi_1_secret_2' } ),
+			'Error',
+		],
+		[
+			'a name that cannot be read',
+			() =>
+				Object.defineProperty( new Error( 'no' ), 'name', {
+					get() {
+						throw new Error( 'pi_1_secret_2' );
+					},
+				} ),
+			'Error',
+		],
+		[
+			'anything but an error class’s name',
+			() => Object.assign( new Error( 'no' ), { name: 'AbortError' } ),
+			'AbortError',
+		],
+	] )(
+		'names an island’s error on the console by its kind, never %s',
+		async ( leak, error, named ) => {
+			const leaking = fakeIsland( 'stub', {
+				canPay: () => {
+					throw error();
+				},
+			} );
+			const { scope } = setUp( { islands: [ leaking.island ] } );
 
-		await flush();
+			await flush();
 
-		const logged = scope.console.warn.mock.calls.flat().join( '\n' );
+			const logged = scope.console.warn.mock.calls.flat().join( '\n' );
 
-		expect( logged ).toContain(
-			'island "stub" failed canMakePayment(): TypeError'
-		);
-		expect( logged ).not.toContain( secret );
-	} );
+			expect( logged ).toContain(
+				`island "stub" failed canMakePayment(): ${ named }`
+			);
+			expect( logged ).not.toContain( 'pi_1_secret_2' );
+		}
+	);
 } );
 
 describe( 'place()', () => {

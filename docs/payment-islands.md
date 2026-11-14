@@ -54,8 +54,9 @@ console warning that names the id and the reason, and lists in `refused()`:
 
 A payment method whose gateway needs an island, and has none registered, is shown disabled, with a
 console warning, rather than left out: a method that silently vanishes cannot be diagnosed. An
-island's call that fails is logged by its error's `code` or `name`, never its message, which may
-carry a provider's secret.
+island's call that fails is logged with the step that failed and its error's name alone, never its
+message or code, which may carry a provider's secret: a built-in error's name, or one that reads as
+an error class's (`…Error`), and `Error` for anything else.
 
 ## The island
 

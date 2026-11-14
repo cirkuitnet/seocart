@@ -148,14 +148,45 @@ function problem( kind, body ) {
 }
 
 /**
- * Names an error for the console without its message: a provider's script may put a client
- * secret in a message, and the console is no place for one.
+ * The names of the errors JavaScript and the browser throw themselves.
+ *
+ * @type {string[]}
+ */
+const BUILT_IN_ERRORS = [
+	'Error',
+	'AggregateError',
+	'EvalError',
+	'RangeError',
+	'ReferenceError',
+	'SyntaxError',
+	'TypeError',
+	'URIError',
+	'DOMException',
+];
+
+/**
+ * Names an error for the console by its kind alone: a provider's script may put a client secret
+ * in an error's message, its code or even its name, and the console is no place for one. The
+ * name is printed when it is a built-in error's or reads as an error class's (`…Error`);
+ * anything else is printed as `Error`.
  *
  * @param {*} thrown What was thrown.
- * @return {string} Its code, or its name.
+ * @return {string} The error's name, or `Error`.
  */
 function nameOf( thrown ) {
-	return String( thrown?.code || thrown?.name || 'an error' );
+	let name;
+
+	try {
+		name = thrown?.name;
+	} catch {
+		return 'Error';
+	}
+
+	return BUILT_IN_ERRORS.includes( name ) ||
+		( 'string' === typeof name &&
+			/^[A-Z][A-Za-z]{2,40}Error$/.test( name ) )
+		? name
+		: 'Error';
 }
 
 /**
