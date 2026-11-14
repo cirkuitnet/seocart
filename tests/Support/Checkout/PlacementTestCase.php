@@ -19,6 +19,7 @@ use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Customer\Infrastructure\Migrations\CreateCustomers;
 use SEOCart\Inventory\Application\InventorySettings;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
@@ -154,6 +155,7 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 		( new CreateRefundClaimTable() )->up( $operations );
 		( new CreateWebhookReceipts() )->up( $operations );
 		( new CreateRateTables() )->up( $operations );
+		( new CreateCustomers() )->up( $operations );
 
 		$this->posts     = array();
 		$this->wake      = new RecordingWake();
@@ -215,13 +217,16 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 	 * @param int                  $dieAfterCommit Optional. A count of COMMITs after which the
 	 *                                             process is killed, right after the commit;
 	 *                                             0 for none. Default 0.
+	 * @param int                  $userId         Optional. The logged-in user who places; 0 for a
+	 *                                             visitor. Default 0.
 	 * @return RunningProbe The running placement; its report names its answer or its refusal.
 	 */
-	protected function startPlacement( CartToken $token, array $input, int $dieAfterCommit = 0 ): RunningProbe {
+	protected function startPlacement( CartToken $token, array $input, int $dieAfterCommit = 0, int $userId = 0 ): RunningProbe {
 		$request = array(
 			'token'            => $token->value(),
 			'input'            => $input,
 			'die_after_commit' => $dieAfterCommit,
+			'user_id'          => $userId,
 		);
 
 		return ChildProcessProbe::start( __DIR__ . '/placement-probe.php', array( 'place', base64_encode( (string) wp_json_encode( $request ) ) ) );

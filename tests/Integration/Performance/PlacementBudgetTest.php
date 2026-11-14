@@ -34,6 +34,7 @@ use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Money;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 use SEOCart\Tests\Support\Checkout\RoutedPlacements;
+use SEOCart\Tests\Support\CreatesUsers;
 use SEOCart\Tests\Support\Payment\StubWebhooks;
 use SEOCart\Tests\Support\Performance\ReferenceCarts;
 use SEOCart\Tests\Support\Pricing\Inputs;
@@ -65,7 +66,10 @@ use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
  * under the calculation; in StockReserved::deliveryMode(), answer AfterCommit: the hold step
  * stores no reservation, and the projector, delivered the reservation in the request, reads and
  * writes stock summaries between the two units; in StockService::holdInside(), publish each held
- * line's reservation on its own: Cart B's hold step sends one outbox insert per line.
+ * line's reservation on its own: Cart B's hold step sends one outbox insert per line. In
+ * PlaceOrder::placeInside(), ask ActorCustomers::customerFor() a second time: a logged-in
+ * placement's first unit grows by one, under the customer; and in the kernel's closure of a user's
+ * registration time, clean the user's cache before reading it: the customer's step reads the user.
  *
  * @group performance
  *
@@ -73,6 +77,7 @@ use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
  */
 final class PlacementBudgetTest extends PlacementTestCase {
 
+	use CreatesUsers;
 	use PricesInCurrencies;
 	use RoutedPlacements;
 
@@ -91,6 +96,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		'session: its read'                => 'MysqlCheckoutSessions->find',
 		'a. the cart\'s claim'             => 'CartService->claimForPlacement',
 		'b. the key\'s claim'              => 'MysqlIdempotencyKeys->claim',
+		'the customer'                     => 'Customers->customerFor',
 		'c. the sale decision'             => 'Sellability->forSale',
 		'd. the stock hold'                => 'StockService->hold',
 		'e. the order'                     => 'Orders->insert',
@@ -119,6 +125,34 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	private const CART_A = array(
 		'before'  => 10,
 		'first'   => 33,
+		'between' => 1,
+		'second'  => 34,
+	);
+
+	/**
+	 * The statements of each part of a placement of Cart A by a logged-in customer who has a record: Cart A's, and the customer's step, the link read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array{before: int, first: int, between: int, second: int}
+	 */
+	private const CART_A_CUSTOMER = array(
+		'before'  => 10,
+		'first'   => 34,
+		'between' => 1,
+		'second'  => 34,
+	);
+
+	/**
+	 * The statements of each part of a logged-in user's first placement, of Cart A: Cart A's, and the customer's step, the link read and the record created.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array{before: int, first: int, between: int, second: int}
+	 */
+	private const CART_A_FIRST_ORDER = array(
+		'before'  => 10,
+		'first'   => 35,
 		'between' => 1,
 		'second'  => 34,
 	);
@@ -249,6 +283,15 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	private const PRESENTMENT_EXTRA = 2;
 
 	/**
+	 * The statements of the last placement measured, by part and step.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, array<string, int>>
+	 */
+	private array $lastSteps = array();
+
+	/**
 	 * Plants the installation record every store that takes orders has, autoloaded: the placement reads it, for the payment gateways' switches, at no cost.
 	 *
 	 * @since 0.2.0
@@ -266,6 +309,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 */
 	public function tear_down(): void {
 		$this->removeBootRecord();
+		$this->deleteCreatedUsers();
 
 		parent::tear_down();
 	}
@@ -283,6 +327,46 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		$parts = $this->measure( 'Cart A' );
 
 		$this->assertWithin( self::CART_A, $parts, 'Cart A' );
+	}
+
+	/**
+	 * Tests that placing Cart A as a logged-in user costs Cart A's statements and the customer's step alone: the link read and the record created for a first order, the link read once the record exists.
+	 *
+	 * The user is logged in after the cold flush, as WordPress authenticates a request before the
+	 * placement runs, so the user's own row is in the request's cache and costs the placement
+	 * nothing. Every other step sends what a guest's placement of Cart A sends.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_placing_cart_a_as_a_customer_costs_the_customers_step_alone(): void {
+		$user    = $this->createUser( 'subscriber' );
+		$standIn = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+
+		$this->readyCart( self::quantities( ReferenceCarts::cartA( $standIn ) ) );
+
+		$guest      = $this->measure( 'Cart A' );
+		$guestSteps = $this->lastSteps;
+		$customers  = array(
+			'a first order' => array( self::CART_A_FIRST_ORDER, 2 ),
+			'a customer'    => array( self::CART_A_CUSTOMER, 1 ),
+		);
+
+		foreach ( $customers as $kind => list( $pins, $customerStep ) ) {
+			$variant = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+
+			$this->readyCart( self::quantities( ReferenceCarts::cartA( $variant ) ) );
+
+			$parts = $this->measure( "Cart A, {$kind}", self::APPROVE, 'approved', Actor::user( $user ) );
+			$steps = $this->lastSteps;
+
+			$this->assertWithin( $pins, $parts, "Cart A, {$kind}" );
+			$this->assertSame( array( 0, $customerStep, 0, 0 ), array_values( array_map( static fn( int $customer, int $guestPart ): int => $customer - $guestPart, $parts, $guest ) ), "Cart A, {$kind}: the customer's step, and nothing more than a guest's placement." );
+			$this->assertSame( $customerStep, $steps['first']['the customer'] ?? 0, "Cart A, {$kind}: the customer's step." );
+
+			unset( $steps['first']['the customer'] );
+
+			$this->assertSame( $guestSteps, $steps, "Cart A, {$kind}: every other step sends what a guest's placement sends." );
+		}
 	}
 
 	/**
@@ -514,12 +598,13 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string $name    The cart's name, for the report.
-	 * @param string $token   Optional. The payment token. Default APPROVE.
-	 * @param string $outcome Optional. What the placement comes to. Default `approved`.
+	 * @param string     $name    The cart's name, for the report.
+	 * @param string     $token   Optional. The payment token. Default APPROVE.
+	 * @param string     $outcome Optional. What the placement comes to. Default `approved`.
+	 * @param Actor|null $actor   Optional. The logged-in user who places. Default null, a visitor.
 	 * @return array{before: int, first: int, between: int, second: int} The statements of each part.
 	 */
-	private function measure( string $name, string $token = self::APPROVE, string $outcome = 'approved' ): array {
+	private function measure( string $name, string $token = self::APPROVE, string $outcome = 'approved', ?Actor $actor = null ): array {
 		$input = $this->placeInput( 'budget-' . $name, $token );
 
 		// A request starts cold: a container of its own, and no object cache but the options WordPress loads at boot.
@@ -529,11 +614,18 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		wp_cache_flush();
 		wp_load_alloptions();
 
+		// WordPress authenticates a logged-in shopper's request before the placement runs: the user is in its cache.
+		if ( null !== $actor ) {
+			wp_set_current_user( $actor->userId() );
+		}
+
 		$log = $this->captureQueries(
-			function () use ( $placement, $input, &$answer ): void {
-				$answer = $placement->place( $input, self::guest() );
+			function () use ( $placement, $input, $actor, &$answer ): void {
+				$answer = $placement->place( $input, $actor ?? self::guest() );
 			}
 		);
+
+		wp_set_current_user( 0 );
 
 		$this->assertSame( $outcome, $answer['outcome'] ?? null, $name );
 		$this->assertSame( 2, $log->matching( '/^START TRANSACTION$/' )->count(), $name . ': two transactions.' );
@@ -603,6 +695,8 @@ final class PlacementBudgetTest extends PlacementTestCase {
 
 		$this->assertSame( 1, $reservations, $name . ': the stock hold stores its reservation with one outbox insert, in the first unit.' );
 		$this->assertSame( array(), $summaries, $name . ': no statement of the placement reads or writes a stock summary.' );
+
+		$this->lastSteps = $steps;
 
 		return $parts;
 	}

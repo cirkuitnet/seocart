@@ -79,9 +79,11 @@ use SEOCart\Support\Error\CodedException;
  * work, each at READ COMMITTED and run again whole on a deadlock, with the gateway called between
  * them, outside any transaction:
  *
- * 1. the first, in the lock order every placement keeps (the cart, the key, the stock items in
- *    ascending order, the order's number and rows, the promotions in ascending order, the intent):
- *    the cart's claim, which moves it to placing; the key's claim; the sale decision, read as last
+ * 1. the first, in the lock order every placement keeps (the cart, the key, the customer's record,
+ *    the stock items in ascending order, the order's number and rows, the promotions in ascending
+ *    order, the intent): the cart's claim, which moves it to placing; the key's claim; the customer
+ *    the order belongs to, the actor's own record, created at a logged-in user's first order
+ *    (ActorCustomers::customerFor()); the sale decision, read as last
  *    committed, so a product being saved now is refused; the stock hold, each unit where the plan
  *    found it, with the destination's row locked first when none is held there; the order, written
  *    from the totals with the location it is fulfilled from and the days a transfer was said to
@@ -105,7 +107,11 @@ use SEOCart\Support\Error\CodedException;
  *
  * The first unit's answer is kept with the key, so a client that lost its answer and sends the same
  * request again gets it back, its access key included; the key is kept sealed with the cart's
- * token and the request's idempotency key, which the store never keeps (KeptAnswer). The same
+ * token and the request's idempotency key, which the store never keeps (KeptAnswer). An answer kept
+ * for an order that has a customer is given back only to an actor who is that customer: anyone
+ * else who sends its key, a visitor included, is answered exactly as for a key never seen, from
+ * the cart as it is, with the same statements, so another account signed in on the same browser
+ * is never handed the order's number or key (keptAnswer()). The same
  * request is the same cart version, grand total and currency: the key is the cart's, and a cart
  * version is claimed once, so the payment data a retry sends is not compared, and a client need
  * not keep it (fingerprint()). The kept
@@ -122,7 +128,8 @@ use SEOCart\Support\Error\CodedException;
  * @since 0.2.0 Checks the payment method can take the payment, and records the payment's mode. Holds
  *              each unit where the plan found it, records where the order is fulfilled from, and plans
  *              once more when the plan went stale. Leaves the payment data out of a request's
- *              fingerprint.
+ *              fingerprint. Records the customer a logged-in user's order belongs to, and gives a kept
+ *              answer for a customer's order back to that customer alone.
  */
 final class PlaceOrder {
 
@@ -179,6 +186,15 @@ final class PlaceOrder {
 	 * @var int
 	 */
 	public const DECLINES_WINDOW = 3600;
+
+	/**
+	 * The field of a kept answer that names whom the answer is kept for: the customer the order belongs to and the user who placed it; absent for an order without a customer. No answer carries it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const KEPT_FOR = 'kept_for';
 
 	/**
 	 * Creates the service. Sends nothing.
@@ -283,10 +299,10 @@ final class PlaceOrder {
 
 		$keyHash     = IdempotencyClaim::keyHash( $token->hash(), $key );
 		$fingerprint = self::fingerprint( $input );
-		$replay      = $this->keys->replay( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint );
+		$kept        = $this->keptAnswer( $keyHash, $fingerprint, $token, $key, $actor );
 
-		if ( null !== $replay ) {
-			return KeptAnswer::open( (string) $replay->responseJson, $token, $key );
+		if ( null !== $kept ) {
+			return $kept;
 		}
 
 		$cart = $this->openCart( (int) $input['cart_version'] );
@@ -309,7 +325,7 @@ final class PlaceOrder {
 				break;
 			} catch ( CodedException $refused ) {
 				if ( ! $replan || ! self::isStalePlan( $refused ) ) {
-					return $this->answerRefusedClaim( $refused, $keyHash, $fingerprint, $token, $key );
+					return $this->answerRefusedClaim( $refused, $keyHash, $fingerprint, $token, $key, $actor );
 				}
 
 				// One more plan, from the stock as it is now, unless the pricing planned again already; never a third attempt.
@@ -438,7 +454,7 @@ final class PlaceOrder {
 			throw new \LogicException( 'An idempotency key of this cart was placed with at the version just claimed, which the cart\'s claim rules out.' );
 		}
 
-		$customer  = $this->customers->customerOf( $actor );
+		$customer  = $this->customers->customerFor( $actor );
 		$sold      = $this->saleOf( $cart );
 		$routing   = self::routingOf( $calculation );
 		$hold      = $this->stock->hold(
@@ -487,7 +503,7 @@ final class PlaceOrder {
 			'payment_instructions' => null !== $method && OfflineMethod::isOffline( $method->id ) ? $method->instructions : null,
 		);
 
-		$this->keys->complete( $claim->id, $order->id, KeptAnswer::seal( $record, $token, $key ) );
+		$this->keys->complete( $claim->id, $order->id, KeptAnswer::seal( self::keptFor( $record, $customer, $actor ), $token, $key ) );
 
 		return array(
 			'record'      => $record,
@@ -762,17 +778,18 @@ final class PlaceOrder {
 	 * @param string         $fingerprint The request's fingerprint.
 	 * @param CartToken      $token       The cart token the request presented.
 	 * @param string         $key         The idempotency key the request sent.
+	 * @param Actor          $actor       Who places the order.
 	 * @return array<string, mixed> The earlier request's answer.
 	 */
-	private function answerRefusedClaim( CodedException $refused, string $keyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key ): array {
+	private function answerRefusedClaim( CodedException $refused, string $keyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): array {
 		if ( ! in_array( $refused->errorCode(), array( CartError::NotOpen, CartError::VersionStale, CartError::NotFound ), true ) ) {
 			throw $refused;
 		}
 
-		$replay = $this->keys->replay( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint );
+		$kept = $this->keptAnswer( $keyHash, $fingerprint, $token, $key, $actor );
 
-		if ( null !== $replay ) {
-			return KeptAnswer::open( (string) $replay->responseJson, $token, $key );
+		if ( null !== $kept ) {
+			return $kept;
 		}
 
 		$cart = CartError::NotOpen === $refused->errorCode() ? $this->carts->current() : null;
@@ -782,6 +799,84 @@ final class PlaceOrder {
 		}
 
 		throw $refused;
+	}
+
+	/**
+	 * Returns the answer an earlier request with the key placed its order with, when this actor may be given it; null, as for a key never seen, otherwise.
+	 *
+	 * One plain read, before any transaction: the key's. An answer kept for an order without a
+	 * customer is given to whoever presents the cart's token and the key, as ever. One kept for a
+	 * customer's order is given only to an actor who is that customer: the actor must be the user
+	 * who placed it, which costs nothing to compare, and then still that customer, which costs the
+	 * link's read. Any other actor, a visitor included, gets null after the key's read alone, and is
+	 * then answered from the cart as a request with a new key is, with the same statements: the
+	 * answer cannot tell a key that is someone else's from one never seen.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException The key's refusals: `checkout.idempotency_key_reused`,
+	 *                        `checkout.placement_in_progress`.
+	 *
+	 * @param string    $keyHash     The key's hash.
+	 * @param string    $fingerprint The request's fingerprint.
+	 * @param CartToken $token       The cart token the request presented.
+	 * @param string    $key         The idempotency key the request sent.
+	 * @param Actor     $actor       Who sends the request.
+	 * @return array<string, mixed>|null The kept answer, as a retry is given it; null when there is none for this actor.
+	 */
+	private function keptAnswer( string $keyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): ?array {
+		$replay = $this->keys->replay( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint );
+
+		if ( null === $replay ) {
+			return null;
+		}
+
+		$answer  = KeptAnswer::open( (string) $replay->responseJson, $token, $key );
+		$keptFor = $answer[ self::KEPT_FOR ] ?? null;
+
+		unset( $answer[ self::KEPT_FOR ] );
+
+		return null === $keptFor || $this->isKeptFor( (array) $keptFor, $actor ) ? $answer : null;
+	}
+
+	/**
+	 * Tells whether an actor is the one a kept answer is kept for: the user who placed the order, and still its customer.
+	 *
+	 * The user is compared first, at no cost; only that user's customer is read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<mixed> $keptFor Whom the answer is kept for: `customer_id` and `user_id`.
+	 * @param Actor        $actor   Who sends the request.
+	 * @return bool True when the actor is that user and that customer.
+	 */
+	private function isKeptFor( array $keptFor, Actor $actor ): bool {
+		$customer = (int) ( $keptFor['customer_id'] ?? 0 );
+
+		return $customer >= 1
+			&& $actor->userId() === (int) ( $keptFor['user_id'] ?? 0 )
+			&& $customer === $this->customers->customerOf( $actor );
+	}
+
+	/**
+	 * Returns the answer as its key keeps it: for an order with a customer, with whom it is kept for, which no answer carries.
+	 *
+	 * An order without a customer keeps the answer exactly as it is sent.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, mixed> $record   The answer.
+	 * @param int|null             $customer The customer the order belongs to, or null.
+	 * @param Actor                $actor    Who placed it.
+	 * @return array<string, mixed> The answer to keep.
+	 */
+	private static function keptFor( array $record, ?int $customer, Actor $actor ): array {
+		return null === $customer ? $record : $record + array(
+			self::KEPT_FOR => array(
+				'customer_id' => $customer,
+				'user_id'     => $actor->userId(),
+			),
+		);
 	}
 
 	/**

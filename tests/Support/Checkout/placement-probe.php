@@ -14,7 +14,8 @@
  * sleeper never pauses and counts the retries.
  *
  * - `place`: the request is base64 of a JSON object: `token`, the cart token the client presents;
- *   `input`, the placement's input; and optionally `die_after_commit`, a count of COMMITs after
+ *   `input`, the placement's input; optionally `user_id`, the logged-in user who places, a visitor
+ *   when absent; and optionally `die_after_commit`, a count of COMMITs after
  *   which the publisher's wake kills the process with SIGKILL, as a request killed right after
  *   its unit of work committed: nothing after it runs, not even PHP's shutdown.
  * - `settle`: the stub gateway's answer for the order's intent, as a webhook delivers it, is
@@ -169,7 +170,7 @@ add_filter(
 
 try {
 	if ( 'place' === $argv[2] ) {
-		$seocart_probe_outcome = array( 'answer_json' => (string) wp_json_encode( $seocart_probe_kernel->get( PlaceOrder::class )->place( (array) ( $seocart_probe_request['input'] ?? array() ), Actor::user( 0 ) ) ) );
+		$seocart_probe_outcome = array( 'answer_json' => (string) wp_json_encode( $seocart_probe_kernel->get( PlaceOrder::class )->place( (array) ( $seocart_probe_request['input'] ?? array() ), Actor::user( (int) ( $seocart_probe_request['user_id'] ?? 0 ) ) ) ) );
 	} elseif ( 'window-end' === $argv[2] ) {
 		$seocart_probe_store  = Actor::system( 'reconciliation', 0 );
 		$seocart_probe_intent = (string) $wpdb->get_var( $wpdb->prepare( 'SELECT i.uuid FROM %i i JOIN %i o ON o.id = i.order_id WHERE o.uuid = %s', $seocart_probe_db->table( PaymentTables::INTENTS ), $seocart_probe_db->table( OrderTables::ORDERS ), (string) ( $seocart_probe_request['order_uuid'] ?? '' ) ) );

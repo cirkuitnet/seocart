@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Customer\Application;
 
+use SEOCart\Customer\Domain\CustomerLink;
 use SEOCart\Customer\Domain\CustomerRepository;
 use SEOCart\Order\Application\ActorCustomers;
 use SEOCart\Platform\Authorization\Actor;
@@ -98,13 +99,51 @@ final class Customers implements ActorCustomers {
 			return null;
 		}
 
-		$link = $this->records->linkOf( $actor->userId() );
+		return self::idOf( $this->records->linkOf( $actor->userId() ), ( $this->registeredAt )( $actor->userId() ) );
+	}
 
-		if ( null === $link || ! $link->matches( ( $this->registeredAt )( $actor->userId() ) ) ) {
+	/**
+	 * Returns the customer record an order placed by an actor belongs to, creating the record of a user's first order.
+	 *
+	 * The one place a record is created, inside the caller's transaction. A visitor and a process
+	 * are no customer and cost nothing, and so is a user deleted since the request was
+	 * authenticated: their order is a guest's. Otherwise the link is read once; a record linked to
+	 * the user at their registration time is theirs. On a miss a record is inserted, and a record
+	 * another first order of the same user inserted at once is taken instead, after waiting for it
+	 * on the unique key. A record linked to the user's id at another registration time, which a
+	 * deleted user's id that came back leaves, is unlinked first, by a conditional update that
+	 * holds the link as read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction, when a record must be unlinked or created.
+	 *
+	 * @param Actor $actor The actor the order is placed by.
+	 * @return int|null The record's id, from 1; null when the actor is no customer.
+	 */
+	public function customerFor( Actor $actor ): ?int {
+		if ( ! self::isPerson( $actor ) ) {
 			return null;
 		}
 
-		return $link->customerId >= 1 ? $link->customerId : null;
+		$registeredAt = ( $this->registeredAt )( $actor->userId() );
+
+		if ( null === $registeredAt ) {
+			return null;
+		}
+
+		$link = $this->records->linkOf( $actor->userId() );
+		$own  = self::idOf( $link, $registeredAt );
+
+		if ( null !== $own ) {
+			return $own;
+		}
+
+		if ( null !== $link ) {
+			$this->records->unlinkStale( $link );
+		}
+
+		return $this->records->create( $this->ids->generate(), $actor->userId(), $registeredAt );
 	}
 
 	/**
@@ -131,5 +170,18 @@ final class Customers implements ActorCustomers {
 	 */
 	private static function isPerson( Actor $actor ): bool {
 		return $actor->userId() >= 1 && null === $actor->systemName();
+	}
+
+	/**
+	 * Returns the record a link names when it was made for a user who registered at a time; never an id below 1.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CustomerLink|null $link         The link read for the user's id, or null when none was.
+	 * @param string|null       $registeredAt When the user registered; null when there is no such user.
+	 * @return int|null The record's id; null when the link is not the user's.
+	 */
+	private static function idOf( ?CustomerLink $link, ?string $registeredAt ): ?int {
+		return null !== $link && $link->matches( $registeredAt ) && $link->customerId >= 1 ? $link->customerId : null;
 	}
 }
