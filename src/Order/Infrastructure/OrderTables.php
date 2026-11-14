@@ -202,7 +202,7 @@ final class OrderTables {
 	 * Declares `orders`: the financial root, with its status, its totals and the payment projection.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 When a person last cleared the order's unreconciled money, and why.
+	 * @since 0.2.0 When a person last cleared the order's unreconciled money, and why. The index of a customer's orders.
 	 *
 	 * @return TableDefinition The declaration.
 	 */
@@ -289,6 +289,7 @@ final class OrderTables {
 				IndexSpec::key( 'unreconciled', array( 'has_unreconciled_money' ), 'The orders a person must reconcile, which doctor reports.' ),
 				IndexSpec::key( 'status_created', array( 'status', 'created_at' ), 'The orders in a status placed before a time, such as those still pending payment that reconciliation settles.' ),
 				IndexSpec::key( 'fulfilment_location', array( 'fulfilment_location_id' ), 'Whether any order is fulfilled from a location, which a location\'s deletion asks.' ),
+				IndexSpec::key( 'customer', array( 'customer_id', 'id' ), 'A customer\'s orders, newest first, a page at a time: the list the customer reads of their own orders.' ),
 			),
 			self::FINANCIAL,
 			array(

@@ -17,6 +17,7 @@ use SEOCart\Application\Operations\RequestHeader;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Domain\AmountBasis;
+use SEOCart\Order\Domain\FulfillmentStatus;
 use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Support\Schema\FieldSpec;
@@ -27,7 +28,7 @@ use SEOCart\Support\Schema\ResourceSchema;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Declares `order.get_status`: a shopper's read of one order, on the Store API.
+ * Declares `order.get_status`, a shopper's read of one order, and `order.list_own`, a customer's list of their own orders, on the Store API.
  *
  * Owns one fact: how an order is offered to a storefront. The route is
  * `GET seocart/store/v1/orders/{uuid}`: an order is named by its uuid, never by its internal id or
@@ -46,9 +47,16 @@ defined( 'ABSPATH' ) || exit;
  * the logs redact; its name, `order_key`, is the order's alone, so the redaction reaches nothing
  * else a log line carries.
  *
+ * The list is `GET seocart/store/v1/account/orders`: the orders of the customer the logged-in
+ * actor is, newest first, a page at a time, granted by the same owner test alone. A key opens one
+ * order and never a list, so the list takes none, and a visitor, or a login cookie sent without
+ * its REST nonce, which WordPress serves as a visitor, is listed nothing. Each row names the order
+ * by its uuid, number, dates, statuses and total: no address and no email.
+ *
  * Declarations are data: building the definition calls no WordPress function.
  *
  * @since 0.1.0
+ * @since 0.2.0 The list of a customer's own orders.
  */
 final class OrderStoreOperations {
 
@@ -96,6 +104,60 @@ final class OrderStoreOperations {
 	 * @var string
 	 */
 	public const RESOURCE = 'StoreOrder';
+
+	/**
+	 * The id of the list of a customer's own orders.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LIST_OWN = 'order.list_own';
+
+	/**
+	 * The route of the list, relative to the Store API's namespace.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LIST_ROUTE = '/account/orders';
+
+	/**
+	 * The name of the resource the list answers with: a page of order summaries.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LIST_RESOURCE = 'StoreOrderList';
+
+	/**
+	 * The most orders a page of the list holds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const MOST_PER_PAGE = 20;
+
+	/**
+	 * How many orders a page holds when the request does not say.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const DEFAULT_PER_PAGE = 10;
+
+	/**
+	 * The last page a request may ask for: far past any customer's orders, and small enough that the page's offset stays an integer.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const MOST_PAGE = 1000000;
 
 	/**
 	 * Builds the status read.
@@ -186,6 +248,135 @@ final class OrderStoreOperations {
 			annotations: new Annotations( read_only: true, destructive: false, idempotent: true ),
 			service: array( OrderStatusRead::class, 'read' ),
 			rest: new RestBinding( self::STATUS_ROUTE, store: true, headers: array( self::KEY => new RequestHeader( self::KEY_HEADER ) ) )
+		);
+	}
+
+	/**
+	 * Builds the list of a customer's own orders.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function listOwn(): OperationDefinition {
+		return new OperationDefinition(
+			id: self::LIST_OWN,
+			label: static fn(): string => __( 'List my orders', 'seocart' ),
+			summary: 'Lists a page of the logged-in customer\'s own orders, newest first, declined attempts left out, each by its uuid, number, statuses and total; a visitor, and a key, are listed nothing.',
+			input: array(
+				new FieldSpec(
+					name: 'page',
+					type: FieldType::Integer,
+					description: 'The page to list, from 1 to ' . self::MOST_PAGE . '.',
+					label: static fn(): string => __( 'Page', 'seocart' ),
+					example: 1,
+					default_value: 1,
+					minimum: 1,
+					maximum: self::MOST_PAGE
+				),
+				new FieldSpec(
+					name: 'per_page',
+					type: FieldType::Integer,
+					description: 'How many orders a page holds, from 1 to ' . self::MOST_PER_PAGE . '.',
+					label: static fn(): string => __( 'Orders per page', 'seocart' ),
+					example: self::DEFAULT_PER_PAGE,
+					default_value: self::DEFAULT_PER_PAGE,
+					minimum: 1,
+					maximum: self::MOST_PER_PAGE
+				),
+			),
+			output: new ResourceSchema(
+				self::LIST_RESOURCE,
+				array(
+					FieldSpec::objectList(
+						'orders',
+						'The customer\'s orders on the page, newest first; none for an actor who is no customer.',
+						static fn(): string => __( 'Orders', 'seocart' ),
+						self::summary(),
+						required: true,
+						max_items: self::MOST_PER_PAGE
+					),
+					new FieldSpec(
+						name: 'has_more',
+						type: FieldType::Boolean,
+						description: 'Whether at least one more order follows this page.',
+						label: static fn(): string => __( 'More orders', 'seocart' ),
+						example: false,
+						required: true
+					),
+				)
+			),
+			capability: null,
+			resource_field: null,
+			errors: array(),
+			annotations: new Annotations( read_only: true, destructive: false, idempotent: true ),
+			service: array( OwnOrdersRead::class, 'list' ),
+			rest: new RestBinding( self::LIST_ROUTE, store: true )
+		);
+	}
+
+	/**
+	 * Declares one order of the list, a StoreOrderSummary: what names it, and no address and no email.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<FieldSpec> The fields.
+	 */
+	private static function summary(): array {
+		return array(
+			self::uuid( 'The order\'s public identifier, which its status read takes.' ),
+			new FieldSpec(
+				name: 'order_number',
+				type: FieldType::String,
+				description: 'The number shown to people on the order and in its emails.',
+				label: static fn(): string => __( 'Order number', 'seocart' ),
+				example: '000042',
+				required: true
+			),
+			new FieldSpec(
+				name: 'placed_at',
+				type: FieldType::String,
+				description: 'When the order was placed, UTC, in ISO 8601, by the database clock.',
+				label: static fn(): string => __( 'Placed', 'seocart' ),
+				example: '2026-11-14T09:30:00Z',
+				required: true
+			),
+			new FieldSpec(
+				name: 'status',
+				type: FieldType::String,
+				description: 'Where the order is in its life, from pending payment to completed.',
+				label: static fn(): string => __( 'Status', 'seocart' ),
+				example: OrderStatus::Processing->value,
+				required: true,
+				allowed: array_map( static fn( OrderStatus $status ): string => $status->value, OrderStatus::cases() )
+			),
+			new FieldSpec(
+				name: 'payment_status',
+				type: FieldType::String,
+				description: 'How far the order has been paid, or refunded.',
+				label: static fn(): string => __( 'Payment status', 'seocart' ),
+				example: PaymentStatus::Paid->value,
+				required: true,
+				allowed: array_map( static fn( PaymentStatus $status ): string => $status->value, PaymentStatus::cases() )
+			),
+			new FieldSpec(
+				name: 'fulfillment_status',
+				type: FieldType::String,
+				description: 'How much of the order has been shipped or returned.',
+				label: static fn(): string => __( 'Fulfillment status', 'seocart' ),
+				example: FulfillmentStatus::Unfulfilled->value,
+				required: true,
+				allowed: array_map( static fn( FulfillmentStatus $status ): string => $status->value, FulfillmentStatus::cases() )
+			),
+			new FieldSpec(
+				name: 'currency',
+				type: FieldType::String,
+				description: 'The ISO 4217 code of the currency the total is in.',
+				label: static fn(): string => __( 'Currency', 'seocart' ),
+				example: 'USD',
+				required: true
+			),
+			self::amount( 'grand_total_minor', 'The order\'s total, in minor units.', static fn(): string => __( 'Total', 'seocart' ) ),
 		);
 	}
 

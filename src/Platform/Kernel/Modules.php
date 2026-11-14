@@ -138,6 +138,7 @@ use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\SequenceOrderNumberGenerator;
 use SEOCart\Order\Infrastructure\WordPressAccessKeys;
 use SEOCart\Order\Interfaces\StoreApi\OrderStatusRead;
+use SEOCart\Order\Interfaces\StoreApi\OwnOrdersRead;
 use SEOCart\Payment\Application\GatewayConfiguration;
 use SEOCart\Payment\Application\GatewayContext;
 use SEOCart\Payment\Application\GatewayStatuses;
@@ -1703,6 +1704,7 @@ final class Modules {
 		$container->bind( ActorCustomers::class, static fn( Container $c ): ActorCustomers => $c->get( Customers::class ) );
 		$container->bind( OrderAccessPolicy::class, static fn( Container $c ): OrderAccessPolicy => new OrderAccessPolicy( $c->get( OrderRepository::class ), $c->get( AccessKeys::class ), $c->get( ActorCustomers::class ) ) );
 		$container->bind( OrderStatusRead::class, static fn( Container $c ): OrderStatusRead => new OrderStatusRead( $c->get( OrderAccessPolicy::class ) ) );
+		$container->bind( OwnOrdersRead::class, static fn( Container $c ): OwnOrdersRead => new OwnOrdersRead( $c->get( OrderAccessPolicy::class ) ) );
 	}
 
 	/**

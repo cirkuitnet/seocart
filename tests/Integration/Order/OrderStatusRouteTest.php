@@ -14,6 +14,8 @@ namespace SEOCart\Tests\Integration\Order;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
 use SEOCart\Order\Domain\InsertedOrder;
+use SEOCart\Order\Domain\OrderStatus;
+use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Order\Interfaces\StoreApi\OrderStoreOperations;
 use SEOCart\Platform\Kernel\Container;
@@ -27,11 +29,19 @@ use SEOCart\Tests\Support\KernelHooks;
 use SEOCart\Tests\Support\OperationSurfaces;
 use SEOCart\Tests\Support\Order\NewOrders;
 use SEOCart\Tests\Support\Order\OrderTestCase;
+use SEOCart\Tests\Support\Order\StoreOrderSurfaces;
 use SEOCart\Tests\Support\ServesRequests;
 use Spy_REST_Server;
 
 /**
- * `order.get_status` through the real route: the five cases of who may read an order, and one answer for every refusal.
+ * The storefront's order surfaces through their real routes, `order.get_status` and `order.list_own`: the five cases of who may see an order on each, and one answer for every refusal.
+ *
+ * The five cases run on every surface StoreOrderSurfaces lists, which a unit test holds to the
+ * operation registry: (1) a guest with the order's key; (2) a guest without one; (3) a logged-in
+ * user who does not own it, another customer and an administrator, without a key and with
+ * another order's key; (4) its customer, logged in, without a key; (5) its expired key, and its
+ * customer once the key has expired. The status read opens the order to 1 and 4 and to its
+ * customer in 5; the list lists it for its customer alone: a key opens one order, never a list.
  *
  * The real Modules::register() and subscribe() serve the production operations on a spy server,
  * over the test's connection and real order tables, the way WordPress serves a request from the
@@ -128,6 +138,242 @@ final class OrderStatusRouteTest extends OrderTestCase {
 		$this->deleteCreatedUsers();
 
 		parent::tear_down();
+	}
+
+	/**
+	 * Tests the five cases on every storefront surface that shows an order, case 3 first, as a table of what each surface answered.
+	 *
+	 * Each cell is the status and whether the answer showed the order: the status read's body is
+	 * the order, the list's holds it among its rows. The table is printed.
+	 *
+	 * Planted violations, each shown red and removed: in OrderAccessPolicy::grants(), add
+	 * `if ( is_user_logged_in() ) { return true; }` first: case 3 opens the order on the status
+	 * read; in MysqlOrderRepository::OWN_ORDERS, drop `customer_id = %d AND` (and its value): case 3
+	 * lists the order to another customer; in OwnOrdersRead::list(), when the request carries the
+	 * key header, list the order the key opens: case 1 lists the order to a guest.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_five_cases_on_every_storefront_order_surface(): void {
+		$owner       = $this->createUser( 'subscriber' );
+		$order       = $this->place( NewOrders::forTwoLines( 'USD', 'USD', $this->plantCustomer( $owner, self::registeredAt( $owner ) ) ) );
+		$someoneElse = $this->createUser( 'subscriber' );
+		$theirs      = $this->place( NewOrders::forTwoLines( 'USD', 'USD', $this->plantCustomer( $someoneElse, self::registeredAt( $someoneElse ) ) ) );
+		$admin       = $this->createUser( 'administrator' );
+		$key         = array( OrderStoreOperations::KEY_HEADER => $order->accessKey );
+		$otherKey    = array( OrderStoreOperations::KEY_HEADER => $theirs->accessKey );
+		$runners     = array(
+			OrderStoreOperations::GET_STATUS => function ( array $headers ) use ( $order ): array {
+				$read = $this->read( $order->uuid, $headers );
+				$uuid = $read['body']['uuid'] ?? null;
+
+				return array( $read['status'], 200 === $read['status'] && $uuid === $order->uuid );
+			},
+			OrderStoreOperations::LIST_OWN   => function ( array $headers ) use ( $order ): array {
+				$list = $this->listOwn( $headers );
+
+				return array( $list['status'], in_array( $order->uuid, array_column( (array) ( $list['body']['orders'] ?? array() ), 'uuid' ), true ) );
+			},
+		);
+		$cases       = array(
+			'3. another customer, no key'               => fn(): array => $this->logIn( $someoneElse ),
+			'3. another customer, another order\'s key' => fn(): array => $this->logIn( $someoneElse ) + $otherKey,
+			'3. an administrator, no key'               => fn(): array => $this->logIn( $admin ),
+			'3. an administrator, another order\'s key' => fn(): array => $this->logIn( $admin ) + $otherKey,
+			'1. a guest with the order\'s key'          => fn(): array => $this->asGuest() + $key,
+			'2. a guest without a key'                  => fn(): array => $this->asGuest(),
+			'4. the customer, logged in, no key'        => fn(): array => $this->logIn( $owner ),
+			'5. a guest with the expired key'           => fn(): array => $this->asGuest() + $key,
+			'5. the customer, logged in, once the key expired' => fn(): array => $this->logIn( $owner ),
+		);
+		$expected    = array(
+			OrderStoreOperations::GET_STATUS => array( '404', '404', '404', '404', '200 shown', '404', '200 shown', '404', '200 shown' ),
+			OrderStoreOperations::LIST_OWN   => array( '200', '200', '200', '200', '200', '200', '200 shown', '200', '200 shown' ),
+		);
+		$table       = array();
+
+		foreach ( StoreOrderSurfaces::FIVE_CASES as $surface ) {
+			$this->assertArrayHasKey( $surface, $runners, "{$surface} is a storefront surface that shows an order, and no five cases run on it here." );
+
+			$this->expireKey( $order, '+ INTERVAL 1 HOUR' );
+
+			foreach ( $cases as $case => $headers ) {
+				if ( str_starts_with( $case, '5.' ) ) {
+					$this->expireKey( $order, '- INTERVAL 1 SECOND' );
+				}
+
+				list( $status, $shown ) = $runners[ $surface ]( $headers() );
+
+				$table[ $surface ][ $case ] = $status . ( $shown ? ' shown' : '' );
+			}
+		}
+
+		$lines = array( sprintf( '%-52s %-18s %s', 'case', OrderStoreOperations::GET_STATUS, OrderStoreOperations::LIST_OWN ) );
+
+		foreach ( array_keys( $cases ) as $case ) {
+			$lines[] = sprintf( '%-52s %-18s %s', $case, $table[ OrderStoreOperations::GET_STATUS ][ $case ] ?? '-', $table[ OrderStoreOperations::LIST_OWN ][ $case ] ?? '-' );
+		}
+
+		fwrite( STDOUT, "\nThe five cases on every storefront order surface:\n  " . implode( "\n  ", $lines ) . "\n" );
+
+		foreach ( StoreOrderSurfaces::FIVE_CASES as $surface ) {
+			$this->assertSame( array_combine( array_keys( $cases ), $expected[ $surface ] ), $table[ $surface ], "The five cases on {$surface}." );
+		}
+	}
+
+	/**
+	 * Tests that a logged-in customer's three refusals, an order that does not exist, a guest's order and another customer's order, are the same answer, at two reads each.
+	 *
+	 * The actor's customer is asked before the order is read, whatever the order turns out to be,
+	 * so neither the answer nor the work tells an order that exists from one that does not, or a
+	 * guest's from another customer's.
+	 *
+	 * Planted violation: in OrderAccessPolicy::authorize(), ask for the actor's customer only once
+	 * the order is found to have one: the unknown uuid's and the guest order's refusals then cost
+	 * one read, and the other customer's two.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_logged_in_customers_refusals_are_one_answer_at_two_reads_each(): void {
+		global $wpdb;
+
+		$plugin   = '/' . preg_quote( $wpdb->prefix . 'seocart_', '/' ) . '/';
+		$actor    = $this->createUser( 'subscriber' );
+		$other    = $this->createUser( 'subscriber' );
+		$refusals = array(
+			'an order that does not exist' => SequentialIdGenerator::nth( 999999 ),
+			'a guest\'s order'             => $this->place()->uuid,
+			'another customer\'s order'    => $this->place( NewOrders::forTwoLines( 'USD', 'USD', $this->plantCustomer( $other, self::registeredAt( $other ) ) ) )->uuid,
+		);
+		$answers  = array();
+		$reads    = array();
+
+		$this->place( NewOrders::forTwoLines( 'USD', 'USD', $this->plantCustomer( $actor, self::registeredAt( $actor ) ) ) );
+
+		foreach ( $refusals as $refusal => $uuid ) {
+			$read = null;
+			$log  = $this->captureQueries(
+				function () use ( $uuid, $actor, &$read ): void {
+					$read = $this->read( $uuid, $this->logIn( $actor ) );
+				}
+			);
+
+			$this->assertNotNull( $read );
+			$this->assertNotFound( $read, ucfirst( $refusal ) );
+
+			$answers[ $refusal ] = $this->comparable( $read );
+			$reads[ $refusal ]   = $log->matching( $plugin )->count();
+		}
+
+		$this->assertCount( 1, array_unique( array_map( 'wp_json_encode', $answers ) ), "The refusals can be told apart:\n" . (string) wp_json_encode( $answers, JSON_PRETTY_PRINT ) );
+		$this->assertSame( array_fill_keys( array_keys( $refusals ), 2 ), $reads, 'Each refusal costs the actor\'s customer and the access check.' );
+	}
+
+	/**
+	 * Tests that the list holds the customer's orders alone, newest first, without the declined attempts, a page at a time, and refuses a page larger than its most.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_list_holds_the_customers_orders_newest_first_without_declined_attempts(): void {
+		$owner    = $this->createUser( 'subscriber' );
+		$customer = $this->plantCustomer( $owner, self::registeredAt( $owner ) );
+		$placed   = array();
+
+		foreach ( range( 1, 4 ) as $nth ) {
+			$placed[ $nth ] = $this->place( NewOrders::forTwoLines( 'USD', 'USD', $customer ) );
+		}
+
+		$this->plantStatus( $placed[3]->id, OrderStatus::Failed, PaymentStatus::Failed );
+		$this->place();
+
+		$first  = $this->listOwn( $this->logIn( $owner ), array( 'per_page' => '2' ) );
+		$second = $this->listOwn(
+			$this->logIn( $owner ),
+			array(
+				'per_page' => '2',
+				'page'     => '2',
+			)
+		);
+
+		$this->assertSame( 200, $first['status'], (string) wp_json_encode( $first['body'] ) );
+		$this->assertSame( array( $placed[4]->uuid, $placed[2]->uuid ), array_column( $first['body']['orders'], 'uuid' ), 'Newest first, the declined attempt left out.' );
+		$this->assertTrue( $first['body']['has_more'] );
+		$this->assertSame( array( $placed[1]->uuid ), array_column( $second['body']['orders'], 'uuid' ) );
+		$this->assertFalse( $second['body']['has_more'] );
+		$this->assertSame(
+			array(
+				'uuid'               => $placed[4]->uuid,
+				'order_number'       => $placed[4]->orderNumber,
+				'status'             => 'pending_payment',
+				'payment_status'     => 'unpaid',
+				'fulfillment_status' => 'unfulfilled',
+				'currency'           => 'USD',
+				'grand_total_minor'  => 3080,
+			),
+			array_diff_key( $first['body']['orders'][0], array( 'placed_at' => true ) ),
+			'A row names the order, and carries no address and no email.'
+		);
+		$this->assertMatchesRegularExpression( '/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/', (string) $first['body']['orders'][0]['placed_at'] );
+		$this->assertNotStore( $first );
+
+		$tooLarge = $this->listOwn( $this->logIn( $owner ), array( 'per_page' => (string) ( OrderStoreOperations::MOST_PER_PAGE + 1 ) ) );
+
+		$this->assertSame( 400, $tooLarge['status'] );
+		$this->assertErrorShape( $tooLarge['body'], 'rest_invalid_param', 400 );
+	}
+
+	/**
+	 * Tests that a login cookie sent without its REST nonce is a visitor's request: the status read refuses the order to it, and the list lists nothing.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_login_cookie_without_its_nonce_is_a_visitor(): void {
+		$owner = $this->createUser( 'subscriber' );
+		$order = $this->place( NewOrders::forTwoLines( 'USD', 'USD', $this->plantCustomer( $owner, self::registeredAt( $owner ) ) ) );
+
+		$this->assertSame( 200, $this->listOwn( $this->logIn( $owner ) )['status'] );
+
+		$this->logIn( $owner );
+		$list = $this->listOwn();
+
+		$this->logIn( $owner );
+		$this->assertNotFound( $this->read( $order->uuid ), 'The customer\'s cookie without the nonce' );
+		$this->assertSame( 200, $list['status'] );
+		$this->assertSame( array(), $list['body']['orders'], 'The customer\'s cookie without the nonce lists nothing.' );
+	}
+
+	/**
+	 * Tests that the list costs no read for a visitor and two for a customer: the customer, and the page, whatever its length.
+	 *
+	 * Planted violation: in OrderAccessPolicy::ownOrders(), read the page before asking whether the
+	 * actor is a customer: the visitor's list costs a read.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_list_costs_nothing_for_a_visitor_and_two_reads_for_a_customer(): void {
+		global $wpdb;
+
+		$plugin   = '/' . preg_quote( $wpdb->prefix . 'seocart_', '/' ) . '/';
+		$owner    = $this->createUser( 'subscriber' );
+		$customer = $this->plantCustomer( $owner, self::registeredAt( $owner ) );
+
+		foreach ( range( 1, 3 ) as $nth ) {
+			$this->place( NewOrders::forTwoLines( 'USD', 'USD', $customer ) );
+		}
+
+		$visitor = $this->captureQueries(
+			function (): void {
+				$this->assertSame( array(), $this->listOwn( $this->asGuest() )['body']['orders'] ?? null );
+			}
+		);
+		$listed  = $this->captureQueries(
+			function () use ( $owner ): void {
+				$this->assertCount( 3, $this->listOwn( $this->logIn( $owner ) )['body']['orders'] ?? array() );
+			}
+		);
+
+		$this->assertQueryCount( 0, $visitor->matching( $plugin ), 'a visitor\'s list' );
+		$this->assertQueryCount( 2, $listed->matching( $plugin ), 'a customer\'s list: their customer, then the page' );
 	}
 
 	/**
@@ -385,9 +631,13 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	}
 
 	/**
-	 * Tests that a read costs the access check's one query and the order's four, whatever its number of lines, and a refusal the one.
+	 * Tests that a read costs the access check's one query and the order's four, whatever its number of lines, and a refusal the one; a logged-in actor's, one more each: their customer.
+	 *
+	 * Planted violation: in Customers::isPerson(), drop `$actor->userId() >= 1 &&`: a visitor's
+	 * read then asks for the customer, at six reads and two.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 A logged-in actor's read and refusal.
 	 */
 	public function test_a_read_costs_five_queries_and_a_refusal_one(): void {
 		global $wpdb;
@@ -419,6 +669,23 @@ final class OrderStatusRouteTest extends OrderTestCase {
 
 			$this->assertQueryCount( 1, $refused->matching( $plugin ), "refusing a read of an order of {$kind}: its access check" );
 		}
+
+		$owner   = $this->createUser( 'subscriber' );
+		$order   = $this->place( NewOrders::forTwoLines( 'USD', 'USD', $this->plantCustomer( $owner, self::registeredAt( $owner ) ) ) );
+		$other   = $this->createUser( 'subscriber' );
+		$read    = $this->captureQueries(
+			function () use ( $owner, $order ): void {
+				$this->assertSame( 200, $this->read( $order->uuid, $this->logIn( $owner ) )['status'] );
+			}
+		);
+		$refused = $this->captureQueries(
+			function () use ( $other, $order ): void {
+				$this->assertNotFound( $this->read( $order->uuid, $this->logIn( $other ) ), 'Another user, logged in' );
+			}
+		);
+
+		$this->assertQueryCount( 6, $read->matching( $plugin ), 'the customer\'s read of their order: their customer, its access check, then the order\'s four' );
+		$this->assertQueryCount( 2, $refused->matching( $plugin ), 'refusing a logged-in user: their customer, and the access check' );
 	}
 
 	/**
@@ -455,7 +722,34 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	 * @return array{status: int|null, headers: array<string, string>, body: array<string, mixed>, raw: string, cookies: list<string>} What was sent, the body's bytes, and every cookie the transport sent while answering.
 	 */
 	private function read( string $uuid, array $headers = array(), array $query = array() ): array {
-		$path   = '/' . RestBinding::STORE_NAMESPACE . str_replace( '{uuid}', $uuid, OrderStoreOperations::STATUS_ROUTE );
+		return $this->get( str_replace( '{uuid}', $uuid, OrderStoreOperations::STATUS_ROUTE ), $headers, $query );
+	}
+
+	/**
+	 * Serves one read of the customer's own orders.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, string> $headers Optional. The request headers. Default none.
+	 * @param array<string, string> $query   Optional. The query. Default none.
+	 * @return array{status: int|null, headers: array<string, string>, body: array<string, mixed>, raw: string, cookies: list<string>} What was sent, the body's bytes, and every cookie the transport sent while answering.
+	 */
+	private function listOwn( array $headers = array(), array $query = array() ): array {
+		return $this->get( OrderStoreOperations::LIST_ROUTE, $headers, $query );
+	}
+
+	/**
+	 * Serves one GET of a Store API route.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string                $route   The route, under the Store API's namespace.
+	 * @param array<string, string> $headers The request headers.
+	 * @param array<string, string> $query   The query.
+	 * @return array{status: int|null, headers: array<string, string>, body: array<string, mixed>, raw: string, cookies: list<string>} What was sent, the body's bytes, and every cookie the transport sent while answering.
+	 */
+	private function get( string $route, array $headers, array $query ): array {
+		$path   = '/' . RestBinding::STORE_NAMESPACE . $route;
 		$sent   = count( $this->cookies );
 		$answer = $this->serve( $this->server, 'GET', $path, $headers, array(), $query );
 

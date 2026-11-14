@@ -421,4 +421,16 @@ interface OrderRepository {
 	 * @return OrderAccess|null The facts, or null when there is no such order.
 	 */
 	public function findForAccess( string $uuid ): ?OrderAccess;
+
+	/**
+	 * Reads a page of a customer's orders, newest first, leaving out the declined attempts (status `failed`). One read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $customerId The customer record.
+	 * @param int $offset     How many of the customer's orders come before the page.
+	 * @param int $limit      The most orders to read.
+	 * @return list<OrderSummary> The orders.
+	 */
+	public function ownOrders( int $customerId, int $offset, int $limit ): array;
 }

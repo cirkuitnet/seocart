@@ -25,6 +25,7 @@ use SEOCart\Order\Domain\OrderChannel;
 use SEOCart\Order\Domain\OrderLineView;
 use SEOCart\Order\Domain\OrderRepository;
 use SEOCart\Order\Domain\OrderStatus;
+use SEOCart\Order\Domain\OrderSummary;
 use SEOCart\Order\Domain\OrderView;
 use SEOCart\Order\Domain\PaymentDelta;
 use SEOCart\Order\Domain\PaymentStatus;
@@ -419,6 +420,15 @@ final class MysqlOrderRepository implements OrderRepository {
 	 * @var string
 	 */
 	public const FIND_FOR_ACCESS = 'SELECT uuid, customer_id, access_key_hash, COALESCE( access_key_expires_at <= UTC_TIMESTAMP(), 1 ) AS key_expired FROM {orders} WHERE uuid = %s';
+
+	/**
+	 * A page of a customer's orders, newest first, by the `customer` key; the declined attempts left out.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const OWN_ORDERS = 'SELECT uuid, order_number, placed_at, status, payment_status, fulfillment_status, currency, grand_total_minor FROM {orders} WHERE customer_id = %d AND status <> %s ORDER BY id DESC LIMIT %d, %d';
 
 	/**
 	 * The order a refund is worked out for, by uuid, with the version of its current totals, what its tax components are read at, and when a person last cleared its unreconciled money.
@@ -1310,6 +1320,31 @@ final class MysqlOrderRepository implements OrderRepository {
 			self::nullableId( $row['customer_id'] ),
 			null === $row['access_key_hash'] ? null : (string) $row['access_key_hash'],
 			'1' === (string) $row['key_expired']
+		);
+	}
+
+	/**
+	 * Reads a page of a customer's orders, newest first, leaving out the declined attempts.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $customerId The customer record.
+	 * @param int $offset     How many of the customer's orders come before the page.
+	 * @param int $limit      The most orders to read.
+	 * @return list<OrderSummary> The orders.
+	 */
+	public function ownOrders( int $customerId, int $offset, int $limit ): array {
+		return array_map(
+			static fn( array $row ): OrderSummary => new OrderSummary(
+				(string) $row['uuid'],
+				(string) $row['order_number'],
+				new \DateTimeImmutable( (string) $row['placed_at'], new \DateTimeZone( 'UTC' ) ),
+				OrderStatus::from( (string) $row['status'] ),
+				PaymentStatus::from( (string) $row['payment_status'] ),
+				FulfillmentStatus::from( (string) $row['fulfillment_status'] ),
+				Money::of( (int) $row['grand_total_minor'], Currency::of( (string) $row['currency'] ) )
+			),
+			$this->statements->rows( self::OWN_ORDERS, $customerId, OrderStatus::Failed->value, $offset, $limit )
 		);
 	}
 

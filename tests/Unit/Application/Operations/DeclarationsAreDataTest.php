@@ -56,8 +56,9 @@ final class DeclarationsAreDataTest extends TestCase {
 	 *
 	 * The inventory module keeps its services beside its declarations, so its declaration files are
 	 * listed one by one: a declaration that loads the stock service or the stock repository is
-	 * reported, not allowed with its directory. So are the order module's: the status read's
-	 * declaration, its error catalog and the three enums it lists, never its service or policy.
+	 * reported, not allowed with its directory. So are the order module's: the status read's and
+	 * the list's declaration, its error catalog and the enums they list, never a service or the
+	 * policy.
 	 *
 	 * Planted violation: in InventoryOperations::adjustStock(), call class_exists( StockService::class ).
 	 * The first test reports that the build opened src/Inventory/Application/StockService.php.
@@ -127,6 +128,7 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Order/Application/OrderOperations.php',
 		'src/Order/Domain/OrderStatus.php',
 		'src/Order/Domain/PaymentStatus.php',
+		'src/Order/Domain/FulfillmentStatus.php',
 		'src/Order/Domain/AmountBasis.php',
 		'src/Platform/RateLimiter/RateLimit.php',
 		'src/Catalog/Interfaces/StoreApi/CatalogOperations.php',

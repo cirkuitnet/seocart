@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Order;
 
+use SEOCart\Customer\Infrastructure\CustomerTables;
+use SEOCart\Customer\Infrastructure\MysqlCustomerRepository;
 use SEOCart\Order\Domain\LockedOrder;
 use SEOCart\Order\Infrastructure\MysqlConversionContexts;
 use SEOCart\Order\Infrastructure\MysqlOrderRepository;
@@ -19,6 +21,7 @@ use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\ServerKind;
+use SEOCart\Tests\Support\Customer\CustomerRecords;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\Order\NewOrders;
 use SEOCart\Tests\Support\Order\OrderTestCase;
@@ -35,12 +38,15 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  * The order module's reads run over a PlanRecorder: the reads back of placing an order, the
  * order's lock, the order's read for showing it and for its access check, the paged reads doctor's
  * payment check sends, reconciliation's read of the orders with nothing due, and a conversion
- * context's read. Each plugin SELECT is explained, printed and judged as the catalog's and the
+ * context's read; and a customer's list of their orders, with the customer module's reads of the
+ * link a customer is found by and doctor's page of linked records. Each plugin SELECT is
+ * explained, printed and judged as the catalog's and the
  * inventory's are; the reference dataset has no orders, so the tables stay under the size at
  * which the rule gates and the run records the plans. And every SELECT the module's source writes
- * must have been sent (ReadInventory), so no read goes unexplained. Reconciliation's read, which
- * runs every five minutes on a live store, is judged again on a table of planted orders large
- * enough for the rule to gate.
+ * must have been sent (ReadInventory), so no read goes unexplained, and so must every SELECT the
+ * customer module's source writes. Reconciliation's read, which runs every five minutes on a live
+ * store, is judged again on a table of planted orders large enough for the rule to gate, and so is
+ * a customer's list, by the `customer` key.
  *
  * It runs only when SEOCART_QUERY_PLANS is 1, as `composer test:query-plans` sets it.
  *
@@ -57,10 +63,13 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  */
 final class OrderQueryPlanTest extends OrderTestCase {
 
+	use CustomerRecords;
+
 	/**
-	 * Skips the test unless the run is switched on.
+	 * Skips the test unless the run is switched on, and creates the customer records' table.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The customer records' table.
 	 */
 	public function set_up(): void {
 		parent::set_up();
@@ -68,6 +77,8 @@ final class OrderQueryPlanTest extends OrderTestCase {
 		if ( '1' !== getenv( 'SEOCART_QUERY_PLANS' ) ) {
 			$this->markTestSkipped( 'The query-plan run is `composer test:query-plans`.' );
 		}
+
+		$this->createCustomerTable();
 	}
 
 	/**
@@ -108,7 +119,52 @@ final class OrderQueryPlanTest extends OrderTestCase {
 
 		$this->assertSame( array(), ReadInventory::unsent( $heads, $recorder->allSent() ), 'A read the order module\'s source writes was not sent; send it in exercise(), so its plan is judged.' );
 		$this->assertSame( array(), ReadInventory::unknown( $heads, $recorder->allSent(), $tables ), 'A read of the order tables came from outside src/Order.' );
+
+		$customerHeads = ReadInventory::of( dirname( __DIR__, 3 ) . '/src/Customer' );
+
+		$this->assertSame( array(), ReadInventory::unsent( $customerHeads, $recorder->allSent() ), 'A read the customer module\'s source writes was not sent; send it in exercise(), so its plan is judged.' );
+		$this->assertSame( array(), ReadInventory::unknown( $customerHeads, $recorder->allSent(), array( $this->table( CustomerTables::CUSTOMERS ) ) ), 'A read of the customer records came from outside src/Customer.' );
 		$this->assertSame( array(), $breaking, sprintf( "These order SELECTs break the query-plan rule:\n%s\n", implode( "\n", $breaking ) ) );
+	}
+
+	/**
+	 * Tests that a customer's list of their orders keeps the rule on an orders table large enough to be judged, by the `customer` key, and finds the customer's newest orders.
+	 *
+	 * The orders are spread over five hundred customers.
+	 *
+	 * Planted violation: in OrderTables::orders(), drop the `customer` index: the read then scans the
+	 * orders, and the rule names it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_list_of_a_customers_orders_keeps_the_rule_on_a_large_table(): void {
+		global $wpdb;
+
+		$ids      = new SequentialIdGenerator( 900000 );
+		$template = $this->db->transaction( fn() => $this->ordersOver( $this->db, $ids )->insert( NewOrders::forTwoLines( 'EUR', 'USD' ), Actor::user( 0 ) ) );
+		$planted  = QueryPlan::LARGE_TABLE + 2000;
+
+		$this->plantOrders( $template->id, $planted, array( 'customer_id' => 'MOD( n.i, 500 ) + 1' ) );
+
+		$recorder = PlanRecorder::open();
+
+		$wpdb->query( $wpdb->prepare( 'ANALYZE TABLE %i', $this->table( OrderTables::ORDERS ) ) );
+
+		try {
+			$listed = ( new MysqlOrderRepository( new OrderStatements( new Database( $recorder, true, $this->reporter() ) ), $ids ) )->ownOrders( 7, 0, 21 );
+		} finally {
+			$recorder->close();
+		}
+
+		$this->assertCount( 1, $recorder->statements() );
+
+		$plan = QueryPlan::explain( $wpdb, $recorder->statements()[0], static fn( string $table ): int => (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i', $table ) ) );
+
+		fwrite( STDOUT, sprintf( "\nThe plan of a customer's list of their orders, over %d orders:\n%s\n", $planted + 1, implode( "\n", $plan->lines( array() === $plan->breaches ? 'ok' : 'BREAKS THE RULE' ) ) ) );
+
+		$this->assertSame( array(), $plan->breaches, implode( "\n", $plan->breaches ) );
+		$this->assertSame( 'customer', $plan->accesses[0]['key'] ?? null, 'The read is served by the customer key.' );
+		$this->assertCount( 21, $listed, 'A page and one more of the customer\'s orders.' );
 	}
 
 	/**
@@ -297,5 +353,14 @@ final class OrderQueryPlanTest extends OrderTestCase {
 
 		// The order's conversion context, read back; its id is looked up unrecorded, being the test's read, not the module's.
 		$contexts->find( (int) $this->db->fetchValue( 'SELECT conversion_context_id FROM %i WHERE id = %d', $this->table( OrderTables::ORDERS ), $inserted->id ) );
+
+		// A customer's list of their orders, a page and one more.
+		$repository->ownOrders( 1, 0, 21 );
+
+		// The customer module's reads: the link a customer is found by, by the user's id, and doctor's page of linked records.
+		$customers = new MysqlCustomerRepository( $db );
+
+		$customers->linkOf( 1 );
+		$customers->linked( 0, 500 );
 	}
 }
