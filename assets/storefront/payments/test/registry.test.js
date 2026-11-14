@@ -224,4 +224,48 @@ describe( 'installRegistry', () => {
 			'seocart.payments: island "legacy" uses contract 0.0.4, which is deprecated; update it to 0.1.0.'
 		);
 	} );
+
+	it.each( [
+		[ 'its id', 'id' ],
+		[ 'its contract version', 'contractVersion' ],
+	] )(
+		'refuses an island whose %s throws when read, and still drains the islands queued after it',
+		( name, member ) => {
+			const scope = freshScope();
+			const broken = anIsland( 'broken' );
+
+			Object.defineProperty( broken, member, {
+				get() {
+					throw new Error( 'no' );
+				},
+			} );
+
+			registerAsAnIslandDoes( scope, broken );
+			registerAsAnIslandDoes( scope, anIsland( 'valid' ) );
+
+			expect( () => installRegistry( scope ) ).not.toThrow();
+			expect( scope.seocart.payments.ids() ).toEqual( [ 'valid' ] );
+			expect( scope.seocart.payments.refused() ).toEqual( [
+				{
+					id: 'id' === member ? '' : 'broken',
+					reason: 'invalid: a member could not be read',
+				},
+			] );
+			expect( scope.ready ).toHaveLength( 1 );
+		}
+	);
+
+	it( 'keeps an island registered when a host that hears of it throws', () => {
+		const scope = freshScope();
+		const installed = installRegistry( scope );
+
+		installed.onRegister( () => {
+			throw new Error( 'the host failed' );
+		} );
+
+		expect( scope.seocart.payments.register( anIsland( 'stub' ) ) ).toBe(
+			true
+		);
+		expect( scope.seocart.payments.ids() ).toEqual( [ 'stub' ] );
+	} );
 } );

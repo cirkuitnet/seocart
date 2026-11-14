@@ -151,12 +151,36 @@ export function installRegistry( scope, adapters = ADAPTERS ) {
 	};
 
 	/**
-	 * Registers an island, or refuses it with a warning.
+	 * Registers an island, or refuses it with a warning. Never throws: an island whose members
+	 * throw when read is refused as invalid, and the islands queued after it are still registered.
 	 *
 	 * @param {Object} island The island.
 	 * @return {boolean} True when it was registered.
 	 */
 	const register = ( island ) => {
+		try {
+			return accept( island );
+		} catch {
+			let id = '';
+
+			try {
+				id = String( island?.id ?? '' );
+			} catch {
+				// Its id cannot be read either: it is refused without one.
+			}
+
+			refuse( id, 'invalid: a member could not be read' );
+			return false;
+		}
+	};
+
+	/**
+	 * Registers an island that can be read, or refuses it with a warning.
+	 *
+	 * @param {Object} island The island.
+	 * @return {boolean} True when it was registered.
+	 */
+	const accept = ( island ) => {
 		const id = String( island?.id ?? '' );
 		const invalid = malformed( island );
 
@@ -190,7 +214,13 @@ export function installRegistry( scope, adapters = ADAPTERS ) {
 		}
 
 		islands.set( id, accepted );
-		listeners.forEach( ( listener ) => listener( id ) );
+		listeners.forEach( ( listener ) => {
+			try {
+				listener( id );
+			} catch {
+				// A host's failure to show the island is the host's; the island stays registered.
+			}
+		} );
 
 		return true;
 	};
