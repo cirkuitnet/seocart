@@ -13,7 +13,7 @@
  * documentation range in `X-Forwarded-For`, which the site under test trusts from the runner
  * through `SEOCART_TRUSTED_PROXIES` (docs/testing.md).
  *
- * The fifteen cases:
+ * The twenty-one cases:
  *
  *  1. an island registers once whether its script runs before or after the module; the ready event
  *     fires once; a second island for the same id is refused with a warning;
@@ -43,7 +43,19 @@
  * 13. the module the site serves is within its budget.json ceiling;
  * 14. a registered customer places with the nonce the page gives the host;
  * 15. a reload after a lost answer: the host hands over the order the store placed; and when the
- *     request never left, it sends nothing on loading, and placing again places one order.
+ *     request never left, it keeps the placement and sends nothing on loading, and placing again
+ *     places one order under the kept key;
+ * 16. a placement still pending at the gateway is asked again after a moment, then rests with its
+ *     key kept, and retrying places the one order;
+ * 17. a reload while the placement is on its way keeps it and sends nothing; once the late request
+ *     has placed the order, placing again is answered that order;
+ * 18. a payment the provider declined before the shopper came back is a decline, never an order;
+ * 19. too many requests keeps the key: nothing is sent before Retry-After, then the same key places
+ *     the one order;
+ * 20. back from the provider, when the order of the settled payment does not come back, the host
+ *     rests with the placement kept, and retrying hands the order over with its key;
+ * 21. a return address naming another payment leaves the kept placement alone, and placing again
+ *     takes its step and hands its order over.
  *
  * The stand-in answers every step with a redirect to the site's address, and passes its challenge
  * at once when asked again, so the step of a provider's script (`sdk`) is proved by the module's
@@ -52,7 +64,7 @@
  * or fails when seeds are required.
  */
 
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { APIRequestContext, Page, Route } from '@playwright/test';
@@ -88,6 +100,12 @@ interface FakeIslandOptions {
 	action?: 'completed' | 'failed' | 'left' | 'decline';
 	hold?: boolean;
 	mutate?: boolean;
+}
+
+/** A placement as the page sent it: its total and its currency, among the rest. */
+interface SentPlacement {
+	grand_total_minor: number;
+	currency: string;
 }
 
 /** One call made to the fake island. */
@@ -389,6 +407,138 @@ async function loseNextAnswer(
 	);
 
 	return lost;
+}
+
+/**
+ * Has the page's next placements reach the store, and their answers reach the page rewritten.
+ *
+ * @param page    The page.
+ * @param rewrite Returns the answer the page is given, from the store's.
+ * @param times   How many placements.
+ */
+async function answerAs(
+	page: Page,
+	rewrite: ( body: Record< string, unknown > ) => Record< string, unknown >,
+	times: number
+): Promise< void > {
+	await page.route(
+		( url ) =>
+			`${ STORE }/checkout` ===
+			new URL( url ).searchParams.get( 'rest_route' ),
+		async ( route: Route ) => {
+			if ( 'POST' !== route.request().method() ) {
+				await route.fallback();
+				return;
+			}
+
+			const response = await route.fetch( {
+				headers: {
+					...( await route.request().allHeaders() ),
+					'x-forwarded-for': client,
+				},
+			} );
+
+			await route.fulfill( {
+				response,
+				json: rewrite( await response.json() ),
+			} );
+		},
+		{ times }
+	);
+}
+
+/**
+ * Has the next placement or resume die on its way, before it reaches the store.
+ *
+ * @param page  The page.
+ * @param route The route under the namespace: `/checkout` or `/checkout/resume`.
+ */
+async function dropNext( page: Page, route: string ): Promise< void > {
+	await page.route(
+		( url ) =>
+			`${ STORE }${ route }` ===
+			new URL( url ).searchParams.get( 'rest_route' ),
+		( dropped: Route ) =>
+			'POST' === dropped.request().method()
+				? dropped.abort( 'failed' )
+				: dropped.fallback(),
+		{ times: 1 }
+	);
+}
+
+/**
+ * Delivers the stand-in's signed webhook for a payment, as its provider would.
+ *
+ * @param page       The page, whose request context sends it.
+ * @param type       The event, such as `authorization.approved`.
+ * @param intentUuid The payment's uuid.
+ * @param placement  The placement as sent: its total and its currency.
+ * @param data       Optional. What the event's data adds, such as an `error_code`.
+ */
+async function deliverWebhook(
+	page: Page,
+	type: string,
+	intentUuid: string,
+	placement: SentPlacement,
+	data: Record< string, string > = {}
+): Promise< void > {
+	const created = Math.floor( Date.now() / 1000 );
+	const body = JSON.stringify( {
+		id: `evt-e2e-${ type }-${ intentUuid }`,
+		type,
+		created,
+		data: {
+			intent_uuid: intentUuid,
+			amount_minor: placement.grand_total_minor,
+			currency: placement.currency,
+			provider_object_id: `stub-ch-${ intentUuid }`,
+			provider_intent_id: `stub-pi-requires_action-${ intentUuid }`,
+			...data,
+		},
+	} );
+	const signature = createHmac( 'sha256', STUB_WEBHOOK_SECRET )
+		.update( `${ created }.${ body }` )
+		.digest( 'hex' );
+	const delivered = await page.request.post(
+		restUrlOf( home(), '/seocart/v1/webhooks/stub/test' ),
+		{
+			headers: {
+				'Content-Type': 'application/json',
+				'X-Stub-Signature': `t=${ created },v1=${ signature }`,
+				'X-Forwarded-For': client,
+			},
+			data: body,
+		}
+	);
+
+	expect( delivered.status(), await delivered.text() ).toBeLessThan( 300 );
+}
+
+/**
+ * Places the order with a fake island that leaves the page for the stand-in's step, and returns
+ * the step's payment and the placement as sent.
+ *
+ * @param page The page.
+ * @param sent What the page sent.
+ */
+async function placeAndLeave(
+	page: Page,
+	sent: RequestLedger
+): Promise< { intentUuid: string; placement: SentPlacement } > {
+	await place( page );
+
+	const [ action ] = ( await islandCalls( page ) ).filter(
+		( call ) => 'action' === call.name
+	);
+	const placements = sent.store.filter(
+		( entry ) =>
+			'POST' === entry.method && `${ STORE }/checkout` === entry.route
+	);
+
+	return {
+		intentUuid: String( action.resume?.intentUuid ),
+		placement: JSON.parse( placements[ placements.length - 1 ].body ),
+	};
 }
 
 /**
@@ -1005,41 +1155,13 @@ test.describe( 'The payment section, as a guest', () => {
 			( call ) => 'action' === call.name
 		);
 		const intentUuid = String( action?.resume?.intentUuid );
-		const placement = JSON.parse(
-			ledger.store[ ledger.store.length - 1 ].body
-		);
-		const created = Math.floor( Date.now() / 1000 );
-		const body = JSON.stringify( {
-			id: `evt-e2e-${ intentUuid }`,
-			type: 'authorization.approved',
-			created,
-			data: {
-				intent_uuid: intentUuid,
-				amount_minor: placement.grand_total_minor,
-				currency: placement.currency,
-				provider_object_id: `stub-ch-${ intentUuid }`,
-				provider_intent_id: `stub-pi-requires_action-${ intentUuid }`,
-			},
-		} );
-		const signature = createHmac( 'sha256', STUB_WEBHOOK_SECRET )
-			.update( `${ created }.${ body }` )
-			.digest( 'hex' );
-		const delivered = await page.request.post(
-			restUrlOf( home(), '/seocart/v1/webhooks/stub/test' ),
-			{
-				headers: {
-					'Content-Type': 'application/json',
-					'X-Stub-Signature': `t=${ created },v1=${ signature }`,
-					'X-Forwarded-For': client,
-				},
-				data: body,
-			}
-		);
 
-		expect( delivered.status(), await delivered.text() ).toBeLessThan(
-			300
+		await deliverWebhook(
+			page,
+			'authorization.approved',
+			intentUuid,
+			JSON.parse( ledger.store[ ledger.store.length - 1 ].body )
 		);
-
 		await page.evaluate( () => window.__fakeIsland?.release?.() );
 
 		expect( await awaitPlaced( page ) ).toMatchObject( {
@@ -1458,7 +1580,7 @@ test.describe( 'The payment section, as a guest', () => {
 		expect( await keptPlacement( page ) ).toBeNull();
 	} );
 
-	test( '(15) reloaded after a placement that never left, the host sends nothing on loading, and placing again places one order under a fresh key', async ( {
+	test( '(15) reloaded after a placement that never left, the host keeps it and sends nothing on loading, and placing again places one order under the kept key', async ( {
 		page,
 		pluginBasePath,
 	} ) => {
@@ -1466,16 +1588,7 @@ test.describe( 'The payment section, as a guest', () => {
 		await openPage( page, pluginBasePath );
 
 		// The request dies before it leaves the browser: the store never sees it.
-		await page.route(
-			( url ) =>
-				`${ STORE }/checkout` ===
-				new URL( url ).searchParams.get( 'rest_route' ),
-			async ( route: Route ) =>
-				'POST' === route.request().method()
-					? route.abort( 'failed' )
-					: route.fallback(),
-			{ times: 1 }
-		);
+		await dropNext( page, '/checkout' );
 		await place( page );
 
 		const aborted = await keptPlacement( page );
@@ -1485,9 +1598,9 @@ test.describe( 'The payment section, as a guest', () => {
 		} );
 		expect( aborted ).toMatchObject( { intentUuid: null } );
 
+		// The page cannot tell a request that never arrived from one still on its way: it keeps it.
 		await page.reload();
 		await waitForHost( page );
-		await expect.poll( () => keptPlacement( page ) ).toBeNull();
 
 		expect(
 			ledger.store.map(
@@ -1498,14 +1611,327 @@ test.describe( 'The payment section, as a guest', () => {
 			`POST ${ STORE }/checkout`,
 			`GET ${ STORE }/cart`,
 		] );
+		expect( await keptPlacement( page ) ).toEqual( aborted );
 
 		await place( page );
 
 		const order = await awaitPlaced( page );
-		const keys = hostWrites( ledger ).map( ( [ , key ] ) => key );
 
 		expect( order.outcome ).toBe( 'approved' );
-		expect( keys ).toHaveLength( 2 );
-		expect( keys[ 1 ] ).not.toBe( aborted?.key );
+		expect( hostWrites( ledger ).map( ( [ , key ] ) => key ) ).toEqual( [
+			aborted?.key,
+			aborted?.key,
+		] );
+		expect( await keptPlacement( page ) ).toBeNull();
+		await expectOnlyHostWrites( page, ledger );
+	} );
+
+	test( '(16) a placement still pending at the gateway is asked again after a moment, then rests with its key kept, and retrying places the one order', async ( {
+		page,
+		pluginBasePath,
+	} ) => {
+		await readyCart( page.request, product.variantId );
+		await openPage( page, pluginBasePath );
+
+		// The store's first two answers reach the page as a gateway's that has not decided yet.
+		await answerAs(
+			page,
+			( body ) => ( {
+				...body,
+				outcome: 'pending',
+				status: 'pending_payment',
+				payment_status: 'pending',
+			} ),
+			2
+		);
+		await place( page );
+
+		const kept = await keptPlacement( page );
+
+		expect( ( await hostState( page ) )?.error ).toEqual( {
+			code: 'pending',
+		} );
+		expect( await placedOrders( page ) ).toEqual( [] );
+		expect( kept?.key ).toMatch( UUID );
+
+		await page.evaluate( () => window.__seocartPayments.host?.retry() );
+
+		expect( ( await awaitPlaced( page ) ).outcome ).toBe( 'approved' );
+		expect( hostWrites( ledger ).map( ( [ , key ] ) => key ) ).toEqual( [
+			kept?.key,
+			kept?.key,
+			kept?.key,
+		] );
+		expect( await keptPlacement( page ) ).toBeNull();
+		await expectOnlyHostWrites( page, ledger );
+	} );
+
+	test( '(17) reloaded while its placement is on its way, the host keeps it and sends nothing; placing again is answered the order the late request placed', async ( {
+		page,
+		pluginBasePath,
+	} ) => {
+		await readyCart( page.request, product.variantId );
+		await openPage( page, pluginBasePath );
+
+		// The placement is held on its way: it reaches the store only once the page has reloaded.
+		const held: {
+			url?: string;
+			key?: string;
+			body?: string;
+			route?: Route;
+		} = {};
+
+		await page.route(
+			( url ) =>
+				`${ STORE }/checkout` ===
+				new URL( url ).searchParams.get( 'rest_route' ),
+			async ( route: Route ) => {
+				const request = route.request();
+
+				held.key = ( await request.allHeaders() )[ 'idempotency-key' ];
+				held.body = request.postData() ?? '';
+				held.url = request.url();
+				held.route = route;
+			},
+			{ times: 1 }
+		);
+		await page.getByRole( 'button', { name: 'Place order' } ).click();
+		await expect.poll( () => held.url ?? '' ).not.toBe( '' );
+
+		const sent = await keptPlacement( page );
+
+		await page.reload();
+		await waitForHost( page );
+		await held.route?.abort().catch( () => undefined );
+
+		expect(
+			ledger.store.map(
+				( entry ) => `${ entry.method } ${ entry.route }`
+			)
+		).toEqual( [
+			`GET ${ STORE }/cart`,
+			`POST ${ STORE }/checkout`,
+			`GET ${ STORE }/cart`,
+		] );
+		expect( await keptPlacement( page ) ).toEqual( sent );
+
+		// The held request reaches the store now, and places the order.
+		const late = await page.request.post( String( held.url ), {
+			headers: {
+				...storeHeaders(),
+				'Content-Type': 'application/json',
+				'Idempotency-Key': String( held.key ),
+			},
+			data: held.body,
+		} );
+
+		expect( late.status(), await late.text() ).toBe( 200 );
+
+		const placedLate = await late.json();
+
+		await place( page );
+
+		const order = await awaitPlaced( page );
+
+		expect( order ).toMatchObject( {
+			outcome: 'approved',
+			orderUuid: placedLate.order_uuid,
+		} );
+		expect( order.orderKey ).toEqual( expect.any( String ) );
+		expect( hostWrites( ledger ).map( ( [ , key ] ) => key ) ).toEqual( [
+			sent?.key,
+			sent?.key,
+		] );
+		await expectOnlyHostWrites( page, ledger );
+	} );
+
+	test( '(18) a payment the provider declined before the shopper came back is a decline: nothing is handed over', async ( {
+		page,
+		pluginBasePath,
+	} ) => {
+		await readyCart( page.request, product.variantId );
+
+		const address = await openPage( page, pluginBasePath, {
+			options: { token: 'stub:requires_action', action: 'left' },
+		} );
+		const { intentUuid, placement } = await placeAndLeave( page, ledger );
+
+		await deliverWebhook(
+			page,
+			'authorization.declined',
+			intentUuid,
+			placement,
+			{ error_code: 'card_declined' }
+		);
+
+		// The provider sends the shopper back: the store had settled the payment, as declined.
+		await page.goto( `${ address }?${ RETURN_ARG }=${ intentUuid }` );
+		await waitForHost( page );
+		await expect
+			.poll( async () => ( await hostState( page ) )?.error )
+			.toEqual( { code: 'declined' } );
+
+		expect( await placedOrders( page ) ).toEqual( [] );
+		expect( await hostEvents( page ) ).toContainEqual( {
+			type: 'stale',
+			detail: { reason: 'declined', code: null },
+		} );
+		expect( await keptPlacement( page ) ).toBeNull();
+		expect( hostWrites( ledger ).map( ( [ route ] ) => route ) ).toEqual( [
+			`${ STORE }/checkout`,
+			`${ STORE }/checkout/resume`,
+		] );
+		await expectOnlyHostWrites( page, ledger );
+	} );
+
+	test( '(19) too many requests keeps the placement’s key: nothing is sent before Retry-After, then the same key places the one order', async ( {
+		page,
+		pluginBasePath,
+	} ) => {
+		await readyCart( page.request, product.variantId );
+		await openPage( page, pluginBasePath );
+
+		const lost = await loseNextAnswer( page );
+
+		await place( page );
+
+		const kept = await keptPlacement( page );
+
+		// The retry is answered too many requests, with a wait, and reaches no store.
+		await page.route(
+			( url ) =>
+				`${ STORE }/checkout` ===
+				new URL( url ).searchParams.get( 'rest_route' ),
+			( route: Route ) =>
+				route.fulfill( {
+					status: 429,
+					headers: { 'Retry-After': '3' },
+					json: {
+						code: 'store_api.rate_limited',
+						message: 'Too many requests.',
+						data: { status: 429 },
+					},
+				} ),
+			{ times: 1 }
+		);
+
+		const limited = Date.now();
+
+		await page.evaluate( () => window.__seocartPayments.host?.retry() );
+
+		expect( ( await hostState( page ) )?.error ).toEqual( {
+			code: 'rate_limited',
+			detail: 'store_api.rate_limited',
+			retryAfter: 3,
+		} );
+		expect( await keptPlacement( page ) ).toEqual( kept );
+
+		// Each retry before the wait has passed sends nothing; the first after it sends the same key.
+		await expect
+			.poll(
+				() =>
+					page.evaluate( () =>
+						window.__seocartPayments.host?.retry()
+					),
+				{ intervals: [ 500 ], timeout: 15000 }
+			)
+			.toBe( true );
+
+		expect( Date.now() - limited ).toBeGreaterThanOrEqual( 3000 );
+
+		const order = await awaitPlaced( page );
+
+		expect( order ).toMatchObject( {
+			outcome: 'approved',
+			orderUuid: lost.order_uuid,
+		} );
+		expect( hostWrites( ledger ).map( ( [ , key ] ) => key ) ).toEqual( [
+			kept?.key,
+			kept?.key,
+			kept?.key,
+		] );
+		await expectOnlyHostWrites( page, ledger );
+	} );
+
+	test( '(20) back from the provider, when the order of the settled payment does not come back, the host rests with the placement kept, and retrying hands it over with its key', async ( {
+		page,
+		pluginBasePath,
+	} ) => {
+		await readyCart( page.request, product.variantId );
+
+		const address = await openPage( page, pluginBasePath, {
+			options: { token: 'stub:requires_action', action: 'left' },
+		} );
+		const { intentUuid } = await placeAndLeave( page, ledger );
+		const kept = await keptPlacement( page );
+
+		// Back on the page, the resume approves, and the request for the order dies on its way.
+		await dropNext( page, '/checkout' );
+		await page.goto( `${ address }?${ RETURN_ARG }=${ intentUuid }` );
+		await waitForHost( page );
+		await expect
+			.poll( async () => ( await hostState( page ) )?.error )
+			.toEqual( { code: 'network' } );
+
+		expect( await placedOrders( page ) ).toEqual( [] );
+		expect( await keptPlacement( page ) ).toEqual( kept );
+
+		await page.evaluate( () => window.__seocartPayments.host?.retry() );
+
+		const order = await awaitPlaced( page );
+
+		expect( order ).toMatchObject( { outcome: 'duplicate', intentUuid } );
+		expect( order.orderKey ).toEqual( expect.any( String ) );
+		expect( hostWrites( ledger ).map( ( [ route ] ) => route ) ).toEqual( [
+			`${ STORE }/checkout`,
+			`${ STORE }/checkout/resume`,
+			`${ STORE }/checkout`,
+			`${ STORE }/checkout/resume`,
+			`${ STORE }/checkout`,
+		] );
+		expect( await keptPlacement( page ) ).toBeNull();
+		await expectOnlyHostWrites( page, ledger );
+	} );
+
+	test( '(21) a return address naming another payment leaves the kept placement alone, and placing again takes its step and hands its order over', async ( {
+		page,
+		pluginBasePath,
+	} ) => {
+		await readyCart( page.request, product.variantId );
+
+		const address = await openPage( page, pluginBasePath, {
+			options: { token: 'stub:requires_action', action: 'left' },
+		} );
+		const { intentUuid } = await placeAndLeave( page, ledger );
+		const kept = await keptPlacement( page );
+
+		// An address that names a payment of no cart of this shopper's.
+		await page.addInitScript( () => {
+			window.__fakeIslandOptions = {
+				token: 'stub:requires_action',
+				action: 'completed',
+			};
+		} );
+		await page.goto( `${ address }?${ RETURN_ARG }=${ randomUUID() }` );
+		await waitForHost( page );
+		await expect
+			.poll( async () => ( await hostState( page ) )?.error )
+			.toEqual( { code: 'refused', detail: 'payment.intent_not_found' } );
+
+		expect( await keptPlacement( page ) ).toEqual( kept );
+
+		await place( page );
+
+		const order = await awaitPlaced( page );
+
+		expect( order ).toMatchObject( { outcome: 'approved', intentUuid } );
+		expect( order.orderKey ).toEqual( expect.any( String ) );
+		expect( hostWrites( ledger ).map( ( [ , key ] ) => key ) ).toEqual( [
+			kept?.key,
+			null,
+			kept?.key,
+			null,
+		] );
+		await expectOnlyHostWrites( page, ledger );
 	} );
 } );
