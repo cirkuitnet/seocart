@@ -693,7 +693,9 @@ id as a whole segment of the path of an `http` or `https` URL, such as the id in
 `publicDigestFields()` is not either, while digits alone, another length or label, and the digest
 among other text are. In a log line, only a value of the line's context that is such an id, or
 such a digest under a key named in `publicDigestFields()`, as a whole is skipped: an id inside a
-URL or in the message is read as a card number as before. Digits alone after the prefix, an id among other text (`order-{id}`, a
+URL or in the message is read as a card number as before. The skip of a digest is by design: rule
+13's logger and the tape's scan read a value by the one shared test, so a field named in
+`publicDigestFields()` changes what a log line may carry as it changes what a tape keeps. Digits alone after the prefix, an id among other text (`order-{id}`, a
 sentence, free text that holds a URL), a field's name and a shape not named are read as before,
 and every other check still reads the value. For ids with no prefix, a shape may have none while
 it is shorter than 20 characters, such as `'' => 17`; it lets no opaque token pass, and one of 20

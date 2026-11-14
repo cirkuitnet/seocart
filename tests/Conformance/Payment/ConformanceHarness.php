@@ -1788,6 +1788,11 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * label or length, digits alone, the digest among other text, a field named like a credential and
 	 * every other field are read as any other.
 	 *
+	 * The suite's logger (rule 13) reads this declaration as a tape does, by the one test the tape
+	 * scrubber and it share (TapeScrubber::namesNoCardIn()): with a field named here, a whole digest
+	 * in a log line's context under that key is not read as a card number either. A field named here
+	 * so changes what rule 13 reads as well as what a tape keeps.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @return list<string> The fields' names: a header's, a body field's or a query field's.
