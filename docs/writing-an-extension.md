@@ -430,8 +430,11 @@ protected function signDelivery( array $headers, string $body, string $secret, \
 A scenario named `NotProducible` skips the rules that need it, with the reason; a scenario not
 named at all fails them. Among the deliveries a gateway that declares `webhooks` records, one is
 an event it applies, which it reads as its result, naming the intent by the store's uuid or, where
-the provider's payload carries none, by the provider's id of it, and one an event it does not
-apply, which it reads as ignored: rule 10 reads both, through the gateway's `readWebhook()` and through the store's
+the provider's payload carries none, by the provider's id of it, which the test then names for the
+delivery in `deliveryPayments()` (by the delivery's name, the provider's id of the payment it is
+about: the result must name it, and the store's route must settle the delivery against the
+store's payment of that id), and one an event it does not apply, which it reads as ignored: rule
+10 reads both, through the gateway's `readWebhook()` and through the store's
 webhook route, whose decision must match the gateway's reading. The tokens above are made up: name
 the provider's own test tokens. The
 scenarios are `approve`, `decline`, `requires_action`, `requires_action_completed` (the customer

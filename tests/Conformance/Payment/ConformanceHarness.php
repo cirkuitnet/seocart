@@ -315,6 +315,15 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	private ?Actor $agent = null;
 
 	/**
+	 * The store's intents rule 10 opened for the payments the test names its deliveries about, by the provider's id of each.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, string>
+	 */
+	private array $deliveredPayments = array();
+
+	/**
 	 * Whether the run has said that the test's gateway refunds a part only after settlement, which it says once.
 	 *
 	 * @since 0.2.0
@@ -485,6 +494,24 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 */
 	protected function deliveriesCarryNoSignedTime(): bool {
 		return false;
+	}
+
+	/**
+	 * Returns the provider's id of the payment each delivery is about, by the delivery's name: none unless the test names them.
+	 *
+	 * A delivery whose result names its payment by the provider's id alone, with no uuid of the
+	 * store's, as the contract allows, is named here: the suite cannot tell from the result which
+	 * payment the delivery is about. Rule 10 requires such a result to name the payment named here,
+	 * opens an intent of the store under that id, and requires the store's route to settle the
+	 * delivery against that intent. Such a delivery named nowhere here fails rule 10. The names are
+	 * checked by hand, in the pull request that adds them, against the deliveries' bodies.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, string> The provider's ids of the payments, by the delivery's name.
+	 */
+	protected function deliveryPayments(): array {
+		return array();
 	}
 
 	/**
@@ -2527,9 +2554,15 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 			$this->assertSame( array( $first->kind, $first->eventId ), array( $late->kind, $late->eventId ), $rule->message() . sprintf( 'the test declares that deliveries carry no signed time (deliveriesCarryNoSignedTime()), and the delivery %1$s read with the clock %2$s was answered %3$s (%4$s), not as on arrival, %5$s (%6$s): a delivery that carries no signed time reads the same whenever it comes, and the store\'s receipt refuses a replay.', $name, $when, $late->kind->value, (string) ( $late->eventId ?? $late->reason ), $first->kind->value, (string) $first->eventId ) );
 		}
 
-		// A result names its intent by the store's uuid, or, where the provider's payload carries none, by the provider's id of it, as the contract allows.
+		// A result names its intent by the store's uuid, or, where the provider's payload carries none, by the provider's id of it, as the contract allows: then the payment the test names for the delivery.
+		$payment = null;
+
 		if ( WebhookReadingKind::Result === $first->kind ) {
 			$this->assertTrue( null !== $first->result && $this->gatewayId() === $first->result->provider && ( '' !== $first->result->intentUuid || '' !== (string) $first->result->providerIntentId ), $rule->message() . sprintf( 'the delivery %s reads as a payment result that is not one of this gateway\'s, about an intent.', $name ) );
+
+			if ( '' === $first->result->intentUuid ) {
+				$payment = $this->paymentDeliveredFor( $rule, $name, (string) $first->result->providerIntentId, $first->result->amount->currency()->code() );
+			}
 		} else {
 			$this->assertNull( $first->result, $rule->message() . sprintf( 'the delivery %s reads as ignored, and carries a result.', $name ) );
 		}
@@ -2540,7 +2573,44 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->assertReceivedAsRead( $name, $headers, $body, $at->modify( '+1 second' ), $first, $first->eventId );
 		$this->assertReceivedAsRead( $name . ' delivered again', $headers, $body, $at->modify( '+2 seconds' ), $first, $first->eventId );
 
+		if ( null !== $payment ) {
+			$this->assertSame( $payment, $this->db->fetchValue( 'SELECT intent_uuid FROM %i WHERE provider = %s AND mode = %s AND event_id = %s', $this->table( WebhookReceiptTables::RECEIPTS ), $this->gatewayId(), Mode::Test->value, DeliveredValues::eventId( (string) $first->eventId ) ), $rule->message() . sprintf( 'the delivery %s names its payment by the provider\'s id, and the store\'s route did not settle it against the store\'s payment of that id.', $name ) );
+		}
+
 		return $first->kind;
+	}
+
+	/**
+	 * Returns the store's intent of the payment a delivery is about, which its result names by the provider's id alone: the payment the test names for the delivery (deliveryPayments()), opened under that id once.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Rule   $rule     The rule.
+	 * @param string $name     The delivery's name.
+	 * @param string $named    The provider's id of the payment the result names.
+	 * @param string $currency The result's currency, the intent's.
+	 * @return string The intent's uuid.
+	 */
+	private function paymentDeliveredFor( Rule $rule, string $name, string $named, string $currency ): string {
+		$payment = $this->deliveryPayments()[ $name ] ?? null;
+
+		if ( null === $payment ) {
+			self::fail( $rule->message() . sprintf( 'the delivery %1$s reads as a payment result that names its payment by the provider\'s id alone, %2$s, and the test names no payment for it in deliveryPayments(): name the provider\'s id of the payment the delivery is about, which the result alone cannot tell.', $name, $named ) );
+		}
+
+		if ( $named !== $payment ) {
+			self::fail( $rule->message() . sprintf( 'the delivery %1$s reads as a payment result about the provider\'s payment %2$s, and the delivery is about the payment %3$s (deliveryPayments()): a result names the payment its delivery is about.', $name, $named, $payment ) );
+		}
+
+		if ( ! isset( $this->deliveredPayments[ $payment ] ) ) {
+			$intent = $this->openIntent( $currency );
+
+			$this->db->execute( 'UPDATE %i SET provider_intent_id = %s WHERE uuid = %s', $this->table( PaymentTables::INTENTS ), $payment, $intent );
+
+			$this->deliveredPayments[ $payment ] = $intent;
+		}
+
+		return $this->deliveredPayments[ $payment ];
 	}
 
 	/**
