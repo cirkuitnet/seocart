@@ -327,15 +327,34 @@ jobs:
 
     # The extension kit against this commit: bin/dev/new-extension.sh writes an extension beside
     # the checkout, then its workflows are linted and its pins checked, and bin/ci/extension.sh
-    # runs every gate of it that needs no database (PHP syntax, coding standards, PHPStan, the
-    # unit suite, the private-reference check, the zip), as the extension's own CI would. A
-    # change to a template, to a shared rule or to a gate that would break every extension
-    # fails here, on the pull request that makes it. Not a required check.
+    # runs every gate of it, as the extension's own CI would: those that need no database (PHP
+    # syntax, coding standards, PHPStan, the unit suite, the private-reference check, the zip),
+    # then, on a MySQL service like extension-ci.yml's, the integration suite, the idle probe and
+    # the conformance suite. A change to a template, to a shared rule or to a gate that would
+    # break every extension fails here, on the pull request that makes it, including a generated
+    # test that asserts something SEOCart no longer does. Not a required check.
     extension-kit:
         needs: lint-php
         runs-on: ubuntu-24.04
-        timeout-minutes: 15
+        timeout-minutes: 25
         env: *actionlint-pin
+        # The MySQL service of extension-ci.yml's integration-tests job, with its throwaway values
+        # (the job's env holds the actionlint pin, so the prepare step below repeats them).
+        services:
+            mysql:
+                image: mysql:8.4
+                env:
+                    MYSQL_ROOT_PASSWORD: ci-throwaway
+                    MYSQL_DATABASE: seocart_tests
+                ports:
+                    - 3306:3306
+                # --host forces TCP: while the image initialises, MySQL listens on its socket
+                # only, so the container turns healthy when the real server accepts connections.
+                options: >-
+                    --health-cmd="mysqladmin ping --host=127.0.0.1 --silent"
+                    --health-interval=5s
+                    --health-timeout=5s
+                    --health-retries=24
         steps:
             # Checked out as seocart/, so that the generated extension finds it beside itself.
             - name: Check out the repository
@@ -348,7 +367,9 @@ jobs:
               uses: ./seocart/.github/actions/setup-php-composer
               with:
                   working-directory: seocart
-                  install: no-scripts
+                  extensions: mysqli
+                  tools: wp-cli:2.12.0
+                  install: full
 
             - *install-actionlint
 
@@ -363,6 +384,24 @@ jobs:
               run: sh seocart/bin/ci/extension.sh all seocart-gateway-for-example
               env:
                   SOURCE_DATE_EPOCH: '1767225600'
+
+            - name: Download WordPress and write SEOCart's test configuration
+              run: sh seocart/bin/ci/prepare-integration.sh "$WP_VERSION"
+              env:
+                  WP_VERSION: '7.1'
+                  SEOCART_CI_DB_HOST: '127.0.0.1:3306'
+                  SEOCART_CI_DB_USER: root
+                  SEOCART_CI_DB_PASSWORD: ci-throwaway
+                  SEOCART_CI_DB_NAME: seocart_tests
+
+            - name: Run the extension's integration tests
+              run: sh seocart/bin/ci/extension.sh integration seocart-gateway-for-example
+
+            - name: Measure the extension's share of an idle request
+              run: sh seocart/bin/ci/extension.sh idle seocart-gateway-for-example
+
+            - name: Run SEOCart's conformance suite for the extension's type
+              run: sh seocart/bin/ci/extension.sh conformance seocart-gateway-for-example payments
 
     # The baseline smoke tests as one list (bin/ci/smoke-suite.sh --report): its output is one
     # line per check, so "all 17 green" is a single answer. It does no work the jobs above did
