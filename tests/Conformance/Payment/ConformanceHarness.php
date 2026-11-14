@@ -1445,9 +1445,11 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 *
 	 * A recording refuses an opaque token. A value that is base64 (the standard alphabet, whole
 	 * groups of four, `=` padding) of TapeScrubber::SIGNATURE_LEAST to TapeScrubber::SIGNATURE_MOST
-	 * characters, in a field named here, is kept as it was recorded; any other value in it is read as
-	 * in any other field. Name a field only when the provider's signature over a body that is public
-	 * is no secret: never a field that holds a key, a token or a credential, which no declaration admits.
+	 * characters, in a field named here, is kept as it was recorded, unless its decoded bytes are
+	 * printable text that holds a credential, a secret or a card number; any other value in it is
+	 * read as in any other field. Name a field only when the provider's signature over a body that
+	 * is public is no secret: never a field that holds a key, a token or a credential, which no
+	 * declaration admits.
 	 *
 	 * @since 0.2.0
 	 *

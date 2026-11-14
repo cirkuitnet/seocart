@@ -47,7 +47,8 @@ use SEOCart\Platform\Logging\CardNumbers;
  * `'pi_' => 24`); a 64-hex digest in a field the test declares
  * (GatewayConformanceCase::publicDigestFields()); a whole value that is base64 of SIGNATURE_LEAST to
  * SIGNATURE_MOST characters in a field the test declares (GatewayConformanceCase::publicSignatureFields(),
- * such as the signature a provider puts on a public delivery); the media type of a `content-type`
+ * such as the signature a provider puts on a public delivery, unless its decoded bytes are text
+ * that holds a secret: refuseDecodedSignature()); the media type of a `content-type`
  * or `accept` header. No public shape passes for a token with a secret's prefix (SECRET_PREFIX), in a field
  * named like a credential (CREDENTIAL_FIELD), or in the query of a redirect's `location`. A field's
  * name is the structure's, not a value: it is checked for a credential, a secret's shape and a card
@@ -820,6 +821,7 @@ final class TapeScrubber {
 		}
 
 		if ( $exemptable && ! $credentialField && self::declares( $this->signatureFields, $field ) && self::isSignature( $text ) ) {
+			$this->refuseDecodedSignature( $text, $where );
 			return;
 		}
 
@@ -920,6 +922,39 @@ final class TapeScrubber {
 	 */
 	public static function isSignature( string $value ): bool {
 		return strlen( $value ) >= self::SIGNATURE_LEAST && strlen( $value ) <= self::SIGNATURE_MOST && 1 === preg_match( self::BASE64, $value );
+	}
+
+	/**
+	 * Refuses a signature whose decoded bytes are text that holds a secret.
+	 *
+	 * A signature a provider makes decodes to binary, which is no secret and passes. Base64 of
+	 * printable text (valid UTF-8, no control character but whitespace) is a value written in
+	 * another alphabet, so its text is read for a credential of the run, a secret's shape, a card
+	 * number (scanText() without its token rule) and a secret the provider issues.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws TapeRefused When the decoded text holds one, naming where, never the value.
+	 *
+	 * @param string $signature The value, base64 within the bounds (isSignature()).
+	 * @param string $where     Where it is, the field included, for the message.
+	 */
+	private function refuseDecodedSignature( string $signature, string $where ): void {
+		$decoded = (string) base64_decode( $signature, true );
+
+		if ( 1 !== preg_match( '/\A[\P{Cc}\s]*\z/u', $decoded ) ) {
+			return;
+		}
+
+		$where .= ', decoded,';
+
+		$this->scanText( $decoded, '', $where, false, false );
+
+		foreach ( $this->providerSecrets as $pattern ) {
+			if ( 1 === preg_match( $pattern, $decoded ) ) {
+				throw new TapeRefused( sprintf( '%s holds a secret the provider issues, which a tape never keeps.', $where ) );
+			}
+		}
 	}
 
 	/**

@@ -599,6 +599,8 @@ final class TapeScrubberTest extends TestCase {
 	/**
 	 * Returns the values a declared signature field may hold, with whether the recording keeps each one.
 	 *
+	 * Each value a scan refuses is one run of 20 or more letters, digits, `_` and `-`, which the token rule reads: shorter runs would pass whether or not the signature rule admits the value, and prove nothing.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @return array<string, array{string, bool}> The value, and whether the scan lets it through.
@@ -607,19 +609,21 @@ final class TapeScrubberTest extends TestCase {
 		$run = str_repeat( 'Ab1C', 6 );
 
 		return array(
-			'a signature of both signs and padding' => array( self::signature( 344 ), true ),
-			'the least, 20 characters'              => array( str_repeat( 'Ab1C', 5 ), true ),
-			'19, which no token rule reads'         => array( substr( str_repeat( 'Ab1C', 5 ), 0, 19 ), true ),
-			'the most, 1024 characters'             => array( str_repeat( 'Ab1C', 256 ), true ),
-			'one group over the most, 1028'         => array( str_repeat( 'Ab1C', 257 ), false ),
-			'padding inside the value'              => array( $run . '==Ab1C', false ),
-			'a length that is no whole group'       => array( $run . 'Zg=', false ),
-			'padding of three'                      => array( $run . 'Z===', false ),
-			'a space inside the value'              => array( $run . ' ' . $run, false ),
-			'a hyphen, as base64url writes it'      => array( $run . '-b1C', false ),
-			'an underscore, as base64url writes it' => array( $run . '_b1C', false ),
-			'a trailing line break'                 => array( $run . "\n", false ),
-			'a 64-hex digest, which is also base64' => array( hash( 'sha256', 'body' ), true ),
+			'a signature of both signs and padding'   => array( self::signature( 344 ), true ),
+			'the least, 20 characters'                => array( str_repeat( 'Ab1C', 5 ), true ),
+			'19, which no token rule reads'           => array( substr( str_repeat( 'Ab1C', 5 ), 0, 19 ), true ),
+			'the most, 1024 characters'               => array( str_repeat( 'Ab1C', 256 ), true ),
+			'one group over the most, 1028'           => array( str_repeat( 'Ab1C', 257 ), false ),
+			'padding inside the value'                => array( $run . '==Ab1C', false ),
+			'a 23-character run, a group short'       => array( substr( $run, 0, 23 ), false ),
+			'a length that is no whole group'         => array( $run . 'Zg=', false ),
+			'padding of three'                        => array( $run . 'Z===', false ),
+			'a space inside the value'                => array( $run . ' ' . $run, false ),
+			'a hyphen inside a 24-character run'      => array( substr_replace( $run, '-', 12, 1 ), false ),
+			'an underscore inside a 24-character run' => array( substr_replace( $run, '_', 12, 1 ), false ),
+			'a trailing line break'                   => array( $run . "\n", false ),
+			'a 64-hex digest, which is also base64'   => array( hash( 'sha256', 'body' ), true ),
+			'printable text that holds no secret'     => array( base64_encode( 'plain words, nothing secret in them' ), true ),
 		);
 	}
 
@@ -649,6 +653,11 @@ final class TapeScrubberTest extends TestCase {
 			),
 		);
 
+		if ( ! $kept ) {
+			$this->assertFalse( TapeScrubber::isSignature( $value ), 'The value is no signature.' );
+			$this->assertSame( 1, preg_match( '/[A-Za-z0-9_\-]{20,}/', $value ), 'The value holds a run the token rule reads.' );
+		}
+
 		foreach ( $scan as $named => $delivery ) {
 			if ( $kept ) {
 				$scrubber->scanDelivery( $delivery, 'The delivery authorized' );
@@ -659,6 +668,79 @@ final class TapeScrubberTest extends TestCase {
 
 			$this->assertRefused( 'The delivery authorized, ' . $named . ' holds an opaque token', $value, fn() => $scrubber->scanDelivery( $delivery, 'The delivery authorized' ) );
 		}
+	}
+
+	/**
+	 * Returns text that holds a secret, with how the refusal says what it holds; the test encodes it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string, string}> The text, and how the refusal says what it holds.
+	 */
+	public function secretsInBase64(): array {
+		return array(
+			'a secret key'                    => array( 'sk_live_' . str_repeat( 'Ab1', 8 ), 'holds a secret or restricted key' ),
+			'a card number'                   => array( '4242424242424242', 'holds a card number' ),
+			'a client secret in its own form' => array( 'client_secret=' . str_repeat( 'Zq8', 4 ), 'holds a secret the provider issues' ),
+		);
+	}
+
+	/**
+	 * Tests that a declared signature field refuses base64 of printable text that holds a secret, in a header and in a body field, naming where and never the value.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider secretsInBase64
+	 * @group conformance
+	 *
+	 * @param string $text  The text that is encoded.
+	 * @param string $holds How the refusal says what it holds.
+	 */
+	public function test_a_declared_signature_field_refuses_a_secret_in_base64( string $text, string $holds ): void {
+		$value    = base64_encode( $text );
+		$scrubber = new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array( 'client_secret' => '/client_secret=[A-Za-z0-9]{8,}/' ), array(), array(), array(), array(), array( 'x-signature', 'signature' ) );
+
+		$this->assertTrue( TapeScrubber::isSignature( $value ), 'The value has the shape the signature rule admits.' );
+
+		foreach (
+			array(
+				'its header x-signature'   => array(
+					'headers' => array( 'x-signature' => $value ),
+					'body'    => '{"id":"evt_1"}',
+				),
+				'its body field signature' => array(
+					'headers' => array(),
+					'body'    => (string) json_encode( array( 'signature' => $value ) ),
+				),
+			) as $named => $delivery
+		) {
+			$begins = 'The delivery authorized, ' . $named . ', decoded, ' . $holds;
+
+			$this->assertRefused( $begins, $value, fn() => $scrubber->scanDelivery( $delivery, 'The delivery authorized' ) );
+			$this->assertRefused( $begins, $text, fn() => $scrubber->scanDelivery( $delivery, 'The delivery authorized' ) );
+		}
+	}
+
+	/**
+	 * Tests that a signature that decodes to binary, as a provider's does, is kept.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_binary_signature_is_kept(): void {
+		$bytes    = hash( 'sha512', 'one', true ) . hash( 'sha512', 'two', true ) . hash( 'sha512', 'three', true ) . hash( 'sha512', 'four', true );
+		$value    = base64_encode( $bytes );
+		$delivery = array(
+			'headers' => array( 'x-signature' => $value ),
+			'body'    => '{}',
+		);
+
+		$this->assertSame( 256, strlen( $bytes ) );
+		$this->assertNotSame( 1, preg_match( '/\A[\P{Cc}\s]*\z/u', $bytes ), 'The bytes are no printable text.' );
+		$this->assertSame( 1, preg_match( '/[A-Za-z0-9_\-]{20,}/', $value ), 'The value holds a run the token rule reads, so keeping it is the signature rule\'s.' );
+		$this->assertRefused( 'The delivery authorized, its header x-signature holds an opaque token', $value, fn() => self::publicScrubber()->scanDelivery( $delivery, 'The delivery authorized' ) );
+		self::signingScrubber()->scanDelivery( $delivery, 'The delivery authorized' );
 	}
 
 	/**
