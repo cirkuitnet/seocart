@@ -230,7 +230,7 @@ const stored = () =>
  * Creates a host on a page of its own.
  *
  * @param {Object} setup Optional. `methods`, `islands`, `answers`, `cart`, `href`, `onStale`, `nonce`,
- *                       `onWait` (called with the host each time it waits).
+ *                       `shopper`, `onWait` (called with the host each time it waits).
  * @return {Object} The host, its page, its requests, what its callbacks heard and its clock.
  */
 function setUp( setup = {} ) {
@@ -267,10 +267,12 @@ function setUp( setup = {} ) {
 	const host = createHost(
 		root,
 		{
-			config: config(
-				setup.methods ?? [ { id: 'stub' } ],
-				undefined === setup.nonce ? {} : { nonce: setup.nonce }
-			),
+			config: config( setup.methods ?? [ { id: 'stub' } ], {
+				...( undefined === setup.nonce ? {} : { nonce: setup.nonce } ),
+				...( undefined === setup.shopper
+					? {}
+					: { shopper: setup.shopper } ),
+			} ),
 			cart: setup.cart ?? CART,
 			onSelect: ( id ) => heard.selected.push( id ),
 			onStale: async ( detail ) => {
@@ -813,6 +815,7 @@ describe( 'place()', () => {
 				currency: 'GBP',
 				gatewayId: 'stub',
 				intentUuid: null,
+				shopper: null,
 			} );
 
 			await host.retry();
@@ -1159,6 +1162,7 @@ describe( 'a payment the shopper must act for', () => {
 			'gatewayId',
 			'intentUuid',
 			'key',
+			'shopper',
 		] );
 		expect( stored() ).toMatchObject( { key: 'key-1', intentUuid: UUID } );
 		expect( text ).not.toContain( 'stub:requires_action' );
@@ -1868,6 +1872,68 @@ describe( 'answers that must not lose an order', () => {
 		expect( stored() ).toMatchObject( {
 			key: 'kept-key',
 			intentUuid: UUID,
+		} );
+	} );
+} );
+
+describe( 'a tab another shopper signs into', () => {
+	it( 'asks a placement kept for the shopper signed in on loading, as for any other', async () => {
+		keep( { shopper: 'marker-a' } );
+
+		const { requests, heard } = setUp( {
+			shopper: 'marker-a',
+			cart: { ...CART, version: 4 },
+			answers: [ { status: 200, body: placed( 'approved' ) } ],
+		} );
+
+		await flush();
+
+		expect( requests.map( ( request ) => request.key ) ).toEqual( [
+			'kept-key',
+		] );
+		expect( heard.placed ).toHaveLength( 1 );
+	} );
+
+	it.each( [
+		[ 'another account', 'marker-a', 'marker-b' ],
+		[ 'a guest, in an account', null, 'marker-b' ],
+		[ 'an account, as a guest', 'marker-a', undefined ],
+	] )(
+		'forgets a placement kept for %s, sending nothing and telling the island nothing',
+		async ( name, keptFor, signedIn ) => {
+			keep( { shopper: keptFor } );
+
+			const { island, calls } = fakeIsland( 'stub' );
+			const { requests, heard } = setUp( {
+				islands: [ island ],
+				shopper: signedIn,
+				cart: { ...CART, version: 4 },
+				answers: [],
+			} );
+
+			await flush();
+
+			expect( requests ).toEqual( [] );
+			expect( stored() ).toBeNull();
+			expect( names( calls ) ).toEqual( [ 'mount' ] );
+			expect( heard.placed ).toEqual( [] );
+		}
+	);
+
+	it( 'keeps the marker of the shopper a placement is made for', async () => {
+		const { island } = fakeIsland( 'stub' );
+		const { host } = setUp( {
+			islands: [ island ],
+			shopper: 'marker-a',
+			answers: [ { network: true } ],
+		} );
+
+		await flush();
+		await host.place();
+
+		expect( stored() ).toMatchObject( {
+			key: 'key-1',
+			shopper: 'marker-a',
 		} );
 	} );
 } );

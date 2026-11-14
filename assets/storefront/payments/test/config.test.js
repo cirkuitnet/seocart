@@ -55,7 +55,7 @@ describe( 'readConfig', () => {
 	it( 'reads the configuration printed in the root, frozen', () => {
 		const read = readConfig( rootWith( JSON.stringify( config() ) ) );
 
-		expect( read ).toEqual( { ...config(), nonce: null } );
+		expect( read ).toEqual( { ...config(), nonce: null, shopper: null } );
 		expect( Object.isFrozen( read ) ).toBe( true );
 		expect( Object.isFrozen( read.methods[ 0 ].settings ) ).toBe( true );
 	} );
@@ -70,6 +70,19 @@ describe( 'readConfig', () => {
 			readConfig(
 				rootWith( JSON.stringify( config( { nonce: null } ) ) )
 			).nonce
+		).toBeNull();
+	} );
+
+	it( 'reads the marker of the shopper signed in, and none for a guest', () => {
+		expect(
+			readConfig(
+				rootWith( JSON.stringify( config( { shopper: 'marker-a' } ) ) )
+			).shopper
+		).toBe( 'marker-a' );
+		expect(
+			readConfig(
+				rootWith( JSON.stringify( config( { shopper: null } ) ) )
+			).shopper
 		).toBeNull();
 	} );
 
@@ -97,6 +110,9 @@ describe( 'checkConfig', () => {
 		[ 'locale', config( { locale: 7 } ) ],
 		[ 'nonce', config( { nonce: 7 } ) ],
 		[ 'nonce', config( { nonce: '' } ) ],
+		[ 'shopper', config( { shopper: '' } ) ],
+		[ 'shopper', config( { shopper: 'm'.repeat( 129 ) } ) ],
+		[ 'shopper', config( { shopper: 7 } ) ],
 		[ 'methods[0]', config( { methods: [ 'stub' ] } ) ],
 		[ 'methods[0].id', config( {}, { id: '' } ) ],
 		[ 'methods[0].label', config( {}, { label: null } ) ],

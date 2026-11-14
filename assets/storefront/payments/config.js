@@ -10,6 +10,8 @@
  *         returnQueryArg: 'seocart_payment', // the argument a provider's return address carries
  *         locale: 'en_GB',
  *         nonce: '…' | null,           // optional: a logged-in shopper's REST nonce; none for a guest
+ *         shopper: '…' | null,         // optional: the page's marker for the shopper signed in,
+ *                                      // 1 to 128 characters; none for a guest
  *         methods: [ {
  *             id, label,               // the gateway's id; the method's name for shoppers
  *             mode: 'test' | 'live',
@@ -229,6 +231,20 @@ export function checkConfig( config ) {
 				( value ) =>
 					undefined === value || null === value || isName( value ),
 				'a nonce, or null for a guest'
+			) ?? null,
+		// Tells the shopper a kept placement was made for from the one signed in now (host.js).
+		shopper:
+			field(
+				config,
+				'shopper',
+				'shopper',
+				( value ) =>
+					undefined === value ||
+					null === value ||
+					( isText( value ) &&
+						value.length >= 1 &&
+						value.length <= 128 ),
+				'a marker of 1 to 128 characters, or null for a guest'
 			) ?? null,
 		methods: Object.freeze( methods ),
 	} );

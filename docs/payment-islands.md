@@ -203,8 +203,9 @@ The store knows a placement by its idempotency key, its cart version, its total 
 not by its payment data: a request with the same four is answered as that placement stands,
 whatever payment data it carries, and the gateway is not asked again. So the tab keeps, in
 `sessionStorage` under `seocart:placement`, exactly `{ key, cartVersion, amountMinor, currency,
-gatewayId, intentUuid }`, and never the payment data or the order's key. The key is sent again
-after a network failure, a server error, an unavailable gateway (`checkout.gateway_unavailable`),
+gatewayId, intentUuid, shopper }`, seven members, and never the payment data or the order's key. The
+key is sent again after a network failure, a server error, an unavailable gateway
+(`checkout.gateway_unavailable`),
 a placement still in progress (`checkout.placement_in_progress`, after `Retry-After`) or still
 `pending`, a `session_expired`, too many requests (`rate_limited`), and while the shopper must
 act. The order's key is handed to the checkout once, through `onPlaced()`.
@@ -253,6 +254,7 @@ element, in `<script type="application/json" class="seocart-payments-config">`:
 	"returnQueryArg": "seocart_payment",
 	"locale": "en_GB",
 	"nonce": null,
+	"shopper": null,
 	"methods": [
 		{
 			"id": "my-gateway",
@@ -271,7 +273,13 @@ element, in `<script type="application/json" class="seocart-payments-config">`:
 `restRoot` is WordPress's REST root, ending in a slash. `returnQueryArg` is the argument the address
 a provider sends the shopper back to carries the payment's uuid in. `nonce` is a logged-in
 shopper's REST nonce (`wp_create_nonce( 'wp_rest' )`), which the host sends with both writes as
-`X-WP-Nonce`; it is null, or left out, for a guest. `island` is true for a method
+`X-WP-Nonce`; it is null, or left out, for a guest. `shopper` is the page's marker for the shopper
+signed in: text of 1 to 128 characters that differs between any two accounts and tells nothing
+about them, null or left out for a guest. The host keeps it with a placement, and a page loaded for
+another shopper than the one a kept placement was made for (another account, a guest's placement
+under an account, or an account's for a guest) forgets that placement without a request, so a tab
+two shoppers share never hands one of them the other's order. That order is not lost: the store
+placed it, and its shopper is sent it by email. `island` is true for a method
 whose gateway calls a provider: without a registered island it is shown disabled. A method's
 `settings` are the gateway's settings for the mode that are public; `instructions` are an offline
 method's. The host refuses a malformed configuration with an error that names the field.

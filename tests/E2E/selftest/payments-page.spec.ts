@@ -3,8 +3,8 @@
  * writes and the fixture's read, and flags an island's write to the cart and a placement an island
  * sends itself; it prints the payment data's member names and never their values, and names the
  * trusted proxies on a 429; the secret scan finds a secret, a provider's handle and a card number,
- * and passes a page with none; the storage check passes a kept placement of six members, and flags
- * anything more and a secret in any item of either storage; a client address is one of the
+ * and passes a page with none; the storage check passes a kept placement of seven members, and
+ * flags anything more and a secret in any item of either storage; a client address is one of the
  * documentation range.
  *
  * The page is set with setContent() at a made-up origin whose every request is answered here, so
@@ -307,7 +307,7 @@ test.describe( 'The payment fixture’s checks', () => {
 		);
 	} );
 
-	test( 'pass a kept placement of six members, and flag one that keeps more or a secret', async ( {
+	test( 'pass a kept placement of seven members, and flag one that keeps more or a secret', async ( {
 		page,
 	} ) => {
 		await shopPage( page );
@@ -319,27 +319,28 @@ test.describe( 'The payment fixture’s checks', () => {
 					window.sessionStorage.setItem( 'seocart:placement', text ),
 				JSON.stringify( value )
 			);
-		const six = {
+		const seven = {
 			key: 'k',
 			cartVersion: 3,
 			amountMinor: 1999,
 			currency: 'GBP',
 			gatewayId: 'stub',
 			intentUuid: null,
+			shopper: null,
 		};
 
-		await keep( six );
+		await keep( seven );
 		await expectNothingSecretKept( page, [ 'tok_sandbox_value' ] );
 
 		await keep( {
-			...six,
+			...seven,
 			paymentData: { payment_token: 'tok_sandbox_value' },
 		} );
 		await expect( expectNothingSecretKept( page ) ).rejects.toThrow(
-			/six members and nothing else/
+			/seven members and nothing else/
 		);
 
-		await keep( { ...six, key: 'pi_1_secret_2' } );
+		await keep( { ...seven, key: 'pi_1_secret_2' } );
 		await expect( expectNothingSecretKept( page ) ).rejects.toThrow(
 			/keeps a secret/
 		);

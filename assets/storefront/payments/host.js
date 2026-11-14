@@ -1131,6 +1131,7 @@ export function createHost( root, options, env ) {
 					: keeper.begin( {
 							cartVersion: cart.version,
 							...inputs,
+							shopper: config.shopper,
 							paymentData,
 						} )
 			);
@@ -1210,6 +1211,14 @@ export function createHost( root, options, env ) {
 			'',
 			withoutReturn( scope.location.href, config.returnQueryArg )
 		);
+	}
+
+	const inherited = keeper.read();
+
+	// A placement kept for another shopper of this tab, another account or a guest's against an
+	// account's, is forgotten without a request: its order is not this shopper's to be handed.
+	if ( inherited && inherited.shopper !== config.shopper ) {
+		keeper.clear();
 	}
 
 	recover( returned );

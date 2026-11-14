@@ -79,14 +79,15 @@ describe( 'samePlacement', () => {
 describe( 'createKeeper', () => {
 	beforeEach( () => window.sessionStorage.clear() );
 
-	it( 'stores the six members of a placement and never its payment data, and keeps all of it for the page', () => {
+	it( 'stores the seven members of a placement and never its payment data, and keeps all of it for the page', () => {
 		const keeper = createKeeper( window, counter() );
-		const placement = keeper.begin( INPUTS );
+		const placement = keeper.begin( { ...INPUTS, shopper: 'marker-a' } );
 		const text = window.sessionStorage.getItem( STORAGE_KEY );
 
 		expect( placement ).toEqual( {
 			key: 'key-1',
 			...INPUTS,
+			shopper: 'marker-a',
 			intentUuid: null,
 		} );
 		expect( JSON.parse( text ) ).toEqual( {
@@ -96,6 +97,7 @@ describe( 'createKeeper', () => {
 			currency: 'GBP',
 			gatewayId: 'stub',
 			intentUuid: null,
+			shopper: 'marker-a',
 		} );
 		expect( text ).not.toContain( 'stub:approve' );
 		expect( text ).not.toMatch( /payment|order_key|orderKey/ );
@@ -116,7 +118,27 @@ describe( 'createKeeper', () => {
 			currency: 'GBP',
 			gatewayId: 'stub',
 			intentUuid: 'u',
+			shopper: null,
 			paymentData: null,
+		} );
+	} );
+
+	it( 'reads a placement kept before shoppers were marked as a guest’s', () => {
+		window.sessionStorage.setItem(
+			STORAGE_KEY,
+			JSON.stringify( {
+				key: 'key-1',
+				cartVersion: 3,
+				amountMinor: 1999,
+				currency: 'GBP',
+				gatewayId: 'stub',
+				intentUuid: null,
+			} )
+		);
+
+		expect( createKeeper( window, counter() ).read() ).toMatchObject( {
+			key: 'key-1',
+			shopper: null,
 		} );
 	} );
 

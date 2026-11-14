@@ -4,11 +4,12 @@
  * A placement is sent with a key the browser mints, and the store answers a request with a key it
  * has seen as it answered the first time, the order key included. The store knows a placement by
  * its key, its cart version, its total and its currency, never by the payment data, so those are
- * what the tab keeps: `{ key, cartVersion, amountMinor, currency, gatewayId, intentUuid }`, the
- * gateway's id telling which method it was placed with and, once the store names it, the uuid of
- * the payment the shopper acts for. The payment data the island confirmed, a payment token among
- * it, stays in the page's memory and is never written: a placement read back after a reload has
- * none, and is asked again with none. The order's key is never kept either.
+ * what the tab keeps: `{ key, cartVersion, amountMinor, currency, gatewayId, intentUuid, shopper }`,
+ * the gateway's id telling which method it was placed with, once the store names it the uuid of the
+ * payment the shopper acts for, and the page's marker for the shopper it was placed for (null for a
+ * guest), so a page loaded for another shopper forgets it. The payment data the island confirmed, a
+ * payment token among it, stays in the page's memory and is never written: a placement read back
+ * after a reload has none, and is asked again with none. The order's key is never kept either.
  *
  * The key is sent again after a network failure, a server error, an unavailable gateway, a
  * placement still in progress or still pending, a session that needs a fresh nonce, too many
@@ -61,6 +62,7 @@ const STORED = [
 	'currency',
 	'gatewayId',
 	'intentUuid',
+	'shopper',
 ];
 
 /**
@@ -126,7 +128,11 @@ function isKept( value ) {
 		Number.isInteger( value.amountMinor ) &&
 		'string' === typeof value.currency &&
 		'string' === typeof value.gatewayId &&
-		( null === value.intentUuid || 'string' === typeof value.intentUuid )
+		( null === value.intentUuid || 'string' === typeof value.intentUuid ) &&
+		// A placement kept before shoppers were marked has no marker: a guest's.
+		( undefined === value.shopper ||
+			null === value.shopper ||
+			'string' === typeof value.shopper )
 	);
 }
 
@@ -165,7 +171,11 @@ export function createKeeper( scope, mint ) {
 				const parsed = raw ? JSON.parse( raw ) : null;
 
 				return isKept( parsed )
-					? { ...parsed, paymentData: null }
+					? {
+							...parsed,
+							shopper: parsed.shopper ?? null,
+							paymentData: null,
+						}
 					: null;
 			} catch {
 				// Unreadable or not JSON: nothing kept.
@@ -174,7 +184,7 @@ export function createKeeper( scope, mint ) {
 		},
 
 		/**
-		 * Keeps a placement: all of it in the page, its six members in the tab's storage.
+		 * Keeps a placement: all of it in the page, its seven members in the tab's storage.
 		 *
 		 * @param {Object} placement The placement.
 		 */
@@ -202,7 +212,7 @@ export function createKeeper( scope, mint ) {
 		 * Starts a placement with a fresh key, and keeps it.
 		 *
 		 * @param {Object} inputs What the placement sends: cartVersion, amountMinor, currency,
-		 *                        gatewayId and paymentData.
+		 *                        gatewayId and paymentData; and the shopper it is made for.
 		 * @return {Object} The placement.
 		 */
 		begin( inputs ) {

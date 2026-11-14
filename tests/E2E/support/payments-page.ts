@@ -19,9 +19,9 @@
  * - expectNoSecretInUrls() fails when a URL or a Store API request carries a secret given, a
  *   provider's handle (`_secret_`) or a card number;
  * - expectRemountOn() counts the island's mounts across a change of the cart;
- * - expectNothingSecretKept() fails when the tab's kept placement holds more than its six members,
- *   or any item of the tab's `sessionStorage` or the origin's `localStorage` holds a secret given,
- *   a provider's handle or a card number.
+ * - expectNothingSecretKept() fails when the tab's kept placement holds more than its seven
+ *   members, or any item of the tab's `sessionStorage` or the origin's `localStorage` holds a
+ *   secret given, a provider's handle or a card number.
  *
  * The Store API allows one client five placements and resumes an hour, and every test of a runner
  * would be the same client. forwardClientAddress() makes each test a client of its own: it gives
@@ -65,6 +65,8 @@ export interface PaymentsConfig {
 	locale: string;
 	/** A logged-in shopper's REST nonce; absent or null for a guest. */
 	nonce?: string | null;
+	/** The page's marker for the shopper signed in; absent or null for a guest. */
+	shopper?: string | null;
 	methods: PaymentMethodConfig[];
 }
 
@@ -611,13 +613,14 @@ const KEPT_MEMBERS = [
 	'gatewayId',
 	'intentUuid',
 	'key',
+	'shopper',
 ];
 
 /**
- * Fails when the tab keeps more of a placement than its six members, or when any item of the tab's
- * `sessionStorage` or of the origin's `localStorage`, its name or its value, holds a secret given
- * (a payment token, an order key), a provider's client handle or a card number. The page that
- * reads the storage must be at the site's origin.
+ * Fails when the tab keeps more of a placement than its seven members, or when any item of the
+ * tab's `sessionStorage` or of the origin's `localStorage`, its name or its value, holds a secret
+ * given (a payment token, an order key), a provider's client handle or a card number. The page
+ * that reads the storage must be at the site's origin.
  *
  * @param page    The fixture page.
  * @param secrets The secrets of the test.
@@ -646,7 +649,7 @@ export async function expectNothingSecretKept(
 	if ( placement ) {
 		expect(
 			Object.keys( JSON.parse( placement[ 1 ] ) ).sort(),
-			'The tab keeps the placement’s six members and nothing else.'
+			'The tab keeps the placement’s seven members and nothing else.'
 		).toEqual( KEPT_MEMBERS );
 	}
 
