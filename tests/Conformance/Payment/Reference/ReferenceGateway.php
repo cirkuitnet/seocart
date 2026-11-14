@@ -149,7 +149,7 @@ class ReferenceGateway implements PaymentGateway {
 	 * @return GatewayDescriptor The descriptor, built without I/O.
 	 */
 	public function describe(): GatewayDescriptor {
-		$operations = array_values( array_diff( Operations::ALL, array( Operations::MULTI_CAPTURE, Operations::OFF_SESSION ) ) );
+		$operations = $this->operations();
 
 		return new GatewayDescriptor(
 			self::ID,
@@ -168,6 +168,17 @@ class ReferenceGateway implements PaymentGateway {
 				new OutboundHost( self::HOST, 'Reference payments', 'Authorizes, captures, voids and refunds the store\'s payments.', self::ENDPOINT, 'The payment\'s amount and currency, the order\'s number and the payment\'s identifier.', 'When an order is placed, and when its payment is captured, voided or refunded.', 'https://reference.example/terms', 'https://reference.example/privacy' ),
 			)
 		);
+	}
+
+	/**
+	 * Returns the operations each row of the matrix declares: every one but multi_capture and off_session.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> The operations.
+	 */
+	protected function operations(): array {
+		return array_values( array_diff( Operations::ALL, array( Operations::MULTI_CAPTURE, Operations::OFF_SESSION ) ) );
 	}
 
 	/**

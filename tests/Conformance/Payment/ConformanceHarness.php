@@ -418,6 +418,28 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
+	 * Tells whether the provider keeps one object for a payment's authorization, capture and cancellation, which the gateway names as each one's object: false unless the test says so.
+	 *
+	 * Some providers make no object per attempt: a payment is one transaction, which a capture and a
+	 * void change and answer by its own id. The gateway then names the provider's intent as the
+	 * object of the authorization and of the capture, and of a refund the provider makes by
+	 * cancelling the payment before it settles; the payment ledger still keys each row by its
+	 * operation. When the test says so, rule 1 lets the authorization, the capture and a refund name
+	 * the provider's intent as their object; each object must still be one the provider's answer to
+	 * the operation's own requests holds, and two refunds never name one object. A matrix with a
+	 * cell that declares multi_capture fails the suite's set-up under the declaration, as two
+	 * captures of one object would be one row of the ledger. The declaration is checked by hand, in
+	 * the pull request that adds it, against the provider's documentation of its transactions.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return bool True when a payment is one object of the provider's.
+	 */
+	protected function paymentIsOneObject(): bool {
+		return false;
+	}
+
+	/**
 	 * Signs a webhook delivery as the provider does; a gateway that declares `webhooks` implements it.
 	 *
 	 * @since 0.2.0
@@ -607,7 +629,49 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->reads       = $this->readRequestsOf( $descriptor );
 		$this->transport->declareCredentialRequests( $this->credentials );
 		$this->transport->declareReadRequests( $this->reads );
+
+		$refusal = $this->declarationRefusal( $descriptor );
+
+		if ( null !== $refusal ) {
+			self::fail( $refusal );
+		}
+
 		$this->configure( $this->suiteMode() );
+	}
+
+	/**
+	 * Returns why a declaration of the test is refused beside what the gateway's matrix declares, in one sentence; null when none is.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayDescriptor $descriptor The gateway's descriptor.
+	 * @return string|null The sentence; null when every declaration fits the matrix.
+	 */
+	private function declarationRefusal( GatewayDescriptor $descriptor ): ?string {
+		if ( $this->paymentIsOneObject() && self::anyCellDeclares( $descriptor, Operations::MULTI_CAPTURE ) ) {
+			return 'The test declares that the provider keeps one object for a payment (paymentIsOneObject()), and a cell of the gateway\'s matrix declares multi_capture: two captures of one object would be one row of the payment ledger, so the declaration is refused.';
+		}
+
+		return null;
+	}
+
+	/**
+	 * Tells whether a cell of a gateway's matrix declares an operation.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param GatewayDescriptor $descriptor The gateway's descriptor.
+	 * @param string            $operation  The operation.
+	 * @return bool True when one does.
+	 */
+	private static function anyCellDeclares( GatewayDescriptor $descriptor, string $operation ): bool {
+		foreach ( $descriptor->matrix->rows as $row ) {
+			if ( $row->supports( $operation ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -2507,6 +2571,9 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	/**
 	 * Fails rule 1 when an outcome does not name its own provider object, and returns the object.
 	 *
+	 * The object may be the provider's intent only where the test declares that the provider keeps
+	 * one object for a payment (paymentIsOneObject()); it is one the provider's answer holds either way.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @param Rule                                                          $rule      The rule.
@@ -2520,7 +2587,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 */
 	private function assertOwnObject( Rule $rule, string $what, array $placed, string $operation, array $exchanges ): string {
 		list( $object ) = $this->ledgerRowOf( $placed['order_id'], $operation );
-		$failure        = AnswerRules::objectFailure( $rule, $what, $object, $this->intentRow( $placed['intent_uuid'] )['provider_intent_id'], $this->answersTo( $exchanges ), false );
+		$failure        = AnswerRules::objectFailure( $rule, $what, $object, $this->intentRow( $placed['intent_uuid'] )['provider_intent_id'], $this->answersTo( $exchanges ), $this->paymentIsOneObject() );
 
 		if ( null !== $failure ) {
 			self::fail( $failure );

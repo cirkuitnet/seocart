@@ -71,7 +71,7 @@ final class AnswerRules {
 	 * @param string|null $objectId         The object the outcome names.
 	 * @param string|null $providerIntentId The provider's intent.
 	 * @param string[]    $answers          The bodies of the provider's answers to the outcome's requests; none for a gateway that calls no service.
-	 * @param bool        $mayNameTheIntent Whether the outcome may name the intent, as a void may.
+	 * @param bool        $mayNameTheIntent Whether the outcome may name the intent, as a void may, and any outcome of a provider that keeps one object for a payment.
 	 * @return string|null The failure, beginning with the rule's message; null when the object keeps the rule.
 	 */
 	public static function objectFailure( Rule $rule, string $what, ?string $objectId, ?string $providerIntentId, array $answers, bool $mayNameTheIntent ): ?string {
