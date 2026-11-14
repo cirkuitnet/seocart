@@ -57,6 +57,8 @@ console warning, rather than left out: a method that silently vanishes cannot be
 ## The island
 
 ```ts
+type BillingAddress = Record< string, string >; // the checkout's fields: country, postcode, …
+
 interface PaymentIsland {
 	id: string; // the gateway's id, exactly
 	contractVersion: string; // '0.1.0'
@@ -69,14 +71,20 @@ interface PaymentIsland {
 }
 
 interface MountedIsland {
-	confirm(): Promise< { payment_data: Record< string, string > } >;
+	confirm( given: {
+		billing: BillingAddress | null;
+	} ): Promise< { payment_data: Record< string, string > } >;
 	action?(
 		next: {
 			type: 'redirect' | 'sdk';
 			url: string | null;
 			client_token: string | null;
 		},
-		resume: { intentUuid: string; returnUrl: string }
+		resume: {
+			intentUuid: string;
+			returnUrl: string;
+			billing: BillingAddress | null;
+		}
 	): Promise< 'completed' | 'failed' | 'left' >;
 	showError?( error: { code: string; message: string } ): void;
 	unmount(): void;
@@ -91,14 +99,19 @@ interface MountedIsland {
   returns a handle. Keep everything a mount creates in its handle, not in the script's top level:
   the island may be mounted again while a promise of the earlier mount is still pending. A mount
   that throws or rejects shows the method disabled, and the others stay selectable.
-- `confirm()` checks the form and returns what the placement sends the gateway, `payment_data`:
-  `payment_token` today. Throw an error, with a `code`, to refuse; the host sends nothing and
-  hands the error to `showError()`.
+- `confirm( { billing } )` checks the form and returns what the placement sends the gateway,
+  `payment_data`: `payment_token` today. It is called every time the shopper places the order,
+  a retry included, so what is sent is what the form shows then. Throw an error, with a `code`,
+  to refuse; the host sends nothing and hands the error to `showError()`. `billing` is the
+  billing address as the checkout holds it at that call, frozen, or null.
 - `action( next, resume )` takes the step the provider asks for once the order is placed: give
-  `next.client_token` to the provider's script, or follow `next.url`. `resume.returnUrl` is the
-  address the provider may send the shopper back to: the checkout's page with the payment's uuid as
-  its only argument. Resolve `completed` or `failed` and the host resumes the payment, whose answer
-  decides; resolve `left` when the provider's script is taking the shopper away from the page.
+  `next.client_token` to the provider's script, or follow `next.url`. It is called only after
+  `confirm()` resolved on the same mount for the same placement. `resume.returnUrl` is the address
+  the provider may send the shopper back to: the checkout's page with the payment's uuid as its
+  only argument; `resume.billing` is the billing address as at `confirm()`'s, for a provider's
+  script that asks for it. Resolve `completed` or `failed` and the host resumes the payment, whose
+  answer decides; resolve `left` when the provider's script is taking the shopper away from the
+  page.
 - `showError( error )` shows a decline, or the island's own refusal, inside the island.
 - `unmount()` is synchronous: it removes the form and abandons any work in flight. After it the
   island holds nothing of that mount.
@@ -120,10 +133,12 @@ interface MountedIsland {
 | `currencies`     | the currencies the payment method takes                                               |
 | `locale`         | the store's locale for the shopper                                                    |
 
-When the checkout holds the billing address, the context also has `billing`, that address.
+The billing address is not part of the context: it may change while the island stays mounted, so
+`confirm()` and `action()` are handed it as it is at each call.
 
 The host mounts the island again, `unmount()` then `mount()` with a new context, when the amount,
-the currency, the gateway, the mode or a setting changes; never when only the cart's version moves.
+the currency, the gateway, the mode or a setting changes; never when only the cart's version or
+the billing address moves, since mounting again empties the form.
 Whatever an earlier mount was still doing is then discarded, so an island never confirms an amount
 the shopper no longer sees. While the order is being placed, a cart that changes waits until the
 host is idle again.
@@ -133,9 +148,12 @@ host is idle again.
 1. The shopper places the order. The host calls `confirm()`, then sends `POST
 /seocart/store/v1/checkout` with the cart's version, its total and currency, the payment data,
    and an `Idempotency-Key`.
-2. An approval (or `processing`, or `pending` for a method paid later) hands the order to the
-   checkout. A decline calls `showError()`, the cart is read again, and the next attempt has a new
-   key.
+2. `approved` or `processing` hands the order to the checkout's `onPlaced()`. A decline calls
+   `showError()`; a void (the payment's window ran out) tells the island nothing; after either the
+   cart is read again through the checkout's `onStale()`, nothing is handed over, and the next
+   attempt has a new key. `pending` means the request is still at the gateway: the host asks once
+   more two seconds later, and if it is still `pending` it rests with the code `pending`, the
+   order waiting as placed until the store learns the outcome.
 3. `requires_action` names the step, `next_action`, and the payment, `intent_uuid`. The host offers
    the step to the island first, whatever its kind, when the island declares `supports.action`.
    An island that does not take it leaves a `redirect` to the host, which sends the shopper to
@@ -143,22 +161,46 @@ host is idle again.
    `action_unsupported`.
 4. Once the island resolves, the host sends `POST /seocart/store/v1/checkout/resume` with the
    payment's uuid. `approved`, or `duplicate` when the store settled the payment first, hands the
-   order over; a decline is shown as in step 2. A payment that still waits for the shopper keeps
-   the key, and placing again sends the same request, which is answered with the same step.
-5. Back from a provider's page, with the payment's uuid in the page's address, the host resumes the
-   payment, then sends the kept placement again to recover the order and its key.
+   order over; a decline or a void is handled as in step 2. A payment that still waits for the
+   shopper keeps the key and rests with the code `action_incomplete`: placing again confirms, is
+   answered the same step, and the island takes it again.
+
+`onPlaced()` is called for `approved`, `processing` and `duplicate`, once. `onStale()` is called
+with the reason `stale` (the cart changed), `declined` or `voided`. A logged-in shopper's request
+refused for a missing or expired nonce (`store_api.nonce_missing`, `rest_cookie_invalid_nonce`)
+writes nothing: the host rests with the code `session_expired`, the island and `onStale()` are not
+told, and a page loaded again brings a fresh nonce.
 
 The host sends those two writes and no other. An island never writes to the cart or the checkout:
 the store prices the order from what it holds, whatever an island sends.
 
-The idempotency key is kept in the tab's `sessionStorage` under `seocart:placement`, with the
-request it was sent with, until the placement settles. The same request is sent again after a
-network failure, a server error, an unavailable gateway (`checkout.gateway_unavailable`), a
-placement still in progress (`checkout.placement_in_progress`, after `Retry-After`), a reload in
-the middle of a step, and a return from a provider's page. A changed total, currency or payment
-method, a stale cart (`cart.version_stale`, `checkout.totals_changed`), a settled, declined or
-voided answer and any other refusal end the key. The order's own key is handed to the checkout once
-and kept nowhere.
+The store knows a placement by its idempotency key, its cart version, its total and its currency,
+not by its payment data: a request with the same four is answered as that placement stands,
+whatever payment data it carries, and the gateway is not asked again. So the tab keeps, in
+`sessionStorage` under `seocart:placement`, exactly `{ key, cartVersion, amountMinor, currency,
+gatewayId, intentUuid }`, and never the payment data or the order's key. The key is sent again
+after a network failure, a server error, an unavailable gateway (`checkout.gateway_unavailable`),
+a placement still in progress (`checkout.placement_in_progress`, after `Retry-After`) or still
+`pending`, a `session_expired`, and while the shopper must act; a changed total, currency or
+payment method, a stale cart (`cart.version_stale`, `checkout.totals_changed`), a settled,
+declined or voided answer and any other refusal end it. The order's key is handed to the checkout
+once, through `onPlaced()`.
+
+## A page loaded again
+
+When the checkout's page loads, the host settles what the tab kept, and never acts by itself: the
+island's form is empty then, and a step the shopper did not ask for is not taken.
+
+- Back from a provider's page, with the payment's uuid in the page's address, or with a kept
+  placement that names a payment: the host resumes that payment. Once the store settled it, the
+  kept placement is asked again, with no payment data, for the order and its key, and the order is
+  handed over. A payment that still waits for the shopper rests with `action_incomplete`; placing
+  again confirms and takes the step.
+- With a kept placement whose answer was lost: while the cart is still at the version the
+  placement was sent with, no placement committed, and it is dropped without a request. Otherwise
+  it is asked again, with no payment data, and its answer taken as a placement's, except that a
+  step the provider asks for waits for the shopper to place again, and a placement the store does
+  not hold is dropped.
 
 ## The configuration
 
@@ -171,6 +213,7 @@ element, in `<script type="application/json" class="seocart-payments-config">`:
 	"restRoot": "https://shop.example/wp-json/",
 	"returnQueryArg": "seocart_payment",
 	"locale": "en_GB",
+	"nonce": null,
 	"methods": [
 		{
 			"id": "my-gateway",
@@ -187,7 +230,9 @@ element, in `<script type="application/json" class="seocart-payments-config">`:
 ```
 
 `restRoot` is WordPress's REST root, ending in a slash. `returnQueryArg` is the argument the address
-a provider sends the shopper back to carries the payment's uuid in. `island` is true for a method
+a provider sends the shopper back to carries the payment's uuid in. `nonce` is a logged-in
+shopper's REST nonce (`wp_create_nonce( 'wp_rest' )`), which the host sends with both writes as
+`X-WP-Nonce`; it is null, or left out, for a guest. `island` is true for a method
 whose gateway calls a provider: without a registered island it is shown disabled. A method's
 `settings` are the gateway's settings for the mode that are public; `instructions` are an offline
 method's. The host refuses a malformed configuration with an error that names the field.
