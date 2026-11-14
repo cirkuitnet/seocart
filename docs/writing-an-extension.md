@@ -443,7 +443,8 @@ request, by its method and its path with its query, in `credentialRequests()`. T
 no money: rule 6 asks it for no idempotency key, and no rule takes it for an operation's own
 request. The test names four at most, and a request on a named path that names the payment (the
 operation's key, the intent's uuid, the provider's id of the intent or of one of its objects, or
-the operation's amount with its currency, in minor units or as a decimal) fails rules 6 and 12.
+fields that hold the operation's amount, in minor units or as a decimal, and its currency) fails
+rules 6 and 12.
 The suite cannot know what a provider's endpoint does, so the pull request
 that adds the declaration is checked by hand against the provider's documentation of the request:
 

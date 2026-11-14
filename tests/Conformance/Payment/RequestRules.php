@@ -79,9 +79,10 @@ final class RequestRules {
 	 * credentials for a token is about the gateway's account, never about a payment, so a request on
 	 * its path, of any method, whose URL, headers or body name the payment the operation is about
 	 * could move money the declaration would hide, with a key or without one. The suite cannot know
-	 * what a provider's endpoint does; it knows what names the payment, and the operation's amount,
-	 * which names it with its currency: in minor units or as a decimal of the currency's exponent,
-	 * the two forms providers send an amount in.
+	 * what a provider's endpoint does; it knows what names the payment, as a whole token anywhere in
+	 * the request, and the operation's amount, which names it in a field beside a field of its
+	 * currency: in minor units or as a decimal of the currency's exponent, the two forms providers
+	 * send an amount in (namesAmount()).
 	 *
 	 * @since 0.2.0
 	 *
@@ -120,7 +121,11 @@ final class RequestRules {
 	}
 
 	/**
-	 * Tells whether a request names an amount with its currency: the currency's code as a whole word, in any case, and the amount as a whole number, in minor units or as a decimal of the currency's exponent.
+	 * Tells whether a request's fields name an amount with its currency: one field whose whole value is the amount, in minor units or as a decimal of the currency's exponent, and one whose whole value is the currency's code, in any case.
+	 *
+	 * The fields are those of the URL's query and of the body, a form or JSON at any depth; a body
+	 * that is neither names no amount. A value that only holds the code, such as `USD-merchant`, or
+	 * an amount with no currency beside it, is no payment's.
 	 *
 	 * @since 0.2.0
 	 *
@@ -129,19 +134,45 @@ final class RequestRules {
 	 * @return bool True when it does.
 	 */
 	private static function namesAmount( Exchange $exchange, Money $amount ): bool {
-		$text = self::textOf( $exchange );
+		$values = self::fieldValuesOf( $exchange );
+		$code   = strtoupper( $amount->currency()->code() );
 
-		if ( 1 !== preg_match( '/(?<![A-Za-z0-9])' . preg_quote( $amount->currency()->code(), '/' ) . '(?![A-Za-z0-9])/i', $text ) ) {
-			return false;
+		return in_array( $code, array_map( 'strtoupper', $values ), true )
+			&& array() !== array_intersect( array( (string) $amount->minorUnits(), $amount->toDecimal()->toString() ), $values );
+	}
+
+	/**
+	 * Returns the scalar values of a request's fields: its URL's query, and its body read as JSON or as a form.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Exchange $exchange The request.
+	 * @return list<string> The values, as text, nested ones included.
+	 */
+	private static function fieldValuesOf( Exchange $exchange ): array {
+		$query = array();
+		$body  = (string) $exchange->body;
+		$form  = array();
+
+		parse_str( (string) wp_parse_url( $exchange->url, PHP_URL_QUERY ), $query );
+
+		$json = json_decode( $body, true );
+
+		if ( ! is_array( $json ) && 1 === preg_match( TapeScrubber::FORM_BODY, $body ) ) {
+			parse_str( $body, $form );
 		}
 
-		foreach ( array_unique( array( (string) $amount->minorUnits(), $amount->toDecimal()->toString() ) ) as $form ) {
-			if ( 1 === preg_match( '/(?<![0-9.])' . preg_quote( $form, '/' ) . '(?![0-9]|\.[0-9])/', $text ) ) {
-				return true;
+		$fields = array( $query, is_array( $json ) ? $json : array(), $form );
+		$values = array();
+
+		array_walk_recursive(
+			$fields,
+			static function ( mixed $value ) use ( &$values ): void {
+				$values[] = is_scalar( $value ) ? (string) $value : '';
 			}
-		}
+		);
 
-		return false;
+		return $values;
 	}
 
 	/**
@@ -157,7 +188,7 @@ final class RequestRules {
 	}
 
 	/**
-	 * Tells whether a request names a value in its URL, a header or its body, in any form a key is sent in, as a whole word: `ri_1` is not named by `ri_12`.
+	 * Tells whether a request names a value in its URL, a header or its body, in any form a key is sent in, as a whole token of letters, digits, `_` and `-`: `ri_1` is not named by `ri_12`, `ri_1_extra` or `x-ri_1`.
 	 *
 	 * @since 0.2.0
 	 *
@@ -173,7 +204,7 @@ final class RequestRules {
 		$text = self::textOf( $exchange );
 
 		foreach ( self::formsOf( $value ) as $form ) {
-			if ( 1 === preg_match( '/(?<![A-Za-z0-9])' . preg_quote( $form, '/' ) . '(?![A-Za-z0-9])/', $text ) ) {
+			if ( 1 === preg_match( '/(?<![A-Za-z0-9_\-])' . preg_quote( $form, '/' ) . '(?![A-Za-z0-9_\-])/', $text ) ) {
 				return true;
 			}
 		}

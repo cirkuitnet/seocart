@@ -345,10 +345,10 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * CredentialRequests::MOST at most; a longer list, or an entry that is not a method and a path
 	 * from `/`, fails the suite's set-up, and a request on a path named here that names the payment
 	 * (the operation's key, the intent's uuid, the provider's id of the intent or of one of its
-	 * objects, or the operation's amount with its currency, in minor units or as a decimal) fails
-	 * rules 6 and 12, since a credential request is about no payment. The suite cannot
-	 * know what a provider's endpoint does, so the declaration is checked by hand, in the pull
-	 * request that adds it, against the provider's documentation of the request.
+	 * objects, or fields that hold the operation's amount, in minor units or as a decimal, and its
+	 * currency) fails rules 6 and 12, since a credential request is about no payment. The suite
+	 * cannot know what a provider's endpoint does, so the declaration is checked by hand, in the
+	 * pull request that adds it, against the provider's documentation of the request.
 	 *
 	 * @since 0.2.0
 	 *

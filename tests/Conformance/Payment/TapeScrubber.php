@@ -175,6 +175,15 @@ final class TapeScrubber {
 	public const CREDENTIAL_FIELD = '/secret|token|passw|passphrase|authori[sz]ation|cookie|credential|^key$|(?:api|access|private|secret|client|signing|restricted|transaction|merchant|license|encryption|auth)[_.\-]?key$/i';
 
 	/**
+	 * A body that is a form, `name=value` pairs joined by `&`, as the scan reads one field by field.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FORM_BODY = '/^[^\s=&{}\[\]"]+(?:\[[^\s=&]*\])*=[^\s]*$/';
+
+	/**
 	 * A UUID, the one public shape every tape may hold: the store's own references are UUIDs.
 	 *
 	 * @since 0.2.0
@@ -1176,7 +1185,7 @@ final class TapeScrubber {
 		$decoded = json_decode( $body, true );
 		$names   = array();
 
-		if ( ! is_array( $decoded ) && 1 === preg_match( '/^[^\s=&{}\[\]"]+(?:\[[^\s=&]*\])*=[^\s]*$/', $body ) ) {
+		if ( ! is_array( $decoded ) && 1 === preg_match( self::FORM_BODY, $body ) ) {
 			$decoded = array();
 			$names   = self::formNames( $body );
 			parse_str( $body, $decoded );

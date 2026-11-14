@@ -250,13 +250,14 @@ final class RequestRulesTest extends TestCase {
 			$this->assertSame( Rule::EveryCallThroughTheClient->message() . $refusal, RequestRules::sentFailure( 'the capture', array( $token, $keyed ), self::KEY, $declared, $names ), $case );
 		}
 
-		foreach ( array( 'grant_type=client_credentials', 'grant_type=client_credentials&scope=ri_12' ) as $body ) {
+		foreach ( array( 'grant_type=client_credentials', 'grant_type=client_credentials&scope=ri_12', 'grant_type=client_credentials&scope=ri_1_extra', 'grant_type=client_credentials&scope=x-ri_1' ) as $body ) {
 			$this->assertNull( RequestRules::keyFailure( 'the capture', array( self::exchange( 'POST', self::TOKEN_PATH, array(), $body ), $keyed ), self::KEY, $declared, $names ), $body );
+			$this->assertNull( RequestRules::sentFailure( 'the capture', array( self::exchange( 'POST', self::TOKEN_PATH, array(), $body ), $keyed ), self::KEY, $declared, $names ), $body );
 		}
 	}
 
 	/**
-	 * Tests that a request on a declared credential path that names the operation's amount with its currency refuses the declaration, in minor units or as a decimal: the amount alone, the currency alone or another amount does not.
+	 * Tests that a request on a declared credential path whose fields hold the operation's amount and its currency, each as a whole value, refuses the declaration, in minor units or as a decimal, in a form, a JSON body or the URL's query: the amount alone, the currency alone, another amount, a value that only holds the currency, and words of a body that is no form or JSON do not.
 	 *
 	 * @since 0.2.0
 	 *
@@ -275,12 +276,18 @@ final class RequestRulesTest extends TestCase {
 			'the currency alone'           => array( 'currency=usd', false ),
 			'another amount'               => array( 'amount=10000&currency=usd', false ),
 			'a decimal of another amount'  => array( '{"currency_code":"USD","value":"1000.00"}', false ),
+			'an amount and a value that only holds the currency' => array( 'expires_in=1000&client_id=USD-merchant', false ),
+			'the amount and the currency in words of no form' => array( 'pay 1000 USD now', false ),
 		) as $case => list( $body, $refused ) ) {
 			$token = self::exchange( 'POST', self::TOKEN_PATH, array(), $body );
 
 			$this->assertSame( $refused ? Rule::KeysAsRuled->message() . $refusal : null, RequestRules::keyFailure( 'the capture', array( $token, $keyed ), self::KEY, $declared, array(), $amount ), $case );
 			$this->assertSame( $refused ? Rule::EveryCallThroughTheClient->message() . $refusal : null, RequestRules::sentFailure( 'the capture', array( $token, $keyed ), self::KEY, $declared, array(), $amount ), $case );
 		}
+
+		$query = self::TOKEN_PATH . '?amount=1000&currency=USD';
+
+		$this->assertStringContainsString( 'names the payment, the operation\'s amount with its currency', (string) RequestRules::keyFailure( 'the capture', array( self::exchange( 'POST', $query, array(), 'grant_type=client_credentials' ), $keyed ), self::KEY, self::declaring( array( 'POST', $query ) ), array(), $amount ), 'The amount and the currency in the URL\'s query.' );
 	}
 
 	/**
