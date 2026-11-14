@@ -67,15 +67,15 @@ final class CustomerConcurrencyTest extends PlacementTestCase {
 
 		$input    = $this->placeInput( 'this cart' );
 		$second   = null;
+		$waited   = false;
 		$insert   = sprintf( 'INSERT INTO `%s`', $this->table( CustomerTables::CUSTOMERS ) );
 		$barriers = $this->beforeStatement(
 			'/^' . preg_quote( sprintf( 'UPDATE `%s` SET held = held + ', $this->table( InventoryTables::ITEMS ) ), '/' ) . '/',
-			function () use ( $token, $theirs, $user, $insert, &$second ): void {
+			function () use ( $token, $theirs, $user, $insert, &$second, &$waited ): void {
 				$this->assertNotNull( $token );
 
 				$second = $this->startPlacement( $token, $theirs, 0, $user );
-
-				$this->awaitProbeSending( $second, $insert, 'update' );
+				$waited = $this->awaitProbeSendingOrEnd( $second, $insert, 'update' );
 			}
 		);
 
@@ -96,6 +96,7 @@ final class CustomerConcurrencyTest extends PlacementTestCase {
 		$this->assertSame( 1, $this->committedCount( $b, CustomerTables::CUSTOMERS, sprintf( 'user_id = %d', $user ) ) );
 		$this->assertNotNull( $owners[0] );
 		$this->assertSame( $owners[0], $owners[1], 'Both orders belong to the one record.' );
+		$this->assertTrue( $waited, 'The second placement\'s insert waited on the first\'s record.' );
 		$this->assertSame( array(), $this->sleeps, 'No deadlock.' );
 	}
 }

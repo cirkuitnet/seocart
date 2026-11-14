@@ -274,6 +274,25 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 	 *                             waiting for a row lock.
 	 */
 	protected function awaitProbeSending( RunningProbe $probe, string $prefix, string $state ): void {
+		if ( ! $this->awaitProbeSendingOrEnd( $probe, $prefix, $state ) ) {
+			$this->fail( sprintf( "The probe ended before the server showed it waiting (%s) on: %s\nIts report: %s\nIts output:\n%s", $state, $prefix, $probe->reportSoFar(), $probe->output() ) );
+		}
+	}
+
+	/**
+	 * Returns once the server shows a probe's statement waiting, or the probe has ended, and tells which; fails the test when neither happens in time.
+	 *
+	 * For a test whose second side may run through without waiting when what it guards is broken:
+	 * the test then asserts what came of it first, and that it waited after.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param RunningProbe $probe  The probe.
+	 * @param string       $prefix How the statement begins, as the server shows it.
+	 * @param string       $state  The process-list state of the wait.
+	 * @return bool True when the server showed the statement waiting; false when the probe ended first.
+	 */
+	protected function awaitProbeSendingOrEnd( RunningProbe $probe, string $prefix, string $state ): bool {
 		global $wpdb;
 
 		$observer = $this->secondConnection();
@@ -284,11 +303,11 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 			$waiting = '0' !== $observer->fetchValue( $query );
 
 			if ( $probe->watch( 5 ) ) {
-				$this->fail( sprintf( "The probe ended before the server showed it waiting (%s) on: %s\nIts report: %s\nIts output:\n%s", $state, $prefix, $probe->reportSoFar(), $probe->output() ) );
+				return false;
 			}
 
 			if ( $waiting ) {
-				return;
+				return true;
 			}
 
 			if ( hrtime( true ) >= $deadline ) {
