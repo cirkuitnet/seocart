@@ -148,6 +148,17 @@ function problem( kind, body ) {
 }
 
 /**
+ * Names an error for the console without its message: a provider's script may put a client
+ * secret in a message, and the console is no place for one.
+ *
+ * @param {*} thrown What was thrown.
+ * @return {string} Its code, or its name.
+ */
+function nameOf( thrown ) {
+	return String( thrown?.code || thrown?.name || 'an error' );
+}
+
+/**
  * Creates a host.
  *
  * @param {HTMLElement} root    The element the methods are shown in.
@@ -207,7 +218,7 @@ export function createHost( root, options, env ) {
 		try {
 			return options[ name ]( arg );
 		} catch ( thrown ) {
-			warn( `${ name }() failed: ${ thrown?.message }` );
+			warn( `${ name }() failed: ${ nameOf( thrown ) }` );
 			return undefined;
 		}
 	};
@@ -222,7 +233,7 @@ export function createHost( root, options, env ) {
 		try {
 			call();
 		} catch ( thrown ) {
-			warn( `island "${ id }" failed: ${ thrown?.message }` );
+			warn( `island "${ id }" failed: ${ nameOf( thrown ) }` );
 		}
 	};
 
@@ -262,7 +273,7 @@ export function createHost( root, options, env ) {
 				: 'cannot_make_payment';
 		} catch ( thrown ) {
 			warn(
-				`island "${ method.id }" failed canMakePayment(): ${ thrown?.message }`
+				`island "${ method.id }" failed canMakePayment(): ${ nameOf( thrown ) }`
 			);
 			return 'cannot_make_payment';
 		}
@@ -312,7 +323,7 @@ export function createHost( root, options, env ) {
 			.catch( ( thrown ) => {
 				if ( mount === mounts && ! destroyed ) {
 					warn(
-						`island "${ method.id }" could not be mounted: ${ thrown?.message }`
+						`island "${ method.id }" could not be mounted: ${ nameOf( thrown ) }`
 					);
 					failed.set( method.id, 'island_failed' );
 					unmount();
@@ -476,7 +487,7 @@ export function createHost( root, options, env ) {
 				applyCart( next );
 			}
 		} catch ( thrown ) {
-			warn( `onStale() failed: ${ thrown?.message }` );
+			warn( `onStale() failed: ${ nameOf( thrown ) }` );
 		}
 	}
 
@@ -688,7 +699,7 @@ export function createHost( root, options, env ) {
 				} );
 			} catch ( thrown ) {
 				warn(
-					`island "${ selected }" failed its action: ${ thrown?.message }`
+					`island "${ selected }" failed its action: ${ nameOf( thrown ) }`
 				);
 				result = 'failed';
 			}

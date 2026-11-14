@@ -389,7 +389,7 @@ describe( 'the methods', () => {
 			root.querySelector( '[data-method="card"]' ).dataset.unavailable
 		).toBe( 'island_failed' );
 		expect( scope.console.warn ).toHaveBeenCalledWith(
-			'seocart.payments: island "card" could not be mounted: the provider’s script did not load'
+			'seocart.payments: island "card" could not be mounted: Error'
 		);
 	} );
 
@@ -484,6 +484,25 @@ describe( 'the methods', () => {
 
 		expect( names( calls ) ).toEqual( [ 'mount', 'unmount' ] );
 		expect( root.querySelector( '.seocart-choices' ) ).toBeNull();
+	} );
+
+	it( 'names an island’s error on the console without its message', async () => {
+		const secret = 'pi_1_secret_2';
+		const leaking = fakeIsland( 'stub', {
+			canPay: () => {
+				throw new TypeError( `the key ${ secret } is wrong` );
+			},
+		} );
+		const { scope } = setUp( { islands: [ leaking.island ] } );
+
+		await flush();
+
+		const logged = scope.console.warn.mock.calls.flat().join( '\n' );
+
+		expect( logged ).toContain(
+			'island "stub" failed canMakePayment(): TypeError'
+		);
+		expect( logged ).not.toContain( secret );
 	} );
 } );
 
