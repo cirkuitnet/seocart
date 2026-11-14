@@ -13,7 +13,7 @@
  * documentation range in `X-Forwarded-For`, which the site under test trusts from the runner
  * through `SEOCART_TRUSTED_PROXIES` (docs/testing.md).
  *
- * The twenty-one cases:
+ * The twenty-two cases:
  *
  *  1. an island registers once whether its script runs before or after the module; the ready event
  *     fires once; a second island for the same id is refused with a warning;
@@ -55,7 +55,10 @@
  * 20. back from the provider, when the order of the settled payment does not come back, the host
  *     rests with the placement kept, and retrying hands the order over with its key;
  * 21. a return address naming another payment leaves the kept placement alone, and placing again
- *     takes its step and hands its order over.
+ *     takes its step and hands its order over;
+ * 22. reloaded after a lost answer, with the asking on loading failed, Place asks the kept placement
+ *     under its key, confirming nothing, and hands the order over; never a fresh key for the cart
+ *     the order emptied.
  *
  * The stand-in answers every step with a redirect to the site's address, and passes its challenge
  * at once when asked again, so the step of a provider's script (`sdk`) is proved by the module's
@@ -1938,6 +1941,53 @@ test.describe( 'The payment section, as a guest', () => {
 			kept?.key,
 			null,
 		] );
+		await expectOnlyHostWrites( page, ledger );
+	} );
+
+	test( '(22) reloaded after the answer was lost and the asking on loading failed, Place asks the kept placement under its key and hands the order over', async ( {
+		page,
+		pluginBasePath,
+	} ) => {
+		await readyCart( page.request, product.variantId );
+		await openPage( page, pluginBasePath );
+
+		const lost = await loseNextAnswer( page );
+
+		await place( page );
+
+		const kept = await keptPlacement( page );
+
+		// The store placed the order, so the cart reads empty; asking for it on loading fails.
+		await dropNext( page, '/checkout' );
+		await page.reload();
+		await waitForHost( page );
+		await expect
+			.poll( async () => ( await hostState( page ) )?.error )
+			.toEqual( { code: 'network' } );
+
+		expect( await keptPlacement( page ) ).toEqual( kept );
+
+		await place( page );
+
+		const order = await awaitPlaced( page );
+
+		expect( order ).toMatchObject( {
+			outcome: 'approved',
+			orderUuid: lost.order_uuid,
+		} );
+		expect( order.orderKey ).toEqual( expect.any( String ) );
+		expect( await callNames( page ) ).toEqual( [ 'mount' ] );
+		expect( hostWrites( ledger ).map( ( [ , key ] ) => key ) ).toEqual( [
+			kept?.key,
+			kept?.key,
+			kept?.key,
+		] );
+		expect( sentPaymentData( ledger ) ).toEqual( [
+			{ payment_token: 'stub:approve' },
+			{},
+			{},
+		] );
+		expect( await keptPlacement( page ) ).toBeNull();
 		await expectOnlyHostWrites( page, ledger );
 	} );
 } );
