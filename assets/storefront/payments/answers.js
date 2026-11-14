@@ -5,12 +5,15 @@
  * Each answer is one of these kinds:
  *
  * - `settled`: an order was placed and the payment came to an outcome the shopper moves on with:
- *   approved, processing, pending, or duplicate (the store had settled it already);
+ *   approved, processing, or duplicate (the store had settled it already);
+ * - `pending`: the placement is still with the gateway, or its request died there; the order
+ *   waits as placed until the store learns the outcome;
  * - `acting`: the shopper must act for the payment provider (requires_action);
  * - `declined`: the payment was declined, the order failed and the cart is open again;
  * - `voided`: the payment's window ran out and it was voided; the cart is open again;
  * - `stale`: the cart changed since the shopper read it (cart.version_stale,
  *   checkout.totals_changed). Not a payment failure: the island is told nothing;
+ * - `session`: the logged-in shopper's nonce is missing or expired; nothing was written;
  * - `in_progress`: another request with the same key is placing the order; wait, and send it again;
  * - `unavailable`: the gateway did not answer; the order may wait as placed;
  * - `server` and `network`: no answer the host can read;
@@ -22,7 +25,7 @@
  *
  * @type {string[]}
  */
-const SETTLED = [ 'approved', 'processing', 'pending', 'duplicate' ];
+const SETTLED = [ 'approved', 'processing', 'duplicate' ];
 
 /**
  * The Store API codes that mean the cart changed under the shopper.
@@ -30,6 +33,14 @@ const SETTLED = [ 'approved', 'processing', 'pending', 'duplicate' ];
  * @type {string[]}
  */
 const STALE = [ 'cart.version_stale', 'checkout.totals_changed' ];
+
+/**
+ * The codes of a request whose logged-in session needs a fresh nonce: the Store API's, and
+ * WordPress's own for a nonce that no longer verifies.
+ *
+ * @type {string[]}
+ */
+const SESSION = [ 'store_api.nonce_missing', 'rest_cookie_invalid_nonce' ];
 
 /**
  * Returns the kind of an answer.
@@ -57,7 +68,7 @@ export function classify( { network, status, body } ) {
 		}
 
 		// A placement declined or voided earlier is answered so again to a retry with its key.
-		return [ 'declined', 'voided' ].includes( outcome )
+		return [ 'pending', 'declined', 'voided' ].includes( outcome )
 			? outcome
 			: 'server';
 	}
@@ -70,6 +81,10 @@ export function classify( { network, status, body } ) {
 
 	if ( STALE.includes( code ) ) {
 		return 'stale';
+	}
+
+	if ( SESSION.includes( code ) ) {
+		return 'session';
 	}
 
 	if ( 'checkout.placement_in_progress' === code ) {

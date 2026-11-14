@@ -2,17 +2,20 @@
  * The placement's idempotency key, kept in the tab's `sessionStorage` until the placement settles.
  *
  * A placement is sent with a key the browser mints, and the store answers a request with a key it
- * has seen as it answered the first time, the order key included. So the key, and the request it
- * was sent with, are kept until an answer settles the placement: sent again after a network
- * failure, a server error, an unavailable gateway or a placement still in progress, after a reload
- * in the middle of a bank's challenge, and on the shopper's return from a provider's page, they
- * get the one order's answer back. A settled, declined or voided answer, a cart that changed and
- * a refusal end the key: the next placement gets a fresh one.
+ * has seen as it answered the first time, the order key included. The store knows a placement by
+ * its key, its cart version, its total and its currency, never by the payment data, so those are
+ * what the tab keeps: `{ key, cartVersion, amountMinor, currency, gatewayId, intentUuid }`, the
+ * gateway's id telling which method it was placed with and, once the store names it, the uuid of
+ * the payment the shopper acts for. The payment data the island confirmed, a payment token among
+ * it, stays in the page's memory and is never written: a placement read back after a reload has
+ * none, and is asked again with none. The order's key is never kept either.
  *
- * The kept placement holds the key and what the request sent (the cart's version, the total, the
- * currency, the payment data) with the gateway and, once the store names it, the payment's uuid.
- * The order's key is never kept. When the browser keeps no storage, the key lives as long as the
- * page.
+ * The key is sent again after a network failure, a server error, an unavailable gateway, a
+ * placement still in progress or still pending, a session that needs a fresh nonce, while the
+ * shopper must act, after a reload, and on the shopper's return from a provider's page; each gets
+ * the one order's answer back. A settled, declined or voided answer, a cart that changed and a
+ * refusal end the key: the next placement gets a fresh one. When the browser keeps no storage,
+ * the key lives as long as the page.
  */
 
 /**
@@ -27,7 +30,29 @@ export const STORAGE_KEY = 'seocart:placement';
  *
  * @type {string[]}
  */
-const KEEPING = [ 'network', 'server', 'unavailable', 'in_progress', 'acting' ];
+const KEEPING = [
+	'network',
+	'server',
+	'unavailable',
+	'in_progress',
+	'pending',
+	'session',
+	'acting',
+];
+
+/**
+ * The members of a kept placement that are written to storage, and only those.
+ *
+ * @type {string[]}
+ */
+const STORED = [
+	'key',
+	'cartVersion',
+	'amountMinor',
+	'currency',
+	'gatewayId',
+	'intentUuid',
+];
 
 /**
  * Tells whether the key outlives an answer of a kind.
@@ -49,7 +74,7 @@ export function keepsKey( kind ) {
  *
  * @param {Object|null} kept   The kept placement.
  * @param {Object}      inputs The placement that would be made now: amountMinor, currency, gatewayId.
- * @return {boolean} True when the kept one is sent again instead.
+ * @return {boolean} True when it is sent under the kept key.
  */
 export function samePlacement( kept, inputs ) {
 	return (
@@ -74,8 +99,7 @@ function isKept( value ) {
 		Number.isInteger( value.amountMinor ) &&
 		'string' === typeof value.currency &&
 		'string' === typeof value.gatewayId &&
-		!! value.paymentData &&
-		'object' === typeof value.paymentData
+		( null === value.intentUuid || 'string' === typeof value.intentUuid )
 	);
 }
 
@@ -99,28 +123,31 @@ export function createKeeper( scope, mint ) {
 
 	const keeper = {
 		/**
-		 * Returns the kept placement, or null.
+		 * Returns the kept placement: the page's own, with the payment data it sent, or else the
+		 * one the tab stored, with `paymentData` null; null when there is none.
 		 *
 		 * @return {Object|null} The placement.
 		 */
 		read() {
-			try {
-				const raw = storage()?.getItem( STORAGE_KEY );
-
-				if ( raw ) {
-					const parsed = JSON.parse( raw );
-
-					return isKept( parsed ) ? parsed : null;
-				}
-			} catch {
-				// Unreadable or not JSON: what the page itself kept is all there is.
+			if ( memory ) {
+				return memory;
 			}
 
-			return memory;
+			try {
+				const raw = storage()?.getItem( STORAGE_KEY );
+				const parsed = raw ? JSON.parse( raw ) : null;
+
+				return isKept( parsed )
+					? { ...parsed, paymentData: null }
+					: null;
+			} catch {
+				// Unreadable or not JSON: nothing kept.
+				return null;
+			}
 		},
 
 		/**
-		 * Keeps a placement.
+		 * Keeps a placement: all of it in the page, its six members in the tab's storage.
 		 *
 		 * @param {Object} placement The placement.
 		 */
@@ -128,7 +155,17 @@ export function createKeeper( scope, mint ) {
 			memory = placement;
 
 			try {
-				storage()?.setItem( STORAGE_KEY, JSON.stringify( placement ) );
+				storage()?.setItem(
+					STORAGE_KEY,
+					JSON.stringify(
+						Object.fromEntries(
+							STORED.map( ( name ) => [
+								name,
+								placement[ name ] ?? null,
+							] )
+						)
+					)
+				);
 			} catch {
 				// Storage refused (private browsing, a full quota): the page keeps it.
 			}

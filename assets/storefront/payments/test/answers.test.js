@@ -7,7 +7,12 @@ describe( 'classify', () => {
 	it.each( [
 		[ 'approved', 200, { outcome: 'approved' }, 'settled' ],
 		[ 'processing', 200, { outcome: 'processing' }, 'settled' ],
-		[ 'pending', 200, { outcome: 'pending' }, 'settled' ],
+		[
+			'a placement still at the gateway',
+			200,
+			{ outcome: 'pending' },
+			'pending',
+		],
 		[ 'duplicate', 200, { outcome: 'duplicate' }, 'settled' ],
 		[ 'requires_action', 200, { outcome: 'requires_action' }, 'acting' ],
 		[ 'a decline replayed', 200, { outcome: 'declined' }, 'declined' ],
@@ -16,6 +21,18 @@ describe( 'classify', () => {
 		[ 'a decline', 402, { code: 'checkout.payment_declined' }, 'declined' ],
 		[ 'a stale cart', 409, { code: 'cart.version_stale' }, 'stale' ],
 		[ 'changed totals', 409, { code: 'checkout.totals_changed' }, 'stale' ],
+		[
+			'a missing nonce',
+			403,
+			{ code: 'store_api.nonce_missing' },
+			'session',
+		],
+		[
+			'an expired nonce',
+			403,
+			{ code: 'rest_cookie_invalid_nonce' },
+			'session',
+		],
 		[
 			'a placement in progress',
 			409,

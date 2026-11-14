@@ -7,7 +7,7 @@
  *
  *     const host = createPaymentHost( root, {
  *         config: readConfig( root ),
- *         cart: { version, amountMinor, currency, billingCountry },
+ *         cart: { version, amountMinor, currency, billingCountry, billing },
  *         selected,                 // optional: the method the checkout's details name
  *         onSelect( id ) {},        // write the method into the checkout's details
  *         async onStale( detail ) {}, // read the cart again and return it

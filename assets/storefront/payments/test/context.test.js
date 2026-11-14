@@ -1,7 +1,7 @@
 /**
  * Internal dependencies
  */
-import { contextFor, needsRemount } from '../context';
+import { billingOf, contextFor, needsRemount } from '../context';
 
 const METHOD = Object.freeze( {
 	id: 'stripe',
@@ -38,13 +38,12 @@ describe( 'contextFor', () => {
 		expect( Object.isFrozen( context ) ).toBe( true );
 	} );
 
-	it( 'adds the billing address when the checkout gives one, frozen and copied', () => {
+	it( 'leaves the billing address out, since it may change while the island stays mounted', () => {
 		const billing = { country: 'GB', postcode: 'SW1Y 4JH' };
-		const context = contextFor( METHOD, { ...CART, billing }, CONFIG );
 
-		expect( context.billing ).toEqual( billing );
-		expect( Object.isFrozen( context.billing ) ).toBe( true );
-		expect( Object.isFrozen( billing ) ).toBe( false );
+		expect(
+			contextFor( METHOD, { ...CART, billing }, CONFIG )
+		).not.toHaveProperty( 'billing' );
 	} );
 
 	it( 'says null for a billing country the checkout does not know yet', () => {
@@ -54,6 +53,18 @@ describe( 'contextFor', () => {
 		expect(
 			contextFor( METHOD, unknown, CONFIG ).billingCountry
 		).toBeNull();
+	} );
+} );
+
+describe( 'billingOf', () => {
+	it( 'hands the island the address the checkout holds now, frozen and copied, or null', () => {
+		const billing = { country: 'GB', postcode: 'SW1Y 4JH' };
+		const given = billingOf( { ...CART, billing } );
+
+		expect( given ).toEqual( billing );
+		expect( Object.isFrozen( given ) ).toBe( true );
+		expect( Object.isFrozen( billing ) ).toBe( false );
+		expect( billingOf( CART ) ).toBeNull();
 	} );
 } );
 

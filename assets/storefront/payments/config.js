@@ -9,6 +9,7 @@
  *         restRoot: 'https://…/wp-json/', // WordPress's REST root, where the Store API lives
  *         returnQueryArg: 'seocart_payment', // the argument a provider's return address carries
  *         locale: 'en_GB',
+ *         nonce: '…' | null,           // optional: a logged-in shopper's REST nonce; none for a guest
  *         methods: [ {
  *             id, label,               // the gateway's id; the method's name for shoppers
  *             mode: 'test' | 'live',
@@ -220,6 +221,15 @@ export function checkConfig( config ) {
 			'a query argument’s name'
 		),
 		locale: field( config, 'locale', 'locale', isText, 'text' ),
+		nonce:
+			field(
+				config,
+				'nonce',
+				'nonce',
+				( value ) =>
+					undefined === value || null === value || isName( value ),
+				'a nonce, or null for a guest'
+			) ?? null,
 		methods: Object.freeze( methods ),
 	} );
 }
