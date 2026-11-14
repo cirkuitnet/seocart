@@ -24,6 +24,7 @@ use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGateway;
 use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGatewaySetup;
 use SEOCart\Tests\Conformance\Payment\Reference\Variants\DeclinesThePartItSent;
 use SEOCart\Tests\Conformance\Payment\Reference\Variants\RefusesAPartBeforeSettlement;
+use SEOCart\Tests\Conformance\Payment\Reference\Variants\SendsThePartPastTheClient;
 use SEOCart\Tests\Conformance\Payment\Rule;
 use SEOCart\Tests\Conformance\Payment\RuleFailures;
 
@@ -90,6 +91,15 @@ final class PartialRefundsNeedSettlementConformanceTest extends ConformanceHarne
 	private const MIXED = 'test_rule_2_passes_a_matrix_of_partial_refunds_in_one_currency_under_the_declaration';
 
 	/**
+	 * The test whose gateway sends a declined part to the provider past its client.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const PAST_THE_CLIENT = 'test_a_gateway_that_sends_the_part_past_the_client_fails_rule_2_under_the_declaration';
+
+	/**
 	 * What the suite's set-up refused, in the test that expects it.
 	 *
 	 * @since 0.2.0
@@ -145,6 +155,15 @@ final class PartialRefundsNeedSettlementConformanceTest extends ConformanceHarne
 	public function test_rule_2_passes_a_matrix_of_partial_refunds_in_one_currency_under_the_declaration(): void {
 		$this->check( Rule::MatrixMatchesBehaviour );
 		$this->addToAssertionCount( 1 );
+	}
+
+	/**
+	 * Tests that rule 2 fails, under the declaration, a gateway that declines a part and sends it to the provider with WordPress's HTTP API, past its client.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_gateway_that_sends_the_part_past_the_client_fails_rule_2_under_the_declaration(): void {
+		$this->assertRuleFails( Rule::MatrixMatchesBehaviour, 'and a refund of one unit of the order captured in usd-any sent a request past the gateway\'s client' );
 	}
 
 	/**
@@ -248,6 +267,7 @@ final class PartialRefundsNeedSettlementConformanceTest extends ConformanceHarne
 		return match ( $this->getName( false ) ) {
 			self::REFUNDS_THE_PART  => new ReferenceGateway( $context ),
 			self::SENDS_THE_PART    => new DeclinesThePartItSent( $context ),
+			self::PAST_THE_CLIENT   => new SendsThePartPastTheClient( $context ),
 			self::NO_PARTIAL_REFUND => new class( $context ) extends RefusesAPartBeforeSettlement {
 
 				/**

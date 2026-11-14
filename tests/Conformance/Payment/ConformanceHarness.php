@@ -2408,6 +2408,9 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	/**
 	 * Rule 2, where the test declares that partial refunds wait for the provider's settlement (partialRefundsNeedSettlement()): a refund of one unit of a captured order is declined by the gateway, with nothing refunded and no request that moves money sent.
 	 *
+	 * No request means none through the gateway's client that moves money, and none past it that
+	 * WordPress's HTTP API saw (HttpWatch), as rule 8 counts them.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @param Rule                                                          $rule   The rule.
@@ -2417,6 +2420,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	private function partDeclinedBeforeSettlement( Rule $rule, array $placed, string $name ): void {
 		$refunded = $this->intentRow( $placed['intent_uuid'] )['refunded_minor'];
 		$before   = count( $this->transport->exchanges() );
+		$foreign  = count( $this->http->foreign() );
 		$refusal  = null;
 
 		try {
@@ -2431,6 +2435,10 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->assertSame( PaymentError::RefundDeclined, $refusal, $part . ( null === $refusal ? 'was made' : sprintf( 'was refused with %s', $refusal->value ) ) . ', not declined by the gateway.' );
 		$this->assertSame( $refunded, $this->intentRow( $placed['intent_uuid'] )['refunded_minor'], $part . 'changed the amount the intent has refunded.' );
 		$this->assertSame( array(), $sent, $part . sprintf( 'sent %s: a gateway declines a part before it asks the provider for anything.', 1 === count( $sent ) ? 'a request that moves money' : count( $sent ) . ' requests that move money' ) );
+
+		$past = count( $this->http->foreign() ) - $foreign;
+
+		$this->assertSame( 0, $past, $part . sprintf( 'sent %s past the gateway\'s client, which WordPress\'s HTTP API saw: a gateway declines a part before it asks the provider for anything.', 1 === $past ? 'a request' : $past . ' requests' ) );
 	}
 
 	/**
