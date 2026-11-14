@@ -85,6 +85,7 @@ use SEOCart\Contracts\HttpClient;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Customer\Application\Customers;
 use SEOCart\Customer\Domain\CustomerRepository;
+use SEOCart\Customer\Infrastructure\Doctor\StaleLinksCheck;
 use SEOCart\Customer\Infrastructure\MysqlCustomerRepository;
 use SEOCart\Interfaces\Operations\AbilitiesAdapter;
 use SEOCart\Interfaces\Operations\CliAdapter;
@@ -671,6 +672,7 @@ final class Modules {
 				$c->get( GatewaysCheck::class ),
 				$c->get( RateVersionCheck::class ),
 				$c->get( PromotionUsageCheck::class ),
+				$c->get( StaleLinksCheck::class ),
 				$c->get( SecretsCheck::class ),
 				...$c->get( CatalogChecks::class )->checks()
 			)
@@ -1708,12 +1710,13 @@ final class Modules {
 	}
 
 	/**
-	 * The customer module: the customer records and the service that says which record an actor is, which the order module's ActorCustomers port resolves to.
+	 * The customer module: the customer records, the service that says which record an actor is, which the order module's ActorCustomers port resolves to, and doctor's check of the links that are no longer true.
 	 *
 	 * It adds no hook: a record is created by the placement that asks for it, inside its first unit
 	 * of work, and a link to a user who is gone matches nobody without a hook following the user.
 	 * The service reads a user's registration time through WordPress's user read, which answers the
-	 * authenticated user from the request's cache.
+	 * authenticated user from the request's cache; the check asks WordPress for a page of users at
+	 * once, by their ids, on every site of a network.
 	 *
 	 * @since 0.2.0
 	 *
@@ -1730,6 +1733,30 @@ final class Modules {
 					$user = get_userdata( $userId );
 
 					return $user instanceof \WP_User ? (string) $user->user_registered : null;
+				}
+			)
+		);
+		$container->bind(
+			StaleLinksCheck::class,
+			static fn( Container $c ): StaleLinksCheck => new StaleLinksCheck(
+				$c->get( CustomerRepository::class ),
+				$c->get( Customers::class ),
+				static function ( array $userIds ): array {
+					$registered = array();
+					$users      = array() === $userIds ? array() : get_users(
+						array(
+							'blog_id'     => 0,
+							'include'     => $userIds,
+							'fields'      => array( 'ID', 'user_registered' ),
+							'count_total' => false,
+						)
+					);
+
+					foreach ( $users as $user ) {
+						$registered[ (int) $user->ID ] = (string) $user->user_registered;
+					}
+
+					return $registered;
 				}
 			)
 		);

@@ -34,6 +34,7 @@
 
 import {
 	expect,
+	type Browser,
 	type BrowserContext,
 	type Page,
 	type Request,
@@ -412,6 +413,8 @@ export interface StoreRequest {
 	storeHeader: boolean;
 	/** The idempotency key it carried, or null. */
 	idempotencyKey: string | null;
+	/** Whether it carried an order's access key, in `X-SEOCart-Order-Key`. */
+	orderKey: boolean;
 	/** The answer's status, once it arrived; 0 for none. */
 	status: number;
 }
@@ -476,6 +479,7 @@ export function storeRequests( page: Page ): RequestLedger {
 			body: request.postData() ?? '',
 			storeHeader: '1' === headers[ 'x-seocart-store' ],
 			idempotencyKey: headers[ 'idempotency-key' ] ?? null,
+			orderKey: 'x-seocart-order-key' in headers,
 			status: 0,
 		};
 
@@ -793,6 +797,154 @@ export function expectNoSecretInUrls(
 
 		expect( card, `A ${ kind } carries a card number.` ).toBeUndefined();
 	}
+}
+
+/** What expectOrderOwnedBy() is given: the order, its customer's signed-in page, another user, and the site. */
+export interface OwnedOrderCheck {
+	/** The order: its uuid, and the key its placement answered. */
+	order: { uuid: string; key: string };
+	/** The customer's page, at the site's origin and signed in, their REST nonce, and the page's ledger, started before the placement. */
+	owner: { page: Page; nonce: string; ledger: RequestLedger };
+	/** Another user, whom the caller created and deletes, and who owns no order. */
+	another: { login: string; password: string };
+	/** Signs a user in on a page, and returns the REST nonce WordPress gives that user's pages. */
+	signIn: (
+		page: Page,
+		login: string,
+		password: string
+	) => Promise< string >;
+	/** The browser, for the other user's and the guest's contexts. */
+	browser: Browser;
+	/** The site's home URL. */
+	baseURL: string;
+	/** Whether the site's certificate is self-signed. */
+	ignoreHTTPSErrors: boolean;
+}
+
+/** One read of the Store API, as a test sees it. */
+interface StoreRead {
+	status: number;
+	body: Record< string, unknown >;
+}
+
+/**
+ * Expects an order placed by a logged-in customer to be that customer's and nobody else's, on
+ * both storefront reads of it: the order's status read and the customer's list of their orders.
+ *
+ * - the customer reads the order from their page with the nonce and no key, and their list names
+ *   exactly that order;
+ * - the customer's login cookie without the nonce is a visitor's request: the order is
+ *   `order.not_found` and the list is empty;
+ * - another user, signed in in a context of their own with their own nonce, is answered
+ *   `order.not_found` and an empty list;
+ * - a guest, in a context of its own, is refused the order without the key and reads it with it,
+ *   and is listed nothing even with it;
+ * - no request of the customer's page carried the order's key, and no address it requested, its
+ *   key.
+ *
+ * The customer's reads are sent by the page itself, so its ledger records them.
+ *
+ * @param check The order, its customer, another user and the site.
+ */
+export async function expectOrderOwnedBy(
+	check: OwnedOrderCheck
+): Promise< void > {
+	const { order, owner } = check;
+	const statusUrl = restUrlOf(
+		check.baseURL,
+		`${ STORE_ROUTE }/orders/${ order.uuid }`
+	);
+	const listUrl = restUrlOf(
+		check.baseURL,
+		`${ STORE_ROUTE }/account/orders`
+	);
+	const fromPage = ( url: string, headers: Record< string, string > ) =>
+		owner.page.evaluate(
+			async ( request ): Promise< StoreRead > => {
+				const response = await fetch( request.url, {
+					headers: request.headers,
+					credentials: 'same-origin',
+				} );
+
+				return { status: response.status, body: await response.json() };
+			},
+			{ url, headers }
+		);
+	const listed = ( read: StoreRead ) =>
+		( ( read.body.orders ?? [] ) as Array< { uuid: string } > ).map(
+			( row ) => row.uuid
+		);
+
+	const own = await fromPage( statusUrl, { 'X-WP-Nonce': owner.nonce } );
+
+	expect( own.status, JSON.stringify( own.body ) ).toBe( 200 );
+	expect( own.body.uuid ).toBe( order.uuid );
+	expect(
+		listed( await fromPage( listUrl, { 'X-WP-Nonce': owner.nonce } ) ),
+		"The customer's list names their order, and only it."
+	).toEqual( [ order.uuid ] );
+
+	const cookieOnly = await fromPage( statusUrl, {} );
+
+	expect( cookieOnly.status, "The customer's cookie without the nonce" ).toBe(
+		404
+	);
+	expect( cookieOnly.body.code ).toBe( 'order.not_found' );
+	expect( listed( await fromPage( listUrl, {} ) ) ).toEqual( [] );
+
+	for ( const who of [ 'another user', 'a guest' ] ) {
+		const context = await check.browser.newContext( {
+			baseURL: check.baseURL,
+			ignoreHTTPSErrors: check.ignoreHTTPSErrors,
+			storageState: { cookies: [], origins: [] },
+		} );
+
+		try {
+			await forwardClientAddress( context, check.baseURL );
+
+			const page = await context.newPage();
+			const nonce =
+				'another user' === who
+					? await check.signIn(
+							page,
+							check.another.login,
+							check.another.password
+						)
+					: null;
+			const headers: Record< string, string > = nonce
+				? { 'X-WP-Nonce': nonce }
+				: {};
+			const refused = await context.request.get( statusUrl, { headers } );
+			const list = await context.request.get( listUrl, {
+				headers: { ...headers, 'X-SEOCart-Order-Key': order.key },
+			} );
+
+			expect( refused.status(), `${ who }, without the key` ).toBe( 404 );
+			expect( ( await refused.json() ).code ).toBe( 'order.not_found' );
+			expect( list.status() ).toBe( 200 );
+			expect(
+				listed( { status: list.status(), body: await list.json() } ),
+				`${ who } is listed nothing, the key presented or not.`
+			).toEqual( [] );
+
+			if ( null === nonce ) {
+				const keyed = await context.request.get( statusUrl, {
+					headers: { 'X-SEOCart-Order-Key': order.key },
+				} );
+
+				expect( keyed.status(), 'A guest with the key' ).toBe( 200 );
+				expect( ( await keyed.json() ).uuid ).toBe( order.uuid );
+			}
+		} finally {
+			await context.close();
+		}
+	}
+
+	expect(
+		owner.ledger.store.filter( ( entry ) => entry.orderKey ),
+		"A request of the customer's page carried the order's key."
+	).toEqual( [] );
+	expectNoSecretInUrls( owner.ledger, [ order.key ] );
 }
 
 /**

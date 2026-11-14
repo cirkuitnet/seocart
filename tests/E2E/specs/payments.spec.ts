@@ -41,7 +41,9 @@
  * 11. the page sends the Store API the host's writes and no other;
  * 12. the payment section passes axe idle, mounted and declined;
  * 13. the module the site serves is within its budget.json ceiling;
- * 14. a registered customer places with the nonce the page gives the host;
+ * 14. a registered customer places with the nonce the page gives the host, and the order is that
+ *     customer's alone: read with the nonce and no key, in their list, and refused to another
+ *     user and to a guest without the key;
  * 15. a reload after a lost answer: the host hands over the order the store placed; and when the
  *     request never left, it keeps the placement and sends nothing on loading, and placing again
  *     places one order under the kept key;
@@ -82,6 +84,7 @@ import {
 	expectNoSecretInUrls,
 	expectNothingSecretKept,
 	expectOnlyHostWrites,
+	expectOrderOwnedBy,
 	expectRemountOn,
 	forwardClientAddress,
 	hostEvents,
@@ -1481,13 +1484,15 @@ test.describe( 'The payment section, as a guest', () => {
 		);
 	} );
 
-	test( '(14) a registered customer places with the nonce the page gives the host, as that customer', async ( {
+	test( '(14) a registered customer places with the nonce the page gives the host, as that customer, and the order is theirs alone', async ( {
 		browser,
 		requestUtils,
 		pluginBasePath,
 	} ) => {
 		const login = `e2e-customer-${ Date.now() }`;
 		const password = randomBytes( 18 ).toString( 'base64url' );
+		const anotherLogin = `e2e-another-${ Date.now() }`;
+		const anotherPassword = randomBytes( 18 ).toString( 'base64url' );
 		const admin = await requestUtils.rest< { id: number } >( {
 			path: '/wp/v2/users/me',
 		} );
@@ -1498,6 +1503,16 @@ test.describe( 'The payment section, as a guest', () => {
 				username: login,
 				email: `${ login }@example.com`,
 				password,
+				roles: [ 'subscriber' ],
+			},
+		} );
+		const another = await requestUtils.rest< { id: number } >( {
+			method: 'POST',
+			path: '/wp/v2/users',
+			data: {
+				username: anotherLogin,
+				email: `${ anotherLogin }@example.com`,
+				password: anotherPassword,
 				roles: [ 'subscriber' ],
 			},
 		} );
@@ -1546,29 +1561,36 @@ test.describe( 'The payment section, as a guest', () => {
 				status: 'processing',
 			} );
 
-			const read = await context.request.get(
-				storeUrl( `/orders/${ order.orderUuid }` ),
-				{
-					headers: {
-						...headers,
-						'X-SEOCart-Order-Key': String( order.orderKey ),
-					},
-				}
-			);
-
-			expect( read.status() ).toBe( 200 );
+			// The placement sent the host's writes alone; then the page reads the order as its customer.
 			await expectOnlyHostWrites( page, customerLedger );
+
+			// The order is the customer's: read with the nonce and no key, listed, and nobody else's.
+			await expectOrderOwnedBy( {
+				order: {
+					uuid: String( order.orderUuid ),
+					key: String( order.orderKey ),
+				},
+				owner: { page, nonce, ledger: customerLedger },
+				another: { login: anotherLogin, password: anotherPassword },
+				signIn,
+				browser,
+				baseURL: home(),
+				ignoreHTTPSErrors: ignoreHTTPSErrors(),
+			} );
 			expectNoSecretInUrls( customerLedger, [
 				String( order.orderKey ),
 				nonce,
 			] );
 		} finally {
 			await context.close();
-			await requestUtils.rest( {
-				method: 'DELETE',
-				path: `/wp/v2/users/${ customer.id }`,
-				params: { force: true, reassign: admin.id },
-			} );
+
+			for ( const user of [ customer, another ] ) {
+				await requestUtils.rest( {
+					method: 'DELETE',
+					path: `/wp/v2/users/${ user.id }`,
+					params: { force: true, reassign: admin.id },
+				} );
+			}
 		}
 	} );
 
@@ -2086,6 +2108,8 @@ test.describe( 'The payment section, as a guest', () => {
 				shopper: `shopper-${ first.id }`,
 			} );
 
+			const keptForFirst = await keptPlacement( page );
+
 			// The first signs out, the cart's cookie untouched, and the second signs in in the tab.
 			const kept = ( await context.cookies() ).filter(
 				( cookie ) => ! cookie.name.startsWith( 'wordpress_' )
@@ -2093,8 +2117,15 @@ test.describe( 'The payment section, as a guest', () => {
 
 			await context.clearCookies();
 			await context.addCookies( kept );
+
+			const secondNonce = await signIn(
+				page,
+				second.login,
+				second.password
+			);
+
 			await openPage( page, pluginBasePath, {
-				nonce: await signIn( page, second.login, second.password ),
+				nonce: secondNonce,
 				shopper: `shopper-${ second.id }`,
 			} );
 
@@ -2110,6 +2141,57 @@ test.describe( 'The payment section, as a guest', () => {
 				`GET ${ STORE }/cart`,
 			] );
 			await expectOnlyHostWrites( page, shopperLedger );
+
+			// Were the page's own check missing, the first shopper's kept placement, taken for the
+			// second's, would be asked for under the second's session: the store hands them nothing of
+			// the first shopper's order, as for a key it never saw.
+			await page.evaluate(
+				( [ item, placement ] ) =>
+					window.sessionStorage.setItem(
+						item,
+						JSON.stringify( placement )
+					),
+				[
+					KEPT,
+					{ ...keptForFirst, shopper: `shopper-${ second.id }` },
+				] as const
+			);
+
+			const asked = page.waitForResponse(
+				( response ) =>
+					'POST' === response.request().method() &&
+					`${ STORE }/checkout` ===
+						new URL( response.url() ).searchParams.get(
+							'rest_route'
+						)
+			);
+
+			await openPage( page, pluginBasePath, {
+				nonce: secondNonce,
+				shopper: `shopper-${ second.id }`,
+			} );
+
+			const answer = await asked;
+			const said = await answer.text();
+			const theFirsts = lost as Record< string, unknown >;
+
+			expect( answer.request().headers()[ 'idempotency-key' ] ).toBe(
+				keptForFirst?.key
+			);
+			expect( answer.status(), said ).toBeGreaterThanOrEqual( 400 );
+
+			for ( const member of [
+				'order_uuid',
+				'order_number',
+				'order_key',
+			] ) {
+				expect(
+					said.includes( String( theFirsts[ member ] ) ),
+					`The second shopper was told the first's ${ member }.`
+				).toBe( false );
+			}
+
+			expect( await placedOrders( page ) ).toEqual( [] );
 		} finally {
 			await context.close();
 
