@@ -2431,8 +2431,9 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 			$this->assertSame( array( $first->kind, $first->eventId ), array( $late->kind, $late->eventId ), $rule->message() . sprintf( 'the test declares that deliveries carry no signed time (deliveriesCarryNoSignedTime()), and the delivery %1$s read with the clock %2$s was answered %3$s (%4$s), not as on arrival, %5$s (%6$s): a delivery that carries no signed time reads the same whenever it comes, and the store\'s receipt refuses a replay.', $name, $when, $late->kind->value, (string) ( $late->eventId ?? $late->reason ), $first->kind->value, (string) $first->eventId ) );
 		}
 
+		// A result names its intent by the store's uuid, or, where the provider's payload carries none, by the provider's id of it, as the contract allows.
 		if ( WebhookReadingKind::Result === $first->kind ) {
-			$this->assertTrue( null !== $first->result && $this->gatewayId() === $first->result->provider && '' !== $first->result->intentUuid, $rule->message() . sprintf( 'the delivery %s reads as a payment result that is not one of this gateway\'s, about an intent.', $name ) );
+			$this->assertTrue( null !== $first->result && $this->gatewayId() === $first->result->provider && ( '' !== $first->result->intentUuid || '' !== (string) $first->result->providerIntentId ), $rule->message() . sprintf( 'the delivery %s reads as a payment result that is not one of this gateway\'s, about an intent.', $name ) );
 		} else {
 			$this->assertNull( $first->result, $rule->message() . sprintf( 'the delivery %s reads as ignored, and carries a result.', $name ) );
 		}
