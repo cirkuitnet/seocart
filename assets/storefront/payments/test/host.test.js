@@ -16,6 +16,8 @@ const CART = {
 	billingCountry: 'GB',
 };
 
+const BILLING = { country: 'GB', postcode: 'SW1Y 4JH' };
+
 /**
  * The answer of a placement: the order, and the outcome given.
  *
@@ -78,9 +80,10 @@ function resumed( outcome ) {
  * Returns a configuration with the methods given.
  *
  * @param {Object[]} methods The methods' differences from a plain test method.
+ * @param {Object}   fields  Optional. Top-level fields to set.
  * @return {Object} The configuration.
  */
-function config( methods ) {
+function config( methods, fields = {} ) {
 	return {
 		contract: '0.1.0',
 		restRoot: 'https://shop.example/wp-json/',
@@ -96,20 +99,22 @@ function config( methods ) {
 			paysOnDelivery: false,
 			...method,
 		} ) ),
+		...fields,
 	};
 }
 
 /**
- * Returns an island that records every call made to it.
+ * Returns an island that records every call made to it, and what each was given.
  *
  * @param {string} id        Its id.
- * @param {Object} behaviour Optional. `token`, `action` (what action() resolves to, or false for an
- *                           island that takes no step), `canPay`, `confirm` (a function replacing
- *                           confirm()), `mountFails`.
+ * @param {Object} behaviour Optional. `token` (a list gives one per confirmation), `action` (what
+ *                           action() resolves to, or false for an island that takes no step),
+ *                           `canPay`, `confirm` (a function replacing confirm()), `mountFails`.
  * @return {{island: Object, calls: Array}} The island and its calls.
  */
 function fakeIsland( id, behaviour = {} ) {
 	const calls = [];
+	const tokens = [].concat( behaviour.token ?? 'stub:approve' );
 	const island = {
 		id,
 		contractVersion: '0.1.0',
@@ -125,12 +130,14 @@ function fakeIsland( id, behaviour = {} ) {
 			return {
 				confirm:
 					behaviour.confirm ??
-					( async () => {
-						calls.push( [ 'confirm' ] );
+					( async ( given ) => {
+						calls.push( [ 'confirm', given ] );
 						return {
 							payment_data: {
 								payment_token:
-									behaviour.token ?? 'stub:approve',
+									tokens.length > 1
+										? tokens.shift()
+										: tokens[ 0 ],
 							},
 						};
 					} ),
@@ -159,6 +166,7 @@ function scriptedFetch( answers ) {
 		requests.push( {
 			url,
 			init,
+			route: url.split( 'v1' )[ 1 ],
 			key: init.headers[ 'Idempotency-Key' ],
 			body: JSON.parse( init.body ),
 		} );
@@ -191,9 +199,37 @@ function scriptedFetch( answers ) {
 const flush = () => new Promise( ( resolve ) => setTimeout( resolve, 0 ) );
 
 /**
+ * Keeps a placement in the tab's storage, as an earlier load of the page left it.
+ *
+ * @param {Object} fields Optional. Members to set or replace.
+ */
+function keep( fields = {} ) {
+	window.sessionStorage.setItem(
+		STORAGE_KEY,
+		JSON.stringify( {
+			key: 'kept-key',
+			cartVersion: 3,
+			amountMinor: 1999,
+			currency: 'GBP',
+			gatewayId: 'stub',
+			intentUuid: null,
+			...fields,
+		} )
+	);
+}
+
+/**
+ * Returns what the tab's storage holds of the placement, parsed, or null.
+ *
+ * @return {Object|null} The stored placement.
+ */
+const stored = () =>
+	JSON.parse( window.sessionStorage.getItem( STORAGE_KEY ) ?? 'null' );
+
+/**
  * Creates a host on a page of its own.
  *
- * @param {Object} setup Optional. `methods`, `islands`, `answers`, `cart`, `href`, `onStale`.
+ * @param {Object} setup Optional. `methods`, `islands`, `answers`, `cart`, `href`, `onStale`, `nonce`.
  * @return {Object} The host, its page, its requests and what its callbacks heard.
  */
 function setUp( setup = {} ) {
@@ -215,7 +251,13 @@ function setUp( setup = {} ) {
 		scope.seocart.payments.register( island );
 	}
 
-	const heard = { changes: [], placed: [], selected: [], stale: [] };
+	const heard = {
+		changes: [],
+		placed: [],
+		selected: [],
+		stale: [],
+		waits: [],
+	};
 	const root = document.createElement( 'div' );
 
 	document.body.append( root );
@@ -223,7 +265,10 @@ function setUp( setup = {} ) {
 	const host = createHost(
 		root,
 		{
-			config: config( setup.methods ?? [ { id: 'stub' } ] ),
+			config: config(
+				setup.methods ?? [ { id: 'stub' } ],
+				undefined === setup.nonce ? {} : { nonce: setup.nonce }
+			),
 			cart: setup.cart ?? CART,
 			onSelect: ( id ) => heard.selected.push( id ),
 			onStale: async ( detail ) => {
@@ -237,7 +282,9 @@ function setUp( setup = {} ) {
 			window: scope,
 			registry: scope.seocart.payments,
 			onRegister: installed.onRegister,
-			wait: async () => {},
+			wait: async ( ms ) => {
+				heard.waits.push( ms );
+			},
 		}
 	);
 
@@ -406,6 +453,28 @@ describe( 'the methods', () => {
 		).not.toBe( '1' );
 	} );
 
+	it( 'gives the island the billing address when it confirms, not when it is mounted: a new address alone mounts nothing again', async () => {
+		const { island, calls } = fakeIsland( 'stub' );
+		const { host } = setUp( {
+			islands: [ island ],
+			answers: [ { status: 200, body: placed( 'approved' ) } ],
+		} );
+
+		await flush();
+		host.update( { ...CART, billing: BILLING } );
+		await flush();
+
+		expect( names( calls ) ).toEqual( [ 'mount' ] );
+		expect( calls[ 0 ][ 1 ] ).not.toHaveProperty( 'billing' );
+
+		await host.place();
+
+		const [ , given ] = calls.find( ( [ name ] ) => 'confirm' === name );
+
+		expect( given ).toEqual( { billing: BILLING } );
+		expect( Object.isFrozen( given.billing ) ).toBe( true );
+	} );
+
 	it( 'removes itself and unmounts the island when destroyed', async () => {
 		const { island, calls } = fakeIsland( 'stub' );
 		const { host, root } = setUp( { islands: [ island ] } );
@@ -420,7 +489,7 @@ describe( 'the methods', () => {
 
 describe( 'place()', () => {
 	it( 'sends the placement with a fresh key and the Store API header, and hands over the order once', async () => {
-		const { island } = fakeIsland( 'stub' );
+		const { island, calls } = fakeIsland( 'stub' );
 		const { host, requests, heard, last } = setUp( {
 			islands: [ island ],
 			answers: [ { status: 200, body: placed( 'approved' ) } ],
@@ -438,12 +507,14 @@ describe( 'place()', () => {
 			credentials: 'same-origin',
 			headers: { 'X-SEOCart-Store': '1', 'Idempotency-Key': 'key-1' },
 		} );
+		expect( requests[ 0 ].init.headers ).not.toHaveProperty( 'X-WP-Nonce' );
 		expect( requests[ 0 ].body ).toEqual( {
 			cart_version: 3,
 			grand_total_minor: 1999,
 			currency: 'GBP',
 			payment_data: { payment_token: 'stub:approve' },
 		} );
+		expect( calls[ 1 ] ).toEqual( [ 'confirm', { billing: null } ] );
 		expect( heard.placed ).toEqual( [
 			{
 				outcome: 'approved',
@@ -460,13 +531,32 @@ describe( 'place()', () => {
 			phase: 'settled',
 			error: null,
 		} );
-		expect( window.sessionStorage.getItem( STORAGE_KEY ) ).toBeNull();
+		expect( stored() ).toBeNull();
+	} );
+
+	it( 'sends a logged-in shopper’s nonce with both writes', async () => {
+		const { island } = fakeIsland( 'stub' );
+		const { host, requests } = setUp( {
+			islands: [ island ],
+			nonce: 'a1b2c3d4e5',
+			answers: [
+				{ status: 200, body: acting() },
+				{ status: 200, body: resumed( 'approved' ) },
+			],
+		} );
+
+		await flush();
+		await host.place();
+
+		expect(
+			requests.map( ( request ) => request.init.headers[ 'X-WP-Nonce' ] )
+		).toEqual( [ 'a1b2c3d4e5', 'a1b2c3d4e5' ] );
 	} );
 
 	it( 'confirms nothing and sends no data for a method without an island', async () => {
 		const { host, requests } = setUp( {
 			methods: [ { id: 'bank', instructions: 'Pay by transfer.' } ],
-			answers: [ { status: 200, body: placed( 'pending' ) } ],
+			answers: [ { status: 200, body: placed( 'processing' ) } ],
 		} );
 
 		await host.place();
@@ -490,11 +580,10 @@ describe( 'place()', () => {
 		expect( requests ).toHaveLength( 1 );
 	} );
 
-	it( 'shows a decline in the island, reads the cart again, and places the next attempt with a fresh key', async () => {
-		const { island, calls } = fakeIsland( 'stub' );
-		const { host, requests, heard, last } = setUp( {
-			islands: [ island ],
-			answers: [
+	it.each( [
+		[
+			'at the placement',
+			[
 				{
 					status: 402,
 					body: {
@@ -502,36 +591,103 @@ describe( 'place()', () => {
 						message: 'The payment was declined.',
 					},
 				},
-				{ status: 200, body: placed( 'approved' ) },
 			],
-			onStale: () => ( { ...CART, version: 5 } ),
-		} );
+		],
+		[
+			'replayed',
+			[
+				{
+					status: 200,
+					body: placed( 'declined', {
+						message: 'The payment was declined.',
+					} ),
+				},
+			],
+		],
+		[
+			'at the resume',
+			[
+				{ status: 200, body: acting() },
+				{
+					status: 402,
+					body: {
+						code: 'checkout.payment_declined',
+						message: 'The payment was declined.',
+					},
+				},
+			],
+		],
+	] )(
+		'shows a decline %s in the island, reads the cart again once, hands nothing over and ends the key',
+		async ( name, answers ) => {
+			const { island, calls } = fakeIsland( 'stub' );
+			const { host, requests, heard, last } = setUp( {
+				islands: [ island ],
+				answers: [
+					...answers,
+					{ status: 200, body: placed( 'approved' ) },
+				],
+				onStale: () => ( { ...CART, version: 5 } ),
+			} );
 
-		await flush();
-		await host.place();
+			await flush();
+			await host.place();
 
-		expect( calls.find( ( [ name ] ) => 'showError' === name ) ).toEqual( [
-			'showError',
-			{ code: 'declined', message: 'The payment was declined.' },
-		] );
-		expect( heard.stale ).toEqual( [
-			{ reason: 'declined', code: 'checkout.payment_declined' },
-		] );
-		expect( last() ).toEqual( {
-			selected: 'stub',
-			phase: 'idle',
-			error: { code: 'declined', detail: 'checkout.payment_declined' },
-		} );
+			expect(
+				calls.find( ( [ call ] ) => 'showError' === call )
+			).toEqual( [
+				'showError',
+				{ code: 'declined', message: 'The payment was declined.' },
+			] );
+			expect( heard.stale.map( ( detail ) => detail.reason ) ).toEqual( [
+				'declined',
+			] );
+			expect( heard.placed ).toEqual( [] );
+			expect( last().error.code ).toBe( 'declined' );
+			expect( stored() ).toBeNull();
 
-		await host.place();
+			await host.place();
 
-		expect( requests.map( ( request ) => request.key ) ).toEqual( [
-			'key-1',
-			'key-2',
-		] );
-		expect( requests[ 1 ].body.cart_version ).toBe( 5 );
-		expect( heard.placed ).toHaveLength( 1 );
-	} );
+			const placements = requests.filter(
+				( request ) => '/checkout' === request.route
+			);
+
+			expect( placements.at( -1 ).key ).not.toBe( placements[ 0 ].key );
+			expect( placements.at( -1 ).body.cart_version ).toBe( 5 );
+			expect( heard.placed ).toHaveLength( 1 );
+		}
+	);
+
+	it.each( [
+		[ 'at the placement', [ { status: 200, body: placed( 'voided' ) } ] ],
+		[
+			'at the resume',
+			[
+				{ status: 200, body: acting() },
+				{ status: 200, body: resumed( 'voided' ) },
+			],
+		],
+	] )(
+		'tells the island nothing of a void %s, reads the cart again once, hands nothing over and ends the key',
+		async ( name, answers ) => {
+			const { island, calls } = fakeIsland( 'stub' );
+			const { host, heard, last } = setUp( {
+				islands: [ island ],
+				answers,
+			} );
+
+			await flush();
+			await host.place();
+
+			expect( names( calls ) ).not.toContain( 'showError' );
+			expect( heard.stale.map( ( detail ) => detail.reason ) ).toEqual( [
+				'voided',
+			] );
+			expect( heard.placed ).toEqual( [] );
+			expect( last().error.code ).toBe( 'voided' );
+			expect( stored() ).toBeNull();
+		}
+	);
 
 	it( 'tells the island nothing when the cart changed, takes the new cart and mints a fresh key', async () => {
 		const { island, calls } = fakeIsland( 'stub' );
@@ -577,9 +733,11 @@ describe( 'place()', () => {
 			{ status: 502, body: { code: 'checkout.gateway_unavailable' } },
 		],
 	] )(
-		'sends the same placement with the same key after %s, confirming nothing again',
+		'confirms again after %s and sends the same key with what the island confirms now',
 		async ( name, failure ) => {
-			const { island, calls } = fakeIsland( 'stub' );
+			const { island, calls } = fakeIsland( 'stub', {
+				token: [ 'stub:first', 'stub:approve' ],
+			} );
 			const { host, requests, heard } = setUp( {
 				islands: [ island ],
 				answers: [
@@ -591,9 +749,14 @@ describe( 'place()', () => {
 			await flush();
 			await host.place();
 
-			expect(
-				JSON.parse( window.sessionStorage.getItem( STORAGE_KEY ) ).key
-			).toBe( 'key-1' );
+			expect( stored() ).toEqual( {
+				key: 'key-1',
+				cartVersion: 3,
+				amountMinor: 1999,
+				currency: 'GBP',
+				gatewayId: 'stub',
+				intentUuid: null,
+			} );
 
 			await host.retry();
 
@@ -601,9 +764,49 @@ describe( 'place()', () => {
 				'key-1',
 				'key-1',
 			] );
-			expect( requests[ 1 ].body ).toEqual( requests[ 0 ].body );
-			expect( names( calls ) ).toEqual( [ 'mount', 'confirm' ] );
+			expect(
+				requests.map(
+					( request ) => request.body.payment_data.payment_token
+				)
+			).toEqual( [ 'stub:first', 'stub:approve' ] );
+			expect( names( calls ) ).toEqual( [
+				'mount',
+				'confirm',
+				'confirm',
+			] );
 			expect( heard.placed ).toHaveLength( 1 );
+		}
+	);
+
+	it.each( [
+		[ 'total', { ...CART, version: 4, amountMinor: 2999 }, 'stub' ],
+		[ 'currency', { ...CART, version: 4, currency: 'EUR' }, 'stub' ],
+		[ 'payment method', CART, 'other' ],
+	] )(
+		'mints a fresh key when the %s changed since the kept placement',
+		async ( change, cart, method ) => {
+			const { island } = fakeIsland( 'stub' );
+			const other = fakeIsland( 'other' );
+			const { host, requests } = setUp( {
+				methods: [ { id: 'stub' }, { id: 'other' } ],
+				islands: [ island, other.island ],
+				answers: [
+					{ network: true },
+					{ status: 200, body: placed( 'approved' ) },
+				],
+			} );
+
+			await flush();
+			await host.place();
+			host.update( cart );
+			host.select( method );
+			await flush();
+			await host.place();
+
+			expect( requests.map( ( request ) => request.key ) ).toEqual( [
+				'key-1',
+				'key-2',
+			] );
 		}
 	);
 
@@ -629,7 +832,90 @@ describe( 'place()', () => {
 			'key-1',
 		] );
 		expect( heard.placed ).toHaveLength( 1 );
+		expect( heard.waits ).toEqual( [ 1000 ] );
 	} );
+
+	it( 'asks once more after a moment when the placement is pending, and hands the order over once settled', async () => {
+		const { island } = fakeIsland( 'stub' );
+		const { host, requests, heard } = setUp( {
+			islands: [ island ],
+			answers: [
+				{ status: 200, body: placed( 'pending' ) },
+				{ status: 200, body: placed( 'approved' ) },
+			],
+		} );
+
+		await flush();
+		await host.place();
+
+		expect( heard.waits ).toEqual( [ 2000 ] );
+		expect( requests.map( ( request ) => request.key ) ).toEqual( [
+			'key-1',
+			'key-1',
+		] );
+		expect( heard.placed ).toEqual( [
+			expect.objectContaining( { outcome: 'approved' } ),
+		] );
+	} );
+
+	it( 'rests with the key kept when the placement is still pending, and hands nothing over', async () => {
+		const { island } = fakeIsland( 'stub' );
+		const { host, requests, heard, last } = setUp( {
+			islands: [ island ],
+			answers: [
+				{ status: 200, body: placed( 'pending' ) },
+				{ status: 200, body: placed( 'pending' ) },
+			],
+		} );
+
+		await flush();
+		await host.place();
+
+		expect( requests ).toHaveLength( 2 );
+		expect( heard.placed ).toEqual( [] );
+		expect( last() ).toMatchObject( {
+			phase: 'idle',
+			error: { code: 'pending' },
+		} );
+		expect( stored().key ).toBe( 'key-1' );
+	} );
+
+	it.each( [
+		[ 'store_api.nonce_missing', 403 ],
+		[ 'rest_cookie_invalid_nonce', 403 ],
+	] )(
+		'asks for a fresh session on %s, tells the island and the checkout nothing, and keeps the key',
+		async ( code, status ) => {
+			const { island, calls } = fakeIsland( 'stub' );
+			const { host, requests, heard, last } = setUp( {
+				islands: [ island ],
+				nonce: 'old',
+				answers: [
+					{ status, body: { code } },
+					{ status: 200, body: placed( 'approved' ) },
+				],
+			} );
+
+			await flush();
+			await host.place();
+
+			expect( last().error ).toEqual( {
+				code: 'session_expired',
+				detail: code,
+			} );
+			expect( names( calls ) ).not.toContain( 'showError' );
+			expect( heard.stale ).toEqual( [] );
+			expect( stored().key ).toBe( 'key-1' );
+
+			await host.retry();
+
+			expect( requests.map( ( request ) => request.key ) ).toEqual( [
+				'key-1',
+				'key-1',
+			] );
+			expect( heard.placed ).toHaveLength( 1 );
+		}
+	);
 
 	it( 'shows the island’s own refusal and sends nothing', async () => {
 		const refusing = fakeIsland( 'stub', {
@@ -728,12 +1014,13 @@ describe( 'place()', () => {
 } );
 
 describe( 'a payment the shopper must act for', () => {
-	it( 'offers the island the step with the return address, then resumes and hands over the order', async () => {
+	it( 'offers the island the step with the return address and the billing address, then resumes and hands over the order', async () => {
 		const { island, calls } = fakeIsland( 'stub', {
 			token: 'stub:requires_action',
 		} );
 		const { host, requests, heard } = setUp( {
 			islands: [ island ],
+			cart: { ...CART, billing: BILLING },
 			answers: [
 				{ status: 200, body: acting() },
 				{ status: 200, body: resumed( 'approved' ) },
@@ -749,6 +1036,7 @@ describe( 'a payment the shopper must act for', () => {
 			{
 				intentUuid: UUID,
 				returnUrl: `https://shop.example/checkout/?seocart_payment=${ UUID }`,
+				billing: BILLING,
 			},
 		] );
 		expect( requests[ 1 ].url ).toBe(
@@ -765,10 +1053,10 @@ describe( 'a payment the shopper must act for', () => {
 				intentUuid: UUID,
 			} ),
 		] );
-		expect( window.sessionStorage.getItem( STORAGE_KEY ) ).toBeNull();
+		expect( stored() ).toBeNull();
 	} );
 
-	it( 'sends the shopper to the provider’s page when the island takes no step, keeping the key and the payment', async () => {
+	it( 'sends the shopper to the provider’s page when the island takes no step, keeping the key and the payment, and no secret', async () => {
 		const { island, calls } = fakeIsland( 'stub', {
 			action: false,
 			token: 'stub:requires_action',
@@ -781,16 +1069,24 @@ describe( 'a payment the shopper must act for', () => {
 		await flush();
 		await host.place();
 
+		const text = window.sessionStorage.getItem( STORAGE_KEY );
+
 		expect( scope.location.assign ).toHaveBeenCalledWith(
 			`https://shop.example/?seocart_payment=${ UUID }`
 		);
 		expect( names( calls ) ).toEqual( [ 'mount', 'confirm' ] );
-		expect(
-			JSON.parse( window.sessionStorage.getItem( STORAGE_KEY ) )
-		).toMatchObject( {
-			key: 'key-1',
-			intentUuid: UUID,
-		} );
+		expect( Object.keys( JSON.parse( text ) ).sort() ).toEqual( [
+			'amountMinor',
+			'cartVersion',
+			'currency',
+			'gatewayId',
+			'intentUuid',
+			'key',
+		] );
+		expect( stored() ).toMatchObject( { key: 'key-1', intentUuid: UUID } );
+		expect( text ).not.toContain( 'stub:requires_action' );
+		expect( text ).not.toContain( 'stub_cs_' );
+		expect( text ).not.toContain( 'k'.repeat( 32 ) );
 	} );
 
 	it( 'cannot take a script’s step without an island that takes it, and keeps the key', async () => {
@@ -814,7 +1110,7 @@ describe( 'a payment the shopper must act for', () => {
 
 		expect( scope.location.assign ).not.toHaveBeenCalled();
 		expect( last().error ).toEqual( { code: 'action_unsupported' } );
-		expect( window.sessionStorage.getItem( STORAGE_KEY ) ).not.toBeNull();
+		expect( stored() ).not.toBeNull();
 	} );
 
 	it( 'does nothing more when the island says the shopper is leaving the page', async () => {
@@ -831,7 +1127,7 @@ describe( 'a payment the shopper must act for', () => {
 		expect( last().phase ).toBe( 'acting' );
 	} );
 
-	it( 'keeps the key when the shopper has not finished, so the same step is taken again', async () => {
+	it( 'keeps the key when the shopper has not finished, so placing again confirms and takes the same step', async () => {
 		const { island, calls } = fakeIsland( 'stub' );
 		const { host, requests, heard, last } = setUp( {
 			islands: [ island ],
@@ -856,12 +1152,39 @@ describe( 'a payment the shopper must act for', () => {
 			'key-1',
 			undefined,
 		] );
-		expect(
-			names( calls ).filter( ( name ) => 'action' === name )
-		).toHaveLength( 2 );
+		expect( names( calls ) ).toEqual( [
+			'mount',
+			'confirm',
+			'action',
+			'confirm',
+			'action',
+		] );
 		expect( heard.placed ).toEqual( [
 			expect.objectContaining( { outcome: 'duplicate' } ),
 		] );
+	} );
+
+	it( 'resumes again when the resume is what failed', async () => {
+		const { island } = fakeIsland( 'stub' );
+		const { host, requests, heard } = setUp( {
+			islands: [ island ],
+			answers: [
+				{ status: 200, body: acting() },
+				{ network: true },
+				{ status: 200, body: resumed( 'approved' ) },
+			],
+		} );
+
+		await flush();
+		await host.place();
+		await host.retry();
+
+		expect( requests.map( ( request ) => request.route ) ).toEqual( [
+			'/checkout',
+			'/checkout/resume',
+			'/checkout/resume',
+		] );
+		expect( heard.placed ).toHaveLength( 1 );
 	} );
 
 	it( 'reports an answer that asks the shopper to act but names no payment, keeping the key', async () => {
@@ -881,24 +1204,29 @@ describe( 'a payment the shopper must act for', () => {
 	} );
 } );
 
-describe( 'the return from a provider’s page', () => {
+describe( 'on loading', () => {
 	const returnedTo = `https://shop.example/checkout/?lang=en&seocart_payment=${ UUID }`;
 
-	it( 'resumes the payment, recovers the order by sending the kept placement again, and clears the address', async () => {
-		const kept = {
-			key: 'kept-key',
-			cartVersion: 3,
-			amountMinor: 1999,
-			currency: 'GBP',
-			gatewayId: 'stub',
-			paymentData: { payment_token: 'stub:requires_action' },
-			intentUuid: UUID,
-		};
+	/**
+	 * Expects nothing to have acted while the page loaded: no island's step, no navigation.
+	 *
+	 * @param {Array}  calls The island's calls.
+	 * @param {Object} scope The page.
+	 */
+	function expectNothingActed( calls, scope ) {
+		expect( names( calls ) ).not.toContain( 'action' );
+		expect( names( calls ) ).not.toContain( 'confirm' );
+		expect( scope.location.assign ).not.toHaveBeenCalled();
+	}
 
-		window.sessionStorage.setItem( STORAGE_KEY, JSON.stringify( kept ) );
+	it( 'resumes the payment the shopper was sent back for, asks the kept placement again with no payment data for the order, and clears the address', async () => {
+		keep( { intentUuid: UUID } );
 
+		const { island, calls } = fakeIsland( 'stub' );
 		const { scope, requests, heard } = setUp( {
 			href: returnedTo,
+			islands: [ island ],
+			cart: { ...CART, version: 4 },
 			answers: [
 				{ status: 200, body: resumed( 'approved' ) },
 				{ status: 200, body: placed( 'approved' ) },
@@ -913,15 +1241,17 @@ describe( 'the return from a provider’s page', () => {
 			'https://shop.example/checkout/?lang=en'
 		);
 		expect(
-			requests.map( ( request ) => [
-				request.url.split( 'v1' )[ 1 ],
-				request.key,
-			] )
+			requests.map( ( request ) => [ request.route, request.key ] )
 		).toEqual( [
 			[ '/checkout/resume', undefined ],
 			[ '/checkout', 'kept-key' ],
 		] );
-		expect( requests[ 1 ].body.payment_data ).toEqual( kept.paymentData );
+		expect( requests[ 1 ].body ).toEqual( {
+			cart_version: 3,
+			grand_total_minor: 1999,
+			currency: 'GBP',
+			payment_data: {},
+		} );
 		expect( heard.placed ).toEqual( [
 			expect.objectContaining( {
 				outcome: 'approved',
@@ -929,7 +1259,28 @@ describe( 'the return from a provider’s page', () => {
 				intentUuid: UUID,
 			} ),
 		] );
-		expect( window.sessionStorage.getItem( STORAGE_KEY ) ).toBeNull();
+		expect( stored() ).toBeNull();
+		expectNothingActed( calls, scope );
+	} );
+
+	it( 'resumes the payment the kept placement names when the page is reloaded mid-step', async () => {
+		keep( { intentUuid: UUID } );
+
+		const { requests, heard } = setUp( {
+			cart: { ...CART, version: 4 },
+			answers: [
+				{ status: 200, body: resumed( 'approved' ) },
+				{ status: 200, body: placed( 'approved' ) },
+			],
+		} );
+
+		await flush();
+
+		expect( requests.map( ( request ) => request.route ) ).toEqual( [
+			'/checkout/resume',
+			'/checkout',
+		] );
+		expect( heard.placed[ 0 ].orderKey ).toBe( 'k'.repeat( 32 ) );
 	} );
 
 	it( 'reports the outcome and statuses alone when nothing was kept for the payment', async () => {
@@ -948,6 +1299,196 @@ describe( 'the return from a provider’s page', () => {
 				status: 'processing',
 			} ),
 		] );
+	} );
+
+	it( 'waits for the shopper when the resumed payment still needs them: placing again confirms and takes the step', async () => {
+		keep( { intentUuid: UUID } );
+
+		const { island, calls } = fakeIsland( 'stub' );
+		const { host, scope, requests, heard, last } = setUp( {
+			islands: [ island ],
+			cart: { ...CART, version: 4 },
+			answers: [
+				{ status: 200, body: resumed( 'requires_action' ) },
+				{ status: 200, body: acting() },
+				{ status: 200, body: resumed( 'approved' ) },
+			],
+		} );
+
+		await flush();
+
+		expect( last().error ).toEqual( { code: 'action_incomplete' } );
+		expect( stored() ).toMatchObject( {
+			key: 'kept-key',
+			intentUuid: UUID,
+		} );
+		expectNothingActed( calls, scope );
+
+		await host.place();
+
+		expect( requests.map( ( request ) => request.key ) ).toEqual( [
+			undefined,
+			'kept-key',
+			undefined,
+		] );
+		expect( names( calls ) ).toEqual( [ 'mount', 'confirm', 'action' ] );
+		expect( heard.placed ).toHaveLength( 1 );
+	} );
+
+	it( 'reads the cart again, hands nothing over and ends the key when the resumed payment was declined', async () => {
+		keep( { intentUuid: UUID } );
+
+		const { heard, last } = setUp( {
+			cart: { ...CART, version: 4 },
+			answers: [
+				{
+					status: 402,
+					body: { code: 'checkout.payment_declined', message: 'No.' },
+				},
+			],
+		} );
+
+		await flush();
+
+		expect( heard.stale.map( ( detail ) => detail.reason ) ).toEqual( [
+			'declined',
+		] );
+		expect( heard.placed ).toEqual( [] );
+		expect( last().error.code ).toBe( 'declined' );
+		expect( stored() ).toBeNull();
+	} );
+
+	it( 'drops the kept placement and reports the refusal when the resume is refused', async () => {
+		keep( { intentUuid: UUID } );
+
+		const { last } = setUp( {
+			cart: { ...CART, version: 4 },
+			answers: [
+				{ status: 404, body: { code: 'payment.intent_not_found' } },
+			],
+		} );
+
+		await flush();
+
+		expect( last().error ).toEqual( {
+			code: 'refused',
+			detail: 'payment.intent_not_found',
+		} );
+		expect( stored() ).toBeNull();
+	} );
+
+	it( 'drops a placement whose answer was lost without a request while the cart is at the version it was sent with', async () => {
+		keep();
+
+		const { requests, last } = setUp( {} );
+
+		await flush();
+
+		expect( requests ).toEqual( [] );
+		expect( stored() ).toBeNull();
+		expect( last() ).toMatchObject( { phase: 'idle', error: null } );
+	} );
+
+	it( 'asks a placement whose answer was lost again, with no payment data, once the cart moved on, and hands the order over', async () => {
+		keep();
+
+		const { island, calls } = fakeIsland( 'stub' );
+		const { scope, requests, heard } = setUp( {
+			islands: [ island ],
+			cart: { ...CART, version: 4 },
+			answers: [ { status: 200, body: placed( 'approved' ) } ],
+		} );
+
+		await flush();
+
+		expect(
+			requests.map( ( request ) => [
+				request.route,
+				request.key,
+				request.body.payment_data,
+			] )
+		).toEqual( [ [ '/checkout', 'kept-key', {} ] ] );
+		expect( heard.placed ).toEqual( [
+			expect.objectContaining( { orderKey: 'k'.repeat( 32 ) } ),
+		] );
+		expectNothingActed( calls, scope );
+	} );
+
+	it( 'notes the payment of a lost answer that asks the shopper to act, and waits for the shopper to place again', async () => {
+		keep();
+
+		const { island, calls } = fakeIsland( 'stub' );
+		const { host, scope, requests, heard, last } = setUp( {
+			islands: [ island ],
+			cart: { ...CART, version: 4 },
+			answers: [
+				{ status: 200, body: acting() },
+				{ status: 200, body: acting() },
+				{ status: 200, body: resumed( 'approved' ) },
+			],
+		} );
+
+		await flush();
+
+		expect( last().error ).toEqual( { code: 'action_incomplete' } );
+		expect( stored() ).toMatchObject( {
+			key: 'kept-key',
+			intentUuid: UUID,
+		} );
+		expectNothingActed( calls, scope );
+
+		await host.place();
+
+		expect( requests.map( ( request ) => request.key ) ).toEqual( [
+			'kept-key',
+			'kept-key',
+			undefined,
+		] );
+		expect( names( calls ) ).toEqual( [ 'mount', 'confirm', 'action' ] );
+		expect( heard.placed ).toHaveLength( 1 );
+	} );
+
+	it.each( [
+		[ 'stale', { status: 409, body: { code: 'cart.version_stale' } } ],
+		[ 'refused', { status: 409, body: { code: 'cart.not_open' } } ],
+	] )(
+		'drops a lost placement the store does not hold (%s) without an error',
+		async ( name, answer ) => {
+			keep();
+
+			const { heard, last } = setUp( {
+				cart: { ...CART, version: 4 },
+				answers: [ answer ],
+			} );
+
+			await flush();
+
+			expect( stored() ).toBeNull();
+			expect( heard.stale ).toEqual( [] );
+			expect( last() ).toMatchObject( { phase: 'idle', error: null } );
+		}
+	);
+
+	it( 'asks again on retry() when asking on loading failed', async () => {
+		keep();
+
+		const { host, requests, heard } = setUp( {
+			cart: { ...CART, version: 4 },
+			answers: [
+				{ network: true },
+				{ status: 200, body: placed( 'approved' ) },
+			],
+		} );
+
+		await flush();
+		await host.retry();
+
+		expect( requests.map( ( request ) => request.key ) ).toEqual( [
+			'kept-key',
+			'kept-key',
+		] );
+		expect( requests[ 1 ].body.payment_data ).toEqual( {} );
+		expect( heard.placed ).toHaveLength( 1 );
 	} );
 } );
 

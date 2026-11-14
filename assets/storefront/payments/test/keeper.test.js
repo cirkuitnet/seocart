@@ -23,12 +23,17 @@ function counter() {
 }
 
 describe( 'keepsKey', () => {
-	it.each( [ 'network', 'server', 'unavailable', 'in_progress', 'acting' ] )(
-		'keeps the key after %s',
-		( kind ) => {
-			expect( keepsKey( kind ) ).toBe( true );
-		}
-	);
+	it.each( [
+		'network',
+		'server',
+		'unavailable',
+		'in_progress',
+		'pending',
+		'session',
+		'acting',
+	] )( 'keeps the key after %s', ( kind ) => {
+		expect( keepsKey( kind ) ).toBe( true );
+	} );
 
 	it.each( [ 'settled', 'declined', 'voided', 'stale', 'refused' ] )(
 		'ends the key after %s',
@@ -73,20 +78,51 @@ describe( 'samePlacement', () => {
 describe( 'createKeeper', () => {
 	beforeEach( () => window.sessionStorage.clear() );
 
-	it( 'keeps a placement in the tab’s storage, with a fresh key, until it is cleared', () => {
+	it( 'stores the six members of a placement and never its payment data, and keeps all of it for the page', () => {
 		const keeper = createKeeper( window, counter() );
 		const placement = keeper.begin( INPUTS );
+		const text = window.sessionStorage.getItem( STORAGE_KEY );
 
 		expect( placement ).toEqual( {
 			key: 'key-1',
 			...INPUTS,
 			intentUuid: null,
 		} );
-		expect(
-			JSON.parse( window.sessionStorage.getItem( STORAGE_KEY ) )
-		).toEqual( placement );
-		expect( createKeeper( window, counter() ).read() ).toEqual( placement );
+		expect( JSON.parse( text ) ).toEqual( {
+			key: 'key-1',
+			cartVersion: 3,
+			amountMinor: 1999,
+			currency: 'GBP',
+			gatewayId: 'stub',
+			intentUuid: null,
+		} );
+		expect( text ).not.toContain( 'stub:approve' );
+		expect( text ).not.toMatch( /payment|order_key|orderKey/ );
+		expect( keeper.read() ).toEqual( placement );
+	} );
 
+	it( 'reads a placement another load of the page stored, without payment data', () => {
+		createKeeper( window, counter() ).write( {
+			key: 'key-1',
+			...INPUTS,
+			intentUuid: 'u',
+		} );
+
+		expect( createKeeper( window, counter() ).read() ).toEqual( {
+			key: 'key-1',
+			cartVersion: 3,
+			amountMinor: 1999,
+			currency: 'GBP',
+			gatewayId: 'stub',
+			intentUuid: 'u',
+			paymentData: null,
+		} );
+	} );
+
+	it( 'ends the key when cleared', () => {
+		const keeper = createKeeper( window, counter() );
+
+		keeper.begin( INPUTS );
 		keeper.clear();
 
 		expect( window.sessionStorage.getItem( STORAGE_KEY ) ).toBeNull();
@@ -98,16 +134,6 @@ describe( 'createKeeper', () => {
 
 		expect( keeper.begin( INPUTS ).key ).toBe( 'key-1' );
 		expect( keeper.begin( INPUTS ).key ).toBe( 'key-2' );
-	} );
-
-	it( 'never keeps an order key', () => {
-		const keeper = createKeeper( window, counter() );
-
-		keeper.write( { ...keeper.begin( INPUTS ), intentUuid: 'u' } );
-
-		expect( window.sessionStorage.getItem( STORAGE_KEY ) ).not.toMatch(
-			/order_key|orderKey/
-		);
 	} );
 
 	it( 'ignores what it cannot read back', () => {

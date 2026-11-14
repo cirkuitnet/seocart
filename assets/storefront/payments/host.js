@@ -6,14 +6,19 @@
  *
  *     idle → confirming   the island's confirm() prepares the payment data; a refusal sends nothing
  *          → placing      POST /checkout with the cart's version, its total and an idempotency key
- *          → settled      approved, processing, pending: onPlaced() is handed the order
+ *          → settled      approved or processing: onPlaced() is handed the order
  *          → acting       requires_action: the island, or the host by a redirect, takes the step
  *          → resuming     POST /checkout/resume, once the shopper has acted
  *          → settled      approved, or duplicate when the store settled the payment first
  *
  * and back to idle with an error code on any other answer, the idempotency key kept where the
- * same request must be sent again (answers.js, keeper.js). The browser never decides a payment:
- * every outcome is the Store API's.
+ * same placement must be asked for again (answers.js, keeper.js). The browser never decides a
+ * payment: every outcome is the Store API's.
+ *
+ * When the page loads, the host settles what the tab kept from an earlier load: the payment a
+ * provider sent the shopper back for, or the placement whose answer was lost (recover()). It never
+ * acts by itself then: it asks the store, hands over an order the store settled, and otherwise
+ * waits for the shopper to place again.
  *
  * The host sends those two writes and no other. It does not write the checkout's details (the
  * payment method chosen among them: onSelect() asks the checkout to), it has no Place button and
@@ -36,7 +41,7 @@ import {
 	withoutReturn,
 } from './action';
 import { checkConfig } from './config';
-import { contextFor, needsRemount } from './context';
+import { billingOf, contextFor, needsRemount } from './context';
 import { createKeeper, keepsKey, samePlacement } from './keeper';
 import { createStoreApi } from './store-api';
 import { createView } from './view';
@@ -61,6 +66,13 @@ const MAX_WAITS = 3;
  * @type {number}
  */
 const MAX_WAIT_SECONDS = 30;
+
+/**
+ * How long a placement answered `pending` is waited for before it is asked once more, in ms.
+ *
+ * @type {number}
+ */
+const PENDING_WAIT_MS = 2000;
 
 /**
  * Tells whether a cart is one the host can show.
@@ -157,8 +169,10 @@ export function createHost( root, options, env ) {
 		config.methods.map( ( method ) => [ method.id, method ] )
 	);
 	const keeper = createKeeper( scope, () => mintKey( scope.crypto ) );
-	const api = createStoreApi( config.restRoot, ( ...args ) =>
-		scope.fetch( ...args )
+	const api = createStoreApi(
+		config.restRoot,
+		( ...args ) => scope.fetch( ...args ),
+		config.nonce
 	);
 	const view = createView( root, config.methods );
 	const failed = new Map();
@@ -443,7 +457,7 @@ export function createHost( root, options, env ) {
 	/**
 	 * Asks the checkout for the cart as it is now, and takes it.
 	 *
-	 * @param {string}      reason Why: the answer's kind.
+	 * @param {string}      reason Why: `stale`, `declined` or `voided`.
 	 * @param {Object|null} body   The answer.
 	 * @return {Promise<void>} Once the cart is taken.
 	 */
@@ -492,32 +506,93 @@ export function createHost( root, options, env ) {
 	}
 
 	/**
-	 * Ends a declined payment: the island shows it, the cart is read again, and the next attempt
-	 * gets a fresh key.
+	 * Ends a payment that came to no order the shopper moves on with: a decline, which the island
+	 * shows, or a void, which it is not told. The cart is read again, since the store opened it
+	 * again at a newer version, and the next attempt gets a fresh key.
 	 *
+	 * @param {string}      kind `declined` or `voided`.
 	 * @param {Object|null} body The answer.
 	 * @return {Promise<void>} Once idle.
 	 */
-	async function decline( body ) {
-		showError( {
-			code: 'declined',
-			message: String( body?.message ?? '' ),
-		} );
-		// The store opened the cart again, at a newer version.
-		await refresh( 'declined', body );
-		idle( problem( 'declined', body ) );
+	async function release( kind, body ) {
+		keeper.clear();
+
+		if ( 'declined' === kind ) {
+			showError( {
+				code: 'declined',
+				message: String( body?.message ?? '' ),
+			} );
+		}
+
+		await refresh( kind, body );
+		idle( problem( kind, body ) );
+	}
+
+	/**
+	 * Asks the store for a placement, waiting and asking again while another request with its key
+	 * places the order.
+	 *
+	 * @param {Object} placement The placement.
+	 * @return {Promise<Object>} What the last request came to.
+	 */
+	async function ask( placement ) {
+		let response = await api.place( placement );
+
+		for (
+			let waits = 0;
+			'in_progress' === classify( response ) &&
+			waits < MAX_WAITS &&
+			! destroyed;
+			waits++
+		) {
+			await env.wait(
+				Math.min(
+					Math.max( response.retryAfter, 1 ),
+					MAX_WAIT_SECONDS
+				) * 1000
+			);
+			response = await api.place( placement );
+		}
+
+		return response;
 	}
 
 	/**
 	 * Acts on a placement's answer.
 	 *
-	 * @param {Object} response  What the placement came to.
-	 * @param {Object} placement The kept placement.
+	 * @param {Object}  response   What the placement came to.
+	 * @param {Object}  placement  The kept placement.
+	 * @param {boolean} recovering Optional. Whether the host asks on loading, when it never acts and
+	 *                             drops a placement the store does not hold. Default false.
 	 * @return {Promise<void>} Once the flow rests.
 	 */
-	async function answered( response, placement ) {
-		const kind = classify( response );
-		const { body } = response;
+	async function answered( response, placement, recovering = false ) {
+		let answer = response;
+		let kind = classify( answer );
+
+		if ( 'pending' === kind ) {
+			// Still at the gateway: asked once more after a moment, then left to the store.
+			await env.wait( PENDING_WAIT_MS );
+
+			if ( destroyed ) {
+				return;
+			}
+
+			answer = await ask( placement );
+			kind = classify( answer );
+		}
+
+		const { body } = answer;
+
+		if ( destroyed ) {
+			return;
+		}
+
+		if ( recovering && ( 'stale' === kind || 'refused' === kind ) ) {
+			// The store holds nothing under the key: the kept placement never reached it.
+			keeper.clear();
+			return idle();
+		}
 
 		if ( ! keepsKey( kind ) ) {
 			keeper.clear();
@@ -529,6 +604,13 @@ export function createHost( root, options, env ) {
 				...placement,
 				intentUuid: body.intent_uuid ?? null,
 			} );
+
+			if ( recovering ) {
+				// The shopper takes the step once they place again; nothing acts on loading.
+				lastStep = 'placement';
+				return idle( { code: 'action_incomplete' } );
+			}
+
 			return act( body );
 		}
 
@@ -536,23 +618,26 @@ export function createHost( root, options, env ) {
 			return settle( body, body );
 		}
 
-		if ( 'declined' === kind ) {
-			return decline( body );
+		if ( 'declined' === kind || 'voided' === kind ) {
+			return release( kind, body );
 		}
 
-		if ( 'stale' === kind || 'voided' === kind ) {
+		if ( 'stale' === kind ) {
 			// The island is told nothing: its payment was not refused.
 			await refresh( kind, body );
+		}
+
+		if ( 'session' === kind ) {
+			return idle( { code: 'session_expired', detail: body?.code } );
 		}
 
 		idle( problem( kind, body ) );
 	}
 
 	/**
-	 * Sends a placement, waiting and sending it again while another request with its key places
-	 * the order.
+	 * Sends a placement, and acts on the answer.
 	 *
-	 * @param {Object} placement The kept placement.
+	 * @param {Object} placement The placement, with the payment data just confirmed.
 	 * @return {Promise<void>} Once the flow rests.
 	 */
 	async function send( placement ) {
@@ -560,26 +645,7 @@ export function createHost( root, options, env ) {
 		lastStep = 'placement';
 		keeper.write( placement );
 
-		let response = await api.place( placement );
-
-		for (
-			let waits = 0;
-			'in_progress' === classify( response ) && waits < MAX_WAITS;
-			waits++
-		) {
-			await env.wait(
-				Math.min(
-					Math.max( response.retryAfter, 1 ),
-					MAX_WAIT_SECONDS
-				) * 1000
-			);
-
-			if ( destroyed ) {
-				return;
-			}
-
-			response = await api.place( placement );
-		}
+		const response = await ask( placement );
 
 		if ( ! destroyed ) {
 			await answered( response, placement );
@@ -618,6 +684,7 @@ export function createHost( root, options, env ) {
 						config.returnQueryArg,
 						intentUuid
 					),
+					billing: billingOf( cart ),
 				} );
 			} catch ( thrown ) {
 				warn(
@@ -655,9 +722,10 @@ export function createHost( root, options, env ) {
 
 		if (
 			'acting' === kind ||
+			'pending' === kind ||
 			( 'settled' === kind && 'processing' === body.outcome )
 		) {
-			// The shopper has not finished: the same request again replays the same step.
+			// The shopper has not finished: placing again is answered the same step.
 			lastStep = 'placement';
 			return idle( { code: 'action_incomplete' } );
 		}
@@ -670,12 +738,12 @@ export function createHost( root, options, env ) {
 			return settle( order ?? {}, body );
 		}
 
-		if ( 'declined' === kind ) {
-			return decline( body );
+		if ( 'declined' === kind || 'voided' === kind ) {
+			return release( kind, body );
 		}
 
-		if ( 'voided' === kind ) {
-			await refresh( kind, body );
+		if ( 'session' === kind ) {
+			return idle( { code: 'session_expired', detail: body?.code } );
 		}
 
 		idle( problem( kind, body ) );
@@ -699,33 +767,71 @@ export function createHost( root, options, env ) {
 	}
 
 	/**
-	 * Resumes the payment a provider sent the shopper back for, then sends the kept placement again
-	 * to recover the order and its key.
+	 * Settles, when the page loads, what the tab kept from an earlier load, and never acts.
 	 *
-	 * @param {string} intentUuid The payment's uuid, from the page's address.
+	 * A payment to resume (the one a provider sent the shopper back for, or else the one the kept
+	 * placement names) is resumed; once the store settled it, the kept placement is asked again,
+	 * with no payment data, for the order and its key. A kept placement whose answer was lost is
+	 * dropped without a request while the cart is still at the version it was sent with, since a
+	 * placement that committed moves the version on; otherwise it is asked again, and the answer
+	 * taken as a placement's, except that a step the provider asks for waits for the shopper to
+	 * place again, and a placement the store does not hold is dropped.
+	 *
+	 * @param {string|null} returned The payment's uuid the page's address carried back, if any.
 	 * @return {Promise<void>} Once the flow rests.
 	 */
-	async function returnFrom( intentUuid ) {
-		enter( 'resuming' );
-		lastStep = 'resume';
-
-		const response = await api.resume( intentUuid );
+	async function recover( returned ) {
 		const kept = keeper.read();
+		const intentUuid = returned ?? kept?.intentUuid ?? null;
 
-		if (
-			! destroyed &&
-			'settled' === classify( response ) &&
-			kept?.intentUuid === intentUuid
-		) {
-			const replay = await api.place( kept );
+		if ( intentUuid ) {
+			enter( 'resuming' );
+			lastStep = 'recovery';
 
-			if ( 'settled' === classify( replay ) ) {
-				order = replay.body;
+			const response = await api.resume( intentUuid );
+			const kind = classify( response );
+
+			if ( destroyed ) {
+				return;
 			}
+
+			if (
+				'settled' === kind &&
+				'processing' !== response.body.outcome &&
+				kept?.intentUuid === intentUuid
+			) {
+				const replay = await ask( { ...kept, paymentData: {} } );
+
+				if ( 'settled' === classify( replay ) ) {
+					order = replay.body;
+				}
+			}
+
+			if ( ! destroyed ) {
+				await resumed( response );
+			}
+
+			return;
 		}
 
+		if ( ! kept ) {
+			return;
+		}
+
+		if ( cart.version === kept.cartVersion ) {
+			// No placement committed at that version: nothing to ask.
+			keeper.clear();
+			return;
+		}
+
+		enter( 'placing' );
+		lastStep = 'recovery';
+
+		const placement = { ...kept, paymentData: {} };
+		const response = await ask( placement );
+
 		if ( ! destroyed ) {
-			await resumed( response );
+			await answered( response, placement, true );
 		}
 	}
 
@@ -782,8 +888,9 @@ export function createHost( root, options, env ) {
 		},
 
 		/**
-		 * Places the order with the selected method. A placement already under way is not
-		 * started again.
+		 * Places the order with the selected method: the island confirms what the form shows now,
+		 * then the placement is sent under the kept key when it is the one kept, or a fresh key.
+		 * A placement already under way is not started again.
 		 *
 		 * @return {Promise<boolean>} Whether a placement was sent.
 		 */
@@ -797,19 +904,6 @@ export function createHost( root, options, env ) {
 			if ( ! method ) {
 				idle( { code: 'no_method' } );
 				return false;
-			}
-
-			const inputs = {
-				amountMinor: cart.amountMinor,
-				currency: cart.currency,
-				gatewayId: method.id,
-			};
-			const kept = keeper.read();
-
-			if ( samePlacement( kept, inputs ) ) {
-				// The same placement, unanswered or unsettled: sent again as it was.
-				await send( kept );
-				return true;
 			}
 
 			enter( 'confirming' );
@@ -827,7 +921,9 @@ export function createHost( root, options, env ) {
 						} );
 					}
 
-					prepared = await handle.confirm();
+					prepared = await handle.confirm( {
+						billing: billingOf( cart ),
+					} );
 				} else {
 					prepared = { payment_data: {} };
 				}
@@ -868,20 +964,29 @@ export function createHost( root, options, env ) {
 				return false;
 			}
 
+			const paymentData = { ...prepared.payment_data };
+			const inputs = {
+				amountMinor: cart.amountMinor,
+				currency: cart.currency,
+				gatewayId: method.id,
+			};
+			const kept = keeper.read();
+
 			await send(
-				keeper.begin( {
-					cartVersion: cart.version,
-					...inputs,
-					paymentData: { ...prepared.payment_data },
-				} )
+				samePlacement( kept, inputs )
+					? { ...kept, paymentData }
+					: keeper.begin( {
+							cartVersion: cart.version,
+							...inputs,
+							paymentData,
+						} )
 			);
 
 			return true;
 		},
 
 		/**
-		 * Sends the kept placement again, as it was, or resumes its payment again when the resume
-		 * was what failed; places afresh when nothing is kept.
+		 * Repeats the step that failed: the resume, the asking on loading, or the placement.
 		 *
 		 * @return {Promise<boolean>} Whether a request was sent.
 		 */
@@ -892,17 +997,17 @@ export function createHost( root, options, env ) {
 
 			const kept = keeper.read();
 
-			if ( ! kept ) {
-				return host.place();
-			}
-
-			if ( 'resume' === lastStep && kept.intentUuid ) {
+			if ( 'resume' === lastStep && kept?.intentUuid ) {
 				await resume( kept.intentUuid );
-			} else {
-				await send( kept );
+				return true;
 			}
 
-			return true;
+			if ( 'recovery' === lastStep && kept ) {
+				await recover( null );
+				return true;
+			}
+
+			return host.place();
 		},
 
 		/**
@@ -952,8 +1057,9 @@ export function createHost( root, options, env ) {
 			'',
 			withoutReturn( scope.location.href, config.returnQueryArg )
 		);
-		returnFrom( returned );
 	}
+
+	recover( returned );
 
 	return host;
 }

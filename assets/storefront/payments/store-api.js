@@ -1,8 +1,9 @@
 /**
  * The payment section's two Store API writes: the placement and the resume of its payment.
  *
- * They are the only requests the host sends. Each carries the Store API's request header and the
- * browser's own cookies, the cart's among them, and nothing else identifies the shopper. The
+ * They are the only requests the host sends. Each carries the Store API's request header, the
+ * browser's own cookies, the cart's among them, and for a logged-in shopper the nonce the page was
+ * given (`X-WP-Nonce`), without which WordPress does not run the request as that shopper. The
  * checkout's details, the payment method chosen among them, are written by the checkout itself.
  */
 
@@ -16,12 +17,15 @@ const NAMESPACE = 'seocart/store/v1';
 /**
  * Creates the client.
  *
- * @param {string}   restRoot The REST root, ending in a slash.
- * @param {Function} fetch    The browser's `fetch`.
+ * @param {string}      restRoot The REST root, ending in a slash.
+ * @param {Function}    fetch    The browser's `fetch`.
+ * @param {string|null} nonce    The logged-in shopper's REST nonce; null for a guest.
  * @return {{place: function(Object): Promise<Object>, resume: function(string): Promise<Object>}} The two writes;
  *         each resolves to `{ status, body, retryAfter }`, or `{ network: true }` when no answer arrived.
  */
-export function createStoreApi( restRoot, fetch ) {
+export function createStoreApi( restRoot, fetch, nonce ) {
+	const session = nonce ? { 'X-WP-Nonce': nonce } : {};
+
 	/**
 	 * Sends one write.
 	 *
@@ -40,6 +44,7 @@ export function createStoreApi( restRoot, fetch ) {
 				headers: {
 					'Content-Type': 'application/json',
 					'X-SEOCart-Store': '1',
+					...session,
 					...headers,
 				},
 				body: JSON.stringify( body ),
@@ -64,6 +69,7 @@ export function createStoreApi( restRoot, fetch ) {
 	};
 
 	return {
+		// A placement read back after a reload has no payment data: it is asked again with none.
 		place: ( placement ) =>
 			post(
 				'/checkout',
@@ -71,7 +77,7 @@ export function createStoreApi( restRoot, fetch ) {
 					cart_version: placement.cartVersion,
 					grand_total_minor: placement.amountMinor,
 					currency: placement.currency,
-					payment_data: placement.paymentData,
+					payment_data: placement.paymentData ?? {},
 				},
 				{ 'Idempotency-Key': placement.key }
 			),

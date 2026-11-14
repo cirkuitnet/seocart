@@ -55,9 +55,22 @@ describe( 'readConfig', () => {
 	it( 'reads the configuration printed in the root, frozen', () => {
 		const read = readConfig( rootWith( JSON.stringify( config() ) ) );
 
-		expect( read ).toEqual( config() );
+		expect( read ).toEqual( { ...config(), nonce: null } );
 		expect( Object.isFrozen( read ) ).toBe( true );
 		expect( Object.isFrozen( read.methods[ 0 ].settings ) ).toBe( true );
+	} );
+
+	it( 'reads a logged-in shopper’s nonce, and none for a guest', () => {
+		expect(
+			readConfig(
+				rootWith( JSON.stringify( config( { nonce: 'a1b2c3d4e5' } ) ) )
+			).nonce
+		).toBe( 'a1b2c3d4e5' );
+		expect(
+			readConfig(
+				rootWith( JSON.stringify( config( { nonce: null } ) ) )
+			).nonce
+		).toBeNull();
 	} );
 
 	it( 'refuses a root without a configuration', () => {
@@ -82,6 +95,8 @@ describe( 'checkConfig', () => {
 		[ 'restRoot', config( { restRoot: 'https://shop.example/wp-json' } ) ],
 		[ 'returnQueryArg', config( { returnQueryArg: 'a b' } ) ],
 		[ 'locale', config( { locale: 7 } ) ],
+		[ 'nonce', config( { nonce: 7 } ) ],
+		[ 'nonce', config( { nonce: '' } ) ],
 		[ 'methods[0]', config( { methods: [ 'stub' ] } ) ],
 		[ 'methods[0].id', config( {}, { id: '' } ) ],
 		[ 'methods[0].label', config( {}, { label: null } ) ],
