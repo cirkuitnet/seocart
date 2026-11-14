@@ -20,7 +20,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /**
  * Says who takes a step: `island`, `redirect` (the host) or `unsupported`.
  *
- * @param {Object|undefined} island The island registered for the method, if any.
+ * @param {Object|undefined} island The record of the island registered for the method, if any.
  * @param {Object|null}      handle What its mount returned, if it is mounted.
  * @param {Object}           next   The step: type, url, client_token.
  * @return {string} Who takes it.

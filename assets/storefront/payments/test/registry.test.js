@@ -119,13 +119,15 @@ describe( 'installRegistry', () => {
 
 	it( 'keeps the first island of an id and refuses a duplicate with a warning', () => {
 		const scope = freshScope();
-		const first = anIsland( 'stub' );
+		const first = anIsland( 'stub', { canMakePayment: () => 'first' } );
 
 		registerAsAnIslandDoes( scope, first );
 		registerAsAnIslandDoes( scope, anIsland( 'stub' ) );
 		installRegistry( scope );
 
-		expect( scope.seocart.payments.get( 'stub' ) ).toBe( first );
+		expect( scope.seocart.payments.get( 'stub' ).canMakePayment() ).toBe(
+			'first'
+		);
 		expect( scope.seocart.payments.refused() ).toEqual( [
 			{
 				id: 'stub',
@@ -213,12 +215,22 @@ describe( 'installRegistry', () => {
 	it( 'wraps an island of an older contract its adapter knows, with a deprecation notice', () => {
 		const scope = freshScope();
 		const old = anIsland( 'legacy', { contractVersion: '0.0.4' } );
-		const adapted = { ...old, contractVersion: CONTRACT_VERSION };
+		const adapted = {
+			...old,
+			contractVersion: CONTRACT_VERSION,
+			canMakePayment: () => 'adapted',
+		};
 
 		installRegistry( scope, { '0.0': () => adapted } );
 		scope.seocart.payments.register( old );
 
-		expect( scope.seocart.payments.get( 'legacy' ) ).toBe( adapted );
+		expect( scope.seocart.payments.get( 'legacy' ) ).toMatchObject( {
+			id: 'legacy',
+			contractVersion: CONTRACT_VERSION,
+		} );
+		expect( scope.seocart.payments.get( 'legacy' ).canMakePayment() ).toBe(
+			'adapted'
+		);
 		expect( scope.seocart.payments.refused() ).toEqual( [] );
 		expect( scope.console.warn ).toHaveBeenCalledWith(
 			'seocart.payments: island "legacy" uses contract 0.0.4, which is deprecated; update it to 0.1.0.'
@@ -254,6 +266,36 @@ describe( 'installRegistry', () => {
 			expect( scope.ready ).toHaveLength( 1 );
 		}
 	);
+
+	it( 'reads an island once, when it registers: a getter that throws later is never reached, and its methods are called on it', () => {
+		const scope = freshScope();
+		const installed = installRegistry( scope );
+		let armed = false;
+		const island = {
+			...anIsland( 'stub' ),
+			ready: 'yes',
+			canMakePayment() {
+				return this.ready;
+			},
+			get supports() {
+				if ( armed ) {
+					throw new Error( 'no' );
+				}
+
+				return { action: true };
+			},
+		};
+
+		installed.onRegister( () => undefined );
+		scope.seocart.payments.register( island );
+		armed = true;
+
+		const record = scope.seocart.payments.get( 'stub' );
+
+		expect( record.supports ).toEqual( { action: true } );
+		expect( record.canMakePayment() ).toBe( 'yes' );
+		expect( Object.isFrozen( record ) ).toBe( true );
+	} );
 
 	it( 'keeps an island registered when a host that hears of it throws', () => {
 		const scope = freshScope();

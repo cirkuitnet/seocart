@@ -52,6 +52,11 @@ console warning that names the id and the reason, and lists in `refused()`:
 - `invalid`: an island missing a member below, or with one of the wrong type, or one whose members
   throw when read; the islands queued after it are registered all the same.
 
+The registry reads an island's members once, when it registers, and the checkout uses what it read
+from then on: `supports` is not read again, and the two methods are called on the island. A step
+the island's handle cannot be asked about, because reading its `action` throws, is taken as the
+island failing the step: the payment is resumed, and the store's answer decides.
+
 A payment method whose gateway needs an island, and has none registered, is shown disabled, with a
 console warning, rather than left out: a method that silently vanishes cannot be diagnosed. An
 island's call that fails is logged with the step that failed and its error's name alone, never its

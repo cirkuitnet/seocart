@@ -15,6 +15,11 @@
  * once. From then on `register()` is the real one, and an island that registers later is accepted
  * like any other: the hosts showing the payment methods are told and show it.
  *
+ * The registry reads an island's members once, when it registers, into a plain record the hosts
+ * use from then on: its id, its contract version, what it supports, and its two methods, called on
+ * the island. A getter of the island's is never reached again, so one that would throw later
+ * cannot stop a payment in its step.
+ *
  * The registry checks what it is given and never throws: an island written against another
  * contract, a second island for an id already registered (the first is kept) and an island
  * missing a member are each refused with a console warning naming the id and the reason, and
@@ -120,6 +125,26 @@ function malformed( island ) {
 }
 
 /**
+ * Reads an island's members once, into the plain record the hosts use from then on.
+ *
+ * @param {Object} island The island, checked.
+ * @param {string} id     Its id, as read.
+ * @return {Object} Its record: id, contractVersion, supports.action, canMakePayment(), mount().
+ */
+function recordOf( island, id ) {
+	const { contractVersion, canMakePayment, mount } = island;
+	const action = Boolean( island.supports?.action );
+
+	return Object.freeze( {
+		id,
+		contractVersion,
+		supports: Object.freeze( { action } ),
+		canMakePayment: ( ctx ) => canMakePayment.call( island, ctx ),
+		mount: ( element, ctx ) => mount.call( island, element, ctx ),
+	} );
+}
+
+/**
  * Installs the registry onto `scope.seocart.payments`, keeping the object an island may have
  * created, and drains its queue. Installing twice returns the registry installed first.
  *
@@ -213,7 +238,7 @@ export function installRegistry( scope, adapters = ADAPTERS ) {
 			return false;
 		}
 
-		islands.set( id, accepted );
+		islands.set( id, recordOf( accepted, id ) );
 		listeners.forEach( ( listener ) => {
 			try {
 				listener( id );

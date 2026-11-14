@@ -1872,6 +1872,68 @@ describe( 'answers that must not lose an order', () => {
 	} );
 } );
 
+describe( 'an island that fails as its step is routed', () => {
+	it( 'takes the step with what the registry read at registration, though the island’s supports throws later', async () => {
+		let armed = false;
+		const { island, calls } = fakeIsland( 'stub' );
+		const { supports } = island;
+
+		Object.defineProperty( island, 'supports', {
+			get() {
+				if ( armed ) {
+					throw new Error( 'no' );
+				}
+
+				return supports;
+			},
+		} );
+
+		const { host, heard } = setUp( {
+			islands: [ island ],
+			answers: [
+				{ status: 200, body: acting() },
+				{ status: 200, body: resumed( 'approved' ) },
+			],
+		} );
+
+		armed = true;
+		await flush();
+		await host.place();
+
+		expect( names( calls ) ).toContain( 'action' );
+		expect( heard.placed ).toHaveLength( 1 );
+	} );
+
+	it( 'resumes the payment when the island’s handle throws as the step is routed, and never rests in the step', async () => {
+		const { island } = fakeIsland( 'stub' );
+		const { mount } = island;
+
+		island.mount = ( element, ctx ) =>
+			Object.defineProperty( { ...mount( element, ctx ) }, 'action', {
+				get() {
+					throw new Error( 'gone' );
+				},
+			} );
+
+		const { host, heard, scope, last } = setUp( {
+			islands: [ island ],
+			answers: [
+				{ status: 200, body: acting() },
+				{ status: 200, body: resumed( 'approved' ) },
+			],
+		} );
+
+		await flush();
+		await host.place();
+
+		expect( last().phase ).toBe( 'settled' );
+		expect( heard.placed ).toHaveLength( 1 );
+		expect( scope.console.warn ).toHaveBeenCalledWith(
+			'seocart.payments: island "stub" failed its action: Error'
+		);
+	} );
+} );
+
 describe( 'mintKey', () => {
 	it( 'makes a version 4 uuid without randomUUID(), as on a page served over HTTP', () => {
 		const key = mintKey( {

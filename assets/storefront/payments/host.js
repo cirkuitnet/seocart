@@ -773,7 +773,18 @@ export function createHost( root, options, env ) {
 		}
 
 		const handle = mounted ? await mounted.ready : null;
-		const route = routeAction( registry.get( selected ), handle, next );
+		let route;
+
+		try {
+			route = routeAction( registry.get( selected ), handle, next );
+		} catch ( thrown ) {
+			// A handle that cannot say whether it takes the step fails it: the store asks the
+			// provider, and its answer decides, as after an action() that throws.
+			warn(
+				`island "${ selected }" failed its action: ${ nameOf( thrown ) }`
+			);
+			return resume( intentUuid );
+		}
 
 		if ( 'island' === route ) {
 			const mount = mounts;
