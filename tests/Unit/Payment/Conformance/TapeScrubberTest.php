@@ -571,7 +571,7 @@ final class TapeScrubberTest extends TestCase {
 	}
 
 	/**
-	 * Tests that a signature is refused in a field the test does not declare, in a digest field, and in a field named like a credential even when declared.
+	 * Tests that a signature is refused in a field the test does not declare, in a digest field, in a field named like a credential even when declared, and in a redirect's query.
 	 *
 	 * @since 0.2.0
 	 *
@@ -593,6 +593,17 @@ final class TapeScrubberTest extends TestCase {
 		$this->assertRefused( 'The delivery authorized, its header x-other holds an opaque token', $signature, fn() => self::signingScrubber()->scanDelivery( $delivery( 'x-other' ), 'The delivery authorized' ) );
 		$this->assertRefused( 'The delivery authorized, its header reference-signature holds an opaque token', $signature, fn() => self::signingScrubber()->scanDelivery( $delivery( 'reference-signature' ), 'The delivery authorized' ) );
 		$this->assertRefused( 'The delivery authorized, its body field signature holds an opaque token', $signature, fn() => self::publicScrubber()->scanDelivery( $body, 'The delivery authorized' ) );
+		$this->assertRefused(
+			'The delivery authorized, its header location query field signature holds an opaque token',
+			rawurlencode( $signature ),
+			fn() => self::signingScrubber()->scanDelivery(
+				array(
+					'headers' => array( 'location' => 'https://h.example/p?signature=' . rawurlencode( $signature ) ),
+					'body'    => '{"id":"evt_1"}',
+				),
+				'The delivery authorized'
+			)
+		);
 		$this->assertRefused( 'The delivery authorized, its header signing_secret holds an opaque token', $signature, fn() => ( new TapeScrubber( array(), array(), array(), array(), array(), array(), array( 'signing_secret' ) ) )->scanDelivery( $delivery( 'signing_secret' ), 'The delivery authorized' ) );
 	}
 
@@ -681,6 +692,9 @@ final class TapeScrubberTest extends TestCase {
 		return array(
 			'a secret key'                    => array( 'sk_live_' . str_repeat( 'Ab1', 8 ), 'holds a secret or restricted key' ),
 			'a card number'                   => array( '4242424242424242', 'holds a card number' ),
+			'a run of letters and digits'     => array( str_repeat( 'Zq8', 8 ), 'holds an opaque token' ),
+			'a secret key in base64 twice'    => array( base64_encode( 'sk_live_' . str_repeat( 'Ab1', 8 ) ), 'holds an opaque token' ), // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- The form a secret is planted in.
+			'a placeholder not written'       => array( '{{secret:foo}}', 'holds text in the shape of a scrubbed secret' ),
 			'a client secret in its own form' => array( 'client_secret=' . str_repeat( 'Zq8', 4 ), 'holds a secret the provider issues' ),
 		);
 	}

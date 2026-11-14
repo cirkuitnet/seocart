@@ -929,8 +929,10 @@ final class TapeScrubber {
 	 *
 	 * A signature a provider makes decodes to binary, which is no secret and passes. Base64 of
 	 * printable text (valid UTF-8, no control character but whitespace) is a value written in
-	 * another alphabet, so its text is read for a credential of the run, a secret's shape, a card
-	 * number (scanText() without its token rule) and a secret the provider issues.
+	 * another alphabet, so its text is read as any value is, with no field's name to exempt a
+	 * public shape (scanText()): a credential of the run, a secret's shape, a card number, a
+	 * placeholder the scrubber did not write, an opaque token (a base64 or hex copy of a secret, a
+	 * bearer token) and a secret the provider issues.
 	 *
 	 * @since 0.2.0
 	 *
@@ -948,7 +950,7 @@ final class TapeScrubber {
 
 		$where .= ', decoded,';
 
-		$this->scanText( $decoded, '', $where, false, false );
+		$this->scanText( $decoded, '', $where, true, true );
 
 		foreach ( $this->providerSecrets as $pattern ) {
 			if ( 1 === preg_match( $pattern, $decoded ) ) {

@@ -522,8 +522,8 @@ number of letters and digits after it (`'pi_' => 24`) or the least and the most
 delivery's signature header; a whole value in base64 (the standard alphabet in whole groups of
 four, `=` padding at the end) of 20 to 1024 characters in a field the test names in
 `publicSignatureFields()`, such as the signature a provider puts on a public delivery, kept as it
-was recorded unless its decoded bytes are printable text that holds a credential, a secret or a card
-number; and the media type of a `Content-Type` or `Accept` header. No public
+was recorded unless its decoded bytes are printable text that holds a credential, a secret, a card
+number or an opaque token; and the media type of a `Content-Type` or `Accept` header. No public
 shape passes for a token with a secret's prefix (`sk_`, `rk_`, `whsec_`, `cs_`, `secret_`,
 `private_`, `token_`, `key_`, `pass_` or `password_`, or `_live_`, `_test_`, `_secret_`,
 `_private_`, `_token_` or `_key_` inside it), in a field named like a credential (`key`, or a name
