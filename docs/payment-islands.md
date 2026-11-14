@@ -195,6 +195,8 @@ brings a fresh nonce. A shopper who sent too many placements and resumes for now
 (`store_api.rate_limited`, HTTP 429) is refused without a write too: the host keeps the key and
 rests with the code `rate_limited` and `retryAfter`, the seconds the store's `Retry-After` asked
 it to wait, and a placement or a retry before then sends nothing and rests with the seconds left.
+The store's own refusal carries no `Retry-After` today, so the host then waits nothing; a proxy's
+429 may carry one.
 
 The host sends those two writes and no other. An island never writes to the cart or the checkout:
 the store prices the order from what it holds, whatever an island sends.
@@ -203,12 +205,12 @@ The store knows a placement by its idempotency key, its cart version, its total 
 not by its payment data: a request with the same four is answered as that placement stands,
 whatever payment data it carries, and the gateway is not asked again. So the tab keeps, in
 `sessionStorage` under `seocart:placement`, exactly `{ key, cartVersion, amountMinor, currency,
-gatewayId, intentUuid, shopper }`, seven members, and never the payment data or the order's key. The
-key is sent again after a network failure, a server error, an unavailable gateway
-(`checkout.gateway_unavailable`),
-a placement still in progress (`checkout.placement_in_progress`, after `Retry-After`) or still
-`pending`, a `session_expired`, too many requests (`rate_limited`), and while the shopper must
-act. The order's key is handed to the checkout once, through `onPlaced()`.
+gatewayId, intentUuid, shopper }`, seven members, and never the payment data or the order's key.
+The key is sent again after a network failure, a server error, an unavailable gateway
+(`checkout.gateway_unavailable`), a placement still in progress (`checkout.placement_in_progress`,
+after `Retry-After`) or still `pending`, a `session_expired`, too many requests (`rate_limited`),
+and while the shopper must act. The order's key is handed to the checkout once, through
+`onPlaced()`.
 
 A kept placement ends, and the next placement gets a fresh key, only when the store has answered
 for it: a settled, declined or voided answer; a stale cart (`cart.version_stale`,
