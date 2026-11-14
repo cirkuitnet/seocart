@@ -24,25 +24,27 @@ use WP_UnitTestCase;
  * WordPress loads active plugins. SEOCart's own registry fires the registration action the first
  * time it is asked for a gateway, so asking for this one proves the main file's hook is the one
  * SEOCart fires, and that SEOCart accepts the gateway it builds: a gateway it refuses is logged
- * and left out.
+ * and left out. The test reads the registry's public answers only: what SEOCart hands out to
+ * place a payment is its own wrapper, never this class.
  *
  * @since 0.1.0
  */
 final class RegistersWithSEOCartTest extends WP_UnitTestCase {
 
 	/**
-	 * Tests that the gateway is registered, written against a contract version SEOCart supports, and not offered.
+	 * Tests that the gateway is registered with its declaration, written against a contract SEOCart supports, and not offered.
 	 *
 	 * @since 0.1.0
 	 */
 	public function test_seocart_registers_the_gateway_and_does_not_offer_it(): void {
 		$registry = Kernel::container()->get( Gateways::class );
-		$gateway  = $registry->get( Gateway::ID, Mode::Test );
-		$declared = $gateway->describe();
+		$declared = $registry->descriptor( Gateway::ID );
 
-		$this->assertInstanceOf( Gateway::class, $gateway );
+		$this->assertSame( array(), $registry->refused(), 'SEOCart refused a registration.' );
+		$this->assertContains( Gateway::ID, $registry->ids() );
 		$this->assertSame( Gateway::ID, $declared->id );
 		$this->assertSame( '{{label}}', $declared->label() );
+		$this->assertSame( array( Mode::Test ), $declared->modes );
 		$this->assertTrue( $registry->supportsContract( $declared->contract ), "SEOCart does not support the contract {$declared->contract} this gateway is written against." );
 
 		foreach ( array( 'USD', 'GBP', 'EUR' ) as $code ) {
