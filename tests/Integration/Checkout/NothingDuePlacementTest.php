@@ -133,6 +133,7 @@ final class NothingDuePlacementTest extends PlacementTestCase {
 		$this->assertSame( 0, $input['grand_total_minor'], 'Nothing is due.' );
 		$this->assertSame( array( 'approved', 'processing', 'paid' ), array( $answer['outcome'], $answer['status'], $answer['payment_status'] ) );
 		$this->assertNotSame( '', (string) $answer['order_key'] );
+		$this->assertNull( $answer['intent_uuid'], 'Nothing is due: no payment for the shopper to act for.' );
 		$this->assertSame( 2, $log->matching( '/^START TRANSACTION$/' )->count(), 'Two units of work.' );
 		$this->assertSame( array(), $this->gateway->calls, 'The gateway was never called.' );
 
