@@ -450,6 +450,10 @@ protected function credentialRequests(): array {
 }
 ```
 
+Rule 2 refunds once with its answer lost, and asks the refund again. The answer lost is that of
+the next request that can move money, neither a read nor a named credential request, so a gateway
+that reads the payment or asks for a token before it refunds has those answered.
+
 ### Tapes: replay and record
 
 The suite never reaches the provider on a pull request. It replays the provider's answers from

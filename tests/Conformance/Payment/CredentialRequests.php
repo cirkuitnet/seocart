@@ -17,8 +17,8 @@ namespace SEOCart\Tests\Conformance\Payment;
  * Owns one fact: which requests of a gateway carry no money though they are no read. A provider
  * that exchanges credentials for a token, such as with `POST /v1/oauth2/token`, has the gateway
  * send that request before its money request. The suite's request rules read such a request as
- * carrying no money (RequestRules::movesMoney()): it needs no idempotency key, and no rule takes it
- * for an operation's own request. A request is one of them when
+ * carrying no money (RequestRules::movesMoney()): it needs no idempotency key, no rule takes it for
+ * an operation's own request, and a lost answer is never its own. A request is one of them when
  * its method and its path, with its query, are a declared one's, and its host is one the gateway's
  * descriptor declares.
  *

@@ -188,13 +188,22 @@ final class RecordingTransport implements Transport {
 	private array $served = array();
 
 	/**
-	 * Whether the next request's answer is lost.
+	 * Whether the answer to the next request that can move money is lost.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var bool
 	 */
 	private bool $loseNext = false;
+
+	/**
+	 * The requests the gateway's test declares exchange its credentials for a token, which move no money.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var CredentialRequests
+	 */
+	private CredentialRequests $credentials;
 
 	/**
 	 * What went wrong, one sentence each.
@@ -234,12 +243,13 @@ final class RecordingTransport implements Transport {
 	 * @param HttpWatch          $watch The watch.
 	 */
 	private function __construct( string $mode, ?Tape $tape, TransactionManager $tx, HttpWatch $watch ) {
-		$this->mode     = $mode;
-		$this->tape     = $tape;
-		$this->tx       = $tx;
-		$this->watch    = $watch;
-		$this->inner    = new WordPressTransport();
-		$this->scrubber = new TapeScrubber( array() );
+		$this->mode        = $mode;
+		$this->tape        = $tape;
+		$this->tx          = $tx;
+		$this->watch       = $watch;
+		$this->inner       = new WordPressTransport();
+		$this->scrubber    = new TapeScrubber( array() );
+		$this->credentials = new CredentialRequests();
 	}
 
 	/**
@@ -344,6 +354,17 @@ final class RecordingTransport implements Transport {
 	}
 
 	/**
+	 * Gives the transport the credential requests the gateway's test declares, whose answers loseNextAnswer() never loses.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CredentialRequests $credentials The declared requests.
+	 */
+	public function declareCredentialRequests( CredentialRequests $credentials ): void {
+		$this->credentials = $credentials;
+	}
+
+	/**
 	 * Answers every request from now on with a connection failure, keeping what was sent.
 	 *
 	 * @since 0.2.0
@@ -377,11 +398,17 @@ final class RecordingTransport implements Transport {
 	}
 
 	/**
-	 * Loses the answer to the next request: the provider answers, and the gateway is told the request timed out.
+	 * Loses the answer to the next request that can move money: the provider answers, and the gateway is told the request timed out.
+	 *
+	 * The request that loses its answer is the next that is neither a read nor a credential request
+	 * the gateway's test declares (RequestRules::movesMoney()): a gateway that reads an order, or
+	 * exchanges its credentials for a token, before it refunds has those answered, and the refund's
+	 * answer lost. A gateway whose operation begins with its money request loses that request's
+	 * answer, as before. A replay loses the answer its tape lost.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param bool $lose False takes the order back, when no request was sent.
+	 * @param bool $lose False takes the order back, when no request that can move money was sent.
 	 */
 	public function loseNextAnswer( bool $lose = true ): void {
 		$this->loseNext = $lose;
@@ -406,10 +433,13 @@ final class RecordingTransport implements Transport {
 			$this->insideTransactions[] = sprintf( 'request %1$d of %2$s was sent at transaction depth %3$d', $number, $this->scenarioName(), $this->tx->depth() );
 		}
 
-		$lost   = $this->loseNext;
-		$answer = null;
+		$movesMoney = RequestRules::movesMoney( $request->method, $request->url, $this->credentials );
+		$lost       = $this->loseNext && $movesMoney;
+		$answer     = null;
 
-		$this->loseNext = false;
+		if ( $movesMoney ) {
+			$this->loseNext = false;
+		}
 
 		if ( $this->replays() ) {
 			$taped = $this->tapedRequest( $request, $number );

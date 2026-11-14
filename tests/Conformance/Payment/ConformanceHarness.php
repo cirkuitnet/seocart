@@ -340,8 +340,8 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * A provider that hands out a token for the gateway's credentials, such as with
 	 * `POST /v1/oauth2/token`, has the gateway send that request before its money request. A
 	 * request named here, by its method in capitals and its path with its query, at a host the
-	 * gateway declares, carries no money: rule 6 asks it for no idempotency key, and no rule takes it
-	 * for an operation's own request. A test names
+	 * gateway declares, carries no money: rule 6 asks it for no idempotency key, no rule takes it for
+	 * an operation's own request, and the lost answer of rule 2 is never its own. A test names
 	 * CredentialRequests::MOST at most; a longer list, or an entry that is not a method and a path
 	 * from `/`, fails the suite's set-up, and a request on a path named here that carries an
 	 * operation's key fails rules 6 and 12, since a credential request moves no money.
@@ -541,6 +541,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 
 		// Asked once here, so a gateway the plugin refused fails every test with the refusal as its cause.
 		$this->credentials = $this->credentialRequestsOf( $this->descriptor() );
+		$this->transport->declareCredentialRequests( $this->credentials );
 		$this->configure( $this->suiteMode() );
 	}
 

@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Integration\Payment\Conformance;
 
 use SEOCart\Contracts\OutboundRequest;
 use SEOCart\Contracts\TransportFailure;
+use SEOCart\Tests\Conformance\Payment\CredentialRequests;
 use SEOCart\Tests\Conformance\Payment\Exchange;
 use SEOCart\Tests\Conformance\Payment\HttpWatch;
 use SEOCart\Tests\Conformance\Payment\RecordingTransport;
@@ -29,13 +30,31 @@ use WP_UnitTestCase;
 final class RecordingTransportTest extends WP_UnitTestCase {
 
 	/**
+	 * The provider, by its scheme and host: the fake provider answers every request to it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const PROVIDER = 'https://api.reference.example';
+
+	/**
 	 * The provider's URL the tests send to.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
-	private const URL = 'https://api.reference.example/v1/intents';
+	private const URL = self::PROVIDER . '/v1/intents';
+
+	/**
+	 * The path of the provider's token request.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const TOKEN_PATH = '/v1/oauth2/token';
 
 	/**
 	 * The credential the tests send.
@@ -92,7 +111,7 @@ final class RecordingTransportTest extends WP_UnitTestCase {
 	private int $answered = 0;
 
 	/**
-	 * Makes a scratch tape and a provider answering with the request's body.
+	 * Makes a scratch tape and a provider answering every request to its host with the request's body.
 	 *
 	 * @since 0.2.0
 	 */
@@ -108,7 +127,7 @@ final class RecordingTransportTest extends WP_UnitTestCase {
 		add_filter(
 			'pre_http_request',
 			function ( mixed $pre, mixed $args, mixed $url ): mixed {
-				if ( false !== $pre || self::URL !== $url ) {
+				if ( false !== $pre || ! is_string( $url ) || ! str_starts_with( $url, self::PROVIDER . '/' ) ) {
 					return $pre;
 				}
 
@@ -266,6 +285,51 @@ final class RecordingTransportTest extends WP_UnitTestCase {
 
 		$this->assertSame( 1, $this->answered, 'The provider answered the recording only.' );
 		$this->assertTrue( Exchange::fromTape( (array) json_decode( (string) file_get_contents( $this->directory . '/lost/1.json' ), true ) )->answerLost );
+	}
+
+	/**
+	 * Tests that the answer lost is that of the next request that can move money: a read and a declared credential request before it are answered, on the recording and on its replay.
+	 *
+	 * Planted violation, shown red and removed: in RecordingTransport::send(), lose the answer to the
+	 * next request whatever it is: the read's answer is lost, and this test fails.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_lost_answer_falls_on_the_next_request_that_can_move_money(): void {
+		$credentials = new CredentialRequests(
+			array(
+				array(
+					'method' => 'POST',
+					'path'   => self::TOKEN_PATH,
+				),
+			),
+			array( 'api.reference.example' )
+		);
+
+		foreach ( array( $this->recorder(), $this->player() ) as $transport ) {
+			$transport->declareCredentialRequests( $credentials );
+			$transport->scenario( 'read-first' );
+			$transport->loseNextAnswer();
+
+			$this->assertSame( 200, $transport->send( new OutboundRequest( 'reference-api', 'GET', self::URL, array( 'Authorization' => 'Bearer ' . self::KEY ), null ), 15 )->status, 'A read lost its answer.' );
+			$this->assertSame( 200, $transport->send( self::request( 'grant_type=client_credentials', self::PROVIDER . self::TOKEN_PATH ), 15 )->status, 'A declared credential request lost its answer.' );
+
+			try {
+				$transport->send( self::request( 'amount=1000' ), 15 );
+				self::fail( 'The answer to the request that can move money reached the gateway.' );
+			} catch ( TransportFailure $lost ) {
+				$this->assertSame( TransportFailure::TIMEOUT, $lost->kind );
+			}
+
+			$this->assertSame( 200, $transport->send( self::request( 'amount=2000' ), 15 )->status, 'A second answer was lost.' );
+			$transport->finish();
+			$this->assertSame( array(), $transport->violations() );
+		}
+
+		$this->assertSame( 4, $this->answered, 'The provider answered the recording only.' );
+		$this->assertSame( array( false, false, true, false ), array_map( fn( int $number ): bool => Exchange::fromTape( (array) json_decode( (string) file_get_contents( $this->directory . '/read-first/' . $number . '.json' ), true ) )->answerLost, array( 1, 2, 3, 4 ) ) );
 	}
 
 	/**
@@ -479,13 +543,14 @@ final class RecordingTransportTest extends WP_UnitTestCase {
 	 * @since 0.2.0
 	 *
 	 * @param string $body The form body.
+	 * @param string $url  Optional. Where it is sent. Default URL.
 	 * @return OutboundRequest The request.
 	 */
-	private static function request( string $body ): OutboundRequest {
+	private static function request( string $body, string $url = self::URL ): OutboundRequest {
 		return new OutboundRequest(
 			'reference-api',
 			'POST',
-			self::URL,
+			$url,
 			array(
 				'Authorization' => 'Bearer ' . self::KEY,
 				'Content-Type'  => 'application/x-www-form-urlencoded',
