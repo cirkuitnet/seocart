@@ -54,8 +54,8 @@
  *     the one order;
  * 20. back from the provider, when the order of the settled payment does not come back, the host
  *     rests with the placement kept, and retrying hands the order over with its key;
- * 21. a return address naming another payment leaves the kept placement alone, and placing again
- *     takes its step and hands its order over;
+ * 21. a return address naming another payment leaves the kept placement alone, and placing then
+ *     asks for the kept placement's own payment, under its key, and hands its order over;
  * 22. reloaded after a lost answer, with the asking on loading failed, Place asks the kept placement
  *     under its key, confirming nothing, and hands the order over; never a fresh key for the cart
  *     the order emptied;
@@ -1930,7 +1930,7 @@ test.describe( 'The payment section, as a guest', () => {
 		await expectOnlyHostWrites( page, ledger );
 	} );
 
-	test( '(21) a return address naming another payment leaves the kept placement alone, and placing again takes its step and hands its order over', async ( {
+	test( '(21) a return address naming another payment leaves the kept placement alone, and placing then asks for that placement’s own payment under its key and hands its order over', async ( {
 		page,
 		pluginBasePath,
 	} ) => {
@@ -1943,12 +1943,6 @@ test.describe( 'The payment section, as a guest', () => {
 		const kept = await keptPlacement( page );
 
 		// An address that names a payment of no cart of this shopper's.
-		await page.addInitScript( () => {
-			window.__fakeIslandOptions = {
-				token: 'stub:requires_action',
-				action: 'completed',
-			};
-		} );
 		await page.goto( `${ address }?${ RETURN_ARG }=${ randomUUID() }` );
 		await waitForHost( page );
 		await expect
@@ -1961,13 +1955,18 @@ test.describe( 'The payment section, as a guest', () => {
 
 		const order = await awaitPlaced( page );
 
+		// The store has not answered for the kept placement on this page: placing asks for its own
+		// payment, then for its order under the kept key, and the island is asked for nothing.
 		expect( order ).toMatchObject( { outcome: 'approved', intentUuid } );
 		expect( order.orderKey ).toEqual( expect.any( String ) );
-		expect( hostWrites( ledger ).map( ( [ , key ] ) => key ) ).toEqual( [
-			kept?.key,
-			null,
-			kept?.key,
-			null,
+		expect( await callNames( page ) ).toEqual( [ 'mount' ] );
+		expect(
+			hostWrites( ledger ).map( ( [ route, key ] ) => [ route, key ] )
+		).toEqual( [
+			[ `${ STORE }/checkout`, kept?.key ],
+			[ `${ STORE }/checkout/resume`, null ],
+			[ `${ STORE }/checkout/resume`, null ],
+			[ `${ STORE }/checkout`, kept?.key ],
 		] );
 		await expectOnlyHostWrites( page, ledger );
 	} );
