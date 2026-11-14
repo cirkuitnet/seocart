@@ -258,18 +258,60 @@ final class AssertingLoggerTest extends TestCase {
 	}
 
 	/**
+	 * Returns log lines that hold a digest whose digits pass the card number's checksum, with whether a logger of a test that declares the digest's field notes a card number: only a whole digest with a letter among its digits, under a declared key not named like a credential, is no card number, as a tape reads it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string, array<string, string>, bool}> The message, the context, and whether a card number is noted.
+	 */
+	public function digestsInALine(): array {
+		$labeled = 'sha512=' . strtoupper( 'ab' . self::DIGITS . str_repeat( 'cd', 55 ) );
+
+		return array(
+			'a digest under a declared key'               => array( 'Verified.', array( 'x-signing' => $labeled ), false ),
+			'a digest under a declared key in another case' => array( 'Verified.', array( 'X-Signing' => $labeled ), false ),
+			'a digest under an undeclared key'            => array( 'Verified.', array( 'signature' => $labeled ), true ),
+			'a digest under a declared key named like a credential' => array( 'Verified.', array( 'signing_key' => $labeled ), true ),
+			'a digest after other text under a declared key' => array( 'Verified.', array( 'x-signing' => 'v1=' . $labeled ), true ),
+			'a digest of 129 digits under a declared key' => array( 'Verified.', array( 'x-signing' => $labeled . 'A' ), true ),
+			'a digest in the message'                     => array( 'Verified ' . $labeled . '.', array(), true ),
+		);
+	}
+
+	/**
+	 * Tests that a log line's context value that is a whole digest under a declared key is no card number, by the tape scrubber's test, and that the same digits elsewhere are one.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider digestsInALine
+	 * @group conformance
+	 *
+	 * @param string                $message The line's message.
+	 * @param array<string, string> $context The line's context.
+	 * @param bool                  $noted   Whether a card number is noted.
+	 */
+	public function test_a_declared_digest_is_no_card_number_as_a_tape_reads_it( string $message, array $context, bool $noted ): void {
+		$logger = self::logger( array(), array(), array( 'x-signing', 'signing_key' ) );
+		$logger->info( 'gateway.verified', $message, $context );
+
+		$this->assertSame( $noted ? array( 'the line gateway.verified holds a card number' ) : array(), $logger->violations() );
+	}
+
+	/**
 	 * Builds a logger whose gateway was served the answer.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string[]                          $codes  The codes the test declares.
-	 * @param array<int|string, int|array<int>> $shapes Optional. The shapes of the ids the test declares. Default none.
+	 * @param string[]                          $codes   The codes the test declares.
+	 * @param array<int|string, int|array<int>> $shapes  Optional. The shapes of the ids the test declares. Default none.
+	 * @param string[]                          $digests Optional. The fields whose digests the test declares public. Default none.
 	 * @return AssertingLogger The logger.
 	 *
 	 * @phpstan-param list<string> $codes
 	 * @phpstan-param array<int|string, int|array{int, int}> $shapes
+	 * @phpstan-param list<string> $digests
 	 */
-	private static function logger( array $codes = array(), array $shapes = array() ): AssertingLogger {
-		return new AssertingLogger( static fn(): array => array( self::ANSWER ), $codes, $shapes );
+	private static function logger( array $codes = array(), array $shapes = array(), array $digests = array() ): AssertingLogger {
+		return new AssertingLogger( static fn(): array => array( self::ANSWER ), $codes, $shapes, $digests );
 	}
 }

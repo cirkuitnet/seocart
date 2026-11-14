@@ -602,9 +602,10 @@ An opaque token passes only in a public shape: a UUID, as the store's own refere
 the provider's enumerated codes, as an exact string the test names in `publicCodes()`, such as a
 long status; an id of exactly a shape the test names in `publicIdShapes()`, a prefix with the
 number of letters and digits after it (`'pi_' => 24`) or the least and the most
-(`'cus_' => array( 14, 24 )`); a
-64-character hexadecimal digest in a field the test names in `publicDigestFields()`, such as a
-delivery's signature header; a whole value in base64 (the standard alphabet in whole groups of
+(`'cus_' => array( 14, 24 )`); in a
+field the test names in `publicDigestFields()`, such as a delivery's signature header, a run of 64
+hexadecimal digits, or a whole value of 128 with a letter among them, bare or after `sha512=`; a
+whole value in base64 (the standard alphabet in whole groups of
 four, `=` padding at the end) of 20 to 1024 characters in a field the test names in
 `publicSignatureFields()`, such as the signature a provider puts on a public delivery, kept as it
 was recorded unless its decoded bytes are printable text that holds a credential, a secret, a card
@@ -658,10 +659,12 @@ A provider's id of letters and digits often holds a run of 13 to 16 digits that 
 number's checksum. In a tape, a value that is, as a whole, an id of a shape named in
 `publicIdShapes()` with a letter after its prefix is not read as a card number, and nor is such an
 id as a whole segment of the path of an `http` or `https` URL, such as the id in
-`/v2/checkout/orders/{id}`; a whole 64-character hexadecimal digest with a letter in it in a
-field named in `publicDigestFields()` is not either. In a log line, only a value of the line's
-context that is such an id as a whole is skipped: an id inside a URL or in the message is read as
-a card number as before. Digits alone after the prefix, an id among other text (`order-{id}`, a
+`/v2/checkout/orders/{id}`; a whole digest of 64 or 128 hexadecimal digits, bare or after
+`sha256=` or `sha512=` as its length is, with a letter among its digits, in a field named in
+`publicDigestFields()` is not either, while digits alone, another length or label, and the digest
+among other text are. In a log line, only a value of the line's context that is such an id, or
+such a digest under a key named in `publicDigestFields()`, as a whole is skipped: an id inside a
+URL or in the message is read as a card number as before. Digits alone after the prefix, an id among other text (`order-{id}`, a
 sentence, free text that holds a URL), a field's name and a shape not named are read as before,
 and every other check still reads the value. For ids with no prefix, a shape may have none while
 it is shorter than 20 characters, such as `'' => 17`; it lets no opaque token pass, and one of 20

@@ -722,6 +722,91 @@ final class TapeScrubberTest extends TestCase {
 	}
 
 	/**
+	 * Returns values of a declared digest field and elsewhere, with whether a tape keeps them and why it does not: digests whose digits hold a run of sixteen that passes the card number's checksum, for the card rule, and digests that hold none, for the token rule.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{0: Exchange, 1: bool, 2?: string}> The exchange, whether both scans keep it, and what each refusal says.
+	 */
+	public function digestsOfBothLengths(): array {
+		$long    = 'ab4242424242424242' . str_repeat( 'cd', 55 );
+		$short   = 'ab4242424242424242' . str_repeat( 'cd', 23 );
+		$labeled = 'sha512=' . strtoupper( $long );
+		$plain   = str_repeat( 'ab12', 32 );
+		$token   = 'holds an opaque token';
+		$card    = 'holds a card number';
+		$header  = static fn( string $name, string $value ): Exchange => self::exchangeWith( 'headers', array( $name => $value ) );
+
+		return array(
+			'128 digits, bare'                             => array( self::exchangeWith( 'responseHeaders', $long ), true ),
+			'sha512= and 128 upper-case digits'            => array( self::exchangeWith( 'responseHeaders', $labeled ), true ),
+			'sha256= and 64 digits'                        => array( self::exchangeWith( 'responseHeaders', 'sha256=' . $short ), true ),
+			'64 digits, bare, as before'                   => array( self::exchangeWith( 'responseHeaders', $short ), true ),
+			'sha512= and 128 digits in a declared body field' => array( self::exchangeWith( 'responseBody', '{"x-signing":"' . $labeled . '"}' ), true ),
+			'a card\'s run in 127 digits'                  => array( self::exchangeWith( 'responseHeaders', substr( $long, 1 ) ), false, $card ),
+			'a card\'s run in 129 digits'                  => array( self::exchangeWith( 'responseHeaders', $long . 'a' ), false, $card ),
+			'a card\'s run after sha256= before 128 digits' => array( self::exchangeWith( 'responseHeaders', 'sha256=' . $long ), false, $card ),
+			'a card\'s run after sha512= before 64 digits' => array( self::exchangeWith( 'responseHeaders', 'sha512=' . $short ), false, $card ),
+			'a card\'s run after SHA512= in capitals'      => array( self::exchangeWith( 'responseHeaders', 'SHA512=' . $long ), false, $card ),
+			'a card\'s run in a digest after other text'   => array( self::exchangeWith( 'responseHeaders', 'v1=' . $labeled ), false, $card ),
+			'a card\'s run in an undeclared field'         => array( $header( 'x-other', $labeled ), false, $card ),
+			'a card\'s run in a declared field named like a credential' => array( $header( 'x-signing-key', $labeled ), false, $card ),
+			'a card\'s run in a field\'s name'             => array( self::exchangeWith( 'responseBody', '{"' . strtoupper( $long ) . '":"x"}' ), false, $card ),
+			'a card\'s run dropped from a field, and whole in the declared one' => array( self::exchangeWith( 'responseBody', '{"note":"' . $labeled . '","note":"x","x-signing":"' . $labeled . '"}' ), false, 'holds, outside every field it was read as, a card number' ),
+			'128 digits of no card, bare'                  => array( self::exchangeWith( 'responseHeaders', $plain ), true ),
+			'sha512= and 128 digits of no card'            => array( self::exchangeWith( 'responseHeaders', 'sha512=' . $plain ), true ),
+			'128 digits alone, no letter among them'       => array( self::exchangeWith( 'responseHeaders', 'sha512=' . str_repeat( '12', 64 ) ), false, $token ),
+			'127 digits'                                   => array( self::exchangeWith( 'responseHeaders', substr( $plain, 1 ) ), false, $token ),
+			'129 digits'                                   => array( self::exchangeWith( 'responseHeaders', $plain . 'a' ), false, $token ),
+			'sha256= before 128 digits'                    => array( self::exchangeWith( 'responseHeaders', 'sha256=' . $plain ), false, $token ),
+			'SHA512= in capitals'                          => array( self::exchangeWith( 'responseHeaders', 'SHA512=' . $plain ), false, $token ),
+			'the digest after other text'                  => array( self::exchangeWith( 'responseHeaders', 'v1=sha512=' . $plain ), false, $token ),
+			'the digest in an undeclared field'            => array( $header( 'x-other', 'sha512=' . $plain ), false, $token ),
+			'the digest in a declared field named like a credential' => array( $header( 'x-signing-key', 'sha512=' . $plain ), false, 'in the field x-signing-key, named like a credential' ),
+		);
+	}
+
+	/**
+	 * Tests that a whole digest of 64 or 128 hexadecimal digits, bare or after the label of its length, with a letter among its digits, passes in a declared field and is no card number there, for the recorder and for rule 14's rescan of the file it writes; and that digits alone, a length or a label it is not, the digest among other text, an undeclared field, a field named like a credential, a field's name and a copy that decoding dropped are read as before, by the card rule and by the token rule.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider digestsOfBothLengths
+	 * @group conformance
+	 *
+	 * @param Exchange $sent    The exchange as sent and answered.
+	 * @param bool     $kept    Whether both scans keep it.
+	 * @param string   $because Optional. What each refusal says. Default anything.
+	 */
+	public function test_a_digest_of_either_length_passes_only_whole_in_a_declared_field( Exchange $sent, bool $kept, string $because = '' ): void {
+		$scrubber = new TapeScrubber( array( 'secret_key' => array( self::KEY ) ), array(), array(), array( 'x-signing', 'x-signing-key' ), array(), self::PLANTED_HEADERS );
+		$verdicts = $this->verdicts( $scrubber, $sent );
+
+		$this->assertSame( array( $kept, $kept ), array_values( array_map( static fn( string $verdict ): bool => 'accepted' === $verdict, $verdicts ) ), implode( ' / ', $verdicts ) );
+
+		foreach ( '' === $because ? array() : $verdicts as $verdict ) {
+			$this->assertStringContainsString( $because, $verdict );
+		}
+	}
+
+	/**
+	 * Tests that a declared field's digest of either length is no card number to the scrubber, nor to rule 13's logger, by the one test they share, and that the same value is one to both outside the declared field.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_the_scrubber_and_the_logger_share_the_digests_test(): void {
+		$labeled = 'sha512=' . strtoupper( 'ab4242424242424242' . str_repeat( 'cd', 55 ) );
+
+		$this->assertTrue( TapeScrubber::namesNoCardIn( array(), array( 'X-Signing' ), $labeled, 'x-signing' ), 'A declared field, in any case.' );
+		$this->assertFalse( TapeScrubber::namesNoCardIn( array(), array( 'x-signing' ), $labeled, 'x-other' ), 'An undeclared field.' );
+		$this->assertFalse( TapeScrubber::namesNoCardIn( array(), array( 'x-signing' ), $labeled, '' ), 'No field.' );
+		$this->assertFalse( TapeScrubber::namesNoCardIn( array(), array( 'signing_key' ), $labeled, 'signing_key' ), 'A declared field named like a credential.' );
+		$this->assertFalse( TapeScrubber::namesNoCardIn( array(), array( 'x-signing' ), 'sha512=' . str_repeat( '4242424242424242', 8 ), 'x-signing' ), 'Digits alone: the label\'s letters are not the digits\'.' );
+	}
+
+	/**
 	 * Tests that a base64 signature in a field the test declares is kept as it was recorded, in a header, a body field and a committed tape, beside a digest field that is kept as before.
 	 *
 	 * @since 0.2.0

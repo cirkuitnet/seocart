@@ -13,7 +13,7 @@ namespace SEOCart\Tests\Support\Doubles;
 
 use SEOCart\Contracts\Logger;
 use SEOCart\Platform\Logging\CardNumbers;
-use SEOCart\Tests\Conformance\Payment\IdShapes;
+use SEOCart\Tests\Conformance\Payment\TapeScrubber;
 
 /**
  * The logger a gateway is given under test: it keeps every line and notes why any of them offends.
@@ -33,11 +33,13 @@ use SEOCart\Tests\Conformance\Payment\IdShapes;
  * so a message logged encoded, in another case, or split across values is found.
  *
  * A context value that is, as a whole, an id of a shape the test declares with a letter after its prefix
- * (GatewayConformanceCase::publicIdShapes(), IdShapes::namesNoCard()) is not read for a card
- * number: one in ten of a provider's ids that hold a run of 13 to 16 digits would pass for one. The
- * test is the tape scrubber's, so an id with a secret's prefix, or in a field named like a
- * credential, is read for one as it is in a tape. The message, and a value that holds an id among
- * other text, are read as before.
+ * (GatewayConformanceCase::publicIdShapes(), IdShapes::namesNoCard()), or a digest with a letter
+ * among its digits under a key the test declares (GatewayConformanceCase::publicDigestFields(),
+ * PublicDigests::namesNoCard()), is not read for a card number: one in ten of a provider's ids that
+ * hold a run of 13 to 16 digits would pass for one. The test is the tape scrubber's
+ * (TapeScrubber::namesNoCardIn()), so an id or a digest with a secret's prefix, or under a key named
+ * like a credential, is read for one as it is in a tape. The message, and a value that holds an id
+ * or a digest among other text, are read as before.
  *
  * It never throws: a gateway could catch the exception and carry on, so a test asks violations().
  *
@@ -61,7 +63,7 @@ final class AssertingLogger implements Logger {
 	 *
 	 * @var string
 	 */
-	public const LIMIT = 'Rule 13 takes for the provider\'s words a value of its answers that has whitespace in it or is one word of letters: a one-word value with `_` or a digit in it is taken for a code or an id, which a log line may carry, and two spellings that differ only by Unicode normalisation are not taken for the same words. A context value that is, as a whole, an id of a shape the gateway\'s test declares in `publicIdShapes()` with a letter after its prefix is not read for a card number, so a card number written in a declared shape is beyond the reading.';
+	public const LIMIT = 'Rule 13 takes for the provider\'s words a value of its answers that has whitespace in it or is one word of letters: a one-word value with `_` or a digit in it is taken for a code or an id, which a log line may carry, and two spellings that differ only by Unicode normalisation are not taken for the same words. A context value that is, as a whole, an id of a shape the gateway\'s test declares in `publicIdShapes()` with a letter after its prefix, or a digest with a letter among its digits under a key it declares in `publicDigestFields()`, as a tape reads them, is not read for a card number, so a card number written in a declared shape is beyond the reading.';
 
 	/**
 	 * Response bodies shorter than this are not looked for: `{}` or `[]` would be found everywhere.
@@ -127,22 +129,34 @@ final class AssertingLogger implements Logger {
 	private array $idShapes;
 
 	/**
-	 * Keeps the source of the answers to look for, the codes a line may carry and the shapes of the ids it may carry.
+	 * The fields whose digests are public, as publicDigestFields() declares them.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param \Closure                          $answers  Returns the response bodies served so far.
-	 * @param string[]                          $codes    Optional. The provider's enumerated codes a line may carry, such as a status. Default none.
-	 * @param array<int|string, int|array<int>> $idShapes Optional. The shapes of the provider's public ids, by prefix, as publicIdShapes() declares them. Default none.
+	 * @var list<string>
+	 */
+	private array $digestFields;
+
+	/**
+	 * Keeps the source of the answers to look for, the codes a line may carry and the shapes of the ids and the digests it may carry.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param \Closure                          $answers      Returns the response bodies served so far.
+	 * @param string[]                          $codes        Optional. The provider's enumerated codes a line may carry, such as a status. Default none.
+	 * @param array<int|string, int|array<int>> $idShapes     Optional. The shapes of the provider's public ids, by prefix, as publicIdShapes() declares them. Default none.
+	 * @param string[]                          $digestFields Optional. The fields whose digests are public, as publicDigestFields() declares them. Default none.
 	 *
 	 * @phpstan-param \Closure(): list<string> $answers
 	 * @phpstan-param list<string> $codes
 	 * @phpstan-param array<int|string, int|array{int, int}> $idShapes
+	 * @phpstan-param list<string> $digestFields
 	 */
-	public function __construct( \Closure $answers, array $codes = array(), array $idShapes = array() ) {
-		$this->answers  = $answers;
-		$this->codes    = array_map( static fn( string $code ): string => self::normalized( $code ), $codes );
-		$this->idShapes = $idShapes;
+	public function __construct( \Closure $answers, array $codes = array(), array $idShapes = array(), array $digestFields = array() ) {
+		$this->answers      = $answers;
+		$this->codes        = array_map( static fn( string $code ): string => self::normalized( $code ), $codes );
+		$this->idShapes     = $idShapes;
+		$this->digestFields = $digestFields;
 	}
 
 	/**
@@ -288,7 +302,7 @@ final class AssertingLogger implements Logger {
 	}
 
 	/**
-	 * Returns a context with each value that is, as a whole, an id of a declared shape with a letter after its prefix emptied, for the card rule's reading.
+	 * Returns a context with each value that names no card as a tape reads it, as a whole (TapeScrubber::namesNoCardIn()), emptied, for the card rule's reading.
 	 *
 	 * @since 0.2.0
 	 *
@@ -299,7 +313,7 @@ final class AssertingLogger implements Logger {
 		array_walk_recursive(
 			$context,
 			function ( mixed &$value, int|string $field ): void {
-				if ( is_string( $value ) && IdShapes::namesNoCard( $this->idShapes, $value, (string) $field ) ) {
+				if ( is_string( $value ) && TapeScrubber::namesNoCardIn( $this->idShapes, $this->digestFields, $value, (string) $field ) ) {
 					$value = '';
 				}
 			}

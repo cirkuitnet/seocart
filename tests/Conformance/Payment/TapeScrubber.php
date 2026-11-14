@@ -41,19 +41,21 @@ use SEOCart\Platform\Logging\CardNumbers;
  *    field sent twice and the digits of a number too long to read as one.
  *
  * A whole value that is an id of a shape the test declares with a letter after its prefix (IdShapes::namesNoCard()),
- * or a whole 64-hex digest with a letter in it in a field the test declares, is not read as a card
- * number, and nor is such an id as a whole segment of the path of an http or https URL
- * (holdsCardNumber()): one in ten of a provider's ids that hold a run of 13 to 16 digits would pass
- * for one. Every other check still reads such a value, and the raw text it is written in passes it
- * only where it stands whole, and only as many times as the reading of the part's fields met it
- * (withoutValuesOfNoCard()).
+ * or a whole digest with a letter among its digits in a field the test declares (PublicDigests::namesNoCard()),
+ * is not read as a card number, and nor is such an id as a whole segment of the path of an http or
+ * https URL (holdsCardNumber()): one in ten of a provider's ids that hold a run of 13 to 16 digits
+ * would pass for one. Every other check still reads such a value, and the raw text it is written
+ * in passes it only where it stands whole, and only as many times as the reading of the part's
+ * fields met it (withoutValuesOfNoCard()). Rule 13's logger reads a value of a log line's context
+ * by the same test (namesNoCardIn()).
  *
  * An opaque token passes only in a public shape: a UUID; a value the test declares as one of the
  * provider's enumerated codes (GatewayConformanceCase::publicCodes(), exact strings, such as a long
  * status); an id of exactly a shape the test declares (GatewayConformanceCase::publicIdShapes(): a
  * prefix and the number of letters and digits after it, or the least and the most, such as
- * `'pi_' => 24`; IdShapes); a 64-hex digest in a field the test declares
- * (GatewayConformanceCase::publicDigestFields()); a whole value that is base64 of SIGNATURE_LEAST to
+ * `'pi_' => 24`; IdShapes); in a field the test declares (GatewayConformanceCase::publicDigestFields()),
+ * a run of 64 hexadecimal digits, or the 128 digits, with a letter among them, of a whole value that
+ * is a digest bare or after `sha512=` (PublicDigests::passes()); a whole value that is base64 of SIGNATURE_LEAST to
  * SIGNATURE_MOST characters in a field the test declares (GatewayConformanceCase::publicSignatureFields(),
  * such as the signature a provider puts on a public delivery, unless its decoded bytes are text
  * that holds a secret: refuseDecodedSignature()); the media type of a `content-type`
@@ -151,7 +153,7 @@ final class TapeScrubber {
 	 *
 	 * @var string
 	 */
-	public const LIMIT = 'Rule 14 reads a recording value by value for an opaque token of ' . self::TOKEN_LENGTH . ' characters or more: a secret shorter than that, or one split across values, is beyond that reading, so every credential of the run is a secret setting the gateway declares, replaced in every form it is sent in, and every secret the provider issues is named in its test\'s `providerSecrets()`. A field\'s name is not held to the token rule, as providers name fields with ' . self::TOKEN_LENGTH . ' characters and more, so a secret sent as a field\'s name is beyond it, unless the name is shaped like a URL, which is read as the URL it is, or is a key of a URL\'s query, which is read as a value is. A form-encoded copy of a placeholder the scrub itself wrote passes as that placeholder, which names a declared setting and carries no value: the tape keeps the placeholder\'s text, and a replay has that text where the provider sent the encoded copy. A card number is refused wherever it is, and a card\'s verification code or full number by the name of its field, `cvc`, `cvv`, `cvv2`, `cvc2`, `csc`, `security_code`, `number`, `card_number` or `account_number`, whatever its value: a verification code under any other name is beyond the reading, as three or four digits read as any number. A card\'s `last4`, `exp_month`, `exp_year`, `brand`, `funding` and `country` are kept. A card number encoded twice, such as with `%2520` between its digits, is not read as one, and digits split between a field\'s name and its value, or across two header values, are separate runs. A whole value that is an id of a shape the test declares in `publicIdShapes()` with a letter after its prefix, or a whole 64-hex digest with a letter in it in a field it declares in `publicDigestFields()`, is not read for a card number, and nor is such an id as a whole segment of the path of an http or https URL, as one in ten of a provider\'s ids that hold a run of 13 to 16 digits would pass for one: a card number written in a declared shape is beyond the reading, while a value with digits alone after its prefix, a value that holds an id among other text and a field\'s name are read as any other.';
+	public const LIMIT = 'Rule 14 reads a recording value by value for an opaque token of ' . self::TOKEN_LENGTH . ' characters or more: a secret shorter than that, or one split across values, is beyond that reading, so every credential of the run is a secret setting the gateway declares, replaced in every form it is sent in, and every secret the provider issues is named in its test\'s `providerSecrets()`. A field\'s name is not held to the token rule, as providers name fields with ' . self::TOKEN_LENGTH . ' characters and more, so a secret sent as a field\'s name is beyond it, unless the name is shaped like a URL, which is read as the URL it is, or is a key of a URL\'s query, which is read as a value is. A form-encoded copy of a placeholder the scrub itself wrote passes as that placeholder, which names a declared setting and carries no value: the tape keeps the placeholder\'s text, and a replay has that text where the provider sent the encoded copy. A card number is refused wherever it is, and a card\'s verification code or full number by the name of its field, `cvc`, `cvv`, `cvv2`, `cvc2`, `csc`, `security_code`, `number`, `card_number` or `account_number`, whatever its value: a verification code under any other name is beyond the reading, as three or four digits read as any number. A card\'s `last4`, `exp_month`, `exp_year`, `brand`, `funding` and `country` are kept. A card number encoded twice, such as with `%2520` between its digits, is not read as one, and digits split between a field\'s name and its value, or across two header values, are separate runs. A whole value that is an id of a shape the test declares in `publicIdShapes()` with a letter after its prefix, or, in a field it declares in `publicDigestFields()`, a whole digest of 64 or 128 hexadecimal digits, bare or after `sha256=` or `sha512=` as its length is, with a letter among its digits, is not read for a card number, and nor is such an id as a whole segment of the path of an http or https URL, as one in ten of a provider\'s ids that hold a run of 13 to 16 digits would pass for one: a card number written in a declared shape is beyond the reading, while a value with digits alone after its prefix, a value that holds an id among other text and a field\'s name are read as any other.';
 
 	/**
 	 * The prefix or infix of a secret: a token that has one passes in no public shape.
@@ -237,15 +239,6 @@ final class TapeScrubber {
 	 * @var string
 	 */
 	private const URL = '#^(?:[a-z][a-z0-9+.\-]*:)?//#i';
-
-	/**
-	 * A 64-hex digest, public only in a field the test declares, such as a delivery's signature.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @var string
-	 */
-	private const DIGEST = '/^[0-9a-f]{64}$/i';
 
 	/**
 	 * A base64 value, as a signature is written: the standard alphabet in whole groups of four, `=` padding at the end only.
@@ -402,7 +395,7 @@ final class TapeScrubber {
 	 * @param array<string, list<string>>  $credentials        Each credential's values in this run, by the setting's name.
 	 * @param array<string, string>        $providerSecrets    Optional. Each secret the provider issues, as a regular expression, by a name for its placeholder. Default none.
 	 * @param array<string, int|list<int>> $publicIdShapes     Optional. The shapes of the provider's public object ids: by each id's prefix, the number of letters and digits after it, or the least and the most, such as `'pi_' => 24`; a shape with no prefix holds fewer than TOKEN_LENGTH. Default none.
-	 * @param string[]                     $publicDigestFields Optional. The fields whose 64-hex digests are public, such as a delivery's signature header. Default none.
+	 * @param string[]                     $publicDigestFields Optional. The fields whose digests are public, such as a delivery's signature header (PublicDigests). Default none.
 	 * @param string[]                     $publicCodes        Optional. The provider's enumerated codes a tape may hold, as exact strings. Default none.
 	 * @param string[]                     $publicHeaders      Optional. The response headers a tape keeps beside `content-type`, by name, such as a request id the gateway reads. Default none.
 	 * @param string[]                     $signatureFields    Optional. The fields whose whole value, a base64 signature, is public, such as the signature a provider puts on a public delivery. Default none.
@@ -824,6 +817,7 @@ final class TapeScrubber {
 	 */
 	private function scanText( string $text, string $field, string $where, bool $exemptable, bool $tokens, bool $url = false ): void {
 		$text            = str_replace( self::PUBLISHED_WEBHOOK_SECRET, '', $text );
+		$value           = $text;
 		$credentialField = 1 === preg_match( self::CREDENTIAL_FIELD, $field );
 
 		if ( $this->holdsCredential( $text ) ) {
@@ -858,7 +852,7 @@ final class TapeScrubber {
 		preg_match_all( '/[A-Za-z0-9_\-]{' . self::TOKEN_LENGTH . ',}/', $text, $found );
 
 		foreach ( $found[0] as $token ) {
-			if ( $exemptable && ! $credentialField && 1 !== preg_match( self::SECRET_PREFIX, $token ) && $this->isPublic( $token, $field ) ) {
+			if ( $exemptable && ! $credentialField && 1 !== preg_match( self::SECRET_PREFIX, $token ) && $this->isPublic( $token, $value, $field ) ) {
 				continue;
 			}
 
@@ -910,7 +904,7 @@ final class TapeScrubber {
 			return sprintf( ', in the field %s, named like a credential, where no public shape passes', $field );
 		}
 
-		return ': declare it as a secret setting, or name it in providerSecrets() if the provider issues it; if it is public, declare it in publicCodes(), the shape of its id in publicIdShapes(), or, for a 64-hex digest, its field in publicDigestFields(), or, for a base64 signature, its field in publicSignatureFields(); a public shape never passes with a secret\'s prefix';
+		return ': declare it as a secret setting, or name it in providerSecrets() if the provider issues it; if it is public, declare it in publicCodes(), the shape of its id in publicIdShapes(), or, for a digest of 64 or 128 hexadecimal digits, its field in publicDigestFields(), or, for a base64 signature, its field in publicSignatureFields(); a public shape never passes with a secret\'s prefix';
 	}
 
 	/**
@@ -919,15 +913,16 @@ final class TapeScrubber {
 	 * @since 0.2.0
 	 *
 	 * @param string $token The token.
+	 * @param string $value The whole value it is in, as the scan was given it.
 	 * @param string $field The field's name.
-	 * @return bool True for a UUID, a declared code, an id of exactly a declared shape, or a 64-hex digest in a declared field.
+	 * @return bool True for a UUID, a declared code, an id of exactly a declared shape, or a digest in a declared field (PublicDigests::passes()).
 	 */
-	private function isPublic( string $token, string $field ): bool {
+	private function isPublic( string $token, string $value, string $field ): bool {
 		if ( 1 === preg_match( self::UUID, $token ) || in_array( $token, $this->publicCodes, true ) || IdShapes::matches( $this->publicIdShapes, $token ) ) {
 			return true;
 		}
 
-		return 1 === preg_match( self::DIGEST, $token ) && self::declares( $this->publicDigestFields, $field );
+		return PublicDigests::passes( $this->publicDigestFields, $token, $value, $field );
 	}
 
 	/**
@@ -1000,7 +995,7 @@ final class TapeScrubber {
 	}
 
 	/**
-	 * Tells whether a whole value names no card: an id of a declared shape with a letter after its prefix (IdShapes::namesNoCard(), which rule 13's logger reads too), or a 64-hex digest with a letter in it in a declared digest field.
+	 * Tells whether a whole value names no card, by this scrubber's declarations (namesNoCardIn()).
 	 *
 	 * @since 0.2.0
 	 *
@@ -1009,7 +1004,25 @@ final class TapeScrubber {
 	 * @return bool True when the card rule does not read it.
 	 */
 	private function namesNoCard( string $value, string $field ): bool {
-		return IdShapes::namesNoCard( $this->publicIdShapes, $value, $field ) || ( 1 === preg_match( self::DIGEST, $value ) && 1 === preg_match( '/[a-f]/i', $value ) && self::declares( $this->publicDigestFields, $field ) );
+		return self::namesNoCardIn( $this->publicIdShapes, $this->publicDigestFields, $value, $field );
+	}
+
+	/**
+	 * Tells whether a whole value in a field names no card: an id of a declared shape with a letter after its prefix (IdShapes::namesNoCard()), or a digest with a letter among its digits in a declared digest field (PublicDigests::namesNoCard()); the one test of it the tape scrubber and rule 13's logger share.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<int|string, int|array<int>> $idShapes     The shapes of the provider's public ids, by prefix, as publicIdShapes() declares them.
+	 * @param string[]                          $digestFields The fields whose digests are public, as publicDigestFields() declares them.
+	 * @param string                            $value        The value.
+	 * @param string                            $field        The field's name; empty for none.
+	 * @return bool True when the card rule does not read it.
+	 *
+	 * @phpstan-param array<int|string, int|array{int, int}> $idShapes
+	 * @phpstan-param list<string> $digestFields
+	 */
+	public static function namesNoCardIn( array $idShapes, array $digestFields, string $value, string $field ): bool {
+		return IdShapes::namesNoCard( $idShapes, $value, $field ) || PublicDigests::namesNoCard( $digestFields, $value, $field );
 	}
 
 	/**
@@ -1117,7 +1130,7 @@ final class TapeScrubber {
 	 *
 	 * @phpstan-param list<string> $declared
 	 */
-	private static function declares( array $declared, string $field ): bool {
+	public static function declares( array $declared, string $field ): bool {
 		return in_array( strtolower( $field ), array_map( 'strtolower', $declared ), true );
 	}
 

@@ -621,7 +621,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->key          = SecretsHarness::newEncryptionKey();
 		$this->http         = new HttpWatch();
 		$this->gatewayClock = FrozenClock::at( self::CLOCK );
-		$this->logger       = new AssertingLogger( fn(): array => isset( $this->transport ) ? $this->transport->servedBodies() : array(), $this->publicCodes(), $this->publicIdShapes() );
+		$this->logger       = new AssertingLogger( fn(): array => isset( $this->transport ) ? $this->transport->servedBodies() : array(), $this->publicCodes(), $this->publicIdShapes(), $this->publicDigestFields() );
 		$this->scrubber     = new TapeScrubber( array() );
 		$this->credentials  = new CredentialRequests();
 		$this->reads        = new ReadRequests();
@@ -1687,10 +1687,15 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
-	 * Returns the fields, by name, whose 64-hex digests are public, such as a delivery's signature header: none unless the test names them.
+	 * Returns the fields, by name, whose digests are public, such as a delivery's signature header: none unless the test names them.
 	 *
-	 * A whole value of 64 hexadecimal digits with a letter in it, in a field named here, is not read
-	 * as a card number either.
+	 * In a field named here, a run of 64 hexadecimal digits passes the token rule wherever it stands
+	 * in the value, and a whole value of 128 digits with a letter among them, bare or after
+	 * `sha512=`, passes it too. A whole value of 64 or 128 hexadecimal digits, bare or after `sha256=`
+	 * or `sha512=` as its length is, with a letter among its digits, is not read as a card number, in
+	 * a tape or as a value of a log line's context under the field's name (PublicDigests). Another
+	 * label or length, digits alone, the digest among other text, a field named like a credential and
+	 * every other field are read as any other.
 	 *
 	 * @since 0.2.0
 	 *
