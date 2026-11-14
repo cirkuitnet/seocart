@@ -315,6 +315,15 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	private ?Actor $agent = null;
 
 	/**
+	 * Whether the run has said that the test's gateway refunds a part only after settlement, which it says once.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var bool
+	 */
+	private static bool $saidSettlement = false;
+
+	/**
 	 * Returns the id the gateway's plugin registers it under.
 	 *
 	 * @since 0.2.0
@@ -457,6 +466,29 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * @return bool True when the provider signs no time.
 	 */
 	protected function deliveriesCarryNoSignedTime(): bool {
+		return false;
+	}
+
+	/**
+	 * Tells whether the provider refunds a part of a payment only once the payment has settled: false unless the test says so.
+	 *
+	 * Some providers refund nothing of a capture before the day's settlement, and cancel a payment
+	 * only whole. A gateway of such a provider refunds a captured payment whole before it settles,
+	 * by cancelling it, and declines a part without asking the provider for it, so the merchant asks
+	 * again once it has settled; no sandbox settles in the minutes a recording takes. When the test
+	 * says so, every rule that refunds a part and then the rest (refundSteps(), refundAll(), the
+	 * lost answer of rule 2 included) refunds the payment whole, once, and rule 2 first asks for one
+	 * unit's refund and requires the gateway's decline, the intent's refunded amount unchanged and
+	 * no request that moves money sent. A matrix none of whose cells declares partial_refund fails
+	 * the suite's set-up under the declaration, and the run prints one line saying that partial
+	 * refunds are proved by the gateway's live run. The declaration is checked by hand, in the pull
+	 * request that adds it, against the provider's documentation of its refunds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return bool True when a part is refunded only after settlement.
+	 */
+	protected function partialRefundsNeedSettlement(): bool {
 		return false;
 	}
 
@@ -657,6 +689,11 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 			self::fail( $refusal );
 		}
 
+		if ( $this->partialRefundsNeedSettlement() && ! self::$saidSettlement ) {
+			self::$saidSettlement = true;
+			fwrite( STDERR, "conformance: the gateway's test declares that its provider refunds a part only after settlement (partialRefundsNeedSettlement()), so the suite refunds each payment whole and requires a part declined: partial refunds are proved by the gateway's live run.\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- One line of the run's output, beside PHPUnit's, which a test may not print to.
+		}
+
 		$this->configure( $this->suiteMode() );
 	}
 
@@ -671,6 +708,10 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	private function declarationRefusal( GatewayDescriptor $descriptor ): ?string {
 		if ( $this->paymentIsOneObject() && self::anyCellDeclares( $descriptor, Operations::MULTI_CAPTURE ) ) {
 			return 'The test declares that the provider keeps one object for a payment (paymentIsOneObject()), and a cell of the gateway\'s matrix declares multi_capture: two captures of one object would be one row of the payment ledger, so the declaration is refused.';
+		}
+
+		if ( $this->partialRefundsNeedSettlement() && ! self::anyCellDeclares( $descriptor, Operations::PARTIAL_REFUND ) ) {
+			return 'The test declares that partial refunds wait for the provider\'s settlement (partialRefundsNeedSettlement()), and no cell of the gateway\'s matrix declares partial_refund: the declaration changes only how the suite refunds a part, so it is refused where no part is refunded.';
 		}
 
 		return null;
@@ -2120,7 +2161,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
-	 * Refunds a captured order whole: one unit first, then the rest, where partial refunds are declared; at once otherwise.
+	 * Refunds a captured order whole, as refundSteps() gives it back: one unit first, then the rest, where partial refunds are declared and made before settlement; at once otherwise.
 	 *
 	 * @since 0.2.0
 	 *
@@ -2130,37 +2171,32 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * @return list<Refund> The refunds, in order.
 	 */
 	protected function refundAll( array $placed, MatrixRow $cell, bool $loseFirst = false ): array {
-		$shipping = $this->hasShipping( $placed['order_id'] );
+		$steps = array_values( $this->refundSteps( $placed, $cell ) );
 
 		if ( ! $loseFirst || ! $cell->supports( Operations::PARTIAL_REFUND ) ) {
-			$refunds = array();
-
-			foreach ( $this->refundSteps( $placed, $cell ) as list( $units, $withShipping ) ) {
-				$refunds[] = $this->refund( $placed['order_uuid'], $units, $withShipping );
-			}
-
-			return $refunds;
+			return array_map( fn( array $step ): Refund => $this->refund( $placed['order_uuid'], $step[0], $step[1] ), $steps );
 		}
 
 		// The provider makes the first refund, and its answer is lost on the way back. Asked again
 		// with the same request, the plugin finds its claim open and asks the gateway what became of
 		// it (queryRefund) instead of refunding twice. A gateway that sends no request is answered.
+		list( $units, $withShipping ) = array_shift( $steps );
 		$this->transport->loseNextAnswer();
 
 		try {
-			$first = $this->refund( $placed['order_uuid'], 1, false );
+			$first = $this->refund( $placed['order_uuid'], $units, $withShipping );
 		} catch ( \Throwable $lost ) {
 			unset( $lost );
-			$first = $this->refund( $placed['order_uuid'], 1, false );
+			$first = $this->refund( $placed['order_uuid'], $units, $withShipping );
 		} finally {
 			$this->transport->loseNextAnswer( false );
 		}
 
-		return array( $first, $this->refund( $placed['order_uuid'], self::UNITS - 1, $shipping ) );
+		return array_merge( array( $first ), array_map( fn( array $step ): Refund => $this->refund( $placed['order_uuid'], $step[0], $step[1] ), $steps ) );
 	}
 
 	/**
-	 * Returns the refunds that give a captured order back whole: one unit, then the rest, where partial refunds are declared; all at once otherwise.
+	 * Returns the refunds that give a captured order back whole: one unit, then the rest, where partial refunds are declared; all at once otherwise, and where the test declares that partial refunds wait for the provider's settlement (partialRefundsNeedSettlement()).
 	 *
 	 * @since 0.2.0
 	 *
@@ -2171,7 +2207,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	protected function refundSteps( array $placed, MatrixRow $cell ): array {
 		$shipping = $this->hasShipping( $placed['order_id'] );
 
-		if ( ! $cell->supports( Operations::PARTIAL_REFUND ) ) {
+		if ( ! $cell->supports( Operations::PARTIAL_REFUND ) || $this->partialRefundsNeedSettlement() ) {
 			return array( 'the refund' => array( self::UNITS, $shipping ) );
 		}
 
@@ -2285,6 +2321,10 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 			$this->refusedBeforeAnyRequest( $rule, sprintf( 'partial_refund is not declared for %s', $name ), PaymentError::OperationUnsupported, fn() => $this->refund( $placed['order_uuid'], 1, false ) );
 		}
 
+		if ( $this->partialRefundsNeedSettlement() ) {
+			$this->partDeclinedBeforeSettlement( $rule, $placed, $name );
+		}
+
 		$refunds = $cell->supports( Operations::PARTIAL_REFUND ) ? 'refund, partial_refund and query_refund are' : 'refund is';
 
 		try {
@@ -2313,6 +2353,34 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 				$this->assertNotSame( 'requires_action', $acting['outcome'], $rule->message() . sprintf( 'the gateway asked the customer to act in %s, where it declares no sca.', $name ) );
 			}
 		}
+	}
+
+	/**
+	 * Rule 2, where the test declares that partial refunds wait for the provider's settlement (partialRefundsNeedSettlement()): a refund of one unit of a captured order is declined by the gateway, with nothing refunded and no request that moves money sent.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Rule                                                          $rule   The rule.
+	 * @param array{order_uuid: string, order_id: int, intent_uuid: string} $placed The captured placement.
+	 * @param string                                                        $name   The cell's name, for the message.
+	 */
+	private function partDeclinedBeforeSettlement( Rule $rule, array $placed, string $name ): void {
+		$refunded = $this->intentRow( $placed['intent_uuid'] )['refunded_minor'];
+		$before   = count( $this->transport->exchanges() );
+		$refusal  = null;
+
+		try {
+			$this->refund( $placed['order_uuid'], 1, false );
+		} catch ( CodedException $refused ) {
+			$refusal = $refused->errorCode();
+		}
+
+		$sent = RequestRules::moneyRequests( array_slice( $this->transport->exchanges(), $before ), $this->credentials, $this->reads );
+		$part = $rule->message() . sprintf( 'the test declares that partial refunds wait for the provider\'s settlement (partialRefundsNeedSettlement()), and a refund of one unit of the order captured in %s ', $name );
+
+		$this->assertSame( PaymentError::RefundDeclined, $refusal, $part . ( null === $refusal ? 'was made' : sprintf( 'was refused with %s', $refusal->value ) ) . ', not declined by the gateway.' );
+		$this->assertSame( $refunded, $this->intentRow( $placed['intent_uuid'] )['refunded_minor'], $part . 'changed the amount the intent has refunded.' );
+		$this->assertSame( array(), $sent, $part . sprintf( 'sent %s: a gateway declines a part before it asks the provider for anything.', 1 === count( $sent ) ? 'a request that moves money' : count( $sent ) . ' requests that move money' ) );
 	}
 
 	/**
