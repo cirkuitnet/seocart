@@ -853,7 +853,8 @@ export function createHost( root, options, env ) {
 	 *
 	 * A payment to resume (the one a provider sent the shopper back for, or else the one the kept
 	 * placement names) is resumed; once the store settled it, the kept placement is asked again,
-	 * with no payment data, for the order and its key. A kept placement whose answer was lost is
+	 * with no payment data, for the order and its key; until it answers with them, the host
+	 * rests with the placement kept, and retry() asks again. A kept placement whose answer was lost is
 	 * dropped without a request while the cart is still at the version it was sent with, since a
 	 * placement that committed moves the version on; otherwise it is asked again, and the answer
 	 * taken as a placement's, except that a step the provider asks for waits for the shopper to
@@ -883,15 +884,24 @@ export function createHost( root, options, env ) {
 				kept?.intentUuid === intentUuid
 			) {
 				const replay = await ask( { ...kept, paymentData: {} } );
+				const replayed = classify( replay );
 
-				if ( 'settled' === classify( replay ) ) {
-					order = replay.body;
+				if ( destroyed ) {
+					return;
 				}
+
+				if ( 'settled' !== replayed ) {
+					// The payment is settled, but its order and key did not come back: the placement is
+					// kept, and retry() asks for them again. No order is handed over without its key.
+					return keepsKey( replayed )
+						? rest( replayed, replay )
+						: idle( problem( replayed, replay.body ) );
+				}
+
+				order = replay.body;
 			}
 
-			if ( ! destroyed ) {
-				await resumed( response );
-			}
+			await resumed( response );
 
 			return;
 		}

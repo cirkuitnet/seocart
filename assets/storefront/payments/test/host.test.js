@@ -1698,6 +1698,56 @@ describe( 'answers that must not lose an order', () => {
 		expect( last().error.code ).toBe( 'rate_limited' );
 		expect( stored() ).toMatchObject( { key: 'kept-key' } );
 	} );
+
+	it.each( [
+		[ 'a network failure', { network: true }, 'network' ],
+		[ 'a server error', { status: 503, body: null }, 'server' ],
+		[
+			'a refusal',
+			{ status: 400, body: { code: 'rest_invalid_param' } },
+			'refused',
+		],
+	] )(
+		'rests with the placement kept when asking a resumed payment’s order meets %s, and asks again on retry()',
+		async ( name, failure, code ) => {
+			keep( { intentUuid: UUID } );
+
+			const { host, requests, heard, last } = setUp( {
+				href: returnedTo,
+				cart: { ...CART, version: 4 },
+				answers: [
+					{ status: 200, body: resumed( 'approved' ) },
+					failure,
+					{
+						status: 200,
+						body: duplicate( 'processing', 'authorized' ),
+					},
+					{ status: 200, body: placed( 'approved' ) },
+				],
+			} );
+
+			await flush();
+
+			expect( heard.placed ).toEqual( [] );
+			expect( last().error.code ).toBe( code );
+			expect( stored() ).toMatchObject( {
+				key: 'kept-key',
+				intentUuid: UUID,
+			} );
+
+			await host.retry();
+
+			expect( requests.map( ( request ) => request.route ) ).toEqual( [
+				'/checkout/resume',
+				'/checkout',
+				'/checkout/resume',
+				'/checkout',
+			] );
+			expect( heard.placed ).toEqual( [
+				expect.objectContaining( { orderKey: 'k'.repeat( 32 ) } ),
+			] );
+		}
+	);
 } );
 
 describe( 'mintKey', () => {
