@@ -49,10 +49,13 @@ console warning that names the id and the reason, and lists in `refused()`:
 
 - `incompatible`: an island written against a contract version it does not support;
 - `duplicate`: a second island for an id already registered (the first is kept);
-- `invalid`: an island missing a member below, or with one of the wrong type.
+- `invalid`: an island missing a member below, or with one of the wrong type, or one whose members
+  throw when read; the islands queued after it are registered all the same.
 
 A payment method whose gateway needs an island, and has none registered, is shown disabled, with a
-console warning, rather than left out: a method that silently vanishes cannot be diagnosed.
+console warning, rather than left out: a method that silently vanishes cannot be diagnosed. An
+island's call that fails is logged by its error's `code` or `name`, never its message, which may
+carry a provider's secret.
 
 ## The island
 
@@ -111,7 +114,8 @@ interface MountedIsland {
   only argument; `resume.billing` is the billing address as at `confirm()`'s, for a provider's
   script that asks for it. Resolve `completed` or `failed` and the host resumes the payment, whose
   answer decides; resolve `left` when the provider's script is taking the shopper away from the
-  page.
+  page. A promise that never settles keeps the host in the step, so placing does nothing until the
+  page is loaded again, which resumes the payment the tab kept.
 - `showError( error )` shows a decline, or the island's own refusal, inside the island.
 - `unmount()` is synchronous: it removes the form and abandons any work in flight. After it the
   island holds nothing of that mount.
@@ -160,16 +164,31 @@ host is idle again.
    `next_action.url`; an `sdk` step without an island to take it is reported as
    `action_unsupported`.
 4. Once the island resolves, the host sends `POST /seocart/store/v1/checkout/resume` with the
-   payment's uuid. `approved`, or `duplicate` when the store settled the payment first, hands the
-   order over; a decline or a void is handled as in step 2. A payment that still waits for the
-   shopper keeps the key and rests with the code `action_incomplete`: placing again confirms, is
-   answered the same step, and the island takes it again.
+   payment's uuid. `approved` hands the order over; a decline or a void is handled as in step 2.
+   `duplicate` answers a payment another path settled first, a webhook or the reconciliation run,
+   with the order's statuses as it left them, read as the table below. A payment that still waits
+   for the shopper keeps the key and rests with the code `action_incomplete`: placing again
+   confirms, is answered the same step, and the island takes it again.
 
-`onPlaced()` is called for `approved`, `processing` and `duplicate`, once. `onStale()` is called
-with the reason `stale` (the cart changed), `declined` or `voided`. A logged-in shopper's request
-refused for a missing or expired nonce (`store_api.nonce_missing`, `rest_cookie_invalid_nonce`)
-writes nothing: the host rests with the code `session_expired`, the island and `onStale()` are not
-told, and a page loaded again brings a fresh nonce.
+| Payment status of a `duplicate`                                                                       | Order status | The host                                    |
+| ----------------------------------------------------------------------------------------------------- | ------------ | ------------------------------------------- |
+| `authorized`, `paid`, `partially_paid`, `partially_refunded`, `refunded`, `disputed`, `terms_pending` | any          | hands the order over                        |
+| `failed`                                                                                              | any          | a decline, as in step 2                     |
+| `voided`                                                                                              | any          | a void, as in step 2                        |
+| `unpaid`, `pending`                                                                                   | `failed`     | a decline, as in step 2                     |
+| `unpaid`, `pending`                                                                                   | `cancelled`  | a void, as in step 2                        |
+| `unpaid`, `pending`                                                                                   | any other    | rests with the code `pending`, the key kept |
+| any other, one this version does not know                                                             | any          | rests with the code `pending`, the key kept |
+
+`onPlaced()` is called for `approved`, `processing` and a `duplicate` whose payment went through,
+once, and only with the order's key. `onStale()` is called with the reason `stale` (the cart
+changed), `declined` or `voided`. A logged-in shopper's request refused for a missing or expired
+nonce (`store_api.nonce_missing`, `rest_cookie_invalid_nonce`) writes nothing: the host rests with
+the code `session_expired`, the island and `onStale()` are not told, and a page loaded again
+brings a fresh nonce. A shopper who sent too many placements and resumes for now
+(`store_api.rate_limited`, HTTP 429) is refused without a write too: the host keeps the key and
+rests with the code `rate_limited` and `retryAfter`, the seconds the store's `Retry-After` asked
+it to wait, and a placement or a retry before then sends nothing and rests with the seconds left.
 
 The host sends those two writes and no other. An island never writes to the cart or the checkout:
 the store prices the order from what it holds, whatever an island sends.
@@ -181,10 +200,14 @@ whatever payment data it carries, and the gateway is not asked again. So the tab
 gatewayId, intentUuid }`, and never the payment data or the order's key. The key is sent again
 after a network failure, a server error, an unavailable gateway (`checkout.gateway_unavailable`),
 a placement still in progress (`checkout.placement_in_progress`, after `Retry-After`) or still
-`pending`, a `session_expired`, and while the shopper must act; a changed total, currency or
-payment method, a stale cart (`cart.version_stale`, `checkout.totals_changed`), a settled,
-declined or voided answer and any other refusal end it. The order's key is handed to the checkout
-once, through `onPlaced()`.
+`pending`, a `session_expired`, too many requests (`rate_limited`), and while the shopper must
+act. The order's key is handed to the checkout once, through `onPlaced()`.
+
+A kept placement ends, and the next placement gets a fresh key, only when the store has answered
+for it: a settled, declined or voided answer; a stale cart (`cart.version_stale`,
+`checkout.totals_changed`), which is also how the store answers a key it never placed with once the
+cart has moved on; any other refusal. A changed total, currency or payment method replaces it.
+Nothing else ends it, a reload included; the tab's storage ends with the tab.
 
 ## A page loaded again
 
@@ -194,13 +217,18 @@ island's form is empty then, and a step the shopper did not ask for is not taken
 - Back from a provider's page, with the payment's uuid in the page's address, or with a kept
   placement that names a payment: the host resumes that payment. Once the store settled it, the
   kept placement is asked again, with no payment data, for the order and its key, and the order is
-  handed over. A payment that still waits for the shopper rests with `action_incomplete`; placing
-  again confirms and takes the step.
-- With a kept placement whose answer was lost: while the cart is still at the version the
-  placement was sent with, no placement committed, and it is dropped without a request. Otherwise
-  it is asked again, with no payment data, and its answer taken as a placement's, except that a
-  step the provider asks for waits for the shopper to place again, and a placement the store does
-  not hold is dropped.
+  handed over with its key. Until that request answers with them (a network failure, a server
+  error, any other answer), the host rests with that error and the placement kept, and `retry()`
+  asks again. A payment that still waits for the shopper rests with `action_incomplete`; placing
+  again confirms and takes the step. A refused resume drops the kept placement only when the
+  payment refused is the one it names: an address naming another payment leaves it alone.
+- With a kept placement whose answer was lost: once the cart has moved past the version the
+  placement was sent with, which a placement that committed does, it is asked again, with no
+  payment data, and its answer taken as a placement's, except that a step the provider asks for
+  waits for the shopper to place again, and a placement the store does not hold is dropped. While
+  the cart is still at that version, the request may never have arrived or may still be on its
+  way: the placement is kept and nothing is sent, and the next placement confirms and sends its
+  key, which either places for the first time or is answered the order the earlier request placed.
 
 ## The configuration
 
