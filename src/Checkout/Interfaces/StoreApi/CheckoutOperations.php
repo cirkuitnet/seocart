@@ -363,6 +363,14 @@ final class CheckoutOperations {
 					self::transferDays( 'The extra days the shopper is told bringing the order\'s items together adds to delivery, kept with the order; null when the order needs no transfer.' ),
 					self::nextAction(),
 					new FieldSpec(
+						name: 'intent_uuid',
+						type: FieldType::Uuid,
+						description: 'The public identifier of the payment the shopper acts for while the outcome is requires_action, which checkout.resume_payment takes once they are back, and null otherwise: when nothing was due, and once the payment needs no more of the shopper. It is answered again to a retry of the same request while the shopper must act.',
+						label: static fn(): string => __( 'Payment', 'seocart' ),
+						example: '0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6e',
+						nullable: true
+					),
+					new FieldSpec(
 						name: 'payment_method_label',
 						type: FieldType::String,
 						description: 'The name of the payment method the order is paid by, as shoppers are shown it; null when nothing was due.',

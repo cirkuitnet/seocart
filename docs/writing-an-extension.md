@@ -701,6 +701,16 @@ command line, which other users of the server can see, so the file has these rul
 The command exits 0 when done, 1 when it refused and saved nothing, and 2 when the settings were
 saved and the webhook step failed.
 
+### A payment form in the checkout
+
+A gateway whose provider takes the shopper's payment details in the browser adds a payment island
+to the checkout: a classic script that registers with `window.seocart.payments`, mounts the
+provider's form in the payment section, returns the `payment_data` the placement sends, and takes
+the step the provider asks of the shopper, such as a bank's confirmation. The adapter enqueues it on
+the action `seocart_enqueue_payment_islands`, and the script ships as written in the plugin's
+`assets/` directory. [Payment islands](payment-islands.md) describes the registration, the island's
+interface, the context it is mounted with, the placement step by step, and the contract's versions.
+
 ## Continuous integration
 
 The generated `.github/workflows/ci.yml` is one job:

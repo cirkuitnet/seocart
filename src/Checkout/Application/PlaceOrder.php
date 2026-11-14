@@ -104,7 +104,10 @@ use SEOCart\Support\Error\CodedException;
  *
  * The first unit's answer is kept with the key, so a client that lost its answer and sends the same
  * request again gets it back, its access key included; the key is kept sealed with the cart's
- * token and the request's idempotency key, which the store never keeps (KeptAnswer). The kept
+ * token and the request's idempotency key, which the store never keeps (KeptAnswer). The same
+ * request is the same cart version, grand total and currency: the key is the cart's, and a cart
+ * version is claimed once, so the payment data a retry sends is not compared, and a client need
+ * not keep it (fingerprint()). The kept
  * answer says the order is `pending` until the second unit writes what it came to. When the
  * gateway cannot be reached the order waits as placed, and the reconciliation job asks the gateway
  * later; a decline releases everything the order held, opens the cart again, and is refused
@@ -117,7 +120,8 @@ use SEOCart\Support\Error\CodedException;
  * @since 0.1.0
  * @since 0.2.0 Checks the payment method can take the payment, and records the payment's mode. Holds
  *              each unit where the plan found it, records where the order is fulfilled from, and plans
- *              once more when the plan went stale.
+ *              once more when the plan went stale. Leaves the payment data out of a request's
+ *              fingerprint.
  */
 final class PlaceOrder {
 
@@ -257,8 +261,9 @@ final class PlaceOrder {
 	 * @return array<string, mixed> The placement, by wire name: the order's uuid, number and access
 	 *                              key, the cart's version, the outcome, the order's status and
 	 *                              payment status, the extra days a transfer adds, what the
-	 *                              shopper must do while they must act, and the payment method's
-	 *                              name, with an offline payment method's instructions.
+	 *                              shopper must do while they must act and the payment they act
+	 *                              for, and the payment method's name, with an offline payment
+	 *                              method's instructions.
 	 */
 	public function place( array $input, Actor $actor ): array {
 		$key = (string) ( $input['idempotency_key'] ?? '' );
@@ -476,6 +481,7 @@ final class PlaceOrder {
 			'payment_status'       => PaymentStatus::Unpaid->value,
 			'transfer_days'        => $routing->transferLeadDays,
 			'next_action'          => null,
+			'intent_uuid'          => null,
 			'payment_method_label' => $method?->label,
 			'payment_instructions' => null !== $method && OfflineMethod::isOffline( $method->id ) ? $method->instructions : null,
 		);
@@ -534,7 +540,7 @@ final class PlaceOrder {
 			$this->refuseUnsent( $placed['intent_uuid'], $refused, $order, $actor );
 		}
 
-		$sealed  = null === $result->nextAction ? null : KeptAnswer::sealAction( $result->nextAction, (string) $record['order_uuid'], $token, $key );
+		$sealed  = null === $result->nextAction ? null : KeptAnswer::sealAction( $result->nextAction, $placed['intent_uuid'], (string) $record['order_uuid'], $token, $key );
 		$settled = $this->settlement->apply( $result, $actor, null, $sealed );
 
 		if ( PlacementOutcome::Declined === $settled->outcome ) {
@@ -545,7 +551,7 @@ final class PlaceOrder {
 			CodedException::raise( CheckoutError::PaymentDeclined, array(), $order );
 		}
 
-		return $this->settledAnswer( $record, $settled, $result->nextAction );
+		return $this->settledAnswer( $record, $settled, $result->nextAction, $placed['intent_uuid'] );
 	}
 
 	/**
@@ -813,46 +819,49 @@ final class PlaceOrder {
 	/**
 	 * Returns the fingerprint of a placement request: what a retry of it must send again.
 	 *
-	 * The key is the cart's already, so the request is its cart's version, the grand total and the
-	 * currency the client agreed to, and what it sent for the gateway.
+	 * It is what the shopper agreed to: the cart's version, the grand total and the currency. The
+	 * key is the cart's already (its hash takes the cart's token), and a cart at one version is
+	 * claimed by one placement, so a request with the same key and those three is a retry of that
+	 * placement whatever it sends for the gateway: it is answered as the placement stands, and the
+	 * gateway is not asked. The payment data is left out so that a client need not keep it, a
+	 * payment token among it, to retry: a browser keeps the key and those three, and nothing secret.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Leaves out the payment data.
 	 *
 	 * @param array<string, mixed> $input The prepared input.
 	 * @return string The SHA-256 of the request's canonical form, in lower-case hexadecimal.
 	 */
 	private static function fingerprint( array $input ): string {
-		$paymentData = (array) ( $input['payment_data'] ?? array() );
-
-		ksort( $paymentData );
-
 		return IdempotencyKey::fingerprint(
 			array(
 				'cart_version'      => (int) $input['cart_version'],
 				'grand_total_minor' => (int) $input['grand_total_minor'],
 				'currency'          => strtoupper( (string) $input['currency'] ),
-				'payment_data'      => $paymentData,
 			)
 		);
 	}
 
 	/**
-	 * Returns the answer of a settled placement: the kept record, with the outcome and the statuses after the settlement, and what the shopper must do while they must act.
+	 * Returns the answer of a settled placement: the kept record, with the outcome and the statuses after the settlement, and what the shopper must do while they must act, with the payment they act for.
 	 *
 	 * The order's status is the settlement's when it changed it; otherwise, as for an answer the
 	 * gateway already delivered by another path, the order's status now, read
-	 * (SettlePlacement::statusesOf()).
+	 * (SettlePlacement::statusesOf()). The payment's uuid is answered with the next action and only
+	 * with it, as a retry is given it back from the next action's box.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 Answers what the shopper must do.
+	 * @since 0.2.0 Answers what the shopper must do, and the payment's uuid.
 	 *
 	 * @param array<string, mixed> $record     The record the key keeps.
 	 * @param SettledPlacement     $settled    What the settlement came to.
 	 * @param NextAction|null      $nextAction Optional. What the gateway asked the shopper to do. Default null.
+	 * @param string|null          $intentUuid Optional. The payment's uuid; null when nothing was due. Default null.
 	 * @return array<string, mixed> The answer.
 	 */
-	private function settledAnswer( array $record, SettledPlacement $settled, ?NextAction $nextAction = null ): array {
+	private function settledAnswer( array $record, SettledPlacement $settled, ?NextAction $nextAction = null, ?string $intentUuid = null ): array {
 		$statuses = $this->settlement->statusesOf( $settled );
+		$acting   = PlacementOutcome::RequiresAction === $settled->outcome && null !== $nextAction;
 
 		return array_merge(
 			$record,
@@ -860,7 +869,8 @@ final class PlaceOrder {
 				'outcome'        => $settled->outcome->value,
 				'status'         => $statuses['status']->value,
 				'payment_status' => $statuses['payment_status']->value,
-				'next_action'    => PlacementOutcome::RequiresAction === $settled->outcome && null !== $nextAction ? KeptAnswer::actionOf( $nextAction ) : null,
+				'next_action'    => $acting ? KeptAnswer::actionOf( $nextAction ) : null,
+				'intent_uuid'    => $acting ? $intentUuid : null,
 			)
 		);
 	}

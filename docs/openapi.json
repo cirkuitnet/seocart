@@ -7442,6 +7442,17 @@
                             }
                         ]
                     },
+                    "intent_uuid": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "uuid",
+                        "description": "The public identifier of the payment the shopper acts for while the outcome is requires_action, which checkout.resume_payment takes once they are back, and null otherwise: when nothing was due, and once the payment needs no more of the shopper. It is answered again to a retry of the same request while the shopper must act.",
+                        "examples": [
+                            "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6e"
+                        ]
+                    },
                     "payment_method_label": {
                         "type": [
                             "string",
