@@ -359,9 +359,9 @@ final class PlacementBudgetTest extends PlacementTestCase {
 			$parts = $this->measure( "Cart A, {$kind}", self::APPROVE, 'approved', Actor::user( $user ) );
 			$steps = $this->lastSteps;
 
+			$this->assertSame( $customerStep, $steps['first']['the customer'] ?? 0, "Cart A, {$kind}: the customer's step." );
 			$this->assertWithin( $pins, $parts, "Cart A, {$kind}" );
 			$this->assertSame( array( 0, $customerStep, 0, 0 ), array_map( static fn( int $customer, int $guestPart ): int => $customer - $guestPart, $parts, $guest ), "Cart A, {$kind}: the customer's step, and nothing more than a guest's placement." );
-			$this->assertSame( $customerStep, $steps['first']['the customer'] ?? 0, "Cart A, {$kind}: the customer's step." );
 
 			unset( $steps['first']['the customer'] );
 
