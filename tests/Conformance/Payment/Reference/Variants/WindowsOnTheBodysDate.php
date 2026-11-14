@@ -25,7 +25,7 @@ use SEOCart\Contracts\Payment\WebhookReadingKind;
  *
  * @since 0.2.0
  */
-final class WindowsOnTheBodysDate extends UndatedDeliveries {
+class WindowsOnTheBodysDate extends UndatedDeliveries {
 
 	/**
 	 * Reads a delivery, and rejects a verified one whose body's time is far from now.
@@ -44,6 +44,17 @@ final class WindowsOnTheBodysDate extends UndatedDeliveries {
 
 		$created = (int) ( $this->decoded( $envelope->rawBody )['created'] ?? 0 );
 
-		return abs( $this->context->clock()->now()->getTimestamp() - $created ) > self::TOLERANCE_SECONDS ? WebhookReading::rejected( WebhookReading::STALE ) : $reading;
+		return abs( $this->context->clock()->now()->getTimestamp() - $created ) > $this->window() ? WebhookReading::rejected( WebhookReading::STALE ) : $reading;
+	}
+
+	/**
+	 * Returns how far from now the body's time may be, in seconds: the reference gateway's tolerance.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return int The window.
+	 */
+	protected function window(): int {
+		return self::TOLERANCE_SECONDS;
 	}
 }

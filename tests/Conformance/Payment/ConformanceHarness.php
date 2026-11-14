@@ -482,9 +482,10 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * happened, unchanged when the provider sends the delivery again for days. A gateway of such a
 	 * provider refuses no delivery for its age: the store's receipt of the event refuses a replay.
 	 * When the test says so, rule 10's cases of a signed time an hour old and an hour ahead are
-	 * replaced by two that require the delivery, read with the clock an hour later and an hour
-	 * earlier, to read as it does on arrival, with the same kind and event id; its other cases are
-	 * kept. A delivery whose headers hold a time (DeliveryTimes) fails rule 10 under the
+	 * replaced by cases that require the delivery, read with the clock an hour later, an hour
+	 * earlier and twenty-nine days later, within the thirty days the store keeps a receipt, to read
+	 * as it does on arrival, with the same kind and event id; its other cases, a bad signature's
+	 * among them, are kept. A delivery whose headers hold a time (DeliveryTimes) fails rule 10 under the
 	 * declaration, as the provider may sign it. The declaration is checked by hand, in the pull
 	 * request that adds it, against the provider's documentation of its signature.
 	 *
@@ -2554,9 +2555,11 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->assertSame( $first->eventId, $second->eventId, $rule->message() . sprintf( 'the delivery %s read twice gave two event ids.', $name ) );
 		$this->assertNotNull( $first->eventId, $rule->message() . sprintf( 'the delivery %s was read without its event id.', $name ) );
 
+		// A provider that signs no time sends a delivery again for days: the last case is within the thirty days the store keeps a receipt.
 		foreach ( $undated ? array(
-			'an hour later'   => $at->modify( '+1 hour' ),
-			'an hour earlier' => $at->modify( '-1 hour' ),
+			'an hour later'          => $at->modify( '+1 hour' ),
+			'an hour earlier'        => $at->modify( '-1 hour' ),
+			'twenty-nine days later' => $at->modify( '+29 days' ),
 		) : array() as $when => $now ) {
 			$late = $this->read( $rule, $name, 'its signature, with the clock ' . $when, $headers, $body, $now );
 			$this->assertSame( array( $first->kind, $first->eventId ), array( $late->kind, $late->eventId ), $rule->message() . sprintf( 'the test declares that deliveries carry no signed time (deliveriesCarryNoSignedTime()), and the delivery %1$s read with the clock %2$s was answered %3$s (%4$s), not as on arrival, %5$s (%6$s): a delivery that carries no signed time reads the same whenever it comes, and the store\'s receipt refuses a replay.', $name, $when, $late->kind->value, (string) ( $late->eventId ?? $late->reason ), $first->kind->value, (string) $first->eventId ) );

@@ -17,6 +17,7 @@ use SEOCart\Tests\Conformance\Payment\ConformanceHarness;
 use SEOCart\Tests\Conformance\Payment\RecordingTransport;
 use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGateway;
 use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGatewaySetup;
+use SEOCart\Tests\Conformance\Payment\Reference\Variants\RefusesADeliveryDaysLate;
 use SEOCart\Tests\Conformance\Payment\Reference\Variants\UndatedDeliveries;
 use SEOCart\Tests\Conformance\Payment\Reference\Variants\WindowsOnTheBodysDate;
 use SEOCart\Tests\Conformance\Payment\Rule;
@@ -71,6 +72,15 @@ final class UndatedDeliveriesConformanceTest extends ConformanceHarness {
 	private const DATED = 'test_a_dated_header_refuses_the_declaration';
 
 	/**
+	 * The test whose gateway refuses a delivery read days after it was sent.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const DAYS_LATE = 'test_a_gateway_that_refuses_a_delivery_days_late_fails_rule_10_under_the_declaration';
+
+	/**
 	 * Tests that rule 10 passes undated deliveries and a gateway that keeps no window, when the test declares it: read an hour later or earlier, each delivery reads as on arrival.
 	 *
 	 * @since 0.2.0
@@ -105,6 +115,15 @@ final class UndatedDeliveriesConformanceTest extends ConformanceHarness {
 	 */
 	public function test_a_dated_header_refuses_the_declaration(): void {
 		$this->assertRuleFails( Rule::WebhooksVerifiedFirst, 'the test declares that deliveries carry no signed time (deliveriesCarryNoSignedTime()), and the header reference-signature of the delivery authorized holds a `t=<digits>` part' );
+	}
+
+	/**
+	 * Tests that rule 10 fails, under the declaration, a gateway that reads a delivery an hour late or early but refuses one read days after it was sent, as a provider that signs no time sends one again.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_gateway_that_refuses_a_delivery_days_late_fails_rule_10_under_the_declaration(): void {
+		$this->assertRuleFails( Rule::WebhooksVerifiedFirst, 'and the delivery authorized read with the clock twenty-nine days later was answered rejected (stale), not as on arrival, result' );
 	}
 
 	/**
@@ -174,7 +193,8 @@ final class UndatedDeliveriesConformanceTest extends ConformanceHarness {
 		$context = $registry->context( ReferenceGateway::ID );
 
 		return match ( $this->getName( false ) ) {
-			self::WINDOWS => new WindowsOnTheBodysDate( $context ),
+			self::WINDOWS   => new WindowsOnTheBodysDate( $context ),
+			self::DAYS_LATE => new RefusesADeliveryDaysLate( $context ),
 			self::DATED   => new ReferenceGateway( $context ),
 			default       => new UndatedDeliveries( $context ),
 		};
