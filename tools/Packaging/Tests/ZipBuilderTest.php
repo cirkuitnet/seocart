@@ -497,6 +497,28 @@ final class ZipBuilderTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a file under an extension's `assets/` that a web server would run as PHP stops the build, whatever the case of its extension, and leaves no zip.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_php_under_assets_stops_the_build(): void {
+		$root = $this->extensionTree();
+		$this->writeFile( 'extension/assets/island.js', "( () => {} )();\n" );
+		$this->writeFile( 'extension/assets/js/Island.pHp', "<?php\n" );
+
+		$builder = new ZipBuilder( $root, PluginPackage::at( $root ), DistIgnore::fromFile( $root . '/.distignore' ), self::TIMESTAMP );
+
+		try {
+			$builder->build( $this->directory . '/out' );
+			$this->fail( 'A PHP file under assets/ was built into the zip.' );
+		} catch ( RuntimeException $refused ) {
+			$this->assertStringContainsString( 'assets/js/Island.pHp may not ship: a web server would run it as PHP', $refused->getMessage() );
+		}
+
+		$this->assertFileDoesNotExist( $this->directory . '/out/seocart-example-0.1.0.zip' );
+	}
+
+	/**
 	 * Tests that bin/build-zip.php builds the plugin --plugin names, into that plugin's dist/.
 	 *
 	 * @since 0.2.0

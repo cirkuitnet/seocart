@@ -169,6 +169,7 @@ final class ZipChecker {
 			self::sizeViolations( (int) filesize( $zip_path ), $budget_bytes, $limit_bytes ),
 			self::layoutViolations( $package, $names ),
 			self::forbiddenPathViolations( $names ),
+			self::refusedFileViolations( $package, $names ),
 			self::symbolicLinkViolations( $zip ),
 			$package->isCore ? self::runtimeDependencyViolations( $names, $composer_lock_path ) : array(),
 			$package->isCore ? self::actionSchedulerViolations( $zip, $names ) : array(),
@@ -417,6 +418,35 @@ final class ZipChecker {
 		}
 
 		return null;
+	}
+
+	/**
+	 * Checks that no file in the plugin folder is one PluginPackage::refusedFile() refuses, such as PHP under `assets/`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param PluginPackage $package The plugin the zip is for.
+	 * @param string[]      $names   Entry names.
+	 * @return list<string> Violations, one per refused file.
+	 */
+	private static function refusedFileViolations( PluginPackage $package, array $names ): array {
+		$folder     = $package->slug . '/';
+		$violations = array();
+
+		foreach ( $names as $name ) {
+			// An entry outside the folder is the layout check's; a directory is no file.
+			if ( ! str_starts_with( $name, $folder ) || str_ends_with( $name, '/' ) ) {
+				continue;
+			}
+
+			$reason = PluginPackage::refusedFile( substr( $name, strlen( $folder ) ) );
+
+			if ( null !== $reason ) {
+				$violations[] = "refused file: {$name}: {$reason}. Exclude it in .distignore, or ship it under another name.";
+			}
+		}
+
+		return $violations;
 	}
 
 	/**

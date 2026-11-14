@@ -660,6 +660,58 @@ final class ZipCheckerTest extends TestCase {
 	}
 
 	/**
+	 * Tests that an extension's zip holding, under `assets/`, a file a web server would run as PHP fails, whatever the case of its extension.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider assetsRunAsPhp
+	 *
+	 * @param string $file The file's path inside the extension's folder.
+	 */
+	public function test_an_extension_zip_may_not_ship_php_in_assets( string $file ): void {
+		$entries = $this->goodExtensionEntries();
+
+		$entries[ 'seocart-example/' . $file ] = "<?php\n";
+
+		$this->assertViolations(
+			array( "refused file: seocart-example/{$file}: a web server would run it as PHP" ),
+			ZipChecker::check( $this->zip( $entries, 'seocart-example-0.1.0.zip' ), ZipChecker::DEFAULT_BUDGET_BYTES, ZipChecker::DEFAULT_LIMIT_BYTES, self::LOCK_FILE, PluginPackage::at( $this->extensionRoot() ) )
+		);
+	}
+
+	/**
+	 * Provides files under `assets/` that a web server would run as PHP.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string}>
+	 */
+	public function assetsRunAsPhp(): array {
+		return array(
+			'php'                       => array( 'assets/island.php' ),
+			'phtml in capitals, deeper' => array( 'assets/js/Island.PHTML' ),
+			'phar in mixed case'        => array( 'assets/island.pHaR' ),
+			'php as an inner extension' => array( 'assets/island.php.js' ),
+		);
+	}
+
+	/**
+	 * Tests that files under `assets/` whose names only look like PHP ship, as do PHP files outside `assets/`.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_extension_zip_may_ship_names_that_only_look_like_php(): void {
+		$entries = $this->goodExtensionEntries() + array(
+			'seocart-example/assets/php/island.js' => "( () => {} )();\n",
+			'seocart-example/assets/phpinfo.js'    => "( () => {} )();\n",
+			'seocart-example/assets/island.phps'   => "Shown, never run.\n",
+			'seocart-example/src/Island.php'       => "<?php\n",
+		);
+
+		$this->assertSame( array(), ZipChecker::check( $this->zip( $entries, 'seocart-example-0.1.0.zip' ), ZipChecker::DEFAULT_BUDGET_BYTES, ZipChecker::DEFAULT_LIMIT_BYTES, self::LOCK_FILE, PluginPackage::at( $this->extensionRoot() ) ) );
+	}
+
+	/**
 	 * Tests that an extension's zip holding tests, a scoped library or a second root file fails, and so does one without its source.
 	 *
 	 * @since 0.2.0

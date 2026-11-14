@@ -80,7 +80,7 @@ final class PluginPackage {
 	 * An extension's allow-list, after its main file, which is always required.
 	 *
 	 * No `vendor-scoped/`: an extension bundles no library. `assets/` holds files that ship as
-	 * written, such as the script of a payment island.
+	 * written, such as the script of a payment island, and never PHP (REFUSED_ASSET).
 	 *
 	 * @since 0.2.0
 	 *
@@ -98,6 +98,22 @@ final class PluginPackage {
 		'build/'        => false,
 		'assets/'       => false,
 	);
+
+	/**
+	 * The files under `assets/` that never ship: those a web server would run as PHP.
+	 *
+	 * `assets/` holds files a web server sends as they are written. A PHP file there would run
+	 * for any request that names it, outside WordPress. The extensions `.php`, `.phtml` and `.phar`
+	 * are matched in any case, as a name's last extension or an inner one, since a server that maps
+	 * handlers by every extension of a name (Apache's AddHandler) runs `island.php.js` as PHP too.
+	 * The builder refuses to ship such a file and the checker fails a zip that holds one; both ask
+	 * refusedFile().
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const REFUSED_ASSET = '~^assets/(?:[^/]+/)*[^/]*\.(?:php|phtml|phar)(?:\.[^/]*)?$~i';
 
 	/**
 	 * The slug: the single top-level folder inside the zip and the prefix of its file name.
@@ -272,5 +288,21 @@ final class PluginPackage {
 		$value = trim( (string) preg_replace( '/\s*(?:\*\/|\?>).*/', '', $matches[1] ) );
 
 		return '' === $value ? null : $value;
+	}
+
+	/**
+	 * Explains why a file may not ship, or returns null when it may.
+	 *
+	 * The zip builder and the zip checker both ask, so they cannot disagree.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $relative The file's path relative to the plugin root, with forward slashes.
+	 * @return string|null The reason, or null.
+	 */
+	public static function refusedFile( string $relative ): ?string {
+		return 1 === preg_match( self::REFUSED_ASSET, $relative )
+			? 'a web server would run it as PHP, and assets/ ships only files sent as they are written'
+			: null;
 	}
 }

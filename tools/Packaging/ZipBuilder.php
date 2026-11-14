@@ -249,6 +249,14 @@ final class ZipBuilder {
 
 		$files = $this->files();
 
+		foreach ( $files as $file ) {
+			$reason = PluginPackage::refusedFile( $file );
+
+			if ( null !== $reason ) {
+				throw new RuntimeException( "{$file} may not ship: {$reason}. Exclude it in .distignore, or ship it under another name." );
+			}
+		}
+
 		if ( ! is_dir( $output_directory ) && ! mkdir( $output_directory, 0755, true ) ) {
 			throw new RuntimeException( "{$output_directory} could not be created." );
 		}

@@ -255,7 +255,9 @@ add_action(
 only when the page offers the gateway's method, so a page loads the islands it shows and no other.
 An id no gateway registered with is refused with an `InvalidArgumentException`. Name the action as a
 string: the plugin's main file runs before SEOCart's classes exist. An island script may ship in the
-plugin's `assets/` directory, which an extension's zip may hold.
+plugin's `assets/` directory, which an extension's zip may hold. That directory never ships a file a
+web server would run as PHP (`.php`, `.phtml` or `.phar`, in any case, as any extension of the name):
+the zip builder refuses to cut one and the zip checker fails it.
 
 ## Versions and deprecation
 
