@@ -226,8 +226,8 @@ describe( 'installRegistry', () => {
 	} );
 
 	it.each( [
-		[ 'its id', 'id' ],
-		[ 'its contract version', 'contractVersion' ],
+		[ 'id', 'id' ],
+		[ 'contract version', 'contractVersion' ],
 	] )(
 		'refuses an island whose %s throws when read, and still drains the islands queued after it',
 		( name, member ) => {
