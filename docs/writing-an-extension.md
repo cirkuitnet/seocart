@@ -454,6 +454,18 @@ Rule 2 refunds once with its answer lost, and asks the refund again. The answer 
 the next request that can move money, neither a read nor a named credential request, so a gateway
 that reads the payment or asks for a token before it refunds has those answered.
 
+A provider that answers a declined payment by creating nothing says so in
+`declineLeavesNoPayment()`: rule 8 then requires `query()` of the declined payment to answer
+nothing and send no request, where it otherwise requires the decline. The suite cannot see the
+decline's own answer, so the pull request that adds the declaration is checked by hand against
+the provider's recorded decline, which must create nothing:
+
+```php
+protected function declineLeavesNoPayment(): bool {
+	return true;
+}
+```
+
 ### Tapes: replay and record
 
 The suite never reaches the provider on a pull request. It replays the provider's answers from

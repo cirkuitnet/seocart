@@ -357,6 +357,25 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
+	 * Tells whether the provider's declined authorization leaves nothing that can be asked about: false unless the test says so.
+	 *
+	 * Some providers answer a declined payment by refusing to create it (an error status and no
+	 * payment), so the gateway's decline names no provider payment, and the plugin has nothing to ask
+	 * about. When the test says so, rule 8 asks query() about the declined payment and requires it
+	 * to answer nothing and send no request; otherwise rule 8 requires the decline itself. The suite
+	 * cannot see the decline's own answer, so it trusts the declaration, which is checked by hand
+	 * against the provider's recorded decline exchange, in the pull request that adds it: that
+	 * exchange must create nothing. Rules 5 and 13 place the decline either way.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return bool True when a decline leaves no payment.
+	 */
+	protected function declineLeavesNoPayment(): bool {
+		return false;
+	}
+
+	/**
 	 * Signs a webhook delivery as the provider does; a gateway that declares `webhooks` implements it.
 	 *
 	 * @since 0.2.0
@@ -895,13 +914,18 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 					$this->refundsNeverMade( $rule, $cell, $profile->searchable );
 				}
 
-				// A declined authorization is answered declined; one awaiting the customer, nothing or pending.
+				// A declined authorization is answered declined, or, where a decline leaves no payment, nothing; one awaiting the customer, nothing or pending.
 				$this->begin( 'rule08-query-answers-' . self::cellName( $cell ) );
 
 				if ( is_string( $this->tokens()[ Scenario::Decline->value ] ?? null ) ) {
 					$declined = $this->place( $rule, Scenario::Decline, $cell );
-					$answer   = $this->queried( $declined['intent_uuid'], $cell );
-					$this->assertTrue( null !== $answer && Operation::Authorize === $answer->operation && Outcome::Declined === $answer->outcome && 'expired' !== $answer->errorCode, $rule->message() . sprintf( 'query() of an authorization the provider declined answered %s, not that decline.', null === $answer ? 'nothing' : self::describeResult( $answer ) ) );
+
+					if ( $this->declineLeavesNoPayment() ) {
+						$this->assertNothingToAskAbout( $rule, $declined['intent_uuid'], $cell );
+					} else {
+						$answer = $this->queried( $declined['intent_uuid'], $cell );
+						$this->assertTrue( null !== $answer && Operation::Authorize === $answer->operation && Outcome::Declined === $answer->outcome && 'expired' !== $answer->errorCode, $rule->message() . sprintf( 'query() of an authorization the provider declined answered %s, not that decline.', null === $answer ? 'nothing' : self::describeResult( $answer ) ) );
+					}
 				}
 
 				if ( is_string( $this->tokens()[ Scenario::Pending->value ] ?? null ) ) {
@@ -2540,6 +2564,33 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		}
 
 		$this->end();
+	}
+
+	/**
+	 * Rule 8, for a gateway whose test declares that a decline leaves no payment (declineLeavesNoPayment()): query() of the declined payment answers nothing and sends no request.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Rule      $rule       The rule.
+	 * @param string    $intentUuid The declined intent.
+	 * @param MatrixRow $cell       The cell it was placed in.
+	 */
+	private function assertNothingToAskAbout( Rule $rule, string $intentUuid, MatrixRow $cell ): void {
+		$before = count( $this->transport->exchanges() );
+		$answer = $this->queried( $intentUuid, $cell );
+		$asked  = count( $this->transport->exchanges() ) - $before;
+
+		if ( null === $answer && 0 === $asked ) {
+			return;
+		}
+
+		$sent = match ( $asked ) {
+			0       => 'no request',
+			1       => 'a request',
+			default => $asked . ' requests',
+		};
+
+		self::fail( $rule->message() . sprintf( 'the test declares that a declined authorization leaves no payment to ask about (declineLeavesNoPayment()), and query() of one answered %1$s and sent %2$s to the provider: under that declaration it answers nothing and sends no request.', null === $answer ? 'nothing' : self::describeResult( $answer ), $sent ) );
 	}
 
 	/**
