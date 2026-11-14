@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Conformance\Payment;
 
+use SEOCart\Support\Money;
+
 /**
  * Tells which requests of an operation move money, and whether each carries the operation's idempotency key where a provider reads one.
  *
@@ -77,8 +79,9 @@ final class RequestRules {
 	 * credentials for a token is about the gateway's account, never about a payment, so a request on
 	 * its path, of any method, whose URL, headers or body name the payment the operation is about
 	 * could move money the declaration would hide, with a key or without one. The suite cannot know
-	 * what a provider's endpoint does; it knows what names the payment. An amount is not compared,
-	 * as its form on the wire is the provider's.
+	 * what a provider's endpoint does; it knows what names the payment, and the operation's amount,
+	 * which names it with its currency: in minor units or as a decimal of the currency's exponent,
+	 * the two forms providers send an amount in.
 	 *
 	 * @since 0.2.0
 	 *
@@ -86,12 +89,15 @@ final class RequestRules {
 	 * @param Exchange[]         $exchanges   The requests the operation sent, in order.
 	 * @param array<string>      $names       What names the payment, by its value: the operation's key first, then such as the intent's uuid and the provider's ids, each described for the message.
 	 * @param CredentialRequests $credentials The credential requests the test declares.
+	 * @param Money|null         $amount      Optional. The operation's amount; null when it is not known. Default null.
 	 * @return string|null The refusal, in one sentence; null when no request on a declared path names the payment.
 	 *
 	 * @phpstan-param list<Exchange> $exchanges
 	 * @phpstan-param array<int|string, string> $names
 	 */
-	public static function hiddenMoney( string $what, array $exchanges, array $names, CredentialRequests $credentials ): ?string {
+	public static function hiddenMoney( string $what, array $exchanges, array $names, CredentialRequests $credentials, ?Money $amount = null ): ?string {
+		$refusal = 'the test declares %1$s a credential request in credentialRequests(), and %2$s sent a request on its path that names the payment, %3$s %4$s: a credential request carries no money, so the declaration is refused.';
+
 		foreach ( $exchanges as $exchange ) {
 			$declared = $credentials->onPath( $exchange->path() );
 
@@ -101,12 +107,53 @@ final class RequestRules {
 
 			foreach ( $names as $value => $name ) {
 				if ( self::names( $exchange, (string) $value ) ) {
-					return sprintf( 'the test declares %1$s a credential request in credentialRequests(), and %2$s sent a request on its path that names the payment, %3$s %4$s: a credential request carries no money, so the declaration is refused.', $declared, $what, $name, $value );
+					return sprintf( $refusal, $declared, $what, $name, $value );
 				}
+			}
+
+			if ( null !== $amount && self::namesAmount( $exchange, $amount ) ) {
+				return sprintf( $refusal, $declared, $what, 'the operation\'s amount with its currency,', sprintf( '%1$d %2$s in minor units', $amount->minorUnits(), $amount->currency()->code() ) );
 			}
 		}
 
 		return null;
+	}
+
+	/**
+	 * Tells whether a request names an amount with its currency: the currency's code as a whole word, in any case, and the amount as a whole number, in minor units or as a decimal of the currency's exponent.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Exchange $exchange The request.
+	 * @param Money    $amount   The amount.
+	 * @return bool True when it does.
+	 */
+	private static function namesAmount( Exchange $exchange, Money $amount ): bool {
+		$text = self::textOf( $exchange );
+
+		if ( 1 !== preg_match( '/(?<![A-Za-z0-9])' . preg_quote( $amount->currency()->code(), '/' ) . '(?![A-Za-z0-9])/i', $text ) ) {
+			return false;
+		}
+
+		foreach ( array_unique( array( (string) $amount->minorUnits(), $amount->toDecimal()->toString() ) ) as $form ) {
+			if ( 1 === preg_match( '/(?<![0-9.])' . preg_quote( $form, '/' ) . '(?![0-9]|\.[0-9])/', $text ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Returns a request's URL, header values and body, one per line, as the reading of what it names reads them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Exchange $exchange The request.
+	 * @return string The text.
+	 */
+	private static function textOf( Exchange $exchange ): string {
+		return $exchange->url . "\n" . implode( "\n", $exchange->headers ) . "\n" . (string) $exchange->body;
 	}
 
 	/**
@@ -123,7 +170,7 @@ final class RequestRules {
 			return false;
 		}
 
-		$text = $exchange->url . "\n" . implode( "\n", $exchange->headers ) . "\n" . (string) $exchange->body;
+		$text = self::textOf( $exchange );
 
 		foreach ( self::formsOf( $value ) as $form ) {
 			if ( 1 === preg_match( '/(?<![A-Za-z0-9])' . preg_quote( $form, '/' ) . '(?![A-Za-z0-9])/', $text ) ) {
@@ -190,13 +237,14 @@ final class RequestRules {
 	 * @param string             $key         The key the operation's requests carry.
 	 * @param CredentialRequests $credentials The credential requests the test declares.
 	 * @param array<string>      $names       Optional. What else names the payment, by its value, each described for the message (hiddenMoney()). Default none.
+	 * @param Money|null         $amount      Optional. The operation's amount; null when it is not known. Default null.
 	 * @return string|null The failure, beginning with the rule's message; null when every request that moves money carries the key.
 	 *
 	 * @phpstan-param list<Exchange> $exchanges
 	 * @phpstan-param array<int|string, string> $names
 	 */
-	public static function keyFailure( string $what, array $exchanges, string $key, CredentialRequests $credentials, array $names = array() ): ?string {
-		$hidden = self::hiddenMoney( $what, $exchanges, array( $key => 'the operation\'s key' ) + $names, $credentials );
+	public static function keyFailure( string $what, array $exchanges, string $key, CredentialRequests $credentials, array $names = array(), ?Money $amount = null ): ?string {
+		$hidden = self::hiddenMoney( $what, $exchanges, array( $key => 'the operation\'s key' ) + $names, $credentials, $amount );
 
 		if ( null !== $hidden ) {
 			return Rule::KeysAsRuled->message() . $hidden;
@@ -243,13 +291,14 @@ final class RequestRules {
 	 * @param string             $key         The operation's key.
 	 * @param CredentialRequests $credentials The credential requests the test declares.
 	 * @param array<string>      $names       Optional. What else names the payment, by its value, each described for the message (hiddenMoney()). Default none.
+	 * @param Money|null         $amount      Optional. The operation's amount; null when it is not known. Default null.
 	 * @return string|null The failure, beginning with the rule's message; null when one of them is the operation's own.
 	 *
 	 * @phpstan-param list<Exchange> $exchanges
 	 * @phpstan-param array<int|string, string> $names
 	 */
-	public static function sentFailure( string $what, array $exchanges, string $key, CredentialRequests $credentials, array $names = array() ): ?string {
-		$hidden = self::hiddenMoney( $what, $exchanges, array( $key => 'the operation\'s key' ) + $names, $credentials );
+	public static function sentFailure( string $what, array $exchanges, string $key, CredentialRequests $credentials, array $names = array(), ?Money $amount = null ): ?string {
+		$hidden = self::hiddenMoney( $what, $exchanges, array( $key => 'the operation\'s key' ) + $names, $credentials, $amount );
 
 		if ( null !== $hidden ) {
 			return Rule::EveryCallThroughTheClient->message() . $hidden;

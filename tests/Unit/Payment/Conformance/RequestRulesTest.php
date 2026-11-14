@@ -14,6 +14,8 @@ namespace SEOCart\Tests\Unit\Payment\Conformance;
 use Brain\Monkey;
 use Brain\Monkey\Functions;
 use PHPUnit\Framework\TestCase;
+use SEOCart\Support\Currency;
+use SEOCart\Support\Money;
 use SEOCart\Tests\Conformance\Payment\CredentialRequests;
 use SEOCart\Tests\Conformance\Payment\Exchange;
 use SEOCart\Tests\Conformance\Payment\RequestRules;
@@ -250,6 +252,34 @@ final class RequestRulesTest extends TestCase {
 
 		foreach ( array( 'grant_type=client_credentials', 'grant_type=client_credentials&scope=ri_12' ) as $body ) {
 			$this->assertNull( RequestRules::keyFailure( 'the capture', array( self::exchange( 'POST', self::TOKEN_PATH, array(), $body ), $keyed ), self::KEY, $declared, $names ), $body );
+		}
+	}
+
+	/**
+	 * Tests that a request on a declared credential path that names the operation's amount with its currency refuses the declaration, in minor units or as a decimal: the amount alone, the currency alone or another amount does not.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @group conformance
+	 */
+	public function test_a_declared_credential_request_that_names_the_amount_is_refused(): void {
+		$declared = self::declaring( array( 'POST', self::TOKEN_PATH ) );
+		$keyed    = self::exchange( 'POST', '/v1/intents/ri_1/capture', array( 'idempotency-key' => self::KEY ), 'amount=1000' );
+		$amount   = Money::of( 1000, Currency::of( 'USD' ) );
+		$refusal  = 'the test declares POST ' . self::TOKEN_PATH . ' a credential request in credentialRequests(), and the capture sent a request on its path that names the payment, the operation\'s amount with its currency, 1000 USD in minor units: a credential request carries no money, so the declaration is refused.';
+
+		foreach ( array(
+			'minor units and the currency' => array( 'amount=1000&currency=usd', true ),
+			'a decimal and the currency'   => array( '{"amount":{"currency_code":"USD","value":"10.00"}}', true ),
+			'the amount alone'             => array( 'amount=1000', false ),
+			'the currency alone'           => array( 'currency=usd', false ),
+			'another amount'               => array( 'amount=10000&currency=usd', false ),
+			'a decimal of another amount'  => array( '{"currency_code":"USD","value":"1000.00"}', false ),
+		) as $case => list( $body, $refused ) ) {
+			$token = self::exchange( 'POST', self::TOKEN_PATH, array(), $body );
+
+			$this->assertSame( $refused ? Rule::KeysAsRuled->message() . $refusal : null, RequestRules::keyFailure( 'the capture', array( $token, $keyed ), self::KEY, $declared, array(), $amount ), $case );
+			$this->assertSame( $refused ? Rule::EveryCallThroughTheClient->message() . $refusal : null, RequestRules::sentFailure( 'the capture', array( $token, $keyed ), self::KEY, $declared, array(), $amount ), $case );
 		}
 	}
 

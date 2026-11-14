@@ -20,6 +20,7 @@ use SEOCart\Tests\Conformance\Payment\RecordingTransport;
 use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGateway;
 use SEOCart\Tests\Conformance\Payment\Reference\ReferenceGatewaySetup;
 use SEOCart\Tests\Conformance\Payment\Reference\Variants\ExchangesCredentialsFirst;
+use SEOCart\Tests\Conformance\Payment\Reference\Variants\NamesTheAmountInItsTokenRequest;
 use SEOCart\Tests\Conformance\Payment\Reference\Variants\NamesThePaymentInItsTokenRequest;
 use SEOCart\Tests\Conformance\Payment\Rule;
 use SEOCart\Tests\Conformance\Payment\RuleFailures;
@@ -168,6 +169,15 @@ final class CredentialRequestsConformanceTest extends ConformanceHarness {
 	}
 
 	/**
+	 * Tests that rule 6 refuses the declaration of a gateway that sends, on its declared token path, a request without a key that names the refund's amount with its currency.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_declared_token_request_that_names_the_amount_fails_rule_6(): void {
+		$this->assertRuleFails( Rule::KeysAsRuled, 'the test declares POST /v1/oauth2/token a credential request in credentialRequests(), and the first refund sent a request on its path that names the payment, the operation\'s amount with its currency' );
+	}
+
+	/**
 	 * Tests that a declaration of more requests than CredentialRequests::MOST fails the suite's set-up with one sentence.
 	 *
 	 * @since 0.2.0
@@ -204,8 +214,13 @@ final class CredentialRequestsConformanceTest extends ConformanceHarness {
 	 */
 	protected function gatewayOf( GatewayRegistry $registry ): ReferenceGateway {
 		$context = $registry->context( ReferenceGateway::ID );
+		$name    = $this->getName( false );
 
-		return str_starts_with( $this->getName( false ), 'test_a_declared_token_request_that_names_the_payment' ) ? new NamesThePaymentInItsTokenRequest( $context ) : new ExchangesCredentialsFirst( $context );
+		if ( str_starts_with( $name, 'test_a_declared_token_request_that_names_the_payment' ) ) {
+			return new NamesThePaymentInItsTokenRequest( $context );
+		}
+
+		return str_starts_with( $name, 'test_a_declared_token_request_that_names_the_amount' ) ? new NamesTheAmountInItsTokenRequest( $context ) : new ExchangesCredentialsFirst( $context );
 	}
 
 	/**
