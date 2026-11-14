@@ -23,6 +23,8 @@ use SEOCart\Catalog\Infrastructure\Migrations\CreatePriceProjections;
 use SEOCart\Catalog\Infrastructure\Migrations\CreateSearchIndex;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\Migrations\CreateCheckoutTables;
+use SEOCart\Customer\Infrastructure\CustomerTables;
+use SEOCart\Customer\Infrastructure\Migrations\CreateCustomers;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\Migrations\AddLocations;
 use SEOCart\Inventory\Infrastructure\Migrations\CreateStockTablesMigration;
@@ -121,6 +123,7 @@ final class OwnedData {
 			new Contribution( tables: RefundTables::all(), migrations: array( new CreateRefundTables() ) ),
 			new Contribution( tables: RefundClaimTables::all(), migrations: array( new CreateRefundClaimTable(), new AddRefundClaimRequest(), new AddRefundClaimSettlement() ) ),
 			new Contribution( tables: array( PaymentTables::offlinePayments() ), migrations: array( new CreateOfflinePayments() ) ),
+			new Contribution( tables: CustomerTables::all(), migrations: array( new CreateCustomers() ) ),
 		);
 	}
 }
