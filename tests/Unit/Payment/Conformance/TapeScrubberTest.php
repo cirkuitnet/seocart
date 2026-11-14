@@ -561,6 +561,8 @@ final class TapeScrubberTest extends TestCase {
 			'a URL in free text'                           => array( self::exchangeWith( 'responseBody', '{"note":"see https://api.example.com/v2/checkout/orders/' . $id . '"}' ), false, 'its response body field note ' . $holds ),
 			'a segment that holds the id after other text' => array( $read( 'https://api.example.com/v2/checkout/orders/order-' . $id ), false, 'its URL ' . $holds ),
 			'a segment that holds the id after a short word' => array( $read( 'https://api.example.com/v2/checkout/orders/n-' . $id ), false, 'its URL ' . $holds ),
+			'the id sent twice in a field named like a credential, then as an id' => array( self::exchangeWith( 'responseBody', '{"client_token":"' . $id . '","client_token":"x","id":"' . $id . '"}' ), false, $beside ),
+			'the id dropped from a body, and whole in the request URL' => array( new Exchange( 'GET', 'https://api.example.com/v2/checkout/orders/' . $id, array(), null, 200, array( 'content-type' => 'application/json' ), '{"note":"' . $id . '","note":"x"}' ), false, $beside ),
 			'a segment of digits alone'                    => array( $read( 'https://api.example.com/v2/checkout/orders/' . $card ), false, 'its URL ' . $holds ),
 			'a card number in the query of a URL with the id' => array( $read( 'https://api.example.com/v2/checkout/orders/' . $id . '?n=' . $card ), false, 'its URL query field n ' . $holds ),
 			'the id in a field named like a credential'    => array( self::exchangeWith( 'responseBody', '{"client_token":"' . $id . '"}' ), false, 'its response body field client_token ' . $holds ),

@@ -45,7 +45,8 @@ use SEOCart\Platform\Logging\CardNumbers;
  * number, and nor is such an id as a whole segment of the path of an http or https URL
  * (holdsCardNumber()): one in ten of a provider's ids that hold a run of 13 to 16 digits would pass
  * for one. Every other check still reads such a value, and the raw text it is written in passes it
- * only where it stands whole (withoutValuesOfNoCard()).
+ * only where it stands whole, and only as many times as the reading of the part's fields met it
+ * (withoutValuesOfNoCard()).
  *
  * An opaque token passes only in a public shape: a UUID; a value the test declares as one of the
  * provider's enumerated codes (GatewayConformanceCase::publicCodes(), exact strings, such as a long
@@ -373,11 +374,11 @@ final class TapeScrubber {
 	private array $passing = array();
 
 	/**
-	 * The whole values the current scan found to name no card (holdsCardNumber()), which the reading of a part's raw text passes where they stand whole.
+	 * How many times the current scan read each whole value it found to name no card (holdsCardNumber()): the reading of a part's raw text passes that many of its whole occurrences, and no more.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @var array<string, true>
+	 * @var array<string, int>
 	 */
 	private array $namingNoCard = array();
 
@@ -634,7 +635,7 @@ final class TapeScrubber {
 		}
 
 		$this->scanFields( $rest, $file . ', its field', '', true );
-		$this->scanUnread( $text, $decoded, $file, array(), self::partsOf( $decoded ) );
+		$this->scanUnread( $text, $decoded, $file, array(), self::partsOf( $decoded ), $this->namingNoCard );
 	}
 
 	/**
@@ -956,7 +957,7 @@ final class TapeScrubber {
 	 */
 	private function withoutIdsOfNoCard( string $text, string $field, bool $url ): string {
 		if ( $this->namesNoCard( $text, $field ) ) {
-			$this->namingNoCard[ $text ] = true;
+			$this->namingNoCard[ $text ] = ( $this->namingNoCard[ $text ] ?? 0 ) + 1;
 
 			return '';
 		}
@@ -969,7 +970,7 @@ final class TapeScrubber {
 
 		foreach ( $segments as $at => $segment ) {
 			if ( '' !== $segment && $this->namesNoCard( $segment, '' ) ) {
-				$this->namingNoCard[ $segment ] = true;
+				$this->namingNoCard[ $segment ] = ( $this->namingNoCard[ $segment ] ?? 0 ) + 1;
 				$segments[ $at ]                = '';
 			}
 		}
@@ -997,24 +998,46 @@ final class TapeScrubber {
 	}
 
 	/**
-	 * Returns a part's raw text, as the card rule reads it, without each value the current scan found to name no card where that value stands whole: between quotes, after `=` before `&`, a quote or the end, and as a path's segment after `/` before `/`, `?`, `#`, a quote or the end.
+	 * Returns a part's raw text, as the card rule reads it, without as many whole occurrences of each value as the reading of the part's fields passed: between quotes, after `=` before `&`, a quote or the end, and as a path's segment after `/` before `/`, `?`, `#`, a quote or the end.
 	 *
 	 * The raw text is read for a card number that decoding dropped, such as the first of a field
-	 * sent twice; a value the reading field by field passed as a whole passes there too, where it
-	 * stands as that whole value, and nowhere else.
+	 * sent twice. A value the reading field by field passed as a whole passes there as many times as
+	 * that reading met it, where it stands as that whole value: an occurrence more, such as one
+	 * decoding dropped, is read for a card number as any other text.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string $text The raw text, as the card rule reads it.
+	 * @param string             $text   The raw text, as the card rule reads it.
+	 * @param array<string, int> $passed How many times the reading of the part's fields passed each value.
 	 * @return string The text, without them.
 	 */
-	private function withoutValuesOfNoCard( string $text ): string {
-		foreach ( array_keys( $this->namingNoCard ) as $value ) {
+	private static function withoutValuesOfNoCard( string $text, array $passed ): string {
+		foreach ( $passed as $value => $times ) {
 			$quoted = preg_quote( (string) $value, '#' );
-			$text   = (string) preg_replace( '#(?<=")' . $quoted . '(?=")|(?<==)' . $quoted . '(?=[&"]|$)|(?<=/)' . $quoted . '(?=[/?\#"]|$)#', '', $text );
+			$text   = (string) preg_replace( '#(?<=")' . $quoted . '(?=")|(?<==)' . $quoted . '(?=[&"]|$)|(?<=/)' . $quoted . '(?=[/?\#"]|$)#', '', $text, $times );
 		}
 
 		return $text;
+	}
+
+	/**
+	 * Returns how many more times the current scan passed each value than it had at an earlier point: what the reading of one part passed.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, int> $before The counts at the earlier point.
+	 * @return array<string, int> The values passed since, each with how many times.
+	 */
+	private function passedSince( array $before ): array {
+		$since = array();
+
+		foreach ( $this->namingNoCard as $value => $times ) {
+			if ( $times > ( $before[ $value ] ?? 0 ) ) {
+				$since[ $value ] = $times - ( $before[ $value ] ?? 0 );
+			}
+		}
+
+		return $since;
 	}
 
 	/**
@@ -1103,9 +1126,10 @@ final class TapeScrubber {
 
 		if ( '' !== $query ) {
 			$fields = array();
+			$before = $this->namingNoCard;
 			parse_str( $query, $fields );
 			$this->scanFields( $fields, $where . ' query field', '', $queryExemptable && 1 !== preg_match( self::CREDENTIAL_FIELD, $field ), '', true );
-			$this->scanUnread( $query, $fields, $where . ' query', self::formNames( $query ), self::urlsIn( $fields ) );
+			$this->scanUnread( $query, $fields, $where . ' query', self::formNames( $query ), self::urlsIn( $fields ), $this->passedSince( $before ) );
 		}
 	}
 
@@ -1153,8 +1177,9 @@ final class TapeScrubber {
 		}
 
 		if ( is_array( $decoded ) ) {
+			$before = $this->namingNoCard;
 			$this->scanFields( $decoded, $where . ' field', '', true );
-			$this->scanUnread( $body, $decoded, $where, $names, self::urlsIn( $decoded ) );
+			$this->scanUnread( $body, $decoded, $where, $names, self::urlsIn( $decoded ), $this->passedSince( $before ) );
 			return;
 		}
 
@@ -1174,7 +1199,8 @@ final class TapeScrubber {
 	 * as the card rule reads it (asCardsRead(): each escape the character it encodes, each `+` a
 	 * space), is read by CardNumbers as it reads a log line, digits inside an identifier and all,
 	 * and a card number found there refuses the part, but for a value the reading field by field
-	 * found to name no card, where it stands as that whole value (withoutValuesOfNoCard()). Where that reading differs from a decoded
+	 * found to name no card, as many times as that reading met it, where it stands as that whole
+	 * value (withoutValuesOfNoCard()). Where that reading differs from a decoded
 	 * value's, it is the stricter (a `+` reads as a space in JSON too; a byte that is not UTF-8
 	 * reads as `?` in its own stretch only, where CardNumbers reads every byte above 127 of a
 	 * whole invalid value as `?`), or the page states the limit: a card number encoded twice, such
@@ -1201,11 +1227,13 @@ final class TapeScrubber {
 	 * @param string       $where   The part, for the message.
 	 * @param string[]     $names   Optional. A form's or a query's field names, as written, URL-decoded. Default none.
 	 * @param string[]     $parts   Optional. The decoded values that are parts the scan reads on their own, their escapes still in. Default none.
+	 * @param int[]        $passed  Optional. How many times the reading of the part's fields passed each value that names no card (holdsCardNumber()). Default none.
 	 *
 	 * @phpstan-param list<string> $names
 	 * @phpstan-param list<string> $parts
+	 * @phpstan-param array<string, int> $passed
 	 */
-	private function scanUnread( string $raw, array $decoded, string $where, array $names = array(), array $parts = array() ): void {
+	private function scanUnread( string $raw, array $decoded, string $where, array $names = array(), array $parts = array(), array $passed = array() ): void {
 		$fields = self::keysAndValues( $decoded );
 		$held   = array();
 
@@ -1225,7 +1253,7 @@ final class TapeScrubber {
 			}
 		}
 
-		if ( CardNumbers::contains( $this->withoutValuesOfNoCard( self::asCardsRead( $raw ) ) ) ) {
+		if ( CardNumbers::contains( self::withoutValuesOfNoCard( self::asCardsRead( $raw ), $passed ) ) ) {
 			throw new TapeRefused( sprintf( '%s holds, outside every field it was read as, a card number: an adapter never asks for card details, and a tape never keeps them.', $where ) );
 		}
 	}
