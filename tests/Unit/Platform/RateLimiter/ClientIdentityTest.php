@@ -51,6 +51,19 @@ final class ClientIdentityTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a client's identity is the key it always was: the HMAC of the same text, so no counter starts again.
+	 *
+	 * The vectors were computed by the identity as it was before its parameter was named for the
+	 * WordPress user: a logged-in client and a guest.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_clients_key_is_unchanged(): void {
+		$this->assertSame( '65fddc4bd8cd0a93e8f22adbb1496669ca0d3dd3aafd09b7d37e99d36d11ed67', ClientIdentity::ofClient( '192.0.2.1', 7, 'secret' )->key(), 'User 7 at 192.0.2.1.' );
+		$this->assertSame( 'f885330bcf4b457c5ef08fe2416f901c48773c9a8b4f29aad2e22dd7cb480919', ClientIdentity::ofClient( '2001:db8::1', 0, 'secret' )->key(), 'A guest at 2001:db8::1.' );
+	}
+
+	/**
 	 * Tests that a cart is counted apart from every client, and that no two sets of parts are hashed alike.
 	 *
 	 * @since 0.1.0

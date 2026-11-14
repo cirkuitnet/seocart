@@ -54,7 +54,7 @@ final class NoLoggedInShortcutTest extends TestCase {
 	 *
 	 * @var list<string>
 	 */
-	private const DIRECTORIES = array( 'src/Platform/Authorization', 'src/Cart/Interfaces', 'src/Order', 'src/Interfaces/Operations' );
+	private const DIRECTORIES = array( 'src/Platform/Authorization', 'src/Cart/Interfaces', 'src/Order', 'src/Customer', 'src/Interfaces/Operations' );
 
 	/**
 	 * Tests that no file of the authorization path or the Store API names the function.
@@ -74,6 +74,7 @@ final class NoLoggedInShortcutTest extends TestCase {
 		$this->assertArrayHasKey( 'src/Cart/Interfaces/StoreApi/StoreRequestPolicy.php', $files, 'The scan did not find the Store API\'s request policy, so an empty result would prove nothing.' );
 		$this->assertArrayHasKey( 'src/Order/Application/OrderAccessPolicy.php', $files, 'The scan did not find the order access policy, so an empty result would prove nothing.' );
 		$this->assertArrayHasKey( 'src/Interfaces/Operations/RestAdapter.php', $files, 'The scan did not find the REST adapter, so an empty result would prove nothing.' );
+		$this->assertArrayHasKey( 'src/Customer/Application/Customers.php', $files, 'The scan did not find the customer records\' service, so an empty result would prove nothing.' );
 
 		foreach ( $files as $file => $source ) {
 			foreach ( token_get_all( $source ) as $token ) {

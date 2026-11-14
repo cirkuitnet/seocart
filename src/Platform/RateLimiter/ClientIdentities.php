@@ -25,9 +25,9 @@ defined( 'ABSPATH' ) || exit;
  * therefore never holds an address or a token, and without the salt its key cannot be tied to
  * one. Changing the salts, which also logs every user out, only starts every counter again.
  *
- * - of(): the client, by its trusted address and its customer id. Every per-client bucket counts
- *   under it. A cart token is not part of it: anyone can make one up, and a made-up token per
- *   request would make a new client of every request.
+ * - of(): the client, by its trusted address and the WordPress user the request was authenticated
+ *   as. Every per-client bucket counts under it. A cart token is not part of it: anyone can make
+ *   one up, and a made-up token per request would make a new client of every request.
  * - ofCart(): one cart, for a per-cart bucket. Call it only with the token of a cart the cart
  *   module has found; a token a request merely carries says nothing until then.
  *
@@ -104,11 +104,11 @@ final class ClientIdentities {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int $customer_id The user the request was authenticated as, 0 for a guest.
+	 * @param int $user_id The WordPress user the request was authenticated as, 0 for a guest.
 	 * @return ClientIdentity The identity.
 	 */
-	public function of( int $customer_id ): ClientIdentity {
-		return ClientIdentity::ofClient( $this->address->address(), $customer_id, $this->key() );
+	public function of( int $user_id ): ClientIdentity {
+		return ClientIdentity::ofClient( $this->address->address(), $user_id, $this->key() );
 	}
 
 	/**

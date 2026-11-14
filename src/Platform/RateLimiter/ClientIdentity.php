@@ -20,8 +20,9 @@ defined( 'ABSPATH' ) || exit;
  * named constructor, which hashes, so a raw address or a raw token can never reach a counter row or
  * a cache key:
  *
- * - ofClient(): a client, by its trusted address and its customer id. Nothing the client makes up
- *   is part of it, so a client cannot become a new one by sending new values;
+ * - ofClient(): a client, by its trusted address and the WordPress user the request was
+ *   authenticated as. Nothing the client makes up is part of it, so a client cannot become a new
+ *   one by sending new values;
  * - ofCart(): one cart, by its token. Only a token the cart module has matched to a stored cart may
  *   be counted this way (ClientIdentities::ofCart() takes it), because a made-up token is a new key
  *   every time.
@@ -60,13 +61,13 @@ final class ClientIdentity {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string $address     The client's address, as TrustedClientIp resolved it.
-	 * @param int    $customer_id The WordPress user the request was authenticated as, 0 for a guest.
-	 * @param string $secret      The key of the HMAC.
+	 * @param string $address The client's address, as TrustedClientIp resolved it.
+	 * @param int    $user_id The WordPress user the request was authenticated as, 0 for a guest.
+	 * @param string $secret  The key of the HMAC.
 	 * @return self The identity.
 	 */
-	public static function ofClient( string $address, int $customer_id, #[\SensitiveParameter] string $secret ): self {
-		return new self( hash_hmac( 'sha256', sprintf( 'client:%d:%s%d', strlen( $address ), $address, $customer_id ), $secret ) );
+	public static function ofClient( string $address, int $user_id, #[\SensitiveParameter] string $secret ): self {
+		return new self( hash_hmac( 'sha256', sprintf( 'client:%d:%s%d', strlen( $address ), $address, $user_id ), $secret ) );
 	}
 
 	/**

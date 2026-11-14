@@ -170,7 +170,8 @@ final class OrderStatusRouteTest extends OrderTestCase {
 				return array( $read['status'], 200 === $read['status'] && $uuid === $order->uuid );
 			},
 			OrderStoreOperations::LIST_OWN   => function ( array $headers ) use ( $order ): array {
-				$list = $this->listOwn( $headers );
+				// The order is named in the query too: a list that let a key open a row would show it.
+				$list = $this->listOwn( $headers, array( 'uuid' => $order->uuid ) );
 
 				return array( $list['status'], in_array( $order->uuid, array_column( (array) ( $list['body']['orders'] ?? array() ), 'uuid' ), true ) );
 			},
