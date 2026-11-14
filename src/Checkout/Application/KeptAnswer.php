@@ -40,9 +40,15 @@ defined( 'ABSPATH' ) || exit;
  * action, and the settlement writes it in (IdempotencyKeys::settleAnswer()) while the payment waits
  * for the shopper, and clears it once it does not.
  *
+ * The payment's uuid, which the client resumes the payment with once the shopper has acted, is
+ * answered exactly while the next action is: so it is kept in the next action's box, beside the
+ * step, never as a field of its own, and a retry is given it back from the box, or null once the
+ * box is cleared.
+ *
  * Each field stays where it was in the answer, so an answer read back keeps its fields' order.
  *
  * @since 0.1.0
+ * @since 0.2.0 Keeps the payment's uuid in the next action's box.
  */
 final class KeptAnswer {
 
@@ -83,6 +89,15 @@ final class KeptAnswer {
 	public const NEXT_ACTION_SEALED = 'next_action_sealed';
 
 	/**
+	 * The field of the answer that holds the uuid of the payment the shopper must act for, or null; kept in the next action's box.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const INTENT_UUID = 'intent_uuid';
+
+	/**
 	 * What the next action's box is bound to, before the order's uuid, so it never opens as the order key's.
 	 *
 	 * @since 0.2.0
@@ -101,13 +116,13 @@ final class KeptAnswer {
 	private const PURPOSE = 'seocart-order-key|';
 
 	/**
-	 * Returns the answer as its key keeps it: the order key and the next action sealed, every other field as it is.
+	 * Returns the answer as its key keeps it: the order key and the next action sealed, the payment's uuid in the next action's box, every other field as it is.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 Seals the next action too.
+	 * @since 0.2.0 Seals the next action too, with the payment's uuid.
 	 *
 	 * @param array<string, mixed> $answer         The answer sent: `order_uuid` and `order_key` among its fields, and
-	 *                                             `next_action`, null while the shopper has nothing to do.
+	 *                                             `next_action` and `intent_uuid`, null while the shopper has nothing to do.
 	 * @param CartToken            $token          The cart token the request presented.
 	 * @param string               $idempotencyKey The idempotency key the request sent.
 	 * @return string The answer to keep, as JSON.
@@ -120,8 +135,8 @@ final class KeptAnswer {
 			if ( self::ORDER_KEY === $field ) {
 				$kept[ self::SEALED ] = self::box( (string) $value, $orderUuid, $token, $idempotencyKey );
 			} elseif ( self::NEXT_ACTION === $field ) {
-				$kept[ self::NEXT_ACTION_SEALED ] = null === $value ? null : self::box( (string) wp_json_encode( $value ), self::NEXT_ACTION_DATA . $orderUuid, $token, $idempotencyKey );
-			} else {
+				$kept[ self::NEXT_ACTION_SEALED ] = null === $value ? null : self::box( (string) wp_json_encode( self::withIntent( (array) $value, $answer[ self::INTENT_UUID ] ?? null ) ), self::NEXT_ACTION_DATA . $orderUuid, $token, $idempotencyKey );
+			} elseif ( self::INTENT_UUID !== $field ) {
 				$kept[ $field ] = $value;
 			}
 		}
@@ -130,18 +145,19 @@ final class KeptAnswer {
 	}
 
 	/**
-	 * Returns a next action sealed as the kept answer holds it, for the settlement to write in.
+	 * Returns a next action sealed as the kept answer holds it, with the uuid of the payment it is for, for the settlement to write in.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param NextAction $action         What the shopper must do.
+	 * @param string     $intentUuid     The uuid of the payment the shopper acts for, which the client resumes.
 	 * @param string     $orderUuid      The order's uuid.
 	 * @param CartToken  $token          The cart token the request presented.
 	 * @param string     $idempotencyKey The idempotency key the request sent.
 	 * @return string The box, as JSON: an object with its nonce and its ciphertext.
 	 */
-	public static function sealAction( NextAction $action, string $orderUuid, CartToken $token, #[\SensitiveParameter] string $idempotencyKey ): string {
-		return (string) wp_json_encode( self::box( (string) wp_json_encode( self::actionOf( $action ) ), self::NEXT_ACTION_DATA . $orderUuid, $token, $idempotencyKey ) );
+	public static function sealAction( NextAction $action, string $intentUuid, string $orderUuid, CartToken $token, #[\SensitiveParameter] string $idempotencyKey ): string {
+		return (string) wp_json_encode( self::box( (string) wp_json_encode( self::withIntent( self::actionOf( $action ), $intentUuid ) ), self::NEXT_ACTION_DATA . $orderUuid, $token, $idempotencyKey ) );
 	}
 
 	/**
@@ -163,7 +179,11 @@ final class KeptAnswer {
 	/**
 	 * Returns a kept answer as a retry is given it: the order key opened in its place, or left out when its box does not open.
 	 *
+	 * The next action's box opens into the next action and, after it, the payment's uuid it was
+	 * sealed with; a cleared box, or one that does not open, into null for both.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Opens the next action and the payment's uuid.
 	 *
 	 * @throws \UnexpectedValueException When the kept answer is not a JSON object.
 	 *
@@ -191,15 +211,30 @@ final class KeptAnswer {
 					$answer[ self::ORDER_KEY ] = $key;
 				}
 			} elseif ( self::NEXT_ACTION_SEALED === $field ) {
-				$action = null === $value ? null : self::unseal( $value, self::NEXT_ACTION_DATA . $orderUuid, $token, $idempotencyKey );
+				$opened = null === $value ? null : self::unseal( $value, self::NEXT_ACTION_DATA . $orderUuid, $token, $idempotencyKey );
+				$action = null === $opened ? null : (array) json_decode( $opened, true );
 
-				$answer[ self::NEXT_ACTION ] = null === $action ? null : json_decode( $action, true );
+				$answer[ self::NEXT_ACTION ] = null === $action ? null : array_diff_key( $action, array( self::INTENT_UUID => true ) );
+				$answer[ self::INTENT_UUID ] = $action[ self::INTENT_UUID ] ?? null;
 			} else {
 				$answer[ $field ] = $value;
 			}
 		}
 
 		return $answer;
+	}
+
+	/**
+	 * Returns a next action, as an answer carries it, with the payment's uuid beside it: what its box holds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, mixed> $action     The next action, by wire name.
+	 * @param mixed                $intentUuid The payment's uuid.
+	 * @return array<string, mixed> What the box holds.
+	 */
+	private static function withIntent( array $action, mixed $intentUuid ): array {
+		return $action + array( self::INTENT_UUID => is_string( $intentUuid ) ? $intentUuid : null );
 	}
 
 	/**

@@ -36,9 +36,15 @@ use SEOCart\Tests\Support\Checkout\PlacementTestCase;
  * payment's identifier and nothing else. No URL the placement produces carries the order key, the
  * cart token, the idempotency key or the provider's handle.
  *
+ * The answer names the payment the shopper acts for, which a browser resumes once they are back;
+ * a retry is given it from the next action's box, and once the shopper need not act, or never had
+ * to, it is null.
+ *
  * Planted violations, each shown red and removed:
  * - in KeptAnswer::seal() or KeptAnswer::sealAction(), keep the next action as it is: the raw row
  *   holds the handle;
+ * - in KeptAnswer::sealAction(), seal the next action without the payment's uuid: the retry is
+ *   answered without it;
  * - in PlaceOrder::paid(), add the order key to the return address: the address carries a secret;
  * - in MysqlIdempotencyKeys::SETTLE_ANSWER, keep the sealed next action whatever the outcome: a
  *   retry after the approval still finds a box;
@@ -127,6 +133,48 @@ final class NextActionPlacementTest extends PlacementTestCase {
 		$kept = (array) json_decode( (string) $this->keptRow( (string) $answer['order_uuid'] ), true );
 
 		$this->assertSame( array( true, null ), array( array_key_exists( KeptAnswer::NEXT_ACTION_SEALED, $kept ), $kept[ KeptAnswer::NEXT_ACTION_SEALED ] ), 'The row keeps no box once the shopper need not act.' );
+	}
+
+	/**
+	 * Tests that the answer names the payment the shopper acts for, after the next action; that a retry is given it from the next action's box, which the row holds it in and nowhere else; and that once the payment is resumed, a retry is told there is none.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_answer_names_the_payment_the_shopper_acts_for(): void {
+		list( $answer, $intent ) = $this->placeActing();
+
+		$fields = array_keys( $answer );
+
+		$this->assertSame( $intent, $answer['intent_uuid'], 'The first answer names the payment.' );
+		$this->assertSame( 'intent_uuid', $fields[ (int) array_search( 'next_action', $fields, true ) + 1 ], 'The payment follows the next action.' );
+		$this->assertSame( $intent, $this->placement->place( $this->actingInput(), self::guest() )['intent_uuid'], 'A retry is given the payment from the box.' );
+
+		$kept = (string) $this->keptRow( (string) $answer['order_uuid'] );
+
+		$this->assertStringNotContainsString( $intent, $kept, 'The row holds the payment\'s uuid only sealed.' );
+		$this->assertArrayNotHasKey( KeptAnswer::INTENT_UUID, (array) json_decode( $kept, true ), 'The row has no field of its own for it.' );
+
+		// The shopper is back: the resume settles the payment, the box is cleared, and a retry names no payment.
+		$this->kernel->get( ResumePayment::class )->resume( array( 'intent_uuid' => $intent ), self::guest() );
+
+		$replayed = $this->placement->place( $this->actingInput(), self::guest() );
+
+		$this->assertSame( array( 'approved', null, null ), array( $replayed['outcome'], $replayed['next_action'], $replayed['intent_uuid'] ) );
+	}
+
+	/**
+	 * Tests that a placement approved at once names no payment to resume, nor does its retry.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_approved_placement_names_no_payment_to_resume(): void {
+		$this->readyCart( array( $this->sellable() => 1 ) );
+
+		$input  = $this->placeInput( 'attempt-approved' );
+		$answer = $this->placement->place( $input, self::guest() );
+
+		$this->assertSame( array( 'approved', null ), array( $answer['outcome'], $answer['intent_uuid'] ) );
+		$this->assertEquals( $answer, $this->placement->place( $input, self::guest() ), 'The retry is answered the same.' );
 	}
 
 	/**
