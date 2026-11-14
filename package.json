@@ -17,8 +17,8 @@
 		"npm": ">=10"
 	},
 	"scripts": {
-		"build": "wp-scripts build --source-path=assets --output-path=build && node bin/check-asset-budget.js",
-		"start": "wp-scripts start --source-path=assets --output-path=build",
+		"build": "wp-scripts build --source-path=assets --output-path=build --experimental-modules && node bin/check-asset-budget.js",
+		"start": "wp-scripts start --source-path=assets --output-path=build --experimental-modules",
 		"lint": "npm run lint:js && npm run lint:css && npm run format:check",
 		"lint:js": "wp-scripts lint-js .",
 		"lint:css": "wp-scripts lint-style \"assets/**/*.{css,scss}\" --allow-empty-input",
