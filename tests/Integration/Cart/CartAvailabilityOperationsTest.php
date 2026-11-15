@@ -15,7 +15,7 @@ use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Cart\Domain\LineIdentity;
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
-use SEOCart\Checkout\Domain\AddressDocument;
+use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Tests\Support\Cart\ServesStoreApi;
@@ -176,7 +176,7 @@ final class CartAvailabilityOperationsTest extends CheckoutTestCase {
 					CheckoutOperations::ROUTE,
 					array(
 						'cart_version'     => 1,
-						'shipping_address' => AddressDocument::of( self::address( 'GB' ) ),
+						'shipping_address' => self::wireAddress( Carrier::SHIPPING, 'GB' ),
 					)
 				);
 			}

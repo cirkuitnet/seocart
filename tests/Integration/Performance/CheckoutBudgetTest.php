@@ -13,7 +13,7 @@ namespace SEOCart\Tests\Integration\Performance;
 
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
-use SEOCart\Checkout\Domain\AddressDocument;
+use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Tests\Support\Cart\ServesStoreApi;
@@ -99,8 +99,8 @@ final class CheckoutBudgetTest extends CheckoutTestCase {
 					CheckoutOperations::ROUTE,
 					array(
 						'cart_version'     => 1,
-						'billing_address'  => AddressDocument::of( self::address( 'GB', 'ada@example.com' ) ),
-						'shipping_address' => AddressDocument::of( self::address( 'GB' ) ),
+						'billing_address'  => self::wireAddress( Carrier::BILLING, 'GB', 'ada@example.com' ),
+						'shipping_address' => self::wireAddress( Carrier::SHIPPING, 'GB' ),
 					)
 				);
 			}

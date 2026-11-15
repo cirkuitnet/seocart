@@ -83,9 +83,10 @@ final class CheckoutOperationsTest extends TestCase {
 	}
 
 	/**
-	 * Tests the input: the cart's version as every cart write declares it, two addresses of the document's fields, all personal data, and the two methods.
+	 * Tests the input: the cart's version as every cart write declares it, two addresses of the built-in fields each carries, all personal data, and the two methods.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The members are the built-in checkout fields, in form order; the email address is the billing address's alone.
 	 */
 	public function test_the_input_declares_the_addresses_as_personal_data(): void {
 		$fields = self::byName( CheckoutOperations::updateSession()->input() );
@@ -93,12 +94,17 @@ final class CheckoutOperationsTest extends TestCase {
 		$this->assertSame( array( 'cart_version', 'billing_address', 'shipping_address', 'shipping_method_key', 'payment_method_key' ), array_keys( $fields ) );
 		$this->assertEquals( CartOperations::cartVersion( 1 ), $fields['cart_version'] );
 
-		foreach ( array( 'billing_address', 'shipping_address' ) as $name ) {
+		$expected = array(
+			'billing_address'  => array( 'email', 'country', 'first_name', 'last_name', 'company', 'line1', 'line2', 'city', 'region', 'postcode', 'phone', 'tax_id' ),
+			'shipping_address' => array( 'country', 'first_name', 'last_name', 'company', 'line1', 'line2', 'city', 'region', 'postcode', 'phone', 'tax_id' ),
+		);
+
+		foreach ( $expected as $name => $names ) {
 			$address = $fields[ $name ];
 			$members = self::byName( $address->fields() );
 
 			$this->assertSame( array( FieldType::Object, false, false ), array( $address->type(), $address->isRequired(), $address->isNullable() ) );
-			$this->assertSame( array_keys( AddressDocument::FIELDS ), array_keys( $members ) );
+			$this->assertSame( $names, array_keys( $members ) );
 
 			foreach ( $members as $member => $field ) {
 				$this->assertSame( array( FieldType::String, Privacy::Pii, AddressDocument::FIELDS[ $member ] ), array( $field->type(), $field->privacy(), $field->maxLength() ), "{$name}.{$member}" );

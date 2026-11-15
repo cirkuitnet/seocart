@@ -25,9 +25,10 @@ use SEOCart\Checkout\Application\ChangeCartCurrency;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\ResumePayment;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
-use SEOCart\Checkout\Domain\AddressDocument;
 use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Checkout\Domain\CheckoutError;
+use SEOCart\Checkout\Domain\Fields\BuiltInFields;
+use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Domain\PlacementOutcome;
 use SEOCart\Contracts\Payment\GatewayDescriptor;
@@ -223,8 +224,8 @@ final class CheckoutOperations {
 			summary: 'Replaces the checkout details of the request\'s cart, the billing and shipping addresses and the shipping and payment methods, clearing each one the request leaves out; the write moves the cart\'s version on, and the answer carries the session, the new version and the totals, shipping included once a shipping address is set.',
 			input: array(
 				CartOperations::cartVersion( 1 ),
-				self::address( 'billing_address', 'The address the payment is billed to; leave it out to clear it.', static fn(): string => __( 'Billing address', 'seocart' ), false ),
-				self::address( 'shipping_address', 'Where the order ships; the totals charge shipping to it. Leave it out to clear it.', static fn(): string => __( 'Shipping address', 'seocart' ), false ),
+				self::address( Carrier::BILLING, 'The address the payment is billed to, with the shopper\'s email address; leave it out to clear it.', static fn(): string => __( 'Billing address', 'seocart' ), false ),
+				self::address( Carrier::SHIPPING, 'Where the order ships; the totals charge shipping to it. Leave it out to clear it.', static fn(): string => __( 'Shipping address', 'seocart' ), false ),
 				self::shippingMethodKey( false ),
 				self::paymentMethodKey( false ),
 			),
@@ -236,8 +237,8 @@ final class CheckoutOperations {
 						'The checkout details the cart now has.',
 						static fn(): string => __( 'Checkout', 'seocart' ),
 						array(
-							self::address( 'billing_address', 'The address the payment is billed to, or null when none was given.', static fn(): string => __( 'Billing address', 'seocart' ), true ),
-							self::address( 'shipping_address', 'Where the order ships, or null when none was given.', static fn(): string => __( 'Shipping address', 'seocart' ), true ),
+							self::address( Carrier::BILLING, 'The address the payment is billed to, with the shopper\'s email address, or null when none was given.', static fn(): string => __( 'Billing address', 'seocart' ), true ),
+							self::address( Carrier::SHIPPING, 'Where the order ships, or null when none was given.', static fn(): string => __( 'Shipping address', 'seocart' ), true ),
 							self::shippingMethodKey( true ),
 							self::paymentMethodKey( true ),
 						),
@@ -526,11 +527,14 @@ final class CheckoutOperations {
 	}
 
 	/**
-	 * Returns an address field: an object of the address's fields, each personal data.
+	 * Returns an address field: an object of the address's members, compiled from the built-in checkout fields it carries, each personal data.
+	 *
+	 * The billing address carries the email address; the shipping address does not.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Compiled from the built-in checkout fields.
 	 *
-	 * @param string   $name        The wire name.
+	 * @param string   $name        The wire name: Carrier::BILLING or Carrier::SHIPPING.
 	 * @param string   $description The machine description.
 	 * @param \Closure $label       Returns the form label.
 	 * @param bool     $output      True for an answer's address, which is null when none was given;
@@ -540,37 +544,7 @@ final class CheckoutOperations {
 	 * @phpstan-param \Closure(): string $label
 	 */
 	private static function address( string $name, string $description, \Closure $label, bool $output ): FieldSpec {
-		$text = static fn( string $field, string $about, \Closure $fieldLabel, string $example, bool $required = false ): FieldSpec => new FieldSpec(
-			name: $field,
-			type: FieldType::String,
-			description: $about,
-			label: $fieldLabel,
-			example: $example,
-			required: $required,
-			max_length: AddressDocument::FIELDS[ $field ],
-			privacy: Privacy::Pii
-		);
-
-		return FieldSpec::object(
-			$name,
-			$description,
-			$label,
-			array(
-				$text( 'country', 'The ISO 3166-1 alpha-2 country code, two upper-case letters.', static fn(): string => __( 'Country', 'seocart' ), 'GB', true ),
-				$text( 'first_name', 'The given name.', static fn(): string => __( 'First name', 'seocart' ), 'Ada' ),
-				$text( 'last_name', 'The family name.', static fn(): string => __( 'Last name', 'seocart' ), 'Lovelace' ),
-				$text( 'company', 'The company name.', static fn(): string => __( 'Company', 'seocart' ), 'Analytical Engines Ltd' ),
-				$text( 'line1', 'The first address line.', static fn(): string => __( 'Address line 1', 'seocart' ), '12 St James\'s Square' ),
-				$text( 'line2', 'The second address line.', static fn(): string => __( 'Address line 2', 'seocart' ), 'Flat 3' ),
-				$text( 'city', 'The city or town.', static fn(): string => __( 'City', 'seocart' ), 'London' ),
-				$text( 'region', 'The state, province, county or other subdivision.', static fn(): string => __( 'Region', 'seocart' ), 'Greater London' ),
-				$text( 'postcode', 'The postal code.', static fn(): string => __( 'Postcode', 'seocart' ), 'SW1Y 4JH' ),
-				$text( 'phone', 'The phone number.', static fn(): string => __( 'Phone', 'seocart' ), '+44 20 7946 0000' ),
-				$text( 'email', 'The e-mail address.', static fn(): string => __( 'Email address', 'seocart' ), 'ada@example.com' ),
-				$text( 'tax_id', 'The tax identifier, such as a VAT number.', static fn(): string => __( 'Tax ID', 'seocart' ), 'GB000000000' ),
-			),
-			nullable: $output
-		);
+		return FieldSpec::object( $name, $description, $label, BuiltInFields::addressMembers( $name ), nullable: $output );
 	}
 
 	/**

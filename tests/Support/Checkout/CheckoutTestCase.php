@@ -13,6 +13,8 @@ namespace SEOCart\Tests\Support\Checkout;
 
 use SEOCart\Checkout\Application\PlannedPricing;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
+use SEOCart\Checkout\Domain\AddressDocument;
+use SEOCart\Checkout\Domain\Fields\BuiltInFields;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
@@ -20,6 +22,7 @@ use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Support\Address;
+use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Tests\Support\Cart\CartTestCase;
 use SEOCart\Tests\Support\Inventory\StockTables;
 use SEOCart\Tests\Support\Payment\TestGateways;
@@ -117,7 +120,7 @@ abstract class CheckoutTestCase extends CartTestCase {
 	}
 
 	/**
-	 * Builds an address in a country, with a name and a street.
+	 * Builds an address in a country, with a name and a street: every field the checkout requires by default.
 	 *
 	 * @since 0.1.0
 	 *
@@ -127,6 +130,22 @@ abstract class CheckoutTestCase extends CartTestCase {
 	 */
 	protected static function address( string $country, string $email = '' ): Address {
 		return new Address( $country, first_name: 'Ada', last_name: 'Lovelace', line1: '12 St James\'s Square', city: 'London', postcode: 'SW1Y 4JH', email: $email );
+	}
+
+	/**
+	 * Returns address() as a session write sends it for one of the two addresses: the members that address carries, which the built-in fields decide.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $carrier Carrier::BILLING or Carrier::SHIPPING.
+	 * @param string $country The country code.
+	 * @param string $email   Optional. The e-mail address, which only the billing address carries. Default empty.
+	 * @return array<string, string> The address's members, by wire name.
+	 */
+	protected static function wireAddress( string $carrier, string $country, string $email = '' ): array {
+		$members = array_map( static fn( FieldSpec $member ): string => $member->name(), BuiltInFields::addressMembers( $carrier ) );
+
+		return array_intersect_key( AddressDocument::of( self::address( $country, $email ) ), array_flip( $members ) );
 	}
 
 	/**

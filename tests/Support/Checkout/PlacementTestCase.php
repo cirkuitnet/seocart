@@ -18,6 +18,7 @@ use SEOCart\Cart\Domain\CartToken;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
+use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Customer\Infrastructure\Migrations\CreateCustomers;
 use SEOCart\Inventory\Application\InventorySettings;
@@ -493,21 +494,8 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 		$this->checkout->update(
 			array(
 				'cart_version'       => $cart->version,
-				'billing_address'    => array(
-					'country'    => 'US',
-					'first_name' => 'Ada',
-					'last_name'  => 'Lovelace',
-					'line1'      => '1 Main Street',
-					'city'       => 'Austin',
-					'postcode'   => '78701',
-					'email'      => 'ada@example.com',
-				),
-				'shipping_address'   => array(
-					'country'  => 'US',
-					'line1'    => '1 Main Street',
-					'city'     => 'Austin',
-					'postcode' => '78701',
-				),
+				'billing_address'    => self::wireAddress( Carrier::BILLING, 'US', 'ada@example.com' ),
+				'shipping_address'   => self::wireAddress( Carrier::SHIPPING, 'US' ),
 				'payment_method_key' => StubGateway::ID,
 			),
 			self::guest()
@@ -592,22 +580,11 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 	 * @param string $method  The payment method.
 	 */
 	protected function writeCheckout( int $version, string $method ): void {
-		$address = array(
-			'country'  => 'US',
-			'line1'    => '1 Main Street',
-			'city'     => 'Austin',
-			'postcode' => '78701',
-		);
-
 		$this->kernel->get( UpdateCheckoutSession::class )->update(
 			array(
 				'cart_version'       => $version,
-				'billing_address'    => $address + array(
-					'first_name' => 'Ada',
-					'last_name'  => 'Lovelace',
-					'email'      => 'ada@example.com',
-				),
-				'shipping_address'   => $address,
+				'billing_address'    => self::wireAddress( Carrier::BILLING, 'US', 'ada@example.com' ),
+				'shipping_address'   => self::wireAddress( Carrier::SHIPPING, 'US' ),
 				'payment_method_key' => $method,
 			),
 			self::guest()

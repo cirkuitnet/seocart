@@ -13,7 +13,7 @@ namespace SEOCart\Tests\Integration\Checkout;
 
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
-use SEOCart\Checkout\Domain\AddressDocument;
+use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Tests\Support\Cart\ServesStoreApi;
@@ -76,7 +76,7 @@ final class CheckoutOperationsTest extends CheckoutTestCase {
 
 		$body    = array(
 			'cart_version'        => 1,
-			'shipping_address'    => AddressDocument::of( self::address( 'GB' ) ),
+			'shipping_address'    => self::wireAddress( Carrier::SHIPPING, 'GB' ),
 			'shipping_method_key' => 'flat',
 			'payment_method_key'  => 'stub',
 		);
