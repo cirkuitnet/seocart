@@ -13,7 +13,7 @@
  * documentation range in `X-Forwarded-For`, which the site under test trusts from the runner
  * through `SEOCART_TRUSTED_PROXIES` (docs/testing.md).
  *
- * The twenty-three cases:
+ * The twenty-four cases:
  *
  *  1. an island registers once whether its script runs before or after the module; the ready event
  *     fires once; a second island for the same id is refused with a warning;
@@ -62,7 +62,11 @@
  *     under its key, confirming nothing, and hands the order over; never a fresh key for the cart
  *     the order emptied;
  * 23. a placement kept for one shopper is forgotten when another signs in in the same tab: nothing
- *     is sent with its key, and nothing is handed over.
+ *     is sent with its key, and nothing is handed over;
+ * 24. back from the provider's page by the browser's Back, the page restored from the back/forward
+ *     cache resumes the payment it left, and placing again resumes the same payment under the same
+ *     key and places one order. Playwright starts Chromium with that cache off, so the case
+ *     launches a browser of its own with it on.
  *
  * The stand-in answers every step with a redirect to the site's address, and passes its challenge
  * at once when asked again, so the step of a provider's script (`sdk`) is proved by the module's
@@ -102,10 +106,13 @@ import {
 	type RequestLedger,
 } from '../support/payments-page';
 
+/** What the fake island's action() resolves to, or `decline` for an island that takes no step. */
+type FakeIslandAction = 'completed' | 'failed' | 'left' | 'decline';
+
 /** The fake island's options, as fake-island.js reads them. */
 interface FakeIslandOptions {
 	token?: string | string[];
-	action?: 'completed' | 'failed' | 'left' | 'decline';
+	action?: FakeIslandAction | FakeIslandAction[];
 	hold?: boolean;
 	mutate?: boolean;
 }
@@ -122,6 +129,7 @@ interface FakeIslandCall {
 	ctx?: { amountMinor: number; currency: string; cartVersion: number };
 	given?: { billing: unknown };
 	type?: string;
+	url?: string | null;
 	handle?: string | null;
 	resume?: { intentUuid: string; returnUrl: string; billing: unknown };
 	error?: { code: string; message: string };
@@ -131,6 +139,8 @@ declare global {
 	interface Window {
 		__fakeIslandOptions?: FakeIslandOptions;
 		__fakeIsland?: { calls: FakeIslandCall[]; release?: () => void };
+		/** Each showing of the page: whether the browser restored it from its back/forward cache. */
+		__pageShows?: boolean[];
 	}
 }
 
@@ -2206,6 +2216,219 @@ test.describe( 'The payment section, as a guest', () => {
 					params: { force: true, reassign: admin.id },
 				} );
 			}
+		}
+	} );
+
+	test( '(24) back from the provider’s page by the browser’s Back, the page restored from the back/forward cache resumes the payment, and placing again resumes the same payment under the same key and places one order', async ( {
+		browser,
+		launchOptions,
+		headless,
+		pluginBasePath,
+	} ) => {
+		// Playwright starts Chromium with its back/forward cache off, so Back would load the page
+		// again, as case 5's reload does. This browser, launched as the suite's is, has it on.
+		const caching = await browser.browserType().launch( {
+			...launchOptions,
+			headless,
+			ignoreDefaultArgs: [ '--disable-back-forward-cache' ],
+		} );
+
+		try {
+			const context = await caching.newContext( {
+				baseURL: home(),
+				ignoreHTTPSErrors: ignoreHTTPSErrors(),
+				storageState: { cookies: [], origins: [] },
+			} );
+
+			client = await forwardClientAddress( context, home() );
+
+			const page = await context.newPage();
+
+			// The page whose requests a failure prints.
+			ledger = storeRequests( page );
+
+			// Each showing of the page, and whether the browser restored it from its cache: a page
+			// loaded again starts the list again.
+			await page.addInitScript( () => {
+				window.__pageShows = [];
+				window.addEventListener( 'pageshow', ( event ) =>
+					window.__pageShows?.push( event.persisted )
+				);
+			} );
+
+			// What the store answered each placement.
+			const answers: Array< {
+				order_uuid?: string;
+				intent_uuid?: string | null;
+				status?: string;
+				payment_status?: string;
+			} > = [];
+
+			page.on( 'response', async ( response ) => {
+				if (
+					'POST' === response.request().method() &&
+					`${ STORE }/checkout` ===
+						new URL( response.url() ).searchParams.get(
+							'rest_route'
+						)
+				) {
+					answers.push( await response.json() );
+				}
+			} );
+
+			await readyCart( context.request, product.variantId );
+
+			const address = await openPage( page, pluginBasePath, {
+				options: {
+					token: 'stub:requires_action',
+					action: [ 'left', 'completed' ],
+				},
+			} );
+
+			await place( page );
+
+			const [ left ] = ( await islandCalls( page ) ).filter(
+				( call ) => 'action' === call.name
+			);
+			const intentUuid = String( left.resume?.intentUuid );
+
+			expect( intentUuid ).toMatch( UUID );
+			expect( ( await hostState( page ) )?.phase ).toBe( 'acting' );
+			await expect.poll( () => answers.length ).toBe( 1 );
+
+			// The island has said the shopper is leaving: they follow the step to the provider's
+			// page, the site's own address with the uuid, answered here.
+			await page.route(
+				( url ) =>
+					url.href.startsWith( home() ) &&
+					url.searchParams.has( RETURN_ARG ) &&
+					! url.pathname.endsWith( FIXTURE_PATH ),
+				( route ) =>
+					route.fulfill( {
+						contentType: 'text/html; charset=utf-8',
+						body: '<!doctype html><title>The provider</title>',
+					} )
+			);
+			await page.evaluate(
+				( url ) => window.location.assign( url ),
+				String( left.url )
+			);
+			await page.waitForURL(
+				( url ) =>
+					url.searchParams.has( RETURN_ARG ) &&
+					! url.pathname.endsWith( FIXTURE_PATH )
+			);
+
+			// The shopper did not finish at the provider, and the store's resume says so. The
+			// stand-in passes its challenge as soon as it is asked, so that one answer is given here,
+			// with the statuses the store gave the placement.
+			await page.route(
+				( url ) =>
+					`${ STORE }/checkout/resume` ===
+					new URL( url ).searchParams.get( 'rest_route' ),
+				( route: Route ) =>
+					route.fulfill( {
+						json: {
+							intent_uuid: intentUuid,
+							outcome: 'requires_action',
+							status: answers[ 0 ].status,
+							payment_status: answers[ 0 ].payment_status,
+						},
+					} ),
+				{ times: 1 }
+			);
+
+			// Back: the browser restores the checkout from its cache, as the shopper left it.
+			await page.goBack( { waitUntil: 'commit' } );
+			await expect
+				.poll( () => page.evaluate( () => window.__pageShows ), {
+					message:
+						'The checkout was restored from the back/forward cache, not loaded again.',
+				} )
+				.toEqual( [ false, true ] );
+			await expect
+				.poll( async () => ( await hostState( page ) )?.error )
+				.toEqual( { code: 'action_incomplete' } );
+
+			expect( page.url() ).toBe( address );
+			expect( await keptPlacement( page ) ).toMatchObject( {
+				intentUuid,
+			} );
+
+			// Place is live: one press takes the same step again, the island completes it, and the
+			// store's resume approves the payment.
+			await page.getByRole( 'button', { name: 'Place order' } ).click();
+
+			const order = await awaitPlaced( page );
+
+			expect( order ).toMatchObject( {
+				outcome: 'approved',
+				status: 'processing',
+				paymentStatus: 'authorized',
+				intentUuid,
+			} );
+			expect( order.orderKey ).toEqual( expect.any( String ) );
+			expect( await page.evaluate( () => window.__pageShows ) ).toEqual( [
+				false,
+				true,
+			] );
+
+			// The same payment under the same key throughout, and one order: the store answered the
+			// second placement with the order the first one placed.
+			const writes = hostWrites( ledger );
+
+			expect( writes.map( ( [ route ] ) => route ) ).toEqual( [
+				`${ STORE }/checkout`,
+				`${ STORE }/checkout/resume`,
+				`${ STORE }/checkout`,
+				`${ STORE }/checkout/resume`,
+			] );
+			expect( writes[ 0 ][ 1 ] ).toMatch( UUID );
+			expect( writes[ 2 ][ 1 ] ).toBe( writes[ 0 ][ 1 ] );
+			expect(
+				ledger.store
+					.filter(
+						( entry ) =>
+							`${ STORE }/checkout/resume` === entry.route
+					)
+					.map( ( entry ) => JSON.parse( entry.body ).intent_uuid )
+			).toEqual( [ intentUuid, intentUuid ] );
+			await expect.poll( () => answers.length ).toBe( 2 );
+			expect(
+				answers.map( ( answer ) => [
+					answer.order_uuid,
+					answer.intent_uuid,
+				] )
+			).toEqual( [
+				[ order.orderUuid, intentUuid ],
+				[ order.orderUuid, intentUuid ],
+			] );
+
+			// The island that left was mounted again with the page restored, and took the step again.
+			expect( await callNames( page ) ).toEqual( [
+				'mount',
+				'confirm',
+				'action',
+				'unmount',
+				'mount',
+				'confirm',
+				'action',
+			] );
+			expect(
+				( await islandCalls( page ) )
+					.filter( ( call ) => 'action' === call.name )
+					.map( ( call ) => call.resume?.intentUuid )
+			).toEqual( [ intentUuid, intentUuid ] );
+			expect( await placedOrders( page ) ).toHaveLength( 1 );
+			expect( await keptPlacement( page ) ).toBeNull();
+			await expectOnlyHostWrites( page, ledger );
+			expectNoSecretInUrls(
+				ledger,
+				[ String( order.orderKey ) ],
+				[ String( left.resume?.returnUrl ) ]
+			);
+		} finally {
+			await caching.close();
 		}
 	} );
 } );
