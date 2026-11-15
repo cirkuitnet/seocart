@@ -149,9 +149,8 @@ The billing address is not part of the context: it may change while the island s
 `confirm()` and `action()` are handed it as it is at each call.
 
 The host mounts the island again, `unmount()` then `mount()` with a new context, when the amount,
-the currency, the gateway, the mode or a setting changes, and when the browser restores the page
-in the provider's step (see [A page loaded again](#a-page-loaded-again)); never when only the
-cart's version or the billing address moves, since mounting again empties the form.
+the currency, the gateway, the mode or a setting changes; never when only the cart's version or
+the billing address moves, since mounting again empties the form.
 Whatever an earlier mount was still doing is then discarded, so an island never confirms an amount
 the shopper no longer sees. While the order is being placed, a cart that changes waits until the
 host is idle again.
@@ -247,11 +246,13 @@ island's form is empty then, and a step the shopper did not ask for is not taken
   way: the placement is kept and nothing is sent, and the next placement confirms and sends its
   key, which either places for the first time or is answered the order the earlier request placed.
 
-A page the browser restores from its back/forward cache, as the shopper left it, is taken as a
-page loaded again when the host was in the provider's step: the island answered `left`, the host
-sent the shopper to `next_action.url`, or the shopper left while the step was under way. The island
-is mounted again, its form empty and any work of the step abandoned, and the host resumes the
-payment the tab kept, as above. Restored at any other point, the page carries on as it was left.
+A page restored by Back from the browser's back/forward cache while a payment is open is loaded
+again: when the host was in the provider's step (the island answered `left`, the host sent the
+shopper to `next_action.url`, or the shopper left while the step was under way), or at rest with a
+payment the tab still keeps open. A restored page still holds what it held when it was left, the
+shopper it was made for and their nonce among it; loaded again, its island is mounted fresh, as on
+any load, and the host settles what the tab keeps, as above. Restored at any other point, the page
+carries on as it was left: the shopper keeps what they typed, and a request under way is answered.
 
 ## The configuration
 
