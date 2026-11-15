@@ -22,8 +22,11 @@ use SEOCart\Tests\Support\Order\StoreOrderSurfaces;
  * without the five cases run on it, or a reason it is the cart's. One that left the registry fails
  * too, so the lists never name what no longer exists.
  *
- * Planted violation: remove `order.list_own` from StoreOrderSurfaces::FIVE_CASES. The list, which
- * answers orders' uuids, is then on neither list, and the test names it.
+ * Planted violations, each shown red and removed: remove `order.list_own` from
+ * StoreOrderSurfaces::FIVE_CASES: the list, which answers orders' uuids, is then on neither list,
+ * and the test names it; in StoreOrderSurfaces::namesAnOrder(), drop the reading of the declared
+ * errors: the currency switch and the resume, whose refusals name an order, are found nowhere,
+ * and the second test names them.
  *
  * @since 0.2.0
  */
@@ -53,6 +56,8 @@ final class StoreOrderSurfacesTest extends TestCase {
 
 		$this->assertContains( 'order.get_status', $found );
 		$this->assertContains( 'checkout.place_order', $found, 'The placement answers an order_uuid.' );
+		$this->assertContains( 'checkout.change_currency', $found, 'Its refusal cart.not_open may carry an order_uuid.' );
+		$this->assertContains( 'checkout.resume_payment', $found, 'Its refusal checkout.gateway_unavailable carries an order_uuid.' );
 		$this->assertNotContains( 'catalog.list_products', $found );
 	}
 }
