@@ -20,6 +20,7 @@ use SEOCart\Order\Domain\LineOption;
 use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\OrderStockLines;
 use SEOCart\Order\Domain\PaymentStatus;
+use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
@@ -84,7 +85,7 @@ final class OrderReadsTest extends OrderTestCase {
 	 */
 	public function test_an_orders_stock_lines_and_status_are_read_by_its_id(): void {
 		$context  = NewOrders::context( Currency::of( 'USD' ), Currency::of( 'USD' ) );
-		$inserted = $this->place( NewOrders::document( $context, array_reverse( NewOrders::lines( $context ) ), NewOrders::adjustments( $context ), NewOrders::totals( $context ) ) );
+		$inserted = $this->place( NewOrders::document( $context, array_reverse( NewOrders::lines( $context ) ), NewOrders::adjustments( $context ), NewOrders::totals( $context ), 31 ), Actor::user( 7 ) );
 		$lines    = array();
 		$status   = null;
 		$log      = $this->captureQueries(
@@ -102,6 +103,8 @@ final class OrderReadsTest extends OrderTestCase {
 				'status'              => OrderStatus::PendingPayment,
 				'payment_status'      => PaymentStatus::Unpaid,
 				'money_reconciled_at' => null,
+				'customer_id'         => 31,
+				'actor_id'            => 7,
 			),
 			$status
 		);
