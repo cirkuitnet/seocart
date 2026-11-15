@@ -64,10 +64,11 @@
  * 23. a placement kept for one shopper is forgotten when another signs in in the same tab: nothing
  *     is sent with its key, and nothing is handed over;
  * 24. back from the provider's page by the browser's Back, the page restored from the back/forward
- *     cache resumes the payment it left, and placing again resumes the same payment under the same
- *     key and places one order. Playwright starts Chromium with that cache off, and headless as its
- *     headless shell, which loads the page again on Back; so the case launches a browser of its
- *     own, the full Chromium build in its new headless mode, with the cache on.
+ *     cache is loaded again by the host and resumes the payment it left, and placing again resumes
+ *     the same payment under the same key and places one order. Playwright starts Chromium with
+ *     that cache off, and headless as its headless shell, which loads the page again on Back; so
+ *     the case launches a browser of its own, the full Chromium build in its new headless mode,
+ *     with the cache on.
  *
  * The stand-in answers every step with a redirect to the site's address, and passes its challenge
  * at once when asked again, so the step of a provider's script (`sdk`) is proved by the module's
@@ -107,13 +108,10 @@ import {
 	type RequestLedger,
 } from '../support/payments-page';
 
-/** What the fake island's action() resolves to, or `decline` for an island that takes no step. */
-type FakeIslandAction = 'completed' | 'failed' | 'left' | 'decline';
-
 /** The fake island's options, as fake-island.js reads them. */
 interface FakeIslandOptions {
 	token?: string | string[];
-	action?: FakeIslandAction | FakeIslandAction[];
+	action?: 'completed' | 'failed' | 'left' | 'decline';
 	hold?: boolean;
 	mutate?: boolean;
 }
@@ -140,8 +138,6 @@ declare global {
 	interface Window {
 		__fakeIslandOptions?: FakeIslandOptions;
 		__fakeIsland?: { calls: FakeIslandCall[]; release?: () => void };
-		/** Each showing of the page: whether the browser restored it from its back/forward cache. */
-		__pageShows?: boolean[];
 	}
 }
 
@@ -162,6 +158,9 @@ const RETURN_ARG = 'seocart_payment';
 
 /** The `sessionStorage` item the host keeps a placement in. */
 const KEPT = 'seocart:placement';
+
+/** The `sessionStorage` item case 24 records each showing of the checkout in. */
+const SHOWN = 'seocart-fixture:checkout-shown';
 
 /** The stand-in's webhook signing secret: a published constant, since the stand-in moves no money. */
 const STUB_WEBHOOK_SECRET = 'stub-webhook-signing-secret';
@@ -636,6 +635,25 @@ async function keptPlacement(
 			KEPT
 		) ) ?? 'null'
 	);
+}
+
+/**
+ * Returns the showings of the checkout the tab recorded, in order (case 24), or null while the page
+ * is being loaded again and cannot be read.
+ *
+ * @param page The page.
+ */
+async function checkoutShown( page: Page ): Promise< string[] | null > {
+	try {
+		return JSON.parse(
+			( await page.evaluate(
+				( item ) => window.sessionStorage.getItem( item ),
+				SHOWN
+			) ) ?? '[]'
+		);
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -2253,14 +2271,42 @@ test.describe( 'The payment section, as a guest', () => {
 			// The page whose requests a failure prints.
 			ledger = storeRequests( page );
 
-			// Each showing of the page, and whether the browser restored it from its cache: a page
-			// loaded again starts the list again.
-			await page.addInitScript( () => {
-				window.__pageShows = [];
-				window.addEventListener( 'pageshow', ( event ) =>
-					window.__pageShows?.push( event.persisted )
-				);
-			} );
+			// Each showing of the checkout, kept in the tab's storage so that it outlives a load:
+			// `restored` from the browser's cache, or `loaded` by a navigation of a type, with the
+			// browser's reasons when Back loaded it instead of restoring it.
+			await page.addInitScript( ( item ) => {
+				window.addEventListener( 'pageshow', ( event ) => {
+					if ( ! document.querySelector( '.seocart-payments' ) ) {
+						return;
+					}
+
+					const navigation = performance.getEntriesByType(
+						'navigation'
+					)[ 0 ] as PerformanceNavigationTiming & {
+						notRestoredReasons?: unknown;
+					};
+					const shown = JSON.parse(
+						window.sessionStorage.getItem( item ) ?? '[]'
+					);
+
+					shown.push(
+						event.persisted
+							? 'restored'
+							: `loaded ${ navigation?.type }${
+									'back_forward' === navigation?.type
+										? ` ${ JSON.stringify(
+												navigation.notRestoredReasons ??
+													null
+											) }`
+										: ''
+								}`
+					);
+					window.sessionStorage.setItem(
+						item,
+						JSON.stringify( shown )
+					);
+				} );
+			}, SHOWN );
 
 			// What the store answered each placement.
 			const answers: Array< {
@@ -2285,10 +2331,7 @@ test.describe( 'The payment section, as a guest', () => {
 			await readyCart( context.request, product.variantId );
 
 			const address = await openPage( page, pluginBasePath, {
-				options: {
-					token: 'stub:requires_action',
-					action: [ 'left', 'completed' ],
-				},
+				options: { token: 'stub:requires_action', action: 'left' },
 			} );
 
 			await place( page );
@@ -2344,31 +2387,24 @@ test.describe( 'The payment section, as a guest', () => {
 				{ times: 1 }
 			);
 
-			// Back: the browser restores the checkout from its cache, as the shopper left it. A page
-			// loaded again instead shows the browser's own reasons for not restoring it.
+			// Loaded again, the page's island takes the step to its end when the shopper places again.
+			await page.addInitScript( () => {
+				window.__fakeIslandOptions = {
+					token: 'stub:requires_action',
+					action: 'completed',
+				};
+			} );
+
+			// Back: the browser restores the checkout from its cache, as the shopper left it, and the
+			// host, in the step, loads it again. A Back that only loads the page shows it once.
 			await page.goBack( { waitUntil: 'commit' } );
 			await expect
-				.poll(
-					() =>
-						page.evaluate( () => ( {
-							shows: window.__pageShows,
-							notRestoredReasons: JSON.stringify(
-								(
-									performance.getEntriesByType(
-										'navigation'
-									)[ 0 ] as { notRestoredReasons?: unknown }
-								 )?.notRestoredReasons ?? null
-							),
-						} ) ),
-					{
-						message:
-							'The checkout was restored from the back/forward cache, not loaded again.',
-					}
-				)
-				.toEqual( {
-					shows: [ false, true ],
-					notRestoredReasons: 'null',
-				} );
+				.poll( () => checkoutShown( page ), {
+					message:
+						'Back restored the checkout from the back/forward cache, and the host loaded it again.',
+				} )
+				.toEqual( [ 'loaded navigate', 'restored', 'loaded reload' ] );
+			await waitForHost( page );
 			await expect
 				.poll( async () => ( await hostState( page ) )?.error )
 				.toEqual( { code: 'action_incomplete' } );
@@ -2391,9 +2427,10 @@ test.describe( 'The payment section, as a guest', () => {
 				intentUuid,
 			} );
 			expect( order.orderKey ).toEqual( expect.any( String ) );
-			expect( await page.evaluate( () => window.__pageShows ) ).toEqual( [
-				false,
-				true,
+			expect( await checkoutShown( page ) ).toEqual( [
+				'loaded navigate',
+				'restored',
+				'loaded reload',
 			] );
 
 			// The same payment under the same key throughout, and one order: the store answered the
@@ -2427,12 +2464,8 @@ test.describe( 'The payment section, as a guest', () => {
 				[ order.orderUuid, intentUuid ],
 			] );
 
-			// The island that left was mounted again with the page restored, and took the step again.
+			// The page loaded again mounted its island afresh, which took the same step.
 			expect( await callNames( page ) ).toEqual( [
-				'mount',
-				'confirm',
-				'action',
-				'unmount',
 				'mount',
 				'confirm',
 				'action',
@@ -2441,7 +2474,7 @@ test.describe( 'The payment section, as a guest', () => {
 				( await islandCalls( page ) )
 					.filter( ( call ) => 'action' === call.name )
 					.map( ( call ) => call.resume?.intentUuid )
-			).toEqual( [ intentUuid, intentUuid ] );
+			).toEqual( [ intentUuid ] );
 			expect( await placedOrders( page ) ).toHaveLength( 1 );
 			expect( await keptPlacement( page ) ).toBeNull();
 			await expectOnlyHostWrites( page, ledger );

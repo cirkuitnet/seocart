@@ -9,8 +9,8 @@
  * - `id` and `contractVersion`: what it registers as; `stub` and `0.1.0` by default;
  * - `token`: the payment token confirm() returns, such as `stub:approve`, `stub:decline` or
  *   `stub:requires_action`; a list gives one token per confirmation, the last repeating;
- * - `action`: what action() resolves to, `completed`, `failed` or `left`; a list gives one per step,
- *   the last repeating; `decline` registers an island that takes no step, so the host takes it;
+ * - `action`: what action() resolves to, `completed`, `failed` or `left`; `decline` registers an
+ *   island that takes no step, so the host takes it;
  * - `hold`: action() waits until the test calls `window.__fakeIsland.release()`;
  * - `mutate`: mount() writes to the cart, as an island must never do;
  * - `delay`: how long confirm() takes, in milliseconds.
@@ -32,7 +32,6 @@
 		window.__fakeIslandOptions || {}
 	);
 	const tokens = [].concat( options.token );
-	const actions = [].concat( options.action );
 	const record = ( window.__fakeIsland = window.__fakeIsland || {
 		calls: [],
 	} );
@@ -85,7 +84,7 @@
 	} ).register( {
 		id: options.id,
 		contractVersion: options.contractVersion,
-		supports: { action: 'decline' !== actions[ 0 ] },
+		supports: { action: 'decline' !== options.action },
 		canMakePayment: () => true,
 		mount( el, ctx ) {
 			const field = `fake-island-token-${ ++mounts }`;
@@ -140,7 +139,7 @@
 						} );
 					}
 
-					return actions.length > 1 ? actions.shift() : actions[ 0 ];
+					return options.action;
 				},
 				showError( error ) {
 					const notice = element(
