@@ -28,8 +28,9 @@ defined( 'ABSPATH' ) || exit;
  * its link until something unlinks it. The linked records are read a page at a time, and each
  * page's users are asked of WordPress by their ids, never joined to the users table, which a
  * network or a split database may keep elsewhere. It fails while any is found, so that `--repair`
- * reaches it; the repair unlinks each record through Customers::unlink(), which keeps the record
- * and its orders and only empties the link.
+ * reaches it; the repair reads those users again and unlinks only the links still stale, each by
+ * a conditional update that holds the link as judged, which keeps the record and its orders and
+ * only empties the link.
  *
  * @since 0.2.0
  */
@@ -81,11 +82,11 @@ final class StaleLinksCheck implements Repairable {
 	private \Closure $registrations;
 
 	/**
-	 * The records the last run() found stale, for repair() to unlink.
+	 * The links the last run() found stale, as it read them, for repair() to judge again and unlink.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @var list<int>
+	 * @var list<CustomerLink>
 	 */
 	private array $found = array();
 
@@ -95,7 +96,7 @@ final class StaleLinksCheck implements Repairable {
 	 * @since 0.2.0
 	 *
 	 * @param CustomerRepository $records       The records.
-	 * @param Customers          $customers     Unlinks a record.
+	 * @param Customers          $customers     Unlinks a stale link.
 	 * @param \Closure           $registrations Returns when each of some users registered, by id, for the users that exist.
 	 *
 	 * @phpstan-param \Closure(list<int>): array<int, string> $registrations
@@ -154,7 +155,11 @@ final class StaleLinksCheck implements Repairable {
 	}
 
 	/**
-	 * Unlinks each record run() found stale.
+	 * Unlinks each link run() found stale that is still stale: its users are read again, and a link is unlinked only while it holds the user's id and registration time run() judged.
+	 *
+	 * A user restored, or registered again at the time the link holds, since run() read them, is
+	 * the record's customer again, and their link stays. Each unlink is one conditional update
+	 * whose `WHERE` holds the link exactly as judged, so a link changed since is left alone.
 	 *
 	 * @since 0.2.0
 	 *
@@ -163,9 +168,9 @@ final class StaleLinksCheck implements Repairable {
 	public function repair(): RepairResult {
 		$changes = array();
 
-		foreach ( $this->found as $customerId ) {
-			if ( $this->customers->unlink( $customerId ) ) {
-				$changes[] = sprintf( 'unlinked customer record %d from its user.', $customerId );
+		foreach ( $this->staleOf( $this->found ) as $link ) {
+			if ( $this->customers->unlinkStale( $link ) ) {
+				$changes[] = sprintf( 'unlinked customer record %d from its user.', $link->customerId );
 			}
 		}
 
@@ -173,22 +178,26 @@ final class StaleLinksCheck implements Repairable {
 	}
 
 	/**
-	 * Returns the records of a page whose user is gone or registered at another time.
+	 * Returns the links whose user is gone or registered at another time, its users read from WordPress now.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param CustomerLink[] $page The linked records.
-	 * @return list<int> The stale records' ids.
+	 * @param CustomerLink[] $links The linked records.
+	 * @return list<CustomerLink> The stale links.
 	 *
-	 * @phpstan-param list<CustomerLink> $page
+	 * @phpstan-param list<CustomerLink> $links
 	 */
-	private function staleOf( array $page ): array {
-		$registered = ( $this->registrations )( array_values( array_unique( array_map( static fn( CustomerLink $link ): int => $link->userId, $page ) ) ) );
+	private function staleOf( array $links ): array {
+		if ( array() === $links ) {
+			return array();
+		}
+
+		$registered = ( $this->registrations )( array_values( array_unique( array_map( static fn( CustomerLink $link ): int => $link->userId, $links ) ) ) );
 		$stale      = array();
 
-		foreach ( $page as $link ) {
+		foreach ( $links as $link ) {
 			if ( ! isset( $registered[ $link->userId ] ) || ! $link->matches( $registered[ $link->userId ] ) ) {
-				$stale[] = $link->customerId;
+				$stale[] = $link;
 			}
 		}
 

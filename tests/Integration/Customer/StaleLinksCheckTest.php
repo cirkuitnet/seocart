@@ -11,8 +11,10 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Customer;
 
+use SEOCart\Customer\Application\Customers;
 use SEOCart\Customer\Infrastructure\CustomerTables;
 use SEOCart\Customer\Infrastructure\Doctor\StaleLinksCheck;
+use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Cli\Doctor\Doctor;
 use SEOCart\Platform\Kernel\Container;
 use SEOCart\Tests\Support\CreatesUsers;
@@ -131,6 +133,40 @@ final class StaleLinksCheckTest extends DatabaseTestCase {
 			'The repair keeps every record, and unlinks the stale ones alone.'
 		);
 		$this->assertTrue( $this->check()->run()->passed, 'Nothing is stale after the repair.' );
+	}
+
+	/**
+	 * Tests that a link whose user is registered again at the time it holds, between the check and its repair, is left linked: the repair judges again, and the customer still reads their order.
+	 *
+	 * Planted violation: in StaleLinksCheck::repair(), unlink each record run() found by its id
+	 * alone, through Customers::unlink(): the live link is unlinked, and the customer's order is
+	 * refused to them.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_link_that_is_true_again_before_the_repair_stays(): void {
+		$user   = $this->createUser( 'subscriber' );
+		$record = $this->plantCustomer( $user, '2001-02-03 04:05:06' );
+		$check  = $this->check();
+
+		$this->assertFalse( $check->run()->passed, 'The link is stale when the check runs.' );
+
+		// The user's registration time comes back to the one the link holds, as a restored user's does.
+		$this->db->execute( 'UPDATE %i SET user_registered = %s WHERE ID = %d', $GLOBALS['wpdb']->users, '2001-02-03 04:05:06', $user );
+		clean_user_cache( $user );
+
+		$repair = $check->repair();
+
+		$this->assertSame( array(), $repair->changes, 'The repair unlinked a link that is true again.' );
+		$this->assertSame(
+			array(
+				'user_id'            => $user,
+				'user_registered_at' => '2001-02-03 04:05:06',
+			),
+			$this->customerRows()[ $record ] ?? null
+		);
+		$this->assertSame( $record, $this->kernel->get( Customers::class )->customerOf( Actor::user( $user ) ), 'The user is the record\'s customer.' );
+		$this->assertTrue( $this->check()->run()->passed );
 	}
 
 	/**

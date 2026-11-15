@@ -63,11 +63,9 @@ interface CustomerRepository {
 	public function unlink( int $customerId ): bool;
 
 	/**
-	 * Empties a record's link while it still names a user at a registration time. One conditional update, inside the caller's transaction.
+	 * Empties a record's link while it still names a user at a registration time. One conditional update, whose `WHERE` holds the link as read.
 	 *
 	 * @since 0.2.0
-	 *
-	 * @throws \LogicException Outside a transaction.
 	 *
 	 * @param CustomerLink $link The link as read.
 	 * @return bool True when the record still had that link and no longer has it.

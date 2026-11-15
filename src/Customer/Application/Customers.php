@@ -147,9 +147,23 @@ final class Customers implements ActorCustomers {
 	}
 
 	/**
+	 * Unlinks a record from a user while it still holds the link as read: one conditional update, which leaves a link changed since alone.
+	 *
+	 * Doctor's repair calls it for a link it found stale, and found still stale.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CustomerLink $link The link as judged stale.
+	 * @return bool True when the record still had that link and no longer has it.
+	 */
+	public function unlinkStale( CustomerLink $link ): bool {
+		return $this->records->unlinkStale( $link );
+	}
+
+	/**
 	 * Unlinks a record from the user it names, whoever that is: the record stays, and its orders keep naming it, but nobody is its customer any more.
 	 *
-	 * Doctor's repair calls it for a link to a user who is gone, and an erasure for the person's own.
+	 * An erasure calls it for the person's own record.
 	 *
 	 * @since 0.2.0
 	 *

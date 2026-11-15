@@ -64,7 +64,7 @@ final class MysqlCustomerRepository implements CustomerRepository {
 	 *
 	 * @var string
 	 */
-	public const UNLINK_STALE = 'UPDATE %i SET user_id = NULL, user_registered_at = NULL, updated_at = UTC_TIMESTAMP(6) WHERE id = %d AND user_id = %d AND user_registered_at = %s';
+	public const UNLINK_STALE = "UPDATE %i SET user_id = NULL, user_registered_at = NULL, updated_at = UTC_TIMESTAMP(6) WHERE id = %d AND user_id = %d AND user_registered_at <=> NULLIF( %s, '' )";
 
 	/**
 	 * A page of the linked records, in id order, by the primary key.
@@ -148,19 +148,15 @@ final class MysqlCustomerRepository implements CustomerRepository {
 	}
 
 	/**
-	 * Empties a record's link while it still names a user at a registration time.
+	 * Empties a record's link while it still names a user at a registration time: a link with no time is matched as having none.
 	 *
 	 * @since 0.2.0
-	 *
-	 * @throws \LogicException Outside a transaction.
 	 *
 	 * @param CustomerLink $link The link as read.
 	 * @return bool True when the record still had that link and no longer has it.
 	 */
 	public function unlinkStale( CustomerLink $link ): bool {
-		$this->requireTransaction( __FUNCTION__ );
-
-		return 1 === $this->db->execute( self::UNLINK_STALE, $this->table(), $link->customerId, $link->userId, $link->registeredAt );
+		return 1 === $this->db->execute( self::UNLINK_STALE, $this->table(), $link->customerId, $link->userId, $link->registeredAt ?? '' );
 	}
 
 	/**
