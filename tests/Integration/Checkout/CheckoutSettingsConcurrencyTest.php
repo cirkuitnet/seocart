@@ -168,7 +168,7 @@ final class CheckoutSettingsConcurrencyTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Has B commit a value of the option just before each of A's compare-and-swap statements, up to a number of times.
+	 * Has B commit a value of the option just before each of A's writes of it, up to a number of times.
 	 *
 	 * @since 0.2.0
 	 *
@@ -186,7 +186,8 @@ final class CheckoutSettingsConcurrencyTest extends DatabaseTestCase {
 		add_filter(
 			'query',
 			function ( string $query ) use ( $b, $values, $times, $wpdb ): string {
-				if ( $this->wins >= $times || ! str_starts_with( $query, 'UPDATE ' ) || ! str_contains( $query, self::OPTION ) ) {
+				// A's write of the option, whichever statement it is: the compare-and-swap, or any other write.
+				if ( $this->wins >= $times || 1 !== preg_match( '/^(UPDATE|INSERT) /', $query ) || ! str_contains( $query, self::OPTION ) ) {
 					return $query;
 				}
 
