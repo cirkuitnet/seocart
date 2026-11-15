@@ -258,8 +258,12 @@ async function signIn(
 	password: string
 ): Promise< string > {
 	await page.goto( `${ home() }wp-login.php` );
+	// The login page moves the focus to the user name a moment after it loads, selecting what it
+	// holds: typed before then, the password can land in the user name. Wait for it, then check.
+	await expect( page.locator( '#user_login' ) ).toBeFocused();
 	await page.locator( '#user_login' ).fill( login );
 	await page.locator( '#user_pass' ).fill( password );
+	await expect( page.locator( '#user_login' ) ).toHaveValue( login );
 	await Promise.all( [
 		page.waitForURL( /\/wp-admin\// ),
 		page.locator( '#wp-submit' ).click(),
