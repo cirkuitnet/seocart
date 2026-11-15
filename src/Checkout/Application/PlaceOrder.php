@@ -305,7 +305,7 @@ final class PlaceOrder {
 			return $kept;
 		}
 
-		$cart = $this->openCart( (int) $input['cart_version'] );
+		$cart = $this->openCart( (int) $input['cart_version'], $actor );
 
 		$this->refuseAfterDeclines( $token );
 
@@ -612,14 +612,15 @@ final class PlaceOrder {
 	 *                        `cart.version_stale`, with the cart's version and totals now;
 	 *                        `checkout.cart_empty`.
 	 *
-	 * @param int $expectedVersion The version the client based the placement on.
+	 * @param int   $expectedVersion The version the client based the placement on.
+	 * @param Actor $actor           Who places, whom a refusal names the order to when they may read it.
 	 * @return Cart The cart, with its lines.
 	 */
-	private function openCart( int $expectedVersion ): Cart {
+	private function openCart( int $expectedVersion, Actor $actor ): Cart {
 		$cart = $this->carts->current() ?? CodedException::raise( CartError::NotFound );
 
 		if ( CartStatus::Open !== $cart->status ) {
-			$this->refuseNotOpen( $cart );
+			$this->refuseNotOpen( $cart, $actor );
 		}
 
 		if ( $expectedVersion !== $cart->version ) {
@@ -795,7 +796,7 @@ final class PlaceOrder {
 		$cart = CartError::NotOpen === $refused->errorCode() ? $this->carts->current() : null;
 
 		if ( null !== $cart && CartStatus::Open !== $cart->status ) {
-			$this->refuseNotOpen( $cart );
+			$this->refuseNotOpen( $cart, $actor );
 		}
 
 		throw $refused;
@@ -888,17 +889,19 @@ final class PlaceOrder {
 	}
 
 	/**
-	 * Refuses a write to a cart that is placing or has placed an order, naming the order and its status.
+	 * Refuses a write to a cart that is placing or has placed an order, naming the order and its status to a requester who may read it.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Takes the requester.
 	 *
 	 * @throws CodedException Always: `cart.not_open`.
 	 *
-	 * @param Cart $cart The cart.
+	 * @param Cart  $cart  The cart.
+	 * @param Actor $actor Who sent the request.
 	 * @return never
 	 */
-	private function refuseNotOpen( Cart $cart ): never {
-		NotOpenCart::refuse( $cart, $this->orders );
+	private function refuseNotOpen( Cart $cart, Actor $actor ): never {
+		NotOpenCart::refuse( $cart, $this->orders, $actor, $this->customers );
 	}
 
 	/**

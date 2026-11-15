@@ -1487,7 +1487,7 @@ final class Modules {
 		$container->bind( IdempotencyKeys::class, static fn( Container $c ): IdempotencyKeys => $c->get( MysqlIdempotencyKeys::class ) );
 		$container->bind( PlannedPricing::class, static fn( Container $c ): PlannedPricing => new PlannedPricing( static fn( array $variantIds ): int => $c->get( StockService::class )->reclaimExpiredOf( $variantIds ) ) );
 		$container->bind( UpdateCheckoutSession::class, static fn( Container $c ): UpdateCheckoutSession => new UpdateCheckoutSession( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( Gateways::class ), $c->get( PlannedPricing::class ) ) );
-		$container->bind( ChangeCartCurrency::class, static fn( Container $c ): ChangeCartCurrency => new ChangeCartCurrency( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( PresentmentCurrencies::class ), $c->get( Orders::class ), self::baseCurrency( $c ) ) );
+		$container->bind( ChangeCartCurrency::class, static fn( Container $c ): ChangeCartCurrency => new ChangeCartCurrency( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( PresentmentCurrencies::class ), $c->get( Orders::class ), self::baseCurrency( $c ), $c->get( ActorCustomers::class ) ) );
 		$container->bind(
 			SettlePlacement::class,
 			static fn( Container $c ): SettlePlacement => new SettlePlacement(

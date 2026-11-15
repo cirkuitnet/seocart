@@ -515,7 +515,7 @@ final class MysqlOrderRepository implements OrderRepository {
 	 *
 	 * @var string
 	 */
-	public const STATUS_OF = 'SELECT uuid, status, payment_status, money_reconciled_at FROM {orders} WHERE id = %d';
+	public const STATUS_OF = 'SELECT uuid, status, payment_status, money_reconciled_at, customer_id, actor_id FROM {orders} WHERE id = %d';
 
 	/**
 	 * Whether any order is fulfilled from a location, on the `fulfilment_location` key: what a location's deletion asks.
@@ -1573,8 +1573,9 @@ final class MysqlOrderRepository implements OrderRepository {
 	 * @since 0.2.0 Reads the payment status and the clearance too.
 	 *
 	 * @param int $orderId The order's internal id.
-	 * @return array{uuid: string, status: OrderStatus, payment_status: PaymentStatus, money_reconciled_at: string|null}|null
-	 *         The four, the clearance UTC to the microsecond or null for never; null when there is no such order.
+	 * @return array{uuid: string, status: OrderStatus, payment_status: PaymentStatus, money_reconciled_at: string|null, customer_id: int|null, actor_id: int|null}|null
+	 *         The six: the clearance UTC to the microsecond or null for never, the customer record and the user who placed it
+	 *         or null for none; null when there is no such order.
 	 */
 	public function statusOf( int $orderId ): ?array {
 		$row = $this->statements->rows( self::STATUS_OF, $orderId )[0] ?? null;
@@ -1584,6 +1585,8 @@ final class MysqlOrderRepository implements OrderRepository {
 			'status'              => OrderStatus::from( (string) $row['status'] ),
 			'payment_status'      => PaymentStatus::from( (string) $row['payment_status'] ),
 			'money_reconciled_at' => null === $row['money_reconciled_at'] ? null : (string) $row['money_reconciled_at'],
+			'customer_id'         => self::nullableId( $row['customer_id'] ),
+			'actor_id'            => self::nullableId( $row['actor_id'] ),
 		);
 	}
 

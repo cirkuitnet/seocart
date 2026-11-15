@@ -382,11 +382,12 @@ interface OrderRepository {
 	 * Reads an order's public identifier, status and payment status, and when a person last cleared its unreconciled money, by its internal id, without a lock.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 Reads the payment status and the clearance too.
+	 * @since 0.2.0 Reads the payment status and the clearance too; the order's customer and the user who placed it.
 	 *
 	 * @param int $orderId The order's internal id, never a value from a request.
-	 * @return array{uuid: string, status: OrderStatus, payment_status: PaymentStatus, money_reconciled_at: string|null}|null
-	 *         The four, the clearance UTC to the microsecond or null for never; null when there is no such order.
+	 * @return array{uuid: string, status: OrderStatus, payment_status: PaymentStatus, money_reconciled_at: string|null, customer_id: int|null, actor_id: int|null}|null
+	 *         The six: the clearance UTC to the microsecond or null for never, the customer record and the user who placed it
+	 *         or null for none; null when there is no such order.
 	 */
 	public function statusOf( int $orderId ): ?array;
 

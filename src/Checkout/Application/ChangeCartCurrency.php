@@ -15,6 +15,7 @@ use SEOCart\Cart\Application\CartError;
 use SEOCart\Cart\Application\CartService;
 use SEOCart\Cart\Domain\CartStatus;
 use SEOCart\Checkout\Domain\CheckoutError;
+use SEOCart\Order\Application\ActorCustomers;
 use SEOCart\Order\Application\Orders;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Pricing\Application\PresentmentCurrencies;
@@ -52,12 +53,14 @@ final class ChangeCartCurrency {
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The customers, whom the order of a cart that is not open is named to.
 	 *
 	 * @param CartService           $carts        The cart, whose version the switch rides.
 	 * @param CheckoutSessions      $sessions     The stored sessions, whose quotes the switch drops.
 	 * @param PresentmentCurrencies $currencies   Tells whether the store sells in a currency now.
 	 * @param Orders                $orders       Names the order of a cart that is not open.
 	 * @param \Closure              $baseCurrency Returns the store's base currency.
+	 * @param ActorCustomers        $customers    Says which customer the requester is, whom the order is named to.
 	 *
 	 * @phpstan-param \Closure(): Currency $baseCurrency
 	 */
@@ -66,7 +69,8 @@ final class ChangeCartCurrency {
 		private CheckoutSessions $sessions,
 		private PresentmentCurrencies $currencies,
 		private Orders $orders,
-		private \Closure $baseCurrency
+		private \Closure $baseCurrency,
+		private ActorCustomers $customers
 	) {
 	}
 
@@ -105,7 +109,7 @@ final class ChangeCartCurrency {
 			);
 		} catch ( CodedException $refused ) {
 			if ( CartError::NotOpen === $refused->errorCode() ) {
-				$this->refuseNamingTheOrder( $refused );
+				$this->refuseNamingTheOrder( $refused, $actor );
 			}
 
 			throw $refused;
@@ -140,18 +144,22 @@ final class ChangeCartCurrency {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws CodedException Always: `cart.not_open`, naming the order when the cart still refuses.
+	 * @since 0.2.0 Names the order to a requester who may read it alone.
+	 *
+	 * @throws CodedException Always: `cart.not_open`, naming the order when the cart still refuses and
+	 *                        the requester may read the order.
 	 *
 	 * @param CodedException $refused The cart's refusal.
+	 * @param Actor          $actor   Who asked for the switch.
 	 * @return never
 	 */
-	private function refuseNamingTheOrder( CodedException $refused ): never {
+	private function refuseNamingTheOrder( CodedException $refused, Actor $actor ): never {
 		$cart = $this->carts->current();
 
 		if ( null === $cart || CartStatus::Open === $cart->status ) {
 			throw $refused;
 		}
 
-		NotOpenCart::refuse( $cart, $this->orders );
+		NotOpenCart::refuse( $cart, $this->orders, $actor, $this->customers );
 	}
 }
