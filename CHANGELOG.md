@@ -228,6 +228,11 @@ seocart jobs run` and from a short tick on admin requests; `wp seocart jobs stat
 - Bank transfer, cheque and cash on delivery are built in, as offline payment methods every store has: an order paid that way is accepted at once and waits for the money; the merchant records the payment received with the day it arrived and its reference (`wp seocart payment capture <intent_uuid> --received_on=<date> --reference=<text>`), and refunds it as money returned outside a provider. Each method's name for shoppers, the instructions they are given and the days an order may wait before Site Health and `wp seocart doctor` remind the merchant are set with `wp seocart gateway configure`.
 - A payment plugin's form, such as a card form, appears inside the checkout's payment section, and a bank's confirmation step completes there before the order is confirmed. A payment method whose plugin form is missing is shown unavailable rather than left out.
 - An order placed by a logged-in shopper now belongs to that shopper's customer account, and a logged-in customer can list and read their own orders without the order's key.
+- Each checkout field can be hidden, optional or required from one setting, and a store can set a minimum and a maximum order amount for each currency it sells in: the checkout tells the shopper where the cart stands, and an order outside the limits is not placed.
+
+### Changed
+
+- An order now needs a name, an address line and a city on both addresses, and the checkout refuses text with control characters or invisible direction characters, such as a right-to-left override, while names written in any script still go through.
 
 ### Fixed
 
