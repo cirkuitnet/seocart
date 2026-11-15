@@ -11,6 +11,9 @@ declare( strict_types=1 );
 
 namespace SEOCart\Checkout\Interfaces\StoreApi;
 
+// Before the imports: Plugin Check looks for this guard only in the first 50 lines of a namespaced file.
+defined( 'ABSPATH' ) || exit;
+
 use SEOCart\Application\Operations\Annotations;
 use SEOCart\Application\Operations\IdempotencyKey;
 use SEOCart\Application\Operations\OperationDefinition;
@@ -22,6 +25,8 @@ use SEOCart\Cart\Application\CurrencyChangeLimit;
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
 use SEOCart\Checkout\Application\ChangeCartCurrency;
+use SEOCart\Checkout\Application\CheckoutForm;
+use SEOCart\Checkout\Application\OrderLimits;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\ResumePayment;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
@@ -31,6 +36,9 @@ use SEOCart\Checkout\Domain\Fields\BuiltInFields;
 use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Domain\PlacementOutcome;
+use SEOCart\Contracts\Checkout\CheckoutField;
+use SEOCart\Contracts\Checkout\CheckoutFieldType;
+use SEOCart\Contracts\Checkout\Section;
 use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Contracts\Payment\NextAction;
 use SEOCart\Inventory\Application\InventoryError;
@@ -44,8 +52,6 @@ use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\FieldType;
 use SEOCart\Support\Schema\Privacy;
 use SEOCart\Support\Schema\ResourceSchema;
-
-defined( 'ABSPATH' ) || exit;
 
 /**
  * Declares the checkout's operations.
@@ -76,6 +82,10 @@ defined( 'ABSPATH' ) || exit;
  *   to another currency the store sells in, at the version the client read. The switch moves the
  *   version on and drops the session's frozen quotes, and its answer is the cart, priced in the
  *   new currency. A cart placing an order refuses it.
+ *
+ * - `checkout.get_form`, `GET seocart/store/v1/checkout/form`: the checkout form as the store set
+ *   it up, compiled from the declared checkout fields and the store's choices: the fields asked
+ *   for, in form order, and the order limits per currency. It is the same for every visitor.
  *
  * The operations are public, so they are routes of the Store API only, guarded by their request
  * policy. The session write and the currency switch are counted in the cart writes' rate limit: a
@@ -134,6 +144,24 @@ final class CheckoutOperations {
 	 * @var string
 	 */
 	public const CHANGE_CURRENCY = 'checkout.change_currency';
+
+	/**
+	 * The id of the read of the checkout form.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const GET_FORM = 'checkout.get_form';
+
+	/**
+	 * The route of the checkout form, relative to the Store API's namespace.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FORM_ROUTE = '/checkout/form';
 
 	/**
 	 * The header a placement's idempotency key is sent in: the idempotency key's own.
@@ -271,11 +299,12 @@ final class CheckoutOperations {
 						),
 						nullable: true
 					),
+					self::orderLimit(),
 				)
 			),
 			capability: null,
 			resource_field: null,
-			errors: array( CartError::NotFound, CartError::VersionStale, CartError::NotOpen, CheckoutError::InvalidAddress, CheckoutError::InvalidMethodKey, PricingError::QuoteUnavailable, PricingError::NoShippingRate, PricingError::CurrencyNotEnabled, InventoryError::RoutingRefused, InventoryError::NoFulfillingLocation, InventoryError::ItemMissing ),
+			errors: array( CartError::NotFound, CartError::VersionStale, CartError::NotOpen, CheckoutError::InvalidFields, CheckoutError::InvalidMethodKey, PricingError::QuoteUnavailable, PricingError::NoShippingRate, PricingError::CurrencyNotEnabled, InventoryError::RoutingRefused, InventoryError::NoFulfillingLocation, InventoryError::ItemMissing ),
 			annotations: new Annotations( read_only: false, destructive: false, idempotent: true ),
 			service: array( UpdateCheckoutSession::class, 'update' ),
 			rest: new RestBinding( self::ROUTE, WriteMethod::Put, store: true ),
@@ -412,8 +441,11 @@ final class CheckoutOperations {
 				CartError::VersionStale,
 				CheckoutError::CartEmpty,
 				CheckoutError::SessionIncomplete,
+				CheckoutError::InvalidFields,
 				CheckoutError::LineUnsellable,
 				CheckoutError::TotalsChanged,
+				CheckoutError::SubtotalBelowMinimum,
+				CheckoutError::SubtotalAboveMaximum,
 				CheckoutError::PaymentMethodUnavailable,
 				InventoryError::Insufficient,
 				InventoryError::ItemMissing,
@@ -524,6 +556,225 @@ final class CheckoutOperations {
 			rest: new RestBinding( self::CURRENCY_ROUTE, WriteMethod::Post, store: true ),
 			public_write: StoreRequestPolicy::write( CartOperations::WRITE_BUCKET, CartOperations::WRITE_LIMIT, CartOperations::WRITE_WINDOW, true )
 		);
+	}
+
+	/**
+	 * Declares the read of the checkout form.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function getForm(): OperationDefinition {
+		return new OperationDefinition(
+			id: self::GET_FORM,
+			label: static fn(): string => __( 'Read the checkout form', 'seocart' ),
+			summary: 'Returns the checkout form as the store set it up: every field the checkout asks for, in the order to show them, with its label in the request\'s language, whether an order needs it, its longest value, its options and where its value is sent, and the order limits per currency. A field the store hides is not listed, and the checkout refuses a value for it.',
+			input: array(),
+			output: new ResourceSchema(
+				'CheckoutForm',
+				array(
+					FieldSpec::objectList(
+						'fields',
+						'The fields the checkout asks for, in the order the form shows them.',
+						static fn(): string => __( 'Fields', 'seocart' ),
+						array_merge( self::fieldIdentity(), self::formMembers() ),
+						required: true
+					),
+					FieldSpec::objectList(
+						'order_limits',
+						'The smallest and the largest order the store takes, one entry per currency that has a limit; a currency without an entry has none. Where a cart stands against them is the session write\'s order_limit.',
+						static fn(): string => __( 'Order limits', 'seocart' ),
+						array(
+							self::limitCurrency(),
+							self::limitBound( 'minimum_minor', 'The smallest order the store takes in the currency, in its minor units; null for none.', static fn(): string => __( 'Minimum order', 'seocart' ), 2500 ),
+							self::limitBound( 'maximum_minor', 'The largest order the store takes in the currency, in its minor units; null for none.', static fn(): string => __( 'Maximum order', 'seocart' ), 500000 ),
+						),
+						required: true
+					),
+				)
+			),
+			capability: null,
+			resource_field: null,
+			errors: array(),
+			annotations: new Annotations( read_only: true, destructive: false, idempotent: true ),
+			service: array( CheckoutForm::class, 'read' ),
+			rest: new RestBinding( self::FORM_ROUTE, store: true )
+		);
+	}
+
+	/**
+	 * Returns the members every list of checkout fields answers each field with: its key, section, type, label and help.
+	 *
+	 * The form read and the staff's field list both start with them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<FieldSpec> The members.
+	 */
+	public static function fieldIdentity(): array {
+		return array(
+			self::formText( 'key', 'The field\'s key: the member of an address, or of the custom fields, that carries its value.', static fn(): string => __( 'Key', 'seocart' ), 'last_name', CheckoutField::KEY_MAX_LENGTH ),
+			self::formClosed( 'section', 'Where the form shows the field: contact, address (in the billing and the shipping address alike) or order.', static fn(): string => __( 'Section', 'seocart' ), array_column( Section::cases(), 'value' ) ),
+			self::formClosed( 'type', 'What the field\'s value is, which decides the input to show: text, email, tel, country, textarea, select or checkbox; a ticked checkbox is 1.', static fn(): string => __( 'Type', 'seocart' ), array_column( CheckoutFieldType::cases(), 'value' ) ),
+			self::formText( 'label', 'The field\'s label, in the request\'s language.', static fn(): string => __( 'Label', 'seocart' ), 'Last name' ),
+			new FieldSpec(
+				name: 'help',
+				type: FieldType::String,
+				description: 'A sentence to show under the field, in the request\'s language; null when there is none.',
+				label: static fn(): string => __( 'Help', 'seocart' ),
+				example: 'For deliveries to a business.',
+				required: true,
+				nullable: true
+			),
+		);
+	}
+
+	/**
+	 * Returns the currency of an order limit, as every list of limits names it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return FieldSpec The field.
+	 */
+	public static function limitCurrency(): FieldSpec {
+		return self::formText( 'currency', 'The ISO 4217 code of the currency the limit is in, such as USD.', static fn(): string => __( 'Currency', 'seocart' ), 'USD', 3 );
+	}
+
+	/**
+	 * Returns what the form read adds to each field: whether an order needs it, its longest value, its options, its autocomplete token and where its value is sent.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<FieldSpec> The members.
+	 */
+	private static function formMembers(): array {
+		return array(
+			new FieldSpec(
+				name: 'required',
+				type: FieldType::Boolean,
+				description: 'Whether an order is placed only with a value for the field; the session write saves the form without it.',
+				label: static fn(): string => __( 'Required', 'seocart' ),
+				example: true,
+				required: true
+			),
+			new FieldSpec(
+				name: 'max_length',
+				type: FieldType::Integer,
+				description: 'The most characters the field\'s value may hold.',
+				label: static fn(): string => __( 'Longest value', 'seocart' ),
+				example: 100,
+				required: true,
+				minimum: 1
+			),
+			FieldSpec::objectList(
+				'options',
+				'A select\'s options, in the order to show them; empty for any other type.',
+				static fn(): string => __( 'Options', 'seocart' ),
+				array(
+					self::formText( 'value', 'The value the session write sends when the option is chosen.', static fn(): string => __( 'Value', 'seocart' ), 'morning' ),
+					self::formText( 'label', 'The option\'s label, in the request\'s language.', static fn(): string => __( 'Label', 'seocart' ), 'Morning' ),
+				),
+				required: true,
+				max_items: CheckoutField::MAX_OPTIONS
+			),
+			new FieldSpec(
+				name: 'autocomplete',
+				type: FieldType::String,
+				description: 'The HTML autocomplete token for the field\'s input, such as family-name; null when there is none.',
+				label: static fn(): string => __( 'Autocomplete', 'seocart' ),
+				example: 'family-name',
+				required: true,
+				nullable: true
+			),
+			self::formClosed( 'carrier', 'Where the session write sends the field\'s value: address, as the member of the billing and of the shipping address named by the key; billing_address, as that member of the billing address alone; or custom_fields.', static fn(): string => __( 'Sent in', 'seocart' ), array_column( Carrier::cases(), 'value' ) ),
+		);
+	}
+
+	/**
+	 * Returns where a cart's goods stand against the order limits of its currency, as the session write answers it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return FieldSpec The field.
+	 */
+	private static function orderLimit(): FieldSpec {
+		return FieldSpec::object(
+			'order_limit',
+			'Where the cart\'s goods stand against the store\'s order limits in its currency, measured on these totals; null when the currency has no limit. The write is never refused for it: the placement is.',
+			static fn(): string => __( 'Order limit', 'seocart' ),
+			array(
+				self::formClosed( 'status', 'ok within the limits; below_minimum or above_maximum when the order would be refused.', static fn(): string => __( 'Status', 'seocart' ), OrderLimits::STATUSES ),
+				new FieldSpec(
+					name: 'amount_minor',
+					type: FieldType::Integer,
+					description: 'What the cart\'s goods come to after their discounts, without shipping or fees, in minor units of the cart\'s currency: with tax when every price was entered with tax, without it otherwise.',
+					label: static fn(): string => __( 'Amount', 'seocart' ),
+					example: 2000,
+					required: true,
+					minimum: 0,
+					privacy: Privacy::Financial
+				),
+				self::limitBound( 'minimum_minor', 'The smallest order the store takes in the currency, in its minor units; null for none.', static fn(): string => __( 'Minimum order', 'seocart' ), 2500 ),
+				self::limitBound( 'maximum_minor', 'The largest order the store takes in the currency, in its minor units; null for none.', static fn(): string => __( 'Maximum order', 'seocart' ), 500000 ),
+				self::formClosed( 'basis', 'gross when every line\'s price was entered with tax, so the amount includes it; net otherwise.', static fn(): string => __( 'Basis', 'seocart' ), array( OrderLimits::NET, OrderLimits::GROSS ) ),
+			),
+			required: true,
+			nullable: true
+		);
+	}
+
+	/**
+	 * Declares one bound of an order limit in an answer: a whole number of minor units from 1, or null.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string   $name        The wire name.
+	 * @param string   $description The machine description.
+	 * @param \Closure $label       Returns the label.
+	 * @param int      $example     An example.
+	 * @return FieldSpec The field.
+	 *
+	 * @phpstan-param \Closure(): string $label
+	 */
+	private static function limitBound( string $name, string $description, \Closure $label, int $example ): FieldSpec {
+		return new FieldSpec( name: $name, type: FieldType::Integer, description: $description, label: $label, example: $example, required: true, nullable: true, minimum: 1 );
+	}
+
+	/**
+	 * Declares a required text field of an answer.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string   $name        The wire name.
+	 * @param string   $description The machine description.
+	 * @param \Closure $label       Returns the label.
+	 * @param string   $example     An example.
+	 * @param int|null $maxLength   Optional. Its longest value. Default none.
+	 * @return FieldSpec The field.
+	 *
+	 * @phpstan-param \Closure(): string $label
+	 */
+	private static function formText( string $name, string $description, \Closure $label, string $example, ?int $maxLength = null ): FieldSpec {
+		return new FieldSpec( name: $name, type: FieldType::String, description: $description, label: $label, example: $example, required: true, max_length: $maxLength );
+	}
+
+	/**
+	 * Declares a required text field of an answer limited to a set of values, the first the example.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string   $name        The wire name.
+	 * @param string   $description The machine description.
+	 * @param \Closure $label       Returns the label.
+	 * @param string[] $allowed     The values.
+	 * @return FieldSpec The field.
+	 *
+	 * @phpstan-param \Closure(): string $label
+	 * @phpstan-param list<string>       $allowed
+	 */
+	private static function formClosed( string $name, string $description, \Closure $label, array $allowed ): FieldSpec {
+		return new FieldSpec( name: $name, type: FieldType::String, description: $description, label: $label, example: $allowed[0], required: true, allowed: $allowed );
 	}
 
 	/**

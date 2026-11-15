@@ -15,8 +15,10 @@ use SEOCart\Cart\Application\CartService;
 use SEOCart\Checkout\Domain\AddressDocument;
 use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Checkout\Domain\CheckoutError;
+use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Payment\Application\Gateways;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Pricing\Application\Calculation;
 use SEOCart\Pricing\Application\RoutingScope;
 use SEOCart\Support\Address;
 use SEOCart\Support\Error\CodedException;
@@ -28,22 +30,25 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Performs `checkout.update_session`: replaces the details of the request's cart's checkout, and answers with them, the cart's version and its totals.
  *
- * Owns one fact: how a checkout write reaches the store. The details are checked first, then
- * written through the cart's one door for another module's write (CartService::changeWith()):
- * the cart's compare-and-swap and the session's upsert are one transaction, so the details
- * change exactly when the cart's version moves on, and a write based on an older version changes
- * neither. Moving the version on makes the session's quotes stale, and the upsert drops them too.
- * The cart's totals are then worked out after the transaction, for the shipping address and
- * method just written, with the plan of where the order's units are held (PlannedPricing). A
- * plan no location can give is refused with the router's code, as a destination with no shipping
- * rate is.
+ * Owns one fact: how a checkout write reaches the store. The details are checked first, every
+ * value against the checkout's fields in force (CheckoutRules::validate()), then written through
+ * the cart's one door for another module's write (CartService::changeWith()): the cart's
+ * compare-and-swap and the session's upsert are one transaction, so the details change exactly
+ * when the cart's version moves on, and a write based on an older version changes neither. Moving
+ * the version on makes the session's quotes stale, and the upsert drops them too. The cart's
+ * totals are then worked out after the transaction, for the shipping address and method just
+ * written, with the plan of where the order's units are held (PlannedPricing). A plan no location
+ * can give is refused with the router's code, as a destination with no shipping rate is.
  *
  * A payment method is the id of a payment gateway the store has, set up for the mode it takes new
  * payments in. Whether it can take this cart's payment, by its currency and total, is checked when
- * the order is placed, once the total is known.
+ * the order is placed, once the total is known. So is an order limit: the answer says where the
+ * cart's goods stand against the limits of its currency, measured on the totals it answers, and a
+ * write is never refused for one, so a shopper below a minimum can still save an address.
  *
  * @since 0.1.0
- * @since 0.2.0 Checks the payment method against the store's gateways.
+ * @since 0.2.0 Checks the payment method against the store's gateways. Checks every value against
+ *              the checkout's fields, and answers where the cart stands against the order limits.
  */
 final class UpdateCheckoutSession {
 
@@ -84,32 +89,44 @@ final class UpdateCheckoutSession {
 	private PlannedPricing $pricing;
 
 	/**
+	 * The checkout's rules, which judge every value before anything is written.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var CheckoutRules
+	 */
+	private CheckoutRules $rules;
+
+	/**
 	 * Creates the service. Sends nothing.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The gateways and the planned pricing were added.
+	 * @since 0.2.0 The gateways, the planned pricing and the checkout's rules were added.
 	 *
 	 * @param CartService      $carts    The cart.
 	 * @param CheckoutSessions $sessions The stored sessions.
 	 * @param Gateways         $gateways The store's payment gateways.
 	 * @param PlannedPricing   $pricing  The checkout's pricing with its plan.
+	 * @param CheckoutRules    $rules    The checkout's rules: its fields in force and its order limits.
 	 */
-	public function __construct( CartService $carts, CheckoutSessions $sessions, Gateways $gateways, PlannedPricing $pricing ) {
+	public function __construct( CartService $carts, CheckoutSessions $sessions, Gateways $gateways, PlannedPricing $pricing, CheckoutRules $rules ) {
 		$this->carts    = $carts;
 		$this->sessions = $sessions;
 		$this->gateways = $gateways;
 		$this->pricing  = $pricing;
+		$this->rules    = $rules;
 	}
 
 	/**
 	 * Performs `checkout.update_session`.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Checks every value against the checkout's fields, and answers the order limit.
 	 *
-	 * @throws CodedException `checkout.invalid_address` when an address has a field the checkout
-	 *                        cannot use, or `checkout.invalid_method_key` when a method key is not
-	 *                        one, or the payment method is not a gateway the store has set up for
-	 *                        its mode, before anything is written; `cart.not_found`,
+	 * @throws CodedException `checkout.invalid_fields` with every value the checkout's fields do not
+	 *                        accept, or `checkout.invalid_method_key` when a method key is not one,
+	 *                        or the payment method is not a gateway the store has set up for its
+	 *                        mode, before anything is written; `cart.not_found`,
 	 *                        `cart.version_stale` or `cart.not_open` when the cart's
 	 *                        compare-and-swap refuses; the codes the calculation raises, its plan's
 	 *                        `stock.routing_refused` and `stock.no_fulfilling_location` among them.
@@ -118,26 +135,35 @@ final class UpdateCheckoutSession {
 	 *                                    billing_address, shipping_address, shipping_method_key
 	 *                                    and payment_method_key.
 	 * @param Actor                $actor Who writes: whose lifetime the cart then lives.
-	 * @return array{checkout_session: array<string, mixed>, version: int, totals: array<string, mixed>, delivery: array{requires_transfer: bool, transfer_days: int|null}|null} The session,
-	 *         the cart's version, its totals and what its plan says of delivery, by wire name: whether units must be
-	 *         brought together and the extra days the shopper is told that adds; null when no plan was made.
+	 * @return array{checkout_session: array<string, mixed>, version: int, totals: array<string, mixed>, delivery: array{requires_transfer: bool, transfer_days: int|null}|null, order_limit: array<string, int|string|null>|null} The session,
+	 *         the cart's version, its totals, what its plan says of delivery, by wire name: whether units must be
+	 *         brought together and the extra days the shopper is told that adds, null when no plan was made; and
+	 *         where its goods stand against the order limits of its currency, null when it has none (OrderLimits::verdict()).
 	 */
 	public function update( array $input, Actor $actor ): array {
+		$this->rules->validate( $input );
+
 		$details = new CheckoutDetails(
-			self::address( 'billing_address', $input ),
-			self::address( 'shipping_address', $input ),
+			self::address( Carrier::BILLING, $input ),
+			self::address( Carrier::SHIPPING, $input ),
 			self::methodKey( 'shipping_method_key', $input ),
 			$this->paymentMethod( $input )
 		);
 
-		$cart = $this->carts->changeWith(
+		$calculation = null;
+		$cart        = $this->carts->changeWith(
 			(int) $input['cart_version'],
 			$actor,
 			function ( int $cartId ) use ( $details ): void {
 				$this->sessions->save( $cartId, $details );
 			},
 			RoutingScope::checkout(),
-			$this->pricing->price( ... )
+			// The answer's totals are this calculation's: the order limit is measured on the same one.
+			function ( \Closure $price ) use ( &$calculation ): Calculation {
+				$calculation = $this->pricing->price( $price );
+
+				return $calculation;
+			}
 		);
 
 		return array(
@@ -150,39 +176,22 @@ final class UpdateCheckoutSession {
 			'version'          => $cart['version'],
 			'totals'           => $cart['totals'],
 			'delivery'         => $cart['routing'],
+			'order_limit'      => null === $calculation ? null : OrderLimits::verdict( $calculation->totals, $this->rules->orderLimits() ),
 		);
 	}
 
 	/**
-	 * Reads one of the input's addresses, refusing a field the checkout cannot use.
+	 * Reads one of the input's addresses, which CheckoutRules::validate() has judged.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The values are judged by the checkout's rules before.
 	 *
-	 * @throws CodedException `checkout.invalid_address`, naming the field: a country that is not
-	 *                        two upper-case letters, or an e-mail address that is not one.
-	 *
-	 * @param string               $field The input field: billing_address or shipping_address.
+	 * @param string               $field The input field: Carrier::BILLING or Carrier::SHIPPING.
 	 * @param array<string, mixed> $input The prepared input.
 	 * @return Address|null The address, or null when the input leaves it out.
 	 */
 	private static function address( string $field, array $input ): ?Address {
-		if ( ! isset( $input[ $field ] ) ) {
-			return null;
-		}
-
-		$document = (array) $input[ $field ];
-		$email    = (string) ( $document['email'] ?? '' );
-
-		if ( '' !== $email && false === is_email( $email ) ) {
-			CodedException::raise( CheckoutError::InvalidAddress, array( 'field' => $field . '.email' ) );
-		}
-
-		try {
-			return AddressDocument::toAddress( $document );
-		} catch ( \InvalidArgumentException $refused ) {
-			// The schema has made every field a string, so what Address refuses is its country.
-			throw CodedException::because( CheckoutError::InvalidAddress, array( 'field' => $field . '.country' ), $refused );
-		}
+		return isset( $input[ $field ] ) ? AddressDocument::toAddress( (array) $input[ $field ] ) : null;
 	}
 
 	/**

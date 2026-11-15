@@ -46,6 +46,15 @@ defined( 'ABSPATH' ) || exit;
 final class BuiltInFields {
 
 	/**
+	 * Who declared the built-in fields, as the staff's field list names it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const SOURCE = 'core';
+
+	/**
 	 * Cannot be called: the class is static functions over one list.
 	 *
 	 * @since 0.2.0

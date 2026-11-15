@@ -183,7 +183,7 @@ final class CartAvailabilityOperationsTest extends CheckoutTestCase {
 		);
 
 		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
-		$this->assertSame( array( 'checkout_session', 'version', 'totals', 'delivery' ), array_keys( $written['body'] ) );
+		$this->assertSame( array( 'checkout_session', 'version', 'totals', 'delivery', 'order_limit' ), array_keys( $written['body'] ) );
 		$this->assertQueryCount( 0, $log->matching( self::SALE_FIGURES ), 'The session write\'s reads of the figures' );
 	}
 

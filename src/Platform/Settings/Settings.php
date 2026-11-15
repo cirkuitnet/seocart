@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Platform\Settings;
 
+use SEOCart\Checkout\Application\CheckoutSettings;
 use SEOCart\Inventory\Application\InventorySettings;
 use SEOCart\Payment\Application\RefundCapSettings;
 use SEOCart\Platform\Authorization\OptionGrantLedger;
@@ -55,7 +56,8 @@ final class Settings {
 				OptionGrantLedger::settings(),
 				SecretKeys::settings(),
 				RefundCapSettings::settings(),
-				InventorySettings::settings()
+				InventorySettings::settings(),
+				CheckoutSettings::settings()
 			),
 			array(
 				OptionGrantLedger::GROUP => OptionGrantLedger::PURPOSE,

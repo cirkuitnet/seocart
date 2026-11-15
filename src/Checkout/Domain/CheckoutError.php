@@ -17,7 +17,7 @@ use SEOCart\Support\Error\ErrorDefinition;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * The errors of the checkout: an address or a method key it cannot use, a placement request whose idempotency key it cannot honour, an order that cannot be placed or paid, and a currency the cart cannot be switched to.
+ * The errors of the checkout: a value or a method key it cannot use, a store's field or limit choice it cannot save, a placement request whose idempotency key it cannot honour, an order that cannot be placed or paid, and a currency the cart cannot be switched to.
  *
  * Owns one fact: how a refused checkout request is reported. A write refused by the cart's
  * version answers with the cart's own codes, and a refusal by stock or by a promotion's limit
@@ -31,11 +31,46 @@ defined( 'ABSPATH' ) || exit;
 enum CheckoutError: string implements ErrorCode {
 
 	/**
-	 * An address the checkout was given has a field it cannot use.
+	 * Values the checkout was given are ones its fields do not accept. The error's details list each value's wire path and why.
 	 *
-	 * @since 0.1.0
+	 * @since 0.2.0
 	 */
-	case InvalidAddress = 'checkout.invalid_address';
+	case InvalidFields = 'checkout.invalid_fields';
+
+	/**
+	 * A presence was chosen for a checkout field no declaration names.
+	 *
+	 * @since 0.2.0
+	 */
+	case FieldUnknown = 'checkout.field_unknown';
+
+	/**
+	 * A presence was chosen for a checkout field that does not allow it.
+	 *
+	 * @since 0.2.0
+	 */
+	case PresenceNotAllowed = 'checkout.presence_not_allowed';
+
+	/**
+	 * An order limit cannot be saved: its currency is not one, it is given twice, or its minimum is above its maximum.
+	 *
+	 * @since 0.2.0
+	 */
+	case InvalidOrderLimits = 'checkout.invalid_order_limits';
+
+	/**
+	 * The order's goods come to less than the store's minimum order in the cart's currency. The error's details carry the amount, the limit, the currency and the basis.
+	 *
+	 * @since 0.2.0
+	 */
+	case SubtotalBelowMinimum = 'checkout.subtotal_below_minimum';
+
+	/**
+	 * The order's goods come to more than the store's maximum order in the cart's currency. The error's details carry the amount, the limit, the currency and the basis.
+	 *
+	 * @since 0.2.0
+	 */
+	case SubtotalAboveMaximum = 'checkout.subtotal_above_maximum';
 
 	/**
 	 * A method key the checkout was given is not one, or the payment method is not one the store offers.
@@ -134,12 +169,46 @@ enum CheckoutError: string implements ErrorCode {
 	public static function definitions(): array {
 		return array(
 			new ErrorDefinition(
-				self::InvalidAddress,
+				self::InvalidFields,
+				422,
+				static fn(): string => __( 'Some checkout details cannot be used as given, so nothing was saved. The error lists each field and why: the store does not ask for it there, it is too long, it holds a control or invisible formatting character, it is not in the right format, or it is not one of the choices.', 'seocart' ),
+				details: array( 'fields' )
+			),
+			new ErrorDefinition(
+				self::FieldUnknown,
 				422,
 				static fn(): string =>
-					/* translators: %1$s: The address field that is not valid, such as shipping_address.country. */
-					__( 'The address field %1$s is not valid. A country is a two-letter code, such as GB, and an email address looks like name@example.com.', 'seocart' ),
+					/* translators: %1$s: The key of a checkout field, such as company. */
+					__( 'The store has no checkout field %1$s, so nothing was saved. Choose one of the fields the field list names.', 'seocart' ),
 				array( 'field' )
+			),
+			new ErrorDefinition(
+				self::PresenceNotAllowed,
+				422,
+				static fn(): string =>
+					/* translators: 1: The key of a checkout field, such as email. 2: The presence chosen: hidden, optional or required. */
+					__( 'The checkout field %1$s cannot be %2$s, so nothing was saved. Choose one of the presences the field list gives for it.', 'seocart' ),
+				array( 'field', 'presence' )
+			),
+			new ErrorDefinition(
+				self::InvalidOrderLimits,
+				422,
+				static fn(): string =>
+					/* translators: 1: A currency code, such as USD. 2: Why its limit cannot be saved: unknown_currency, duplicate or min_above_max. */
+					__( 'The order limit for %1$s cannot be saved (%2$s), so nothing was saved. Give each currency the store knows once, with its minimum no larger than its maximum.', 'seocart' ),
+				array( 'currency', 'reason' )
+			),
+			new ErrorDefinition(
+				self::SubtotalBelowMinimum,
+				409,
+				static fn(): string => __( 'The order is below the store\'s minimum order amount, so it was not placed. Add more to the cart, then place the order again.', 'seocart' ),
+				details: array( 'amount_minor', 'limit_minor', 'currency', 'basis' )
+			),
+			new ErrorDefinition(
+				self::SubtotalAboveMaximum,
+				409,
+				static fn(): string => __( 'The order is above the store\'s maximum order amount, so it was not placed. Remove something from the cart, then place the order again.', 'seocart' ),
+				details: array( 'amount_minor', 'limit_minor', 'currency', 'basis' )
 			),
 			new ErrorDefinition(
 				self::InvalidMethodKey,
@@ -172,7 +241,7 @@ enum CheckoutError: string implements ErrorCode {
 			new ErrorDefinition(
 				self::SessionIncomplete,
 				422,
-				static fn(): string => __( 'The checkout is missing details an order needs: both addresses, an email address on the billing address, and a payment method. The error lists the ones missing.', 'seocart' ),
+				static fn(): string => __( 'The checkout is missing details an order needs: both addresses, every field the store requires on them, such as the email address on the billing address, and a payment method. The error lists the ones missing.', 'seocart' ),
 				details: array( 'missing' )
 			),
 			new ErrorDefinition(

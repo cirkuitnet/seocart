@@ -128,17 +128,20 @@ final class CheckoutOperationsTest extends TestCase {
 		$session    = self::byName( $output['checkout_session']->fields() );
 		$codes      = array_map( static fn( $code ): string => (string) $code->value, $definition->errors() );
 
-		$this->assertSame( array( 'checkout_session', 'version', 'totals', 'delivery' ), array_keys( $output ) );
+		$this->assertSame( array( 'checkout_session', 'version', 'totals', 'delivery', 'order_limit' ), array_keys( $output ) );
 		$this->assertSame( array( true, array( 'requires_transfer', 'transfer_days' ) ), array( $output['delivery']->isNullable(), array_keys( self::byName( $output['delivery']->fields() ) ) ), 'The delivery is null until a plan is made.' );
+		$this->assertSame( array( true, array( 'status', 'amount_minor', 'minimum_minor', 'maximum_minor', 'basis' ) ), array( $output['order_limit']->isNullable(), array_keys( self::byName( $output['order_limit']->fields() ) ) ), 'The order limit is null for a currency without one.' );
 		$this->assertContains( 'stock.routing_refused', $codes );
 		$this->assertContains( 'stock.no_fulfilling_location', $codes );
 		$this->assertSame( array( 'billing_address', 'shipping_address', 'shipping_method_key', 'payment_method_key' ), array_keys( $session ) );
 		$this->assertSame( array( true, true ), array( $session['billing_address']->isNullable(), $session['shipping_address']->isNullable() ) );
 		$this->assertSame( Privacy::Pii, $session['shipping_address']->privacy() );
 
-		foreach ( array( CartError::NotFound, CartError::VersionStale, CartError::NotOpen, CheckoutError::InvalidAddress ) as $code ) {
+		foreach ( array( CartError::NotFound, CartError::VersionStale, CartError::NotOpen, CheckoutError::InvalidFields ) as $code ) {
 			$this->assertContains( $code->value, $codes );
 		}
+
+		$this->assertNotContains( 'checkout.invalid_address', $codes, 'Every fault of the values is checkout.invalid_fields.' );
 	}
 
 	/**
@@ -197,7 +200,7 @@ final class CheckoutOperationsTest extends TestCase {
 		$this->assertSame( array( Privacy::Public, array( 'type', 'url', 'client_token' ) ), array( self::byName( $output['next_action']->fields() )['client_token']->privacy(), array_keys( self::byName( $output['next_action']->fields() ) ) ), 'The handle is answered: it is no secret field, which no answer carries.' );
 		$this->assertSame( Redactor::ANSWERED_SECRETS, array( self::byName( $output['next_action']->fields() )['client_token']->name() ), 'The logs drop the answered handle by the field\'s own name.' );
 
-		foreach ( array( CheckoutError::IdempotencyKeyMissing, CheckoutError::IdempotencyKeyReused, CheckoutError::PlacementInProgress, CheckoutError::CartEmpty, CheckoutError::SessionIncomplete, CheckoutError::TotalsChanged, CheckoutError::PaymentMethodUnavailable, CheckoutError::LineUnsellable, CheckoutError::PaymentDeclined, CheckoutError::GatewayUnavailable, CartError::NotOpen, CartError::VersionStale ) as $code ) {
+		foreach ( array( CheckoutError::IdempotencyKeyMissing, CheckoutError::IdempotencyKeyReused, CheckoutError::PlacementInProgress, CheckoutError::CartEmpty, CheckoutError::SessionIncomplete, CheckoutError::InvalidFields, CheckoutError::SubtotalBelowMinimum, CheckoutError::SubtotalAboveMaximum, CheckoutError::TotalsChanged, CheckoutError::PaymentMethodUnavailable, CheckoutError::LineUnsellable, CheckoutError::PaymentDeclined, CheckoutError::GatewayUnavailable, CartError::NotOpen, CartError::VersionStale ) as $code ) {
 			$this->assertContains( $code->value, $codes );
 		}
 	}

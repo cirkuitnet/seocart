@@ -281,6 +281,8 @@ async function placeOrder(
 				},
 				shipping_address: {
 					country: 'GB',
+					first_name: 'Ada',
+					last_name: 'Lovelace',
 					line1: "12 St James's Square",
 					city: 'London',
 					postcode: 'SW1Y 4JH',

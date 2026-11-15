@@ -53,7 +53,8 @@ use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
  * nothing the placement sends reads or writes a product's stock summary, whose projector hears the
  * reservation after the response; the allocation reads the hold's rows, item by item, once. The calculation plans where
  * the units are held: it reads the locations, the units each has, and the store's routing mode
- * with the days a transfer adds (one read of their group), each once, cold; the first unit
+ * with the days a transfer adds (one read of their group, which the checkout's rules make with
+ * their own, before the calculation), each once, cold; the first unit
  * records the location the order ships from, and the second reads the mode again only when a
  * unit is allocated away from it, warm in the same request.
  *
@@ -70,6 +71,10 @@ use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
  * PlaceOrder::placeInside(), ask ActorCustomers::customerFor() a second time: a logged-in
  * placement's first unit grows by one, under the customer; and in the kernel's closure of a user's
  * registration time, clean the user's cache before reading it: the customer's step reads the user.
+ * The checkout's rules read their settings group in the statement that primes the routing mode's
+ * group, which the calculation read cold before: in CheckoutRules::current(), read the `checkout`
+ * group in a values() call of its own: the part before the first unit grows by one (Cart A's to 11),
+ * under the checkout's rules.
  *
  * @group performance
  *
@@ -92,6 +97,7 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		'replay: the key, read'            => 'MysqlIdempotencyKeys->replay',
 		'declines: the cart\'s count'      => 'PlaceOrder->refuseAfterDeclines',
 		'cart: its row and lines'          => 'CartService->current',
+		'the checkout\'s rules'            => 'CheckoutRules->current',
 		'calculation'                      => 'CartService->calculation',
 		'session: its read'                => 'MysqlCheckoutSessions->find',
 		'a. the cart\'s claim'             => 'CartService->claimForPlacement',

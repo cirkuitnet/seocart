@@ -198,7 +198,23 @@ final class PlaceOrderTest extends PlacementTestCase {
 
 		$refused = $this->assertRefused( CheckoutError::SessionIncomplete, fn() => $this->placement->place( $this->placeInput(), self::guest() ) );
 
-		$this->assertSame( array( 'missing' => array( 'billing_address.email' ) ), $refused->details(), 'An order needs an e-mail address to send its messages to.' );
+		$this->assertSame(
+			array(
+				'missing' => array(
+					'billing_address.email',
+					'billing_address.first_name',
+					'billing_address.last_name',
+					'billing_address.line1',
+					'billing_address.city',
+					'shipping_address.first_name',
+					'shipping_address.last_name',
+					'shipping_address.line1',
+					'shipping_address.city',
+				),
+			),
+			$refused->details(),
+			'An order needs every field the store requires: an e-mail address to send its messages to, a name and a street to deliver to.'
+		);
 	}
 
 	/**

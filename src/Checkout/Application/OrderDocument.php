@@ -232,12 +232,15 @@ final class OrderDocument {
 	/**
 	 * Returns how the prices of the order's lines were entered: the basis they share, or MIXED_ENTRY.
 	 *
+	 * The order records it, and the order limits measure the goods on it (OrderLimits::amountOf()).
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Public, for the order limits.
 	 *
 	 * @param Totals $totals The totals.
 	 * @return string `net`, `gross` or `mixed`.
 	 */
-	private static function priceEntryMode( Totals $totals ): string {
+	public static function priceEntryMode( Totals $totals ): string {
 		$bases = array_unique( array_map( static fn( TotalsLine $line ): string => $line->line->unitPrice->basis->value, $totals->lines ) );
 
 		return 1 === count( $bases ) ? (string) reset( $bases ) : self::MIXED_ENTRY;

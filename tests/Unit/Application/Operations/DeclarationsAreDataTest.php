@@ -32,7 +32,10 @@ use SEOCart\Tests\Fixtures\Operations\FixtureStockOperation;
  *   reasons they list, the caps on refused promotion
  *   codes and on currency switches, and the declared shape of totals with the enums it lists, the
  *   checkout's declarations with their error catalog, the address document whose fields they state,
- *   the details whose method key they bound and the payment gateway descriptor whose id length
+ *   the built-in checkout fields the address is compiled from, with the contract types they are
+ *   declared with and the carriers they name, the staff's checkout operations with the checkout
+ *   settings whose limits they state, the order limits whose verdicts and bases the session write
+ *   lists, the details whose method key they bound and the payment gateway descriptor whose id length
  *   bounds the payment method, the next action whose types and bounds the placement states, the
  *   refund caps' settings with the payment error catalog their check names, the refund's
  *   declaration with the reasons it lists, the capture's and the void's
@@ -102,6 +105,12 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Checkout/Domain/CheckoutDetails.php',
 		'src/Checkout/Domain/IdempotencyClaim.php',
 		'src/Checkout/Domain/PlacementOutcome.php',
+		'src/Checkout/Domain/Fields/BuiltInFields.php',
+		'src/Checkout/Domain/Fields/Carrier.php',
+		'src/Checkout/Application/CheckoutSettings.php',
+		'src/Checkout/Application/OrderLimits.php',
+		'src/Checkout/Interfaces/Rest/CheckoutSettingsOperations.php',
+		'src/Contracts/Checkout/',
 		'src/Contracts/Payment/GatewayDescriptor.php',
 		'src/Contracts/Payment/NextAction.php',
 		'src/Payment/Application/RefundCapSettings.php',

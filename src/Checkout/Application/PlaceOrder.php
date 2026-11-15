@@ -70,7 +70,11 @@ use SEOCart\Support\Error\CodedException;
  * Owns one fact: the order in which a placement does its work. Before anything is written, a
  * request whose key an earlier request placed its order with is answered as that one was; then
  * the cart, its checkout and its totals are checked, and the cart is priced from what the store
- * holds, never from the client: the client's grand total must be the one priced. The pricing plans
+ * holds, never from the client: the client's grand total must be the one priced. The checkout is
+ * judged once by the checkout's rules (CheckoutRules::forPlacement()), and the order, the gateway's
+ * billing contact and the kept answer are all built from the session they answer; the goods of
+ * every calculation the order may be placed with are judged against the store's order limits
+ * (OrderLimits::refuse()). The pricing plans
  * where the order's units are held and the one location it is fulfilled from, from the stock as
  * read then. The payment
  * method chosen must still be able to take that total, by its gateway's capability matrix and the
@@ -129,7 +133,8 @@ use SEOCart\Support\Error\CodedException;
  *              each unit where the plan found it, records where the order is fulfilled from, and plans
  *              once more when the plan went stale. Leaves the payment data out of a request's
  *              fingerprint. Records the customer a logged-in user's order belongs to, and gives a kept
- *              answer for a customer's order back to that customer alone.
+ *              answer for a customer's order back to that customer alone. Judges the checkout by the
+ *              checkout's rules, and the goods by the store's order limits.
  */
 final class PlaceOrder {
 
@@ -217,6 +222,7 @@ final class PlaceOrder {
 	 * @param ClientIdentities   $identities  Names the cart a count is kept for.
 	 * @param Gateways           $gateways    The store's payment gateways, which say whether the payment method can take the payment.
 	 * @param PlannedPricing     $pricing     The cart's pricing with its plan, which may ask once more.
+	 * @param CheckoutRules      $rules       The checkout's rules, which judge the session before it is priced.
 	 */
 	public function __construct(
 		private CartService $carts,
@@ -234,7 +240,8 @@ final class PlaceOrder {
 		private RateLimiter $limiter,
 		private ClientIdentities $identities,
 		private Gateways $gateways,
-		private PlannedPricing $pricing
+		private PlannedPricing $pricing,
+		private CheckoutRules $rules
 	) {
 	}
 
@@ -260,8 +267,10 @@ final class PlaceOrder {
 	 *                        `cart.not_found`; `store_api.rate_limited` after too many declines of the cart;
 	 *                        `cart.not_open` (naming the order being placed) and
 	 *                        `cart.version_stale`; `checkout.cart_empty`,
-	 *                        `checkout.session_incomplete`, `checkout.line_unsellable`,
-	 *                        `checkout.totals_changed` and `checkout.payment_method_unavailable`,
+	 *                        `checkout.session_incomplete`, `checkout.invalid_fields`,
+	 *                        `checkout.line_unsellable`, `checkout.totals_changed`,
+	 *                        `checkout.subtotal_below_minimum`, `checkout.subtotal_above_maximum`
+	 *                        and `checkout.payment_method_unavailable`,
 	 *                        before anything is written; `stock.routing_refused` and
 	 *                        `stock.no_fulfilling_location` when no plan gives the order its units;
 	 *                        `stock.insufficient`, `stock.location_missing`, `stock.location_inactive`
@@ -309,7 +318,8 @@ final class PlaceOrder {
 
 		$this->refuseAfterDeclines( $token );
 
-		$session     = $this->sessions->find( $cart->id );
+		// The session as the checkout's rules let it be placed: the order, the gateway's contact and the kept answer are built from it.
+		$session     = $this->rules->forPlacement( $this->sessions->find( $cart->id ) );
 		$replan      = true;
 		$calculation = $this->priced( $cart, $session, $input, $replan );
 		$mode        = $this->paymentMode( $session, $calculation );
@@ -635,37 +645,32 @@ final class PlaceOrder {
 	}
 
 	/**
-	 * Prices the cart as the store holds it, and refuses a placement it cannot make at the totals the client agreed to.
+	 * Prices the cart as the store holds it, and refuses a placement it cannot make at the totals the client agreed to, or outside the store's order limits.
 	 *
 	 * Priced with its plan through PlannedPricing: a plan refused for too few units may be asked
 	 * once more, after the expired holds of the variants it named are reclaimed, and that is the
-	 * placement's one plan more.
+	 * placement's one plan more. The order limits of the cart's currency are judged on the
+	 * calculation the order is placed with, whichever plan it came from, before anything is written.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 Priced with its plan, which may be asked once more.
+	 * @since 0.2.0 Priced with its plan, which may be asked once more. The session comes judged by the
+	 *              checkout's rules, and the order limits are checked.
 	 *
-	 * @throws CodedException `checkout.session_incomplete` with the fields missing;
-	 *                        `checkout.line_unsellable` for a line with no price in the cart's
+	 * @throws CodedException `checkout.line_unsellable` for a line with no price in the cart's
 	 *                        currency; `checkout.totals_changed` with the cart's version and totals;
-	 *                        the plan's refusals.
+	 *                        `checkout.subtotal_below_minimum` and `checkout.subtotal_above_maximum`
+	 *                        (OrderLimits::refuse()); the plan's refusals.
 	 *
 	 * @param Cart                 $cart    The cart.
-	 * @param CheckoutSession|null $session Its checkout, or null when it has none.
+	 * @param CheckoutSession      $session Its checkout, as the checkout's rules let it be placed.
 	 * @param array<string, mixed> $input   The request's grand total and currency.
 	 * @param bool                 $replan  Whether the placement may still plan once more; set to false when the
 	 *                                      pricing did.
 	 * @return Calculation The totals the order is placed with.
 	 *
-	 * @phpstan-assert CheckoutSession $session
 	 * @param-out bool $replan
 	 */
-	private function priced( Cart $cart, ?CheckoutSession $session, array $input, bool &$replan ): Calculation {
-		$missing = null === $session ? array( 'billing_address', 'shipping_address', 'payment_method_key' ) : $session->details->missingForPlacement();
-
-		if ( array() !== $missing || null === $session ) {
-			CodedException::raise( CheckoutError::SessionIncomplete, array(), array( 'missing' => $missing ) );
-		}
-
+	private function priced( Cart $cart, CheckoutSession $session, array $input, bool &$replan ): Calculation {
 		// Priced and planned with the session just read: the cart's claim, at the version read with it, refuses a session changed since.
 		$delivery    = CheckoutSession::deliveryOf( $session );
 		$calculation = $this->pricing->price( fn(): Calculation => $this->carts->calculation( $cart, $delivery, RoutingScope::checkout() ), $replan );
@@ -693,6 +698,8 @@ final class PlaceOrder {
 				)
 			);
 		}
+
+		OrderLimits::refuse( $calculation->totals, $this->rules->orderLimits() );
 
 		return $calculation;
 	}

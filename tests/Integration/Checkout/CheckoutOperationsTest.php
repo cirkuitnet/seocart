@@ -83,7 +83,8 @@ final class CheckoutOperationsTest extends CheckoutTestCase {
 		$written = $this->store( 'PUT', CheckoutOperations::ROUTE, $body );
 
 		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
-		$this->assertSame( array( 'checkout_session', 'version', 'totals', 'delivery' ), array_keys( $written['body'] ) );
+		$this->assertSame( array( 'checkout_session', 'version', 'totals', 'delivery', 'order_limit' ), array_keys( $written['body'] ) );
+		$this->assertNull( $written['body']['order_limit'], 'A currency without an order limit has none to tell.' );
 		$this->assertSame(
 			array(
 				'requires_transfer' => false,
@@ -196,7 +197,16 @@ final class CheckoutOperationsTest extends CheckoutTestCase {
 		);
 
 		$this->assertSame( 422, $invalid['status'] );
-		$this->assertErrorShape( $invalid['body'], 'checkout.invalid_address', 422 );
+		$this->assertErrorShape( $invalid['body'], 'checkout.invalid_fields', 422 );
+		$this->assertSame(
+			array(
+				array(
+					'field'  => 'billing_address.country',
+					'reason' => 'format',
+				),
+			),
+			$invalid['body']['data']['details']['fields'] ?? null
+		);
 
 		$unoffered = $this->store(
 			'PUT',

@@ -38,15 +38,15 @@ final class CheckoutFieldTest extends TestCase {
 		$label = static fn(): string => 'Label';
 
 		return array(
-			'a key that is not snake_case'          => array( static fn(): CheckoutField => new CheckoutField( 'PoNumber', Section::Order, CheckoutFieldType::Text, $label, 20, array( Presence::Optional ) ) ),
-			'a key of 49 characters'                => array( static fn(): CheckoutField => new CheckoutField( str_repeat( 'a', 49 ), Section::Order, CheckoutFieldType::Text, $label, 20, array( Presence::Optional ) ) ),
-			'no presence'                           => array( static fn(): CheckoutField => new CheckoutField( 'po_number', Section::Order, CheckoutFieldType::Text, $label, 20, array() ) ),
-			'a presence twice'                      => array( static fn(): CheckoutField => new CheckoutField( 'po_number', Section::Order, CheckoutFieldType::Text, $label, 20, array( Presence::Optional, Presence::Optional ) ) ),
-			'options on a text field'               => array( static fn(): CheckoutField => new CheckoutField( 'po_number', Section::Order, CheckoutFieldType::Text, $label, 20, array( Presence::Optional ), options: array( 'a' => $label ) ) ),
-			'51 options'                            => array( static fn(): CheckoutField => new CheckoutField( 'slot', Section::Order, CheckoutFieldType::Select, $label, 20, array( Presence::Optional ), options: array_fill_keys( array_map( static fn( int $n ): string => 'o' . $n, range( 1, 51 ) ), $label ) ) ),
-			'a one-line field of 256 characters'    => array( static fn(): CheckoutField => new CheckoutField( 'po_number', Section::Order, CheckoutFieldType::Text, $label, 256, array( Presence::Optional ) ) ),
-			'a textarea of 2,001 characters'        => array( static fn(): CheckoutField => new CheckoutField( 'note', Section::Order, CheckoutFieldType::Textarea, $label, 2001, array( Presence::Optional ) ) ),
-			'a length of 0'                         => array( static fn(): CheckoutField => new CheckoutField( 'po_number', Section::Order, CheckoutFieldType::Text, $label, 0, array( Presence::Optional ) ) ),
+			'a key that is not snake_case'       => array( static fn(): CheckoutField => new CheckoutField( 'PoNumber', Section::Order, CheckoutFieldType::Text, $label, 20, array( Presence::Optional ) ) ),
+			'a key of 49 characters'             => array( static fn(): CheckoutField => new CheckoutField( str_repeat( 'a', 49 ), Section::Order, CheckoutFieldType::Text, $label, 20, array( Presence::Optional ) ) ),
+			'no presence'                        => array( static fn(): CheckoutField => new CheckoutField( 'po_number', Section::Order, CheckoutFieldType::Text, $label, 20, array() ) ),
+			'a presence twice'                   => array( static fn(): CheckoutField => new CheckoutField( 'po_number', Section::Order, CheckoutFieldType::Text, $label, 20, array( Presence::Optional, Presence::Optional ) ) ),
+			'options on a text field'            => array( static fn(): CheckoutField => new CheckoutField( 'po_number', Section::Order, CheckoutFieldType::Text, $label, 20, array( Presence::Optional ), options: array( 'a' => $label ) ) ),
+			'51 options'                         => array( static fn(): CheckoutField => new CheckoutField( 'slot', Section::Order, CheckoutFieldType::Select, $label, 20, array( Presence::Optional ), options: array_fill_keys( array_map( static fn( int $n ): string => 'o' . $n, range( 1, 51 ) ), $label ) ) ),
+			'a one-line field of 256 characters' => array( static fn(): CheckoutField => new CheckoutField( 'po_number', Section::Order, CheckoutFieldType::Text, $label, 256, array( Presence::Optional ) ) ),
+			'a textarea of 2,001 characters'     => array( static fn(): CheckoutField => new CheckoutField( 'note', Section::Order, CheckoutFieldType::Textarea, $label, 2001, array( Presence::Optional ) ) ),
+			'a length of 0'                      => array( static fn(): CheckoutField => new CheckoutField( 'po_number', Section::Order, CheckoutFieldType::Text, $label, 0, array( Presence::Optional ) ) ),
 		);
 	}
 
@@ -57,12 +57,12 @@ final class CheckoutFieldTest extends TestCase {
 	 *
 	 * @dataProvider refused
 	 *
-	 * @param \Closure $declare Builds the declaration.
+	 * @param \Closure $build Builds the declaration.
 	 */
-	public function test_a_declaration_breaking_a_rule_is_refused( \Closure $declare ): void {
+	public function test_a_declaration_breaking_a_rule_is_refused( \Closure $build ): void {
 		$this->expectException( \InvalidArgumentException::class );
 
-		$declare();
+		$build();
 	}
 
 	/**

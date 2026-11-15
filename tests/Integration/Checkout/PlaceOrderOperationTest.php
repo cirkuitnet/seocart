@@ -18,6 +18,7 @@ use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
 use SEOCart\Checkout\Application\KeptAnswer;
 use SEOCart\Checkout\Application\PlaceOrder;
+use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
@@ -357,21 +358,8 @@ final class PlaceOrderOperationTest extends PlacementTestCase {
 			CheckoutOperations::ROUTE,
 			array(
 				'cart_version'       => 1,
-				'billing_address'    => array(
-					'country'    => 'US',
-					'first_name' => 'Ada',
-					'last_name'  => 'Lovelace',
-					'line1'      => '1 Main Street',
-					'city'       => 'Austin',
-					'postcode'   => '78701',
-					'email'      => 'ada@example.com',
-				),
-				'shipping_address'   => array(
-					'country'  => 'US',
-					'line1'    => '1 Main Street',
-					'city'     => 'Austin',
-					'postcode' => '78701',
-				),
+				'billing_address'    => self::wireAddress( Carrier::BILLING, 'US', 'ada@example.com' ),
+				'shipping_address'   => self::wireAddress( Carrier::SHIPPING, 'US' ),
 				'payment_method_key' => StubGateway::ID,
 			)
 		);

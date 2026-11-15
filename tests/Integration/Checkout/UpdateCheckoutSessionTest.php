@@ -162,28 +162,40 @@ final class UpdateCheckoutSessionTest extends CheckoutTestCase {
 	}
 
 	/**
-	 * Tests that an address the checkout cannot use is refused, naming its field, before anything is written.
+	 * Tests that an address the checkout cannot use is refused, naming its field and why, before anything is written.
 	 *
-	 * Planted violation: in UpdateCheckoutSession::address(), leave out the e-mail check: a billing
-	 * address with an e-mail address that is not one is then stored.
+	 * Planted violation: in CheckoutRules::typeFault(), accept any email address: a billing address
+	 * with an e-mail address that is not one is then stored.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Refused as checkout.invalid_fields, with the field and why.
 	 */
 	public function test_an_invalid_address_is_refused_before_anything_is_written(): void {
 		$cart    = $this->startCart( array( $this->shirt => 1 ) );
 		$invalid = array(
-			'shipping_address.country' => array( 'shipping_address' => array( 'country' => 'gb' ) + AddressDocument::of( self::address( 'GB' ) ) ),
-			'billing_address.country'  => array( 'billing_address' => array( 'country' => 'GBR' ) + AddressDocument::of( self::address( 'GB' ) ) ),
-			'billing_address.email'    => array( 'billing_address' => AddressDocument::of( self::address( 'GB', 'not an e-mail address' ) ) ),
+			'shipping_address.country' => array( array( 'shipping_address' => array( 'country' => 'gb' ) + AddressDocument::of( self::address( 'GB' ) ) ), 'format' ),
+			'billing_address.country'  => array( array( 'billing_address' => array( 'country' => 'GBR' ) + AddressDocument::of( self::address( 'GB' ) ) ), 'too_long' ),
+			'billing_address.email'    => array( array( 'billing_address' => AddressDocument::of( self::address( 'GB', 'not an e-mail address' ) ) ), 'format' ),
 		);
 
-		foreach ( $invalid as $field => $details ) {
+		foreach ( $invalid as $field => list( $details, $reason ) ) {
 			try {
 				$this->checkout->update( $this->input( 1, $details ), self::guest() );
 				$this->fail( $field . ' was accepted.' );
 			} catch ( CodedException $refused ) {
-				$this->assertSame( CheckoutError::InvalidAddress, $refused->errorCode() );
-				$this->assertSame( array( 'field' => $field ), $refused->context() );
+				$this->assertSame( CheckoutError::InvalidFields, $refused->errorCode() );
+				$this->assertSame(
+					array(
+						'fields' => array(
+							array(
+								'field'  => $field,
+								'reason' => $reason,
+							),
+						),
+					),
+					$refused->details(),
+					"{$field}: a value is judged by its length before its format."
+				);
 			}
 		}
 

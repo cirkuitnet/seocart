@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Platform\Settings;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Checkout\Application\CheckoutSettings;
 use SEOCart\Inventory\Application\InventorySettings;
 use SEOCart\Payment\Application\RefundCapSettings;
 use SEOCart\Platform\Authorization\CapabilityDeclaration;
@@ -65,6 +66,8 @@ final class SettingsRegistryTest extends TestCase {
 				'seocart_inventory_multi_location_fulfilment' => array( InventorySettings::MULTI_LOCATION_FULFILMENT ),
 				'seocart_inventory_transfer_lead_days'    => array( InventorySettings::TRANSFER_LEAD_DAYS ),
 				'seocart_inventory_transfer_warning_days' => array( InventorySettings::TRANSFER_WARNING_DAYS ),
+				'seocart_checkout_field_presence'         => array( CheckoutSettings::FIELD_PRESENCE ),
+				'seocart_checkout_order_limits'           => array( CheckoutSettings::ORDER_LIMITS ),
 			),
 			$options
 		);
@@ -173,6 +176,8 @@ final class SettingsRegistryTest extends TestCase {
 				'seocart_inventory_multi_location_fulfilment' => array( 'Settings', InventorySettings::settings()[0]->field()->description(), false, Classification::Public ),
 				'seocart_inventory_transfer_lead_days'    => array( 'Settings', InventorySettings::settings()[1]->field()->description(), false, Classification::Public ),
 				'seocart_inventory_transfer_warning_days' => array( 'Settings', InventorySettings::settings()[2]->field()->description(), false, Classification::Public ),
+				'seocart_checkout_field_presence'         => array( 'Settings', CheckoutSettings::settings()[0]->field()->description(), false, Classification::Public ),
+				'seocart_checkout_order_limits'           => array( 'Settings', CheckoutSettings::settings()[1]->field()->description(), false, Classification::Public ),
 			),
 			self::described( Settings::registry()->optionDefinitions() )
 		);

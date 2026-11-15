@@ -74,22 +74,23 @@ final readonly class CheckoutDetails {
 	}
 
 	/**
-	 * Lists what an order cannot be placed without and the details lack: both addresses, an e-mail address on the billing one, and a payment method.
+	 * Lists the details an order cannot be placed without and these lack: both addresses and a payment method.
 	 *
-	 * The shipping method may be left out: the cheapest rate quoted is the one charged.
+	 * The shipping method may be left out: the cheapest rate quoted is the one charged. Which fields
+	 * an address needs, the email address on the billing one among them, is the checkout's rules'
+	 * to say (CheckoutRules::forPlacement()).
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The billing address's email address is the checkout's rules' to ask for.
 	 *
-	 * @return list<string> The missing fields, by wire name: `billing_address`, `billing_address.email`,
-	 *                      `shipping_address` and `payment_method_key`; none when an order can be placed.
+	 * @return list<string> The missing details, by wire name: `billing_address`, `shipping_address`
+	 *                      and `payment_method_key`; none when the details are all given.
 	 */
 	public function missingForPlacement(): array {
 		$missing = array();
 
 		if ( null === $this->billingAddress ) {
 			$missing[] = 'billing_address';
-		} elseif ( '' === trim( $this->billingAddress->email() ) ) {
-			$missing[] = 'billing_address.email';
 		}
 
 		if ( null === $this->shippingAddress ) {

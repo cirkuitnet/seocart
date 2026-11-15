@@ -65,7 +65,10 @@ use SEOCart\Catalog\Interfaces\Admin\ProductEditorPanel;
 use SEOCart\Catalog\Interfaces\Cli\CatalogCommand;
 use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
 use SEOCart\Checkout\Application\ChangeCartCurrency;
+use SEOCart\Checkout\Application\CheckoutForm;
+use SEOCart\Checkout\Application\CheckoutRules;
 use SEOCart\Checkout\Application\CheckoutSessions;
+use SEOCart\Checkout\Application\CheckoutSettingsService;
 use SEOCart\Checkout\Application\IdempotencyKeys;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\PlannedPricing;
@@ -75,6 +78,7 @@ use SEOCart\Checkout\Application\SettlePlacement;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\CheckoutSession;
+use SEOCart\Checkout\Domain\Fields\BuiltInFields;
 use SEOCart\Checkout\Infrastructure\Doctor\CheckoutChecks;
 use SEOCart\Checkout\Infrastructure\Jobs\IdempotencyKeyRetention;
 use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
@@ -1486,7 +1490,11 @@ final class Modules {
 		$container->bind( MysqlIdempotencyKeys::class, static fn( Container $c ): MysqlIdempotencyKeys => new MysqlIdempotencyKeys( $c->get( Database::class ) ) );
 		$container->bind( IdempotencyKeys::class, static fn( Container $c ): IdempotencyKeys => $c->get( MysqlIdempotencyKeys::class ) );
 		$container->bind( PlannedPricing::class, static fn( Container $c ): PlannedPricing => new PlannedPricing( static fn( array $variantIds ): int => $c->get( StockService::class )->reclaimExpiredOf( $variantIds ) ) );
-		$container->bind( UpdateCheckoutSession::class, static fn( Container $c ): UpdateCheckoutSession => new UpdateCheckoutSession( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( Gateways::class ), $c->get( PlannedPricing::class ) ) );
+		// The rules read their group with the inventory group's settings, which the calculation reads next: one statement primes both.
+		$container->bind( CheckoutRules::class, static fn( Container $c ): CheckoutRules => new CheckoutRules( $c->get( SettingsStore::class ), InventorySettings::settings(), BuiltInFields::all() ) );
+		$container->bind( CheckoutForm::class, static fn( Container $c ): CheckoutForm => new CheckoutForm( $c->get( CheckoutRules::class ) ) );
+		$container->bind( CheckoutSettingsService::class, static fn( Container $c ): CheckoutSettingsService => new CheckoutSettingsService( $c->get( CheckoutRules::class ), $c->get( SettingsStore::class ), $c->get( LockService::class ) ) );
+		$container->bind( UpdateCheckoutSession::class, static fn( Container $c ): UpdateCheckoutSession => new UpdateCheckoutSession( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( Gateways::class ), $c->get( PlannedPricing::class ), $c->get( CheckoutRules::class ) ) );
 		$container->bind( ChangeCartCurrency::class, static fn( Container $c ): ChangeCartCurrency => new ChangeCartCurrency( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( PresentmentCurrencies::class ), $c->get( Orders::class ), self::baseCurrency( $c ), $c->get( ActorCustomers::class ) ) );
 		$container->bind(
 			SettlePlacement::class,
@@ -1520,7 +1528,8 @@ final class Modules {
 				$c->get( RateLimiter::class ),
 				$c->get( ClientIdentities::class ),
 				$c->get( Gateways::class ),
-				$c->get( PlannedPricing::class )
+				$c->get( PlannedPricing::class ),
+				$c->get( CheckoutRules::class )
 			)
 		);
 		$container->bind( ResumePayment::class, static fn( Container $c ): ResumePayment => new ResumePayment( $c->get( TransactionManager::class ), $c->get( CartService::class ), $c->get( PaymentService::class ), $c->get( SettlePlacement::class ), $c->get( Orders::class ) ) );

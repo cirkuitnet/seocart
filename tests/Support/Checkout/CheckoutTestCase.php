@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Support\Checkout;
 
+use SEOCart\Checkout\Application\CheckoutRules;
 use SEOCart\Checkout\Application\PlannedPricing;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Checkout\Domain\AddressDocument;
@@ -19,8 +20,12 @@ use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
+use SEOCart\Contracts\Checkout\CheckoutField;
+use SEOCart\Inventory\Application\InventorySettings;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
+use SEOCart\Platform\Settings\Settings;
+use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Support\Address;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Tests\Support\Cart\CartTestCase;
@@ -97,7 +102,21 @@ abstract class CheckoutTestCase extends CartTestCase {
 
 		$this->sessions = new MysqlCheckoutSessions( $this->db );
 		$this->keys     = new MysqlIdempotencyKeys( $this->db );
-		$this->checkout = new UpdateCheckoutSession( $this->service, $this->sessions, TestGateways::of( new StubGateway() ), new PlannedPricing( static fn(): int => 0 ) );
+		$this->checkout = new UpdateCheckoutSession( $this->service, $this->sessions, TestGateways::of( new StubGateway() ), new PlannedPricing( static fn(): int => 0 ), $this->rules() );
+	}
+
+	/**
+	 * Returns the checkout's rules over `$this->db`, as the kernel wires them: the built-in fields, read with the inventory group.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CheckoutField[] $fields Optional. The declared fields. Default the built-in ones.
+	 * @return CheckoutRules The rules, which read nothing until first asked.
+	 *
+	 * @phpstan-param list<CheckoutField>|null $fields
+	 */
+	protected function rules( ?array $fields = null ): CheckoutRules {
+		return new CheckoutRules( new SettingsStore( Settings::registry(), $this->db ), InventorySettings::settings(), $fields ?? BuiltInFields::all() );
 	}
 
 	/**
