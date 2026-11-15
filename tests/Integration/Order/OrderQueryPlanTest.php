@@ -357,7 +357,12 @@ final class OrderQueryPlanTest extends OrderTestCase {
 		// A customer's list of their orders, a page and one more.
 		$repository->ownOrders( 1, 0, 21 );
 
-		// The customer module's reads: the link a customer is found by, by the user's id, and doctor's page of linked records.
+		// The customer module's reads: the link a customer is found by, by the user's id, and doctor's page of linked records,
+		// over records planted unrecorded.
+		$this->plantCustomer( 1, '2026-01-01 00:00:00' );
+		$this->plantCustomer( 2, '2026-01-02 00:00:00' );
+		$this->plantCustomer( null, null );
+
 		$customers = new MysqlCustomerRepository( $db );
 
 		$customers->linkOf( 1 );

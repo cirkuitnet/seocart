@@ -20,6 +20,7 @@ use SEOCart\Catalog\Domain\Variant;
 use SEOCart\Catalog\Domain\VariantSelection;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
+use SEOCart\Customer\Infrastructure\CustomerTables;
 use SEOCart\Inventory\Domain\LedgerReason;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
 use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
@@ -383,6 +384,7 @@ final class ReferenceSeed {
 			CheckoutTables::IDEMPOTENCY_KEYS     => 'Only an order placement claims a key, and there are no orders yet. A claim finds a key by its unique key, but doctor\'s search for stranded keys reads the whole table, so the query-plan run writes keys of its own to judge it.',
 			PromotionTables::CONDITIONS          => 'No condition is evaluated yet, so none is seeded.',
 			PromotionTables::USAGE               => 'Only an order uses a promotion, and there are no orders yet.',
+			CustomerTables::CUSTOMERS            => 'A customer record is created at a user\'s first order placed while logged in, and the dataset has no orders yet; its link is read by its unique key, and doctor\'s pages of linked records by the primary key.',
 		) + array_fill_keys( OrderTables::names(), 'The dataset has no orders yet: placing orders is a workload of its own.' )
 			+ array_fill_keys( PaymentTables::names(), 'A payment is made for an order, and the dataset has no orders yet.' )
 			+ array( PaymentTables::OFFLINE_PAYMENTS => 'A payment received offline is recorded for a paid order, and the dataset has no orders yet; its one statement writes it beside its ledger row, found by the row\'s id.' )

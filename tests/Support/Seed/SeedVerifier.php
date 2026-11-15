@@ -60,6 +60,7 @@ use SEOCart\Pricing\Infrastructure\Doctor\RateVersionCheck;
 use SEOCart\Pricing\Infrastructure\MysqlExchangeRates;
 use SEOCart\Pricing\Infrastructure\MysqlPresentmentCurrencies;
 use SEOCart\Pricing\Infrastructure\PricingCurrencyTerms;
+use SEOCart\Customer\Infrastructure\Doctor\StaleLinksCheck;
 use SEOCart\Promotion\Infrastructure\Doctor\PromotionUsageCheck;
 use SEOCart\Promotion\Infrastructure\MysqlPromotionRepository;
 use SEOCart\Support\Currency;
@@ -67,6 +68,7 @@ use SEOCart\Support\SystemClock;
 use SEOCart\Tests\Support\Doubles\RecordingEventPublisher;
 use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\Inventory\StockServices;
+use SEOCart\Tests\Support\KernelContainer;
 use SEOCart\Tests\Support\Payment\TestGateways;
 
 /**
@@ -183,6 +185,7 @@ final class SeedVerifier {
 				}
 			),
 			new PromotionUsageCheck( new MysqlPromotionRepository( $db ) ),
+			KernelContainer::build( $db, $report )->get( StaleLinksCheck::class ),
 			new SecretsCheck( self::secretsStatus( $db ) ),
 			...( new CatalogChecks( $products, $stock, $groups, $settler, new SystemClock(), $db, static fn(): Currency => Currency::of( $baseCurrency ), array( new LockService( $db, LockMode::GetLock ), 'withLock' ), new MysqlStockSummaryProjection( $db ), new MysqlPriceProjections( $db ), self::currencyTerms( $db, $report, $baseCurrency ), new MysqlCatalogSearch( $db ), new MysqlCatalogSearch( $db ) ) )->checks()
 		);
