@@ -18,7 +18,9 @@
  * When the page loads, the host settles what the tab kept from an earlier load: the payment a
  * provider sent the shopper back for, or the placement whose answer was lost (recover()). It never
  * acts by itself then: it asks the store, hands over an order the store settled, and otherwise
- * waits for the shopper to place again.
+ * waits for the shopper to place again. A page the browser restores from its back/forward cache
+ * after the shopper left it for the provider's step, by Back, is taken as a page loaded again
+ * (onShow).
  *
  * The host sends those two writes and no other. It does not write the checkout's details (the
  * payment method chosen among them: onSelect() asks the checkout to), it has no Place button and
@@ -976,6 +978,39 @@ export function createHost( root, options, env ) {
 		}
 	}
 
+	/**
+	 * Settles what the tab kept as the page loads (recover()): the payment the address carries back
+	 * from a provider, taken off it so that a reload does not resume it again, or else the kept
+	 * placement; a placement kept for another shopper is forgotten first.
+	 *
+	 * @return {Promise<void>} Once the flow rests.
+	 */
+	function load() {
+		const returned = returnedIntent(
+			scope.location.href,
+			config.returnQueryArg
+		);
+
+		if ( returned ) {
+			// Once handled, a reload must not resume again.
+			scope.history.replaceState(
+				scope.history.state,
+				'',
+				withoutReturn( scope.location.href, config.returnQueryArg )
+			);
+		}
+
+		const inherited = keeper.read();
+
+		// A placement kept for another shopper of this tab, another account or a guest's against an
+		// account's, is forgotten without a request: its order is not this shopper's to be handed.
+		if ( inherited && inherited.shopper !== config.shopper ) {
+			keeper.clear();
+		}
+
+		return recover( returned );
+	}
+
 	const host = {
 		/**
 		 * Takes the cart as it is now. An older version than the one held is ignored; while the
@@ -1176,6 +1211,7 @@ export function createHost( root, options, env ) {
 			unmount();
 			stopListening();
 			view.group.removeEventListener( 'change', onPick );
+			scope.removeEventListener( 'pageshow', onShow );
 			view.destroy();
 		},
 	};
@@ -1187,6 +1223,26 @@ export function createHost( root, options, env ) {
 	 */
 	const onPick = ( event ) => host.select( event.target.value );
 
+	/**
+	 * Treats a page the browser restores from its back/forward cache while the host was in the
+	 * provider's step as a page loaded again. The shopper left it for the step (an island's `left`,
+	 * the host's redirect, or their own way off the page while the step was under way) and came
+	 * back by Back: the page would otherwise stay in the step, and placing would do nothing. The
+	 * island is mounted again, which abandons whatever the step was still doing, and the host
+	 * settles what the tab kept as on loading. Restored in any other phase, the page carries on as
+	 * it was left: nothing was left mid-step, and a request under way is answered as it would have
+	 * been.
+	 *
+	 * @param {PageTransitionEvent} event The page's showing.
+	 */
+	const onShow = ( event ) => {
+		if ( event.persisted && 'acting' === phase ) {
+			unmount();
+			render();
+			load();
+		}
+	};
+
 	// An island that registers after the host was created is shown, and mounted when selected.
 	const stopListening = env.onRegister( ( id ) => {
 		if ( methods.has( id ) && 'idle' === phase && ! destroyed ) {
@@ -1196,32 +1252,10 @@ export function createHost( root, options, env ) {
 	} );
 
 	view.group.addEventListener( 'change', onPick );
+	scope.addEventListener( 'pageshow', onShow );
 	render( true );
 	emit();
-
-	const returned = returnedIntent(
-		scope.location.href,
-		config.returnQueryArg
-	);
-
-	if ( returned ) {
-		// Once handled, a reload must not resume again.
-		scope.history.replaceState(
-			scope.history.state,
-			'',
-			withoutReturn( scope.location.href, config.returnQueryArg )
-		);
-	}
-
-	const inherited = keeper.read();
-
-	// A placement kept for another shopper of this tab, another account or a guest's against an
-	// account's, is forgotten without a request: its order is not this shopper's to be handed.
-	if ( inherited && inherited.shopper !== config.shopper ) {
-		keeper.clear();
-	}
-
-	recover( returned );
+	load();
 
 	return host;
 }

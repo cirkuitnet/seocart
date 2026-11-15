@@ -108,13 +108,15 @@ function config( methods, fields = {} ) {
  *
  * @param {string} id        Its id.
  * @param {Object} behaviour Optional. `token` (a list gives one per confirmation), `action` (what
- *                           action() resolves to, or false for an island that takes no step),
- *                           `canPay`, `confirm` (a function replacing confirm()), `mountFails`.
+ *                           action() resolves to, a list giving one per step, or false for an
+ *                           island that takes no step), `canPay`, `confirm` (a function replacing
+ *                           confirm()), `mountFails`. A list's last member repeats.
  * @return {{island: Object, calls: Array}} The island and its calls.
  */
 function fakeIsland( id, behaviour = {} ) {
 	const calls = [];
 	const tokens = [].concat( behaviour.token ?? 'stub:approve' );
+	const actions = [].concat( behaviour.action ?? 'completed' );
 	const island = {
 		id,
 		contractVersion: '0.1.0',
@@ -143,7 +145,7 @@ function fakeIsland( id, behaviour = {} ) {
 					} ),
 				action: async ( next, resume ) => {
 					calls.push( [ 'action', next, resume ] );
-					return behaviour.action ?? 'completed';
+					return actions.length > 1 ? actions.shift() : actions[ 0 ];
 				},
 				showError: ( error ) => calls.push( [ 'showError', error ] ),
 				unmount: () => calls.push( [ 'unmount' ] ),
@@ -236,6 +238,8 @@ const stored = () =>
 function setUp( setup = {} ) {
 	let minted = 0;
 	const { fetch, requests } = scriptedFetch( setup.answers ?? [] );
+	// The page's own events, such as its showing again (showPage()).
+	const events = new EventTarget();
 	const scope = {
 		document,
 		CustomEvent,
@@ -245,6 +249,10 @@ function setUp( setup = {} ) {
 		history: { state: null, replaceState: jest.fn() },
 		sessionStorage: window.sessionStorage,
 		fetch,
+		addEventListener: ( ...args ) => events.addEventListener( ...args ),
+		removeEventListener: ( ...args ) =>
+			events.removeEventListener( ...args ),
+		dispatchEvent: ( event ) => events.dispatchEvent( event ),
 	};
 	const installed = installRegistry( scope );
 
@@ -306,6 +314,18 @@ function setUp( setup = {} ) {
 }
 
 const names = ( calls ) => calls.map( ( [ name ] ) => name );
+
+/**
+ * Shows the page again, as the browser does when the shopper comes back to it: restored from its
+ * back/forward cache, as it was left, or not.
+ *
+ * @param {Object}  scope     The page.
+ * @param {boolean} persisted Optional. Whether the page was restored from the cache. Default true.
+ */
+const showPage = ( scope, persisted = true ) =>
+	scope.dispatchEvent(
+		new window.PageTransitionEvent( 'pageshow', { persisted } )
+	);
 
 beforeEach( () => {
 	window.sessionStorage.clear();
@@ -1616,6 +1636,385 @@ describe( 'on loading', () => {
 		] );
 		expect( requests[ 1 ].body.payment_data ).toEqual( {} );
 		expect( heard.placed ).toHaveLength( 1 );
+	} );
+} );
+
+describe( 'a page restored from the back/forward cache', () => {
+	/**
+	 * Sends the requests the host makes from now on, and holds each answer until it is released.
+	 *
+	 * @param {Object} scope The page.
+	 * @return {Function[]} The releases, one per request, in order.
+	 */
+	function holdAnswers( scope ) {
+		const send = scope.fetch;
+		const held = [];
+
+		scope.fetch = ( ...args ) => {
+			const answer = send( ...args );
+
+			return new Promise( ( resolve ) =>
+				held.push( () => resolve( answer ) )
+			);
+		};
+
+		return held;
+	}
+
+	/**
+	 * Places an order whose payment waits for the shopper, and leaves the page for the step: the
+	 * island says the shopper is leaving, or, for an island that takes no step, the host sends them
+	 * to the provider's address.
+	 *
+	 * @param {string}   by      `island` or `redirect`.
+	 * @param {Object[]} answers The answers after the placement's.
+	 * @return {Promise<Object>} The host in the step, its page, and its island's calls.
+	 */
+	async function leave( by, answers ) {
+		const { island, calls } = fakeIsland( 'stub', {
+			action: 'island' === by ? [ 'left', 'completed' ] : false,
+		} );
+		const setup = setUp( {
+			islands: [ island ],
+			answers: [ { status: 200, body: acting() }, ...answers ],
+		} );
+
+		await flush();
+		await setup.host.place();
+
+		expect( setup.last().phase ).toBe( 'acting' );
+
+		return { ...setup, calls };
+	}
+
+	const sent = ( requests ) =>
+		requests.map( ( request ) => [
+			request.route,
+			request.key,
+			request.body.intent_uuid,
+		] );
+
+	it( 'resumes the payment the island left the page for, once, as a page loaded again does; placing again sends the kept key and takes the same step', async () => {
+		const { host, scope, requests, heard, last, calls } = await leave(
+			'island',
+			[
+				{ status: 200, body: resumed( 'requires_action' ) },
+				{ status: 200, body: acting() },
+				{ status: 200, body: resumed( 'approved' ) },
+			]
+		);
+
+		showPage( scope );
+		showPage( scope );
+		await flush();
+
+		// Back by the browser: the address carries no payment, and the kept placement names it.
+		expect( scope.history.replaceState ).not.toHaveBeenCalled();
+		expect( sent( requests ) ).toEqual( [
+			[ '/checkout', 'key-1', undefined ],
+			[ '/checkout/resume', undefined, UUID ],
+		] );
+		expect( last() ).toMatchObject( {
+			phase: 'idle',
+			error: { code: 'action_incomplete' },
+		} );
+		expect( stored() ).toMatchObject( { key: 'key-1', intentUuid: UUID } );
+		// The island that left is mounted again, its form empty, as on a page loaded again.
+		expect( names( calls ) ).toEqual( [
+			'mount',
+			'confirm',
+			'action',
+			'unmount',
+			'mount',
+		] );
+
+		expect( await host.place() ).toBe( true );
+
+		expect( sent( requests ).slice( 2 ) ).toEqual( [
+			[ '/checkout', 'key-1', undefined ],
+			[ '/checkout/resume', undefined, UUID ],
+		] );
+		expect( names( calls ).slice( 5 ) ).toEqual( [ 'confirm', 'action' ] );
+		expect( calls.at( -1 )[ 2 ].intentUuid ).toBe( UUID );
+		expect( heard.placed ).toEqual( [
+			expect.objectContaining( {
+				outcome: 'approved',
+				orderKey: 'k'.repeat( 32 ),
+				intentUuid: UUID,
+			} ),
+		] );
+		expect( stored() ).toBeNull();
+	} );
+
+	it( 'hands over the order the store settled while the shopper was away, asking the kept placement for its key', async () => {
+		const { scope, requests, heard, last } = await leave( 'island', [
+			{ status: 200, body: resumed( 'approved' ) },
+			{ status: 200, body: placed( 'approved' ) },
+		] );
+
+		showPage( scope );
+		await flush();
+
+		expect( sent( requests ) ).toEqual( [
+			[ '/checkout', 'key-1', undefined ],
+			[ '/checkout/resume', undefined, UUID ],
+			[ '/checkout', 'key-1', undefined ],
+		] );
+		expect( requests[ 2 ].body.payment_data ).toEqual( {} );
+		expect( heard.placed ).toEqual( [
+			expect.objectContaining( {
+				outcome: 'approved',
+				orderKey: 'k'.repeat( 32 ),
+				intentUuid: UUID,
+			} ),
+		] );
+		expect( last().phase ).toBe( 'settled' );
+		expect( stored() ).toBeNull();
+	} );
+
+	it( 'resumes the payment the host’s own redirect left the page for', async () => {
+		const { scope, requests, last } = await leave( 'redirect', [
+			{ status: 200, body: resumed( 'requires_action' ) },
+		] );
+
+		showPage( scope );
+		await flush();
+
+		expect( sent( requests ) ).toEqual( [
+			[ '/checkout', 'key-1', undefined ],
+			[ '/checkout/resume', undefined, UUID ],
+		] );
+		expect( last().error ).toEqual( { code: 'action_incomplete' } );
+		expect( scope.location.assign ).toHaveBeenCalledTimes( 1 );
+	} );
+
+	it( 'resumes once when the page is shown again while the resume runs', async () => {
+		const { scope, requests, last } = await leave( 'island', [
+			{ status: 200, body: resumed( 'requires_action' ) },
+		] );
+		const held = holdAnswers( scope );
+
+		showPage( scope );
+		await flush();
+
+		expect( last().phase ).toBe( 'resuming' );
+
+		showPage( scope );
+		await flush();
+		held.forEach( ( release ) => release() );
+		await flush();
+
+		expect( sent( requests ) ).toEqual( [
+			[ '/checkout', 'key-1', undefined ],
+			[ '/checkout/resume', undefined, UUID ],
+		] );
+		expect( last().error ).toEqual( { code: 'action_incomplete' } );
+	} );
+
+	it( 'abandons a step still under way when the page was left: the island is mounted again, and the step’s late answer resumes nothing', async () => {
+		let answer;
+		const { island, calls } = fakeIsland( 'stub', {
+			action: new Promise( ( resolve ) => {
+				answer = resolve;
+			} ),
+		} );
+		const { host, scope, requests, heard, last } = setUp( {
+			islands: [ island ],
+			answers: [
+				{ status: 200, body: acting() },
+				{ status: 200, body: resumed( 'requires_action' ) },
+			],
+		} );
+
+		await flush();
+
+		const placing = host.place();
+
+		await flush();
+		showPage( scope );
+		await flush();
+		answer( 'completed' );
+		await placing;
+		await flush();
+
+		expect( sent( requests ) ).toEqual( [
+			[ '/checkout', 'key-1', undefined ],
+			[ '/checkout/resume', undefined, UUID ],
+		] );
+		expect( names( calls ) ).toEqual( [
+			'mount',
+			'confirm',
+			'action',
+			'unmount',
+			'mount',
+		] );
+		expect( last().error ).toEqual( { code: 'action_incomplete' } );
+		expect( heard.placed ).toEqual( [] );
+	} );
+
+	it( 'does nothing when the page is shown without being restored from the cache', async () => {
+		const { scope, requests, last, calls } = await leave( 'island', [] );
+
+		showPage( scope, false );
+		await flush();
+
+		expect( requests ).toHaveLength( 1 );
+		expect( last().phase ).toBe( 'acting' );
+		expect( names( calls ) ).toEqual( [ 'mount', 'confirm', 'action' ] );
+	} );
+
+	it.each( [
+		[
+			'idle, nothing placed',
+			async () => {
+				const { island, calls } = fakeIsland( 'stub' );
+				const setup = setUp( { islands: [ island ] } );
+
+				await flush();
+
+				return { ...setup, calls };
+			},
+		],
+		[
+			'idle, the key kept after a failure',
+			async () => {
+				const { island, calls } = fakeIsland( 'stub' );
+				const setup = setUp( {
+					islands: [ island ],
+					answers: [ { network: true } ],
+				} );
+
+				await flush();
+				await setup.host.place();
+
+				return { ...setup, calls };
+			},
+		],
+		[
+			'idle, waiting for the shopper to place again',
+			async () => {
+				const { island, calls } = fakeIsland( 'stub' );
+				const setup = setUp( {
+					islands: [ island ],
+					answers: [
+						{ status: 200, body: acting() },
+						{ status: 200, body: resumed( 'requires_action' ) },
+					],
+				} );
+
+				await flush();
+				await setup.host.place();
+
+				return { ...setup, calls };
+			},
+		],
+		[
+			'confirming',
+			async () => {
+				const { island, calls } = fakeIsland( 'stub', {
+					confirm: () => new Promise( () => {} ),
+				} );
+				const setup = setUp( { islands: [ island ] } );
+
+				await flush();
+				setup.host.place();
+				await flush();
+
+				return { ...setup, calls };
+			},
+		],
+		[
+			'placing',
+			async () => {
+				const { island, calls } = fakeIsland( 'stub' );
+				const setup = setUp( {
+					islands: [ island ],
+					answers: [ { status: 200, body: placed( 'approved' ) } ],
+				} );
+
+				await flush();
+				holdAnswers( setup.scope );
+				setup.host.place();
+				await flush();
+
+				return { ...setup, calls };
+			},
+		],
+		[
+			'resuming',
+			async () => {
+				const { island, calls } = fakeIsland( 'stub' );
+				const setup = setUp( {
+					islands: [ island ],
+					answers: [
+						{ status: 200, body: acting() },
+						{ status: 200, body: resumed( 'approved' ) },
+					],
+				} );
+
+				await flush();
+
+				const held = holdAnswers( setup.scope );
+
+				setup.host.place();
+				await flush();
+				held[ 0 ]();
+				await flush();
+
+				return { ...setup, calls };
+			},
+		],
+		[
+			'settled',
+			async () => {
+				const { island, calls } = fakeIsland( 'stub' );
+				const setup = setUp( {
+					islands: [ island ],
+					answers: [ { status: 200, body: placed( 'approved' ) } ],
+				} );
+
+				await flush();
+				await setup.host.place();
+
+				return { ...setup, calls };
+			},
+		],
+	] )(
+		'does nothing when the page is restored while %s',
+		async ( name, freeze ) => {
+			const { scope, requests, heard, last, calls } = await freeze();
+			const state = () => ( {
+				phase: last().phase,
+				error: last().error,
+				requests: requests.length,
+				calls: names( calls ),
+				placed: heard.placed.length,
+			} );
+			const before = state();
+
+			showPage( scope );
+			await flush();
+
+			expect( state() ).toEqual( before );
+		}
+	);
+
+	it( 'stops listening once destroyed', async () => {
+		const { host, scope, requests, calls } = await leave( 'island', [
+			{ status: 200, body: resumed( 'requires_action' ) },
+		] );
+
+		host.destroy();
+		showPage( scope );
+		await flush();
+
+		expect( requests ).toHaveLength( 1 );
+		expect( names( calls ) ).toEqual( [
+			'mount',
+			'confirm',
+			'action',
+			'unmount',
+		] );
 	} );
 } );
 
