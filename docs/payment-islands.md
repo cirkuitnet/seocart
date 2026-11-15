@@ -120,8 +120,10 @@ interface MountedIsland {
   only argument; `resume.billing` is the billing address as at `confirm()`'s, for a provider's
   script that asks for it. Resolve `completed` or `failed` and the host resumes the payment, whose
   answer decides; resolve `left` when the provider's script is taking the shopper away from the
-  page. A promise that never settles keeps the host in the step, so placing does nothing until the
-  page is loaded again, which resumes the payment the tab kept.
+  page. An island that answers `left` has taken the shopper away; the page they come back to, by
+  the return address or by the browser's Back (a page restored from the back/forward cache),
+  resumes the payment. A promise that never settles keeps the host in the step, so placing does
+  nothing until the page is loaded again, which resumes the payment the tab kept.
 - `showError( error )` shows a decline, or the island's own refusal, inside the island.
 - `unmount()` is synchronous: it removes the form and abandons any work in flight. After it the
   island holds nothing of that mount.
@@ -147,8 +149,9 @@ The billing address is not part of the context: it may change while the island s
 `confirm()` and `action()` are handed it as it is at each call.
 
 The host mounts the island again, `unmount()` then `mount()` with a new context, when the amount,
-the currency, the gateway, the mode or a setting changes; never when only the cart's version or
-the billing address moves, since mounting again empties the form.
+the currency, the gateway, the mode or a setting changes, and when the browser restores the page
+in the provider's step (see [A page loaded again](#a-page-loaded-again)); never when only the
+cart's version or the billing address moves, since mounting again empties the form.
 Whatever an earlier mount was still doing is then discarded, so an island never confirms an amount
 the shopper no longer sees. While the order is being placed, a cart that changes waits until the
 host is idle again.
@@ -244,6 +247,12 @@ island's form is empty then, and a step the shopper did not ask for is not taken
   way: the placement is kept and nothing is sent, and the next placement confirms and sends its
   key, which either places for the first time or is answered the order the earlier request placed.
 
+A page the browser restores from its back/forward cache, as the shopper left it, is taken as a
+page loaded again when the host was in the provider's step: the island answered `left`, the host
+sent the shopper to `next_action.url`, or the shopper left while the step was under way. The island
+is mounted again, its form empty and any work of the step abandoned, and the host resumes the
+payment the tab kept, as above. Restored at any other point, the page carries on as it was left.
+
 ## The configuration
 
 The page that shows the payment section prints the host's configuration as JSON, inside the host's
@@ -303,7 +312,9 @@ add_action(
 `add( $gatewayId, $handle, $src, $version )` enqueues the script deferred and in the footer, and
 only when the page offers the gateway's method, so a page loads the islands it shows and no other.
 An id no gateway registered with is refused with an `InvalidArgumentException`. Name the action as a
-string: the plugin's main file runs before SEOCart's classes exist. An island script may ship in the
+string: the plugin's main file runs before SEOCart's classes exist. Write an island's words with
+`wp.i18n.__()` in the plugin's text domain, and call `wp_set_script_translations()` after `add()`;
+the script stays deferred, after wp-i18n. An island script may ship in the
 plugin's `assets/` directory, which an extension's zip may hold. That directory never ships a file a
 web server would run as PHP or serve as PHP source (`.php`, `.php3` to `.php9`, `.phtml`, `.pht`,
 `.phps`, `.phar` or `.inc`, in any case, as any extension of the name): the zip builder refuses to
