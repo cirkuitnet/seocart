@@ -63,6 +63,23 @@ final readonly class PaymentRequest {
 	}
 
 	/**
+	 * Restores a request from what PHP's serialize() wrote of it, giving each member it lacks the constructor's default.
+	 *
+	 * A request serialized before a member was added, such as one an extension kept from before
+	 * the billing contact, holds no value for that member; restored as it was written, the member
+	 * would be left uninitialised and throw when read. Each member is restored through the
+	 * constructor, by name, so one the kept request lacks takes the default the constructor
+	 * declares for it: no return address, and no billing contact.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, mixed> $data The members serialize() wrote, by name.
+	 */
+	public function __unserialize( array $data ): void {
+		$this->__construct( ...$data );
+	}
+
+	/**
 	 * Returns the key the provider is sent with the authorization.
 	 *
 	 * @since 0.2.0
