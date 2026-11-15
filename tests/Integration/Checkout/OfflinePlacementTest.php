@@ -15,6 +15,7 @@ use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
+use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Order\Infrastructure\OrderTables;
@@ -293,23 +294,13 @@ final class OfflinePlacementTest extends PlacementTestCase {
 		$this->assertSame( 200, $started['status'], (string) wp_json_encode( $started['body'] ) );
 		$this->presentCookie( $this->cookies[ count( $this->cookies ) - 1 ]['value'] );
 
-		$address  = array(
-			'country'  => 'US',
-			'line1'    => '1 Main Street',
-			'city'     => 'Austin',
-			'postcode' => '78701',
-		);
 		$checkout = $this->store(
 			'PUT',
 			CheckoutOperations::ROUTE,
 			array(
 				'cart_version'       => 1,
-				'billing_address'    => $address + array(
-					'first_name' => 'Ada',
-					'last_name'  => 'Lovelace',
-					'email'      => 'ada@example.com',
-				),
-				'shipping_address'   => $address,
+				'billing_address'    => self::wireAddress( Carrier::BILLING, 'US', 'ada@example.com' ),
+				'shipping_address'   => self::wireAddress( Carrier::SHIPPING, 'US' ),
 				'payment_method_key' => $method,
 			)
 		);

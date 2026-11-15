@@ -36,22 +36,6 @@ final class BillingContactPlacementTest extends PlacementTestCase {
 	use CreatesUsers;
 
 	/**
-	 * The contact of the billing address the test case's checkout is written with (PlacementTestCase::writeCheckout()).
-	 *
-	 * @since 0.2.0
-	 *
-	 * @var array<string, string>
-	 */
-	private const CONTACT = array(
-		'country'   => 'US',
-		'firstName' => 'Ada',
-		'lastName'  => 'Lovelace',
-		'line1'     => '1 Main Street',
-		'city'      => 'Austin',
-		'postcode'  => '78701',
-	);
-
-	/**
 	 * Removes the users the test made.
 	 *
 	 * @since 0.2.0
@@ -88,7 +72,7 @@ final class BillingContactPlacementTest extends PlacementTestCase {
 	public function test_a_line_logged_with_the_contact_keeps_none_of_it(): void {
 		( new CreateLogsMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
 
-		$contact = new BillingContact( ...self::CONTACT );
+		$contact = self::contact();
 
 		$this->kernel->get( Logger::class )->error(
 			'gateway.planted',
@@ -104,7 +88,7 @@ final class BillingContactPlacementTest extends PlacementTestCase {
 
 		$this->assertCount( 1, $lines, 'The planted line was written.' );
 
-		foreach ( self::CONTACT as $field => $value ) {
+		foreach ( array_filter( get_object_vars( self::contact() ) ) as $field => $value ) {
 			$this->assertStringNotContainsString( $value, (string) wp_json_encode( $lines[0] ), sprintf( 'The log line keeps the contact\'s %s.', $field ) );
 		}
 	}
@@ -142,6 +126,19 @@ final class BillingContactPlacementTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Returns the contact of the billing address the test case's checkout is written with (CheckoutTestCase::address()).
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return BillingContact The contact.
+	 */
+	private static function contact(): BillingContact {
+		$billing = self::address( 'US' );
+
+		return new BillingContact( country: $billing->country(), firstName: $billing->firstName(), lastName: $billing->lastName(), line1: $billing->line1(), city: $billing->city(), postcode: $billing->postcode() );
+	}
+
+	/**
 	 * Places an order of one unit as an actor and asserts the gateway was given the checkout's billing contact.
 	 *
 	 * @since 0.2.0
@@ -155,6 +152,6 @@ final class BillingContactPlacementTest extends PlacementTestCase {
 
 		$this->assertSame( 'approved', $answer['outcome'] );
 		$this->assertCount( 1, $this->gateway->authorizations );
-		$this->assertEquals( new BillingContact( ...self::CONTACT ), $this->gateway->authorizations[0]->billing );
+		$this->assertEquals( self::contact(), $this->gateway->authorizations[0]->billing );
 	}
 }

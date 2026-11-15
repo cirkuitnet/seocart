@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Checkout;
 
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
+use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
 use SEOCart\Contracts\Payment\GatewayRegistry;
 use SEOCart\Contracts\Payment\GatewayResult;
@@ -126,23 +127,13 @@ final class NotFoundGateTest extends PlacementTestCase {
 	 * @return string The order's uuid.
 	 */
 	private function pendingThroughSlow(): string {
-		$cart    = $this->startCart( array( $this->sellable() => 1 ) );
-		$address = array(
-			'country'  => 'US',
-			'line1'    => '1 Main Street',
-			'city'     => 'Austin',
-			'postcode' => '78701',
-		);
+		$cart = $this->startCart( array( $this->sellable() => 1 ) );
 
 		$this->kernel->get( UpdateCheckoutSession::class )->update(
 			array(
 				'cart_version'       => $cart->version,
-				'billing_address'    => $address + array(
-					'first_name' => 'Ada',
-					'last_name'  => 'Lovelace',
-					'email'      => 'ada@example.com',
-				),
-				'shipping_address'   => $address,
+				'billing_address'    => self::wireAddress( Carrier::BILLING, 'US', 'ada@example.com' ),
+				'shipping_address'   => self::wireAddress( Carrier::SHIPPING, 'US' ),
 				'payment_method_key' => 'slow',
 			),
 			self::guest()

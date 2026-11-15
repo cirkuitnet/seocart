@@ -16,6 +16,7 @@ use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
 use SEOCart\Catalog\Application\Lifecycle\DeleteProduct;
+use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Inventory\Domain\Routing\FulfilmentMode;
 use SEOCart\Inventory\Infrastructure\InventoryTables;
@@ -319,24 +320,14 @@ final class RoutingOperationsTest extends PlacementTestCase {
 	 * @return array{status: int|null, headers: array<string, string>, body: array<string, mixed>} What was sent.
 	 */
 	private function checkoutOverTheWire( int $version, bool $shipping ): array {
-		$address = array(
-			'country'  => 'US',
-			'line1'    => '1 Main Street',
-			'city'     => 'Austin',
-			'postcode' => '78701',
-		);
-		$body    = array(
+		$body = array(
 			'cart_version'       => $version,
-			'billing_address'    => $address + array(
-				'first_name' => 'Ada',
-				'last_name'  => 'Lovelace',
-				'email'      => 'ada@example.com',
-			),
+			'billing_address'    => self::wireAddress( Carrier::BILLING, 'US', 'ada@example.com' ),
 			'payment_method_key' => StubGateway::ID,
 		);
 
 		if ( $shipping ) {
-			$body['shipping_address'] = $address;
+			$body['shipping_address'] = self::wireAddress( Carrier::SHIPPING, 'US' );
 		}
 
 		return $this->store( 'PUT', CheckoutOperations::ROUTE, $body );

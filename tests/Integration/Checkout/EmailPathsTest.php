@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Integration\Checkout;
 
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
+use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Platform\Authorization\Actor;
@@ -100,27 +101,17 @@ final class EmailPathsTest extends PlacementTestCase {
 		$cart    = $this->startCart( array( $variant => 1 ) );
 		$update  = $this->kernelOver( $this->db, $this->tokens )->get( UpdateCheckoutSession::class );
 		$session = array();
-		$address = array(
-			'country'  => 'US',
-			'line1'    => '1 Main Street',
-			'city'     => 'Austin',
-			'postcode' => '78701',
-		);
 
 		wp_cache_flush();
 		wp_load_alloptions();
 
 		$written = $this->captureQueries(
-			function () use ( $update, $cart, $address, $email, &$session ): void {
+			function () use ( $update, $cart, $email, &$session ): void {
 				$session = $update->update(
 					array(
 						'cart_version'       => $cart->version,
-						'billing_address'    => $address + array(
-							'first_name' => 'Ada',
-							'last_name'  => 'Lovelace',
-							'email'      => $email,
-						),
-						'shipping_address'   => $address,
+						'billing_address'    => self::wireAddress( Carrier::BILLING, 'US', $email ),
+						'shipping_address'   => self::wireAddress( Carrier::SHIPPING, 'US' ),
 						'payment_method_key' => StubGateway::ID,
 					),
 					self::guest()
