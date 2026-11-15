@@ -162,9 +162,7 @@ final class CustomerLinkTest extends OrderTestCase {
 		$old      = $this->plantCustomer( $newcomer, '2001-02-03 04:05:06' );
 		$older    = $this->place( NewOrders::forTwoLines( 'USD', 'USD', $old ) );
 
-		require_once ABSPATH . 'wp-admin/includes/user.php';
-
-		$this->assertTrue( wp_delete_user( $gone ) );
+		$this->assertTrue( $this->deleteUser( $gone ) );
 		clean_user_cache( $gone );
 
 		$this->assertSame( $gone, $this->customerRows()[ $record ]['user_id'] ?? null, 'The deleted user\'s record stays, linked as it was: no hook followed the user.' );

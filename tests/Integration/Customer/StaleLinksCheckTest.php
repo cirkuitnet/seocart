@@ -98,9 +98,7 @@ final class StaleLinksCheckTest extends DatabaseTestCase {
 		$deleted = $this->plantCustomer( $gone, self::registeredAt( $gone ) );
 		$other   = $this->plantCustomer( $renewed, '2001-02-03 04:05:06' );
 
-		require_once ABSPATH . 'wp-admin/includes/user.php';
-
-		wp_delete_user( $gone );
+		$this->assertTrue( $this->deleteUser( $gone ) );
 
 		$check  = $this->check();
 		$log    = $this->captureQueries( fn() => $check->run() );

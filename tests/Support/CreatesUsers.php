@@ -69,20 +69,30 @@ trait CreatesUsers {
 	 * @since 0.1.0
 	 */
 	protected function deleteCreatedUsers(): void {
-		require_once ABSPATH . 'wp-admin/includes/user.php';
-
-		if ( is_multisite() ) {
-			require_once ABSPATH . 'wp-admin/includes/ms.php';
-		}
-
 		foreach ( $this->createdUsers as $id ) {
-			if ( is_multisite() ) {
-				wpmu_delete_user( $id );
-			} else {
-				wp_delete_user( $id );
-			}
+			$this->deleteUser( $id );
 		}
 
 		$this->createdUsers = array();
+	}
+
+	/**
+	 * Deletes a user, from the whole network when there is one: on a network, deleting a user from one site only removes them from it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $id The user.
+	 * @return bool True when the user was deleted.
+	 */
+	protected function deleteUser( int $id ): bool {
+		require_once ABSPATH . 'wp-admin/includes/user.php';
+
+		if ( ! is_multisite() ) {
+			return wp_delete_user( $id );
+		}
+
+		require_once ABSPATH . 'wp-admin/includes/ms.php';
+
+		return wpmu_delete_user( $id );
 	}
 }
