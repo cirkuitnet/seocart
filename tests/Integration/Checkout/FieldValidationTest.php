@@ -128,7 +128,7 @@ final class FieldValidationTest extends PlacementTestCase {
 		$this->choosePresences( $presence === $field->defaultPresence()->value ? array() : array( $key => $presence ) );
 		$this->cartOverTheWire();
 
-		$written = $this->writeOverTheWire( $this->addresses( $key, $sent ) );
+		$written = $this->write( $this->addresses( $key, $sent ) );
 
 		if ( 'given' === $sent && Presence::Hidden->value === $presence ) {
 			$this->assertRefusedFields( $written, array_map( static fn( string $path ): array => self::fault( $path, 'not_accepted' ), $paths ) );
@@ -204,7 +204,7 @@ final class FieldValidationTest extends PlacementTestCase {
 		$addresses[ Carrier::BILLING ]['last_name']  = $name;
 		$addresses[ Carrier::SHIPPING ]['last_name'] = $name;
 
-		$written = $this->writeOverTheWire( $addresses );
+		$written = $this->write( $addresses );
 
 		if ( ! $accepted ) {
 			$this->assertRefusedFields( $written, array( self::fault( 'billing_address.last_name', 'characters' ), self::fault( 'shipping_address.last_name', 'characters' ) ) );
@@ -232,7 +232,7 @@ final class FieldValidationTest extends PlacementTestCase {
 		$addresses[ Carrier::SHIPPING ]['company'] = 'Analytical Engines';
 
 		$this->assertRefusedFields(
-			$this->writeOverTheWire( $addresses ),
+			$this->write( $addresses ),
 			array(
 				self::fault( 'billing_address.email', 'format' ),
 				self::fault( 'billing_address.country', 'format' ),
@@ -253,7 +253,7 @@ final class FieldValidationTest extends PlacementTestCase {
 
 		$long[ Carrier::BILLING ]['city'] = str_repeat( 'a', self::field( 'city' )->maxLength + 1 );
 
-		$refused = $this->writeOverTheWire( $long );
+		$refused = $this->write( $long );
 
 		$this->assertSame( 400, $refused['status'], (string) wp_json_encode( $refused['body'] ) );
 		$this->assertSame( 'rest_invalid_param', $refused['body']['code'] ?? null );
@@ -262,7 +262,7 @@ final class FieldValidationTest extends PlacementTestCase {
 
 		$emailed[ Carrier::SHIPPING ]['email'] = 'ada@example.com';
 
-		$refused = $this->writeOverTheWire( $emailed );
+		$refused = $this->write( $emailed );
 
 		$this->assertSame( 400, $refused['status'], (string) wp_json_encode( $refused['body'] ) );
 		$this->assertSame( 'rest_invalid_param', $refused['body']['code'] ?? null );
@@ -277,7 +277,7 @@ final class FieldValidationTest extends PlacementTestCase {
 	public function test_choices_changed_between_the_write_and_the_placement(): void {
 		$this->cartOverTheWire();
 
-		$written = $this->writeOverTheWire( $this->addresses( 'phone', 'absent' ) );
+		$written = $this->write( $this->addresses( 'phone', 'absent' ) );
 
 		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
 		$this->choosePresences( array( 'phone' => 'required' ) );
@@ -291,7 +291,7 @@ final class FieldValidationTest extends PlacementTestCase {
 		$this->cartOverTheWire();
 
 		$withCompany = $this->addresses( 'company', 'given' );
-		$written     = $this->writeOverTheWire( $withCompany );
+		$written     = $this->write( $withCompany );
 
 		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
 		$this->forgetCheckoutChoices();
@@ -311,7 +311,7 @@ final class FieldValidationTest extends PlacementTestCase {
 	public function test_a_session_stored_before_the_rules_is_judged_at_placement(): void {
 		$this->cartOverTheWire();
 
-		$written = $this->writeOverTheWire( $this->addresses( 'city', 'given' ) );
+		$written = $this->write( $this->addresses( 'city', 'given' ) );
 
 		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
 
@@ -331,7 +331,7 @@ final class FieldValidationTest extends PlacementTestCase {
 	 *
 	 * @param string $key  The field under test.
 	 * @param string $sent `given`, `empty` or `absent`.
-	 * @return array<string, array<string, string>> The billing and the shipping address.
+	 * @return array<string, array<string, string>> The billing and the shipping address, by wire name.
 	 */
 	private function addresses( string $key, string $sent ): array {
 		$field     = self::field( $key );
@@ -359,11 +359,19 @@ final class FieldValidationTest extends PlacementTestCase {
 			$addresses[ $address ] = $members;
 		}
 
-		return array(
-			Carrier::BILLING     => $addresses[ Carrier::BILLING ],
-			Carrier::SHIPPING    => $addresses[ Carrier::SHIPPING ],
-			'payment_method_key' => 'stub',
-		);
+		return $addresses;
+	}
+
+	/**
+	 * Writes the cart's checkout: two addresses, and the stand-in's payment method.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, array<string, string>> $addresses The billing and the shipping address, by wire name.
+	 * @return array{status: int|null, headers: array<string, string>, body: array<string, mixed>} What was sent.
+	 */
+	private function write( array $addresses ): array {
+		return $this->writeOverTheWire( $addresses + array( 'payment_method_key' => 'stub' ) );
 	}
 
 	/**
