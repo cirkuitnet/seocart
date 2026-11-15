@@ -153,6 +153,18 @@ final class CheckoutOperations {
 	public const RETRY_AFTER_SECONDS = 2;
 
 	/**
+	 * The longest payment token a placement takes, in characters: a provider's opaque value from its script in the browser runs to several hundred.
+	 *
+	 * The token is handed to the gateway and kept nowhere: not in the order, the checkout, the
+	 * placement's kept answer, its fingerprint or a log line, which drops it as a secret.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const PAYMENT_TOKEN_MAX_LENGTH = 1024;
+
+	/**
 	 * What the rate limit of placements counts, per client.
 	 *
 	 * @since 0.1.0
@@ -314,7 +326,7 @@ final class CheckoutOperations {
 							description: 'The gateway\'s token for the shopper\'s payment method, never a card number.',
 							label: static fn(): string => __( 'Payment token', 'seocart' ),
 							example: 'stub:approve',
-							max_length: 191,
+							max_length: self::PAYMENT_TOKEN_MAX_LENGTH,
 							privacy: Privacy::Secret
 						),
 					)

@@ -22,6 +22,7 @@ use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
+use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Order\Domain\Event\OrderPlaced;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Order\Interfaces\StoreApi\OrderStoreOperations;
@@ -54,14 +55,15 @@ final class PlaceOrderOperationTest extends PlacementTestCase {
 	use ServesStoreApi;
 
 	/**
-	 * Wires the kernel and boots a spy server.
+	 * Wires the kernel and boots a spy server; in the tests of the payment token's length, its stand-in is the test case's recording gateway, which keeps what it is given.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The tests of the token's length watch the gateway.
 	 */
 	public function set_up(): void {
 		parent::set_up();
 
-		$this->bootStoreApi();
+		$this->bootStoreApi( str_starts_with( $this->getName( false ), 'test_a_token_' ) ? array( PaymentGateway::class => fn(): PaymentGateway => $this->gateway ) : array() );
 	}
 
 	/**
@@ -272,6 +274,67 @@ final class PlaceOrderOperationTest extends PlacementTestCase {
 		);
 
 		$this->assertSame( array( 'order_uuid' => 'kept' ), $redacted, 'The logs drop the key by its name, as a secret.' );
+	}
+
+	/**
+	 * Tests that a payment token as long as a placement takes reaches the gateway as it was sent, and is kept nowhere: in no table, the options' among them, no log line and no kept answer.
+	 *
+	 * The token is the stand-in's prefix and random hexadecimal digits, which nothing else holds;
+	 * the stand-in declines a token it did not script, so the placement is answered 402 and its
+	 * retry opens the answer kept for it.
+	 *
+	 * Planted violation: in PlaceOrder::placeInside(), keep the request's payment data in the
+	 * placement's record: the kept answer, which a retry opens, then holds the token.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_token_of_the_longest_length_reaches_the_gateway_and_is_kept_nowhere(): void {
+		global $wpdb;
+
+		( new CreateLogsMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+
+		$longest = CheckoutOperations::PAYMENT_TOKEN_MAX_LENGTH;
+		$token   = 'stub:' . substr( bin2hex( random_bytes( $longest ) ), 0, $longest - 5 );
+		$body    = $this->readyOverTheWire();
+
+		$body['payment_data']['payment_token'] = $token;
+
+		$sent = $this->place( $body, 'attempt-longest' );
+
+		$this->assertSame( array( 1024, 402 ), array( strlen( $token ), $sent['status'] ), (string) wp_json_encode( $sent['body'] ) );
+		$this->assertSame( $token, $this->gateway->authorizations[ count( $this->gateway->authorizations ) - 1 ]->paymentToken, 'The gateway was given the token as it was sent.' );
+
+		$retry = $this->place( $body, 'attempt-longest' );
+
+		$this->assertSame( 200, $retry['status'], 'The retry opens the answer kept for the placement.' );
+		$this->assertStringNotContainsString( $token, (string) wp_json_encode( $retry['body'] ), 'The kept answer holds the token.' );
+
+		$tables = array_column( $this->db->fetchAll( 'SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = %s', 'BASE TABLE' ), 'name' );
+
+		$this->assertContains( $wpdb->options, $tables, 'The options are among the tables read.' );
+
+		foreach ( $tables as $table ) {
+			foreach ( $this->db->fetchAll( 'SELECT * FROM %i', (string) $table ) as $row ) {
+				$this->assertStringNotContainsString( $token, implode( "\n", array_map( 'strval', $row ) ), sprintf( 'The table %s keeps the payment token.', $table ) );
+			}
+		}
+	}
+
+	/**
+	 * Tests that a payment token one character longer than a placement takes is refused before anything is written or sent.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_token_one_character_too_long_is_refused(): void {
+		$body = $this->readyOverTheWire();
+
+		$body['payment_data']['payment_token'] = 'stub:' . str_repeat( 'a', CheckoutOperations::PAYMENT_TOKEN_MAX_LENGTH - 4 );
+
+		$refused = $this->place( $body, 'attempt-too-long' );
+
+		$this->assertSame( array( 400, 'rest_invalid_param' ), array( $refused['status'], $refused['body']['code'] ?? null ) );
+		$this->assertSame( array(), $this->gateway->authorizations, 'The gateway was asked nothing.' );
+		$this->assertSame( '0', (string) $this->db->fetchValue( 'SELECT COUNT(*) FROM %i', $this->table( OrderTables::ORDERS ) ), 'An order was written.' );
 	}
 
 	/**

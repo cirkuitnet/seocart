@@ -1166,7 +1166,7 @@
                                         "properties": {
                                             "payment_token": {
                                                 "type": "string",
-                                                "maxLength": 191,
+                                                "maxLength": 1024,
                                                 "description": "The gateway's token for the shopper's payment method, never a card number."
                                             }
                                         },
