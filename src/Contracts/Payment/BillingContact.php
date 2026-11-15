@@ -20,8 +20,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: what of the billing address a gateway is given with an authorization. Each value
  * is the order's own billing field as the checkout took it, within the limits of the order's
- * address fields, as plain text: UTF-8 with no control character, which SEOCart makes of a control
- * character the checkout took a space; an empty string means not given. The shopper's e-mail
+ * address fields, as plain text: UTF-8 with no control character (CONTROL_CHARACTER), which SEOCart
+ * makes of one the checkout took a space; an empty string means not given. The shopper's e-mail
  * address, phone number and tax identifier are not part of it.
  *
  * Every value is personal data. An adapter sends the contact only where its provider needs it,
@@ -39,12 +39,25 @@ defined( 'ABSPATH' ) || exit;
 final readonly class BillingContact implements \JsonSerializable {
 
 	/**
+	 * A character no value of a contact holds, as a regular expression's character class, read as UTF-8.
+	 *
+	 * Every Unicode control character (category Cc: U+0000 to U+001F and U+007F to U+009F) and the
+	 * line and paragraph separators (U+2028, U+2029): each starts a new line, or does something
+	 * other than show a character, wherever the contact is written.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CONTROL_CHARACTER = '[\p{Cc}\x{2028}\x{2029}]';
+
+	/**
 	 * Records the contact.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @throws \InvalidArgumentException When the country is not two upper-case letters, or a value is not valid UTF-8
-	 *                                   plain text: it holds a control character.
+	 *                                   plain text: it holds a control character (CONTROL_CHARACTER).
 	 *
 	 * @param string $country   The ISO 3166-1 alpha-2 country code, for example 'US'.
 	 * @param string $firstName Optional. The given name. Default empty.
@@ -72,8 +85,9 @@ final readonly class BillingContact implements \JsonSerializable {
 		}
 
 		foreach ( array( $firstName, $lastName, $organization, $line1, $line2, $city, $region, $postcode ) as $value ) {
-			if ( 1 !== preg_match( '/^[^\x00-\x1F\x7F]*\z/u', $value ) ) {
-				throw new \InvalidArgumentException( 'A billing contact\'s value is plain text: valid UTF-8, with no control character.' );
+			// preg_match() gives 0 for plain text, 1 for a control character, and false for text that is not valid UTF-8.
+			if ( 0 !== preg_match( '/' . self::CONTROL_CHARACTER . '/u', $value ) ) {
+				throw new \InvalidArgumentException( 'A billing contact\'s value is plain text: valid UTF-8, with no control character and no line or paragraph separator.' );
 			}
 		}
 	}

@@ -134,6 +134,10 @@ final class BillingContactTest extends TestCase {
 			'a nul byte in the city'           => array( array( 'city' => "Austin\0" ) ),
 			'a delete character in the region' => array( array( 'region' => "T\x7FX" ) ),
 			'bytes that are not UTF-8'         => array( array( 'postcode' => "787\xC3" ) ),
+			'a next line (U+0085) in a name'   => array( array( 'lastName' => "Love\u{0085}lace" ) ),
+			'a C1 control (U+009B) in a line'  => array( array( 'line2' => "Suite\u{009B}2" ) ),
+			'a line separator (U+2028)'        => array( array( 'organization' => "Analytical\u{2028}Engines" ) ),
+			'a paragraph separator (U+2029)'   => array( array( 'city' => "Aus\u{2029}tin" ) ),
 		);
 	}
 
@@ -155,12 +159,19 @@ final class BillingContactTest extends TestCase {
 	/**
 	 * Tests that the contact of an address whose text the checkout took with control characters, or with bytes that are not UTF-8, is plain text and is never refused: each run of control characters is one space, each such byte a `?`.
 	 *
+	 * The control characters are every Unicode one (category Cc, U+0000 to U+001F and U+007F to
+	 * U+009F) and the line and paragraph separators (U+2028, U+2029).
+	 *
 	 * @since 0.2.0
 	 */
 	public function test_the_contact_of_an_address_with_control_characters_is_plain_text(): void {
 		$contact = PaymentService::billingContactOf( new Address( country: 'US', first_name: "Ada\tB.", line1: "1 Main Street\r\nApt 2", city: "Aus\x7Ftin", postcode: "787\xC301" ) );
 
 		$this->assertSame( array( 'Ada B.', '1 Main Street Apt 2', 'Aus tin', '787?01' ), array( $contact->firstName, $contact->line1, $contact->city, $contact->postcode ) );
+
+		$contact = PaymentService::billingContactOf( new Address( country: 'US', last_name: "Love\u{0085}lace", company: "Analytical\u{2028}\u{2029}Engines", line2: "Suite\u{009B}2", region: "T\u{009F}\u{0080}X" ) );
+
+		$this->assertSame( array( 'Love lace', 'Analytical Engines', 'Suite 2', 'T X' ), array( $contact->lastName, $contact->organization, $contact->line2, $contact->region ) );
 	}
 
 	/**

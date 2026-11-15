@@ -509,9 +509,10 @@ final class PaymentService {
 	 *
 	 * The checkout takes an address's text as it is sent, its length checked, so a value may hold a
 	 * line break or another control character, or, read from elsewhere, bytes that are not UTF-8.
-	 * Each run of control characters becomes one space and each byte that is not UTF-8 a `?`, so the
-	 * contact of any address the checkout accepted is plain text and never refused: the gateway is
-	 * asked after the order is written.
+	 * Each run of control characters, as the contact names them (BillingContact::CONTROL_CHARACTER:
+	 * every Unicode one, and the line and paragraph separators), becomes one space and each byte that
+	 * is not UTF-8 a `?`, so the contact of any address the checkout accepted is plain text and never
+	 * refused: the gateway is asked after the order is written.
 	 *
 	 * @since 0.2.0
 	 *
@@ -519,7 +520,7 @@ final class PaymentService {
 	 * @return BillingContact The contact.
 	 */
 	public static function billingContactOf( Address $address ): BillingContact {
-		$plain = static fn( string $value ): string => (string) preg_replace( '/[\x00-\x1F\x7F]+/u', ' ', mb_scrub( $value, 'UTF-8' ) );
+		$plain = static fn( string $value ): string => (string) preg_replace( '/' . BillingContact::CONTROL_CHARACTER . '+/u', ' ', mb_scrub( $value, 'UTF-8' ) );
 
 		return new BillingContact(
 			country: $address->country(),

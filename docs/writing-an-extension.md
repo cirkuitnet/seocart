@@ -225,7 +225,8 @@ amount, the shopper's payment token (at most 1,024 characters, as the provider's
 browser made it), the mode, the order's uuid and number, the address a shopper asked to act comes
 back to, and the order's billing contact, `$billing`: a `BillingContact` of the given and family
 name, the company (`organization`), two address lines, the city, the region, the postcode and the
-country, each plain text within the order's own limits, or null when a caller has none to give.
+country, each plain text within the order's own limits (no Unicode control character, and no line
+or paragraph separator), or null when a caller has none to give.
 The contact is personal data. An adapter sends it only when its provider needs it, such as for its
 address check, names it in the `dataSent` of the host that receives it, which the extension's readme
 discloses, and never logs it: SEOCart's log writes the contact under the names it declares personal
