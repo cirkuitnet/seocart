@@ -447,7 +447,7 @@ final class PlaceOrder {
 	 */
 	private function placeInside( Cart $cart, CheckoutSession $session, Calculation $calculation, ?Mode $mode, string $keyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): array {
 		$version = $this->carts->claimForPlacement( $cart->id, $cart->version, $actor );
-		$claim   = $this->keys->claim( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint, self::KEY_TTL_SECONDS );
+		$claim   = $this->keys->claim( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint, self::KEY_TTL_SECONDS, self::claimedFor( $actor ) );
 
 		if ( ! $claim->owned ) {
 			// The cart's claim serialises the requests of one key: one that placed its order moved the cart on first.
@@ -809,10 +809,13 @@ final class PlaceOrder {
 	 * customer is given to whoever presents the cart's token and the key, as ever. One kept for a
 	 * customer's order is given only to an actor who is that customer: the actor must be the user
 	 * who placed it, which costs nothing to compare, and then still that customer, which costs the
-	 * link's read. Any other actor, a visitor included, gets null after the key's read alone, and is
-	 * then answered from the cart as a request with a new key is, with the same statements: the
-	 * answer cannot tell a key that is someone else's from one never seen. Whom the answer is kept
-	 * for is decided before its sealed order key is opened.
+	 * link's read. A key still claimed by a logged-in user's placement is that user's alone. Whom
+	 * the key is for is decided before its state or the request's fingerprint is judged, and before
+	 * the sealed order key is opened: any other actor, a visitor included, gets null after the
+	 * key's read alone, whatever body it sent, and is then answered from the cart as a request with
+	 * a new key is, with the same statements. Only the placement's own actor, or anyone holding the
+	 * cart's token for an order without a customer, is ever refused by the key itself
+	 * (`checkout.idempotency_key_reused`, `checkout.placement_in_progress`).
 	 *
 	 * @since 0.2.0
 	 *
@@ -827,21 +830,13 @@ final class PlaceOrder {
 	 * @return array<string, mixed>|null The kept answer, as a retry is given it; null when there is none for this actor.
 	 */
 	private function keptAnswer( string $keyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): ?array {
-		$replay = $this->keys->replay( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint );
+		$replay = $this->keys->replay( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint, fn( ?string $kept ): bool => $this->mayBeAnswered( $kept, $actor ) );
 
 		if ( null === $replay ) {
 			return null;
 		}
 
-		$kept    = (string) $replay->responseJson;
-		$stored  = json_decode( $kept, true );
-		$keptFor = is_array( $stored ) ? ( $stored[ self::KEPT_FOR ] ?? null ) : null;
-
-		if ( null !== $keptFor && ! $this->isKeptFor( (array) $keptFor, $actor ) ) {
-			return null;
-		}
-
-		$answer = KeptAnswer::open( $kept, $token, $key );
+		$answer = KeptAnswer::open( (string) $replay->responseJson, $token, $key );
 
 		unset( $answer[ self::KEPT_FOR ] );
 
@@ -849,22 +844,63 @@ final class PlaceOrder {
 	}
 
 	/**
-	 * Tells whether an actor is the one a kept answer is kept for: the user who placed the order, and still its customer.
-	 *
-	 * The user is compared first, at no cost; only that user's customer is read.
+	 * Tells whether an actor may be answered from what a key keeps: anyone, for a key that names nobody; otherwise the one it is kept for.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param array<mixed> $keptFor Whom the answer is kept for: `customer_id` and `user_id`.
+	 * @param string|null $kept   What the key keeps: its answer, or what its claim kept, as JSON; null for nothing.
+	 * @param Actor       $actor  Who sends the request.
+	 * @return bool True when the actor may be answered from the key, its refusals included.
+	 */
+	private function mayBeAnswered( ?string $kept, Actor $actor ): bool {
+		$stored  = null === $kept ? null : json_decode( $kept, true );
+		$keptFor = is_array( $stored ) ? ( $stored[ self::KEPT_FOR ] ?? null ) : null;
+
+		return null === $keptFor || $this->isKeptFor( (array) $keptFor, $actor );
+	}
+
+	/**
+	 * Tells whether an actor is the one a key is kept for: the user who placed, and, once the order has a customer, still that customer.
+	 *
+	 * The user is compared first, at no cost; only that user's customer is read. A key still claimed
+	 * names its user alone: the order, and so its customer, is not written yet.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<mixed> $keptFor Whom the key is kept for: `user_id`, and `customer_id` once the order is placed.
 	 * @param Actor        $actor   Who sends the request.
-	 * @return bool True when the actor is that user and that customer.
+	 * @return bool True when the actor is that user, and that customer when the key names one.
 	 */
 	private function isKeptFor( array $keptFor, Actor $actor ): bool {
-		$customer = (int) ( $keptFor['customer_id'] ?? 0 );
+		$user = (int) ( $keptFor['user_id'] ?? 0 );
 
-		return $customer >= 1
-			&& $actor->userId() === (int) ( $keptFor['user_id'] ?? 0 )
-			&& $customer === $this->customers->customerOf( $actor );
+		if ( $user < 1 || $actor->userId() !== $user || null !== $actor->systemName() ) {
+			return false;
+		}
+
+		if ( ! isset( $keptFor['customer_id'] ) ) {
+			return true;
+		}
+
+		$customer = (int) $keptFor['customer_id'];
+
+		return $customer >= 1 && $customer === $this->customers->customerOf( $actor );
+	}
+
+	/**
+	 * Returns what a placement's key keeps while it is claimed: for a logged-in user, whom it is placing for; nothing for a visitor or a process.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Actor $actor Who places.
+	 * @return string The JSON the claim keeps; empty for nothing.
+	 */
+	public static function claimedFor( Actor $actor ): string {
+		if ( $actor->userId() < 1 || null !== $actor->systemName() ) {
+			return '';
+		}
+
+		return (string) wp_json_encode( array( self::KEPT_FOR => array( 'user_id' => $actor->userId() ) ) );
 	}
 
 	/**

@@ -60,7 +60,7 @@ final class IdempotencyClaimConcurrencyTest extends CheckoutTestCase {
 	public function test_a_claim_waits_for_an_uncommitted_claim_and_replays_its_answer_once_it_commits(): void {
 		$hash   = self::keyHash( 'attempt-1' );
 		$b      = $this->secondConnection();
-		$insert = $this->raw( MysqlIdempotencyKeys::CLAIM, $this->keyTable(), self::SCOPE, $hash, self::digest( 'request 1' ), self::KEY_TTL );
+		$insert = $this->raw( MysqlIdempotencyKeys::CLAIM, $this->keyTable(), self::SCOPE, $hash, self::digest( 'request 1' ), '', self::KEY_TTL );
 
 		$this->db->transaction(
 			function () use ( $hash, $b, $insert ): void {
@@ -102,7 +102,7 @@ final class IdempotencyClaimConcurrencyTest extends CheckoutTestCase {
 	public function test_a_claim_waits_for_an_uncommitted_claim_and_owns_the_key_once_it_rolls_back(): void {
 		$hash     = self::keyHash( 'attempt-1' );
 		$b        = $this->secondConnection();
-		$insert   = $this->raw( MysqlIdempotencyKeys::CLAIM, $this->keyTable(), self::SCOPE, $hash, self::digest( 'request 2' ), self::KEY_TTL );
+		$insert   = $this->raw( MysqlIdempotencyKeys::CLAIM, $this->keyTable(), self::SCOPE, $hash, self::digest( 'request 2' ), '', self::KEY_TTL );
 		$rollBack = new \RuntimeException( 'A fails after its claim, as a placement refused by its stock would.' );
 
 		try {
@@ -166,7 +166,7 @@ final class IdempotencyClaimConcurrencyTest extends CheckoutTestCase {
 		$hash   = self::keyHash( 'attempt-1' );
 		$old    = $this->placedKey( $hash );
 		$b      = $this->secondConnection();
-		$insert = $this->raw( MysqlIdempotencyKeys::CLAIM, $this->keyTable(), self::SCOPE, $hash, self::digest( 'request 3' ), self::KEY_TTL );
+		$insert = $this->raw( MysqlIdempotencyKeys::CLAIM, $this->keyTable(), self::SCOPE, $hash, self::digest( 'request 3' ), '', self::KEY_TTL );
 
 		$this->keyExpiresIn( $old->id, -1 );
 
@@ -225,7 +225,7 @@ final class IdempotencyClaimConcurrencyTest extends CheckoutTestCase {
 		$hash    = self::keyHash( 'attempt-1' );
 		$old     = $this->placedKey( $hash );
 		$b       = $this->secondConnection();
-		$insert  = $this->raw( MysqlIdempotencyKeys::CLAIM, $this->keyTable(), self::SCOPE, $hash, self::digest( 'request 3' ), self::KEY_TTL );
+		$insert  = $this->raw( MysqlIdempotencyKeys::CLAIM, $this->keyTable(), self::SCOPE, $hash, self::digest( 'request 3' ), '', self::KEY_TTL );
 		$refused = null;
 
 		$this->keyExpiresIn( $old->id, -1 );
@@ -300,7 +300,7 @@ final class IdempotencyClaimConcurrencyTest extends CheckoutTestCase {
 
 		$b       = $this->secondConnection();
 		$table   = $this->keyTable();
-		$reclaim = $this->raw( MysqlIdempotencyKeys::RECLAIM_EXPIRED, $table, self::digest( 'request 3' ), self::KEY_TTL, $old->id );
+		$reclaim = $this->raw( MysqlIdempotencyKeys::RECLAIM_EXPIRED, $table, self::digest( 'request 3' ), '', self::KEY_TTL, $old->id );
 		$read    = array();
 
 		$b->query( 'SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED' );
@@ -310,7 +310,7 @@ final class IdempotencyClaimConcurrencyTest extends CheckoutTestCase {
 		$raced = $this->beforeStatement(
 			self::shapeOf( MysqlIdempotencyKeys::RECLAIM_EXPIRED ),
 			function () use ( $b, $table, $hash, $reclaim, &$read ): void {
-				$this->assertSame( 1062, $this->queryError( $b, $this->raw( MysqlIdempotencyKeys::CLAIM, $table, self::SCOPE, $hash, self::digest( 'request 3' ), self::KEY_TTL ) ), 'B\'s INSERT did not fail as a duplicate of the expired key.' );
+				$this->assertSame( 1062, $this->queryError( $b, $this->raw( MysqlIdempotencyKeys::CLAIM, $table, self::SCOPE, $hash, self::digest( 'request 3' ), '', self::KEY_TTL ) ), 'B\'s INSERT did not fail as a duplicate of the expired key.' );
 
 				$read = (array) $b->fetchRow( $this->raw( MysqlIdempotencyKeys::TAKEN, $table, self::SCOPE, $hash ) );
 

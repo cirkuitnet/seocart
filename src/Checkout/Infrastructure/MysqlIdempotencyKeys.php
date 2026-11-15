@@ -54,7 +54,7 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	 *
 	 * @var string
 	 */
-	public const CLAIM = "INSERT INTO %i ( scope, key_hash, request_fingerprint, state, expires_at, created_at ) VALUES ( %s, %s, %s, 'claimed', UTC_TIMESTAMP() + INTERVAL %d SECOND, UTC_TIMESTAMP(6) )";
+	public const CLAIM = "INSERT INTO %i ( scope, key_hash, request_fingerprint, state, response_json, expires_at, created_at ) VALUES ( %s, %s, %s, 'claimed', NULLIF( %s, '' ), UTC_TIMESTAMP() + INTERVAL %d SECOND, UTC_TIMESTAMP(6) )";
 
 	/**
 	 * The key a claim found taken: what it holds, and whether it has expired. A locking read, by the unique key.
@@ -85,7 +85,7 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	 *
 	 * @var string
 	 */
-	public const RECLAIM_EXPIRED = "UPDATE %i SET request_fingerprint = %s, state = 'claimed', order_id = NULL, response_json = NULL, expires_at = UTC_TIMESTAMP() + INTERVAL %d SECOND, created_at = UTC_TIMESTAMP(6) WHERE id = %d AND expires_at <= UTC_TIMESTAMP()";
+	public const RECLAIM_EXPIRED = "UPDATE %i SET request_fingerprint = %s, state = 'claimed', order_id = NULL, response_json = NULLIF( %s, '' ), expires_at = UTC_TIMESTAMP() + INTERVAL %d SECOND, created_at = UTC_TIMESTAMP(6) WHERE id = %d AND expires_at <= UTC_TIMESTAMP()";
 
 	/**
 	 * Records the order placed with a claimed key, and the answer sent: claimed becomes placed.
@@ -199,18 +199,19 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	 * @param string $keyHash     The key's hash.
 	 * @param string $fingerprint The SHA-256 of the request's canonical form.
 	 * @param int    $ttlSeconds  How long the key lives from now.
+	 * @param string $claimedFor  Optional. What the key keeps while it is claimed, as JSON; empty for nothing. Default empty.
 	 * @return IdempotencyClaim The claim: owned, or a replay of the earlier answer.
 	 */
-	public function claim( string $scope, string $keyHash, string $fingerprint, int $ttlSeconds ): IdempotencyClaim {
+	public function claim( string $scope, string $keyHash, string $fingerprint, int $ttlSeconds, string $claimedFor = '' ): IdempotencyClaim {
 		$this->requireTransaction( __FUNCTION__ );
 		self::requireClaimable( $keyHash, $fingerprint, $ttlSeconds );
 
 		try {
-			$this->db->execute( self::CLAIM, $this->keys(), $scope, $keyHash, $fingerprint, $ttlSeconds );
+			$this->db->execute( self::CLAIM, $this->keys(), $scope, $keyHash, $fingerprint, $claimedFor, $ttlSeconds );
 
 			return IdempotencyClaim::owned( $this->db->lastInsertId() );
 		} catch ( DuplicateKey $taken ) {
-			return $this->answerTaken( $scope, $keyHash, $fingerprint, $ttlSeconds );
+			return $this->answerTaken( $scope, $keyHash, $fingerprint, $ttlSeconds, $claimedFor );
 		}
 	}
 
@@ -221,15 +222,23 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	 *
 	 * @throws CodedException `checkout.idempotency_key_reused` or `checkout.placement_in_progress`.
 	 *
-	 * @param string $scope       What the key is claimed for.
-	 * @param string $keyHash     The key's hash.
-	 * @param string $fingerprint The SHA-256 of the request's canonical form.
-	 * @return IdempotencyClaim|null A replay of the earlier answer; null when the key is new or expired.
+	 * @param string        $scope       What the key is claimed for.
+	 * @param string        $keyHash     The key's hash.
+	 * @param string        $fingerprint The SHA-256 of the request's canonical form.
+	 * @param \Closure|null $mayAnswer   Optional. Tells, from what the key keeps, whether the request may be answered from it. Default null: every request may.
+	 * @return IdempotencyClaim|null A replay of the earlier answer; null when the key is new or expired, or the decider says no.
+	 *
+	 * @phpstan-param (\Closure(string|null): bool)|null $mayAnswer
 	 */
-	public function replay( string $scope, string $keyHash, string $fingerprint ): ?IdempotencyClaim {
+	public function replay( string $scope, string $keyHash, string $fingerprint, ?\Closure $mayAnswer = null ): ?IdempotencyClaim {
 		$row = $this->db->fetchRow( self::FIND, $this->keys(), $scope, $keyHash );
 
 		if ( null === $row || '1' === (string) $row['expired'] ) {
+			return null;
+		}
+
+		// Whom the key is for is decided before its state or the request's fingerprint is: anyone else learns nothing from it.
+		if ( null !== $mayAnswer && ! $mayAnswer( null === $row['response_json'] ? null : (string) $row['response_json'] ) ) {
 			return null;
 		}
 
@@ -337,9 +346,10 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	 * @param string $keyHash     The key's hash.
 	 * @param string $fingerprint The request's fingerprint.
 	 * @param int    $ttlSeconds  How long the key lives from now, if it is claimed again.
+	 * @param string $claimedFor  What the key keeps while it is claimed, if it is claimed again.
 	 * @return IdempotencyClaim A re-claim of an expired key, or a replay of the earlier answer.
 	 */
-	private function answerTaken( string $scope, string $keyHash, string $fingerprint, int $ttlSeconds ): IdempotencyClaim {
+	private function answerTaken( string $scope, string $keyHash, string $fingerprint, int $ttlSeconds, string $claimedFor ): IdempotencyClaim {
 		$row = $this->db->fetchRow( self::TAKEN, $this->keys(), $scope, $keyHash );
 
 		// The duplicate check holds a shared lock on the row, so it cannot go before this read; if
@@ -351,7 +361,7 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 		$id = (int) $row['id'];
 
 		if ( '1' === (string) $row['expired'] ) {
-			if ( 1 === $this->db->execute( self::RECLAIM_EXPIRED, $this->keys(), $fingerprint, $ttlSeconds, $id ) ) {
+			if ( 1 === $this->db->execute( self::RECLAIM_EXPIRED, $this->keys(), $fingerprint, $claimedFor, $ttlSeconds, $id ) ) {
 				return IdempotencyClaim::owned( $id );
 			}
 

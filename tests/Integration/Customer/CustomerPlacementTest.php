@@ -211,6 +211,12 @@ final class CustomerPlacementTest extends PlacementTestCase {
 	public function test_a_customers_kept_answer_is_given_back_to_that_customer_alone(): void {
 		$placer  = $this->createUser( 'subscriber' );
 		$another = $this->createUser( 'subscriber' );
+		$admin   = $this->createUser( 'administrator' );
+		$others  = array(
+			'another customer' => Actor::user( $another ),
+			'an administrator' => Actor::user( $admin ),
+			'a visitor'        => self::guest(),
+		);
 
 		$this->plantCustomer( $another, self::registeredAt( $another ) );
 
@@ -230,20 +236,29 @@ final class CustomerPlacementTest extends PlacementTestCase {
 			$this->assertSame( array( $placed['order_uuid'], $placed['order_number'], $placed['order_key'] ), array( $again['order_uuid'], $again['order_number'], $again['order_key'] ?? null ), "{$outcome}: the placer is given their answer back, their order key included." );
 			$this->assertEqualsCanonicalizing( array_keys( $placed ), array_keys( $again ), "{$outcome}: the answer given back has the fields of the answer sent, and no more." );
 
-			foreach ( array(
-				'another customer' => Actor::user( $another ),
-				'a visitor'        => self::guest(),
-			) as $who => $actor ) {
-				$refused = $this->refusal( $input, $actor );
-				$unknown = $this->refusal( array( 'idempotency_key' => "a key never seen, {$outcome}" ) + $input, $actor );
-				$said    = (string) wp_json_encode( $refused['answer'] );
+			$changed = array( 'grand_total_minor' => (int) $input['grand_total_minor'] + 1 ) + $input;
 
-				$this->assertSame( $unknown['answer'], $refused['answer'], "{$outcome}: {$who}, with the placer's key, is answered as for a key never seen." );
-				$this->assertSame( $unknown['statements'], $refused['statements'], "{$outcome}: {$who}, with the placer's key, sends the statements of a key never seen." );
-				$this->assertSame( $neverSeen, $refused['answer']['code'] ?? null, "{$outcome}: {$who}" );
-				$this->assertStringNotContainsString( $placed['order_number'], $said, "{$outcome}: {$who} is told the order's number." );
-				$this->assertStringNotContainsString( $placed['order_key'], $said, "{$outcome}: {$who} is told the order's key." );
+			$this->assertSame( 'checkout.idempotency_key_reused', $this->refusal( $changed, Actor::user( $placer ) )['answer']['code'] ?? null, "{$outcome}: the placer, with their key and another body, is refused by the key." );
+
+			foreach ( $others as $who => $actor ) {
+				foreach ( array(
+					'the same body' => $input,
+					'another body'  => $changed,
+				) as $body => $sent ) {
+					$this->assertNeverSeen( $this->refusal( $sent, $actor ), $this->refusal( array( 'idempotency_key' => 'unseen-' . substr( md5( "{$outcome}, {$who}, {$body}" ), 0, 12 ) ) + $sent, $actor ), $placed, "{$outcome}: {$who}, with the placer's key and {$body}" );
+				}
 			}
+		}
+
+		// The key of the placement still waiting for the shopper, as it is while its placement is under way: claimed, its order not written, and the user it is placing for kept.
+		$waiting = (int) $this->db->fetchValue( 'SELECT id FROM %i WHERE uuid = %s', $this->table( OrderTables::ORDERS ), $placed['order_uuid'] );
+
+		$this->db->execute( "UPDATE %i SET state = 'claimed', order_id = NULL, response_json = %s WHERE order_id = %d", $this->table( CheckoutTables::IDEMPOTENCY_KEYS ), PlaceOrder::claimedFor( Actor::user( $placer ) ), $waiting );
+
+		$this->assertSame( 'checkout.placement_in_progress', $this->refusal( $input, Actor::user( $placer ) )['answer']['code'] ?? null, 'The placer is told their placement is under way.' );
+
+		foreach ( $others as $who => $actor ) {
+			$this->assertNeverSeen( $this->refusal( $input, $actor ), $this->refusal( array( 'idempotency_key' => 'unseen-' . substr( md5( "under way, {$who}" ), 0, 12 ) ) + $input, $actor ), $placed, "Under way: {$who}, with the placer's key" );
 		}
 	}
 
@@ -278,6 +293,27 @@ final class CustomerPlacementTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Asserts that a request with another actor's key was answered exactly as one with a key never seen: the same answer, the same statements in shape, and nothing of the order but what a key never seen names.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array{answer: array<string, mixed>, statements: list<string>} $refused What the request with the key got.
+	 * @param array{answer: array<string, mixed>, statements: list<string>} $unknown What the request with a key never seen got.
+	 * @param array<string, mixed>                                          $placed  The placement's answer.
+	 * @param string                                                        $who     Who asked, for the messages.
+	 */
+	private function assertNeverSeen( array $refused, array $unknown, array $placed, string $who ): void {
+		$said = (string) wp_json_encode( $refused['answer'] );
+
+		$this->assertSame( $unknown['answer'], $refused['answer'], "{$who}: answered as for a key never seen." );
+		$this->assertSame( $unknown['statements'], $refused['statements'], "{$who}: the statements of a key never seen." );
+		$this->assertContains( $refused['answer']['code'] ?? null, array( 'cart.not_found', 'cart.not_open' ), $who );
+		$this->assertStringNotContainsString( (string) $placed['order_uuid'], $said, "{$who}: told the order's uuid." );
+		$this->assertStringNotContainsString( (string) $placed['order_number'], $said, "{$who}: told the order's number." );
+		$this->assertStringNotContainsString( (string) $placed['order_key'], $said, "{$who}: told the order's key." );
+	}
+
+	/**
 	 * Tests that a guest's kept answer is given back, as before, to whoever presents the cart's token and the key: a guest, and a user who signed in since.
 	 *
 	 * @since 0.2.0
@@ -301,6 +337,16 @@ final class CustomerPlacementTest extends PlacementTestCase {
 			$again = $this->placement->place( $input, $actor );
 
 			$this->assertSame( array( $placed['order_uuid'], $placed['order_number'], $placed['order_key'] ), array( $again['order_uuid'], $again['order_number'], $again['order_key'] ?? null ), "{$who} is given the answer back." );
+		}
+
+		// The key as it is while a visitor's placement is under way: claimed, keeping nothing. Whoever holds the cart's token is told so, as before.
+		$this->db->execute( "UPDATE %i SET state = 'claimed', order_id = NULL, response_json = NULL ORDER BY id DESC LIMIT 1", $this->table( CheckoutTables::IDEMPOTENCY_KEYS ) );
+
+		foreach ( array(
+			'the guest'              => self::guest(),
+			'a user signed in since' => Actor::user( $user ),
+		) as $who => $actor ) {
+			$this->assertSame( 'checkout.placement_in_progress', $this->refusal( $input, $actor )['answer']['code'] ?? null, "{$who} is told the placement is under way." );
 		}
 
 		$this->assertSame( array(), $this->customerRows(), 'Nobody became a customer.' );

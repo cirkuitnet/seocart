@@ -52,13 +52,18 @@ interface IdempotencyKeys {
 	 *                         `checkout.placement_in_progress` when another request holds the key
 	 *                         and has not placed its order.
 	 *
+	 * @since 0.2.0 What the key keeps while it is claimed.
+	 *
 	 * @param string $scope       What the key is claimed for, such as the order placement's operation id.
 	 * @param string $keyHash     The key's hash: IdempotencyClaim::keyHash().
 	 * @param string $fingerprint The SHA-256 of the request's canonical form, in lower-case hexadecimal.
 	 * @param int    $ttlSeconds  How long the key lives from now.
+	 * @param string $claimedFor  Optional. What the key keeps in place of an answer while it is claimed, as
+	 *                            JSON: whom the request is placing for, which replay() hands its decider;
+	 *                            empty for nothing. Default empty.
 	 * @return IdempotencyClaim The claim: owned, or a replay of the earlier answer.
 	 */
-	public function claim( string $scope, string $keyHash, string $fingerprint, int $ttlSeconds ): IdempotencyClaim;
+	public function claim( string $scope, string $keyHash, string $fingerprint, int $ttlSeconds, string $claimedFor = '' ): IdempotencyClaim;
 
 	/**
 	 * Answers a request as the earlier request with its key answered, when that one placed its order: one plain read, before any transaction.
@@ -67,18 +72,31 @@ interface IdempotencyKeys {
 	 * cart has moved on, so the replay must be found before the cart is. A key that is new, or
 	 * whose expiry has passed, answers nothing, and the request goes on to claim it.
 	 *
+	 * Before the key's state or the request's fingerprint is judged, the caller's decider is handed
+	 * what the key keeps: the answer of the placement that holds it, or what its claim kept while
+	 * it is claimed. When the decider says the request may not be answered from the key, the key
+	 * answers nothing, as a key never seen does, whatever its fingerprint and its state: neither a
+	 * replay nor a refusal of the key tells that request anything of the placement.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws CodedException `checkout.idempotency_key_reused` when the order was placed for a request
 	 *                        of another fingerprint; `checkout.placement_in_progress` when another
 	 *                        request holds the key and has not placed its order.
 	 *
-	 * @param string $scope       What the key is claimed for.
-	 * @param string $keyHash     The key's hash: IdempotencyClaim::keyHash().
-	 * @param string $fingerprint The SHA-256 of the request's canonical form, in lower-case hexadecimal.
+	 * @since 0.2.0 The decider.
+	 *
+	 * @param string        $scope       What the key is claimed for.
+	 * @param string        $keyHash     The key's hash: IdempotencyClaim::keyHash().
+	 * @param string        $fingerprint The SHA-256 of the request's canonical form, in lower-case hexadecimal.
+	 * @param \Closure|null $mayAnswer   Optional. Tells, from what the key keeps (JSON, or null for nothing),
+	 *                                   whether the request may be answered from the key at all. Default null:
+	 *                                   every request may.
 	 * @return IdempotencyClaim|null A replay of the earlier answer, or null.
+	 *
+	 * @phpstan-param (\Closure(string|null): bool)|null $mayAnswer
 	 */
-	public function replay( string $scope, string $keyHash, string $fingerprint ): ?IdempotencyClaim;
+	public function replay( string $scope, string $keyHash, string $fingerprint, ?\Closure $mayAnswer = null ): ?IdempotencyClaim;
 
 	/**
 	 * Records that the request that owns a key placed its order, and the answer it sends: claimed becomes placed.
