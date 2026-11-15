@@ -65,8 +65,9 @@
  *     is sent with its key, and nothing is handed over;
  * 24. back from the provider's page by the browser's Back, the page restored from the back/forward
  *     cache resumes the payment it left, and placing again resumes the same payment under the same
- *     key and places one order. Playwright starts Chromium with that cache off, so the case
- *     launches a browser of its own with it on.
+ *     key and places one order. Playwright starts Chromium with that cache off, and headless as its
+ *     headless shell, which loads the page again on Back; so the case launches a browser of its
+ *     own, the full Chromium build in its new headless mode, with the cache on.
  *
  * The stand-in answers every step with a redirect to the site's address, and passes its challenge
  * at once when asked again, so the step of a provider's script (`sdk`) is proved by the module's
@@ -2221,13 +2222,18 @@ test.describe( 'The payment section, as a guest', () => {
 
 	test( '(24) back from the provider’s page by the browser’s Back, the page restored from the back/forward cache resumes the payment, and placing again resumes the same payment under the same key and places one order', async ( {
 		browser,
+		channel,
 		launchOptions,
 		headless,
 		pluginBasePath,
 	} ) => {
 		// Playwright starts Chromium with its back/forward cache off, so Back would load the page
-		// again, as case 5's reload does. This browser, launched as the suite's is, has it on.
+		// again, as case 5's reload does; and headless, by default, as its headless shell, which
+		// loads it again all the same. This browser, launched as the suite's is otherwise, is the
+		// full Chromium build (`chromium`, unless the suite names a channel), headless in its new
+		// mode, with the cache on. An executable the suite names is still the one launched.
 		const caching = await browser.browserType().launch( {
+			channel: channel ?? 'chromium',
 			...launchOptions,
 			headless,
 			ignoreDefaultArgs: [ '--disable-back-forward-cache' ],
@@ -2338,14 +2344,31 @@ test.describe( 'The payment section, as a guest', () => {
 				{ times: 1 }
 			);
 
-			// Back: the browser restores the checkout from its cache, as the shopper left it.
+			// Back: the browser restores the checkout from its cache, as the shopper left it. A page
+			// loaded again instead shows the browser's own reasons for not restoring it.
 			await page.goBack( { waitUntil: 'commit' } );
 			await expect
-				.poll( () => page.evaluate( () => window.__pageShows ), {
-					message:
-						'The checkout was restored from the back/forward cache, not loaded again.',
-				} )
-				.toEqual( [ false, true ] );
+				.poll(
+					() =>
+						page.evaluate( () => ( {
+							shows: window.__pageShows,
+							notRestoredReasons: JSON.stringify(
+								(
+									performance.getEntriesByType(
+										'navigation'
+									)[ 0 ] as { notRestoredReasons?: unknown }
+								 )?.notRestoredReasons ?? null
+							),
+						} ) ),
+					{
+						message:
+							'The checkout was restored from the back/forward cache, not loaded again.',
+					}
+				)
+				.toEqual( {
+					shows: [ false, true ],
+					notRestoredReasons: 'null',
+				} );
 			await expect
 				.poll( async () => ( await hostState( page ) )?.error )
 				.toEqual( { code: 'action_incomplete' } );
