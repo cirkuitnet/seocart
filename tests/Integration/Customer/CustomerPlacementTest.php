@@ -248,6 +248,36 @@ final class CustomerPlacementTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Tests that a user given the placer's id, registered at another time, holding the placer's cart and key, is answered as for a key never seen: being the placer's user id is not being the placer's customer.
+	 *
+	 * The placer's registration time is moved, as a new user given a deleted user's id has another.
+	 *
+	 * Planted violation: in PlaceOrder::isKeptFor(), answer the placer's user id without asking whether it is still the order's
+	 * customer (replace `$customer === $this->customers->customerOf( $actor )` with `true`): the new user is handed the order's
+	 * number and key.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_user_given_the_placers_id_is_answered_as_for_a_key_never_seen(): void {
+		$placer = $this->createUser( 'subscriber' );
+
+		$this->readyCart( array( $this->sellable() => 1 ) );
+
+		$input  = $this->placeInput( 'the placer\'s attempt' );
+		$placed = $this->placement->place( $input, Actor::user( $placer ) );
+
+		$this->db->execute( 'UPDATE %i SET user_registered = %s WHERE ID = %d', $GLOBALS['wpdb']->users, '2001-02-03 04:05:06', $placer );
+		clean_user_cache( $placer );
+
+		$refused = $this->refusal( $input, Actor::user( $placer ) );
+		$unknown = $this->refusal( array( 'idempotency_key' => 'a key never seen' ) + $input, Actor::user( $placer ) );
+
+		$this->assertSame( $unknown['answer'], $refused['answer'], 'The user given the placer\'s id is answered as for a key never seen.' );
+		$this->assertStringNotContainsString( $placed['order_number'], (string) wp_json_encode( $refused['answer'] ) );
+		$this->assertStringNotContainsString( $placed['order_key'], (string) wp_json_encode( $refused['answer'] ) );
+	}
+
+	/**
 	 * Tests that a guest's kept answer is given back, as before, to whoever presents the cart's token and the key: a guest, and a user who signed in since.
 	 *
 	 * @since 0.2.0
