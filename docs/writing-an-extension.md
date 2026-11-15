@@ -230,8 +230,9 @@ or paragraph separator), or null when a caller has none to give.
 The contact is personal data. An adapter sends it only when its provider needs it, such as for its
 address check, names it in the `dataSent` of the host that receives it, which the extension's readme
 discloses, and never logs it: SEOCart's log writes the contact under the names it declares personal
-data, each value redacted, and a dump shows it masked, but a field copied out under a name of the
-adapter's own is beyond that. A request an extension serialized before a member was added reads
+data, each value redacted, and redacts its members copied out under their own names (`firstName`,
+`organization` and the rest, as `BillingContact::LOGGED_AS` lists them), and a dump shows it masked,
+but a field copied out under a name of the adapter's own is beyond that. A request an extension serialized before a member was added reads
 back with that member's default: one kept from before the billing contact has none.
 
 ## Run the gates

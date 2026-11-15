@@ -110,6 +110,38 @@ final class BillingContactPlacementTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Tests that a line logged with the contact's members copied into its context under their own names, from its public properties and from an array cast, keeps none of their values.
+	 *
+	 * Planted violation, shown red and removed: leave one member out of the names the contact
+	 * declares for the log (BillingContact::LOGGED_AS): the line keeps that member's value.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_line_logged_with_the_contacts_members_by_their_own_names_keeps_none_of_them(): void {
+		( new CreateLogsMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+
+		$contact = new BillingContact( 'GB', 'Augusta', 'Byron-King', 'Analytical Engines Ltd', '12 St James Square', 'Flat 3', 'Marylebone', 'Greater London', 'NW1 6XE' );
+
+		$this->kernel->get( Logger::class )->error(
+			'gateway.planted',
+			'Sent the contact.',
+			array(
+				'properties' => get_object_vars( $contact ),
+				'cast'       => (array) $contact,
+			)
+		);
+
+		$lines = $this->db->fetchAll( 'SELECT message, context_json FROM %i WHERE machine_code = %s', $this->table( LogsTable::NAME ), 'gateway.planted' );
+
+		$this->assertCount( 1, $lines, 'The planted line was written.' );
+		$this->assertSame( array_keys( get_object_vars( $contact ) ), array_keys( (array) $contact ), 'The cast names the members as the properties do.' );
+
+		foreach ( get_object_vars( $contact ) as $member => $value ) {
+			$this->assertStringNotContainsString( $value, (string) wp_json_encode( $lines[0] ), sprintf( 'The log line keeps the contact\'s %s.', $member ) );
+		}
+	}
+
+	/**
 	 * Places an order of one unit as an actor and asserts the gateway was given the checkout's billing contact.
 	 *
 	 * @since 0.2.0

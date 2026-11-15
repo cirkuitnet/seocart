@@ -16,12 +16,20 @@ use SEOCart\Contracts\Payment\BillingContact;
 use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Contracts\Payment\PaymentRequest;
 use SEOCart\Payment\Application\PaymentService;
+use SEOCart\Platform\Authorization\CapabilityDeclaration;
+use SEOCart\Platform\DataRegistry\DataRegistry;
+use SEOCart\Platform\Logging\Redactor;
 use SEOCart\Support\Address;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Money;
+use SEOCart\Support\Schema\FieldSpec;
+use SEOCart\Support\Schema\Privacy;
 
 /**
- * The contact is the order's billing address without its e-mail address, phone number and tax identifier; it holds plain text alone; its JSON form names its fields as the plugin declares them personal data; a dump masks them; and a request carries none unless given one.
+ * The contact is the order's billing address without its e-mail address, phone number and tax identifier; it holds plain text alone; its JSON form names its fields as the plugin declares them personal data; its members are redacted under those names and their own; a dump masks them; and a request carries none unless given one.
+ *
+ * Planted violation, shown red and removed: leave `firstName` out of BillingContact::LOGGED_AS: the
+ * list no longer holds every member, and a context naming the member by its own name keeps it.
  *
  * @group contract
  * @since 0.2.0
@@ -64,6 +72,54 @@ final class BillingContactTest extends TestCase {
 		$this->assertStringNotContainsString( 'ada@example.com', (string) json_encode( $contact ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode -- The unit suite loads no WordPress.
 		$this->assertStringNotContainsString( '555', (string) json_encode( $contact ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode -- The unit suite loads no WordPress.
 		$this->assertStringNotContainsString( 'US-TAX-1', (string) json_encode( $contact ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode -- The unit suite loads no WordPress.
+	}
+
+	/**
+	 * Tests that every public member of the contact has a name it is logged as, so a member added later cannot be left out of the log's redaction.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_every_public_member_has_a_name_it_is_logged_as(): void {
+		$members = array_map( static fn( \ReflectionProperty $property ): string => $property->getName(), ( new \ReflectionClass( BillingContact::class ) )->getProperties( \ReflectionProperty::IS_PUBLIC ) );
+
+		$this->assertNotEmpty( $members, 'The contact\'s members must be read, or the test proves nothing.' );
+		$this->assertEqualsCanonicalizing( $members, array_keys( BillingContact::LOGGED_AS ), 'Each public member is listed in LOGGED_AS, and nothing else is.' );
+	}
+
+	/**
+	 * Tests that the fields the log learns from the contact are personal data, each name once: every member's own, lower-cased, and every name it is logged as.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_fields_the_log_learns_are_each_name_once_as_personal_data(): void {
+		$fields = BillingContact::personalData();
+		$names  = array_map( static fn( FieldSpec $field ): string => $field->name(), $fields );
+
+		$this->assertEqualsCanonicalizing( array( 'country', 'firstname', 'first_name', 'lastname', 'last_name', 'organization', 'company', 'line1', 'line2', 'city', 'region', 'postcode' ), $names );
+
+		foreach ( $fields as $field ) {
+			$this->assertSame( Privacy::Pii, $field->privacy(), sprintf( 'The field %s is not personal data.', $field->name() ) );
+		}
+	}
+
+	/**
+	 * Tests that a redactor that learned the contact's fields redacts each of its values in a context made from its public members, from an array cast and from its JSON form.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_context_of_the_contacts_members_is_redacted_whichever_way_it_was_made(): void {
+		$redactor = Redactor::fromDeclarations( new DataRegistry( new CapabilityDeclaration() ), ...BillingContact::personalData() );
+		$contact  = PaymentService::billingContactOf( self::address() );
+		$contexts = array(
+			'its public members' => get_object_vars( $contact ),
+			'an array cast'      => (array) $contact,
+			'its JSON form'      => $contact->jsonSerialize(),
+		);
+
+		foreach ( $contexts as $made => $context ) {
+			$this->assertCount( 9, $context, sprintf( 'The context made from %s holds every member.', $made ) );
+			$this->assertSame( array_fill_keys( array_keys( $context ), Redactor::REDACTED ), $redactor->context( $context ), sprintf( 'A context made from %s keeps a value of the contact.', $made ) );
+		}
 	}
 
 	/**

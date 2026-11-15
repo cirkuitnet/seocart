@@ -570,7 +570,7 @@ final class Modules {
 			$fields = array_merge( $fields, $definition->input(), $definition->output()->fields() );
 		}
 
-		return array_merge( $fields, array_map( static fn( Setting $setting ): FieldSpec => $setting->field(), Settings::registry()->all() ) );
+		return array_merge( $fields, array_map( static fn( Setting $setting ): FieldSpec => $setting->field(), Settings::registry()->all() ), \SEOCart\Contracts\Payment\BillingContact::personalData() );
 	}
 
 	/**

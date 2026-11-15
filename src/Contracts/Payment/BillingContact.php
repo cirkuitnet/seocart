@@ -11,6 +11,10 @@ declare( strict_types=1 );
 
 namespace SEOCart\Contracts\Payment;
 
+use SEOCart\Support\Schema\FieldSpec;
+use SEOCart\Support\Schema\FieldType;
+use SEOCart\Support\Schema\Privacy;
+
 defined( 'ABSPATH' ) || exit;
 
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- These exceptions report a caller's programming error to the developer; they are never HTML.
@@ -28,9 +32,10 @@ defined( 'ABSPATH' ) || exit;
  * such as for its address check, and names it in what its host sends (OutboundHost::$dataSent).
  * SEOCart's log writes it, as any value of a log line's context, by its JSON form, each field under
  * the name the plugin declares personal data (jsonSerialize()), the company name (organization)
- * under `company`, so every one is redacted; a dump shows its values masked (__debugInfo()). A
- * field copied out of it under a name of the adapter's own choosing is beyond that redaction: an
- * adapter logs none of it.
+ * under `company`; its members copied out under their own names, such as by get_object_vars() or
+ * an array cast, are redacted too, since each name is declared personal data (LOGGED_AS,
+ * personalData()). A dump shows its values masked (__debugInfo()). A field copied out of it under a
+ * name of the adapter's own choosing is beyond that redaction: an adapter logs none of it.
  *
  * @since 0.2.0
  *
@@ -50,6 +55,30 @@ final readonly class BillingContact implements \JsonSerializable {
 	 * @var string
 	 */
 	public const CONTROL_CHARACTER = '[\p{Cc}\x{2028}\x{2029}]';
+
+	/**
+	 * The name each member is logged as: the order's address field it holds, by member.
+	 *
+	 * The one declaration of the names the contact is known by outside PHP. Its JSON form names each
+	 * value by it (jsonSerialize()), and the log's redaction learns each of these names and each
+	 * member's own (personalData()), so a value is redacted whichever of the two a log line's context
+	 * names it by. Every public member is listed: a test holds the list to the class's members.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, string>
+	 */
+	public const LOGGED_AS = array(
+		'country'      => 'country',
+		'firstName'    => 'first_name',
+		'lastName'     => 'last_name',
+		'organization' => 'company',
+		'line1'        => 'line1',
+		'line2'        => 'line2',
+		'city'         => 'city',
+		'region'       => 'region',
+		'postcode'     => 'postcode',
+	);
 
 	/**
 	 * Records the contact.
@@ -93,24 +122,49 @@ final readonly class BillingContact implements \JsonSerializable {
 	}
 
 	/**
-	 * Returns the contact's fields under the names the plugin declares personal data, the order's address fields': what SEOCart's log redacts.
+	 * Returns the personal-data fields SEOCart's log redacts the contact under: each member's own name, lower-cased, and each name it is logged as (LOGGED_AS).
+	 *
+	 * The log compares a context's keys without regard to case, so a member copied out under its own
+	 * name, such as `firstName`, is redacted as one under the order's name, such as `first_name`.
+	 * SEOCart's kernel declares these fields to the log's redaction with the plugin's other fields;
+	 * a name another declaration already makes personal data stays so, and one it makes secret stays
+	 * secret.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<FieldSpec> The fields, each personal data, each name once.
+	 */
+	public static function personalData(): array {
+		$names = array_values( array_unique( array_merge( array_map( 'strtolower', array_keys( self::LOGGED_AS ) ), array_values( self::LOGGED_AS ) ) ) );
+
+		return array_map(
+			static fn( string $name ): FieldSpec => new FieldSpec(
+				name: $name,
+				type: FieldType::String,
+				description: 'A value of the billing contact a gateway is given with an authorization.',
+				label: static fn(): string => __( 'Billing contact', 'seocart' ),
+				example: '',
+				privacy: Privacy::Pii
+			),
+			$names
+		);
+	}
+
+	/**
+	 * Returns the contact's fields under the names the plugin declares personal data, the order's address fields' (LOGGED_AS): what SEOCart's log redacts.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @return array<string, string> The fields, by name.
 	 */
 	public function jsonSerialize(): array {
-		return array(
-			'country'    => $this->country,
-			'first_name' => $this->firstName,
-			'last_name'  => $this->lastName,
-			'company'    => $this->organization,
-			'line1'      => $this->line1,
-			'line2'      => $this->line2,
-			'city'       => $this->city,
-			'region'     => $this->region,
-			'postcode'   => $this->postcode,
-		);
+		$fields = array();
+
+		foreach ( self::LOGGED_AS as $member => $name ) {
+			$fields[ $name ] = $this->{$member};
+		}
+
+		return $fields;
 	}
 
 	/**
