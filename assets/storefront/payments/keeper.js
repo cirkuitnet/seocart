@@ -141,7 +141,7 @@ function isKept( value ) {
  *
  * @param {Object}             scope The global object, whose `sessionStorage` may be missing or refuse access.
  * @param {function(): string} mint  Returns a fresh key.
- * @return {Object} The keeper: read(), begin(), write(), clear().
+ * @return {Object} The keeper: read(), stored(), begin(), write(), clear().
  */
 export function createKeeper( scope, mint ) {
 	let memory = null;
@@ -162,10 +162,17 @@ export function createKeeper( scope, mint ) {
 		 * @return {Object|null} The placement.
 		 */
 		read() {
-			if ( memory ) {
-				return memory;
-			}
+			return memory ?? keeper.stored();
+		},
 
+		/**
+		 * Returns the placement the tab's storage holds now, with `paymentData` null, whatever the
+		 * page keeps of its own: another page of the tab may have ended it or replaced it since.
+		 * Null when there is none, or the browser keeps no storage.
+		 *
+		 * @return {Object|null} The placement.
+		 */
+		stored() {
 			try {
 				const raw = storage()?.getItem( STORAGE_KEY );
 				const parsed = raw ? JSON.parse( raw ) : null;

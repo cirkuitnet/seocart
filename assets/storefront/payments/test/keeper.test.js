@@ -142,6 +142,30 @@ describe( 'createKeeper', () => {
 		} );
 	} );
 
+	it( 'tells what the tab’s storage holds now, whatever the page keeps of its own', () => {
+		const keeper = createKeeper( window, counter() );
+		const placement = { key: 'key-1', ...INPUTS, intentUuid: 'u' };
+
+		keeper.write( placement );
+
+		expect( keeper.stored() ).toEqual( {
+			key: 'key-1',
+			cartVersion: 3,
+			amountMinor: 1999,
+			currency: 'GBP',
+			gatewayId: 'stub',
+			intentUuid: 'u',
+			shopper: null,
+			paymentData: null,
+		} );
+
+		// Another page of the tab ended the placement: the page still keeps its own copy.
+		window.sessionStorage.removeItem( STORAGE_KEY );
+
+		expect( keeper.stored() ).toBeNull();
+		expect( keeper.read() ).toEqual( placement );
+	} );
+
 	it( 'ends the key when cleared', () => {
 		const keeper = createKeeper( window, counter() );
 
