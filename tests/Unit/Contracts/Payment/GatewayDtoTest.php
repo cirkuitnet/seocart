@@ -42,6 +42,7 @@ final class GatewayDtoTest extends TestCase {
 	 * The parameters a contract class may take: identities, amounts, outcomes, tokens, references and declarations.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The billing contact's name and postal address.
 	 *
 	 * @var list<string>
 	 */
@@ -71,6 +72,18 @@ final class GatewayDtoTest extends TestCase {
 		'orderNumber',
 		'returnUrl',
 		'reason',
+		// The billing contact an authorization carries: a name and a postal address, personal data, and no card field.
+		// Its company name is `organization`: `company` holds the fragment `pan`.
+		'billing',
+		'country',
+		'firstName',
+		'lastName',
+		'organization',
+		'line1',
+		'line2',
+		'city',
+		'region',
+		'postcode',
 		// Queries: when the intent's wait, for the customer or the gateway, runs out.
 		'waitEndsAt',
 		'waitEnded',

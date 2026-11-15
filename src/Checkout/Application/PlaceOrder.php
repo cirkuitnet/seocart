@@ -59,6 +59,7 @@ use SEOCart\Pricing\Domain\Quote\RoutingProposal;
 use SEOCart\Pricing\Domain\Source;
 use SEOCart\Promotion\Application\PromotionUsage;
 use SEOCart\Promotion\Application\UsageClaim;
+use SEOCart\Support\Address;
 use SEOCart\Support\Error\CodedException;
 
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- These exceptions report a programming error to the developer; they are never HTML. Coded errors go through CodedException.
@@ -318,7 +319,7 @@ final class PlaceOrder {
 			}
 		}
 
-		return $this->paid( $placed, (array) ( $input['payment_data'] ?? array() ), $token, $key, $actor );
+		return $this->paid( $placed, (array) ( $input['payment_data'] ?? array() ), $token, $key, $actor, $session->details->billingAddress );
 	}
 
 	/**
@@ -517,9 +518,10 @@ final class PlaceOrder {
 	 * @param CartToken                                                                    $token       The token of the cart placed, which a decline is counted for.
 	 * @param string                                                                       $key         The idempotency key the request sent, which seals what the shopper must do.
 	 * @param Actor                                                                        $actor       Who places the order.
+	 * @param Address|null                                                                 $billing     The order's billing address, as the session held it, which the gateway is given.
 	 * @return array<string, mixed> The answer.
 	 */
-	private function paid( array $placed, array $paymentData, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): array {
+	private function paid( array $placed, array $paymentData, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor, ?Address $billing ): array {
 		$record = $placed['record'];
 		$order  = array( 'order_uuid' => $record['order_uuid'] );
 
@@ -528,7 +530,7 @@ final class PlaceOrder {
 		}
 
 		try {
-			$result = $this->payments->authorize( $placed['intent_uuid'], $paymentData, (string) $record['order_uuid'], (string) $record['order_number'], ReturnUrls::for( $placed['intent_uuid'] ) );
+			$result = $this->payments->authorize( $placed['intent_uuid'], $paymentData, (string) $record['order_uuid'], (string) $record['order_number'], ReturnUrls::for( $placed['intent_uuid'] ), $billing );
 		} catch ( GatewayUnavailable $unavailable ) {
 			// The request may have reached the provider: the order waits as placed, and reconciliation asks.
 			throw CodedException::because( CheckoutError::GatewayUnavailable, array(), $unavailable, $order );

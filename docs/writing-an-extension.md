@@ -220,6 +220,18 @@ gateway's error, as it treats a call the gateway did not answer: nothing of it i
 placement waits for the reconciliation run, a capture or a void asked again sends the same
 idempotency key, and a refund stays claimed.
 
+`authorize()` is given a `PaymentRequest`: the intent's uuid, which is its idempotency key, the
+amount, the shopper's payment token (at most 1,024 characters, as the provider's script in the
+browser made it), the mode, the order's uuid and number, the address a shopper asked to act comes
+back to, and the order's billing contact, `$billing`: a `BillingContact` of the given and family
+name, the company (`organization`), two address lines, the city, the region, the postcode and the
+country, each plain text within the order's own limits, or null when a caller has none to give.
+The contact is personal data. An adapter sends it only when its provider needs it, such as for its
+address check, names it in the `dataSent` of the host that receives it, which the extension's readme
+discloses, and never logs it: SEOCart's log writes the contact under the names it declares personal
+data, each value redacted, and a dump shows it masked, but a field copied out under a name of the
+adapter's own is beyond that.
+
 ## Run the gates
 
 Commit the files first: the private-reference check reads what git tracks, and the zip takes its

@@ -14,6 +14,7 @@ namespace SEOCart\Payment\Application;
 // Before the imports: Plugin Check looks for this guard only in the first 50 lines of a namespaced file.
 defined( 'ABSPATH' ) || exit;
 
+use SEOCart\Contracts\Payment\BillingContact;
 use SEOCart\Contracts\Payment\CaptureRequest;
 use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\GatewayUnavailable;
@@ -57,6 +58,7 @@ use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Platform\Events\EventPublisher;
 use SEOCart\Platform\Logging\CardNumbers;
 use SEOCart\Platform\Logging\CorrelationId;
+use SEOCart\Support\Address;
 use SEOCart\Support\Clock;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
@@ -469,10 +471,12 @@ final class PaymentService {
 	 * The gateway's matrix is checked again right before the call, for the intent's currency and
 	 * recorded mode: placement checked it before writing the order, but the account's country, or
 	 * the gateway itself, may have changed since. The return address is where a provider that asks
-	 * the shopper to act sends them back; it carries nothing secret.
+	 * the shopper to act sends them back; it carries nothing secret. The billing address is the
+	 * caller's too, the order's as the placement holds it, given to the gateway as its billing
+	 * contact (BillingContact): reading it here would cost the placement a statement as well.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The order's uuid and number, and the return address, were added, and the matrix is checked before the call.
+	 * @since 0.2.0 The order's uuid and number, the return address and the billing address were added, and the matrix is checked before the call.
 	 *
 	 * @throws \LogicException     Inside a transaction, before any statement.
 	 * @throws CodedException      `payment.intent_not_found`; `payment.operation_unsupported`;
@@ -485,9 +489,11 @@ final class PaymentService {
 	 * @param string               $orderNumber The order's number.
 	 * @param string|null          $returnUrl   Optional. Where the provider sends the shopper back after asking them to
 	 *                                          act. Default null, for none.
+	 * @param Address|null         $billing     Optional. The order's billing address. Default null, for none: the
+	 *                                          gateway is then given no billing contact.
 	 * @return GatewayResult The gateway's answer.
 	 */
-	public function authorize( string $intentUuid, array $paymentData, string $orderUuid, string $orderNumber, ?string $returnUrl = null ): GatewayResult {
+	public function authorize( string $intentUuid, array $paymentData, string $orderUuid, string $orderNumber, ?string $returnUrl = null, ?Address $billing = null ): GatewayResult {
 		$this->requireNoTransaction( __FUNCTION__ );
 
 		$intent = $this->find( $intentUuid );
@@ -495,7 +501,37 @@ final class PaymentService {
 
 		$this->require( $intent->gatewayId, Operations::AUTHORIZE, $intent->mode, $intent->amount->currency() );
 
-		return $this->gateways->get( $intent->gatewayId, $intent->mode )->authorize( new PaymentRequest( $intent->uuid, $intent->amount, is_string( $token ) && '' !== $token ? $token : null, $intent->mode, $orderUuid, $orderNumber, $returnUrl ) );
+		return $this->gateways->get( $intent->gatewayId, $intent->mode )->authorize( new PaymentRequest( $intent->uuid, $intent->amount, is_string( $token ) && '' !== $token ? $token : null, $intent->mode, $orderUuid, $orderNumber, $returnUrl, null === $billing ? null : self::billingContactOf( $billing ) ) );
+	}
+
+	/**
+	 * Returns the billing contact a gateway is given of an order's billing address: its name, company, lines, city, region, postcode and country.
+	 *
+	 * The checkout takes an address's text as it is sent, its length checked, so a value may hold a
+	 * line break or another control character, or, read from elsewhere, bytes that are not UTF-8.
+	 * Each run of control characters becomes one space and each byte that is not UTF-8 a `?`, so the
+	 * contact of any address the checkout accepted is plain text and never refused: the gateway is
+	 * asked after the order is written.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Address $address The billing address.
+	 * @return BillingContact The contact.
+	 */
+	public static function billingContactOf( Address $address ): BillingContact {
+		$plain = static fn( string $value ): string => (string) preg_replace( '/[\x00-\x1F\x7F]+/u', ' ', mb_scrub( $value, 'UTF-8' ) );
+
+		return new BillingContact(
+			country: $address->country(),
+			firstName: $plain( $address->firstName() ),
+			lastName: $plain( $address->lastName() ),
+			organization: $plain( $address->company() ),
+			line1: $plain( $address->line1() ),
+			line2: $plain( $address->line2() ),
+			city: $plain( $address->city() ),
+			region: $plain( $address->region() ),
+			postcode: $plain( $address->postcode() )
+		);
 	}
 
 	/**
