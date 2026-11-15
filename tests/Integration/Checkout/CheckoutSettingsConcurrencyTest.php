@@ -142,10 +142,10 @@ final class CheckoutSettingsConcurrencyTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Tests that a change that loses every attempt answers `settings.version_conflict` and writes nothing of its own.
+	 * Tests that a change that loses three attempts answers `settings.version_conflict` and writes nothing of its own.
 	 *
-	 * Planted violation: in CheckoutSettingsService::ATTEMPTS, allow one attempt more than B wins:
-	 * the change then goes through on the fourth.
+	 * Planted violation: in CheckoutSettingsService::ATTEMPTS, allow a fourth attempt: the change
+	 * then goes through on it.
 	 *
 	 * @since 0.2.0
 	 */
@@ -154,7 +154,7 @@ final class CheckoutSettingsConcurrencyTest extends DatabaseTestCase {
 
 		$b = $this->secondConnection();
 
-		$this->beforeEachSwap( $b, array( '{"phone":"optional"}', '{"phone":"required"}', '{"phone":"hidden"}', '{"phone":"optional"}' ), CheckoutSettingsService::ATTEMPTS );
+		$this->beforeEachSwap( $b, array( '{"phone":"optional"}', '{"phone":"required"}', '{"phone":"hidden"}' ), 3 );
 
 		try {
 			$this->service()->updateFields( self::fields( array( 'line2' => 'hidden' ) ), Actor::user( 1 ) );
@@ -163,7 +163,7 @@ final class CheckoutSettingsConcurrencyTest extends DatabaseTestCase {
 			$this->assertSame( array( SettingsError::VersionConflict, array( 'group' => CheckoutSettings::GROUP ) ), array( $lost->errorCode(), $lost->context() ) );
 		}
 
-		$this->assertSame( CheckoutSettingsService::ATTEMPTS, $this->wins );
+		$this->assertSame( 3, $this->wins, 'A change tries three times.' );
 		$this->assertStringNotContainsString( 'line2', (string) self::committed( $b ) );
 	}
 
