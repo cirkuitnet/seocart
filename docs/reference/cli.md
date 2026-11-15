@@ -316,6 +316,72 @@ wp seocart transfer cancel <transfer_uuid> [--format=<format>]
 - `<transfer_uuid>`: The transfer to cancel. A uuid.
 - `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
 
+## `wp seocart checkout fields`
+
+Returns every checkout field the store has, hidden ones included, in the order the form shows them, each with its presence in this store, the presences it allows, who declared it and whether it is locked.
+
+```sh
+wp seocart checkout fields [--format=<format>]
+```
+
+- Operation: `checkout.get_fields`
+- Capability: `seocart_manage_settings`
+- Error codes: `settings.stored_value_invalid` (500), `authorization.denied` (403)
+
+### Arguments
+
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart checkout update-fields`
+
+Sets whether the checkout hides, offers or requires each field named, among the presences the field allows, keeps every other field as it is, and returns every checkout field; a change made at the same moment by someone else is kept.
+
+```sh
+wp seocart checkout update-fields --fields=<json> [--format=<format>]
+```
+
+- Operation: `checkout.update_fields`
+- Capability: `seocart_manage_settings`
+- Error codes: `checkout.field_unknown` (422), `checkout.presence_not_allowed` (422), `settings.version_conflict` (409), `settings.stored_value_invalid` (500), `authorization.denied` (403), `store.unavailable` (503)
+
+### Arguments
+
+- `--fields=<json>`: The fields to change, each by its key with its new presence. A list of 1 to 100 objects, each with `key`, `presence`.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart checkout order-limits`
+
+Returns the smallest and the largest order the store takes in each currency that has a limit, in that currency's minor units; a currency left out has none.
+
+```sh
+wp seocart checkout order-limits [--format=<format>]
+```
+
+- Operation: `checkout.get_order_limits`
+- Capability: `seocart_manage_settings`
+- Error codes: `settings.stored_value_invalid` (500), `authorization.denied` (403)
+
+### Arguments
+
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
+## `wp seocart checkout update-order-limits`
+
+Replaces the store's order limits with the ones given, at most one per currency, and returns them; a currency left out, or given without either bound, has no limit. Each bound is compared with the goods after their discounts, without shipping or fees, with tax when every price was entered with tax.
+
+```sh
+wp seocart checkout update-order-limits --limits=<json> [--format=<format>]
+```
+
+- Operation: `checkout.update_order_limits`
+- Capability: `seocart_manage_settings`
+- Error codes: `checkout.invalid_order_limits` (422), `settings.version_conflict` (409), `settings.stored_value_invalid` (500), `authorization.denied` (403), `store.unavailable` (503)
+
+### Arguments
+
+- `--limits=<json>`: The order limits, at most one per currency; every currency left out has none. A list of 0 to 200 objects, each with `currency`, `min_subtotal_minor`, `max_subtotal_minor`.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
 ## `wp seocart order refund`
 
 Gives back units of an order's lines, and what is left of its shipping when asked, through the gateway its payment was taken by, at the order's own rate, and answers the refund; the Idempotency-Key header is required, and a retry with the same key and the same request is answered with the same refund, never a second one.

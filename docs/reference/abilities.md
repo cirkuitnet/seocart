@@ -395,6 +395,78 @@ Cancels a draft, or a requested transfer that carries no order's units; a transf
 - `received_at` (always): When its last units were received or written off, UTC, in ISO 8601 to the microsecond; null until then. Text. May be null.
 - `lines` (always): The transfer's lines, by ascending variant. A list of objects, each with `line_id`, `variant_id`, `quantity`, `received_quantity`, `lost_quantity`, `in_transit`, `allocated`.
 
+## `seocart/get-checkout-fields`
+
+Returns every checkout field the store has, hidden ones included, in the order the form shows them, each with its presence in this store, the presences it allows, who declared it and whether it is locked.
+
+- Operation: `checkout.get_fields`
+- Capability: `seocart_manage_settings`
+- Error codes: `settings.stored_value_invalid` (500), `authorization.denied` (403)
+- Annotations: readonly `true`, destructive `false`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+This ability takes no input.
+
+### Output
+
+- `fields` (always): Every checkout field the store has, hidden ones included, in the order the form shows them. A list of objects, each with `key`, `section`, `type`, `label`, `help`, `presence`, `presences`, `source`, `locked`.
+
+## `seocart/update-checkout-fields`
+
+Sets whether the checkout hides, offers or requires each field named, among the presences the field allows, keeps every other field as it is, and returns every checkout field; a change made at the same moment by someone else is kept.
+
+- Operation: `checkout.update_fields`
+- Capability: `seocart_manage_settings`
+- Error codes: `checkout.field_unknown` (422), `checkout.presence_not_allowed` (422), `settings.version_conflict` (409), `settings.stored_value_invalid` (500), `authorization.denied` (403), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `false`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+- `fields` (required): The fields to change, each by its key with its new presence. A list of 1 to 100 objects, each with `key`, `presence`.
+
+### Output
+
+- `fields` (always): Every checkout field the store has, hidden ones included, in the order the form shows them. A list of objects, each with `key`, `section`, `type`, `label`, `help`, `presence`, `presences`, `source`, `locked`.
+
+## `seocart/get-order-limits`
+
+Returns the smallest and the largest order the store takes in each currency that has a limit, in that currency's minor units; a currency left out has none.
+
+- Operation: `checkout.get_order_limits`
+- Capability: `seocart_manage_settings`
+- Error codes: `settings.stored_value_invalid` (500), `authorization.denied` (403)
+- Annotations: readonly `true`, destructive `false`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+This ability takes no input.
+
+### Output
+
+- `limits` (always): The order limits, one per currency that has one, by currency code. A list of 0 to 200 objects, each with `currency`, `min_subtotal_minor`, `max_subtotal_minor`.
+
+## `seocart/update-order-limits`
+
+Replaces the store's order limits with the ones given, at most one per currency, and returns them; a currency left out, or given without either bound, has no limit. Each bound is compared with the goods after their discounts, without shipping or fees, with tax when every price was entered with tax.
+
+- Operation: `checkout.update_order_limits`
+- Capability: `seocart_manage_settings`
+- Error codes: `checkout.invalid_order_limits` (422), `settings.version_conflict` (409), `settings.stored_value_invalid` (500), `authorization.denied` (403), `store.unavailable` (503)
+- Annotations: readonly `false`, destructive `false`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+- `limits` (required): The order limits, at most one per currency; every currency left out has none. A list of 0 to 200 objects, each with `currency`, `min_subtotal_minor`, `max_subtotal_minor`.
+
+### Output
+
+- `limits` (always): The order limits, one per currency that has one, by currency code. A list of 0 to 200 objects, each with `currency`, `min_subtotal_minor`, `max_subtotal_minor`.
+
 ## `seocart/refund-order`
 
 Gives back units of an order's lines, and what is left of its shipping when asked, through the gateway its payment was taken by, at the order's own rate, and answers the refund; the Idempotency-Key header is required, and a retry with the same key and the same request is answered with the same refund, never a second one.

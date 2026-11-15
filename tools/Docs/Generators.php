@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tools\Docs;
 
 use SEOCart\Application\Operations\Operations;
+use SEOCart\Checkout\Domain\Fields\BuiltInFields;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Platform\Hooks\ActionDeclarations;
 use SEOCart\Platform\Hooks\FilterDeclarations;
@@ -50,6 +51,7 @@ final class Generators {
 			new ErrorsReference( $errors ),
 			new HooksReference( Modules::EVENT_CLASSES, FilterDeclarations::ALL, ActionDeclarations::ALL ),
 			GatewayMatrixPage::forCore(),
+			new CheckoutFieldsReference( BuiltInFields::all() ),
 		);
 	}
 

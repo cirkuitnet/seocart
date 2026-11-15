@@ -897,6 +897,11 @@
                                     "billing_address": {
                                         "type": "object",
                                         "properties": {
+                                            "email": {
+                                                "type": "string",
+                                                "maxLength": 255,
+                                                "description": "The e-mail address."
+                                            },
                                             "country": {
                                                 "type": "string",
                                                 "maxLength": 2,
@@ -910,7 +915,7 @@
                                             "last_name": {
                                                 "type": "string",
                                                 "maxLength": 100,
-                                                "description": "The family name."
+                                                "description": "The family name, or the whole name of a person who has one name."
                                             },
                                             "company": {
                                                 "type": "string",
@@ -947,11 +952,6 @@
                                                 "maxLength": 32,
                                                 "description": "The phone number."
                                             },
-                                            "email": {
-                                                "type": "string",
-                                                "maxLength": 255,
-                                                "description": "The e-mail address."
-                                            },
                                             "tax_id": {
                                                 "type": "string",
                                                 "maxLength": 64,
@@ -962,9 +962,10 @@
                                             "country"
                                         ],
                                         "additionalProperties": false,
-                                        "description": "The address the payment is billed to; leave it out to clear it.",
+                                        "description": "The address the payment is billed to, with the shopper's email address; leave it out to clear it.",
                                         "examples": [
                                             {
+                                                "email": "ada@example.com",
                                                 "country": "GB",
                                                 "first_name": "Ada",
                                                 "last_name": "Lovelace",
@@ -975,7 +976,6 @@
                                                 "region": "Greater London",
                                                 "postcode": "SW1Y 4JH",
                                                 "phone": "+44 20 7946 0000",
-                                                "email": "ada@example.com",
                                                 "tax_id": "GB000000000"
                                             }
                                         ]
@@ -996,7 +996,7 @@
                                             "last_name": {
                                                 "type": "string",
                                                 "maxLength": 100,
-                                                "description": "The family name."
+                                                "description": "The family name, or the whole name of a person who has one name."
                                             },
                                             "company": {
                                                 "type": "string",
@@ -1032,11 +1032,6 @@
                                                 "type": "string",
                                                 "maxLength": 32,
                                                 "description": "The phone number."
-                                            },
-                                            "email": {
-                                                "type": "string",
-                                                "maxLength": 255,
-                                                "description": "The e-mail address."
                                             },
                                             "tax_id": {
                                                 "type": "string",
@@ -1061,7 +1056,6 @@
                                                 "region": "Greater London",
                                                 "postcode": "SW1Y 4JH",
                                                 "phone": "+44 20 7946 0000",
-                                                "email": "ada@example.com",
                                                 "tax_id": "GB000000000"
                                             }
                                         ]
@@ -1152,7 +1146,7 @@
                         }
                     },
                     "422": {
-                        "description": "`checkout.invalid_address`: The address field {field} is not valid. A country is a two-letter code, such as GB, and an email address looks like name@example.com.\n\n`checkout.invalid_method_key`: The {field} is not a method the store can use. A method key uses only lower-case letters, digits, dots, colons, hyphens and underscores, such as flat, and a payment method is one the store offers.",
+                        "description": "`checkout.invalid_fields`: Some checkout details cannot be used as given, so nothing was saved. The error lists each field and why: the store does not ask for it there, it is too long, it holds a control or invisible formatting character, it is not in the right format, or it is not one of the choices.\n\n`checkout.invalid_method_key`: The {field} is not a method the store can use. A method key uses only lower-case letters, digits, dots, colons, hyphens and underscores, such as flat, and a payment method is one the store offers.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -1322,7 +1316,7 @@
                         }
                     },
                     "409": {
-                        "description": "`checkout.placement_in_progress`: An order is being placed with this idempotency key right now. Wait a moment, then send the same request again.\n\n`cart.not_open`: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.\n\n`cart.version_stale`: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.\n\n`checkout.line_unsellable`: The variant {variant_id} cannot be sold now ({reason}), so no order was placed. Remove it from the cart, then place the order again.\n\n`checkout.totals_changed`: The cart's totals have changed since you read them, so no order was placed. Check the new totals, then place the order again with them.\n\n`checkout.payment_method_unavailable`: The payment method {payment_method_key} cannot take this order's payment now, so the order was not placed. Choose another way to pay, then place the order again.\n\n`stock.insufficient`: Variant {variant_id}: {requested} asked for, but only {available} available.\n\n`stock.routing_refused`: These items cannot be sent together in the quantities asked for.\n\n`stock.no_fulfilling_location`: No location ships online orders at the moment, so nothing can be sold.\n\n`stock.location_inactive`: Location {location_id} is deactivated.\n\n`promotion.limit_reached`: That code can no longer be used. Remove it to go on.\n\n`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.",
+                        "description": "`checkout.placement_in_progress`: An order is being placed with this idempotency key right now. Wait a moment, then send the same request again.\n\n`cart.not_open`: The cart can no longer be changed: an order has been placed from it (its status is {status}). Start a new cart to keep shopping.\n\n`cart.version_stale`: The cart has changed since you read it, and is now at version {current_version}. Read it again, then repeat your change if you still want it.\n\n`checkout.line_unsellable`: The variant {variant_id} cannot be sold now ({reason}), so no order was placed. Remove it from the cart, then place the order again.\n\n`checkout.totals_changed`: The cart's totals have changed since you read them, so no order was placed. Check the new totals, then place the order again with them.\n\n`checkout.subtotal_below_minimum`: The order is below the store's minimum order amount, so it was not placed. Add more to the cart, then place the order again.\n\n`checkout.subtotal_above_maximum`: The order is above the store's maximum order amount, so it was not placed. Remove something from the cart, then place the order again.\n\n`checkout.payment_method_unavailable`: The payment method {payment_method_key} cannot take this order's payment now, so the order was not placed. Choose another way to pay, then place the order again.\n\n`stock.insufficient`: Variant {variant_id}: {requested} asked for, but only {available} available.\n\n`stock.routing_refused`: These items cannot be sent together in the quantities asked for.\n\n`stock.no_fulfilling_location`: No location ships online orders at the moment, so nothing can be sold.\n\n`stock.location_inactive`: Location {location_id} is deactivated.\n\n`promotion.limit_reached`: That code can no longer be used. Remove it to go on.\n\n`pricing.no_shipping_rate`: No shipping method delivers to this address. Check the address, or contact the store.\n\n`pricing.currency_not_enabled`: Prices are not offered in {currency}. Choose another currency.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -1340,7 +1334,7 @@
                         }
                     },
                     "422": {
-                        "description": "`checkout.idempotency_key_reused`: This idempotency key was already used to place an order from a different request. Send a new key with a new request.\n\n`checkout.cart_empty`: The cart has no line, so there is no order to place. Add a line to the cart first.\n\n`checkout.session_incomplete`: The checkout is missing details an order needs: both addresses, an email address on the billing address, and a payment method. The error lists the ones missing.",
+                        "description": "`checkout.idempotency_key_reused`: This idempotency key was already used to place an order from a different request. Send a new key with a new request.\n\n`checkout.cart_empty`: The cart has no line, so there is no order to place. Add a line to the cart first.\n\n`checkout.session_incomplete`: The checkout is missing details an order needs: both addresses, every field the store requires on them, such as the email address on the billing address, and a payment method. The error lists the ones missing.\n\n`checkout.invalid_fields`: Some checkout details cannot be used as given, so nothing was saved. The error lists each field and why: the store does not ask for it there, it is too long, it holds a control or invisible formatting character, it is not in the right format, or it is not one of the choices.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -1361,6 +1355,450 @@
                     },
                     "503": {
                         "description": "`checkout.gateway_unavailable`: The payment provider could not be reached. Your order is waiting for its answer: check its status in a few minutes before you try again.\n\n`pricing.quote_unavailable`: an internal failure, answered with a generic message and empty details. The site's error log has what went wrong, under the correlation id.\n\n`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/checkout/fields": {
+            "get": {
+                "operationId": "checkout.get_fields",
+                "summary": "Returns every checkout field the store has, hidden ones included, in the order the form shows them, each with its presence in this store, the presences it allows, who declared it and whether it is locked.",
+                "description": "Requires the capability `seocart_manage_settings`.",
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the CheckoutFields resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CheckoutFields"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_settings`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_settings`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "`settings.stored_value_invalid`: The option {option} holds a value SEOCart cannot use. Save the setting again to replace it.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "operationId": "checkout.update_fields",
+                "summary": "Sets whether the checkout hides, offers or requires each field named, among the presences the field allows, keeps every other field as it is, and returns every checkout field; a change made at the same moment by someone else is kept.",
+                "description": "Requires the capability `seocart_manage_settings`.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "fields": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "key": {
+                                                    "type": "string",
+                                                    "maxLength": 48,
+                                                    "description": "The field's key, as the field list names it."
+                                                },
+                                                "presence": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                        "hidden",
+                                                        "optional",
+                                                        "required"
+                                                    ],
+                                                    "description": "The field's new presence: one of the presences the field allows."
+                                                }
+                                            },
+                                            "required": [
+                                                "key",
+                                                "presence"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        "minItems": 1,
+                                        "maxItems": 100,
+                                        "description": "The fields to change, each by its key with its new presence.",
+                                        "examples": [
+                                            [
+                                                {
+                                                    "key": "company",
+                                                    "presence": "hidden"
+                                                }
+                                            ]
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "fields"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the CheckoutFields resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CheckoutFields"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_settings`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_settings`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`settings.version_conflict`: The {group} settings were changed by someone else after you read them, so your change was not saved. Read them again, then repeat your change.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "`checkout.field_unknown`: The store has no checkout field {field}, so nothing was saved. Choose one of the fields the field list names.\n\n`checkout.presence_not_allowed`: The checkout field {field} cannot be {presence}, so nothing was saved. Choose one of the presences the field list gives for it.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "`settings.stored_value_invalid`: The option {option} holds a value SEOCart cannot use. Save the setting again to replace it.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/checkout/form": {
+            "servers": [
+                {
+                    "url": "{site}/wp-json/seocart/store/v1",
+                    "variables": {
+                        "site": {
+                            "default": "https://example.com",
+                            "description": "The address of the WordPress site."
+                        }
+                    }
+                }
+            ],
+            "get": {
+                "operationId": "checkout.get_form",
+                "summary": "Returns the checkout form as the store set it up: every field the checkout asks for, in the order to show them, with its label in the request's language, whether an order needs it, its longest value, its options and where its value is sent, and the order limits per currency. A field the store hides is not listed, and the checkout refuses a value for it.",
+                "description": "Public: requires no capability, and anyone may send it.",
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the CheckoutForm resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CheckoutForm"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/checkout/order-limits": {
+            "get": {
+                "operationId": "checkout.get_order_limits",
+                "summary": "Returns the smallest and the largest order the store takes in each currency that has a limit, in that currency's minor units; a currency left out has none.",
+                "description": "Requires the capability `seocart_manage_settings`.",
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the OrderLimits resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OrderLimits"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_settings`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_settings`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "`settings.stored_value_invalid`: The option {option} holds a value SEOCart cannot use. Save the setting again to replace it.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "operationId": "checkout.update_order_limits",
+                "summary": "Replaces the store's order limits with the ones given, at most one per currency, and returns them; a currency left out, or given without either bound, has no limit. Each bound is compared with the goods after their discounts, without shipping or fees, with tax when every price was entered with tax.",
+                "description": "Requires the capability `seocart_manage_settings`.",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "limits": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "currency": {
+                                                    "type": "string",
+                                                    "maxLength": 3,
+                                                    "description": "The ISO 4217 code of the currency the limit is in, such as USD."
+                                                },
+                                                "min_subtotal_minor": {
+                                                    "type": [
+                                                        "integer",
+                                                        "null"
+                                                    ],
+                                                    "minimum": 1,
+                                                    "description": "The smallest order the store takes in the currency, in its minor units, compared with the goods after their discounts; null for none."
+                                                },
+                                                "max_subtotal_minor": {
+                                                    "type": [
+                                                        "integer",
+                                                        "null"
+                                                    ],
+                                                    "minimum": 1,
+                                                    "description": "The largest order the store takes in the currency, in its minor units, compared with the goods after their discounts; null for none."
+                                                }
+                                            },
+                                            "required": [
+                                                "currency"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        "maxItems": 200,
+                                        "description": "The order limits, at most one per currency; every currency left out has none.",
+                                        "examples": [
+                                            [
+                                                {
+                                                    "currency": "USD",
+                                                    "min_subtotal_minor": 2500,
+                                                    "max_subtotal_minor": 500000
+                                                }
+                                            ]
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "limits"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the OrderLimits resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OrderLimits"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_manage_settings`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_manage_settings`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`settings.version_conflict`: The {group} settings were changed by someone else after you read them, so your change was not saved. Read them again, then repeat your change.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "`checkout.invalid_order_limits`: The order limit for {currency} cannot be saved ({reason}), so nothing was saved. Give each currency the store knows once, with its minimum no larger than its maximum.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "`settings.stored_value_invalid`: The option {option} holds a value SEOCart cannot use. Save the setting again to replace it.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -5595,6 +6033,316 @@
                     "unavailable_lines"
                 ]
             },
+            "CheckoutFields": {
+                "type": "object",
+                "properties": {
+                    "fields": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key": {
+                                    "type": "string",
+                                    "maxLength": 48,
+                                    "description": "The field's key: the member of an address, or of the custom fields, that carries its value."
+                                },
+                                "section": {
+                                    "type": "string",
+                                    "enum": [
+                                        "contact",
+                                        "address",
+                                        "order"
+                                    ],
+                                    "description": "Where the form shows the field: contact, address (in the billing and the shipping address alike) or order."
+                                },
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "text",
+                                        "email",
+                                        "tel",
+                                        "country",
+                                        "textarea",
+                                        "select",
+                                        "checkbox"
+                                    ],
+                                    "description": "What the field's value is, which decides the input to show: text, email, tel, country, textarea, select or checkbox; a ticked checkbox is 1."
+                                },
+                                "label": {
+                                    "type": "string",
+                                    "description": "The field's label, in the request's language."
+                                },
+                                "help": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "description": "A sentence to show under the field, in the request's language; null when there is none."
+                                },
+                                "presence": {
+                                    "type": "string",
+                                    "enum": [
+                                        "hidden",
+                                        "optional",
+                                        "required"
+                                    ],
+                                    "description": "The field's presence in this store: hidden, optional or required."
+                                },
+                                "presences": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "presence": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "hidden",
+                                                    "optional",
+                                                    "required"
+                                                ],
+                                                "description": "A presence the field allows."
+                                            }
+                                        },
+                                        "required": [
+                                            "presence"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    "minItems": 1,
+                                    "maxItems": 3,
+                                    "description": "The presences the store may choose for the field, the default first; a locked field allows one."
+                                },
+                                "source": {
+                                    "type": "string",
+                                    "description": "Who declared the field: core for SEOCart's own fields."
+                                },
+                                "locked": {
+                                    "type": "boolean",
+                                    "description": "Whether the field allows one presence alone, so the store cannot change it."
+                                }
+                            },
+                            "required": [
+                                "key",
+                                "section",
+                                "type",
+                                "label",
+                                "help",
+                                "presence",
+                                "presences",
+                                "source",
+                                "locked"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "description": "Every checkout field the store has, hidden ones included, in the order the form shows them.",
+                        "examples": [
+                            [
+                                {
+                                    "key": "last_name",
+                                    "section": "contact",
+                                    "type": "text",
+                                    "label": "Last name",
+                                    "help": "For deliveries to a business.",
+                                    "presence": "hidden",
+                                    "presences": [
+                                        {
+                                            "presence": "hidden"
+                                        }
+                                    ],
+                                    "source": "core",
+                                    "locked": false
+                                }
+                            ]
+                        ]
+                    }
+                },
+                "required": [
+                    "fields"
+                ]
+            },
+            "CheckoutForm": {
+                "type": "object",
+                "properties": {
+                    "fields": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key": {
+                                    "type": "string",
+                                    "maxLength": 48,
+                                    "description": "The field's key: the member of an address, or of the custom fields, that carries its value."
+                                },
+                                "section": {
+                                    "type": "string",
+                                    "enum": [
+                                        "contact",
+                                        "address",
+                                        "order"
+                                    ],
+                                    "description": "Where the form shows the field: contact, address (in the billing and the shipping address alike) or order."
+                                },
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "text",
+                                        "email",
+                                        "tel",
+                                        "country",
+                                        "textarea",
+                                        "select",
+                                        "checkbox"
+                                    ],
+                                    "description": "What the field's value is, which decides the input to show: text, email, tel, country, textarea, select or checkbox; a ticked checkbox is 1."
+                                },
+                                "label": {
+                                    "type": "string",
+                                    "description": "The field's label, in the request's language."
+                                },
+                                "help": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "description": "A sentence to show under the field, in the request's language; null when there is none."
+                                },
+                                "required": {
+                                    "type": "boolean",
+                                    "description": "Whether an order is placed only with a value for the field; the session write saves the form without it."
+                                },
+                                "max_length": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "The most characters the field's value may hold."
+                                },
+                                "options": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "value": {
+                                                "type": "string",
+                                                "description": "The value the session write sends when the option is chosen."
+                                            },
+                                            "label": {
+                                                "type": "string",
+                                                "description": "The option's label, in the request's language."
+                                            }
+                                        },
+                                        "required": [
+                                            "value",
+                                            "label"
+                                        ],
+                                        "additionalProperties": false
+                                    },
+                                    "maxItems": 50,
+                                    "description": "A select's options, in the order to show them; empty for any other type."
+                                },
+                                "autocomplete": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "description": "The HTML autocomplete token for the field's input, such as family-name; null when there is none."
+                                },
+                                "carrier": {
+                                    "type": "string",
+                                    "enum": [
+                                        "address",
+                                        "billing_address",
+                                        "custom_fields"
+                                    ],
+                                    "description": "Where the session write sends the field's value: address, as the member of the billing and of the shipping address named by the key; billing_address, as that member of the billing address alone; or custom_fields."
+                                }
+                            },
+                            "required": [
+                                "key",
+                                "section",
+                                "type",
+                                "label",
+                                "help",
+                                "required",
+                                "max_length",
+                                "options",
+                                "autocomplete",
+                                "carrier"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "description": "The fields the checkout asks for, in the order the form shows them.",
+                        "examples": [
+                            [
+                                {
+                                    "key": "last_name",
+                                    "section": "contact",
+                                    "type": "text",
+                                    "label": "Last name",
+                                    "help": "For deliveries to a business.",
+                                    "required": true,
+                                    "max_length": 100,
+                                    "options": [
+                                        {
+                                            "value": "morning",
+                                            "label": "Morning"
+                                        }
+                                    ],
+                                    "autocomplete": "family-name",
+                                    "carrier": "address"
+                                }
+                            ]
+                        ]
+                    },
+                    "order_limits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "currency": {
+                                    "type": "string",
+                                    "maxLength": 3,
+                                    "description": "The ISO 4217 code of the currency the limit is in, such as USD."
+                                },
+                                "minimum_minor": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ],
+                                    "minimum": 1,
+                                    "description": "The smallest order the store takes in the currency, in its minor units; null for none."
+                                },
+                                "maximum_minor": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ],
+                                    "minimum": 1,
+                                    "description": "The largest order the store takes in the currency, in its minor units; null for none."
+                                }
+                            },
+                            "required": [
+                                "currency",
+                                "minimum_minor",
+                                "maximum_minor"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "description": "The smallest and the largest order the store takes, one entry per currency that has a limit; a currency without an entry has none. Where a cart stands against them is the session write's order_limit.",
+                        "examples": [
+                            [
+                                {
+                                    "currency": "USD",
+                                    "minimum_minor": 2500,
+                                    "maximum_minor": 500000
+                                }
+                            ]
+                        ]
+                    }
+                },
+                "required": [
+                    "fields",
+                    "order_limits"
+                ]
+            },
             "CheckoutSession": {
                 "type": "object",
                 "properties": {
@@ -5607,6 +6355,11 @@
                                     "null"
                                 ],
                                 "properties": {
+                                    "email": {
+                                        "type": "string",
+                                        "maxLength": 255,
+                                        "description": "The e-mail address."
+                                    },
                                     "country": {
                                         "type": "string",
                                         "maxLength": 2,
@@ -5620,7 +6373,7 @@
                                     "last_name": {
                                         "type": "string",
                                         "maxLength": 100,
-                                        "description": "The family name."
+                                        "description": "The family name, or the whole name of a person who has one name."
                                     },
                                     "company": {
                                         "type": "string",
@@ -5657,11 +6410,6 @@
                                         "maxLength": 32,
                                         "description": "The phone number."
                                     },
-                                    "email": {
-                                        "type": "string",
-                                        "maxLength": 255,
-                                        "description": "The e-mail address."
-                                    },
                                     "tax_id": {
                                         "type": "string",
                                         "maxLength": 64,
@@ -5669,7 +6417,7 @@
                                     }
                                 },
                                 "additionalProperties": false,
-                                "description": "The address the payment is billed to, or null when none was given."
+                                "description": "The address the payment is billed to, with the shopper's email address, or null when none was given."
                             },
                             "shipping_address": {
                                 "type": [
@@ -5690,7 +6438,7 @@
                                     "last_name": {
                                         "type": "string",
                                         "maxLength": 100,
-                                        "description": "The family name."
+                                        "description": "The family name, or the whole name of a person who has one name."
                                     },
                                     "company": {
                                         "type": "string",
@@ -5726,11 +6474,6 @@
                                         "type": "string",
                                         "maxLength": 32,
                                         "description": "The phone number."
-                                    },
-                                    "email": {
-                                        "type": "string",
-                                        "maxLength": 255,
-                                        "description": "The e-mail address."
                                     },
                                     "tax_id": {
                                         "type": "string",
@@ -5763,6 +6506,7 @@
                         "examples": [
                             {
                                 "billing_address": {
+                                    "email": "ada@example.com",
                                     "country": "GB",
                                     "first_name": "Ada",
                                     "last_name": "Lovelace",
@@ -5773,7 +6517,6 @@
                                     "region": "Greater London",
                                     "postcode": "SW1Y 4JH",
                                     "phone": "+44 20 7946 0000",
-                                    "email": "ada@example.com",
                                     "tax_id": "GB000000000"
                                 },
                                 "shipping_address": {
@@ -5787,7 +6530,6 @@
                                     "region": "Greater London",
                                     "postcode": "SW1Y 4JH",
                                     "phone": "+44 20 7946 0000",
-                                    "email": "ada@example.com",
                                     "tax_id": "GB000000000"
                                 },
                                 "shipping_method_key": "flat",
@@ -6549,12 +7291,77 @@
                                 "transfer_days": 3
                             }
                         ]
+                    },
+                    "order_limit": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "enum": [
+                                    "ok",
+                                    "below_minimum",
+                                    "above_maximum"
+                                ],
+                                "description": "ok within the limits; below_minimum or above_maximum when the order would be refused."
+                            },
+                            "amount_minor": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "What the cart's goods come to after their discounts, without shipping or fees, in minor units of the cart's currency: with tax when every price was entered with tax, without it otherwise."
+                            },
+                            "minimum_minor": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ],
+                                "minimum": 1,
+                                "description": "The smallest order the store takes in the currency, in its minor units; null for none."
+                            },
+                            "maximum_minor": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ],
+                                "minimum": 1,
+                                "description": "The largest order the store takes in the currency, in its minor units; null for none."
+                            },
+                            "basis": {
+                                "type": "string",
+                                "enum": [
+                                    "net",
+                                    "gross"
+                                ],
+                                "description": "gross when every line's price was entered with tax, so the amount includes it; net otherwise."
+                            }
+                        },
+                        "required": [
+                            "status",
+                            "amount_minor",
+                            "minimum_minor",
+                            "maximum_minor",
+                            "basis"
+                        ],
+                        "additionalProperties": false,
+                        "description": "Where the cart's goods stand against the store's order limits in its currency, measured on these totals; null when the currency has no limit. The write is never refused for it: the placement is.",
+                        "examples": [
+                            {
+                                "status": "ok",
+                                "amount_minor": 2000,
+                                "minimum_minor": 2500,
+                                "maximum_minor": 500000,
+                                "basis": "net"
+                            }
+                        ]
                     }
                 },
                 "required": [
                     "checkout_session",
                     "version",
-                    "totals"
+                    "totals",
+                    "order_limit"
                 ]
             },
             "DeletedLocation": {
@@ -7283,6 +8090,60 @@
                     "order_uuid",
                     "has_unreconciled_money",
                     "money_reconciled_at"
+                ]
+            },
+            "OrderLimits": {
+                "type": "object",
+                "properties": {
+                    "limits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "currency": {
+                                    "type": "string",
+                                    "maxLength": 3,
+                                    "description": "The ISO 4217 code of the currency the limit is in, such as USD."
+                                },
+                                "min_subtotal_minor": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ],
+                                    "minimum": 1,
+                                    "description": "The smallest order the store takes in the currency, in its minor units, compared with the goods after their discounts; null for none."
+                                },
+                                "max_subtotal_minor": {
+                                    "type": [
+                                        "integer",
+                                        "null"
+                                    ],
+                                    "minimum": 1,
+                                    "description": "The largest order the store takes in the currency, in its minor units, compared with the goods after their discounts; null for none."
+                                }
+                            },
+                            "required": [
+                                "currency",
+                                "min_subtotal_minor",
+                                "max_subtotal_minor"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "maxItems": 200,
+                        "description": "The order limits, one per currency that has one, by currency code.",
+                        "examples": [
+                            [
+                                {
+                                    "currency": "USD",
+                                    "min_subtotal_minor": 2500,
+                                    "max_subtotal_minor": 500000
+                                }
+                            ]
+                        ]
+                    }
+                },
+                "required": [
+                    "limits"
                 ]
             },
             "PaymentResult": {

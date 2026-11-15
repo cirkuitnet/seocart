@@ -239,6 +239,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The store does not sell in that currency, so the cart was not changed. Choose one of the currencies the store offers.
 - Values: none
 
+## `checkout.field_unknown`
+
+- HTTP status: 422
+- Message: The store has no checkout field {field}, so nothing was saved. Choose one of the fields the field list names.
+- Values: `field`
+
 ## `checkout.gateway_unavailable`
 
 - HTTP status: 503
@@ -258,17 +264,24 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: This idempotency key was already used to place an order from a different request. Send a new key with a new request.
 - Values: none
 
-## `checkout.invalid_address`
+## `checkout.invalid_fields`
 
 - HTTP status: 422
-- Message: The address field {field} is not valid. A country is a two-letter code, such as GB, and an email address looks like name@example.com.
-- Values: `field`
+- Message: Some checkout details cannot be used as given, so nothing was saved. The error lists each field and why: the store does not ask for it there, it is too long, it holds a control or invisible formatting character, it is not in the right format, or it is not one of the choices.
+- Values: none
+- Details: `fields`, beside the values
 
 ## `checkout.invalid_method_key`
 
 - HTTP status: 422
 - Message: The {field} is not a method the store can use. A method key uses only lower-case letters, digits, dots, colons, hyphens and underscores, such as flat, and a payment method is one the store offers.
 - Values: `field`
+
+## `checkout.invalid_order_limits`
+
+- HTTP status: 422
+- Message: The order limit for {currency} cannot be saved ({reason}), so nothing was saved. Give each currency the store knows once, with its minimum no larger than its maximum.
+- Values: `currency`, `reason`
 
 ## `checkout.line_unsellable`
 
@@ -296,12 +309,32 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: An order is being placed with this idempotency key right now. Wait a moment, then send the same request again.
 - Values: none
 
+## `checkout.presence_not_allowed`
+
+- HTTP status: 422
+- Message: The checkout field {field} cannot be {presence}, so nothing was saved. Choose one of the presences the field list gives for it.
+- Values: `field`, `presence`
+
 ## `checkout.session_incomplete`
 
 - HTTP status: 422
-- Message: The checkout is missing details an order needs: both addresses, an email address on the billing address, and a payment method. The error lists the ones missing.
+- Message: The checkout is missing details an order needs: both addresses, every field the store requires on them, such as the email address on the billing address, and a payment method. The error lists the ones missing.
 - Values: none
 - Details: `missing`, beside the values
+
+## `checkout.subtotal_above_maximum`
+
+- HTTP status: 409
+- Message: The order is above the store's maximum order amount, so it was not placed. Remove something from the cart, then place the order again.
+- Values: none
+- Details: `amount_minor`, `limit_minor`, `currency`, `basis`, beside the values
+
+## `checkout.subtotal_below_minimum`
+
+- HTTP status: 409
+- Message: The order is below the store's minimum order amount, so it was not placed. Add more to the cart, then place the order again.
+- Values: none
+- Details: `amount_minor`, `limit_minor`, `currency`, `basis`, beside the values
 
 ## `checkout.totals_changed`
 

@@ -47,6 +47,7 @@ final class GeneratorsTest extends TestCase {
 		'docs/reference/errors.md',
 		'docs/reference/hooks.md',
 		'docs/reference/gateways.md',
+		'docs/reference/checkout-fields.md',
 	);
 
 	/**
