@@ -25,14 +25,19 @@ use SEOCart\Tests\Support\Checkout\CheckoutTestCase;
  * - one transaction, which sends the cart's compare-and-swap and one statement to the session table;
  * - after it, one read of the session, which gives the totals their destination;
  * - no read of the lines' figures for sale: the answer carries the totals, never the lines;
- * - at most 20 queries in all, on a three-line cart.
+ * - 18 statements on a cold cache, within a budget of 20, on a three-line cart.
+ *
+ * The write is measured cold, with the object cache flushed after the request that fills the
+ * cart, because no real request inherits the options an earlier request read.
  *
  * The measurement is printed for the report.
  *
- * Planted violation: in UpdateCheckoutSession::update(), save the session twice in the closure:
- * the transaction then sends two statements to the session table.
+ * Planted violations: in UpdateCheckoutSession::update(), save the session twice in the closure:
+ * the transaction then sends two statements to the session table; in CheckoutRules::current(),
+ * read the `checkout` group in a values() call of its own: the cold write sends 19.
  *
  * @since 0.1.0
+ * @since 0.2.0 Measured cold, and its statements pinned.
  *
  * @group performance
  */
@@ -48,6 +53,15 @@ final class CheckoutBudgetTest extends CheckoutTestCase {
 	 * @var int
 	 */
 	private const WRITE_BUDGET = 20;
+
+	/**
+	 * The statements a session write on a three-line cart sends on a cold cache.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const COLD_WRITE = 18;
 
 	/**
 	 * Wires the kernel and boots a spy server.
@@ -75,6 +89,7 @@ final class CheckoutBudgetTest extends CheckoutTestCase {
 	 * Tests that a session write on a three-line cart stays within its budget, in one transaction.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Measured on a cold cache.
 	 */
 	public function test_a_session_write_stays_within_its_budget(): void {
 		$quantities = array(
@@ -90,6 +105,10 @@ final class CheckoutBudgetTest extends CheckoutTestCase {
 
 		$this->assertSame( 200, $started['status'] );
 		$this->presentCookie( $this->cookies[0]['value'] );
+
+		// A request starts cold: no object cache but the options WordPress loads at boot.
+		wp_cache_flush();
+		wp_load_alloptions();
 
 		$written = array();
 		$log     = $this->captureQueries(
@@ -114,8 +133,9 @@ final class CheckoutBudgetTest extends CheckoutTestCase {
 		$this->assertQueryCount( 1, $sessions->ofType( 'SELECT' ), 'The read of the session for the totals' );
 		$this->assertQueryCount( 2, $log->forTable( $this->table( CartTables::CARTS ) )->ofType( 'UPDATE' ), 'The compare-and-swap and the recount of the cart' );
 		$this->assertQueryCount( 0, $log->matching( self::SALE_FIGURES ), 'The reads of the figures for sale, MysqlStockRepository::SALE_FIGURES' );
+		$this->assertQueryCount( self::COLD_WRITE, $log, 'A session write on a three-line cart, cold' );
 		$this->assertQueryCountAtMost( self::WRITE_BUDGET, $log, 'A session write on a three-line cart' );
 
-		fwrite( STDOUT, sprintf( "\nA checkout session write on a three-line cart: %d queries (budget %d), the transaction's statements included:\n  %s\n", $log->count(), self::WRITE_BUDGET, implode( "\n  ", $log->sqls() ) ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- The measurement is printed for the report.
+		fwrite( STDOUT, sprintf( "\nA checkout session write on a three-line cart, cold: %d queries (budget %d), the transaction's statements included:\n  %s\n", $log->count(), self::WRITE_BUDGET, implode( "\n  ", $log->sqls() ) ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- The measurement is printed for the report.
 	}
 }
