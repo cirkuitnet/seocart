@@ -318,17 +318,17 @@ final class OneDeclarationTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Returns the rows of the generated reference page, by key: section, type, presences and longest value.
+	 * Returns each field's entry on the generated reference page, by key: section, type, presences and longest value.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @return array<string, list<string>> The rows.
+	 * @return array<string, list<string>> The entries.
 	 */
 	private static function pageRows(): array {
 		$page = (string) file_get_contents( dirname( __DIR__, 3 ) . '/docs/reference/checkout-fields.md' );
 		$rows = array();
 
-		preg_match_all( '/^\| `([a-z0-9_]+)` \| ([a-z]+) \| ([a-z]+) \| `[a-z_]+` \| ([a-z, ]+) \| (\d+) \|$/m', $page, $matches, PREG_SET_ORDER );
+		preg_match_all( '/^## `([a-z0-9_]+)`\n\n- Section: ([a-z]+)\n- Type: ([a-z]+)\n- Sent in: `[a-z_]+`\n- Presences \(default first\): ([a-z, ]+)\n- Longest value: (\d+)$/m', $page, $matches, PREG_SET_ORDER );
 
 		foreach ( $matches as $match ) {
 			$rows[ $match[1] ] = array( $match[2], $match[3], $match[4], $match[5] );

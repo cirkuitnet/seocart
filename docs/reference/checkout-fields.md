@@ -6,17 +6,98 @@ These are the fields the checkout asks a shopper for out of the box, in the orde
 
 The session write (`checkout.update_session`) refuses a value for a hidden field and any value its field does not accept, with `checkout.invalid_fields`, and never asks for a required field; the placement asks for every required field without a value, with `checkout.session_incomplete`. An `address` field is a member of the billing and of the shipping address alike; the email address is a member of the billing address alone. No value may hold a control character or an invisible formatting character, but the zero width non-joiner and joiner.
 
-| Key | Section | Type | Sent in | Presences (default first) | Longest value |
-| --- | --- | --- | --- | --- | --- |
-| `email` | contact | email | `billing_address` | required | 255 |
-| `country` | address | country | `address` | required | 2 |
-| `first_name` | address | text | `address` | required, optional | 100 |
-| `last_name` | address | text | `address` | required | 100 |
-| `company` | address | text | `address` | hidden, optional, required | 255 |
-| `line1` | address | text | `address` | required | 255 |
-| `line2` | address | text | `address` | optional, hidden, required | 255 |
-| `city` | address | text | `address` | required | 100 |
-| `region` | address | text | `address` | optional, required | 64 |
-| `postcode` | address | text | `address` | optional, required | 32 |
-| `phone` | address | tel | `address` | optional, hidden, required | 32 |
-| `tax_id` | address | text | `address` | hidden, optional, required | 64 |
+## `email`
+
+- Section: contact
+- Type: email
+- Sent in: `billing_address`
+- Presences (default first): required
+- Longest value: 255
+
+## `country`
+
+- Section: address
+- Type: country
+- Sent in: `address`
+- Presences (default first): required
+- Longest value: 2
+
+## `first_name`
+
+- Section: address
+- Type: text
+- Sent in: `address`
+- Presences (default first): required, optional
+- Longest value: 100
+
+## `last_name`
+
+- Section: address
+- Type: text
+- Sent in: `address`
+- Presences (default first): required
+- Longest value: 100
+
+## `company`
+
+- Section: address
+- Type: text
+- Sent in: `address`
+- Presences (default first): hidden, optional, required
+- Longest value: 255
+
+## `line1`
+
+- Section: address
+- Type: text
+- Sent in: `address`
+- Presences (default first): required
+- Longest value: 255
+
+## `line2`
+
+- Section: address
+- Type: text
+- Sent in: `address`
+- Presences (default first): optional, hidden, required
+- Longest value: 255
+
+## `city`
+
+- Section: address
+- Type: text
+- Sent in: `address`
+- Presences (default first): required
+- Longest value: 100
+
+## `region`
+
+- Section: address
+- Type: text
+- Sent in: `address`
+- Presences (default first): optional, required
+- Longest value: 64
+
+## `postcode`
+
+- Section: address
+- Type: text
+- Sent in: `address`
+- Presences (default first): optional, required
+- Longest value: 32
+
+## `phone`
+
+- Section: address
+- Type: tel
+- Sent in: `address`
+- Presences (default first): optional, hidden, required
+- Longest value: 32
+
+## `tax_id`
+
+- Section: address
+- Type: text
+- Sent in: `address`
+- Presences (default first): hidden, optional, required
+- Longest value: 64
