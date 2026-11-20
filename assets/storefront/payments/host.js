@@ -19,7 +19,8 @@
  * provider sent the shopper back for, or the placement whose answer was lost (recover()). It never
  * acts by itself then: it asks the store, hands over an order the store settled, and otherwise
  * waits for the shopper to place again. A page the browser restores from its back/forward cache
- * while a payment is open is loaded again, so that it settles the same way (onShow).
+ * while a payment is open is loaded again, so that it settles the same way, and sends nothing more
+ * itself (onShow).
  *
  * The host sends those two writes and no other. It does not write the checkout's details (the
  * payment method chosen among them: onSelect() asks the checkout to), it has no Place button and
@@ -236,6 +237,8 @@ export function createHost( root, options, env ) {
 	let mounts = 0;
 	let lastStep = 'placement';
 	let order = null;
+	// Whether the host is finished, destroyed or its page about to load again (onShow): it sends
+	// nothing more, and hands nothing over, whatever was under way.
 	let destroyed = false;
 	// When the store asked for no more requests until then (Retry-After), in milliseconds.
 	let notBefore = 0;
@@ -779,6 +782,11 @@ export function createHost( root, options, env ) {
 		}
 
 		const handle = mounted ? await mounted.ready : null;
+
+		if ( destroyed ) {
+			return;
+		}
+
 		let route;
 
 		try {
@@ -1196,9 +1204,10 @@ export function createHost( root, options, env ) {
 	 * keeps open now, which another page of the tab may have settled or ended since. A restored
 	 * page carries what it held when it was left: the shopper it was made for, their nonce, and its
 	 * own copy of the kept placement. Loaded again, it reads them afresh and settles the payment as
-	 * on any load; its own showing is not a restore, so it is not loaded again. Restored at any
-	 * other moment, the page carries on as it was left: the shopper keeps what they typed, and a
-	 * request under way is answered.
+	 * on any load; its own showing is not a restore, so it is not loaded again. Until then the
+	 * restored page is finished: an island's step that ends meanwhile is not resumed, and placing
+	 * or retrying sends nothing. Restored at any other moment, the page carries on as it was left:
+	 * the shopper keeps what they typed, and a request under way is answered.
 	 *
 	 * @param {PageTransitionEvent} event The page's showing.
 	 */
@@ -1208,6 +1217,7 @@ export function createHost( root, options, env ) {
 			( 'acting' === phase ||
 				( 'idle' === phase && keeper.stored()?.intentUuid ) )
 		) {
+			destroyed = true;
 			scope.location.reload();
 		}
 	};

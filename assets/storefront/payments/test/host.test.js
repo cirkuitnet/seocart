@@ -230,7 +230,8 @@ const stored = () =>
  * Creates a host on a page of its own.
  *
  * @param {Object} setup Optional. `methods`, `islands`, `answers`, `cart`, `href`, `onStale`, `nonce`,
- *                       `shopper`, `onWait` (called with the host each time it waits).
+ *                       `shopper`, `onWait` (called with the host each time it waits), `onChange`
+ *                       (called with each state the host reports).
  * @return {Object} The host, its page, its requests, what its callbacks heard and its clock.
  */
 function setUp( setup = {} ) {
@@ -293,7 +294,10 @@ function setUp( setup = {} ) {
 				return setup.onStale ? setup.onStale( detail ) : null;
 			},
 			onPlaced: ( result ) => heard.placed.push( result ),
-			onChange: ( state ) => heard.changes.push( state ),
+			onChange: ( state ) => {
+				heard.changes.push( state );
+				setup.onChange?.( state );
+			},
 		},
 		{
 			window: scope,
@@ -1308,6 +1312,23 @@ describe( 'a payment the shopper must act for', () => {
 		expect( names( calls ) ).toEqual( [ 'mount', 'confirm' ] );
 		expect( last().error ).toEqual( { code: 'action_incomplete' } );
 	} );
+
+	it( 'takes no step once destroyed as the step begins', async () => {
+		let host = null;
+		const setup = setUp( {
+			answers: [ { status: 200, body: acting() } ],
+			// The checkout tears the payment section down on hearing the step.
+			onChange: ( { phase } ) => 'acting' === phase && host.destroy(),
+		} );
+
+		host = setup.host;
+		await flush();
+		await host.place();
+
+		// A method with no island would have the host send the shopper to the provider's address.
+		expect( setup.scope.location.assign ).not.toHaveBeenCalled();
+		expect( setup.requests ).toHaveLength( 1 );
+	} );
 } );
 
 describe( 'on loading', () => {
@@ -1759,6 +1780,76 @@ describe( 'a page restored from the back/forward cache', () => {
 			await flush();
 
 			expect( setup.scope.location.reload ).toHaveBeenCalledTimes( 1 );
+			expect( state( setup ) ).toEqual( before );
+		}
+	);
+
+	it.each( [ 'completed', 'failed' ] )(
+		'sends nothing more once it asked to load the page again: an island’s step that ends %s meanwhile is not resumed',
+		async ( ending ) => {
+			let end;
+			const { island, calls } = fakeIsland( 'stub', {
+				action: new Promise( ( resolve ) => {
+					end = resolve;
+				} ),
+			} );
+			const setup = setUp( {
+				islands: [ island ],
+				answers: [
+					{ status: 200, body: acting() },
+					{ status: 200, body: resumed( 'approved' ) },
+				],
+			} );
+
+			await flush();
+			setup.host.place();
+			await flush();
+
+			// The shopper left while the island's step was under way, and Back restores the page.
+			expect( names( calls ) ).toEqual( [
+				'mount',
+				'confirm',
+				'action',
+			] );
+			showPage( setup.scope );
+
+			expect( setup.scope.location.reload ).toHaveBeenCalledTimes( 1 );
+
+			const before = state( { ...setup, calls } );
+
+			// The step ends before the page loaded again replaces this one, which resumes the payment.
+			end( ending );
+			await flush();
+
+			expect( state( { ...setup, calls } ) ).toEqual( before );
+			expect(
+				setup.requests.map( ( request ) => request.route )
+			).toEqual( [ '/checkout' ] );
+		}
+	);
+
+	it.each( [
+		[
+			'waiting for the shopper',
+			{ status: 200, body: resumed( 'requires_action' ) },
+		],
+		[ 'after a resume that failed', { network: true } ],
+	] )(
+		'sends nothing more once it asked to load the page again: restored at rest %s, placing and retrying send nothing',
+		async ( name, answer ) => {
+			const setup = await restWithPayment( answer );
+
+			showPage( setup.scope );
+
+			expect( setup.scope.location.reload ).toHaveBeenCalledTimes( 1 );
+
+			const before = state( setup );
+
+			// The shopper presses Place, or Retry, before the page loaded again replaces this one.
+			expect( await setup.host.place() ).toBe( false );
+			expect( await setup.host.retry() ).toBe( false );
+			await flush();
+
 			expect( state( setup ) ).toEqual( before );
 		}
 	);
