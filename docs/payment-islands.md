@@ -251,8 +251,10 @@ again: when the host was in the provider's step (the island answered `left`, the
 shopper to `next_action.url`, or the shopper left while the step was under way), or at rest with a
 payment the tab still keeps open. A restored page still holds what it held when it was left, the
 shopper it was made for and their nonce among it; loaded again, its island is mounted fresh, as on
-any load, and the host settles what the tab keeps, as above. Restored at any other point, the page
-carries on as it was left: the shopper keeps what they typed, and a request under way is answered.
+any load, and the host settles what the tab keeps, as above. Until it is loaded again, the restored
+page sends nothing: an `action()` that settles meanwhile is not resumed, and placing or retrying
+does nothing. Restored at any other point, the page carries on as it was left: the shopper keeps
+what they typed, and a request under way is answered.
 
 ## The configuration
 
