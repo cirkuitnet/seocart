@@ -156,7 +156,7 @@ final class CheckoutSettings {
 		$choices = array();
 
 		foreach ( self::object( $json ) as $key => $presence ) {
-			if ( 1 !== preg_match( '/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*\z/', (string) $key ) || strlen( (string) $key ) > CheckoutField::KEY_MAX_LENGTH || ! is_string( $presence ) || null === Presence::tryFrom( $presence ) ) {
+			if ( ! CheckoutField::isKey( (string) $key ) || ! is_string( $presence ) || null === Presence::tryFrom( $presence ) ) {
 				throw new \InvalidArgumentException( 'The checkout field presences are a JSON object of field keys to hidden, optional or required.' );
 			}
 

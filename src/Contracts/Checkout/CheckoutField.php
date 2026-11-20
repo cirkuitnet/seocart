@@ -152,7 +152,7 @@ final readonly class CheckoutField {
 		public ?string $autocomplete = null,
 		public ?\Closure $check = null
 	) {
-		if ( 1 !== preg_match( self::KEY_PATTERN, $key ) || strlen( $key ) > self::KEY_MAX_LENGTH ) {
+		if ( ! self::isKey( $key ) ) {
 			throw new \InvalidArgumentException( sprintf( 'The checkout field key "%1$s" is not lower-case snake_case of at most %2$d characters.', $key, self::KEY_MAX_LENGTH ) );
 		}
 
@@ -162,6 +162,20 @@ final readonly class CheckoutField {
 
 		$this->presences = $presences;
 		$this->options   = $options;
+	}
+
+	/**
+	 * Tells whether a text can be a field's key: lower-case snake_case of at most KEY_MAX_LENGTH characters.
+	 *
+	 * The declaration and anything that stores a choice by field key judge a key here.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $key The text.
+	 * @return bool True when it can be a key.
+	 */
+	public static function isKey( string $key ): bool {
+		return 1 === preg_match( self::KEY_PATTERN, $key ) && strlen( $key ) <= self::KEY_MAX_LENGTH;
 	}
 
 	/**
