@@ -1878,7 +1878,7 @@ describe( 'a page restored from the back/forward cache', () => {
 		expect( setup.last().phase ).toBe( 'acting' );
 	} );
 
-	it( 'cannot loop: the page loaded again is shown without being restored, so it is not loaded again', async () => {
+	it( 'cannot loop: the page loaded again is shown without being restored, so it is not loaded again; a later restore of it is a new one, loaded again once', async () => {
 		const left = await leave( 'island' );
 
 		showPage( left.scope );
@@ -1901,6 +1901,13 @@ describe( 'a page restored from the back/forward cache', () => {
 		await flush();
 
 		expect( loaded.scope.location.reload ).not.toHaveBeenCalled();
+
+		// The shopper leaves it, with the payment still open, and Back restores it later.
+		showPage( loaded.scope );
+		await flush();
+
+		expect( loaded.scope.location.reload ).toHaveBeenCalledTimes( 1 );
+		expect( left.scope.location.reload ).toHaveBeenCalledTimes( 1 );
 	} );
 
 	it.each( [
