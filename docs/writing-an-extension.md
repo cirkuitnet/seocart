@@ -859,6 +859,110 @@ the action `seocart_enqueue_payment_islands`, and the script ships as written in
 `assets/` directory. [Payment islands](payment-islands.md) describes the registration, the island's
 interface, the context it is mounted with, the placement step by step, and the contract's versions.
 
+## Add checkout fields
+
+An extension may ask the shopper for something the checkout does not: a purchase order number, a
+delivery slot, a box to tick. It registers each field once, on the action
+`seocart_register_checkout_fields`, with the checkout field registry SEOCart hands it, and that one
+registration is all it writes. The checkout form (`checkout.get_form`), the store's list of fields
+and its choice of each one's presence (`checkout.get_fields`, `checkout.update_fields`), the
+session write's rules, the placement, the order and staff's read of an order's values
+(`order.list_field_values`) all take the field from it. SEOCart fires the action at most once a
+request, the first time something needs the checkout's fields, and never on a request that needs
+none; the main file names the action by its string, as it names the gateway registration's.
+
+This is the registration of `acme`, the extension SEOCart's own tests walk through every surface
+(`tests/Support/Checkout/AcmeCheckoutFields.php`); its main file hooks it with
+`add_action( 'seocart_register_checkout_fields', … )`:
+
+```php
+public static function register( CheckoutFieldRegistry $registry ): void {
+	if ( ! $registry->supportsContract( self::CONTRACT ) ) {
+		return;
+	}
+
+	$registry->register(
+		self::ID,
+		new CheckoutField(
+			key: 'po_number',
+			section: Section::Order,
+			type: CheckoutFieldType::Text,
+			label: static fn(): string => __( 'Purchase order number', 'acme-checkout' ),
+			maxLength: 20,
+			presences: array( Presence::Optional, Presence::Required, Presence::Hidden ),
+			help: static fn(): string => __( 'For an order your company pays by invoice.', 'acme-checkout' ),
+			check: static function ( string $value ): ?string {
+				if ( str_contains( $value, '?' ) ) {
+					// A check may throw: SEOCart refuses the value and logs the field and the exception's class, never this message.
+					throw new \UnexpectedValueException( sprintf( 'Cannot read the purchase order number %s.', $value ) );
+				}
+
+				return str_starts_with( $value, 'PO-' ) ? null : __( 'A purchase order number starts with PO-.', 'acme-checkout' );
+			}
+		)
+	);
+	$registry->register(
+		self::ID,
+		new CheckoutField(
+			key: 'delivery_slot',
+			section: Section::Order,
+			type: CheckoutFieldType::Select,
+			label: static fn(): string => __( 'Delivery slot', 'acme-checkout' ),
+			maxLength: 20,
+			presences: array( Presence::Optional, Presence::Required, Presence::Hidden ),
+			options: array(
+				'morning'   => static fn(): string => __( 'Morning', 'acme-checkout' ),
+				'afternoon' => static fn(): string => __( 'Afternoon', 'acme-checkout' ),
+			)
+		)
+	);
+	$registry->register(
+		self::ID,
+		new CheckoutField(
+			key: 'gift_wrap',
+			section: Section::Order,
+			type: CheckoutFieldType::Checkbox,
+			label: static fn(): string => __( 'Wrap it as a gift', 'acme-checkout' ),
+			maxLength: 1,
+			presences: array( Presence::Optional, Presence::Hidden )
+		)
+	);
+}
+```
+
+- **The key.** A field is stored as `{extensionId}_{key}`, `acme_po_number` above, and every surface
+  names it so. A session write sends its value in `custom_fields`, a list of `{ key, field_value }`
+  entries; a select sends its option's value, and a ticked checkbox `1`.
+- **What may be registered.** The sections `contact` and `order`; the types `text`, `textarea`,
+  `select` (at most 50 options) and `checkbox`; at most 20 fields from all extensions together. An
+  extension's field has no autocomplete token.
+- **What is refused.** A 21st field, a field of the `address` section, another type, a key that is
+  one of SEOCart's own fields or a member of the session write, given or stored, a stored key that
+  starts `seocart_` or `custom_`, a key registered already, and a registration after the action ran.
+  A refused field is left out, logged once with the code `checkout.field_rejected` and noted by
+  `wp seocart doctor`; it is never an error, and the first registration of a key wins.
+- **Presence.** The presences listed are the ones a store may choose, the first the default; a
+  field that lists one is locked. Only the store chooses, through `checkout.update_fields`.
+- **Words.** The label, the help and each option's label are closures around the extension's own
+  translation calls, run in the request's language. An order keeps the field's label and a chosen
+  option's label as the shopper saw them, so a later version that changes them, or the extension's
+  removal, leaves the orders placed before as they were.
+- **The check.** A field's own `check` is given a value every other rule of the field accepted, and
+  answers null to accept it or a sentence to refuse it; the session write answers the reason
+  `rejected` with the sentence as `message`, and the placement judges a kept value again. A check
+  that throws refuses the value with no message, and SEOCart logs the field's key and the
+  exception's class, never the value or the exception's message.
+- **Personal data.** Every value is personal data, whatever the field: it travels under the name
+  `field_value`, which SEOCart's log redacts wherever it appears, and the session and the order
+  declare it for their eraser to destroy, keeping the field's key and label. A value an extension
+  needs as something else belongs in storage of its own.
+- **The contract.** `supportsContract()` answers whether this version of SEOCart implements the
+  checkout field contract the extension was written against; before 1.0 the major and minor
+  versions must be equal.
+
+[Checkout fields](reference/checkout-fields.md) lists SEOCart's own fields and the session write's
+rules, and [the hooks reference](reference/hooks.md) the action.
+
 ## Continuous integration
 
 The generated `.github/workflows/ci.yml` is one job:

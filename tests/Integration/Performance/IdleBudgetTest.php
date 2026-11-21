@@ -238,7 +238,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int}}|null
+	 * @var array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int}}|null
 	 */
 	private static ?array $measurements = null;
 
@@ -405,6 +405,19 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Tests that an idle request registers no checkout field: the registration action fires only when something needs the checkout's fields.
+	 *
+	 * Planted violation, in CheckoutOperations::getForm(), a declaration:
+	 * `do_action( CheckoutFieldRegistry::ACTION, null );`. A request that builds the operations then
+	 * fires it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_idle_request_registers_no_checkout_field(): void {
+		$this->assertSame( 0, self::measurement()['field_registrations'], 'An idle request fired the checkout fields\' registration action.' );
+	}
+
+	/**
 	 * Tests G4's post-type share: registering the product post type makes WordPress add the one hook it was measured to add.
 	 *
 	 * Planted violation: add `'register_meta_box_cb' => 'strlen',` to the arguments in
@@ -531,7 +544,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int} The report.
+	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int} The report.
 	 */
 	private static function measurement(): array {
 		return self::measurements()['with_plugin'];
@@ -547,7 +560,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int}} The reports.
+	 * @return array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int}} The reports.
 	 */
 	private static function measurements(): array {
 		if ( null === self::$measurements ) {
@@ -578,7 +591,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 *
 	 * @param bool $load_plugin Whether the integration bootstrap loads the plugin.
-	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int} The report.
+	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int} The report.
 	 */
 	private static function serveIdleRequestInChildProcess( bool $load_plugin ): array {
 		$result_file = (string) tempnam( sys_get_temp_dir(), 'seocart-idle-' );

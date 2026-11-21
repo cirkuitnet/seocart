@@ -80,6 +80,8 @@ final class SessionFieldValuesMigrationTest extends DatabaseTestCase {
 			}
 		);
 
+		fwrite( STDOUT, "\nThe session step sent: " . implode( "\n", $log->ofType( 'ALTER' )->sqls() ) . "\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- The statement sent is printed for the report.
+
 		$this->assertSame( array( AddSessionFieldValues::ID ), array_column( $report->applied(), 'id' ) );
 		$this->assertSame( AddSessionFieldValues::ID, ( new MigrationsTableState( $this->db ) )->schemaHead() );
 		$this->assertSame( array( $this->approved( self::COLUMN_DDL ) ), $log->ofType( 'ALTER' )->sqls(), 'The column is added once, as approved.' );

@@ -20,12 +20,12 @@ use SEOCart\Contracts\Checkout\Section;
 // phpcs:disable WordPress.WP.I18n.TextDomainMismatch -- The fixture stands for a third party's extension, which translates its words in its own text domain.
 
 /**
- * The fixture extension `acme`: a purchase order number (text, with its own check), a delivery slot (select) and gift wrapping (checkbox), registered on `seocart_register_checkout_fields` through the public contract alone.
+ * The fixture extension `acme`: a purchase order number (text, with its own check, which throws on a number it cannot read), a delivery slot (select) and gift wrapping (checkbox), registered on `seocart_register_checkout_fields` through the public contract alone.
  *
  * Owns one fact: what a third party's registration looks like, which the tests walk through every
  * surface and the extension guide quotes. The registration is what an extension's main file
- * holds; listen() and forget() stand for activating and deactivating it. Its option labels are
- * changed with relabel(), as a new version of the extension would change them.
+ * holds; listen() and forget() stand for activating and deactivating it. relabel() changes its
+ * words, as a new translation or a new version of the extension would.
  *
  * @since 0.2.0
  */
@@ -86,11 +86,11 @@ final class AcmeCheckoutFields {
 	public const PO_REFUSAL = 'A purchase order number starts with PO-.';
 
 	/**
-	 * The label of the morning slot, as relabel() last set it.
+	 * The words relabel() changed, each by the text the registration translates.
 	 *
-	 * @var string
+	 * @var array<string, string>
 	 */
-	private static string $morning = 'Morning';
+	private static array $words = array();
 
 	/**
 	 * Activates the extension: its main file's add_action() call.
@@ -98,8 +98,6 @@ final class AcmeCheckoutFields {
 	 * @since 0.2.0
 	 */
 	public static function listen(): void {
-		self::$morning = 'Morning';
-
 		add_action( 'seocart_register_checkout_fields', array( self::class, 'register' ) );
 	}
 
@@ -110,17 +108,36 @@ final class AcmeCheckoutFields {
 	 */
 	public static function forget(): void {
 		remove_action( 'seocart_register_checkout_fields', array( self::class, 'register' ) );
+		remove_filter( 'gettext', array( self::class, 'translate' ) );
+
+		self::$words = array();
 	}
 
 	/**
-	 * Changes the morning slot's label, as a new version of the extension would.
+	 * Changes the extension's words, as a new translation or a new version of it would: each text it translates becomes another.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string $label The new label.
+	 * @param array<string, string> $words The new words, by the text the registration translates.
 	 */
-	public static function relabel( string $label ): void {
-		self::$morning = $label;
+	public static function relabel( array $words ): void {
+		self::$words = $words;
+
+		add_filter( 'gettext', array( self::class, 'translate' ), 10, 3 );
+	}
+
+	/**
+	 * Answers the changed words of the extension's text domain.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $translation The translation so far.
+	 * @param string $text        The text translated.
+	 * @param string $domain      Its text domain.
+	 * @return string The translation.
+	 */
+	public static function translate( string $translation, string $text, string $domain ): string {
+		return 'acme-checkout' === $domain ? ( self::$words[ $text ] ?? $translation ) : $translation;
 	}
 
 	/**
@@ -145,7 +162,14 @@ final class AcmeCheckoutFields {
 				maxLength: 20,
 				presences: array( Presence::Optional, Presence::Required, Presence::Hidden ),
 				help: static fn(): string => __( 'For an order your company pays by invoice.', 'acme-checkout' ),
-				check: static fn( string $value ): ?string => str_starts_with( $value, 'PO-' ) ? null : __( 'A purchase order number starts with PO-.', 'acme-checkout' )
+				check: static function ( string $value ): ?string {
+					if ( str_contains( $value, '?' ) ) {
+						// A check may throw: SEOCart refuses the value and logs the field and the exception's class, never this message.
+						throw new \UnexpectedValueException( sprintf( 'Cannot read the purchase order number %s.', $value ) );
+					}
+
+					return str_starts_with( $value, 'PO-' ) ? null : __( 'A purchase order number starts with PO-.', 'acme-checkout' );
+				}
 			)
 		);
 		$registry->register(
@@ -158,7 +182,7 @@ final class AcmeCheckoutFields {
 				maxLength: 20,
 				presences: array( Presence::Optional, Presence::Required, Presence::Hidden ),
 				options: array(
-					'morning'   => static fn(): string => self::$morning,
+					'morning'   => static fn(): string => __( 'Morning', 'acme-checkout' ),
 					'afternoon' => static fn(): string => __( 'Afternoon', 'acme-checkout' ),
 				)
 			)

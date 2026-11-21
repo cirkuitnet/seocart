@@ -94,6 +94,8 @@ final class OrderFieldValuesMigrationTest extends DatabaseTestCase {
 		);
 		$sent      = $this->approved( self::TABLE_DDL );
 
+		fwrite( STDOUT, "\nThe order step sent: " . implode( "\n", $log->ofType( 'CREATE' )->sqls() ) . "\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- The statement sent is printed for the report.
+
 		$this->assertSame( array( CreateOrderFieldValues::ID ), array_column( $report->applied(), 'id' ) );
 		$this->assertSame( CreateOrderFieldValues::ID, ( new MigrationsTableState( $this->db ) )->schemaHead() );
 		$this->assertSame( $sent, $generator->createTable( OrderTables::fieldValues(), $this->db->table( OrderTables::FIELD_VALUES ), $this->db->charsetCollate() ), 'The declaration writes the approved statement, byte for byte.' );
