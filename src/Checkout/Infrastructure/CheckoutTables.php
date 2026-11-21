@@ -29,7 +29,8 @@ defined( 'ABSPATH' ) || exit;
  * A cart has at most one checkout session, which lives exactly as long as the cart: the cart's
  * sweep deletes it in the statement that deletes the cart, so it has no expiry of its own, and
  * nothing finds it but its cart. Its two addresses are personal data,
- * kept as JSON documents of the address's fields. An idempotency key is claimed by an order
+ * kept as JSON documents of the address's fields, and so are the values of the other checkout
+ * fields, kept as one JSON object of each field's key and value. An idempotency key is claimed by an order
  * placement in its own transaction and completed in the same one; `response_json` holds the
  * answer the placement sent, kept until the key expires, with the order's access key sealed by
  * the cart's token and the request's idempotency key, neither of which is stored; it stays
@@ -70,6 +71,15 @@ final class CheckoutTables {
 	public const KEYS_RETENTION = 'idempotency_keys';
 
 	/**
+	 * The session's column of the values of the checkout fields that are no address member.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FIELD_VALUES = 'field_values_json';
+
+	/**
 	 * The module both tables belong to.
 	 *
 	 * @since 0.1.0
@@ -93,6 +103,7 @@ final class CheckoutTables {
 	 * Declares `checkout_sessions`: one row per cart in checkout, from the first write of its details until the cart is swept.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The values of the checkout fields that are no address member, last.
 	 *
 	 * @return TableDefinition The declaration.
 	 */
@@ -116,6 +127,7 @@ final class CheckoutTables {
 				new ColumnSpec( 'payment_method_key', 'varchar(32)', $public, 'The payment method the shopper chose; NULL until chosen.', nullable: true, collation: 'ascii_bin' ),
 				new ColumnSpec( 'created_at', 'datetime(6)', $public, 'When the session was created, UTC, from the database clock.' ),
 				new ColumnSpec( 'updated_at', 'datetime(6)', $public, 'When the session last changed, UTC, from the database clock.' ),
+				new ColumnSpec( self::FIELD_VALUES, 'text', Classification::Pii, 'The values the shopper gave for the checkout fields that are no address member, the order note and the fields extensions declare, as a JSON object of each field\'s key and its value; NULL until one is given. Each value is personal data, whatever its field.', nullable: true, erasure: ColumnSpec::ERASE_DESTROY ),
 			),
 			array( 'id' ),
 			array(

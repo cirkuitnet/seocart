@@ -70,11 +70,11 @@ final class OrderTablesMigrationTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Tests the migration's place and what it declares: ten tables, their patterns and retention, and that the production registry lists them.
+	 * Tests the migration's place and what it declares: eleven tables, their patterns and retention, and that the production registry lists them.
 	 *
 	 * @since 0.1.0
 	 */
-	public function test_the_migration_declares_the_ten_tables(): void {
+	public function test_the_migration_declares_the_eleven_tables(): void {
 		$migration = new CreateOrderTables();
 
 		$this->assertGreaterThan( CreateOutboxMigration::ID, $migration->id() );
@@ -97,6 +97,7 @@ final class OrderTablesMigrationTest extends DatabaseTestCase {
 				'order_tax_components' => array( MutationPattern::AppendOnly, 'financial' ),
 				'order_adjustments'    => array( MutationPattern::MutableTransactional, 'financial' ),
 				'order_addresses'      => array( MutationPattern::MutableTransactional, 'financial' ),
+				'order_field_values'   => array( MutationPattern::MutableTransactional, 'financial' ),
 				'order_totals'         => array( MutationPattern::AppendOnly, 'financial' ),
 				'order_events'         => array( MutationPattern::AppendOnly, 'financial' ),
 				'order_number_seq'     => array( MutationPattern::MutableTransactional, 'permanent' ),

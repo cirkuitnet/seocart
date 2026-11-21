@@ -166,6 +166,16 @@ final class MysqlOrderRepository implements OrderRepository {
 		. 'VALUES ( %d, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s )';
 
 	/**
+	 * One value of a checkout field the order was placed with; the option's label is NULL for a field that is no select.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const INSERT_FIELD_VALUE = 'INSERT INTO {order_field_values} ( order_id, field_key, section, type, label_snapshot, field_value, value_label_snapshot, locale_snapshot, position ) '
+		. "VALUES ( %d, %s, %s, %s, %s, %s, NULLIF( %s, '' ), %s, %d )";
+
+	/**
 	 * A totals snapshot, as the order's current one.
 	 *
 	 * @since 0.1.0

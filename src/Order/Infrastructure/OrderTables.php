@@ -20,13 +20,13 @@ use SEOCart\Platform\Database\Schema\TableDefinition;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Declares the ten tables of the order module.
+ * Declares the eleven tables of the order module.
  *
  * Owns one fact: the shape of the order tables. The migration that creates them and the data
  * registry that lists them call the same factories.
  *
  * An order is stored as what was sold, at the prices and in the words of the moment it was
- * placed: every line, label and address is a snapshot, and no column is ever read back from a
+ * placed: every line, label, address and checkout field's value is a snapshot, and no column is ever read back from a
  * catalog or customer row to display it. Every amount is a signed `bigint` of minor units with
  * its currency beside it, and every amount an order owns has a `base_` twin in the store's base
  * currency, written from the first row, so no report branches on a missing value. Times other
@@ -92,6 +92,15 @@ final class OrderTables {
 	 * @var string
 	 */
 	public const ADDRESSES = 'order_addresses';
+
+	/**
+	 * The unprefixed name of the table of the checkout fields' values an order was placed with.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FIELD_VALUES = 'order_field_values';
 
 	/**
 	 * The unprefixed name of the totals snapshot table.
@@ -166,9 +175,10 @@ final class OrderTables {
 	private const ACTOR_RETAINED = 'The order record keeps who acted on the order for as long as the order is kept; the user id identifies no one once the user is erased.';
 
 	/**
-	 * Returns the ten declarations.
+	 * Returns the eleven declarations.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The checkout fields' values.
 	 *
 	 * @return list<TableDefinition> The order tables, the counter and the conversion contexts.
 	 */
@@ -180,6 +190,7 @@ final class OrderTables {
 			self::taxComponents(),
 			self::adjustments(),
 			self::addresses(),
+			self::fieldValues(),
 			self::totals(),
 			self::events(),
 			self::numberSequence(),
@@ -188,14 +199,15 @@ final class OrderTables {
 	}
 
 	/**
-	 * Returns the unprefixed names of the ten tables.
+	 * Returns the unprefixed names of the eleven tables.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The checkout fields' values.
 	 *
 	 * @return list<string> The names, in the order of all().
 	 */
 	public static function names(): array {
-		return array( self::ORDERS, self::LINES, self::LINE_OPTIONS, self::TAX_COMPONENTS, self::ADJUSTMENTS, self::ADDRESSES, self::TOTALS, self::EVENTS, self::NUMBER_SEQUENCE, self::CONVERSION_CONTEXTS );
+		return array( self::ORDERS, self::LINES, self::LINE_OPTIONS, self::TAX_COMPONENTS, self::ADJUSTMENTS, self::ADDRESSES, self::FIELD_VALUES, self::TOTALS, self::EVENTS, self::NUMBER_SEQUENCE, self::CONVERSION_CONTEXTS );
 	}
 
 	/**
@@ -551,6 +563,51 @@ final class OrderTables {
 			self::FINANCIAL,
 			array(
 				'orders -> order_addresses' => 'Written only with their order, in the transaction that places it; anonymized with it on erasure, except the country and region.',
+			)
+		);
+	}
+
+	/**
+	 * Declares `order_field_values`: the value of each checkout field an order was placed with that is no address member, with its words as the shopper saw them.
+	 *
+	 * A row is written with its order and never changed by anything but the eraser: the key, the
+	 * section, the type and the labels are what the field declared when the order was placed, in
+	 * the order's locale, so staff see a field its extension no longer declares as it was. Every
+	 * value is personal data, whatever its field; the eraser destroys the value and the option's
+	 * label and keeps what the field was.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return TableDefinition The declaration.
+	 */
+	public static function fieldValues(): TableDefinition {
+		$destroy = static fn( string $name, string $type, string $note ): ColumnSpec => new ColumnSpec( $name, $type, Classification::Pii, $note, nullable: true, erasure: ColumnSpec::ERASE_DESTROY );
+
+		return new TableDefinition(
+			self::FIELD_VALUES,
+			self::MODULE,
+			'Records the value an order was placed with for each checkout field that is no address member, such as the order note or a field an extension declares, with the field\'s label and a chosen option\'s label as the shopper saw them.',
+			MutationPattern::MutableTransactional,
+			array(
+				self::id( 'Surrogate key.' ),
+				self::orderId( 'The order the value belongs to.' ),
+				new ColumnSpec( 'field_key', 'varchar(64)', Classification::Public, 'The checkout field\'s key, such as order_note or an extension\'s acme_po_number.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'section', 'varchar(16)', Classification::Public, 'Where the form showed the field: contact or order.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'type', 'varchar(16)', Classification::Public, 'What the field\'s value was: text, textarea, select or checkbox.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'label_snapshot', 'varchar(255)', Classification::Public, 'The field\'s label the shopper saw.' ),
+				$destroy( 'field_value', 'text', 'The value the shopper gave; for a select, the chosen option\'s value, and for a ticked checkbox, 1. NULL once erased.' ),
+				$destroy( 'value_label_snapshot', 'varchar(255)', 'For a select, the chosen option\'s label the shopper saw; NULL for any other type, and once erased.' ),
+				self::locale( 'locale_snapshot', 'The locale the labels are written in: the order\'s.' ),
+				new ColumnSpec( 'position', 'int', Classification::Public, 'Where the field was shown among the order\'s fields, from 0.' ),
+			),
+			array( 'id' ),
+			array(
+				IndexSpec::unique( 'order_field', array( 'order_id', 'field_key' ), 'One value per field of an order; it also finds the values of a list of orders.' ),
+			),
+			array(),
+			self::FINANCIAL,
+			array(
+				'orders -> order_field_values' => 'Written only with their order, in the transaction that places it; on erasure the value and the option\'s label are destroyed, and the key and the label kept.',
 			)
 		);
 	}

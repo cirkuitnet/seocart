@@ -96,7 +96,7 @@ final class CheckoutTablesMigrationTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Tests what the tables declare: their patterns and retention, the addresses as personal data, the stored answer as a secret, and the name the cart's sweep deletes a session by.
+	 * Tests what the tables declare: their patterns and retention, the addresses and the checkout fields' values as personal data, the stored answer as a secret, and the name the cart's sweep deletes a session by.
 	 *
 	 * @since 0.1.0
 	 */
@@ -110,6 +110,7 @@ final class CheckoutTablesMigrationTest extends DatabaseTestCase {
 			array(
 				'billing_address_json'  => Classification::Pii,
 				'shipping_address_json' => Classification::Pii,
+				'field_values_json'     => Classification::Pii,
 			),
 			self::classified( $sessions->columns(), Classification::Pii )
 		);
