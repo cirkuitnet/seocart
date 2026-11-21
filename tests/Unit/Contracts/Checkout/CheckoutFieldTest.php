@@ -66,6 +66,18 @@ final class CheckoutFieldTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a select listing no option is refused, with a sentence of its own: no value could ever answer it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_select_without_options_is_refused(): void {
+		$this->expectException( \InvalidArgumentException::class );
+		$this->expectExceptionMessage( 'The checkout field slot is a select and lists no option, so no value could answer it.' );
+
+		new CheckoutField( 'slot', Section::Order, CheckoutFieldType::Select, static fn(): string => 'Slot', 20, array( Presence::Optional ) );
+	}
+
+	/**
 	 * Tests the limits themselves, accepted: a key of 48 characters, 50 options, a one-line field of 255 and a textarea of 2,000; and the default presence is the first, and a field with one presence is locked.
 	 *
 	 * @since 0.2.0

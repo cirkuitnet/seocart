@@ -934,7 +934,7 @@ public static function register( CheckoutFieldRegistry $registry ): void {
   names it so. A session write sends its value in `custom_fields`, a list of `{ key, field_value }`
   entries; a select sends its option's value, and a ticked checkbox `1`.
 - **What may be registered.** The sections `contact` and `order`; the types `text`, `textarea`,
-  `select` (at most 50 options) and `checkbox`; at most 20 fields from all extensions together. An
+  `select` (one to 50 options) and `checkbox`; at most 20 fields from all extensions together. An
   extension's field has no autocomplete token.
 - **What is refused.** A 21st field, a field of the `address` section, another type, a key that is
   one of SEOCart's own fields or a member of the session write, given or stored, a stored key that
