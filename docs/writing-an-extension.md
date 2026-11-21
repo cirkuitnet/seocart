@@ -940,7 +940,10 @@ public static function register( CheckoutFieldRegistry $registry ): void {
   one of SEOCart's own fields or a member of the session write, given or stored, a stored key that
   starts `seocart_` or `custom_`, a key registered already, and a registration after the action ran.
   A refused field is left out, logged once with the code `checkout.field_rejected` and noted by
-  `wp seocart doctor`; it is never an error, and the first registration of a key wins.
+  `wp seocart doctor`; it is never an error, and the first registration of a key wins. A listener
+  that throws ends the registration where it threw: the fields registered before it are kept, the
+  listeners after it on the action do not run, and SEOCart logs the exception's class with the
+  reason `registration_failed`, never its message.
 - **Presence.** The presences listed are the ones a store may choose, the first the default; a
   field that lists one is locked. Only the store chooses, through `checkout.update_fields`.
 - **Words.** The label, the help and each option's label are closures around the extension's own

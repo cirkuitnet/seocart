@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Checkout;
 
+use SEOCart\Checkout\Application\CheckoutRules;
 use SEOCart\Checkout\Application\ExtensionFields;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
@@ -26,8 +27,10 @@ use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
 use SEOCart\Platform\Database\Schema\SchemaVerifier;
 use SEOCart\Platform\Database\SchemaOperations;
+use SEOCart\Platform\Logging\LogsTable;
 use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Tests\Support\Checkout\AcmeCheckoutFields;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 
 /**
@@ -115,6 +118,56 @@ final class CheckoutChecksTest extends PlacementTestCase {
 
 		$this->assertTrue( $result->passed, implode( "\n", $result->findings ) );
 		$this->assertSame( array( 'Note: the checkout left out 1 checkout field an extension registered: phone from acme (' . ExtensionFields::RESERVED_KEY . '). Each was logged with the code ' . ExtensionFields::REJECTED . '; the extension\'s documentation says what it needs.' ), $result->findings );
+	}
+
+	/**
+	 * Tests what a registration listener that throws does to the listeners after it: the fields registered before it are kept, the action ends there, so a later extension's fields are absent; one `registration_failed` report names the exception's class; and doctor notes it.
+	 *
+	 * This is what WordPress does with any listener that throws, and what the payment gateways'
+	 * registration does; the test pins it so a change is a decision.
+	 *
+	 * Planted violation: in ExtensionFields::collect(), forget the fields registered before the
+	 * throw (`$this->fields = array();` in the catch): the earlier listener's field is gone.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_listener_that_throws_ends_the_registration_for_the_listeners_after_it(): void {
+		$before  = static function ( CheckoutFieldRegistry $registry ): void {
+			$registry->register( 'early', new CheckoutField( key: 'note', section: Section::Order, type: CheckoutFieldType::Text, label: static fn(): string => 'Early note', maxLength: 20, presences: array( Presence::Optional ) ) );
+		};
+		$thrower = static function (): void {
+			throw new \DomainException( 'A listener failed.' );
+		};
+
+		( new CreateLogsMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+		add_action( CheckoutFieldRegistry::ACTION, $before, 5 );
+		add_action( CheckoutFieldRegistry::ACTION, $thrower, 9 );
+		AcmeCheckoutFields::listen();
+
+		try {
+			$keys   = array_map( static fn( CheckoutField $field ): string => $field->key, $this->kernel->get( CheckoutRules::class )->fields() );
+			$result = $this->kernel->get( CheckoutChecks::class )->run();
+		} finally {
+			remove_action( CheckoutFieldRegistry::ACTION, $before, 5 );
+			remove_action( CheckoutFieldRegistry::ACTION, $thrower, 9 );
+			AcmeCheckoutFields::forget();
+		}
+
+		$reports = $this->db->fetchAll( 'SELECT context_json FROM %i WHERE machine_code = %s', $this->table( LogsTable::NAME ), ExtensionFields::REJECTED );
+
+		$this->assertContains( 'early_note', $keys, 'The field registered before the throw is gone.' );
+		$this->assertSame( array(), array_values( array_intersect( array( AcmeCheckoutFields::PO_NUMBER, AcmeCheckoutFields::DELIVERY_SLOT, AcmeCheckoutFields::GIFT_WRAP ), $keys ) ), 'A listener after the throw ran.' );
+		$this->assertCount( 1, $reports );
+		$this->assertSame(
+			array(
+				'extension' => \DomainException::class,
+				'key'       => '',
+				'reason'    => ExtensionFields::FAILED,
+			),
+			array_intersect_key( (array) json_decode( (string) $reports[0]['context_json'], true ), array_flip( array( 'extension', 'key', 'reason' ) ) )
+		);
+		$this->assertTrue( $result->passed, implode( "\n", $result->findings ) );
+		$this->assertSame( array( 'Note: the checkout left out 1 checkout field an extension registered: a listener from DomainException (' . ExtensionFields::FAILED . '). Each was logged with the code ' . ExtensionFields::REJECTED . '; the extension\'s documentation says what it needs.' ), $result->findings );
 	}
 
 	/**
