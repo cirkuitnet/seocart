@@ -25,9 +25,11 @@ use SEOCart\Support\Schema\ResourceSchema;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Declares `order.clear_unreconciled_money`: a person's word that the money an order was flagged for is reconciled.
+ * Declares the order operations a merchant's client calls: `order.clear_unreconciled_money`, a person's word that the money an order was flagged for is reconciled, and `order.list_field_values`, the checkout field values an order was placed with.
  *
- * Owns one fact: how the clearance is offered to clients. One declaration serves the REST route
+ * Owns one fact: how these are offered to clients.
+ *
+ * The clearance: One declaration serves the REST route
  * `POST seocart/v1/orders/{order_uuid}/money-reconciliation`, the ability
  * `seocart/clear-unreconciled-money` and the command `wp seocart order reconcile <order_uuid>`;
  * each is compiled from it and none restates it.
@@ -36,6 +38,11 @@ defined( 'ABSPATH' ) || exit;
  * so it is destructive, needs `seocart_override_money_state`, and is never exposed to agents. A
  * cleared order's flag stays down until money the ledger did not expect lands again; clearing it
  * twice is refused, so a retry is safe.
+ *
+ * The field values: one declaration serves `GET seocart/v1/orders/{order_uuid}/field-values`, the
+ * ability `seocart/list-order-field-values` and `wp seocart order field-values <order_uuid>`. It
+ * needs `seocart_view_orders`; each value and a select's option label are personal data, left out
+ * for a user without `seocart_view_customer_pii`. Each entry's members are OrderFieldValueFields'.
  *
  * Declarations are data: building the definition reads nothing.
  *
@@ -78,6 +85,33 @@ final class OrderOperations {
 	 * @var string
 	 */
 	public const MONEY_OVERRIDE_CAPABILITY = 'seocart_override_money_state';
+
+	/**
+	 * The id of the read of an order's checkout field values.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const LIST_FIELD_VALUES = 'order.list_field_values';
+
+	/**
+	 * The REST route of the read of an order's checkout field values, relative to the namespace.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FIELD_VALUES_ROUTE = '/orders/{order_uuid}/field-values';
+
+	/**
+	 * The capability that lets a user read orders.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const VIEW_CAPABILITY = 'seocart_view_orders';
 
 	/**
 	 * The longest note a clearance keeps, in characters.
@@ -149,6 +183,45 @@ final class OrderOperations {
 			ability: self::CLEAR_ABILITY,
 			cli: new CliBinding( array( 'order', 'reconcile' ), array( 'order_uuid' ) ),
 			agent_exposed: false
+		);
+	}
+
+	/**
+	 * Builds the read of an order's checkout field values.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function listFieldValues(): OperationDefinition {
+		return new OperationDefinition(
+			id: self::LIST_FIELD_VALUES,
+			label: static fn(): string => __( 'List an order\'s checkout field values', 'seocart' ),
+			summary: 'Returns the values an order was placed with for its checkout fields that are no address member, such as the order note and an extension\'s fields, in the order the form showed them: each field\'s key, section, type and label as the shopper saw them, its label today, the value and a chosen option\'s label. A field no longer declared is still listed, its label today null.',
+			input: array( self::orderUuid( 'The public identifier of the order whose checkout field values are read.' ) ),
+			output: new ResourceSchema(
+				'OrderFieldValues',
+				array(
+					FieldSpec::objectList(
+						'field_values',
+						'The order\'s checkout field values, in the order the checkout form showed their fields; empty when it has none.',
+						static fn(): string => __( 'Checkout field values', 'seocart' ),
+						OrderFieldValueFields::list(),
+						required: true
+					),
+				)
+			),
+			capability: self::VIEW_CAPABILITY,
+			resource_field: null,
+			errors: array(
+				AuthorizationError::Denied,
+				OrderError::NotFound,
+			),
+			annotations: new Annotations( read_only: true, destructive: false, idempotent: true ),
+			service: array( OrderFieldValues::class, 'list' ),
+			rest: new RestBinding( self::FIELD_VALUES_ROUTE ),
+			ability: 'list-order-field-values',
+			cli: new CliBinding( array( 'order', 'field-values' ), array( 'order_uuid' ) )
 		);
 	}
 

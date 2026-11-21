@@ -443,6 +443,23 @@ wp seocart order reconcile <order_uuid> --note=<note> [--format=<format>]
 - `--note=<note>`: Why the person says the order's money is reconciled; kept with the order, and refused when it holds a card number. Text of at most 500 characters. Personal data.
 - `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
 
+## `wp seocart order field-values`
+
+Returns the values an order was placed with for its checkout fields that are no address member, such as the order note and an extension's fields, in the order the form showed them: each field's key, section, type and label as the shopper saw them, its label today, the value and a chosen option's label. A field no longer declared is still listed, its label today null.
+
+```sh
+wp seocart order field-values <order_uuid> [--format=<format>]
+```
+
+- Operation: `order.list_field_values`
+- Capability: `seocart_view_orders`
+- Error codes: `authorization.denied` (403), `order.not_found` (404)
+
+### Arguments
+
+- `<order_uuid>`: The public identifier of the order whose checkout field values are read. A uuid.
+- `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
+
 ## `wp seocart payment capture`
 
 Captures an authorized payment through its gateway, everything authorized or, where the gateway declares partial captures, the amount given, the gateway releasing the rest; a payment is captured once, so a capture asked again after it was made is refused with payment.not_capturable and what was captured, and one whose answer was lost is asked again with the same request, which the gateway carries out once. For an offline payment method, such as a bank transfer, the capture records the payment received, with the day it arrived and, optionally, its reference and a note.

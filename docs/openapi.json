@@ -2705,6 +2705,80 @@
                 }
             }
         },
+        "/orders/{order_uuid}/field-values": {
+            "get": {
+                "operationId": "order.list_field_values",
+                "summary": "Returns the values an order was placed with for its checkout fields that are no address member, such as the order note and an extension's fields, in the order the form showed them: each field's key, section, type and label as the shopper saw them, its label today, the value and a chosen option's label. A field no longer declared is still listed, its label today null.",
+                "description": "Requires the capability `seocart_view_orders`.",
+                "parameters": [
+                    {
+                        "name": "order_uuid",
+                        "in": "path",
+                        "required": true,
+                        "description": "The public identifier of the order whose checkout field values are read.",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid",
+                            "examples": [
+                                "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b"
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the OrderFieldValues resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OrderFieldValues"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No user is logged in, and the operation requires the capability `seocart_view_orders`: `rest_forbidden`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not hold the capability `seocart_view_orders`: `rest_forbidden`.\n\n`authorization.denied`: Sorry, you are not allowed to do that. It requires the {capability} capability.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`order.not_found`: The order was not found.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/orders/{order_uuid}/money-reconciliation": {
             "post": {
                 "operationId": "order.clear_unreconciled_money",
@@ -8156,6 +8230,106 @@
                     "order_uuid",
                     "has_unreconciled_money",
                     "money_reconciled_at"
+                ]
+            },
+            "OrderFieldValues": {
+                "type": "object",
+                "properties": {
+                    "field_values": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key": {
+                                    "type": "string",
+                                    "maxLength": 48,
+                                    "description": "The checkout field's key, as the order keeps it, such as order_note or an extension's acme_po_number."
+                                },
+                                "section": {
+                                    "type": "string",
+                                    "enum": [
+                                        "contact",
+                                        "address",
+                                        "order"
+                                    ],
+                                    "description": "Where the checkout form showed the field: contact or order."
+                                },
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "text",
+                                        "email",
+                                        "tel",
+                                        "country",
+                                        "textarea",
+                                        "select",
+                                        "checkbox"
+                                    ],
+                                    "description": "What the field's value was, such as text, textarea, select or checkbox; a ticked checkbox is 1."
+                                },
+                                "label": {
+                                    "type": "string",
+                                    "maxLength": 255,
+                                    "description": "The field's label as the shopper saw it, in the order's locale."
+                                },
+                                "current_label": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "maxLength": 255,
+                                    "description": "The field's label as it is declared today, in the request's language; null when no field of this key is declared any more."
+                                },
+                                "field_value": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "maxLength": 2000,
+                                    "description": "The value the shopper gave: text, a select's chosen value, or 1 for a ticked checkbox; null once the order is erased."
+                                },
+                                "value_label": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "maxLength": 255,
+                                    "description": "For a select, the chosen option's label as the shopper saw it, in the order's locale; null for any other type, and once the order is erased."
+                                },
+                                "locale": {
+                                    "type": "string",
+                                    "description": "The locale the labels the order keeps are written in: the order's."
+                                }
+                            },
+                            "required": [
+                                "key",
+                                "section",
+                                "type",
+                                "label",
+                                "current_label",
+                                "locale"
+                            ],
+                            "additionalProperties": false
+                        },
+                        "description": "The order's checkout field values, in the order the checkout form showed their fields; empty when it has none.",
+                        "examples": [
+                            [
+                                {
+                                    "key": "acme_po_number",
+                                    "section": "contact",
+                                    "type": "text",
+                                    "label": "Purchase order number",
+                                    "current_label": "Purchase order number",
+                                    "field_value": "PO-1234",
+                                    "value_label": "Morning",
+                                    "locale": "en_GB"
+                                }
+                            ]
+                        ]
+                    }
+                },
+                "required": [
+                    "field_values"
                 ]
             },
             "OrderLimits": {

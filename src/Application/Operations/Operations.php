@@ -88,6 +88,7 @@ final class Operations {
 		$registry->add( PaymentOperations::REFUND_ORDER, array( PaymentOperations::class, 'refundOrder' ) );
 		$registry->add( PaymentOperations::SETTLE_REFUND_CLAIM, array( PaymentOperations::class, 'settleRefundClaim' ) );
 		$registry->add( OrderOperations::CLEAR_UNRECONCILED_MONEY, array( OrderOperations::class, 'clearUnreconciledMoney' ) );
+		$registry->add( OrderOperations::LIST_FIELD_VALUES, array( OrderOperations::class, 'listFieldValues' ) );
 		$registry->add( PaymentOperations::CAPTURE_PAYMENT, array( PaymentOperations::class, 'capturePayment' ) );
 		$registry->add( PaymentOperations::VOID_PAYMENT, array( PaymentOperations::class, 'voidPayment' ) );
 

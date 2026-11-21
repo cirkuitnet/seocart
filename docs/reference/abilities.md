@@ -548,6 +548,24 @@ Lowers the flag of an order holding money a person must reconcile, with the note
 - `has_unreconciled_money` (always): Whether the order holds money a person must reconcile: false once cleared. True or false.
 - `money_reconciled_at` (always): When the flag was cleared, UTC, in ISO 8601 to the microsecond, by the database clock. Text.
 
+## `seocart/list-order-field-values`
+
+Returns the values an order was placed with for its checkout fields that are no address member, such as the order note and an extension's fields, in the order the form showed them: each field's key, section, type and label as the shopper saw them, its label today, the value and a chosen option's label. A field no longer declared is still listed, its label today null.
+
+- Operation: `order.list_field_values`
+- Capability: `seocart_view_orders`
+- Error codes: `authorization.denied` (403), `order.not_found` (404)
+- Annotations: readonly `true`, destructive `false`, idempotent `true`
+- Exposed to agents: no
+
+### Input
+
+- `order_uuid` (required): The public identifier of the order whose checkout field values are read. A uuid.
+
+### Output
+
+- `field_values` (always): The order's checkout field values, in the order the checkout form showed their fields; empty when it has none. A list of objects, each with `key`, `section`, `type`, `label`, `current_label`, `field_value`, `value_label`, `locale`. Personal data: returned only to a user who holds the capability `seocart_view_customer_pii`.
+
 ## `seocart/capture-payment`
 
 Captures an authorized payment through its gateway, everything authorized or, where the gateway declares partial captures, the amount given, the gateway releasing the rest; a payment is captured once, so a capture asked again after it was made is refused with payment.not_capturable and what was captured, and one whose answer was lost is asked again with the same request, which the gateway carries out once. For an offline payment method, such as a bank transfer, the capture records the payment received, with the day it arrived and, optionally, its reference and a note.
