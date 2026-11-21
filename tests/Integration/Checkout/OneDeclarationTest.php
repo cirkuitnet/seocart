@@ -13,6 +13,7 @@ namespace SEOCart\Tests\Integration\Checkout;
 
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Checkout\Application\CheckoutRules;
+use SEOCart\Checkout\Application\ExtensionFields;
 use SEOCart\Checkout\Domain\AddressDocument;
 use SEOCart\Checkout\Domain\Fields\BuiltInFields;
 use SEOCart\Checkout\Domain\Fields\Carrier;
@@ -471,6 +472,67 @@ final class OneDeclarationTest extends PlacementTestCase {
 
 		$this->assertSame( array( AcmeCheckoutFields::DELIVERY_SLOT, 'Delivery slot' ), array( $erased[0]['key'] ?? null, $erased[0]['label'] ?? null ), 'An erased order keeps the field.' );
 		$this->assertSame( array( null, null ), array( $erased[0]['field_value'], $erased[0]['value_label'] ), 'An erased order keeps a value.' );
+	}
+
+	/**
+	 * Tests that the schema's outer bounds of the custom fields are the declaration's own: a value as long as the longest any field may declare, and a key as long as the longest stored key the registry can produce.
+	 *
+	 * The schema says the list's shape alone; each field's own length is the rules'. Its value bound
+	 * is the largest maxLength a CheckoutField accepts, and its key bound the longest
+	 * `{extensionId}_{key}` the registry keeps, which the key grammar caps.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_custom_fields_outer_bounds_are_the_declarations(): void {
+		$members = array();
+
+		foreach ( CheckoutOperations::updateSession()->input() as $input ) {
+			if ( Carrier::CustomFields->value === $input->name() ) {
+				foreach ( $input->fields() as $member ) {
+					$members[ $member->name() ] = $member->maxLength();
+				}
+			}
+		}
+
+		$longest = 0;
+
+		foreach ( CheckoutFieldType::cases() as $type ) {
+			$options = CheckoutFieldType::Select === $type ? array( 'one' => static fn(): string => 'One' ) : array();
+
+			foreach ( array( CheckoutField::LINE_MAX_LENGTH, CheckoutField::TEXTAREA_MAX_LENGTH ) as $length ) {
+				try {
+					new CheckoutField( key: 'any', section: Section::Order, type: $type, label: static fn(): string => 'Any', maxLength: $length, presences: array( Presence::Optional ), options: $options );
+					$longest = max( $longest, $length );
+				} catch ( \InvalidArgumentException ) {
+					continue;
+				}
+			}
+		}
+
+		$this->assertSame( $longest, $members[ Carrier::VALUE ] ?? null, 'The value bound is not the longest value a field may declare.' );
+
+		$kept     = array();
+		$registry = new ExtensionFields( array(), $this->reporter() );
+		$listener = static function ( CheckoutFieldRegistry $registry ): void {
+			$field = static fn( string $key ): CheckoutField => new CheckoutField( key: $key, section: Section::Order, type: CheckoutFieldType::Text, label: static fn(): string => 'A label', maxLength: 20, presences: array( Presence::Optional ) );
+
+			// An id and a key the grammar accepts whose stored key is the longest it allows, and one character more.
+			$registry->register( str_repeat( 'a', CheckoutField::KEY_MAX_LENGTH - 2 ), $field( 'b' ) );
+			$registry->register( str_repeat( 'c', CheckoutField::KEY_MAX_LENGTH - 1 ), $field( 'd' ) );
+		};
+
+		add_action( CheckoutFieldRegistry::ACTION, $listener );
+
+		try {
+			foreach ( $registry->fieldsBeside( array() ) as $field ) {
+				$kept[] = $field->key;
+			}
+		} finally {
+			remove_action( CheckoutFieldRegistry::ACTION, $listener );
+		}
+
+		$this->assertCount( 1, $kept, 'The registry kept a stored key longer than a key may be.' );
+		$this->assertSame( strlen( $kept[0] ), $members[ Carrier::KEY ] ?? null, 'The key bound is not the longest stored key the registry can produce.' );
 	}
 
 	/**
