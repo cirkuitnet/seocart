@@ -25,6 +25,7 @@ use SEOCart\Contracts\Payment\MatrixRow;
 use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Contracts\Payment\ProvisionsWebhooks;
+use SEOCart\Platform\Plugins\PluginFiles;
 use SEOCart\Platform\Settings\Setting;
 use SEOCart\Platform\Settings\Settings;
 use SEOCart\Support\ContractVersion;
@@ -321,7 +322,7 @@ final class Gateways implements GatewayRegistry {
 	 * @param PaymentGateway $gateway The gateway.
 	 */
 	public function register( PaymentGateway $gateway ): void {
-		$this->admit( $gateway, self::pluginOfFile( (string) ( new \ReflectionClass( $gateway ) )->getFileName() ) );
+		$this->admit( $gateway, PluginFiles::slugOf( (string) ( new \ReflectionClass( $gateway ) )->getFileName() ) );
 	}
 
 	/**
@@ -822,7 +823,7 @@ final class Gateways implements GatewayRegistry {
 			// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- Always seocart_register_payment_gateways, the contract's GatewayRegistry::ACTION.
 			do_action( GatewayRegistry::ACTION, $this );
 		} catch ( \Throwable $failed ) {
-			$this->refuse( get_class( $failed ), self::pluginOfFile( $failed->getFile() ), 'registration_failed', sprintf( 'A listener of the registration action threw %s.', get_class( $failed ) ) );
+			$this->refuse( get_class( $failed ), PluginFiles::slugOf( $failed->getFile() ), 'registration_failed', sprintf( 'A listener of the registration action threw %s.', get_class( $failed ) ) );
 		} finally {
 			$this->building = false;
 		}
@@ -1089,31 +1090,6 @@ final class Gateways implements GatewayRegistry {
 
 		// Each event type is checked when the target is built: a malformed one fails the webhook step.
 		return in_array( GatewayDescriptor::WEBHOOK_SECRET, $secrets, true ) && array() !== $events ? $events : null;
-	}
-
-	/**
-	 * Returns the slug of the plugin a file was loaded from: its directory under the plugins directory.
-	 *
-	 * WordPress's plugin_basename() decides, so a plugin directory linked into the plugins
-	 * directory from elsewhere is known by the name it has there. A file outside the plugins
-	 * directories belongs to no plugin.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param string $file The file's path.
-	 * @return string|null The slug, such as `seocart-gateway-for-stripe`; null for no plugin.
-	 */
-	private static function pluginOfFile( string $file ): ?string {
-		$path     = wp_normalize_path( $file );
-		$relative = plugin_basename( $path );
-
-		if ( '' === $path || trim( $path, '/' ) === $relative ) {
-			return null;
-		}
-
-		$slug = strstr( $relative, '/', true );
-
-		return false === $slug ? basename( $relative, '.php' ) : $slug;
 	}
 
 	/**

@@ -244,7 +244,7 @@ final class CheckoutChecks implements Repairable {
 	}
 
 	/**
-	 * Notes the checkout fields extensions registered in this request that the checkout left out, each by its extension, its key and the reason.
+	 * Notes the checkout fields extensions registered in this request that the checkout left out, each by its extension, its key and the reason; a listener that threw, by the plugin its file lies in when one can be named.
 	 *
 	 * @since 0.2.0
 	 *
@@ -257,9 +257,25 @@ final class CheckoutChecks implements Repairable {
 			return array();
 		}
 
-		$listed = array_map( static fn( array $refusal ): string => sprintf( '%1$s from %2$s (%3$s)', '' === $refusal['key'] ? 'a listener' : $refusal['key'], '' === $refusal['extension'] ? 'an unknown extension' : $refusal['extension'], $refusal['reason'] ), $refused );
+		$listed = array_map( static fn( array $refusal ): string => sprintf( '%1$s from %2$s (%3$s)', '' === $refusal['key'] ? 'a listener' : $refusal['key'], self::refusedBy( $refusal ), $refusal['reason'] ), $refused );
 
 		return array( sprintf( 'Note: the checkout left out %1$d checkout %2$s an extension registered: %3$s. Each was logged with the code checkout.field_rejected; the extension\'s documentation says what it needs.', count( $refused ), 1 === count( $refused ) ? 'field' : 'fields', implode( '; ', $listed ) ) );
+	}
+
+	/**
+	 * Names who a refused registration came from: the plugin a throwing listener's file lies in, with what it threw; otherwise the extension, or the class a listener threw when no plugin can be named.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array{extension: string, key: string, reason: string, plugin?: string|null} $refusal The refusal.
+	 * @return string Who, such as `acme-fields that threw DomainException` or `acme`.
+	 */
+	private static function refusedBy( array $refusal ): string {
+		if ( isset( $refusal['plugin'] ) ) {
+			return sprintf( '%1$s that threw %2$s', $refusal['plugin'], $refusal['extension'] );
+		}
+
+		return '' === $refusal['extension'] ? 'an unknown extension' : $refusal['extension'];
 	}
 
 	/**

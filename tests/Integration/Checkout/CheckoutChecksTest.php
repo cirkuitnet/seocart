@@ -121,23 +121,54 @@ final class CheckoutChecksTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Tests what a registration listener that throws does to the listeners after it: the fields registered before it are kept, the action ends there, so a later extension's fields are absent; one `registration_failed` report names the exception's class; and doctor notes it.
-	 *
-	 * This is what WordPress does with any listener that throws, and what the payment gateways'
-	 * registration does; the test pins it so a change is a decision.
-	 *
-	 * Planted violation: in ExtensionFields::collect(), forget the fields registered before the
-	 * throw (`$this->fields = array();` in the catch): the earlier listener's field is gone.
+	 * Provides where a throwing listener's file lies: in a plugin's directory, which the report and doctor name, or outside every plugin.
 	 *
 	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string|null}> The slug of the plugin this test's directory is linked as, or null for none.
 	 */
-	public function test_a_listener_that_throws_ends_the_registration_for_the_listeners_after_it(): void {
+	public static function throwersPlugins(): array {
+		return array(
+			'from a plugin'  => array( 'seocart-fixture-fields' ),
+			'from no plugin' => array( null ),
+		);
+	}
+
+	/**
+	 * Tests what a registration listener that throws does to the listeners after it: the fields registered before it are kept, the action ends there, so a later extension's fields are absent; one `registration_failed` report names the exception's class and the plugin its file lies in; and doctor notes it by that plugin, or by the class alone when no plugin can be named.
+	 *
+	 * This is what WordPress does with any listener that throws, and what the payment gateways'
+	 * registration does; the test pins it so a change is a decision. For the plugin, this test's
+	 * directory is linked into the plugins directory, as WordPress records a plugin directory
+	 * linked from elsewhere, so the throwing listener's file lies in that plugin.
+	 *
+	 * Planted violations:
+	 * - in ExtensionFields::collect(), forget the fields registered before the throw
+	 *   (`$this->fields = array();` in the catch): the earlier listener's field is gone;
+	 * - in ExtensionFields::collect(), report no plugin: the report and doctor's note name none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider throwersPlugins
+	 *
+	 * @param string|null $plugin The plugin the throwing listener's file lies in, or null for none.
+	 */
+	public function test_a_listener_that_throws_ends_the_registration_for_the_listeners_after_it( ?string $plugin ): void {
+		global $wp_plugin_paths;
+
 		$before  = static function ( CheckoutFieldRegistry $registry ): void {
 			$registry->register( 'early', new CheckoutField( key: 'note', section: Section::Order, type: CheckoutFieldType::Text, label: static fn(): string => 'Early note', maxLength: 20, presences: array( Presence::Optional ) ) );
 		};
 		$thrower = static function (): void {
 			throw new \DomainException( 'A listener failed.' );
 		};
+
+		$linked = (array) $wp_plugin_paths;
+
+		if ( null !== $plugin ) {
+			// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- The test links a directory as WordPress does for a plugin linked from elsewhere, and puts the list back.
+			$wp_plugin_paths[ wp_normalize_path( WP_PLUGIN_DIR . '/' . $plugin ) ] = wp_normalize_path( (string) realpath( __DIR__ ) );
+		}
 
 		( new CreateLogsMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
 		add_action( CheckoutFieldRegistry::ACTION, $before, 5 );
@@ -151,6 +182,9 @@ final class CheckoutChecksTest extends PlacementTestCase {
 			remove_action( CheckoutFieldRegistry::ACTION, $before, 5 );
 			remove_action( CheckoutFieldRegistry::ACTION, $thrower, 9 );
 			AcmeCheckoutFields::forget();
+
+			// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- The list as it was before the test.
+			$wp_plugin_paths = $linked;
 		}
 
 		$reports = $this->db->fetchAll( 'SELECT context_json FROM %i WHERE machine_code = %s', $this->table( LogsTable::NAME ), ExtensionFields::REJECTED );
@@ -163,11 +197,12 @@ final class CheckoutChecksTest extends PlacementTestCase {
 				'extension' => \DomainException::class,
 				'key'       => '',
 				'reason'    => ExtensionFields::FAILED,
+				'plugin'    => $plugin,
 			),
-			array_intersect_key( (array) json_decode( (string) $reports[0]['context_json'], true ), array_flip( array( 'extension', 'key', 'reason' ) ) )
+			array_intersect_key( (array) json_decode( (string) $reports[0]['context_json'], true ) + array( 'plugin' => 'none reported' ), array_flip( array( 'extension', 'key', 'reason', 'plugin' ) ) )
 		);
 		$this->assertTrue( $result->passed, implode( "\n", $result->findings ) );
-		$this->assertSame( array( 'Note: the checkout left out 1 checkout field an extension registered: a listener from DomainException (' . ExtensionFields::FAILED . '). Each was logged with the code ' . ExtensionFields::REJECTED . '; the extension\'s documentation says what it needs.' ), $result->findings );
+		$this->assertSame( array( 'Note: the checkout left out 1 checkout field an extension registered: a listener from ' . ( null === $plugin ? '' : $plugin . ' that threw ' ) . 'DomainException (' . ExtensionFields::FAILED . '). Each was logged with the code ' . ExtensionFields::REJECTED . '; the extension\'s documentation says what it needs.' ), $result->findings );
 	}
 
 	/**

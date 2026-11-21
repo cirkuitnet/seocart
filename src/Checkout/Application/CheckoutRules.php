@@ -312,7 +312,7 @@ final class CheckoutRules {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @return list<array{extension: string, key: string, reason: string}> The refusals, in order (ExtensionFields::refused()).
+	 * @return list<array{extension: string, key: string, reason: string, plugin?: string|null}> The refusals, in order (ExtensionFields::refused()).
 	 */
 	public function refusedRegistrations(): array {
 		$this->fields();

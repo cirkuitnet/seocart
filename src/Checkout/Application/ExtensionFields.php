@@ -15,6 +15,7 @@ use SEOCart\Contracts\Checkout\CheckoutField;
 use SEOCart\Contracts\Checkout\CheckoutFieldRegistry;
 use SEOCart\Contracts\Checkout\CheckoutFieldType;
 use SEOCart\Contracts\Checkout\Section;
+use SEOCart\Platform\Plugins\PluginFiles;
 use SEOCart\Support\ContractVersion;
 
 defined( 'ABSPATH' ) || exit;
@@ -34,8 +35,8 @@ defined( 'ABSPATH' ) || exit;
  * of a type no extension may declare; under a key that SEOCart's own fields or the session write's
  * members hold, given or stored, or a stored key with a reserved prefix; and when the stored key is
  * not one a field can have.
- * A listener that throws is reported by its exception's class, never its message. A report names
- * the extension, the key and the reason, never a label or a value.
+ * A listener that throws is reported by its exception's class and the plugin its file lies in, never
+ * its message. A report names the extension, the key and the reason, never a label or a value.
  *
  * @since 0.2.0
  */
@@ -190,7 +191,7 @@ final class ExtensionFields implements CheckoutFieldRegistry {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @var list<array{extension: string, key: string, reason: string}>
+	 * @var list<array{extension: string, key: string, reason: string, plugin?: string|null}>
 	 */
 	private array $refused = array();
 
@@ -297,7 +298,7 @@ final class ExtensionFields implements CheckoutFieldRegistry {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @return list<array{extension: string, key: string, reason: string}> The refusals: the extension, the key it gave and why.
+	 * @return list<array{extension: string, key: string, reason: string, plugin?: string|null}> The refusals: the extension, the key it gave and why.
 	 */
 	public function refused(): array {
 		return $this->refused;
@@ -321,7 +322,7 @@ final class ExtensionFields implements CheckoutFieldRegistry {
 			// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- Always seocart_register_checkout_fields, the contract's CheckoutFieldRegistry::ACTION.
 			do_action( CheckoutFieldRegistry::ACTION, $this );
 		} catch ( \Throwable $failed ) {
-			$this->refuse( get_class( $failed ), '', self::FAILED );
+			$this->refuse( get_class( $failed ), '', self::FAILED, array( 'plugin' => PluginFiles::slugOf( $failed->getFile() ) ) );
 		} finally {
 			$this->collecting = false;
 		}
@@ -397,20 +398,24 @@ final class ExtensionFields implements CheckoutFieldRegistry {
 	}
 
 	/**
-	 * Reports a refused registration once, and keeps it for the request.
+	 * Reports a refused registration once, and keeps it for the request: for a listener that threw, with the plugin its file lies in.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param string $extensionId The extension's id, or the class a listener threw.
 	 * @param string $key         The key it gave; empty for a listener that threw.
 	 * @param string $reason      Why.
+	 * @param array  $plugin      Optional. For a listener that threw, `plugin`: the slug of the plugin its
+	 *                            file lies in, or null for none. Default none.
+	 *
+	 * @phpstan-param array{plugin?: string|null} $plugin
 	 */
-	private function refuse( string $extensionId, string $key, string $reason ): void {
+	private function refuse( string $extensionId, string $key, string $reason, array $plugin = array() ): void {
 		$refusal = array(
 			'extension' => $extensionId,
 			'key'       => $key,
 			'reason'    => $reason,
-		);
+		) + $plugin;
 
 		( $this->report )( self::REJECTED, $refusal );
 

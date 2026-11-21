@@ -284,7 +284,7 @@ final class ExtensionFieldsTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Tests that a listener that throws is reported by the exception's class, never its message, and that the fields registered before it stay.
+	 * Tests that a listener that throws is reported by the exception's class and the plugin its file lies in (none, for this test's file), never its message, and that the fields registered before it stay.
 	 *
 	 * @since 0.2.0
 	 */
@@ -309,6 +309,7 @@ final class ExtensionFieldsTest extends DatabaseTestCase {
 				'extension' => \DomainException::class,
 				'key'       => '',
 				'reason'    => ExtensionFields::FAILED,
+				'plugin'    => null,
 			),
 			$this->reports[0]['context'] ?? null
 		);
