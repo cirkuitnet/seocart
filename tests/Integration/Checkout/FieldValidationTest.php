@@ -109,8 +109,9 @@ final class FieldValidationTest extends PlacementTestCase {
 	/**
 	 * Tests one row of the presence table: what the write answers, and then what the placement answers.
 	 *
-	 * The write refuses a value for a hidden field, and the country's absence from an address, and
-	 * accepts anything else: it never asks for a required field. The placement asks for a required
+	 * The write refuses a value for a hidden field, the country's absence from an address (the
+	 * schema's 400) and an empty country (`format`), and accepts anything else: it never asks for a
+	 * required field. The placement asks for a required
 	 * field without a value, by wire path, in each address that carries it, and places otherwise.
 	 *
 	 * @since 0.2.0
@@ -137,9 +138,16 @@ final class FieldValidationTest extends PlacementTestCase {
 			return;
 		}
 
-		if ( CheckoutFieldType::Country === $field->type && 'given' !== $sent ) {
-			// An address is not held without its country: the wire asks for it, and an empty one is no country.
-			$this->assertSame( 'absent' === $sent ? 400 : 422, $written['status'], (string) wp_json_encode( $written['body'] ) );
+		if ( CheckoutFieldType::Country === $field->type && 'absent' === $sent ) {
+			// An address is not held without its country: the wire asks for it.
+			$this->assertSame( 400, $written['status'], (string) wp_json_encode( $written['body'] ) );
+
+			return;
+		}
+
+		if ( CheckoutFieldType::Country === $field->type && 'empty' === $sent ) {
+			// An empty country is no country at all: the rules refuse it as a value not in its format.
+			$this->assertRefusedFields( $written, array_map( static fn( string $path ): array => self::fault( $path, 'format' ), $paths ) );
 
 			return;
 		}
