@@ -361,8 +361,11 @@ final class SettingsStore {
 	 * (CREATE_ROW), never the insert that updates a row that exists (WRITE_SCALAR), so when two
 	 * writers create the option at once, the option name's unique key lets one win. The other
 	 * changes nothing and is told so, which is no error: it reads the option again and goes on from
-	 * what the winner stored. Either way the option is removed from the object cache, as after every
-	 * write attempt, so no reader is served the absence it cached before.
+	 * what the winner stored. Either way the option is removed from the object cache, and inside a
+	 * transaction kept out of it until the transaction ends, as after every write attempt, so no
+	 * reader is served an absence cached before or during it. A caller inside a repeatable-read
+	 * transaction does not see the winner's row until its transaction ends, so creating and then
+	 * swapping is for callers outside a transaction, or at READ COMMITTED.
 	 *
 	 * @since 0.2.0
 	 *
@@ -379,16 +382,16 @@ final class SettingsStore {
 
 		try {
 			$this->database->execute( self::CREATE_ROW, $this->database->prefix() . 'options', $option, $stored );
-		} catch ( DuplicateKey ) {
-			$this->forget( $option );
 
-			return false;
+			$created = true;
+		} catch ( DuplicateKey ) {
+			$created = false;
 		}
 
 		$this->forget( $option );
 		$this->settle( $option );
 
-		return true;
+		return $created;
 	}
 
 	/**

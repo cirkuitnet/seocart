@@ -254,6 +254,53 @@ final class SettingsConcurrencyTest extends DatabaseTestCase {
 	}
 
 	/**
+	 * Tests that a create lost inside a transaction keeps the option out of the cache until the transaction ends, so a reader after it is served the winner's value.
+	 *
+	 * A opens a transaction at the server's isolation, repeatable read, and reads the setting past
+	 * the cache: its snapshot has no row. B creates the setting and commits. A's create loses on the
+	 * option name, and A reads the setting through the store before committing: its snapshot still
+	 * has no row, so it reads the default, and must cache nothing. Once A's transaction has ended, a
+	 * read through the store is served B's value.
+	 *
+	 * Planted violation: in SettingsStore::createScalar(), settle the option only when the create
+	 * won: A's read inside the transaction caches its snapshot's absence, which outlives the commit.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_create_lost_inside_a_transaction_caches_nothing(): void {
+		global $wpdb;
+
+		$option  = 'seocart_fixture_scalars_weight_unit';
+		$setting = SettingsFixtures::registry()->setting( 'weight_unit' );
+		$b       = $this->secondConnection();
+		$inside  = array();
+
+		$this->db->transaction(
+			function () use ( $b, $wpdb, $option, $setting, &$inside ): void {
+				$inside['snapshot'] = $this->store->valuesAsStored( array( $setting ) )['weight_unit'];
+
+				$b->query( (string) $wpdb->prepare( SettingsStore::CREATE_ROW, $wpdb->options, $option, 'lb' ) );
+
+				$inside['created'] = $this->store->createScalar( 'weight_unit', 'oz' );
+				$inside['read']    = $this->store->value( 'weight_unit' );
+				$inside['cached']  = false !== wp_cache_get( $option, 'options' ) || array_key_exists( $option, (array) wp_cache_get( 'notoptions', 'options' ) );
+			}
+		);
+
+		$this->assertSame(
+			array(
+				'snapshot' => 'kg',
+				'created'  => false,
+				'read'     => 'kg',
+				'cached'   => false,
+			),
+			$inside,
+			'Inside the transaction the snapshot has no row, the create loses, and the read after it must cache nothing.'
+		);
+		$this->assertSame( 'lb', $this->store->value( 'weight_unit' ), 'After the transaction the store served the absence its snapshot cached, not the winner\'s value.' );
+	}
+
+	/**
 	 * Tests that writers of two independent settings neither wait for nor overwrite each other.
 	 *
 	 * A writes one setting inside a transaction and holds its row. B writes the other and must be
