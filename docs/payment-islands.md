@@ -253,8 +253,11 @@ payment the tab still keeps open. A restored page still holds what it held when 
 shopper it was made for and their nonce among it; loaded again, its island is mounted fresh, as on
 any load, and the host settles what the tab keeps, as above. Until it is loaded again, the restored
 page sends nothing: an `action()` that settles meanwhile is not resumed, and placing or retrying
-does nothing. Restored at any other point, the page carries on as it was left: the shopper keeps
-what they typed, and a request under way is answered.
+does nothing. An island must not settle its action from a `pageshow` listener of its own: the host
+owns what a restored page does, and an island's listener, registered before the host's, would
+resume the payment from the old page before the host loads it again. Restored at any other point,
+the page carries on as it was left: the shopper keeps what they typed, and a request under way is
+answered.
 
 ## The configuration
 

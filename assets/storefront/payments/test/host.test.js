@@ -2044,6 +2044,36 @@ describe( 'a page restored from the back/forward cache', () => {
 
 		expect( scope.location.reload ).not.toHaveBeenCalled();
 	} );
+
+	it( 'is still torn down, once, when destroyed after it asked to load the page again and the page was not loaded', async () => {
+		const { host, scope, root, calls } = await leave( 'island' );
+
+		// The browser restores the page; the reload is asked for but something cancels it.
+		showPage( scope );
+
+		expect( scope.location.reload ).toHaveBeenCalledTimes( 1 );
+		expect( root.querySelector( 'input[type="radio"]' ) ).not.toBeNull();
+
+		host.destroy();
+
+		expect(
+			names( calls ).filter( ( name ) => 'unmount' === name )
+		).toEqual( [ 'unmount' ] );
+		expect( root.querySelector( 'input[type="radio"]' ) ).toBeNull();
+		expect( scope.removeEventListener ).toHaveBeenCalledTimes( 1 );
+		expect( scope.removeEventListener ).toHaveBeenCalledWith(
+			'pageshow',
+			expect.any( Function )
+		);
+
+		// A second destroy does nothing more.
+		host.destroy();
+
+		expect(
+			names( calls ).filter( ( name ) => 'unmount' === name )
+		).toHaveLength( 1 );
+		expect( scope.removeEventListener ).toHaveBeenCalledTimes( 1 );
+	} );
 } );
 
 describe( 'answers that must not lose an order', () => {

@@ -240,6 +240,9 @@ export function createHost( root, options, env ) {
 	// Whether the host is finished, destroyed or its page about to load again (onShow): it sends
 	// nothing more, and hands nothing over, whatever was under way.
 	let destroyed = false;
+	// Whether destroy() already took the host down, which it does once, whether or not the page's
+	// showing (onShow) set `destroyed` first.
+	let tornDown = false;
 	// When the store asked for no more requests until then (Retry-After), in milliseconds.
 	let notBefore = 0;
 
@@ -1177,10 +1180,11 @@ export function createHost( root, options, env ) {
 		 * Unmounts the island and removes the methods. A request under way is ignored when it ends.
 		 */
 		destroy() {
-			if ( destroyed ) {
+			if ( tornDown ) {
 				return;
 			}
 
+			tornDown = true;
 			destroyed = true;
 			unmount();
 			stopListening();
