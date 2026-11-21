@@ -694,6 +694,40 @@ final class FieldValidationTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Tests that a required custom field given only white space is asked for at placement, as one not given is: the write takes the value, and the placement does not count it as an answer.
+	 *
+	 * The field is a required text with no check of its own, so nothing but the placement's
+	 * question judges a blank value.
+	 *
+	 * Planted violation: in CheckoutRules::customForPlacement(), count a value as given unless it is
+	 * empty (`'' === $value` for `'' === trim( $value )`): the blank value answers the question.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_required_custom_field_given_only_white_space_is_asked_for(): void {
+		$required = static function ( CheckoutFieldRegistry $registry ): void {
+			$registry->register( 'probe', new CheckoutField( key: 'reference', section: Section::Order, type: CheckoutFieldType::Text, label: static fn(): string => 'Reference', maxLength: 20, presences: array( Presence::Required ) ) );
+		};
+
+		add_action( CheckoutFieldRegistry::ACTION, $required );
+
+		try {
+			$this->cartOverTheWire();
+
+			$written = $this->write( $this->addresses( 'email', 'given' ) + array( 'custom_fields' => array( self::entry( 'probe_reference', '   ' ) ) ) );
+
+			$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
+
+			$asked = $this->placeOverTheWire( $written['body'], 'custom-blank' );
+		} finally {
+			remove_action( CheckoutFieldRegistry::ACTION, $required );
+		}
+
+		$this->assertErrorShape( $asked['body'], 'checkout.session_incomplete', 422 );
+		$this->assertSame( array( 'custom_fields.probe_reference' ), $asked['body']['data']['details']['missing'] ?? null );
+	}
+
+	/**
 	 * Returns one entry of the custom fields, as a session write sends it.
 	 *
 	 * @since 0.2.0

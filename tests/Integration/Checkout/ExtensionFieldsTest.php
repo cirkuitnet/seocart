@@ -284,16 +284,44 @@ final class ExtensionFieldsTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Tests that a listener that throws is reported by the exception's class and the plugin its file lies in (none, for this test's file), never its message, and that the fields registered before it stay.
+	 * Provides listeners that throw: one that throws an exception, and one typed for another argument than the registry, which PHP refuses with a \TypeError, an Error.
 	 *
 	 * @since 0.2.0
+	 *
+	 * @return array<string, array{\Closure, class-string<\Throwable>}> The listener, and the class it throws.
 	 */
-	public function test_a_listener_that_throws_is_reported_by_its_class(): void {
-		$this->registrations = array( array( 'acme', self::field( 'note' ) ) );
+	public static function throwers(): array {
+		return array(
+			'an exception'                         => array(
+				static function (): void {
+					throw new \DomainException( 'secret-in-the-message' );
+				},
+				\DomainException::class,
+			),
+			'an error: a listener of another type' => array(
+				static function ( int $mistyped ): void {
+					unset( $mistyped );
+				},
+				\TypeError::class,
+			),
+		);
+	}
 
-		$thrower = static function (): void {
-			throw new \DomainException( 'secret-in-the-message' );
-		};
+	/**
+	 * Tests that a listener that throws, an Error as an exception, is reported by the class it threw and the plugin its file lies in (none, for this test's file), never its message, and that the fields registered before it stay.
+	 *
+	 * Planted violation: in ExtensionFields::collect(), catch \Exception instead of \Throwable: the
+	 * \TypeError ends the request instead of the registration.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider throwers
+	 *
+	 * @param \Closure $thrower The listener.
+	 * @param string   $thrown  The class it throws.
+	 */
+	public function test_a_listener_that_throws_is_reported_by_its_class( \Closure $thrower, string $thrown ): void {
+		$this->registrations = array( array( 'acme', self::field( 'note' ) ) );
 
 		add_action( CheckoutFieldRegistry::ACTION, $thrower, 20 );
 
@@ -306,7 +334,7 @@ final class ExtensionFieldsTest extends DatabaseTestCase {
 		$this->assertSame( 'acme_note', end( $fields )->key );
 		$this->assertSame(
 			array(
-				'extension' => \DomainException::class,
+				'extension' => $thrown,
 				'key'       => '',
 				'reason'    => ExtensionFields::FAILED,
 				'plugin'    => null,

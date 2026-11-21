@@ -12,7 +12,11 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Checkout;
 
 use SEOCart\Application\Operations\OperationRegistry;
+use SEOCart\Cart\Application\CartService;
+use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Checkout\Domain\Fields\BuiltInFields;
+use SEOCart\Checkout\Domain\Fields\Carrier;
+use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Contracts\Checkout\CheckoutField;
 use SEOCart\Contracts\Checkout\CheckoutFieldRegistry;
 use SEOCart\Contracts\Checkout\CheckoutFieldType;
@@ -250,6 +254,43 @@ final class OrderFieldValuesOperationTest extends PlacementTestCase {
 		$this->assertArrayHasKey( 'current_label', $row );
 		$this->assertNull( $row['current_label'], 'The row takes the label of another extension\'s field of the same stored key.' );
 		$this->assertSame( 'a_b', $row['source'], 'The row does not keep who declared its field.' );
+	}
+
+	/**
+	 * Tests that the values one write kept are gone after a write that leaves the custom fields out: the session keeps none, and the order placed has no row.
+	 *
+	 * Planted violation: in MysqlCheckoutSessions::SAVE, keep the stored values when a write gives
+	 * none (`field_values_json = COALESCE( VALUES( field_values_json ), field_values_json )`): the
+	 * session keeps the first write's value, and the order is placed with it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_write_that_leaves_the_custom_fields_out_clears_them(): void {
+		$variant = $this->sellable();
+		$cart    = $this->readyCart( array( $variant => 1 ) );
+		$kept    = fn(): mixed => $this->db->fetchValue( 'SELECT field_values_json FROM %i', $this->table( CheckoutTables::SESSIONS ) );
+
+		$this->writeCheckout( $cart->version, StubGateway::ID, array( AcmeCheckoutFields::DELIVERY_SLOT => 'morning' ) );
+
+		$this->assertNotNull( $kept(), 'The first write kept no value.' );
+
+		// The same write, at the cart's version now, without `custom_fields`.
+		$this->kernel->get( UpdateCheckoutSession::class )->update(
+			array(
+				'cart_version'       => $this->kernel->get( CartService::class )->current()?->version,
+				'billing_address'    => self::wireAddress( Carrier::BILLING, 'US', 'ada@example.com' ),
+				'shipping_address'   => self::wireAddress( Carrier::SHIPPING, 'US' ),
+				'payment_method_key' => StubGateway::ID,
+			),
+			self::guest()
+		);
+
+		$this->assertNull( $kept(), 'A write that leaves the custom fields out keeps the values written before.' );
+
+		$answer = $this->freshPlacement()->place( $this->placeInput( 'cleared-values' ), self::guest() );
+
+		$this->assertSame( 'approved', $answer['outcome'] ?? null, (string) wp_json_encode( $answer ) );
+		$this->assertSame( array(), $this->db->fetchAll( 'SELECT field_key FROM %i', $this->table( OrderTables::FIELD_VALUES ) ), 'The order holds a value a later write left out.' );
 	}
 
 	/**
