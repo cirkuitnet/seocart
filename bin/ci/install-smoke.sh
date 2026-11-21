@@ -596,7 +596,7 @@ place_an_order() {
 	expect_status "$status" 200 'adding the product to the cart'
 	cart_version=$(answer version)
 
-	status=$(as_guest PUT /seocart/store/v1/checkout "{\"cart_version\":$cart_version,\"billing_address\":{\"country\":\"GB\",\"first_name\":\"Ada\",\"last_name\":\"Lovelace\",\"line1\":\"12 St James's Square\",\"city\":\"London\",\"postcode\":\"SW1Y 4JH\",\"email\":\"ada@example.com\"},\"shipping_address\":{\"country\":\"GB\",\"line1\":\"12 St James's Square\",\"city\":\"London\",\"postcode\":\"SW1Y 4JH\"},\"payment_method_key\":\"stub\"}")
+	status=$(as_guest PUT /seocart/store/v1/checkout "{\"cart_version\":$cart_version,\"billing_address\":{\"country\":\"GB\",\"first_name\":\"Ada\",\"last_name\":\"Lovelace\",\"line1\":\"12 St James's Square\",\"city\":\"London\",\"postcode\":\"SW1Y 4JH\",\"email\":\"ada@example.com\"},\"shipping_address\":{\"country\":\"GB\",\"first_name\":\"Ada\",\"last_name\":\"Lovelace\",\"line1\":\"12 St James's Square\",\"city\":\"London\",\"postcode\":\"SW1Y 4JH\"},\"payment_method_key\":\"stub\"}")
 	expect_status "$status" 200 'filling in the checkout'
 	checkout_version=$(answer version)
 	grand_total=$(answer totals/summary/grand_minor)
