@@ -62,7 +62,10 @@ use SEOCart\Tests\Support\GrantsCapabilities;
  *   answer: the order holds the value of a field hidden since the session kept it;
  * - Carrier::VALUE named `value`: the redactor keeps a custom field's value;
  * - in CheckoutTables::sessions(), declare `field_values_json` public: the eraser's listing leaves
- *   the session's values out.
+ *   the session's values out;
+ * - in RestErrorTranslator::translate(), report a public error too, and in Reporter::internal(),
+ *   add the error's details to the line's context: the log holds the values a check's sentence
+ *   quotes.
  *
  * @since 0.2.0
  */
@@ -403,6 +406,49 @@ final class OneDeclarationTest extends PlacementTestCase {
 		}
 
 		$this->assertSame( $expected, $read, 'The order\'s read answers each value with its field\'s words, in form order.' );
+	}
+
+	/**
+	 * Tests that error details stay out of the log, so a value a check's sentence quotes reaches only the shopper: after a failing session write and a failing placement, the answer carries the sentence and no log line holds the value.
+	 *
+	 * The fixture's reference field has a check whose sentence quotes the value it refuses, which
+	 * the extension guide advises against. Today a public error's details go to the client alone,
+	 * so this test is green by design: it guards against a later change that starts logging an
+	 * error's details, which would write every value such a sentence quotes into the log.
+	 *
+	 * Planted violation, shown red and removed: in RestErrorTranslator::translate(), report a public
+	 * error too, and in Reporter::internal(), add the error's details to the line's context: the log
+	 * holds both quoted values.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_error_details_stay_out_of_the_log_so_a_value_a_check_quotes_reaches_only_the_shopper(): void {
+		( new CreateLogsMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+		AcmeCheckoutFields::listen();
+		AcmeCheckoutFields::listenQuoting();
+		$this->newRequest();
+		$this->cartOverTheWire();
+
+		// A failing session write answers the sentence, the value quoted.
+		$this->assertSame(
+			array( self::fault( AcmeCheckoutFields::REFERENCE, 'rejected' ) + array( 'message' => AcmeCheckoutFields::referenceRefusal( 'SECRET-WRITTEN' ) ) ),
+			$this->refusedWrite( array( AcmeCheckoutFields::REFERENCE => 'SECRET-WRITTEN' ) )
+		);
+
+		// A failing placement of a kept value answers it too.
+		$written = $this->writeOverTheWire( self::addressesBody( array( AcmeCheckoutFields::REFERENCE => 'REF-1' ) ) );
+
+		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
+		$this->db->execute( 'UPDATE %i SET field_values_json = %s', $this->table( CheckoutTables::SESSIONS ), (string) wp_json_encode( array( AcmeCheckoutFields::REFERENCE => 'SECRET-KEPT' ) ) );
+		$this->assertSame(
+			array( self::fault( AcmeCheckoutFields::REFERENCE, 'rejected' ) + array( 'message' => AcmeCheckoutFields::referenceRefusal( 'SECRET-KEPT' ) ) ),
+			$this->placeOverTheWire( $written['body'], 'quoted-kept' )['body']['data']['details']['fields'] ?? null
+		);
+
+		// No log line holds either value.
+		$lines = $this->db->fetchAll( 'SELECT machine_code, message, context_json FROM %i ORDER BY id', $this->table( LogsTable::NAME ) );
+
+		$this->assertStringNotContainsString( 'SECRET', (string) wp_json_encode( $lines ), 'A log line holds a value a check\'s sentence quotes: an error\'s details are logged.' );
 	}
 
 	/**

@@ -25,7 +25,9 @@ use SEOCart\Contracts\Checkout\Section;
  * Owns one fact: what a third party's registration looks like, which the tests walk through every
  * surface and the extension guide quotes. The registration is what an extension's main file
  * holds; listen() and forget() stand for activating and deactivating it. relabel() changes its
- * words, as a new translation or a new version of the extension would.
+ * words, as a new translation or a new version of the extension would. listenQuoting() adds a
+ * reference field whose check's sentence quotes the value it refuses, which the extension guide
+ * advises against, for the test that proves no log keeps what a refusal says.
  *
  * @since 0.2.0
  */
@@ -86,6 +88,15 @@ final class AcmeCheckoutFields {
 	public const PO_REFUSAL = 'A purchase order number starts with PO-.';
 
 	/**
+	 * The stored key of the reference field listenQuoting() adds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const REFERENCE = 'acme_reference';
+
+	/**
 	 * The words relabel() changed, each by the text the registration translates.
 	 *
 	 * @var array<string, string>
@@ -108,9 +119,32 @@ final class AcmeCheckoutFields {
 	 */
 	public static function forget(): void {
 		remove_action( 'seocart_register_checkout_fields', array( self::class, 'register' ) );
+		remove_action( 'seocart_register_checkout_fields', array( self::class, 'registerQuoting' ) );
 		remove_filter( 'gettext', array( self::class, 'translate' ) );
 
 		self::$words = array();
+	}
+
+	/**
+	 * Adds the reference field to the extension's registration, after its other fields.
+	 *
+	 * @since 0.2.0
+	 */
+	public static function listenQuoting(): void {
+		add_action( 'seocart_register_checkout_fields', array( self::class, 'registerQuoting' ) );
+	}
+
+	/**
+	 * Returns the sentence the reference field's check refuses a value with: it quotes the value, which the extension guide advises against.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $value The value refused.
+	 * @return string The sentence.
+	 */
+	public static function referenceRefusal( string $value ): string {
+		/* translators: %s: the reference the shopper gave. */
+		return sprintf( __( 'The reference %s does not start with REF-.', 'acme-checkout' ), $value );
 	}
 
 	/**
@@ -196,6 +230,27 @@ final class AcmeCheckoutFields {
 				label: static fn(): string => __( 'Wrap it as a gift', 'acme-checkout' ),
 				maxLength: 1,
 				presences: array( Presence::Optional, Presence::Hidden )
+			)
+		);
+	}
+	/**
+	 * Registers the reference field, whose check refuses a value that does not start with REF- in a sentence that quotes it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CheckoutFieldRegistry $registry The checkout field registry.
+	 */
+	public static function registerQuoting( CheckoutFieldRegistry $registry ): void {
+		$registry->register(
+			self::ID,
+			new CheckoutField(
+				key: 'reference',
+				section: Section::Order,
+				type: CheckoutFieldType::Text,
+				label: static fn(): string => __( 'Your reference', 'acme-checkout' ),
+				maxLength: 20,
+				presences: array( Presence::Optional ),
+				check: static fn( string $value ): ?string => str_starts_with( $value, 'REF-' ) ? null : self::referenceRefusal( $value )
 			)
 		);
 	}

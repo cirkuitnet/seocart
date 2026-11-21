@@ -954,7 +954,9 @@ public static function register( CheckoutFieldRegistry $registry ): void {
   answers null to accept it or a sentence to refuse it; the session write answers the reason
   `rejected` with the sentence as `message`, and the placement judges a kept value again. A check
   that throws refuses the value with no message, and SEOCart logs the field's key and the
-  exception's class, never the value or the exception's message.
+  exception's class, never the value or the exception's message. A check's sentence should say
+  the rule, not repeat the value: the shopper sees what they typed already, and a sentence that
+  quotes it carries personal data wherever the sentence goes.
 - **Personal data.** Every value is personal data, whatever the field: it travels under the name
   `field_value`, which SEOCart's log redacts wherever it appears, and the session and the order
   declare it for their eraser to destroy, keeping the field's key and label. A value an extension
