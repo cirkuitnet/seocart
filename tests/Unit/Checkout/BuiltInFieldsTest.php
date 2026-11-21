@@ -17,7 +17,9 @@ use SEOCart\Checkout\Domain\Fields\BuiltInFields;
 use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Contracts\Checkout\CheckoutField;
+use SEOCart\Contracts\Checkout\CheckoutFieldType;
 use SEOCart\Contracts\Checkout\Presence;
+use SEOCart\Contracts\Checkout\Section;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Platform\Database\Schema\ColumnSpec;
 use SEOCart\Support\Schema\FieldSpec;
@@ -149,10 +151,25 @@ final class BuiltInFieldsTest extends TestCase {
 				'postcode'   => array( 'optional', 'required' ),
 				'phone'      => array( 'optional', 'hidden', 'required' ),
 				'tax_id'     => array( 'hidden', 'optional', 'required' ),
+				'order_note' => array( 'optional', 'hidden' ),
 			),
 			$presences
 		);
 		$this->assertSame( array( 'email', 'country', 'last_name', 'line1', 'city' ), array_keys( array_filter( self::byKey(), static fn( CheckoutField $field ): bool => $field->isLocked() ) ) );
+	}
+
+	/**
+	 * Tests the order note, the one built-in field that is no address member: an order field, a textarea of 1,000 characters, never required, carried in the custom fields.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_order_note_is_a_textarea_carried_in_the_custom_fields(): void {
+		$note = self::byKey()['order_note'] ?? null;
+
+		$this->assertNotNull( $note );
+		$this->assertSame( array( Section::Order, CheckoutFieldType::Textarea, 1000, null ), array( $note->section, $note->type, $note->maxLength, $note->autocomplete ) );
+		$this->assertSame( Carrier::CustomFields, Carrier::of( $note ) );
+		$this->assertSame( array(), Carrier::addressesOf( $note ), 'An address carries the order note.' );
 	}
 
 	/**

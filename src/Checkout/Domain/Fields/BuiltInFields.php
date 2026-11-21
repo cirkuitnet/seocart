@@ -38,6 +38,9 @@ defined( 'ABSPATH' ) || exit;
  * The postcode and the region are optional until the store requires them: which countries use
  * them is a per-country rule the checkout does not know yet.
  *
+ * The order note is the one built-in field that is no address member: optional or hidden, never
+ * required, it rides in the session write's custom fields and is kept with the order's values.
+ *
  * Declarations are data: building them performs no I/O, calls no WordPress function and
  * translates nothing.
  *
@@ -136,6 +139,11 @@ final class BuiltInFields {
 			self::member( 'postcode', Section::Address, CheckoutFieldType::Text, static fn(): string => __( 'Postcode', 'seocart' ), $asked, 'postal-code', 'The postal code.', 'SW1Y 4JH' ),
 			self::member( 'phone', Section::Address, CheckoutFieldType::Tel, static fn(): string => __( 'Phone', 'seocart' ), $optional, 'tel', 'The phone number.', '+44 20 7946 0000' ),
 			self::member( 'tax_id', Section::Address, CheckoutFieldType::Text, static fn(): string => __( 'Tax ID', 'seocart' ), $hidden, null, 'The tax identifier, such as a VAT number.', 'GB000000000' ),
+			array(
+				'field'       => new CheckoutField( key: 'order_note', section: Section::Order, type: CheckoutFieldType::Textarea, label: static fn(): string => __( 'Order note', 'seocart' ), maxLength: 1000, presences: array( Presence::Optional, Presence::Hidden ) ),
+				'description' => 'A note the shopper leaves for the store with the order.',
+				'example'     => 'Please leave it with the porter.',
+			),
 		);
 	}
 

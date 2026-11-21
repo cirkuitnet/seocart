@@ -60,10 +60,11 @@ final class FieldValidationTest extends PlacementTestCase {
 	 * @var array<string, string>
 	 */
 	private const SAMPLES = array(
-		'text'    => 'Ada',
-		'email'   => 'ada@example.com',
-		'tel'     => '+44 20 7946 0000',
-		'country' => 'GB',
+		'text'     => 'Ada',
+		'email'    => 'ada@example.com',
+		'tel'      => '+44 20 7946 0000',
+		'country'  => 'GB',
+		'textarea' => "Ring twice.\nThank you.",
 	);
 
 	/**
@@ -129,12 +130,12 @@ final class FieldValidationTest extends PlacementTestCase {
 	 */
 	public function test_each_field_at_each_presence( string $key, string $presence, string $sent ): void {
 		$field = self::field( $key );
-		$paths = array_map( static fn( string $address ): string => "{$address}.{$key}", Carrier::addressesOf( $field ) );
+		$paths = self::pathsOf( $field );
 
 		$this->choosePresences( $presence === $field->defaultPresence()->value ? array() : array( $key => $presence ) );
 		$this->cartOverTheWire();
 
-		$written = $this->write( $this->addresses( $key, $sent ) );
+		$written = $this->write( $this->addresses( $key, $sent ) + self::customFieldsFor( $field, $sent ) );
 
 		if ( 'given' === $sent && Presence::Hidden->value === $presence ) {
 			$this->assertRefusedFields( $written, array_map( static fn( string $path ): array => self::fault( $path, 'not_accepted' ), $paths ) );
@@ -171,7 +172,51 @@ final class FieldValidationTest extends PlacementTestCase {
 		}
 
 		$this->assertSame( 200, $placed['status'], (string) wp_json_encode( $placed['body'] ) );
-		$this->assertSame( 'given' === $sent ? self::sampleOf( $field ) : '', $this->orderAddressValue( $key ), "The order's billing {$key}." );
+		$this->assertSame( 'given' === $sent ? self::sampleOf( $field ) : '', Carrier::CustomFields === Carrier::of( $field ) ? $this->orderFieldValue( $key ) : $this->orderAddressValue( $key ), "The order's {$key}." );
+	}
+
+	/**
+	 * Provides texts for the textarea, the order note: a line feed is accepted there alone; a carriage return and the other refused characters are not.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string, bool}> The note sent, and whether it is accepted.
+	 */
+	public static function noteCharacters(): array {
+		return array(
+			'U+000A line feed'              => array( "Ring twice.\nThank you.", true ),
+			'Αθηνά and علی‌رضا with U+200C' => array( "Αθηνά, علی\u{200C}رضا", true ),
+			'U+000D carriage return'        => array( "Ring twice.\r\nThank you.", false ),
+			'U+0007 bell'                   => array( "Ring\u{0007} twice.", false ),
+			'U+202E right-to-left override' => array( "Ring \u{202E}twice.", false ),
+			'U+2028 line separator'         => array( "Ring twice.\u{2028}Thank you.", false ),
+		);
+	}
+
+	/**
+	 * Tests the characters of the textarea over the route: a line feed is accepted, kept by the order as sent; any other refused character is `characters`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider noteCharacters
+	 *
+	 * @param string $note     The order note sent.
+	 * @param bool   $accepted Whether the write accepts it.
+	 */
+	public function test_the_characters_of_the_textarea( string $note, bool $accepted ): void {
+		$this->cartOverTheWire();
+
+		$written = $this->write( $this->addresses( 'email', 'given' ) + array( 'custom_fields' => array( self::entry( 'order_note', $note ) ) ) );
+
+		if ( ! $accepted ) {
+			$this->assertRefusedFields( $written, array( self::fault( 'custom_fields.order_note', 'characters' ) ) );
+
+			return;
+		}
+
+		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
+		$this->assertSame( 200, $this->placeOverTheWire( $written['body'], 'note-' . md5( $note ) )['status'] );
+		$this->assertSame( $note, $this->orderFieldValue( 'order_note' ) );
 	}
 
 	/**
@@ -723,6 +768,55 @@ final class FieldValidationTest extends PlacementTestCase {
 	 */
 	private function write( array $addresses ): array {
 		return $this->writeOverTheWire( $addresses + array( 'payment_method_key' => 'stub' ) );
+	}
+
+	/**
+	 * Returns the wire paths a field's value is sent at: the member of each address that carries it, or its entry of the custom fields.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CheckoutField $field The field.
+	 * @return list<string> The paths.
+	 */
+	private static function pathsOf( CheckoutField $field ): array {
+		if ( Carrier::CustomFields === Carrier::of( $field ) ) {
+			return array( 'custom_fields.' . $field->key );
+		}
+
+		return array_map( static fn( string $address ): string => "{$address}.{$field->key}", Carrier::addressesOf( $field ) );
+	}
+
+	/**
+	 * Returns the custom fields a session write sends for a field the custom fields carry: its value given, empty, or left out; none for an address's field.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CheckoutField $field The field under test.
+	 * @param string        $sent  `given`, `empty` or `absent`.
+	 * @return array<string, list<array<string, string>>> The custom fields, by wire name; empty when none is sent.
+	 */
+	private static function customFieldsFor( CheckoutField $field, string $sent ): array {
+		if ( Carrier::CustomFields !== Carrier::of( $field ) || 'absent' === $sent ) {
+			return array();
+		}
+
+		return array( 'custom_fields' => array( self::entry( $field->key, 'given' === $sent ? self::sampleOf( $field ) : '' ) ) );
+	}
+
+	/**
+	 * Returns the newest order's value of a custom field, as committed, or an empty string when it keeps none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $key The field's key.
+	 * @return string The value.
+	 */
+	private function orderFieldValue( string $key ): string {
+		$order = $this->secondConnection()->fetchValue( sprintf( 'SELECT MAX( id ) FROM `%s`', $this->table( OrderTables::ORDERS ) ) );
+
+		$this->assertNotNull( $order, 'No order was placed.' );
+
+		return (string) $this->secondConnection()->fetchValue( sprintf( "SELECT field_value FROM `%s` WHERE order_id = %d AND field_key = '%s'", $this->table( OrderTables::FIELD_VALUES ), (int) $order, esc_sql( $key ) ) );
 	}
 
 	/**

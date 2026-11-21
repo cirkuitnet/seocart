@@ -74,6 +74,10 @@ final readonly class NewOrder {
 	 *                                                   none was planned. Default null.
 	 * @param int|null             $transferLeadDays  Optional. The extra days its shopper was told a transfer adds, 0 or
 	 *                                                more; null when it needs no transfer. Default null.
+	 * @param OrderFieldValue[]    $fieldValues       Optional. The values of the checkout fields that are no address
+	 *                                                member, in the order the form showed their fields. Default none.
+	 *
+	 * @phpstan-param list<OrderFieldValue> $fieldValues
 	 */
 	public function __construct(
 		public OrderChannel $channel,
@@ -91,7 +95,8 @@ final readonly class NewOrder {
 		public ?string $clientIp = null,
 		public ?string $userAgent = null,
 		public ?int $fulfilmentLocationId = null,
-		public ?int $transferLeadDays = null
+		public ?int $transferLeadDays = null,
+		public array $fieldValues = array()
 	) {
 		$this->checkHeader();
 		$this->checkReferences();
@@ -173,6 +178,16 @@ final readonly class NewOrder {
 			if ( null !== $adjustment->lineKey && ! isset( $keys[ $adjustment->lineKey ] ) ) {
 				throw new \InvalidArgumentException( sprintf( 'Adjustment %s names the line %s, which the order does not have.', $adjustment->source, $adjustment->lineKey ) );
 			}
+		}
+
+		$fields = array();
+
+		foreach ( $this->fieldValues as $value ) {
+			if ( ! $value instanceof OrderFieldValue || isset( $fields[ $value->key ] ) ) {
+				throw new \InvalidArgumentException( 'An order keeps one value per checkout field, each an OrderFieldValue.' );
+			}
+
+			$fields[ $value->key ] = true;
 		}
 	}
 

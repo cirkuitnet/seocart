@@ -103,3 +103,11 @@ The session write (`checkout.update_session`) checks a value in two steps. First
 - Sent in: `address`
 - Presences (default first): hidden, optional, required
 - Longest value: 64
+
+## `order_note`
+
+- Section: order
+- Type: textarea
+- Sent in: `custom_fields`
+- Presences (default first): optional, hidden
+- Longest value: 1000

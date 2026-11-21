@@ -36,7 +36,8 @@ use SEOCart\Tests\Support\QueryPlan\ReadInventory;
  * Every SELECT the order module's source writes is sent, explained and judged by the query-plan rule.
  *
  * The order module's reads run over a PlanRecorder: the reads back of placing an order, the
- * order's lock, the order's read for showing it and for its access check, the paged reads doctor's
+ * order's lock, the order's read for showing it and for its access check, its id by its uuid and
+ * the checkout field values of a list of orders, the paged reads doctor's
  * payment check sends, reconciliation's read of the orders with nothing due, and a conversion
  * context's read; and a customer's list of their orders, with the customer module's reads of the
  * link a customer is found by and doctor's page of linked records. Each plugin SELECT is
@@ -317,6 +318,10 @@ final class OrderQueryPlanTest extends OrderTestCase {
 		// The order's reads by uuid: for showing it, and for its access check.
 		$orders->findByUuid( $inserted->uuid );
 		$repository->findForAccess( $inserted->uuid );
+
+		// The order's id by its uuid, and the checkout field values of a list of orders, which staff's read of an order's values sends.
+		$repository->idOf( $inserted->uuid );
+		$repository->fieldValuesOf( array( $inserted->id ) );
 
 		// The reads of a placement's settlement and of a refusal that names the order: its lines' stock, its status by id.
 		$orders->stockLines( $inserted->id );

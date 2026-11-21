@@ -572,20 +572,31 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 	}
 
 	/**
-	 * Writes the request's cart's checkout through the production wiring, with a payment method.
+	 * Writes the request's cart's checkout through the production wiring, with a payment method and, optionally, values of the custom fields.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param int    $version The cart's version.
-	 * @param string $method  The payment method.
+	 * @param int                   $version The cart's version.
+	 * @param string                $method  The payment method.
+	 * @param array<string, string> $values  Optional. The custom fields' values, by field key. Default none.
 	 */
-	protected function writeCheckout( int $version, string $method ): void {
+	protected function writeCheckout( int $version, string $method, array $values = array() ): void {
+		$custom = array();
+
+		foreach ( $values as $key => $value ) {
+			$custom[] = array(
+				Carrier::KEY   => $key,
+				Carrier::VALUE => $value,
+			);
+		}
+
 		$this->kernel->get( UpdateCheckoutSession::class )->update(
 			array(
 				'cart_version'       => $version,
 				'billing_address'    => self::wireAddress( Carrier::BILLING, 'US', 'ada@example.com' ),
 				'shipping_address'   => self::wireAddress( Carrier::SHIPPING, 'US' ),
 				'payment_method_key' => $method,
+				'custom_fields'      => $custom,
 			),
 			self::guest()
 		);

@@ -32,6 +32,7 @@ use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
 use SEOCart\Support\Currency;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Money;
+use SEOCart\Tests\Support\Checkout\AcmeCheckoutFields;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 use SEOCart\Tests\Support\Checkout\RoutedPlacements;
 use SEOCart\Tests\Support\CreatesUsers;
@@ -262,6 +263,20 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	);
 
 	/**
+	 * The statements of each part of a placement of Cart A whose checkout holds two values of the custom fields, the order note and an extension's field: Cart A's, and the order's one insert of both rows.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array{before: int, first: int, between: int, second: int}
+	 */
+	private const CART_A_FIELD_VALUES = array(
+		'before'  => 10,
+		'first'   => 34,
+		'between' => 1,
+		'second'  => 34,
+	);
+
+	/**
 	 * The statements a delivered approval costs beyond the second unit of work it runs: the receipt read, the receipt claimed, the intent read, the lookup of the provider's reference the intent does not hold yet, the receipt settled and the line logged, and the savepoint pair of the second unit, which runs in the receiver's transaction.
 	 *
 	 * @since 0.2.0
@@ -441,6 +456,47 @@ final class PlacementBudgetTest extends PlacementTestCase {
 
 		$this->assertSame( self::CART_A_OFFLINE, $parts, 'Cart A, bank transfer' );
 		$this->assertSame( array( 1, 0, 0, 0 ), array_map( static fn( int $offline, int $standIn ): int => $offline - $standIn, $parts, $cartA ), 'The method\'s settings, read once before the first unit, and nothing more.' );
+	}
+
+	/**
+	 * Tests that placing Cart A with two values of the custom fields costs Cart A's statements and one insert of both rows, under the order; with an extension's fields registered and no value given, Cart A's alone.
+	 *
+	 * Planted violation: in MysqlOrderRepository::insertFieldValues(), insert each row on its own:
+	 * the first unit grows by one more, under the order.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_placing_cart_a_with_two_field_values_costs_one_insert_more(): void {
+		AcmeCheckoutFields::listen();
+
+		try {
+			$standIn = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+
+			$this->readyCart( self::quantities( ReferenceCarts::cartA( $standIn ) ) );
+
+			$cartA      = $this->measure( 'Cart A, an extension\'s fields registered' );
+			$cartASteps = $this->lastSteps;
+			$variant    = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+			$cart       = $this->readyCart( self::quantities( ReferenceCarts::cartA( $variant ) ) );
+
+			$this->writeCheckout(
+				$cart->version,
+				StubGateway::ID,
+				array(
+					'order_note'                  => 'Please leave it with the porter.',
+					AcmeCheckoutFields::PO_NUMBER => 'PO-1234',
+				)
+			);
+
+			$parts = $this->measure( 'Cart A, two field values' );
+		} finally {
+			AcmeCheckoutFields::forget();
+		}
+
+		$this->assertSame( self::CART_A, $cartA, 'Cart A, an extension\'s fields registered and no value given: Cart A\'s statements.' );
+		$this->assertSame( self::CART_A_FIELD_VALUES, $parts, 'Cart A, two field values' );
+		$this->assertSame( ( $cartASteps['first']['e. the order'] ?? 0 ) + 1, $this->lastSteps['first']['e. the order'] ?? 0, 'The order\'s step sends one insert more, whatever the number of values.' );
+		$this->assertSame( '2', (string) $this->db->fetchValue( 'SELECT COUNT(*) FROM %i WHERE order_id = %d', $this->table( OrderTables::FIELD_VALUES ), $this->lastOrder() ) );
 	}
 
 	/**

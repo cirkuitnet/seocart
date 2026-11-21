@@ -13,12 +13,14 @@ namespace SEOCart\Checkout\Application;
 
 use SEOCart\Catalog\Domain\SellabilityFacts;
 use SEOCart\Checkout\Domain\CheckoutDetails;
+use SEOCart\Contracts\Checkout\CheckoutField;
 use SEOCart\Order\Domain\AmountBasis;
 use SEOCart\Order\Domain\NewOrder;
 use SEOCart\Order\Domain\NewOrderAdjustment;
 use SEOCart\Order\Domain\NewOrderLine;
 use SEOCart\Order\Domain\NewTaxComponent;
 use SEOCart\Order\Domain\OrderChannel;
+use SEOCart\Order\Domain\OrderFieldValue;
 use SEOCart\Order\Domain\TotalsSnapshot;
 use SEOCart\Pricing\Domain\Totals\TaxComponent;
 use SEOCart\Pricing\Domain\Totals\Totals;
@@ -38,7 +40,8 @@ defined( 'ABSPATH' ) || exit;
  * words are the snapshot the order keeps: each line's product, SKU and title are the facts the
  * sale was judged on, read in the cart's locale, and an adjustment's label is the key the
  * calculation gave it. The order is the storefront's, in the cart's locale, at the totals' frozen
- * rate, for the billing address's e-mail.
+ * rate, for the billing address's e-mail. The checkout fields' values that are no address member
+ * are kept with their fields' labels and a select's option label, as the shopper sees them now.
  *
  * How the store's prices were entered is recorded from the lines: the basis they share, or
  * `mixed` when they differ.
@@ -82,9 +85,13 @@ final class OrderDocument {
 	 *                                                           Default null, none planned.
 	 * @param int|null                     $transferLeadDays     Optional. The extra days the shopper was told a transfer
 	 *                                                           adds; null when the plan needs none. Default null.
+	 * @param CheckoutField[]              $fields               Optional. The declared checkout fields, in form order, whose
+	 *                                                           words the order keeps with each value. Default none.
 	 * @return NewOrder The document.
+	 *
+	 * @phpstan-param list<CheckoutField> $fields
 	 */
-	public static function of( Totals $totals, Locale $locale, CheckoutDetails $details, array $sold, ?string $holdGroup, ?int $customerId, ?int $fulfilmentLocationId = null, ?int $transferLeadDays = null ): NewOrder {
+	public static function of( Totals $totals, Locale $locale, CheckoutDetails $details, array $sold, ?string $holdGroup, ?int $customerId, ?int $fulfilmentLocationId = null, ?int $transferLeadDays = null, array $fields = array() ): NewOrder {
 		$billing = $details->billingAddress ?? throw new \InvalidArgumentException( 'An order is placed with a billing address.' );
 
 		return new NewOrder(
@@ -101,8 +108,48 @@ final class OrderDocument {
 			shippingAddress: $details->shippingAddress,
 			holdGroup: $holdGroup,
 			fulfilmentLocationId: $fulfilmentLocationId,
-			transferLeadDays: $transferLeadDays
+			transferLeadDays: $transferLeadDays,
+			fieldValues: self::fieldValues( $details, $fields )
 		);
+	}
+
+	/**
+	 * Copies the checkout's custom field values, in form order, each with its field's words as the shopper sees them now: its label and, for a select, the chosen option's label.
+	 *
+	 * The details are those the checkout's rules let be placed (CheckoutRules::forPlacement()), so
+	 * every value is one a field in force accepts. A label is resolved in the request's locale, the
+	 * order's, and kept as long as its column allows (OrderFieldValue::kept()).
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CheckoutDetails $details The checkout, as placed.
+	 * @param CheckoutField[] $fields  The declared fields, in form order.
+	 * @return list<OrderFieldValue> The values.
+	 *
+	 * @phpstan-param list<CheckoutField> $fields
+	 */
+	private static function fieldValues( CheckoutDetails $details, array $fields ): array {
+		$values = array();
+
+		foreach ( $fields as $field ) {
+			$value = $details->fieldValues[ $field->key ] ?? null;
+
+			if ( null === $value ) {
+				continue;
+			}
+
+			$option   = $field->options[ $value ] ?? null;
+			$values[] = new OrderFieldValue(
+				$field->key,
+				$field->section->value,
+				$field->type->value,
+				OrderFieldValue::kept( ( $field->label )() ),
+				$value,
+				null === $option ? null : OrderFieldValue::kept( $option() )
+			);
+		}
+
+		return $values;
 	}
 
 	/**

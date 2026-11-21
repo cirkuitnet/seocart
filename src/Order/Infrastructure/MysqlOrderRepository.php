@@ -528,6 +528,24 @@ final class MysqlOrderRepository implements OrderRepository {
 	public const STATUS_OF = 'SELECT uuid, status, payment_status, money_reconciled_at, customer_id, actor_id FROM {orders} WHERE id = %d';
 
 	/**
+	 * An order's internal id, by its public identifier.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ORDER_ID = 'SELECT id FROM {orders} WHERE uuid = %s';
+
+	/**
+	 * The checkout field values of a list of orders, each order's in the order the form showed their fields.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FIELD_VALUES_OF = 'SELECT order_id, field_key, section, type, label_snapshot, field_value, value_label_snapshot, locale_snapshot FROM {order_field_values} WHERE order_id IN ({list}) ORDER BY order_id, position';
+
+	/**
 	 * Whether any order is fulfilled from a location, on the `fulfilment_location` key: what a location's deletion asks.
 	 *
 	 * @since 0.2.0
@@ -892,6 +910,28 @@ final class MysqlOrderRepository implements OrderRepository {
 		}
 
 		$this->statements->insertRows( self::INSERT_ADDRESS, $rows );
+	}
+
+	/**
+	 * Inserts the order's checkout field values in one statement, each with its position among them and the order's locale; sends nothing when there is none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int      $orderId The order.
+	 * @param NewOrder $order   The document.
+	 */
+	public function insertFieldValues( int $orderId, NewOrder $order ): void {
+		$this->statements->requireTransaction( __METHOD__ );
+
+		$rows = array();
+
+		foreach ( $order->fieldValues as $position => $value ) {
+			$rows[] = array( $orderId, $value->key, $value->section, $value->type, $value->label, $value->value, (string) $value->valueLabel, $order->locale->toString(), $position );
+		}
+
+		if ( array() !== $rows ) {
+			$this->statements->insertRows( self::INSERT_FIELD_VALUE, $rows );
+		}
 	}
 
 	/**
@@ -1571,6 +1611,53 @@ final class MysqlOrderRepository implements OrderRepository {
 
 		foreach ( $this->statements->rows( self::FULFILMENT_LOCATIONS_OF, $orderIds ) as $row ) {
 			$found[ (int) $row['id'] ] = null === $row['fulfilment_location_id'] ? null : (int) $row['fulfilment_location_id'];
+		}
+
+		return $found;
+	}
+
+	/**
+	 * Reads an order's internal id by its public identifier.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $uuid The order's public identifier.
+	 * @return int|null The id, or null when there is no such order.
+	 */
+	public function idOf( string $uuid ): ?int {
+		$rows = $this->statements->rows( self::ORDER_ID, $uuid );
+
+		return array() === $rows ? null : (int) $rows[0]['id'];
+	}
+
+	/**
+	 * Reads the checkout field values of some orders, in one statement; sends nothing for no order.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $orderIds The orders.
+	 * @return array<int, list<array{key: string, section: string, type: string, label: string, field_value: string|null, value_label: string|null, locale: string}>>
+	 *         Each order that has values, by id, with its values in the order the form showed their fields.
+	 *
+	 * @phpstan-param list<int> $orderIds
+	 */
+	public function fieldValuesOf( array $orderIds ): array {
+		$found = array();
+
+		if ( array() === $orderIds ) {
+			return $found;
+		}
+
+		foreach ( $this->statements->rows( self::FIELD_VALUES_OF, $orderIds ) as $row ) {
+			$found[ (int) $row['order_id'] ][] = array(
+				'key'         => (string) $row['field_key'],
+				'section'     => (string) $row['section'],
+				'type'        => (string) $row['type'],
+				'label'       => (string) $row['label_snapshot'],
+				'field_value' => null === $row['field_value'] ? null : (string) $row['field_value'],
+				'value_label' => null === $row['value_label_snapshot'] ? null : (string) $row['value_label_snapshot'],
+				'locale'      => (string) $row['locale_snapshot'],
+			);
 		}
 
 		return $found;

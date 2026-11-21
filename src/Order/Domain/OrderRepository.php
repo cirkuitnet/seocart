@@ -109,6 +109,16 @@ interface OrderRepository {
 	public function insertAddresses( int $orderId, NewOrder $order ): void;
 
 	/**
+	 * Inserts the order's checkout field values in one statement; sends nothing when there is none.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int      $orderId The order.
+	 * @param NewOrder $order   The document.
+	 */
+	public function insertFieldValues( int $orderId, NewOrder $order ): void;
+
+	/**
 	 * Inserts a totals snapshot as the order's current one.
 	 *
 	 * @since 0.1.0
@@ -377,6 +387,32 @@ interface OrderRepository {
 	 * @phpstan-param list<int> $orderIds
 	 */
 	public function fulfilmentLocationsOf( array $orderIds ): array;
+
+	/**
+	 * Reads an order's internal id by its public identifier: one read, by the unique key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $uuid The order's public identifier.
+	 * @return int|null The id, or null when there is no such order.
+	 */
+	public function idOf( string $uuid ): ?int;
+
+	/**
+	 * Reads the checkout field values of some orders: one read, by the key that keeps one value per field of an order.
+	 *
+	 * The order's own read, the export of a page of orders and its messages share it. Each value is
+	 * as the order keeps it: the value and a select's option label null once the order is erased.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int[] $orderIds The orders.
+	 * @return array<int, list<array{key: string, section: string, type: string, label: string, field_value: string|null, value_label: string|null, locale: string}>>
+	 *         Each order that has values, by id, with its values in the order the form showed their fields.
+	 *
+	 * @phpstan-param list<int> $orderIds
+	 */
+	public function fieldValuesOf( array $orderIds ): array;
 
 	/**
 	 * Reads an order's public identifier, status and payment status, and when a person last cleared its unreconciled money, by its internal id, without a lock.

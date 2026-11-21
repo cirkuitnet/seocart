@@ -287,10 +287,10 @@ final class Orders {
 	/**
 	 * Writes an order from its document, in its first status, inside the caller's transaction.
 	 *
-	 * Fourteen statements, whatever the number of lines: the rate is frozen, the number allocated
-	 * last before the order row (its counter row stays locked until the caller commits, so
-	 * placements serialise only for what follows), the order and each kind of child row written in
-	 * one statement, the ids of the lines and adjustments read back once each, the order pointed at
+	 * Fourteen statements, whatever the number of lines, and one more for an order placed with
+	 * checkout field values: the rate is frozen, the number allocated last before the order row (its
+	 * counter row stays locked until the caller commits, so placements serialise only for what
+	 * follows), the order and each kind of child row written in one statement, the ids of the lines and adjustments read back once each, the order pointed at
 	 * its totals snapshot, its first event recorded and OrderCreated stored in the outbox. The
 	 * access key is returned here, once, and stored only as its hash.
 	 *
@@ -322,6 +322,7 @@ final class Orders {
 
 		$this->orders->insertTaxComponents( $orderId, $order, $lineIds, $adjustmentIds, self::FIRST_TOTALS_VERSION );
 		$this->orders->insertAddresses( $orderId, $order );
+		$this->orders->insertFieldValues( $orderId, $order );
 
 		$totalsId = $this->orders->insertTotals( $orderId, $order, $contextId, self::FIRST_TOTALS_VERSION );
 
