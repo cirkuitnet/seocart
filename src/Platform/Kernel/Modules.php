@@ -149,9 +149,9 @@ use SEOCart\Order\Interfaces\StoreApi\OrderStatusRead;
 use SEOCart\Order\Interfaces\StoreApi\OwnOrdersRead;
 use SEOCart\Payment\Application\GatewayConfiguration;
 use SEOCart\Payment\Application\GatewayContext;
+use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Application\GatewayStatuses;
 use SEOCart\Payment\Application\GatewaySwitches;
-use SEOCart\Payment\Application\Gateways;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Application\RefundCapPolicy;
@@ -221,6 +221,7 @@ use SEOCart\Platform\Jobs\RunnerTriggers;
 use SEOCart\Platform\Kernel\Cli\SafeModeCommand;
 use SEOCart\Platform\Localization\Polylang\PolylangLocales;
 use SEOCart\Platform\Localization\PostLocales;
+use SEOCart\Platform\Localization\RequestLanguage;
 use SEOCart\Platform\Localization\SiteLocale;
 use SEOCart\Platform\Logging\CorrelationId;
 use SEOCart\Platform\Logging\FallbackLog;
@@ -1003,6 +1004,7 @@ final class Modules {
 		$container->bind( Sellability::class, static fn( Container $c ): Sellability => new Sellability( $c->get( ProductRepository::class ) ) );
 		$container->bind( PostGateway::class, static fn( Container $c ): PostGateway => new WordPressPostGateway( $c->get( TransactionManager::class ), $c->get( Reporter::class ), defined( 'WP_DEBUG' ) && WP_DEBUG ) );
 		$container->bind( PostLocales::class, static fn(): PostLocales => self::postLocales() );
+		$container->bind( RequestLanguage::class, static fn(): RequestLanguage => new RequestLanguage() );
 		$container->bind(
 			SaveProduct::class,
 			static fn( Container $c ): SaveProduct => new SaveProduct(
@@ -1159,21 +1161,6 @@ final class Modules {
 	 */
 	private static function catalogRestInit( Container $container ): void {
 		ProductPostsController::install( ProductCapabilities::POST_TYPE, static fn(): ProductPostsController => $container->get( ProductPostsController::class ) );
-	}
-
-	/**
-	 * Returns the locale a cart started in this request is in, asked of the site's localization when it is wanted.
-	 *
-	 * Owns one fact: where the checkout learns the request's locale. A new cart is started in it,
-	 * and a placement resolves its checkout fields' labels in it; both ask the same service.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param Container $container The container the localization comes from.
-	 * @return \Closure(): Locale The reader, which throws for a locale no order can keep.
-	 */
-	private static function newCartLocale( Container $container ): \Closure {
-		return static fn(): Locale => $container->get( PostLocales::class )->siteLocale();
 	}
 
 	/**
@@ -1477,7 +1464,7 @@ final class Modules {
 				self::checkoutDelivery( $c ),
 				static fn( array $variantIds ): array => $c->get( Availability::class )->forSale( $variantIds, null ),
 				self::baseCurrency( $c ),
-				self::newCartLocale( $c ),
+				static fn(): Locale => $c->get( PostLocales::class )->siteLocale(),
 				$c->get( Calculator::class ),
 				$c->get( PromotionResolver::class )
 			)
@@ -1558,7 +1545,7 @@ final class Modules {
 				$c->get( Gateways::class ),
 				$c->get( PlannedPricing::class ),
 				$c->get( CheckoutRules::class ),
-				self::newCartLocale( $c )
+				static fn(): Locale => $c->get( RequestLanguage::class )->locale()
 			)
 		);
 		$container->bind( ResumePayment::class, static fn( Container $c ): ResumePayment => new ResumePayment( $c->get( TransactionManager::class ), $c->get( CartService::class ), $c->get( PaymentService::class ), $c->get( SettlePlacement::class ), $c->get( Orders::class ) ) );

@@ -224,11 +224,11 @@ final class PlaceOrder {
 	 * @param Gateways           $gateways    The store's payment gateways, which say whether the payment method can take the payment.
 	 * @param PlannedPricing     $pricing     The cart's pricing with its plan, which may ask once more.
 	 * @param CheckoutRules      $rules       The checkout's rules, which judge the session before it is priced.
-	 * @param \Closure           $locale      Returns the locale a cart started in this request would be in, which the
-	 *                                        checkout fields' labels are resolved in; it may throw for a locale
-	 *                                        no order can keep.
+	 * @param \Closure           $language    Returns the language WordPress translates this request's words in,
+	 *                                        which the checkout fields' labels are resolved in; it throws for a
+	 *                                        locale no order can keep.
 	 *
-	 * @phpstan-param \Closure(): Locale $locale
+	 * @phpstan-param \Closure(): Locale $language
 	 */
 	public function __construct(
 		private CartService $carts,
@@ -248,7 +248,7 @@ final class PlaceOrder {
 		private Gateways $gateways,
 		private PlannedPricing $pricing,
 		private CheckoutRules $rules,
-		private \Closure $locale
+		private \Closure $language
 	) {
 	}
 
@@ -359,10 +359,10 @@ final class PlaceOrder {
 	/**
 	 * Returns the locale the checkout fields' labels are resolved in, which the order keeps beside them, or null for a checkout that holds no value and needs none.
 	 *
-	 * Asked before anything is written, of the service a new cart asks for its locale. Where that
-	 * service names no locale an order can keep (a request locale outside a WordPress locale's form,
-	 * or longer than Locale::MAX_LENGTH), the cart's own locale, which the same service gave the
-	 * cart, stands in: the placement never fails over the words of its labels.
+	 * Asked before anything is written, of the request's language, which every text domain is loaded
+	 * in (not the site's content locale a new cart is started in). Where WordPress names no locale an
+	 * order can keep (outside a WordPress locale's form, or longer than Locale::MAX_LENGTH), the
+	 * cart's own locale stands in: the placement never fails over the words of its labels.
 	 *
 	 * @since 0.2.0
 	 *
@@ -376,7 +376,7 @@ final class PlaceOrder {
 		}
 
 		try {
-			return ( $this->locale )();
+			return ( $this->language )();
 		} catch ( \InvalidArgumentException $unkept ) {
 			return $cart->locale;
 		}

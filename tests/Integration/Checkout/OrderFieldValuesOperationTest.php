@@ -253,32 +253,71 @@ final class OrderFieldValuesOperationTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Tests that a row records the locale its labels were resolved in, the placing request's, not the order's: a cart started in English and placed in a request a language plugin set to French keeps fr_FR beside the labels it resolved.
+	 * Provides the ways WordPress settles a request's language: a language plugin's `locale` filter, a filter ahead of WordPress's own choice, and a signed-in shopper's profile language, which a JSON request asks for with `_locale=user`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string}> The way.
+	 */
+	public static function requestLanguages(): array {
+		return array(
+			'a language plugin\'s locale filter'        => array( 'locale' ),
+			'a filter ahead of WordPress\'s own choice' => array( 'pre_determine_locale' ),
+			'a signed-in shopper\'s profile, asked for' => array( 'profile' ),
+		);
+	}
+
+	/**
+	 * Tests that a row records the locale its labels were resolved in, the placing request's language however WordPress settles it, not the cart's: a cart started in English and placed in German keeps de_DE beside the labels.
 	 *
 	 * The cart keeps its own locale, which the sale of its products is judged in, so the request is
 	 * the one that differs here.
 	 *
 	 * @since 0.2.0
+	 *
+	 * @dataProvider requestLanguages
+	 *
+	 * @param string $way How the request's language is set: a filter's name, or `profile`.
 	 */
-	public function test_a_row_records_the_locale_its_labels_were_resolved_in(): void {
+	public function test_a_row_records_the_language_its_labels_were_resolved_in( string $way ): void {
 		$variant = $this->sellable();
 		$cart    = $this->readyCart( array( $variant => 1 ) );
-		$french  = static fn(): string => 'fr_FR';
+		$german  = static fn(): string => 'de_DE';
+		$actor   = self::guest();
+		$server  = $_SERVER;
+		$query   = $_GET; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Kept to be restored; nothing is read from it.
 
 		$this->writeCheckout( $cart->version, StubGateway::ID, array( AcmeCheckoutFields::DELIVERY_SLOT => 'morning' ) );
 
-		// The request's language, as a language plugin sets it.
-		add_filter( 'locale', $french );
+		$input = $this->placeInput( 'language-of-the-labels' );
+
+		if ( 'profile' === $way ) {
+			// A signed-in shopper whose profile is in German, placing through a JSON request that asks for the user's language.
+			$user  = $this->createUser( 'subscriber' );
+			$actor = Actor::user( $user );
+
+			update_user_meta( $user, 'locale', 'de_DE' );
+			wp_set_current_user( $user );
+
+			$_GET['_locale']        = 'user';
+			$_SERVER['HTTP_ACCEPT'] = 'application/json';
+		} else {
+			add_filter( $way, $german );
+		}
 
 		try {
-			$answer = $this->freshPlacement()->place( $this->placeInput( 'locale-of-the-labels' ), self::guest() );
+			$answer = $this->freshPlacement()->place( $input, $actor );
 		} finally {
-			remove_filter( 'locale', $french );
+			remove_filter( $way, $german );
+			wp_set_current_user( 0 );
+
+			$_SERVER = $server;
+			$_GET    = $query;
 		}
 
 		$this->assertSame( 'approved', $answer['outcome'] ?? null, (string) wp_json_encode( $answer ) );
-		$this->assertSame( get_locale(), (string) $this->db->fetchValue( 'SELECT locale FROM %i WHERE uuid = %s', $this->table( OrderTables::ORDERS ), $answer['order_uuid'] ), 'The order is not in the cart\'s locale.' );
-		$this->assertSame( 'fr_FR', (string) $this->db->fetchValue( 'SELECT locale_snapshot FROM %i', $this->table( OrderTables::FIELD_VALUES ) ), 'The row names another locale than the one its labels were resolved in.' );
+		$this->assertSame( $cart->locale->toString(), (string) $this->db->fetchValue( 'SELECT locale FROM %i WHERE uuid = %s', $this->table( OrderTables::ORDERS ), $answer['order_uuid'] ), 'The order is not in the cart\'s locale.' );
+		$this->assertSame( 'de_DE', (string) $this->db->fetchValue( 'SELECT locale_snapshot FROM %i', $this->table( OrderTables::FIELD_VALUES ) ), 'The row names another locale than the one its labels were resolved in.' );
 	}
 
 	/**
