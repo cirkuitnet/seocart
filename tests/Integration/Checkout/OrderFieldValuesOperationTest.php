@@ -18,6 +18,8 @@ use SEOCart\Order\Application\OrderFieldValues;
 use SEOCart\Order\Application\OrderOperations;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Authorization\AuthorizationError;
+use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Checkout\AcmeCheckoutFields;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 use SEOCart\Tests\Support\CreatesUsers;
@@ -29,7 +31,8 @@ use SEOCart\Tests\Support\OperationSurfaces;
  * Staff read an order's checkout field values on the route, the ability and the command, compiled from one declaration: in the order the form showed their fields, each with its words as the shopper saw them and its label today; the value and a select's option label only for a user who may see personal data; two statements.
  *
  * Planted violations, each shown red and removed:
- * - in OrderFieldValues::list(), skip the authorizer: a user who may not read orders reads them;
+ * - in OrderFieldValues::list(), skip the authorizer: the service answers a user who may not read
+ *   orders (each surface's own permission check, from the declaration, still refuses them);
  * - in OrderOperations::listFieldValues(), declare `field_value` without its privacy: a user who
  *   may not see personal data reads the values.
  *
@@ -148,10 +151,20 @@ final class OrderFieldValuesOperationTest extends PlacementTestCase {
 	public function test_a_user_who_may_not_read_orders_and_an_unknown_order_are_refused(): void {
 		$uuid = $this->placedWith( array( AcmeCheckoutFields::PO_NUMBER => 'PO-1234' ) );
 
-		wp_set_current_user( $this->createUser( 'subscriber' ) );
+		$subscriber = $this->createUser( 'subscriber' );
+
+		wp_set_current_user( $subscriber );
 
 		$this->assertSame( 403, $this->surfaces()->rest( 'GET', '/orders/' . $uuid . '/field-values' )->get_status() );
 		$this->assertStringContainsString( 'requires the capability seocart_view_orders', (string) $this->surfaces()->cli( 'seocart order field-values', array( $uuid ), array() )['failure'] );
+
+		// The service refuses too, for a caller in the same process that no surface checked.
+		try {
+			$this->kernel->get( OrderFieldValues::class )->list( array( 'order_uuid' => $uuid ), Actor::user( $subscriber ) );
+			$this->fail( 'The service answered a user who may not read orders.' );
+		} catch ( CodedException $refused ) {
+			$this->assertSame( AuthorizationError::Denied, $refused->errorCode() );
+		}
 
 		wp_set_current_user( $this->userGranted( OrderOperations::VIEW_CAPABILITY )->userId() );
 
