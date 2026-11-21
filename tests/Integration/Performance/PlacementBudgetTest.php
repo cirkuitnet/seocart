@@ -289,6 +289,15 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	private const PRESENTMENT_EXTRA = 2;
 
 	/**
+	 * The statements of a cold replay of a placement: the read of its key, whose kept answer is the answer, and nothing before it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const REPLAY = 1;
+
+	/**
 	 * The statements of the last placement measured, by part and step.
 	 *
 	 * @since 0.2.0
@@ -333,6 +342,43 @@ final class PlacementBudgetTest extends PlacementTestCase {
 		$parts = $this->measure( 'Cart A' );
 
 		$this->assertWithin( self::CART_A, $parts, 'Cart A' );
+	}
+
+	/**
+	 * Tests that a cold replay of Cart A's placement reads the key alone and answers what the placement answered: nothing is read before the kept answer, the checkout's rules included.
+	 *
+	 * Planted violation: in PlaceOrder::place(), read the checkout's rules before the kept answer:
+	 * the replay reads their settings too.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_cold_replay_reads_the_kept_answer_alone(): void {
+		$variant = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+
+		$this->readyCart( self::quantities( ReferenceCarts::cartA( $variant ) ) );
+
+		// The request measure() places, sent again as it was.
+		$input = $this->placeInput( 'budget-Cart A', self::APPROVE );
+
+		$this->measure( 'Cart A' );
+
+		// A request starts cold: a container of its own, and no object cache but the options WordPress loads at boot.
+		$replay = $this->kernelOver( $this->db, $this->tokens )->get( PlaceOrder::class );
+		$answer = array();
+
+		wp_cache_flush();
+		wp_load_alloptions();
+
+		$log = $this->captureQueries(
+			function () use ( $replay, $input, &$answer ): void {
+				$answer = $replay->place( $input, self::guest() );
+			}
+		);
+
+		fwrite( STDOUT, sprintf( "\nReplaying Cart A, cold: %d statements.\n  %s\n", $log->count(), implode( "\n  ", $log->sqls() ) ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- The measurement is printed for the report.
+
+		$this->assertSame( 'approved', $answer['outcome'] ?? null, 'The replay answers what the placement answered.' );
+		$this->assertSame( self::REPLAY, $log->count(), 'A cold replay of Cart A\'s placement.' );
 	}
 
 	/**

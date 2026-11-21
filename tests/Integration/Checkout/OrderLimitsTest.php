@@ -69,6 +69,15 @@ final class OrderLimitsTest extends PlacementTestCase {
 	private const EUR_PRICE = 2400;
 
 	/**
+	 * The price of a second line in EUR, net, in minor units.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const EUR_NET_PRICE = 1000;
+
+	/**
 	 * The variant of the test's cart.
 	 *
 	 * @since 0.2.0
@@ -189,6 +198,31 @@ final class OrderLimitsTest extends PlacementTestCase {
 
 		$this->assertNull( $this->writeAgain()['order_limit'] );
 		$this->assertSame( 'approved', $this->freshPlacement()->place( $this->placeInput( 'no-entry' ), self::guest() )['outcome'] );
+	}
+
+	/**
+	 * Tests that a cart whose prices were entered on both bases is measured net: in EUR, a line priced 24.00 with tax and one priced 10.00 without come to 20.00 and 10.00 net, 30.00, which a minimum of 30.00 places.
+	 *
+	 * Planted violation: in OrderLimits::amountOf(), measure such a cart gross: it comes to 36.00,
+	 * with the second line's tax.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_cart_of_both_bases_is_measured_net(): void {
+		$this->setLimits( array( 'EUR' => array( 3000, null ) ) );
+		$this->cartOfBothBasesInEur();
+
+		$this->assertSame(
+			array(
+				'status'        => 'ok',
+				'amount_minor'  => 3000,
+				'minimum_minor' => 3000,
+				'maximum_minor' => null,
+				'basis'         => 'net',
+			),
+			$this->writeAgain()['order_limit']
+		);
+		$this->assertSame( 'approved', $this->freshPlacement()->place( $this->placeInput( 'both-bases' ), self::guest() )['outcome'] );
 	}
 
 	/**
@@ -452,6 +486,25 @@ final class OrderLimitsTest extends PlacementTestCase {
 		if ( 'EUR' === $currency ) {
 			$this->switchToEur();
 		}
+	}
+
+	/**
+	 * Starts a cart of two lines in EUR, with a complete checkout: one priced 24.00 with tax, the other 10.00 without.
+	 *
+	 * @since 0.2.0
+	 */
+	private function cartOfBothBasesInEur(): void {
+		$this->variant = $this->sellable( 5, self::USD_PRICE );
+		$second        = $this->sellable( 5, self::EUR_NET_PRICE );
+
+		$this->readyCart(
+			array(
+				$this->variant => 1,
+				$second        => 1,
+			)
+		);
+		$this->switchToEur();
+		$this->db->execute( "INSERT INTO %i ( variant_id, currency, amount_basis, price_minor, created_at, updated_at ) VALUES ( %d, 'EUR', 'net', %d, UTC_TIMESTAMP(), UTC_TIMESTAMP() )", $this->table( 'variant_prices' ), $second, self::EUR_NET_PRICE );
 	}
 
 	/**

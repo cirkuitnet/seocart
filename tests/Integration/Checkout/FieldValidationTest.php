@@ -319,11 +319,14 @@ final class FieldValidationTest extends PlacementTestCase {
 		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
 		$this->forgetCheckoutChoices();
 
-		$placed = $this->placeOverTheWire( $written['body'], 'made-hidden' );
+		$gateway = $this->recordingGatewayOverTheWire();
+		$placed  = $this->placeOverTheWire( $written['body'], 'made-hidden' );
 
 		$this->assertSame( 200, $placed['status'], (string) wp_json_encode( $placed['body'] ) );
 		$this->assertSame( '', $this->orderAddressValue( 'company' ), 'The order holds the value of a field hidden since it was written.' );
 		$this->assertSame( 'Ada', $this->orderAddressValue( 'first_name' ) );
+		$this->assertCount( 1, $gateway->authorizations, 'The gateway was not asked to authorize the payment.' );
+		$this->assertSame( array( '', 'Ada' ), array( $gateway->authorizations[0]->billing?->organization, $gateway->authorizations[0]->billing?->firstName ), 'The gateway\'s billing contact holds the value of a field hidden since it was written.' );
 	}
 
 	/**
@@ -345,6 +348,83 @@ final class FieldValidationTest extends PlacementTestCase {
 
 		$this->assertRefusedFields( $placed, array( self::fault( 'billing_address.city', 'characters' ), self::fault( 'shipping_address.city', 'too_long' ) ) );
 		$this->assertSame( 0, $this->committedCount( $this->secondConnection(), OrderTables::ORDERS ) );
+	}
+
+	/**
+	 * Provides a kept city of two-byte characters at its field's length, and one character over.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{int, bool}> How many characters the kept city has, and whether the order is placed.
+	 */
+	public static function keptLengths(): array {
+		$length = self::field( 'city' )->maxLength;
+
+		return array(
+			'at the field\'s length, in characters' => array( $length, true ),
+			'one character over'                    => array( $length + 1, false ),
+		);
+	}
+
+	/**
+	 * Tests that the placement measures a kept value in characters, never bytes: a city of two-byte characters at its field's length is placed, and one character more is refused `too_long`.
+	 *
+	 * Planted violation: in CheckoutRules::reasonFor(), count the length with strlen(): the city at
+	 * its length, twice as many bytes, is refused.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider keptLengths
+	 *
+	 * @param int  $characters How many characters the kept city has.
+	 * @param bool $placed     Whether the order is placed.
+	 */
+	public function test_a_kept_value_is_measured_in_characters( int $characters, bool $placed ): void {
+		$this->cartOverTheWire();
+
+		$written = $this->write( $this->addresses( 'city', 'given' ) );
+
+		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
+
+		$city = str_repeat( "\u{00E9}", $characters );
+
+		$this->db->execute( "UPDATE %i SET billing_address_json = JSON_SET( billing_address_json, '$.city', %s ), shipping_address_json = JSON_SET( shipping_address_json, '$.city', %s )", $this->table( CheckoutTables::SESSIONS ), $city, $city );
+
+		$answer = $this->placeOverTheWire( $written['body'], "kept-length-{$characters}" );
+
+		if ( ! $placed ) {
+			$this->assertRefusedFields( $answer, array( self::fault( 'billing_address.city', 'too_long' ), self::fault( 'shipping_address.city', 'too_long' ) ) );
+
+			return;
+		}
+
+		$this->assertSame( 200, $answer['status'], (string) wp_json_encode( $answer['body'] ) );
+		$this->assertSame( $city, $this->orderAddressValue( 'city' ) );
+	}
+
+	/**
+	 * Tests that a member an address does not carry, kept from before the checkout refused it, is left out at placement: a kept shipping address holding an email address is placed, and the order's shipping address holds none.
+	 *
+	 * Planted violation: in CheckoutRules::inForce(), keep a member whose field the address does not
+	 * carry: the shipping email address is then judged as a value no field of that address takes, and
+	 * the placement is refused.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_kept_member_the_address_does_not_carry_is_left_out(): void {
+		$this->cartOverTheWire();
+
+		$written = $this->write( $this->addresses( 'email', 'given' ) );
+
+		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
+
+		$this->db->execute( "UPDATE %i SET shipping_address_json = JSON_SET( shipping_address_json, '$.email', %s )", $this->table( CheckoutTables::SESSIONS ), 'ada@example.com' );
+
+		$placed = $this->placeOverTheWire( $written['body'], 'kept-shipping-email' );
+
+		$this->assertSame( 200, $placed['status'], (string) wp_json_encode( $placed['body'] ) );
+		$this->assertSame( '', $this->orderAddressValue( 'email', 'shipping' ), 'The order\'s shipping address holds the email address it does not carry.' );
+		$this->assertSame( 'ada@example.com', $this->orderAddressValue( 'email' ) );
 	}
 
 	/**
@@ -458,15 +538,16 @@ final class FieldValidationTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Returns a member of the newest order's billing address, as committed.
+	 * Returns a member of one of the newest order's addresses, as committed.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param string $member The member.
+	 * @param string $role   Optional. The address: `billing` or `shipping`. Default `billing`.
 	 * @return string The value.
 	 */
-	private function orderAddressValue( string $member ): string {
-		$value = $this->secondConnection()->fetchValue( sprintf( "SELECT a.`%s` FROM `%s` a WHERE a.role = 'billing' ORDER BY a.order_id DESC LIMIT 1", $member, $this->table( OrderTables::ADDRESSES ) ) );
+	private function orderAddressValue( string $member, string $role = 'billing' ): string {
+		$value = $this->secondConnection()->fetchValue( sprintf( "SELECT a.`%s` FROM `%s` a WHERE a.role = '%s' ORDER BY a.order_id DESC LIMIT 1", $member, $this->table( OrderTables::ADDRESSES ), $role ) );
 
 		$this->assertNotNull( $value, 'No order was placed.' );
 

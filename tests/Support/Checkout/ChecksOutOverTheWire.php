@@ -17,8 +17,11 @@ use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
 use SEOCart\Checkout\Application\CheckoutSettings;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
+use SEOCart\Contracts\Payment\PaymentGateway;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Platform\Settings\Settings;
 use SEOCart\Platform\Settings\SettingsStore;
+use SEOCart\Tests\Support\Doubles\RecordingGateway;
 
 /**
  * Starts a cart, writes its checkout and places it, each a request of its own served through the production wiring; and sets the store's presence choices and order limits as staff would have.
@@ -31,6 +34,30 @@ use SEOCart\Platform\Settings\SettingsStore;
  * @since 0.2.0
  */
 trait ChecksOutOverTheWire {
+
+	/**
+	 * The replacements each request's container is booted with, such as a gateway that records what it is handed; none by default.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, callable(\SEOCart\Platform\Kernel\Container): object>
+	 */
+	protected array $wireReplacements = array();
+
+	/**
+	 * Serves every following request with the stand-in gateway recording what a placement hands it, and returns it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return RecordingGateway The gateway: its authorizations list each payment request it was given.
+	 */
+	protected function recordingGatewayOverTheWire(): RecordingGateway {
+		$gateway = new RecordingGateway( new StubGateway(), $this->db );
+
+		$this->wireReplacements = array( PaymentGateway::class => static fn(): PaymentGateway => $gateway );
+
+		return $gateway;
+	}
 
 	/**
 	 * Starts a new cart with one line of a sellable variant, and presents its cookie.
@@ -156,7 +183,7 @@ trait ChecksOutOverTheWire {
 
 		$this->shutStoreApi();
 		wp_cache_flush();
-		$this->bootStoreApi();
+		$this->bootStoreApi( $this->wireReplacements );
 
 		if ( null !== $cookie ) {
 			$this->presentCookie( (string) $cookie );
