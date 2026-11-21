@@ -171,7 +171,7 @@ enum CheckoutError: string implements ErrorCode {
 			new ErrorDefinition(
 				self::InvalidFields,
 				422,
-				static fn(): string => __( 'Some checkout details cannot be used as given, so nothing was saved. The error lists each field and why: the store does not ask for it there, it holds a control or invisible formatting character, it is not in the right format, it is not one of the choices, the field\'s own rule refuses it, with a sentence that says why, or a value the checkout kept is now too long.', 'seocart' ),
+				static fn(): string => __( 'Some checkout details cannot be used as given, so nothing was saved. The error lists each field and why: the store does not ask for it there, it is given twice, it is too long, it holds a control or invisible formatting character, it is not in the right format, it is not one of the choices, or the field\'s own rule refuses it, with a sentence that says why.', 'seocart' ),
 				details: array( 'fields' )
 			),
 			new ErrorDefinition(

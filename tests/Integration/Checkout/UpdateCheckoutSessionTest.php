@@ -91,6 +91,7 @@ final class UpdateCheckoutSessionTest extends CheckoutTestCase {
 				'shipping_address'    => AddressDocument::of( self::address( 'DE' ) ),
 				'shipping_method_key' => 'flat',
 				'payment_method_key'  => 'stub',
+				'custom_fields'       => array(),
 			),
 			$answer['checkout_session']
 		);

@@ -98,6 +98,7 @@ final class CheckoutOperationsTest extends CheckoutTestCase {
 				'shipping_address'    => array(),
 				'shipping_method_key' => 'flat',
 				'payment_method_key'  => 'stub',
+				'custom_fields'       => array(),
 			),
 			$written['body']['checkout_session'],
 			'A guest\'s answer carries an address\'s fields, which are personal data.'

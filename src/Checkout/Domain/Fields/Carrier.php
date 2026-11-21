@@ -70,6 +70,24 @@ enum Carrier: string {
 	public const SHIPPING = 'shipping_address';
 
 	/**
+	 * The member of an entry of the custom fields that names its field.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const KEY = 'key';
+
+	/**
+	 * The member of an entry of the custom fields that carries its value: `field_value`, never `value`, because the log's redactor hides a value by the name it travels under, and the order's column of this name declares it personal data.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const VALUE = 'field_value';
+
+	/**
 	 * Returns the carrier of a field.
 	 *
 	 * @since 0.2.0

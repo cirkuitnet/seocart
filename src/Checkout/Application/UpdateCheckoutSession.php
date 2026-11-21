@@ -122,6 +122,7 @@ final class UpdateCheckoutSession {
 	 *
 	 * @since 0.1.0
 	 * @since 0.2.0 Checks every value against the checkout's fields, and answers the order limit.
+	 *              Writes and answers the values of the custom fields.
 	 *
 	 * @throws CodedException `checkout.invalid_fields` with every value the checkout's fields do not
 	 *                        accept, or `checkout.invalid_method_key` when a method key is not one,
@@ -132,8 +133,8 @@ final class UpdateCheckoutSession {
 	 *                        `stock.routing_refused` and `stock.no_fulfilling_location` among them.
 	 *
 	 * @param array<string, mixed> $input The prepared input: cart_version, and optionally
-	 *                                    billing_address, shipping_address, shipping_method_key
-	 *                                    and payment_method_key.
+	 *                                    billing_address, shipping_address, shipping_method_key,
+	 *                                    payment_method_key and custom_fields.
 	 * @param Actor                $actor Who writes: whose lifetime the cart then lives.
 	 * @return array{checkout_session: array<string, mixed>, version: int, totals: array<string, mixed>, delivery: array{requires_transfer: bool, transfer_days: int|null}|null, order_limit: array<string, int|string|null>|null} The session,
 	 *         the cart's version, its totals, what its plan says of delivery, by wire name: whether units must be
@@ -147,7 +148,8 @@ final class UpdateCheckoutSession {
 			self::address( Carrier::BILLING, $input ),
 			self::address( Carrier::SHIPPING, $input ),
 			self::methodKey( 'shipping_method_key', $input ),
-			$this->paymentMethod( $input )
+			$this->paymentMethod( $input ),
+			CheckoutRules::customValues( $input )
 		);
 
 		$calculation = null;
@@ -172,6 +174,7 @@ final class UpdateCheckoutSession {
 				'shipping_address'    => null === $details->shippingAddress ? null : AddressDocument::of( $details->shippingAddress ),
 				'shipping_method_key' => $details->shippingMethodKey,
 				'payment_method_key'  => $details->paymentMethodKey,
+				'custom_fields'       => CheckoutRules::customEntries( $details->fieldValues ),
 			),
 			'version'          => $cart['version'],
 			'totals'           => $cart['totals'],

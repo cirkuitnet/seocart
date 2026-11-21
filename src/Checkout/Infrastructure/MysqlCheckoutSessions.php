@@ -43,7 +43,7 @@ final class MysqlCheckoutSessions implements CheckoutSessions {
 	 *
 	 * @var string
 	 */
-	public const FIND = 'SELECT quoted_at_cart_version, billing_address_json, shipping_address_json, shipping_method_key, payment_method_key, shipping_quote_json, tax_quote_fingerprint FROM %i WHERE cart_id = %d';
+	public const FIND = 'SELECT quoted_at_cart_version, billing_address_json, shipping_address_json, shipping_method_key, payment_method_key, field_values_json, shipping_quote_json, tax_quote_fingerprint FROM %i WHERE cart_id = %d';
 
 	/**
 	 * Creates a cart's session with its details, or replaces the details of the one it has; either way without quotes.
@@ -52,7 +52,7 @@ final class MysqlCheckoutSessions implements CheckoutSessions {
 	 *
 	 * @var string
 	 */
-	public const SAVE = "INSERT INTO %i ( cart_id, quoted_at_cart_version, billing_address_json, shipping_address_json, shipping_method_key, payment_method_key, created_at, updated_at ) VALUES ( %d, 0, NULLIF( %s, '' ), NULLIF( %s, '' ), NULLIF( %s, '' ), NULLIF( %s, '' ), UTC_TIMESTAMP(6), UTC_TIMESTAMP(6) ) ON DUPLICATE KEY UPDATE quoted_at_cart_version = 0, billing_address_json = VALUES( billing_address_json ), shipping_address_json = VALUES( shipping_address_json ), shipping_method_key = VALUES( shipping_method_key ), payment_method_key = VALUES( payment_method_key ), shipping_quote_json = NULL, tax_quote_fingerprint = NULL, updated_at = UTC_TIMESTAMP(6)";
+	public const SAVE = "INSERT INTO %i ( cart_id, quoted_at_cart_version, billing_address_json, shipping_address_json, shipping_method_key, payment_method_key, field_values_json, created_at, updated_at ) VALUES ( %d, 0, NULLIF( %s, '' ), NULLIF( %s, '' ), NULLIF( %s, '' ), NULLIF( %s, '' ), NULLIF( %s, '' ), UTC_TIMESTAMP(6), UTC_TIMESTAMP(6) ) ON DUPLICATE KEY UPDATE quoted_at_cart_version = 0, billing_address_json = VALUES( billing_address_json ), shipping_address_json = VALUES( shipping_address_json ), shipping_method_key = VALUES( shipping_method_key ), payment_method_key = VALUES( payment_method_key ), field_values_json = VALUES( field_values_json ), shipping_quote_json = NULL, tax_quote_fingerprint = NULL, updated_at = UTC_TIMESTAMP(6)";
 
 	/**
 	 * Keeps the quotes of a cart version, unless the session holds quotes of a later one.
@@ -113,7 +113,8 @@ final class MysqlCheckoutSessions implements CheckoutSessions {
 			self::address( $row['billing_address_json'] ),
 			self::address( $row['shipping_address_json'] ),
 			null === $row['shipping_method_key'] ? null : (string) $row['shipping_method_key'],
-			null === $row['payment_method_key'] ? null : (string) $row['payment_method_key']
+			null === $row['payment_method_key'] ? null : (string) $row['payment_method_key'],
+			self::fieldValues( $row['field_values_json'] )
 		);
 
 		$version = (int) $row['quoted_at_cart_version'];
@@ -144,7 +145,8 @@ final class MysqlCheckoutSessions implements CheckoutSessions {
 			self::json( $details->billingAddress ),
 			self::json( $details->shippingAddress ),
 			(string) $details->shippingMethodKey,
-			(string) $details->paymentMethodKey
+			(string) $details->paymentMethodKey,
+			CheckoutDetails::fieldValuesDocument( $details->fieldValues )
 		);
 	}
 
@@ -218,6 +220,32 @@ final class MysqlCheckoutSessions implements CheckoutSessions {
 		} catch ( \InvalidArgumentException $damaged ) {
 			throw new \UnexpectedValueException( 'A checkout session holds an address document that is not an address.', 0, $damaged );
 		}
+	}
+
+	/**
+	 * Reads the values of the checkout fields that are no address member from their stored document.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \UnexpectedValueException When the document is not one of values this class wrote.
+	 *
+	 * @param mixed $stored The column's value: a JSON document, or null for a session that holds none.
+	 * @return array<string, string> The values, by field key.
+	 */
+	private static function fieldValues( mixed $stored ): array {
+		if ( null === $stored ) {
+			return array();
+		}
+
+		$values = self::document( (string) $stored );
+
+		foreach ( $values as $key => $value ) {
+			if ( ! is_string( $key ) || ! is_string( $value ) || '' === $value ) {
+				throw new \UnexpectedValueException( 'A checkout session holds a document of field values that is not one.' );
+			}
+		}
+
+		return $values;
 	}
 
 	/**

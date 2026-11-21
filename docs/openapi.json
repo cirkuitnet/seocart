@@ -877,7 +877,7 @@
             ],
             "put": {
                 "operationId": "checkout.update_session",
-                "summary": "Replaces the checkout details of the request's cart, the billing and shipping addresses and the shipping and payment methods, clearing each one the request leaves out; the write moves the cart's version on, and the answer carries the session, the new version and the totals, shipping included once a shipping address is set.",
+                "summary": "Replaces the checkout details of the request's cart, the billing and shipping addresses, the shipping and payment methods and the custom fields, clearing each one the request leaves out; the write moves the cart's version on, and the answer carries the session, the new version and the totals, shipping included once a shipping address is set.",
                 "description": "Public: requires no capability. The Store API's request policy requires the header `X-SEOCart-Store: 1`, the `X-WP-Nonce` header when a login cookie is sent, the cart's token, and at most 60 requests per client in 60 seconds.",
                 "requestBody": {
                     "required": true,
@@ -1075,6 +1075,39 @@
                                         "examples": [
                                             "stub"
                                         ]
+                                    },
+                                    "custom_fields": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "key": {
+                                                    "type": "string",
+                                                    "maxLength": 48,
+                                                    "description": "The field's key, as the checkout form names it: a built-in field's, such as the order note's, or an extension's, such as acme_po_number."
+                                                },
+                                                "field_value": {
+                                                    "type": "string",
+                                                    "maxLength": 2000,
+                                                    "description": "The value given: text, the value of a select's option, or 1 for a ticked checkbox."
+                                                }
+                                            },
+                                            "required": [
+                                                "key",
+                                                "field_value"
+                                            ],
+                                            "additionalProperties": false
+                                        },
+                                        "maxItems": 32,
+                                        "description": "The values of the checkout fields that are no address member, such as the order note and an extension's fields, each its field's key and its value; the checkout form lists the fields sent here, with the carrier custom_fields. Leave it out to clear them all; an empty value is not given.",
+                                        "examples": [
+                                            [
+                                                {
+                                                    "key": "acme_po_number",
+                                                    "field_value": "PO-1234"
+                                                }
+                                            ]
+                                        ]
                                     }
                                 },
                                 "required": [
@@ -1146,7 +1179,7 @@
                         }
                     },
                     "422": {
-                        "description": "`checkout.invalid_fields`: Some checkout details cannot be used as given, so nothing was saved. The error lists each field and why: the store does not ask for it there, it holds a control or invisible formatting character, it is not in the right format, it is not one of the choices, the field's own rule refuses it, with a sentence that says why, or a value the checkout kept is now too long.\n\n`checkout.invalid_method_key`: The {field} is not a method the store can use. A method key uses only lower-case letters, digits, dots, colons, hyphens and underscores, such as flat, and a payment method is one the store offers.",
+                        "description": "`checkout.invalid_fields`: Some checkout details cannot be used as given, so nothing was saved. The error lists each field and why: the store does not ask for it there, it is given twice, it is too long, it holds a control or invisible formatting character, it is not in the right format, it is not one of the choices, or the field's own rule refuses it, with a sentence that says why.\n\n`checkout.invalid_method_key`: The {field} is not a method the store can use. A method key uses only lower-case letters, digits, dots, colons, hyphens and underscores, such as flat, and a payment method is one the store offers.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -1334,7 +1367,7 @@
                         }
                     },
                     "422": {
-                        "description": "`checkout.idempotency_key_reused`: This idempotency key was already used to place an order from a different request. Send a new key with a new request.\n\n`checkout.cart_empty`: The cart has no line, so there is no order to place. Add a line to the cart first.\n\n`checkout.session_incomplete`: The checkout is missing details an order needs: both addresses, every field the store requires on them, such as the email address on the billing address, and a payment method. The error lists the ones missing.\n\n`checkout.invalid_fields`: Some checkout details cannot be used as given, so nothing was saved. The error lists each field and why: the store does not ask for it there, it holds a control or invisible formatting character, it is not in the right format, it is not one of the choices, the field's own rule refuses it, with a sentence that says why, or a value the checkout kept is now too long.",
+                        "description": "`checkout.idempotency_key_reused`: This idempotency key was already used to place an order from a different request. Send a new key with a new request.\n\n`checkout.cart_empty`: The cart has no line, so there is no order to place. Add a line to the cart first.\n\n`checkout.session_incomplete`: The checkout is missing details an order needs: both addresses, every field the store requires on them, such as the email address on the billing address, and a payment method. The error lists the ones missing.\n\n`checkout.invalid_fields`: Some checkout details cannot be used as given, so nothing was saved. The error lists each field and why: the store does not ask for it there, it is given twice, it is too long, it holds a control or invisible formatting character, it is not in the right format, it is not one of the choices, or the field's own rule refuses it, with a sentence that says why.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -6499,8 +6532,35 @@
                                 ],
                                 "maxLength": 32,
                                 "description": "The payment method chosen, or null when none was."
+                            },
+                            "custom_fields": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "key": {
+                                            "type": "string",
+                                            "maxLength": 48,
+                                            "description": "The field's key, as the checkout form names it: a built-in field's, such as the order note's, or an extension's, such as acme_po_number."
+                                        },
+                                        "field_value": {
+                                            "type": "string",
+                                            "maxLength": 2000,
+                                            "description": "The value given: text, the value of a select's option, or 1 for a ticked checkbox."
+                                        }
+                                    },
+                                    "required": [
+                                        "key"
+                                    ],
+                                    "additionalProperties": false
+                                },
+                                "maxItems": 32,
+                                "description": "The values of the checkout fields that are no address member the cart now has, in the order they were sent; empty when none was given."
                             }
                         },
+                        "required": [
+                            "custom_fields"
+                        ],
                         "additionalProperties": false,
                         "description": "The checkout details the cart now has.",
                         "examples": [
@@ -6533,7 +6593,13 @@
                                     "tax_id": "GB000000000"
                                 },
                                 "shipping_method_key": "flat",
-                                "payment_method_key": "stub"
+                                "payment_method_key": "stub",
+                                "custom_fields": [
+                                    {
+                                        "key": "acme_po_number",
+                                        "field_value": "PO-1234"
+                                    }
+                                ]
                             }
                         ]
                     },

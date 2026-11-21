@@ -11,14 +11,18 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Checkout;
 
+use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Checkout\Domain\Fields\BuiltInFields;
 use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Contracts\Checkout\CheckoutField;
+use SEOCart\Contracts\Checkout\CheckoutFieldRegistry;
 use SEOCart\Contracts\Checkout\CheckoutFieldType;
 use SEOCart\Contracts\Checkout\Presence;
+use SEOCart\Contracts\Checkout\Section;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Tests\Support\Cart\ServesStoreApi;
+use SEOCart\Tests\Support\Checkout\AcmeCheckoutFields;
 use SEOCart\Tests\Support\Checkout\ChecksOutOverTheWire;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 
@@ -79,6 +83,7 @@ final class FieldValidationTest extends PlacementTestCase {
 	 * @since 0.2.0
 	 */
 	public function tear_down(): void {
+		AcmeCheckoutFields::forget();
 		$this->shutStoreApi();
 		$this->forgetCheckoutChoices();
 
@@ -425,6 +430,249 @@ final class FieldValidationTest extends PlacementTestCase {
 		$this->assertSame( 200, $placed['status'], (string) wp_json_encode( $placed['body'] ) );
 		$this->assertSame( '', $this->orderAddressValue( 'email', 'shipping' ), 'The order\'s shipping address holds the email address it does not carry.' );
 		$this->assertSame( 'ada@example.com', $this->orderAddressValue( 'email' ) );
+	}
+
+	/**
+	 * Provides values for the custom fields the fixture extension registers, a text field with its own check, a select and a checkbox: what the write answers.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{list<array<string, mixed>>, list<array<string, string>>|null}> The entries sent, and the faults (null when the write is accepted).
+	 */
+	public static function customValues(): array {
+		$po   = AcmeCheckoutFields::PO_NUMBER;
+		$slot = AcmeCheckoutFields::DELIVERY_SLOT;
+		$wrap = AcmeCheckoutFields::GIFT_WRAP;
+
+		return array(
+			'a text value its check accepts'            => array( array( self::entry( $po, 'PO-1234' ) ), null ),
+			'a text value at its length, in characters' => array( array( self::entry( $po, 'PO-' . str_repeat( "\u{00E9}", 17 ) ) ), null ),
+			'one character over the text\'s length'     => array( array( self::entry( $po, 'PO-' . str_repeat( "\u{00E9}", 18 ) ) ), array( self::fault( "custom_fields.{$po}", 'too_long' ) ) ),
+			'a line feed in a one-line text'            => array( array( self::entry( $po, "PO-12\n34" ) ), array( self::fault( "custom_fields.{$po}", 'characters' ) ) ),
+			'U+202E in a one-line text'                 => array( array( self::entry( $po, "PO-12\u{202E}34" ) ), array( self::fault( "custom_fields.{$po}", 'characters' ) ) ),
+			'a text value its check refuses'            => array( array( self::entry( $po, '12345' ) ), array( self::fault( "custom_fields.{$po}", 'rejected' ) + array( 'message' => AcmeCheckoutFields::PO_REFUSAL ) ) ),
+			'one of the select\'s options'              => array( array( self::entry( $slot, 'morning' ) ), null ),
+			'an option not among the select\'s'         => array( array( self::entry( $slot, 'evening' ) ), array( self::fault( "custom_fields.{$slot}", 'not_an_option' ) ) ),
+			'a ticked checkbox'                         => array( array( self::entry( $wrap, '1' ) ), null ),
+			'a checkbox sent as y'                      => array( array( self::entry( $wrap, 'y' ) ), array( self::fault( "custom_fields.{$wrap}", 'format' ) ) ),
+			'a checkbox sent as 0'                      => array( array( self::entry( $wrap, '0' ) ), array( self::fault( "custom_fields.{$wrap}", 'format' ) ) ),
+			'a key no field has'                        => array( array( self::entry( 'acme_colour', 'red' ) ), array( self::fault( 'custom_fields.acme_colour', 'not_accepted' ) ) ),
+			'an address member sent as a custom field'  => array( array( self::entry( 'phone', '+44 20 7946 0000' ) ), array( self::fault( 'custom_fields.phone', 'not_accepted' ) ) ),
+			'a key given twice'                         => array( array( self::entry( $po, 'PO-1' ), self::entry( $po, 'PO-2' ) ), array( self::fault( "custom_fields.{$po}", 'duplicate' ) ) ),
+			'empty values, not given'                   => array( array( self::entry( 'acme_colour', '' ), self::entry( $po, '' ) ), null ),
+			'three faults at once'                      => array(
+				array( self::entry( $po, '12345' ), self::entry( $slot, 'evening' ), self::entry( $wrap, '2' ) ),
+				array( self::fault( "custom_fields.{$po}", 'rejected' ) + array( 'message' => AcmeCheckoutFields::PO_REFUSAL ), self::fault( "custom_fields.{$slot}", 'not_an_option' ), self::fault( "custom_fields.{$wrap}", 'format' ) ),
+			),
+		);
+	}
+
+	/**
+	 * Tests one row of the custom fields' table over the route: refused with every fault and nothing stored, or accepted and kept on the session as sent, an empty value not given.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider customValues
+	 *
+	 * @param list<array<string, mixed>>       $entries The custom fields sent.
+	 * @param list<array<string, string>>|null $faults  The faults; null when the write is accepted.
+	 */
+	public function test_a_custom_field_value( array $entries, ?array $faults ): void {
+		AcmeCheckoutFields::listen();
+		$this->cartOverTheWire();
+
+		$written = $this->write( $this->addresses( 'email', 'given' ) + array( 'custom_fields' => $entries ) );
+
+		if ( null !== $faults ) {
+			$this->assertRefusedFields( $written, $faults );
+			$this->assertSame( 0, $this->checkoutRows( CheckoutTables::SESSIONS ), 'A refused value was stored.' );
+
+			return;
+		}
+
+		$given = array_values( array_filter( $entries, static fn( array $entry ): bool => '' !== $entry['field_value'] ) );
+
+		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
+		$this->assertSame( array_column( $given, 'field_value', 'key' ), $this->storedFieldValues(), 'The session keeps what was given, and nothing empty.' );
+		$this->assertSame( array_map( static fn( array $entry ): array => array( 'key' => $entry['key'] ), $given ), $written['body']['checkout_session']['custom_fields'] ?? null, 'A guest\'s answer names each value\'s field, without the value.' );
+	}
+
+	/**
+	 * Tests that a custom field the store hides refuses a value, `not_accepted`, and stores nothing.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_hidden_custom_field_refuses_a_value(): void {
+		AcmeCheckoutFields::listen();
+		$this->choosePresences( array( AcmeCheckoutFields::GIFT_WRAP => 'hidden' ) );
+		$this->cartOverTheWire();
+
+		$written = $this->write( $this->addresses( 'email', 'given' ) + array( 'custom_fields' => array( self::entry( AcmeCheckoutFields::GIFT_WRAP, '1' ) ) ) );
+
+		$this->assertRefusedFields( $written, array( self::fault( 'custom_fields.' . AcmeCheckoutFields::GIFT_WRAP, 'not_accepted' ) ) );
+		$this->assertSame( 0, $this->checkoutRows( CheckoutTables::SESSIONS ) );
+	}
+
+	/**
+	 * Provides custom fields whose values each fit, four and five long notes of four-byte characters: what a session keeps, together, is bounded.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{int, bool}> How many notes, and whether the write is accepted.
+	 */
+	public static function documentSizes(): array {
+		return array(
+			'four notes, within the document a session keeps' => array( 4, true ),
+			'five notes, longer than the document' => array( 5, false ),
+		);
+	}
+
+	/**
+	 * Tests that custom fields each within their length are refused together, `too_long` on custom_fields, when their document is longer than a session keeps.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider documentSizes
+	 *
+	 * @param int  $notes    How many notes are sent, each its field's longest value of four-byte characters.
+	 * @param bool $accepted Whether the write is accepted.
+	 */
+	public function test_custom_fields_longer_together_than_a_session_keeps( int $notes, bool $accepted ): void {
+		$register = static function ( CheckoutFieldRegistry $registry ): void {
+			for ( $note = 1; $note <= 5; $note++ ) {
+				$registry->register( 'bulk', new CheckoutField( key: "note_{$note}", section: Section::Order, type: CheckoutFieldType::Textarea, label: static fn(): string => 'Note', maxLength: CheckoutField::TEXTAREA_MAX_LENGTH, presences: array( Presence::Optional ) ) );
+			}
+		};
+
+		add_action( CheckoutFieldRegistry::ACTION, $register );
+
+		try {
+			$this->cartOverTheWire();
+
+			$entries = array();
+
+			for ( $note = 1; $note <= $notes; $note++ ) {
+				$entries[] = self::entry( "bulk_note_{$note}", str_repeat( "\u{1F600}", CheckoutField::TEXTAREA_MAX_LENGTH ) );
+			}
+
+			$written = $this->write( $this->addresses( 'email', 'given' ) + array( 'custom_fields' => $entries ) );
+		} finally {
+			remove_action( CheckoutFieldRegistry::ACTION, $register );
+		}
+
+		if ( ! $accepted ) {
+			$this->assertRefusedFields( $written, array( self::fault( 'custom_fields', 'too_long' ) ) );
+
+			return;
+		}
+
+		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
+		$this->assertCount( $notes, $this->storedFieldValues() );
+	}
+
+	/**
+	 * Provides custom fields the route's schema refuses, with WordPress's code for the fault: the list's shape is the schema's, every value's rules the checkout's.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{list<mixed>, string}> The custom fields sent, and the code.
+	 */
+	public static function customSchemaRefusals(): array {
+		$entries = array();
+
+		for ( $entry = 0; $entry <= CheckoutDetails::MAX_FIELD_VALUES; $entry++ ) {
+			$entries[] = self::entry( "acme_field_{$entry}", 'x' );
+		}
+
+		return array(
+			'one entry more than the list takes'        => array( $entries, 'rest_too_many_items' ),
+			'an entry with a member it does not have'   => array( array( self::entry( AcmeCheckoutFields::PO_NUMBER, 'PO-1' ) + array( 'value' => 'PO-1' ) ), 'rest_additional_properties_forbidden' ),
+			'a value that is not a string'              => array( array( self::entry( AcmeCheckoutFields::GIFT_WRAP, 1 ) ), 'rest_invalid_type' ),
+			'a value longer than any field may declare' => array( array( self::entry( AcmeCheckoutFields::PO_NUMBER, str_repeat( 'a', CheckoutField::TEXTAREA_MAX_LENGTH + 1 ) ) ), 'rest_too_long' ),
+		);
+	}
+
+	/**
+	 * Tests one shape the route's schema refuses before the checkout's rules run: `rest_invalid_param`, HTTP 400, WordPress's code under the custom fields, and nothing stored.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider customSchemaRefusals
+	 *
+	 * @param array  $entries The custom fields sent.
+	 * @param string $code    WordPress's code for the fault, under `param_codes`.
+	 *
+	 * @phpstan-param list<mixed> $entries
+	 */
+	public function test_the_schema_refuses_custom_fields_it_cannot_hold( array $entries, string $code ): void {
+		AcmeCheckoutFields::listen();
+		$this->cartOverTheWire();
+
+		$refused = $this->write( $this->addresses( 'email', 'given' ) + array( 'custom_fields' => $entries ) );
+
+		$this->assertSame( 400, $refused['status'], (string) wp_json_encode( $refused['body'] ) );
+		$this->assertSame( 'rest_invalid_param', $refused['body']['code'] ?? null );
+		$this->assertSame( array( 'custom_fields' => $code ), $refused['body']['data']['details']['param_codes'] ?? null );
+		$this->assertSame( 0, $this->checkoutRows( CheckoutTables::SESSIONS ), 'A refused write stored a session.' );
+	}
+
+	/**
+	 * Tests the custom fields at placement: a field the store made required is asked for by its wire path; a value kept that its check now refuses is refused as the write refuses it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_custom_fields_at_placement(): void {
+		AcmeCheckoutFields::listen();
+		$this->choosePresences( array( AcmeCheckoutFields::PO_NUMBER => 'required' ) );
+		$this->cartOverTheWire();
+
+		$written = $this->write( $this->addresses( 'email', 'given' ) );
+
+		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
+
+		$asked = $this->placeOverTheWire( $written['body'], 'custom-required' );
+
+		$this->assertErrorShape( $asked['body'], 'checkout.session_incomplete', 422 );
+		$this->assertSame( array( 'custom_fields.' . AcmeCheckoutFields::PO_NUMBER ), $asked['body']['data']['details']['missing'] ?? null );
+
+		$written = $this->write( $this->addresses( 'email', 'given' ) + array( 'custom_fields' => array( self::entry( AcmeCheckoutFields::PO_NUMBER, 'PO-1' ) ) ) );
+
+		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
+
+		// What an older version of the extension accepted, which its check refuses now.
+		$this->db->execute( 'UPDATE %i SET field_values_json = %s', $this->table( CheckoutTables::SESSIONS ), (string) wp_json_encode( array( AcmeCheckoutFields::PO_NUMBER => '12345' ) ) );
+
+		$this->assertRefusedFields( $this->placeOverTheWire( $written['body'], 'custom-kept' ), array( self::fault( 'custom_fields.' . AcmeCheckoutFields::PO_NUMBER, 'rejected' ) + array( 'message' => AcmeCheckoutFields::PO_REFUSAL ) ) );
+		$this->assertSame( 0, $this->committedCount( $this->secondConnection(), OrderTables::ORDERS ) );
+	}
+
+	/**
+	 * Returns one entry of the custom fields, as a session write sends it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $key   The field's key.
+	 * @param mixed  $value The value.
+	 * @return array{key: string, field_value: mixed} The entry.
+	 */
+	private static function entry( string $key, mixed $value ): array {
+		return array(
+			'key'         => $key,
+			'field_value' => $value,
+		);
+	}
+
+	/**
+	 * Returns the custom fields' values the cart's session keeps, by field key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, string> The values; empty when it keeps none.
+	 */
+	private function storedFieldValues(): array {
+		$stored = $this->db->fetchValue( 'SELECT field_values_json FROM %i', $this->table( CheckoutTables::SESSIONS ) );
+
+		return null === $stored ? array() : (array) json_decode( (string) $stored, true );
 	}
 
 	/**

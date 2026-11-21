@@ -25,8 +25,10 @@ use SEOCart\Checkout\Application\UpdateCheckoutSession;
 use SEOCart\Checkout\Domain\AddressDocument;
 use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Checkout\Domain\CheckoutError;
+use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Domain\PlacementOutcome;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
+use SEOCart\Contracts\Checkout\CheckoutField;
 use SEOCart\Contracts\Payment\GatewayDescriptor;
 use SEOCart\Platform\Logging\Redactor;
 use SEOCart\Support\Schema\FieldSpec;
@@ -86,12 +88,12 @@ final class CheckoutOperationsTest extends TestCase {
 	 * Tests the input: the cart's version as every cart write declares it, two addresses of the built-in fields each carries, all personal data, and the two methods.
 	 *
 	 * @since 0.1.0
-	 * @since 0.2.0 The members are the built-in checkout fields, in form order; the email address is the billing address's alone.
+	 * @since 0.2.0 The members are the built-in checkout fields, in form order; the email address is the billing address's alone. The custom fields.
 	 */
 	public function test_the_input_declares_the_addresses_as_personal_data(): void {
 		$fields = self::byName( CheckoutOperations::updateSession()->input() );
 
-		$this->assertSame( array( 'cart_version', 'billing_address', 'shipping_address', 'shipping_method_key', 'payment_method_key' ), array_keys( $fields ) );
+		$this->assertSame( array( 'cart_version', 'billing_address', 'shipping_address', 'shipping_method_key', 'payment_method_key', 'custom_fields' ), array_keys( $fields ) );
 		$this->assertEquals( CartOperations::cartVersion( 1 ), $fields['cart_version'] );
 
 		$expected = array(
@@ -115,6 +117,15 @@ final class CheckoutOperationsTest extends TestCase {
 		// Any gateway the store offers, checked against its gateways; as long as a gateway id may be.
 		$this->assertSame( array( array(), GatewayDescriptor::ID_MAX_LENGTH ), array( $fields['payment_method_key']->allowedValues(), $fields['payment_method_key']->maxLength() ) );
 		$this->assertSame( CheckoutDetails::METHOD_KEY_MAX_LENGTH, $fields['shipping_method_key']->maxLength() );
+
+		// The custom fields' shape alone: which keys a store takes, and each one's rules, are the checkout's rules'.
+		$custom  = $fields['custom_fields'];
+		$entries = self::byName( $custom->fields() );
+
+		$this->assertSame( array( FieldType::ObjectList, false, CheckoutDetails::MAX_FIELD_VALUES ), array( $custom->type(), $custom->isRequired(), $custom->maxItems() ) );
+		$this->assertSame( array( Carrier::KEY, Carrier::VALUE ), array_keys( $entries ) );
+		$this->assertSame( array( FieldType::String, Privacy::Public, CheckoutField::KEY_MAX_LENGTH ), array( $entries[ Carrier::KEY ]->type(), $entries[ Carrier::KEY ]->privacy(), $entries[ Carrier::KEY ]->maxLength() ) );
+		$this->assertSame( array( FieldType::String, Privacy::Pii, CheckoutField::TEXTAREA_MAX_LENGTH ), array( $entries[ Carrier::VALUE ]->type(), $entries[ Carrier::VALUE ]->privacy(), $entries[ Carrier::VALUE ]->maxLength() ), 'Every value is personal data, under the one name the redactor hides.' );
 	}
 
 	/**
@@ -133,7 +144,8 @@ final class CheckoutOperationsTest extends TestCase {
 		$this->assertSame( array( true, array( 'status', 'amount_minor', 'minimum_minor', 'maximum_minor', 'basis' ) ), array( $output['order_limit']->isNullable(), array_keys( self::byName( $output['order_limit']->fields() ) ) ), 'The order limit is null for a currency without one.' );
 		$this->assertContains( 'stock.routing_refused', $codes );
 		$this->assertContains( 'stock.no_fulfilling_location', $codes );
-		$this->assertSame( array( 'billing_address', 'shipping_address', 'shipping_method_key', 'payment_method_key' ), array_keys( $session ) );
+		$this->assertSame( array( 'billing_address', 'shipping_address', 'shipping_method_key', 'payment_method_key', 'custom_fields' ), array_keys( $session ) );
+		$this->assertTrue( $session['custom_fields']->isRequired(), 'The answer always lists the custom fields, empty when none was given.' );
 		$this->assertSame( array( true, true ), array( $session['billing_address']->isNullable(), $session['shipping_address']->isNullable() ) );
 		$this->assertSame( Privacy::Pii, $session['shipping_address']->privacy() );
 

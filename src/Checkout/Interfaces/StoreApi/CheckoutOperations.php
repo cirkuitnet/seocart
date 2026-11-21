@@ -60,8 +60,11 @@ use SEOCart\Support\Schema\ResourceSchema;
  * the currency it pays in, and places it.
  *
  * - `checkout.update_session`, `PUT seocart/store/v1/checkout`: replaces the checkout details of
- *   the request's cart: the billing and shipping addresses and the shipping and payment methods.
- *   A detail the request leaves out is cleared. The write rides the cart's version, like every
+ *   the request's cart: the billing and shipping addresses, the shipping and payment methods, and
+ *   the custom fields, the values of every checkout field that is no address member (the order
+ *   note, an extension's fields), each a key and a value. A detail the request leaves out is
+ *   cleared. Which keys the custom fields take is the checkout form's to say (`checkout.get_form`,
+ *   the fields whose carrier is `custom_fields`), per store: this document names none. The write rides the cart's version, like every
  *   cart write: it is refused with `cart.version_stale` when the cart has moved on, and it moves
  *   the version on, which makes the session's frozen quotes stale. The answer is the session, the
  *   cart's new version and its totals, which carry the shipping once a shipping address is set.
@@ -249,13 +252,14 @@ final class CheckoutOperations {
 		return new OperationDefinition(
 			id: self::UPDATE_SESSION,
 			label: static fn(): string => __( 'Update the checkout', 'seocart' ),
-			summary: 'Replaces the checkout details of the request\'s cart, the billing and shipping addresses and the shipping and payment methods, clearing each one the request leaves out; the write moves the cart\'s version on, and the answer carries the session, the new version and the totals, shipping included once a shipping address is set.',
+			summary: 'Replaces the checkout details of the request\'s cart, the billing and shipping addresses, the shipping and payment methods and the custom fields, clearing each one the request leaves out; the write moves the cart\'s version on, and the answer carries the session, the new version and the totals, shipping included once a shipping address is set.',
 			input: array(
 				CartOperations::cartVersion( 1 ),
 				self::address( Carrier::BILLING, 'The address the payment is billed to, with the shopper\'s email address; leave it out to clear it.', static fn(): string => __( 'Billing address', 'seocart' ), false ),
 				self::address( Carrier::SHIPPING, 'Where the order ships; the totals charge shipping to it. Leave it out to clear it.', static fn(): string => __( 'Shipping address', 'seocart' ), false ),
 				self::shippingMethodKey( false ),
 				self::paymentMethodKey( false ),
+				self::customFields( 'The values of the checkout fields that are no address member, such as the order note and an extension\'s fields, each its field\'s key and its value; the checkout form lists the fields sent here, with the carrier custom_fields. Leave it out to clear them all; an empty value is not given.', false ),
 			),
 			output: new ResourceSchema(
 				'CheckoutSession',
@@ -269,6 +273,7 @@ final class CheckoutOperations {
 							self::address( Carrier::SHIPPING, 'Where the order ships, or null when none was given.', static fn(): string => __( 'Shipping address', 'seocart' ), true ),
 							self::shippingMethodKey( true ),
 							self::paymentMethodKey( true ),
+							self::customFields( 'The values of the checkout fields that are no address member the cart now has, in the order they were sent; empty when none was given.', true ),
 						),
 						required: true
 					),
@@ -818,6 +823,43 @@ final class CheckoutOperations {
 	 */
 	private static function address( string $name, string $description, \Closure $label, bool $output ): FieldSpec {
 		return FieldSpec::object( $name, $description, $label, BuiltInFields::addressMembers( $name ), nullable: $output );
+	}
+
+	/**
+	 * Returns the custom fields: the values of the checkout fields that are no address member, each its field's key and its value, personal data whatever the field.
+	 *
+	 * The schema says the list's shape alone: at most CheckoutDetails::MAX_FIELD_VALUES entries,
+	 * each a key and a value of no more characters than any field may declare. Which keys a store
+	 * takes, each one's length, options and rules, and a key given twice, are the checkout's rules'
+	 * to judge (CheckoutRules::validate()), since an extension's field is no member of this document.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $description The machine description.
+	 * @param bool   $output      True for the answer's, which is always present; false for the request's, which may be left out.
+	 * @return FieldSpec The field.
+	 */
+	private static function customFields( string $description, bool $output ): FieldSpec {
+		return FieldSpec::objectList(
+			Carrier::CustomFields->value,
+			$description,
+			static fn(): string => __( 'Other checkout fields', 'seocart' ),
+			array(
+				self::formText( Carrier::KEY, 'The field\'s key, as the checkout form names it: a built-in field\'s, such as the order note\'s, or an extension\'s, such as acme_po_number.', static fn(): string => __( 'Field', 'seocart' ), 'acme_po_number', CheckoutField::KEY_MAX_LENGTH ),
+				new FieldSpec(
+					name: Carrier::VALUE,
+					type: FieldType::String,
+					description: 'The value given: text, the value of a select\'s option, or 1 for a ticked checkbox.',
+					label: static fn(): string => __( 'Value', 'seocart' ),
+					example: 'PO-1234',
+					required: true,
+					max_length: CheckoutField::TEXTAREA_MAX_LENGTH,
+					privacy: Privacy::Pii
+				),
+			),
+			required: $output,
+			max_items: CheckoutDetails::MAX_FIELD_VALUES
+		);
 	}
 
 	/**

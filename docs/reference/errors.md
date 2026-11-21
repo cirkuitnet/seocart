@@ -267,7 +267,7 @@ An internal error carries a generic message and empty details: it is a code mark
 ## `checkout.invalid_fields`
 
 - HTTP status: 422
-- Message: Some checkout details cannot be used as given, so nothing was saved. The error lists each field and why: the store does not ask for it there, it holds a control or invisible formatting character, it is not in the right format, it is not one of the choices, the field's own rule refuses it, with a sentence that says why, or a value the checkout kept is now too long.
+- Message: Some checkout details cannot be used as given, so nothing was saved. The error lists each field and why: the store does not ask for it there, it is given twice, it is too long, it holds a control or invisible formatting character, it is not in the right format, it is not one of the choices, or the field's own rule refuses it, with a sentence that says why.
 - Values: none
 - Details: `fields`, beside the values
 

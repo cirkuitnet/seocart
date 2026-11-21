@@ -107,6 +107,15 @@ final class CheckoutRules {
 	public const NOT_AN_OPTION = 'not_an_option';
 
 	/**
+	 * The reason of a field's key given twice in the custom fields.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const DUPLICATE = 'duplicate';
+
+	/**
 	 * The value of a ticked checkbox.
 	 *
 	 * @since 0.2.0
@@ -326,10 +335,14 @@ final class CheckoutRules {
 	 * Refuses a session write that gives a value the checkout does not accept, naming every fault at once.
 	 *
 	 * Every value given is judged, the addresses' members in form order, then any member no field
-	 * of that address is: its field must be in force and carried by that address, and its value
-	 * within its length, plain text (CheckoutText), what its type is, and then what its
-	 * declaration's own check accepts. An empty value is not given and never a fault, but for the
-	 * country: an address is not held without one (Address). A required field is not asked for here.
+	 * of that address is, then the custom fields in the order given: its field must be in force and
+	 * carried where it was sent, and its value within its length, plain text (CheckoutText), what
+	 * its type is (an email address, a country, one of a select's options, a ticked checkbox), and
+	 * then what its declaration's own check accepts. A key the custom fields give twice is refused
+	 * `duplicate`, and custom fields whose document (CheckoutDetails::fieldValuesDocument()) is longer
+	 * than a session keeps are refused `too_long` as a whole. An empty value is not given and never a
+	 * fault, but for the country: an address is not held without one (Address). A required field is
+	 * not asked for here.
 	 *
 	 * @since 0.2.0
 	 *
@@ -349,7 +362,54 @@ final class CheckoutRules {
 			}
 		}
 
+		$faults = array_merge( $faults, $this->customFaults( $fields, (array) ( $input[ Carrier::CustomFields->value ] ?? array() ) ) );
+
 		self::refuseFaults( $faults );
+	}
+
+	/**
+	 * Returns the values of the custom fields a session write gives, by field key, in the order given, leaving out each empty one: not given.
+	 *
+	 * Called on an input validate() accepted, so no key is given twice.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, mixed> $input The prepared input of `checkout.update_session`.
+	 * @return array<string, string> The values, by field key.
+	 */
+	public static function customValues( array $input ): array {
+		$values = array();
+
+		foreach ( (array) ( $input[ Carrier::CustomFields->value ] ?? array() ) as $entry ) {
+			$value = (string) ( $entry[ Carrier::VALUE ] ?? '' );
+
+			if ( '' !== $value ) {
+				$values[ (string) $entry[ Carrier::KEY ] ] = $value;
+			}
+		}
+
+		return $values;
+	}
+
+	/**
+	 * Returns custom fields' values as the session write answers them: a list of each field's key and value.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, string> $values The values, by field key.
+	 * @return list<array{key: string, field_value: string}> The entries, in the order of the values.
+	 */
+	public static function customEntries( array $values ): array {
+		$entries = array();
+
+		foreach ( $values as $key => $value ) {
+			$entries[] = array(
+				Carrier::KEY   => (string) $key,
+				Carrier::VALUE => $value,
+			);
+		}
+
+		return $entries;
 	}
 
 	/**
@@ -358,15 +418,17 @@ final class CheckoutRules {
 	 * Called once, on the session the placement read, before it is priced: the order, the gateway's
 	 * billing contact and the kept answer are all built from what this answers. The checkout must
 	 * have both addresses and a payment method (CheckoutDetails::missingForPlacement()); each
-	 * address then needs a value for every required field it carries. A value for a field hidden
-	 * or no longer declared is left out; a value kept from before a declaration changed, which it
-	 * now refuses, is refused.
+	 * address then needs a value for every required field it carries, and the custom fields one for
+	 * every required field they carry. A value for a field hidden or no longer declared is left out;
+	 * a value kept from before a declaration changed, which it now refuses, is refused. The custom
+	 * fields' values placed are in form order.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @throws CodedException `checkout.session_incomplete` with the detail `missing`, the wire paths of
 	 *                        what is missing: the details first, then each required field, billing
-	 *                        before shipping; `checkout.invalid_fields`, as validate() answers it, for
+	 *                        before shipping, then the custom fields; `checkout.invalid_fields`, as
+	 *                        validate() answers it, for
 	 *                        a value kept that the declarations refuse.
 	 *
 	 * @param CheckoutSession|null $session The session the placement read, or null when the cart has none.
@@ -397,6 +459,11 @@ final class CheckoutRules {
 			$placed[ $address ] = AddressDocument::toAddress( $document );
 		}
 
+		list( $custom, $customMissing, $customFaults ) = $this->customForPlacement( $fields, $session->details->fieldValues );
+
+		$missing = array_merge( $missing, $customMissing );
+		$faults  = array_merge( $faults, $customFaults );
+
 		if ( array() !== $missing ) {
 			CodedException::raise( CheckoutError::SessionIncomplete, array(), array( 'missing' => $missing ) );
 		}
@@ -405,7 +472,7 @@ final class CheckoutRules {
 
 		return new CheckoutSession(
 			$session->cartId,
-			new CheckoutDetails( $placed[ Carrier::BILLING ] ?? null, $placed[ Carrier::SHIPPING ] ?? null, $session->details->shippingMethodKey, $session->details->paymentMethodKey ),
+			new CheckoutDetails( $placed[ Carrier::BILLING ] ?? null, $placed[ Carrier::SHIPPING ] ?? null, $session->details->shippingMethodKey, $session->details->paymentMethodKey, $custom ),
 			$session->quotedAtCartVersion,
 			$session->quotes
 		);
@@ -609,6 +676,112 @@ final class CheckoutRules {
 		}
 
 		return $document;
+	}
+
+	/**
+	 * Returns the faults of the custom fields a session write gives, in the order given: a key given twice, each value its field does not accept, then a document longer than a session keeps.
+	 *
+	 * A key no field carried in the custom fields has, or a hidden field's, is `not_accepted` when
+	 * its value is given; an empty value is not given.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CompiledFields $fields  The fields in force.
+	 * @param array          $entries The custom fields given: each a key and a field value.
+	 * @return list<array{field: string, reason: string, message?: string}> The faults.
+	 *
+	 * @phpstan-param array<mixed> $entries
+	 */
+	private function customFaults( CompiledFields $fields, array $entries ): array {
+		$faults   = array();
+		$seen     = array();
+		$accepted = array();
+
+		foreach ( $entries as $entry ) {
+			$key   = (string) ( $entry[ Carrier::KEY ] ?? '' );
+			$value = $entry[ Carrier::VALUE ] ?? '';
+			$path  = self::customPath( $key );
+			$field = $fields->field( $key );
+
+			if ( isset( $seen[ $key ] ) ) {
+				$faults[] = self::fault( $path, self::DUPLICATE );
+
+				continue;
+			}
+
+			$seen[ $key ] = true;
+			$fault        = null !== $field && Carrier::CustomFields === Carrier::of( $field )
+				? $this->faultOf( $fields, $field, $path, $value )
+				: ( '' === $value ? null : self::fault( $path, self::NOT_ACCEPTED ) );
+
+			if ( null !== $fault ) {
+				$faults[] = $fault;
+			} elseif ( is_string( $value ) && '' !== $value ) {
+				$accepted[ $key ] = $value;
+			}
+		}
+
+		// The values accepted one by one must still fit, together, in the document a session keeps.
+		if ( strlen( CheckoutDetails::fieldValuesDocument( $accepted ) ) > CheckoutDetails::FIELD_VALUES_MAX_BYTES ) {
+			$faults[] = self::fault( Carrier::CustomFields->value, self::TOO_LONG );
+		}
+
+		return $faults;
+	}
+
+	/**
+	 * Judges the custom fields' values a placement's session kept: the values in force, in form order, the required fields without one, and each value the declarations now refuse.
+	 *
+	 * A value for a field hidden, undeclared or carried elsewhere is left out.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CompiledFields        $fields The fields in force.
+	 * @param array<string, string> $values The values kept, by field key.
+	 * @return array{array<string, string>, list<string>, list<array{field: string, reason: string, message?: string}>} The values
+	 *         in force by field key, the wire paths of the required fields without a value, and the faults.
+	 */
+	private function customForPlacement( CompiledFields $fields, array $values ): array {
+		$kept    = array();
+		$missing = array();
+		$faults  = array();
+
+		foreach ( $fields->inForce() as $field ) {
+			if ( Carrier::CustomFields !== Carrier::of( $field ) ) {
+				continue;
+			}
+
+			$value = $values[ $field->key ] ?? '';
+
+			if ( '' === trim( $value ) ) {
+				if ( Presence::Required === $fields->presenceOf( $field ) ) {
+					$missing[] = self::customPath( $field->key );
+				}
+
+				continue;
+			}
+
+			$kept[ $field->key ] = $value;
+			$fault               = $this->faultOf( $fields, $field, self::customPath( $field->key ), $value );
+
+			if ( null !== $fault ) {
+				$faults[] = $fault;
+			}
+		}
+
+		return array( $kept, $missing, $faults );
+	}
+
+	/**
+	 * Returns the wire path of a value of the custom fields, such as custom_fields.order_note.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $key The field's key.
+	 * @return string The path.
+	 */
+	private static function customPath( string $key ): string {
+		return Carrier::CustomFields->value . '.' . $key;
 	}
 
 	/**
