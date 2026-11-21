@@ -101,7 +101,7 @@ final class OrderFieldValueFields {
 			new FieldSpec(
 				name: 'locale',
 				type: FieldType::String,
-				description: 'The locale the labels the order keeps are written in: the order\'s.',
+				description: 'The locale the labels the order keeps were resolved in: the language of the request that placed the order, which need not be the order\'s own.',
 				label: static fn(): string => __( 'Locale', 'seocart' ),
 				example: 'en_GB',
 				required: true

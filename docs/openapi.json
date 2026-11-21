@@ -8303,7 +8303,7 @@
                                 },
                                 "locale": {
                                     "type": "string",
-                                    "description": "The locale the labels the order keeps are written in: the order's."
+                                    "description": "The locale the labels the order keeps were resolved in: the language of the request that placed the order, which need not be the order's own."
                                 }
                             },
                             "required": [

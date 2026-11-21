@@ -22,6 +22,7 @@ use SEOCart\Interfaces\Operations\OperationInvoker;
 use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Application\OrderFieldValues;
 use SEOCart\Order\Application\OrderOperations;
+use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\AuthorizationError;
@@ -249,6 +250,35 @@ final class OrderFieldValuesOperationTest extends PlacementTestCase {
 		$this->assertArrayHasKey( 'current_label', $row );
 		$this->assertNull( $row['current_label'], 'The row takes the label of another extension\'s field of the same stored key.' );
 		$this->assertSame( 'a_b', $row['source'] ?? null, 'The row does not keep who declared its field.' );
+	}
+
+	/**
+	 * Tests that a row records the locale its labels were resolved in, the placing request's, not the order's: a cart started in English and placed in a request a language plugin set to French keeps fr_FR beside the labels it resolved.
+	 *
+	 * The cart keeps its own locale, which the sale of its products is judged in, so the request is
+	 * the one that differs here.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_row_records_the_locale_its_labels_were_resolved_in(): void {
+		$variant = $this->sellable();
+		$cart    = $this->readyCart( array( $variant => 1 ) );
+		$french  = static fn(): string => 'fr_FR';
+
+		$this->writeCheckout( $cart->version, StubGateway::ID, array( AcmeCheckoutFields::DELIVERY_SLOT => 'morning' ) );
+
+		// The request's language, as a language plugin sets it.
+		add_filter( 'locale', $french );
+
+		try {
+			$answer = $this->freshPlacement()->place( $this->placeInput( 'locale-of-the-labels' ), self::guest() );
+		} finally {
+			remove_filter( 'locale', $french );
+		}
+
+		$this->assertSame( 'approved', $answer['outcome'] ?? null, (string) wp_json_encode( $answer ) );
+		$this->assertSame( get_locale(), (string) $this->db->fetchValue( 'SELECT locale FROM %i WHERE uuid = %s', $this->table( OrderTables::ORDERS ), $answer['order_uuid'] ), 'The order is not in the cart\'s locale.' );
+		$this->assertSame( 'fr_FR', (string) $this->db->fetchValue( 'SELECT locale_snapshot FROM %i', $this->table( OrderTables::FIELD_VALUES ) ), 'The row names another locale than the one its labels were resolved in.' );
 	}
 
 	/**

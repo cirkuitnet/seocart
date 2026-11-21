@@ -913,7 +913,7 @@ final class MysqlOrderRepository implements OrderRepository {
 	}
 
 	/**
-	 * Inserts the order's checkout field values in one statement, each with its position among them and the order's locale; sends nothing when there is none.
+	 * Inserts the order's checkout field values in one statement, each with its position among them and the locale its labels were resolved in; sends nothing when there is none.
 	 *
 	 * @since 0.2.0
 	 *
@@ -926,7 +926,7 @@ final class MysqlOrderRepository implements OrderRepository {
 		$rows = array();
 
 		foreach ( $order->fieldValues as $position => $value ) {
-			$rows[] = array( $orderId, $value->key, $value->source, $value->section, $value->type, $value->label, $value->value, (string) $value->valueLabel, $order->locale->toString(), $position );
+			$rows[] = array( $orderId, $value->key, $value->source, $value->section, $value->type, $value->label, $value->value, (string) $value->valueLabel, $value->locale, $position );
 		}
 
 		if ( array() !== $rows ) {

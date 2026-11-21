@@ -572,7 +572,7 @@ final class OrderTables {
 	 *
 	 * A row is written with its order and never changed by anything but the eraser: the key, the
 	 * section, the type and the labels are what the field declared when the order was placed, in
-	 * the order's locale, with who declared the field, so staff see a field its extension no longer
+	 * the locale the placing request resolved them in, with who declared the field, so staff see a field its extension no longer
 	 * declares, or another extension now declares under the same key, as it was. Every
 	 * value is personal data, whatever its field; the eraser destroys the value and the option's
 	 * label and keeps what the field was.
@@ -599,7 +599,7 @@ final class OrderTables {
 				new ColumnSpec( 'label_snapshot', 'varchar(255)', Classification::Public, 'The field\'s label the shopper saw.' ),
 				$destroy( 'field_value', 'text', 'The value the shopper gave; for a select, the chosen option\'s value, and for a ticked checkbox, 1. NULL once erased.' ),
 				$destroy( 'value_label_snapshot', 'varchar(255)', 'For a select, the chosen option\'s label the shopper saw; NULL for any other type, and once erased.' ),
-				self::locale( 'locale_snapshot', 'The locale the labels are written in: the order\'s.' ),
+				self::locale( 'locale_snapshot', 'The locale the labels were resolved in: the language of the request that placed the order, which need not be the order\'s own.' ),
 				new ColumnSpec( 'position', 'int', Classification::Public, 'Where the field was shown among the order\'s fields, from 0.' ),
 			),
 			array( 'id' ),

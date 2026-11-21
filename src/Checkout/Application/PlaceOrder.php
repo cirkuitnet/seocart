@@ -61,6 +61,7 @@ use SEOCart\Promotion\Application\PromotionUsage;
 use SEOCart\Promotion\Application\UsageClaim;
 use SEOCart\Support\Address;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Support\Locale;
 
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- These exceptions report a programming error to the developer; they are never HTML. Coded errors go through CodedException.
 
@@ -473,7 +474,7 @@ final class PlaceOrder {
 			$cart->id,
 			destinationLocationId: $routing->destinationLocationId
 		);
-		$order     = $this->orders->insert( OrderDocument::of( $calculation->totals, $cart->locale, $session->details, $sold, $hold->holdGroup, $customer, $routing->destinationLocationId, $routing->transferLeadDays, $this->rules->declarations() ), $actor );
+		$order     = $this->orders->insert( OrderDocument::of( $calculation->totals, $cart->locale, $session->details, $sold, $hold->holdGroup, $customer, $routing->destinationLocationId, $routing->transferLeadDays, $this->rules->declarations(), Locale::of( determine_locale() ) ), $actor );
 		$summary   = $calculation->totals->summary;
 		$tokenHash = $token->hash();
 

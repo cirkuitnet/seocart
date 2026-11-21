@@ -73,7 +73,8 @@ final class OrderDocument {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \InvalidArgumentException When the checkout has no billing address, or a line's variant has no facts.
+	 * @throws \InvalidArgumentException When the checkout has no billing address, a line's variant has no facts, or a field's
+	 *                                   value is copied without the locale its labels are resolved in.
 	 *
 	 * @param Totals                       $totals     The totals the cart was priced with.
 	 * @param Locale                       $locale     The cart's locale.
@@ -88,11 +89,14 @@ final class OrderDocument {
 	 * @param array                        $declared             Optional. The declared checkout fields with who declared each,
 	 *                                                           by key, in form order (CheckoutRules::declarations()), whose
 	 *                                                           words and source the order keeps with each value. Default none.
+	 * @param Locale|null                  $labelLocale          Optional. The locale the request resolves the fields' labels
+	 *                                                           in, which each value records; given whenever $declared is.
+	 *                                                           Default none.
 	 * @return NewOrder The document.
 	 *
 	 * @phpstan-param array<string, array{field: CheckoutField, source: string}> $declared
 	 */
-	public static function of( Totals $totals, Locale $locale, CheckoutDetails $details, array $sold, ?string $holdGroup, ?int $customerId, ?int $fulfilmentLocationId = null, ?int $transferLeadDays = null, array $declared = array() ): NewOrder {
+	public static function of( Totals $totals, Locale $locale, CheckoutDetails $details, array $sold, ?string $holdGroup, ?int $customerId, ?int $fulfilmentLocationId = null, ?int $transferLeadDays = null, array $declared = array(), ?Locale $labelLocale = null ): NewOrder {
 		$billing = $details->billingAddress ?? throw new \InvalidArgumentException( 'An order is placed with a billing address.' );
 
 		return new NewOrder(
@@ -110,7 +114,7 @@ final class OrderDocument {
 			holdGroup: $holdGroup,
 			fulfilmentLocationId: $fulfilmentLocationId,
 			transferLeadDays: $transferLeadDays,
-			fieldValues: self::fieldValues( $details, $declared )
+			fieldValues: self::fieldValues( $details, $declared, $labelLocale )
 		);
 	}
 
@@ -118,18 +122,22 @@ final class OrderDocument {
 	 * Copies the checkout's custom field values, in form order, each with who declared its field and the field's words as the shopper sees them now: its label and, for a select, the chosen option's label.
 	 *
 	 * The details are those the checkout's rules let be placed (CheckoutRules::forPlacement()), so
-	 * every value is one a field in force accepts. A label is resolved in the request's locale, the
-	 * order's, and kept as long as its column allows (OrderFieldValue::kept()).
+	 * every value is one a field in force accepts. A label is resolved in the request's language,
+	 * which each value records, whatever the order's own locale, and kept as long as its column
+	 * allows (OrderFieldValue::kept()).
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param CheckoutDetails $details  The checkout, as placed.
 	 * @param array           $declared The declared fields with who declared each, by key, in form order.
+	 * @param Locale|null     $locale   The locale the labels are resolved in.
 	 * @return list<OrderFieldValue> The values.
+	 *
+	 * @throws \InvalidArgumentException When there is a value and no locale.
 	 *
 	 * @phpstan-param array<string, array{field: CheckoutField, source: string}> $declared
 	 */
-	private static function fieldValues( CheckoutDetails $details, array $declared ): array {
+	private static function fieldValues( CheckoutDetails $details, array $declared, ?Locale $locale ): array {
 		$values = array();
 
 		foreach ( $declared as list( 'field' => $field, 'source' => $source ) ) {
@@ -147,7 +155,8 @@ final class OrderDocument {
 				$field->type->value,
 				OrderFieldValue::kept( ( $field->label )() ),
 				$value,
-				null === $option ? null : OrderFieldValue::kept( $option() )
+				null === $option ? null : OrderFieldValue::kept( $option() ),
+				( $locale ?? throw new \InvalidArgumentException( 'A checkout field\'s value is copied with the locale its labels are resolved in.' ) )->toString()
 			);
 		}
 

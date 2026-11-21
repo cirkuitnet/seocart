@@ -21,7 +21,7 @@ use SEOCart\Tests\Support\Order\NewOrders;
 use SEOCart\Tests\Support\Order\OrderTestCase;
 
 /**
- * An order's checkout field values are written by its insert as one statement, in form order with the order's locale, nothing for an order without any; a unit retried after its values reached the table writes no second row for a field; and one read answers the values of a list of orders.
+ * An order's checkout field values are written by its insert as one statement, in form order, each with the locale its labels were resolved in, nothing for an order without any; a unit retried after its values reached the table writes no second row for a field; and one read answers the values of a list of orders.
  *
  * Planted violation, shown red and removed: in OrderTables::fieldValues(), leave out the unique key
  * `order_field`. The values sent again for the same order are then written a second time.
@@ -56,7 +56,7 @@ final class OrderFieldValuesTest extends OrderTestCase {
 					'label'       => 'Order note',
 					'field_value' => "Ring twice.\nThank you.",
 					'value_label' => null,
-					'locale'      => $withValues->locale->toString(),
+					'locale'      => 'de_DE',
 				),
 				array(
 					'key'         => 'acme_delivery_slot',
@@ -66,7 +66,7 @@ final class OrderFieldValuesTest extends OrderTestCase {
 					'label'       => 'Delivery slot',
 					'field_value' => 'morning',
 					'value_label' => 'Morning',
-					'locale'      => $withValues->locale->toString(),
+					'locale'      => 'de_DE',
 				),
 			),
 			$read[ $orderIds[0] ]
@@ -104,8 +104,8 @@ final class OrderFieldValuesTest extends OrderTestCase {
 	 */
 	private static function withValues(): NewOrder {
 		$values = array(
-			new OrderFieldValue( 'order_note', 'core', 'order', 'textarea', 'Order note', "Ring twice.\nThank you.", null ),
-			new OrderFieldValue( 'acme_delivery_slot', 'acme', 'order', 'select', 'Delivery slot', 'morning', 'Morning' ),
+			new OrderFieldValue( 'order_note', 'core', 'order', 'textarea', 'Order note', "Ring twice.\nThank you.", null, 'de_DE' ),
+			new OrderFieldValue( 'acme_delivery_slot', 'acme', 'order', 'select', 'Delivery slot', 'morning', 'Morning', 'de_DE' ),
 		);
 
 		return new NewOrder( ...array_merge( get_object_vars( NewOrders::forTwoLines() ), array( 'fieldValues' => $values ) ) );

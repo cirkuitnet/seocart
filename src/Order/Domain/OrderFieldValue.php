@@ -16,10 +16,11 @@ defined( 'ABSPATH' ) || exit;
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- This exception reports a caller's programming error to the developer; it is never HTML.
 
 /**
- * One value of a checkout field that is no address member, with what the field was when the order was placed: its key, who declared it, its section, type and label, and a chosen option's label.
+ * One value of a checkout field that is no address member, with what the field was when the order was placed: its key, who declared it, its section, type and label, a chosen option's label, and the locale the labels were resolved in.
  *
- * Owns one fact: what an order keeps of a checkout field's value. Every member is a snapshot in
- * the order's locale, never read back from the field's declaration, which may change or go. The
+ * Owns one fact: what an order keeps of a checkout field's value. Every member is a snapshot,
+ * never read back from the field's declaration, which may change or go; the labels are in the
+ * locale the placing request resolved them in, which need not be the order's own. The
  * value is personal data, whatever its field.
  *
  * @since 0.2.0
@@ -49,6 +50,7 @@ final readonly class OrderFieldValue {
 	 * @param string      $label      The field's label the shopper saw.
 	 * @param string      $value      The value: for a select, the chosen option's value; for a ticked checkbox, 1.
 	 * @param string|null $valueLabel For a select, the chosen option's label the shopper saw; null for any other type.
+	 * @param string      $locale     The locale the labels were resolved in: the placing request's, such as en_GB.
 	 */
 	public function __construct(
 		public string $key,
@@ -57,10 +59,11 @@ final readonly class OrderFieldValue {
 		public string $type,
 		public string $label,
 		public string $value,
-		public ?string $valueLabel
+		public ?string $valueLabel,
+		public string $locale
 	) {
-		if ( '' === $key || '' === $value ) {
-			throw new \InvalidArgumentException( 'An order keeps a checkout field\'s value by the field\'s key, and only a value given.' );
+		if ( '' === $key || '' === $value || '' === $locale ) {
+			throw new \InvalidArgumentException( 'An order keeps a checkout field\'s value by the field\'s key, only a value given, with the locale its labels were resolved in.' );
 		}
 
 		if ( mb_strlen( $label ) > self::LABEL_MAX_LENGTH || mb_strlen( (string) $valueLabel ) > self::LABEL_MAX_LENGTH ) {
