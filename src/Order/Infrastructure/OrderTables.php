@@ -600,7 +600,7 @@ final class OrderTables {
 				new ColumnSpec( 'label_snapshot', 'varchar(255)', Classification::Public, 'The field\'s label the shopper saw.' ),
 				$destroy( 'field_value', 'text', 'The value the shopper gave; for a select, the chosen option\'s value, and for a ticked checkbox, 1. NULL once erased.' ),
 				$destroy( 'value_label_snapshot', 'varchar(255)', 'For a select, the chosen option\'s label the shopper saw; NULL for any other type, and once erased.' ),
-				self::locale( 'locale_snapshot', 'The locale the labels were resolved in: the language of the request that placed the order, which need not be the order\'s own.' ),
+				self::locale( 'locale_snapshot', 'The locale the labels were resolved in: the language of the request that placed the order, which need not be the order\'s own; the order\'s own when the request\'s is no locale an order can keep.' ),
 				new ColumnSpec( 'position', 'int', Classification::Public, 'Where the field was shown among the order\'s fields, from 0.' ),
 			),
 			array( 'id' ),

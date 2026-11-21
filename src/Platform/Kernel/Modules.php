@@ -1162,6 +1162,21 @@ final class Modules {
 	}
 
 	/**
+	 * Returns the locale a cart started in this request is in, asked of the site's localization when it is wanted.
+	 *
+	 * Owns one fact: where the checkout learns the request's locale. A new cart is started in it,
+	 * and a placement resolves its checkout fields' labels in it; both ask the same service.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Container $container The container the localization comes from.
+	 * @return \Closure(): Locale The reader, which throws for a locale no order can keep.
+	 */
+	private static function newCartLocale( Container $container ): \Closure {
+		return static fn(): Locale => $container->get( PostLocales::class )->siteLocale();
+	}
+
+	/**
 	 * Returns the store's base currency, read from its setting when it is asked for.
 	 *
 	 * Owns one fact: where every catalog service gets the base currency. It is the setting, read
@@ -1462,7 +1477,7 @@ final class Modules {
 				self::checkoutDelivery( $c ),
 				static fn( array $variantIds ): array => $c->get( Availability::class )->forSale( $variantIds, null ),
 				self::baseCurrency( $c ),
-				static fn(): Locale => $c->get( PostLocales::class )->siteLocale(),
+				self::newCartLocale( $c ),
 				$c->get( Calculator::class ),
 				$c->get( PromotionResolver::class )
 			)
@@ -1542,7 +1557,8 @@ final class Modules {
 				$c->get( ClientIdentities::class ),
 				$c->get( Gateways::class ),
 				$c->get( PlannedPricing::class ),
-				$c->get( CheckoutRules::class )
+				$c->get( CheckoutRules::class ),
+				self::newCartLocale( $c )
 			)
 		);
 		$container->bind( ResumePayment::class, static fn( Container $c ): ResumePayment => new ResumePayment( $c->get( TransactionManager::class ), $c->get( CartService::class ), $c->get( PaymentService::class ), $c->get( SettlePlacement::class ), $c->get( Orders::class ) ) );

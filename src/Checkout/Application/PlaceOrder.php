@@ -224,6 +224,11 @@ final class PlaceOrder {
 	 * @param Gateways           $gateways    The store's payment gateways, which say whether the payment method can take the payment.
 	 * @param PlannedPricing     $pricing     The cart's pricing with its plan, which may ask once more.
 	 * @param CheckoutRules      $rules       The checkout's rules, which judge the session before it is priced.
+	 * @param \Closure           $locale      Returns the locale a cart started in this request would be in, which the
+	 *                                        checkout fields' labels are resolved in; it may throw for a locale
+	 *                                        no order can keep.
+	 *
+	 * @phpstan-param \Closure(): Locale $locale
 	 */
 	public function __construct(
 		private CartService $carts,
@@ -242,7 +247,8 @@ final class PlaceOrder {
 		private ClientIdentities $identities,
 		private Gateways $gateways,
 		private PlannedPricing $pricing,
-		private CheckoutRules $rules
+		private CheckoutRules $rules,
+		private \Closure $locale
 	) {
 	}
 
@@ -321,6 +327,7 @@ final class PlaceOrder {
 
 		// The session as the checkout's rules let it be placed: the order, the gateway's contact and the kept answer are built from it.
 		$session     = $this->rules->forPlacement( $this->sessions->find( $cart->id ) );
+		$labels      = $this->labelLocale( $cart, $session );
 		$replan      = true;
 		$calculation = $this->priced( $cart, $session, $input, $replan );
 		$mode        = $this->paymentMode( $session, $calculation );
@@ -328,7 +335,7 @@ final class PlaceOrder {
 		while ( true ) {
 			try {
 				$placed = $this->tx->transaction(
-					fn(): array => $this->placeInside( $cart, $session, $calculation, $mode, $keyHash, $fingerprint, $token, $key, $actor ),
+					fn(): array => $this->placeInside( $cart, $session, $labels, $calculation, $mode, $keyHash, $fingerprint, $token, $key, $actor ),
 					RetryPolicy::deadlocks(),
 					Isolation::ReadCommitted
 				);
@@ -347,6 +354,32 @@ final class PlaceOrder {
 		}
 
 		return $this->paid( $placed, (array) ( $input['payment_data'] ?? array() ), $token, $key, $actor, $session->details->billingAddress );
+	}
+
+	/**
+	 * Returns the locale the checkout fields' labels are resolved in, which the order keeps beside them, or null for a checkout that holds no value and needs none.
+	 *
+	 * Asked before anything is written, of the service a new cart asks for its locale. Where that
+	 * service names no locale an order can keep (a request locale outside a WordPress locale's form,
+	 * or longer than Locale::MAX_LENGTH), the cart's own locale, which the same service gave the
+	 * cart, stands in: the placement never fails over the words of its labels.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Cart            $cart    The cart.
+	 * @param CheckoutSession $session Its checkout, as the rules let it be placed.
+	 * @return Locale|null The locale, or null.
+	 */
+	private function labelLocale( Cart $cart, CheckoutSession $session ): ?Locale {
+		if ( array() === $session->details->fieldValues ) {
+			return null;
+		}
+
+		try {
+			return ( $this->locale )();
+		} catch ( \InvalidArgumentException $unkept ) {
+			return $cart->locale;
+		}
 	}
 
 	/**
@@ -446,6 +479,7 @@ final class PlaceOrder {
 	 *
 	 * @param Cart            $cart          The cart, as read before the transaction.
 	 * @param CheckoutSession $session       Its checkout.
+	 * @param Locale|null     $labels        The locale its fields' labels are resolved in (labelLocale()); null when it holds no value.
 	 * @param Calculation     $calculation   Its totals, priced before the transaction.
 	 * @param Mode|null       $mode          The mode the payment is created in; null when nothing is due.
 	 * @param string          $keyHash       The key's hash.
@@ -456,7 +490,7 @@ final class PlaceOrder {
 	 * @return array{record: array<string, mixed>, order_id: int, intent_uuid: string|null} The answer, the order, and the intent
 	 *                                                                                      to authorize: null when nothing is due.
 	 */
-	private function placeInside( Cart $cart, CheckoutSession $session, Calculation $calculation, ?Mode $mode, string $keyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): array {
+	private function placeInside( Cart $cart, CheckoutSession $session, ?Locale $labels, Calculation $calculation, ?Mode $mode, string $keyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): array {
 		$version = $this->carts->claimForPlacement( $cart->id, $cart->version, $actor );
 		$claim   = $this->keys->claim( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint, self::KEY_TTL_SECONDS, self::claimedFor( $actor ) );
 
@@ -474,7 +508,7 @@ final class PlaceOrder {
 			$cart->id,
 			destinationLocationId: $routing->destinationLocationId
 		);
-		$order     = $this->orders->insert( OrderDocument::of( $calculation->totals, $cart->locale, $session->details, $sold, $hold->holdGroup, $customer, $routing->destinationLocationId, $routing->transferLeadDays, $this->rules->declarations(), Locale::of( determine_locale() ) ), $actor );
+		$order     = $this->orders->insert( OrderDocument::of( $calculation->totals, $cart->locale, $session->details, $sold, $hold->holdGroup, $customer, $routing->destinationLocationId, $routing->transferLeadDays, $this->rules->declarations(), $labels ), $actor );
 		$summary   = $calculation->totals->summary;
 		$tokenHash = $token->hash();
 

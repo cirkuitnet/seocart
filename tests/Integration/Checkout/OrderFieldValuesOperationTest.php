@@ -282,6 +282,57 @@ final class OrderFieldValuesOperationTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Provides request locales no order can keep, each with and without a checkout field value: one outside a WordPress locale's form, and one longer than a locale column holds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string, bool}> The locale a `locale` filter answers, and whether the checkout holds a value.
+	 */
+	public static function unkeptLocales(): array {
+		$long = 'en_US_' . str_repeat( 'x', 24 );
+
+		return array(
+			'a value, a locale outside the form'   => array( 'en-US', true ),
+			'a value, a variant of 30 characters'  => array( $long, true ),
+			'no value, a locale outside the form'  => array( 'en-US', false ),
+			'no value, a variant of 30 characters' => array( $long, false ),
+		);
+	}
+
+	/**
+	 * Tests that a request whose locale no order can keep still places its order: a row keeps the locale of the cart, which the same service gave the cart and fits its column, and an order without values never asks for the locale.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider unkeptLocales
+	 *
+	 * @param string $locale    The locale the request's `locale` filter answers.
+	 * @param bool   $withValue Whether the checkout holds a field value.
+	 */
+	public function test_a_request_locale_no_order_can_keep_still_places_the_order( string $locale, bool $withValue ): void {
+		$variant = $this->sellable();
+		$cart    = $this->readyCart( array( $variant => 1 ) );
+		$unkept  = static fn(): string => $locale;
+
+		$this->writeCheckout( $cart->version, StubGateway::ID, $withValue ? array( AcmeCheckoutFields::DELIVERY_SLOT => 'morning' ) : array() );
+
+		add_filter( 'locale', $unkept );
+
+		try {
+			$answer = $this->freshPlacement()->place( $this->placeInput( 'unkept-locale' ), self::guest() );
+		} finally {
+			remove_filter( 'locale', $unkept );
+		}
+
+		$this->assertSame( 'approved', $answer['outcome'] ?? null, (string) wp_json_encode( $answer ) );
+		$this->assertSame(
+			$withValue ? array( $cart->locale->toString() ) : array(),
+			array_column( $this->db->fetchAll( 'SELECT locale_snapshot FROM %i', $this->table( OrderTables::FIELD_VALUES ) ), 'locale_snapshot' ),
+			'The row does not keep the cart\'s locale in place of one no order can keep.'
+		);
+	}
+
+	/**
 	 * Places an order whose checkout holds custom field values, and returns its uuid.
 	 *
 	 * @since 0.2.0

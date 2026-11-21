@@ -90,7 +90,8 @@ final class OrderDocument {
 	 *                                                           by key, in form order (CheckoutRules::declarations()), whose
 	 *                                                           words and source the order keeps with each value. Default none.
 	 * @param Locale|null                  $labelLocale          Optional. The locale the request resolves the fields' labels
-	 *                                                           in, which each value records; given whenever $declared is.
+	 *                                                           in, which each value records; given whenever the checkout
+	 *                                                           holds a value.
 	 *                                                           Default none.
 	 * @return NewOrder The document.
 	 *
