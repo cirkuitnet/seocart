@@ -291,6 +291,15 @@ Fires after a refund the gateway made, and its document, are committed.
 - `baseCurrency` (string): The base currency, ISO 4217.
 - `reasonCode` (string): Why the order was refunded.
 
+## `seocart_register_checkout_fields`
+
+Fires when the checkout first needs its fields, so an extension can register its own.
+
+- Fires: At most once per request, the first time something needs the checkout's fields: a session write, a placement, the checkout form, the store's field list or an order's field values; never on a request that needs none.
+- Listener arguments: `( SEOCart\Contracts\Checkout\CheckoutFieldRegistry $registry )`
+- Register with: `add_action( 'seocart_register_checkout_fields', $callback )`, naming the action as a string: an extension's main file runs before the plugin's classes exist.
+- Since: 0.2.0
+
 ## `seocart_register_payment_gateways`
 
 Fires when the store first needs its payment gateways, so a gateway plugin can register its gateway.

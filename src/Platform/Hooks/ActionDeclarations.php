@@ -32,6 +32,7 @@ final class ActionDeclarations {
 	 */
 	public const ALL = array(
 		EnqueuePaymentIslandsAction::class,
+		RegisterCheckoutFieldsAction::class,
 		RegisterPaymentGatewaysAction::class,
 	);
 }

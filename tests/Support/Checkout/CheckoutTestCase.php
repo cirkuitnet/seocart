@@ -106,7 +106,7 @@ abstract class CheckoutTestCase extends CartTestCase {
 	}
 
 	/**
-	 * Returns the checkout's rules over `$this->db`, as the kernel wires them: the built-in fields, read with the inventory group.
+	 * Returns the checkout's rules over `$this->db`, as the kernel wires them: the built-in fields, read with the inventory group, reporting to the test.
 	 *
 	 * @since 0.2.0
 	 *
@@ -116,7 +116,7 @@ abstract class CheckoutTestCase extends CartTestCase {
 	 * @phpstan-param list<CheckoutField>|null $fields
 	 */
 	protected function rules( ?array $fields = null ): CheckoutRules {
-		return new CheckoutRules( new SettingsStore( Settings::registry(), $this->db ), InventorySettings::settings(), $fields ?? BuiltInFields::all() );
+		return new CheckoutRules( new SettingsStore( Settings::registry(), $this->db ), InventorySettings::settings(), $fields ?? BuiltInFields::all(), null, $this->reporter() );
 	}
 
 	/**

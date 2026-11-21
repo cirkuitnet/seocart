@@ -69,6 +69,7 @@ use SEOCart\Checkout\Application\CheckoutForm;
 use SEOCart\Checkout\Application\CheckoutRules;
 use SEOCart\Checkout\Application\CheckoutSessions;
 use SEOCart\Checkout\Application\CheckoutSettingsService;
+use SEOCart\Checkout\Application\ExtensionFields;
 use SEOCart\Checkout\Application\IdempotencyKeys;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\PlannedPricing;
@@ -85,6 +86,7 @@ use SEOCart\Checkout\Infrastructure\Jobs\ReconcileStalePlacements;
 use SEOCart\Checkout\Infrastructure\MysqlCheckoutSessions;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Checkout\Interfaces\Rest\WebhookRoute;
+use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Contracts\HttpClient;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Customer\Application\Customers;
@@ -1491,7 +1493,17 @@ final class Modules {
 		$container->bind( IdempotencyKeys::class, static fn( Container $c ): IdempotencyKeys => $c->get( MysqlIdempotencyKeys::class ) );
 		$container->bind( PlannedPricing::class, static fn( Container $c ): PlannedPricing => new PlannedPricing( static fn( array $variantIds ): int => $c->get( StockService::class )->reclaimExpiredOf( $variantIds ) ) );
 		// The rules read their group with the inventory group's settings, which the calculation reads next: one statement primes both.
-		$container->bind( CheckoutRules::class, static fn( Container $c ): CheckoutRules => new CheckoutRules( $c->get( SettingsStore::class ), InventorySettings::settings(), BuiltInFields::all() ) );
+		$container->bind(
+			CheckoutRules::class,
+			static fn( Container $c ): CheckoutRules => new CheckoutRules(
+				$c->get( SettingsStore::class ),
+				InventorySettings::settings(),
+				BuiltInFields::all(),
+				// No extension's field may take the name of a member of the session write.
+				new ExtensionFields( array_map( static fn( FieldSpec $member ): string => $member->name(), CheckoutOperations::updateSession()->input() ), $c->get( Reporter::class ) ),
+				$c->get( Reporter::class )
+			)
+		);
 		$container->bind( CheckoutForm::class, static fn( Container $c ): CheckoutForm => new CheckoutForm( $c->get( CheckoutRules::class ) ) );
 		$container->bind( CheckoutSettingsService::class, static fn( Container $c ): CheckoutSettingsService => new CheckoutSettingsService( $c->get( CheckoutRules::class ), $c->get( SettingsStore::class ) ) );
 		$container->bind( UpdateCheckoutSession::class, static fn( Container $c ): UpdateCheckoutSession => new UpdateCheckoutSession( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( Gateways::class ), $c->get( PlannedPricing::class ), $c->get( CheckoutRules::class ) ) );
@@ -1535,7 +1547,7 @@ final class Modules {
 		$container->bind( ResumePayment::class, static fn( Container $c ): ResumePayment => new ResumePayment( $c->get( TransactionManager::class ), $c->get( CartService::class ), $c->get( PaymentService::class ), $c->get( SettlePlacement::class ), $c->get( Orders::class ) ) );
 		$container->bind( ReconcileStalePlacements::class, static fn( Container $c ): ReconcileStalePlacements => new ReconcileStalePlacements( $c->get( PaymentService::class ), $c->get( Orders::class ), $c->get( SettlePlacement::class ), $c->get( Reporter::class ) ) );
 		$container->bind( IdempotencyKeyRetention::class, static fn( Container $c ): IdempotencyKeyRetention => new IdempotencyKeyRetention( $c->get( MysqlIdempotencyKeys::class ) ) );
-		$container->bind( CheckoutChecks::class, static fn( Container $c ): CheckoutChecks => new CheckoutChecks( $c->get( MysqlIdempotencyKeys::class ), $c->get( Database::class ), $c->get( PaymentRepository::class ), $c->get( OrderRepository::class ), $c->get( Gateways::class ) ) );
+		$container->bind( CheckoutChecks::class, static fn( Container $c ): CheckoutChecks => new CheckoutChecks( $c->get( MysqlIdempotencyKeys::class ), $c->get( Database::class ), $c->get( PaymentRepository::class ), $c->get( OrderRepository::class ), $c->get( Gateways::class ), $c->get( CheckoutRules::class ) ) );
 		$container->bind(
 			ReceiveWebhook::class,
 			static fn( Container $c ): ReceiveWebhook => new ReceiveWebhook(

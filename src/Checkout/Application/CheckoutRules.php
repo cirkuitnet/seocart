@@ -15,6 +15,7 @@ use SEOCart\Checkout\Domain\AddressDocument;
 use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\CheckoutSession;
+use SEOCart\Checkout\Domain\Fields\BuiltInFields;
 use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Domain\Fields\CheckoutText;
 use SEOCart\Checkout\Domain\Fields\CompiledFields;
@@ -48,7 +49,13 @@ defined( 'ABSPATH' ) || exit;
  * A value is judged by the request's own values and the store's declarations alone: no refusal
  * reads a user, a customer or an order, and none names a value, only the field and why. The last
  * rule a value meets is its declaration's own check, when it has one: given a value every other
- * rule accepted, it answers null, or the sentence that says why it refuses it.
+ * rule accepted, it answers null, or the sentence that says why it refuses it. A check that throws
+ * refuses the value too, and is reported once with the code CHECK_FAILED, the field's key and the
+ * exception's class: never the value, nor the exception's message, which may quote it.
+ *
+ * The declared fields are SEOCart's own, then those extensions register (ExtensionFields), asked
+ * for the first time the rules need their fields in a request, which fires the registration action
+ * then and never on a request that needs none.
  *
  * @since 0.2.0
  */
@@ -118,6 +125,15 @@ final class CheckoutRules {
 	public const REJECTED = 'rejected';
 
 	/**
+	 * The code a declaration's own check that threw is reported with.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CHECK_FAILED = 'checkout.field_check_failed';
+
+	/**
 	 * The store's settings.
 	 *
 	 * @since 0.2.0
@@ -136,13 +152,40 @@ final class CheckoutRules {
 	private array $alongside;
 
 	/**
-	 * The declared fields, in form order.
+	 * SEOCart's own fields, in form order.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var list<CheckoutField>
 	 */
 	private array $fields;
+
+	/**
+	 * The fields extensions register, or null where none may.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var ExtensionFields|null
+	 */
+	private ?ExtensionFields $extensions;
+
+	/**
+	 * Receives a report code and its context.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var \Closure(string, array<string, mixed>): void
+	 */
+	private \Closure $report;
+
+	/**
+	 * Every declared field, SEOCart's own then the extensions', once asked for.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<CheckoutField>|null
+	 */
+	private ?array $declared = null;
 
 	/**
 	 * The fields with their presences, once read.
@@ -163,22 +206,29 @@ final class CheckoutRules {
 	private array $limits = array();
 
 	/**
-	 * Creates the rules. Reads nothing.
+	 * Creates the rules. Reads nothing and fires nothing.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param SettingsStore   $store     The store's settings.
-	 * @param Setting[]       $alongside The settings read in the same statement: the ones the
-	 *                                   calculation reads next.
-	 * @param CheckoutField[] $fields    The declared fields, in form order.
+	 * @param SettingsStore        $store      The store's settings.
+	 * @param Setting[]            $alongside  The settings read in the same statement: the ones the
+	 *                                         calculation reads next.
+	 * @param CheckoutField[]      $fields     SEOCart's own fields, in form order.
+	 * @param ExtensionFields|null $extensions Optional. The fields extensions register. Default
+	 *                                         none: the fields given are all there are.
+	 * @param callable|null        $report     Optional. Receives a report code (string) and its
+	 *                                         context (array). Default: reports go nowhere.
 	 *
 	 * @phpstan-param list<Setting>       $alongside
 	 * @phpstan-param list<CheckoutField> $fields
+	 * @phpstan-param (callable(string, array<string, mixed>): void)|null $report
 	 */
-	public function __construct( SettingsStore $store, array $alongside, array $fields ) {
-		$this->store     = $store;
-		$this->alongside = $alongside;
-		$this->fields    = $fields;
+	public function __construct( SettingsStore $store, array $alongside, array $fields, ?ExtensionFields $extensions = null, ?callable $report = null ) {
+		$this->store      = $store;
+		$this->alongside  = $alongside;
+		$this->fields     = $fields;
+		$this->extensions = $extensions;
+		$this->report     = null === $report ? static function (): void {} : \Closure::fromCallable( $report );
 	}
 
 	/**
@@ -196,21 +246,46 @@ final class CheckoutRules {
 			$values = $this->store->values( array_merge( CheckoutSettings::settings(), $this->alongside ) );
 
 			$this->limits   = CheckoutSettings::limits( (string) $values[ CheckoutSettings::ORDER_LIMITS ] );
-			$this->compiled = new CompiledFields( $this->fields, CheckoutSettings::presences( (string) $values[ CheckoutSettings::FIELD_PRESENCE ] ) );
+			$this->compiled = new CompiledFields( $this->fields(), CheckoutSettings::presences( (string) $values[ CheckoutSettings::FIELD_PRESENCE ] ) );
 		}
 
 		return $this->compiled;
 	}
 
 	/**
-	 * Returns the declared fields, in form order, without reading the store's choices.
+	 * Returns the declared fields, in form order, without reading the store's choices: SEOCart's own, then those extensions register, which the first call in a request asks for.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @return list<CheckoutField> The fields.
 	 */
 	public function fields(): array {
-		return $this->fields;
+		return $this->declared ??= array_merge( $this->fields, null === $this->extensions ? array() : $this->extensions->fieldsBeside( $this->fields ) );
+	}
+
+	/**
+	 * Says who declared a field, as the store's field list names it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CheckoutField $field A declared field.
+	 * @return string The id of the extension that registered it, or BuiltInFields::SOURCE for SEOCart's own.
+	 */
+	public function sourceOf( CheckoutField $field ): string {
+		return $this->extensions?->sourceOf( $field->key ) ?? BuiltInFields::SOURCE;
+	}
+
+	/**
+	 * Returns the registrations of extension fields refused in this request, asking for the fields first.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<array{extension: string, key: string, reason: string}> The refusals, in order (ExtensionFields::refused()).
+	 */
+	public function refusedRegistrations(): array {
+		$this->fields();
+
+		return null === $this->extensions ? array() : $this->extensions->refused();
 	}
 
 	/**
@@ -356,7 +431,7 @@ final class CheckoutRules {
 			}
 
 			$carried[ $field->key ] = true;
-			$fault                  = self::faultOf( $fields, $field, $address . '.' . $field->key, $document[ $field->key ] ?? '' );
+			$fault                  = $this->faultOf( $fields, $field, $address . '.' . $field->key, $document[ $field->key ] ?? '' );
 
 			if ( null !== $fault ) {
 				$faults[] = $fault;
@@ -386,14 +461,14 @@ final class CheckoutRules {
 	 * @param mixed          $value  The value given; an empty string for none.
 	 * @return array{field: string, reason: string, message?: string}|null The fault, or null.
 	 */
-	private static function faultOf( CompiledFields $fields, CheckoutField $field, string $path, mixed $value ): ?array {
+	private function faultOf( CompiledFields $fields, CheckoutField $field, string $path, mixed $value ): ?array {
 		$reason = self::reasonFor( $fields, $field, $value );
 
 		if ( null !== $reason ) {
 			return self::fault( $path, $reason );
 		}
 
-		return is_string( $value ) && '' !== $value ? self::checkFault( $field, $path, $value ) : null;
+		return is_string( $value ) && '' !== $value ? $this->checkFault( $field, $path, $value ) : null;
 	}
 
 	/**
@@ -402,6 +477,8 @@ final class CheckoutRules {
 	 * The check is given a value every other rule of its field accepted, and answers null, or the
 	 * sentence that says why it refuses it, which the fault carries as its message. A check that
 	 * throws refuses the value too, with no message: what it threw is not for the shopper to read.
+	 * It is reported with CHECK_FAILED, the field's key and the exception's class, and nothing that
+	 * could quote the value.
 	 *
 	 * @since 0.2.0
 	 *
@@ -410,14 +487,22 @@ final class CheckoutRules {
 	 * @param string        $value The value, which every other rule of the field accepted.
 	 * @return array{field: string, reason: string, message?: string}|null The fault, or null.
 	 */
-	private static function checkFault( CheckoutField $field, string $path, string $value ): ?array {
+	private function checkFault( CheckoutField $field, string $path, string $value ): ?array {
 		if ( null === $field->check ) {
 			return null;
 		}
 
 		try {
 			$refusal = ( $field->check )( $value );
-		} catch ( \Throwable ) {
+		} catch ( \Throwable $failed ) {
+			( $this->report )(
+				self::CHECK_FAILED,
+				array(
+					'field'     => $field->key,
+					'exception' => get_class( $failed ),
+				)
+			);
+
 			return self::fault( $path, self::REJECTED );
 		}
 

@@ -11,12 +11,22 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Checkout;
 
+use SEOCart\Checkout\Application\ExtensionFields;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Checkout\Infrastructure\Doctor\CheckoutChecks;
+use SEOCart\Contracts\Checkout\CheckoutField;
+use SEOCart\Contracts\Checkout\CheckoutFieldRegistry;
+use SEOCart\Contracts\Checkout\CheckoutFieldType;
+use SEOCart\Contracts\Checkout\Presence;
+use SEOCart\Contracts\Checkout\Section;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
+use SEOCart\Platform\Database\Schema\DdlGenerator;
+use SEOCart\Platform\Database\Schema\SchemaVerifier;
+use SEOCart\Platform\Database\SchemaOperations;
+use SEOCart\Platform\Logging\Migrations\CreateLogsMigration;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 
@@ -79,6 +89,32 @@ final class CheckoutChecksTest extends PlacementTestCase {
 		$this->assertTrue( $check->run()->passed, 'The stranded key is still reported after --repair.' );
 		$this->assertSame( array( $young->id, $placed->id ), array_map( 'intval', array_column( $this->db->fetchAll( 'SELECT id FROM %i ORDER BY id', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ) ), 'id' ) ), '--repair touched a key it must not.' );
 		$this->assertTrue( $this->claimCommitted( self::keyHash( 'stranded' ), self::digest( 'request 1' ) )->owned, 'The retry did not own the key once the stranded claim was gone.' );
+	}
+
+	/**
+	 * Tests that the check notes the checkout fields an extension registered that the checkout left out, by key, extension and reason, and still passes.
+	 *
+	 * Planted violation: in CheckoutChecks::run(), leave out the note: no line names the refused field.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_refused_checkout_field_is_noted(): void {
+		$register = static function ( CheckoutFieldRegistry $registry ): void {
+			$registry->register( 'acme', new CheckoutField( key: 'phone', section: Section::Order, type: CheckoutFieldType::Text, label: static fn(): string => 'Phone', maxLength: 20, presences: array( Presence::Optional ) ) );
+		};
+
+		// The refusal is reported to the log, which the kernel's reporter writes.
+		( new CreateLogsMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+		add_action( CheckoutFieldRegistry::ACTION, $register );
+
+		try {
+			$result = $this->kernel->get( CheckoutChecks::class )->run();
+		} finally {
+			remove_action( CheckoutFieldRegistry::ACTION, $register );
+		}
+
+		$this->assertTrue( $result->passed, implode( "\n", $result->findings ) );
+		$this->assertSame( array( 'Note: the checkout left out 1 checkout field an extension registered: phone from acme (' . ExtensionFields::RESERVED_KEY . '). Each was logged with the code ' . ExtensionFields::REJECTED . '; the extension\'s documentation says what it needs.' ), $result->findings );
 	}
 
 	/**

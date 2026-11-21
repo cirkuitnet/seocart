@@ -262,7 +262,7 @@ final class CheckoutSettingsOperations {
 							new FieldSpec(
 								name: 'source',
 								type: FieldType::String,
-								description: 'Who declared the field: core for SEOCart\'s own fields.',
+								description: 'Who declared the field: core for SEOCart\'s own fields, or the id of the extension that registered it.',
 								label: static fn(): string => __( 'Source', 'seocart' ),
 								example: BuiltInFields::SOURCE,
 								required: true

@@ -12,7 +12,6 @@ declare( strict_types=1 );
 namespace SEOCart\Checkout\Application;
 
 use SEOCart\Checkout\Domain\CheckoutError;
-use SEOCart\Checkout\Domain\Fields\BuiltInFields;
 use SEOCart\Checkout\Domain\Fields\CompiledFields;
 use SEOCart\Contracts\Checkout\CheckoutField;
 use SEOCart\Contracts\Checkout\Presence;
@@ -111,7 +110,7 @@ final class CheckoutSettingsService {
 	public function getFields( array $input, Actor $actor ): array {
 		unset( $input, $actor );
 
-		return self::fieldList( $this->rules->current() );
+		return $this->fieldList( $this->rules->current() );
 	}
 
 	/**
@@ -157,7 +156,7 @@ final class CheckoutSettingsService {
 			static fn( string $stored ): string => CheckoutSettings::encode( ( new CompiledFields( $declared->all(), $chosen + CheckoutSettings::presences( $stored ) ) )->choices() )
 		);
 
-		return self::fieldList( new CompiledFields( $declared->all(), CheckoutSettings::presences( $written ) ) );
+		return $this->fieldList( new CompiledFields( $declared->all(), CheckoutSettings::presences( $written ) ) );
 	}
 
 	/**
@@ -299,13 +298,13 @@ final class CheckoutSettingsService {
 	 * @param CompiledFields $fields The fields with their presences.
 	 * @return array{fields: list<array<string, mixed>>} The fields, in form order.
 	 */
-	private static function fieldList( CompiledFields $fields ): array {
+	private function fieldList( CompiledFields $fields ): array {
 		return array(
 			'fields' => array_map(
-				static fn( CheckoutField $field ): array => CheckoutRules::identityOf( $field ) + array(
+				fn( CheckoutField $field ): array => CheckoutRules::identityOf( $field ) + array(
 					'presence'  => $fields->presenceOf( $field )->value,
 					'presences' => array_map( static fn( Presence $presence ): array => array( 'presence' => $presence->value ), $field->presences ),
-					'source'    => BuiltInFields::SOURCE,
+					'source'    => $this->rules->sourceOf( $field ),
 					'locked'    => $field->isLocked(),
 				),
 				$fields->all()

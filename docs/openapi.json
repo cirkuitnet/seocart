@@ -6114,7 +6114,7 @@
                                 },
                                 "source": {
                                     "type": "string",
-                                    "description": "Who declared the field: core for SEOCart's own fields."
+                                    "description": "Who declared the field: core for SEOCart's own fields, or the id of the extension that registered it."
                                 },
                                 "locked": {
                                     "type": "boolean",

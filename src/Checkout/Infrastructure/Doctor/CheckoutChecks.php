@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Checkout\Infrastructure\Doctor;
 
+use SEOCart\Checkout\Application\CheckoutRules;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Order\Domain\OrderRepository;
 use SEOCart\Payment\Application\Gateways;
@@ -49,6 +50,10 @@ defined( 'ABSPATH' ) || exit;
  * settles it until a person acts. Nothing here settles it, and repair leaves it alone.
  *
  * It prints key ids, scopes and ages, and order uuids, never a hash or an answer.
+ *
+ * It also notes the checkout fields extensions registered in the request that the checkout left
+ * out (CheckoutRules::refusedRegistrations()), by the extension, the key and the reason: an
+ * extension's own business, which never fails the check.
  *
  * @since 0.1.0
  */
@@ -136,6 +141,15 @@ final class CheckoutChecks implements Repairable {
 	private Gateways $gateways;
 
 	/**
+	 * The checkout's rules, which say what extensions' field registrations were refused.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var CheckoutRules
+	 */
+	private CheckoutRules $rules;
+
+	/**
 	 * The keys the last run() found, for repair() to act on.
 	 *
 	 * @since 0.1.0
@@ -154,13 +168,15 @@ final class CheckoutChecks implements Repairable {
 	 * @param PaymentRepository    $payments The payment intents.
 	 * @param OrderRepository      $orders   The orders.
 	 * @param Gateways             $gateways The payment gateways.
+	 * @param CheckoutRules        $rules    The checkout's rules.
 	 */
-	public function __construct( MysqlIdempotencyKeys $keys, Database $db, PaymentRepository $payments, OrderRepository $orders, Gateways $gateways ) {
+	public function __construct( MysqlIdempotencyKeys $keys, Database $db, PaymentRepository $payments, OrderRepository $orders, Gateways $gateways, CheckoutRules $rules ) {
 		$this->keys     = $keys;
 		$this->db       = $db;
 		$this->payments = $payments;
 		$this->orders   = $orders;
 		$this->gateways = $gateways;
+		$this->rules    = $rules;
 	}
 
 	/**
@@ -187,10 +203,12 @@ final class CheckoutChecks implements Repairable {
 		$waiting  = $this->waitingPlacements();
 		$stranded = $this->keys->stranded( self::STRANDED_SECONDS, self::LIMIT );
 
+		$notes = $this->refusedFieldsNote();
+
 		$this->found = array_column( $stranded, 'id' );
 
 		if ( ! $refused && array() === $waiting && array() === $stranded ) {
-			return CheckResult::pass( self::NAME, sprintf( 'The binary log takes the checkout\'s writes, no placement has waited for its payment for more than %1$d hours, and no idempotency key has been claimed for more than %2$d minutes without its order.', intdiv( self::PENDING_SECONDS, 3600 ), intdiv( self::STRANDED_SECONDS, 60 ) ) );
+			return CheckResult::pass( self::NAME, sprintf( 'The binary log takes the checkout\'s writes, no placement has waited for its payment for more than %1$d hours, and no idempotency key has been claimed for more than %2$d minutes without its order.', intdiv( self::PENDING_SECONDS, 3600 ), intdiv( self::STRANDED_SECONDS, 60 ) ), $notes );
 		}
 
 		$findings = array();
@@ -222,7 +240,26 @@ final class CheckoutChecks implements Repairable {
 			$summary = trim( $summary . ' ' . sprintf( '%d stranded idempotency %s.', count( $stranded ), 1 === count( $stranded ) ? 'key' : 'keys' ) );
 		}
 
-		return CheckResult::fail( self::NAME, $summary, $findings );
+		return CheckResult::fail( self::NAME, $summary, array_merge( $findings, $notes ) );
+	}
+
+	/**
+	 * Notes the checkout fields extensions registered in this request that the checkout left out, each by its extension, its key and the reason.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<string> One `Note:` line, or none when no registration was refused.
+	 */
+	private function refusedFieldsNote(): array {
+		$refused = $this->rules->refusedRegistrations();
+
+		if ( array() === $refused ) {
+			return array();
+		}
+
+		$listed = array_map( static fn( array $refusal ): string => sprintf( '%1$s from %2$s (%3$s)', '' === $refusal['key'] ? 'a listener' : $refusal['key'], '' === $refusal['extension'] ? 'an unknown extension' : $refusal['extension'], $refusal['reason'] ), $refused );
+
+		return array( sprintf( 'Note: the checkout left out %1$d checkout %2$s an extension registered: %3$s. Each was logged with the code checkout.field_rejected; the extension\'s documentation says what it needs.', count( $refused ), 1 === count( $refused ) ? 'field' : 'fields', implode( '; ', $listed ) ) );
 	}
 
 	/**

@@ -23,6 +23,8 @@ use SEOCart\Catalog\Infrastructure\MysqlCatalogSearch;
 use SEOCart\Catalog\Infrastructure\MysqlPriceProjections;
 use SEOCart\Catalog\Infrastructure\MysqlProductRepository;
 use SEOCart\Catalog\Infrastructure\MysqlStockSummaryProjection;
+use SEOCart\Checkout\Application\CheckoutRules;
+use SEOCart\Checkout\Domain\Fields\BuiltInFields;
 use SEOCart\Checkout\Infrastructure\Doctor\CheckoutChecks;
 use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Order\Infrastructure\MysqlOrderRepository;
@@ -56,6 +58,7 @@ use SEOCart\Platform\Secrets\SecretsStatus;
 use SEOCart\Platform\Secrets\SecretVault;
 use SEOCart\Platform\Settings\Settings;
 use SEOCart\Platform\Settings\SettingsStore;
+use SEOCart\Inventory\Application\InventorySettings;
 use SEOCart\Pricing\Infrastructure\Doctor\RateVersionCheck;
 use SEOCart\Pricing\Infrastructure\MysqlExchangeRates;
 use SEOCart\Pricing\Infrastructure\MysqlPresentmentCurrencies;
@@ -173,7 +176,7 @@ final class SeedVerifier {
 			self::migrator( $db, $report ),
 			new Outbox( $db ),
 			new ActionSchedulerQueue( $db, new LockService( $db, LockMode::Table ), new JobHandlers( JobHandlers::PRODUCTION, 'strval' ), new CorrelationId( new SequentialIdGenerator() ), $report ),
-			new CheckoutChecks( new MysqlIdempotencyKeys( $db ), $db, $payments, new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 960000 ) ), $gateways ),
+			new CheckoutChecks( new MysqlIdempotencyKeys( $db ), $db, $payments, new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 960000 ) ), $gateways, new CheckoutRules( new SettingsStore( Settings::registry(), $db ), InventorySettings::settings(), BuiltInFields::all() ) ),
 			StockServices::check( $db, $stock ),
 			new PaymentLedgerCheck( new MysqlPaymentRepository( $db, new SequentialIdGenerator( 980000 ) ), new MysqlOrderRepository( new OrderStatements( $db ), new SequentialIdGenerator( 990000 ) ) ),
 			new GatewaysCheck( new GatewayStatuses( $gateways, $payments ), $gateways ),

@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Checkout;
 
+use SEOCart\Checkout\Application\CheckoutRules;
 use SEOCart\Checkout\Domain\AddressDocument;
 use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Checkout\Domain\CheckoutError;
@@ -26,8 +27,9 @@ use SEOCart\Tests\Support\Checkout\CheckoutTestCase;
  * A declaration's own check is the last rule a value meets: it is given a value every other rule of its field accepted, and answers null to accept it or the sentence that says why not; a check that throws refuses the value too.
  *
  * A refusal is the reason `rejected`, with the check's sentence, when it gave one, as the entry's
- * `message`. The session write and the placement judge through the one validator, so both refuse
- * alike. The test declares the built-in fields with one changed: the second address line, given a
+ * `message`. A check that throws leaves one report: its code, the field's key and the exception's
+ * class, never the value nor the exception's message, which quotes it here. The session write and
+ * the placement judge through the one validator, so both refuse alike. The test declares the built-in fields with one changed: the second address line, given a
  * check that refuses a post office box and throws on a value it cannot judge. No built-in field
  * declares a check.
  *
@@ -36,7 +38,9 @@ use SEOCart\Tests\Support\Checkout\CheckoutTestCase;
  * - in CheckoutRules::checkFault(), let what the check throws through: the throwing row ends in
  *   the check's exception instead of a refusal;
  * - in CheckoutRules::faultOf(), call the check before the field's other rules: a value too long,
- *   or holding a refused character, reaches the check.
+ *   or holding a refused character, reaches the check;
+ * - in CheckoutRules::checkFault(), report the exception's message beside its class: the throwing
+ *   row's report quotes the value.
  *
  * @since 0.2.0
  */
@@ -113,6 +117,25 @@ final class FieldCheckTest extends CheckoutTestCase {
 		}
 
 		$this->assertSame( $checked, $this->checked, 'The values the check was given.' );
+		$this->assertSame( 'boom' === $line2 ? array( self::checkFailedReport() ) : array(), $this->reports, 'Only a check that throws is reported.' );
+		$this->assertStringNotContainsString( 'boom', (string) wp_json_encode( $this->reports ), 'A report quotes the value.' );
+	}
+
+	/**
+	 * Returns the one report a check that throws leaves: its code, the field's key and the exception's class.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array{code: string, context: array{field: string, exception: string}} The report.
+	 */
+	private static function checkFailedReport(): array {
+		return array(
+			'code'    => CheckoutRules::CHECK_FAILED,
+			'context' => array(
+				'field'     => 'line2',
+				'exception' => \RuntimeException::class,
+			),
+		);
 	}
 
 	/**
@@ -167,7 +190,7 @@ final class FieldCheckTest extends CheckoutTestCase {
 					$this->checked[] = $value;
 
 					if ( 'boom' === $value ) {
-						throw new \RuntimeException( 'The check cannot judge this value.' );
+						throw new \RuntimeException( sprintf( 'The check cannot judge %s.', $value ) );
 					}
 
 					return str_starts_with( $value, 'PO Box' ) ? self::REFUSAL : null;
