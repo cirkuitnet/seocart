@@ -586,6 +586,7 @@ test.describe( 'Store API, as a guest', () => {
 			shipping_address: {},
 			shipping_method_key: 'flat',
 			payment_method_key: 'stub',
+			custom_fields: [],
 		} );
 		expect( answer.totals.summary.shipping_total_minor ).toBe( 0 );
 
