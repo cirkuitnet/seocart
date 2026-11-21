@@ -242,31 +242,46 @@ final class FieldValidationTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Tests the two values the compiled schema refuses before the checkout's rules see them: one character over a field's length, and an email address in the shipping address, which does not carry one.
+	 * Provides values an address's compiled schema refuses, each with the address it is sent in and WordPress's code for the fault.
 	 *
 	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string, string, mixed, string}> The address, the member, the value sent, and the code.
 	 */
-	public function test_the_schema_refuses_a_long_value_and_a_shipping_email(): void {
+	public static function schemaRefusals(): array {
+		return array(
+			'one character over the length, counted in characters' => array( Carrier::BILLING, 'city', str_repeat( "\u{00E9}", self::field( 'city' )->maxLength + 1 ), 'rest_too_long' ),
+			'a member the address does not have'       => array( Carrier::BILLING, 'nickname', 'Ada', 'rest_additional_properties_forbidden' ),
+			'a value that is not a string'             => array( Carrier::BILLING, 'city', 5, 'rest_invalid_type' ),
+			'an email address in the shipping address' => array( Carrier::SHIPPING, 'email', 'ada@example.com', 'rest_additional_properties_forbidden' ),
+		);
+	}
+
+	/**
+	 * Tests one value the route's schema refuses, as on every operation, before the checkout's rules run: `rest_invalid_param`, HTTP 400, WordPress's code for the address that holds it, and nothing stored.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider schemaRefusals
+	 *
+	 * @param string $address The address the value is sent in.
+	 * @param string $member  The member it is sent as.
+	 * @param mixed  $value   The value.
+	 * @param string $code    WordPress's code for the fault, under `param_codes`.
+	 */
+	public function test_the_schema_refuses_what_an_address_cannot_hold( string $address, string $member, mixed $value, string $code ): void {
 		$this->cartOverTheWire();
 
-		$long = $this->addresses( 'city', 'given' );
+		$addresses = $this->addresses( 'email', 'given' );
 
-		$long[ Carrier::BILLING ]['city'] = str_repeat( 'a', self::field( 'city' )->maxLength + 1 );
+		$addresses[ $address ][ $member ] = $value;
 
-		$refused = $this->write( $long );
-
-		$this->assertSame( 400, $refused['status'], (string) wp_json_encode( $refused['body'] ) );
-		$this->assertSame( 'rest_invalid_param', $refused['body']['code'] ?? null );
-
-		$emailed = $this->addresses( 'email', 'given' );
-
-		$emailed[ Carrier::SHIPPING ]['email'] = 'ada@example.com';
-
-		$refused = $this->write( $emailed );
+		$refused = $this->write( $addresses );
 
 		$this->assertSame( 400, $refused['status'], (string) wp_json_encode( $refused['body'] ) );
 		$this->assertSame( 'rest_invalid_param', $refused['body']['code'] ?? null );
-		$this->assertSame( 0, $this->checkoutRows( CheckoutTables::SESSIONS ) );
+		$this->assertSame( array( $address => $code ), $refused['body']['data']['details']['param_codes'] ?? null );
+		$this->assertSame( 0, $this->checkoutRows( CheckoutTables::SESSIONS ), 'A refused write stored a session.' );
 	}
 
 	/**
@@ -367,7 +382,7 @@ final class FieldValidationTest extends PlacementTestCase {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param array<string, array<string, string>> $addresses The billing and the shipping address, by wire name.
+	 * @param array<string, array<string, mixed>> $addresses The billing and the shipping address, by wire name.
 	 * @return array{status: int|null, headers: array<string, string>, body: array<string, mixed>} What was sent.
 	 */
 	private function write( array $addresses ): array {
