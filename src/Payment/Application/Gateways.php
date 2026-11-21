@@ -25,9 +25,9 @@ use SEOCart\Contracts\Payment\MatrixRow;
 use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Contracts\Payment\ProvisionsWebhooks;
-
 use SEOCart\Platform\Settings\Setting;
 use SEOCart\Platform\Settings\Settings;
+use SEOCart\Support\ContractVersion;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Support\Money;
 use SEOCart\Support\Schema\FieldSpec;
@@ -289,14 +289,7 @@ final class Gateways implements GatewayRegistry {
 	 * @return bool True when the versions agree: the same major and minor before 1.0; from 1.0, the same major and a minor no later than the plugin's.
 	 */
 	public function supportsContract( string $writtenAgainst ): bool {
-		$theirs = self::version( $writtenAgainst );
-		$ours   = self::version( PaymentGateway::CONTRACT_VERSION );
-
-		if ( null === $theirs || null === $ours || $theirs[0] !== $ours[0] ) {
-			return false;
-		}
-
-		return 0 === $ours[0] ? $theirs[1] === $ours[1] : $theirs[1] <= $ours[1];
+		return ContractVersion::supports( PaymentGateway::CONTRACT_VERSION, $writtenAgainst );
 	}
 
 	/**
@@ -1137,21 +1130,5 @@ final class Gateways implements GatewayRegistry {
 			'gateway_id' => $gatewayId,
 			'reason'     => $reason,
 		);
-	}
-
-	/**
-	 * Reads a contract version's major and minor numbers.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param string $version `major.minor` or `major.minor.patch`.
-	 * @return array{0: int, 1: int}|null The two numbers; null when the version is not one.
-	 */
-	private static function version( string $version ): ?array {
-		if ( 1 !== preg_match( '/^(\d+)\.(\d+)(?:\.\d+)?\z/', $version, $parts ) ) {
-			return null;
-		}
-
-		return array( (int) $parts[1], (int) $parts[2] );
 	}
 }

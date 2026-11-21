@@ -15,6 +15,7 @@ use SEOCart\Contracts\Checkout\CheckoutField;
 use SEOCart\Contracts\Checkout\CheckoutFieldRegistry;
 use SEOCart\Contracts\Checkout\CheckoutFieldType;
 use SEOCart\Contracts\Checkout\Section;
+use SEOCart\Support\ContractVersion;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -235,14 +236,7 @@ final class ExtensionFields implements CheckoutFieldRegistry {
 	 * @return bool True when the versions agree: the same major and minor before 1.0; from 1.0, the same major and a minor no later than the plugin's.
 	 */
 	public function supportsContract( string $version ): bool {
-		$theirs = self::version( $version );
-		$ours   = self::version( self::CONTRACT_VERSION );
-
-		if ( null === $theirs || null === $ours || $theirs[0] !== $ours[0] ) {
-			return false;
-		}
-
-		return 0 === $ours[0] ? $theirs[1] === $ours[1] : $theirs[1] <= $ours[1];
+		return ContractVersion::supports( self::CONTRACT_VERSION, $version );
 	}
 
 	/**
@@ -420,21 +414,5 @@ final class ExtensionFields implements CheckoutFieldRegistry {
 		( $this->report )( self::REJECTED, $refusal );
 
 		$this->refused[] = $refusal;
-	}
-
-	/**
-	 * Reads a contract version's major and minor.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param string $version The version.
-	 * @return array{int, int}|null The major and the minor, or null when the text is no version.
-	 */
-	private static function version( string $version ): ?array {
-		if ( 1 !== preg_match( '/^(\d+)\.(\d+)(?:\.\d+)?\z/', $version, $parts ) ) {
-			return null;
-		}
-
-		return array( (int) $parts[1], (int) $parts[2] );
 	}
 }
