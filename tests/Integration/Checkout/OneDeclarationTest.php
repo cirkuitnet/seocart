@@ -350,19 +350,21 @@ final class OneDeclarationTest extends PlacementTestCase {
 		);
 		$this->assertStringNotContainsString( 'SECRET', (string) wp_json_encode( $lines ), 'A log line holds a value.' );
 
-		// The production redactor hides a custom field's value by the name it travels under.
+		// The production redactor hides a custom field's value by the name it travels under: in the
+		// whole list, and in one entry on its own, as a line about that one value would carry it.
+		$entry    = array(
+			Carrier::KEY   => AcmeCheckoutFields::PO_NUMBER,
+			Carrier::VALUE => 'PO-SECRET-REDACTED',
+		);
 		$redacted = $this->kernel->get( Redactor::class )->context(
 			array(
-				Carrier::CustomFields->value => array(
-					array(
-						Carrier::KEY   => AcmeCheckoutFields::PO_NUMBER,
-						Carrier::VALUE => 'PO-SECRET-REDACTED',
-					),
-				),
+				Carrier::CustomFields->value => array( $entry ),
+				'entry'                      => $entry,
 			)
 		);
 
 		$this->assertStringNotContainsString( 'PO-SECRET-REDACTED', (string) wp_json_encode( $redacted ), 'The redactor keeps a custom field\'s value.' );
+		$this->assertSame( AcmeCheckoutFields::PO_NUMBER, $redacted['entry'][ Carrier::KEY ] ?? null, 'The redactor hides the field\'s key, which is no personal data.' );
 
 		// The values are stored on the session, placed, written to the order with their words, and read back.
 		$values  = array(

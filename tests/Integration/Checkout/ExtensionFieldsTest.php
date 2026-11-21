@@ -41,7 +41,9 @@ use SEOCart\Tests\Support\KernelContainer;
  * - in ExtensionFields::refusalOf(), drop the reserved-key arm: an extension's `phone`, and the
  *   stored `tax_id`, are accepted, and the collision rows fail (the stored `tax_id` then also
  *   shadows the address's member: the rules' list holds two fields of that key);
- * - in CheckoutRules::fields(), drop the memo (`??=`): the action fires twice in one request.
+ * - in ExtensionFields::fieldsBeside(), collect whether or not the action ran: the action fires
+ *   twice in one request (the rules' own memo, CheckoutRules::fields(), dropped alone, leaves it
+ *   firing once).
  *
  * @since 0.2.0
  */

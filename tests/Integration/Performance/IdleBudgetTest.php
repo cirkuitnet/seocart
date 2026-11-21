@@ -407,9 +407,9 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	/**
 	 * Tests that an idle request registers no checkout field: the registration action fires only when something needs the checkout's fields.
 	 *
-	 * Planted violation, in CheckoutOperations::getForm(), a declaration:
-	 * `do_action( CheckoutFieldRegistry::ACTION, null );`. A request that builds the operations then
-	 * fires it.
+	 * Planted violation, in Modules::checkoutRegister():
+	 * `do_action( CheckoutFieldRegistry::ACTION, null );`. Every request then fires it. An idle request
+	 * builds no operation, so the action fired from a declaration is DeclarationsAreDataTest's to find.
 	 *
 	 * @since 0.2.0
 	 */
