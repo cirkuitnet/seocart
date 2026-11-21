@@ -46,7 +46,9 @@ defined( 'ABSPATH' ) || exit;
  *   hidden field held, which it leaves out, and what the declarations refuse now.
  *
  * A value is judged by the request's own values and the store's declarations alone: no refusal
- * reads a user, a customer or an order, and none names a value, only the field and why.
+ * reads a user, a customer or an order, and none names a value, only the field and why. The last
+ * rule a value meets is its declaration's own check, when it has one: given a value every other
+ * rule accepted, it answers null, or the sentence that says why it refuses it.
  *
  * @since 0.2.0
  */
@@ -105,6 +107,15 @@ final class CheckoutRules {
 	 * @var string
 	 */
 	public const TICKED = '1';
+
+	/**
+	 * The reason of a value its declaration's own check refuses; the check's sentence, when it gave one, is the fault's message.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const REJECTED = 'rejected';
 
 	/**
 	 * The store's settings.
@@ -220,14 +231,15 @@ final class CheckoutRules {
 	 *
 	 * Every value given is judged, the addresses' members in form order, then any member no field
 	 * of that address is: its field must be in force and carried by that address, and its value
-	 * within its length, plain text (CheckoutText), and what its type is. An empty value is not
-	 * given and never a fault, but for the country: an address is not held without one (Address).
-	 * A required field is not asked for here.
+	 * within its length, plain text (CheckoutText), what its type is, and then what its
+	 * declaration's own check accepts. An empty value is not given and never a fault, but for the
+	 * country: an address is not held without one (Address). A required field is not asked for here.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @throws CodedException `checkout.invalid_fields`, with the detail `fields`: a list of
-	 *                        `{ field, reason }`, the wire path and why, one per value refused.
+	 *                        `{ field, reason }`, the wire path and why, one per value refused, with
+	 *                        the check's sentence as `message` when a check refused it with one.
 	 *
 	 * @param array<string, mixed> $input The prepared input of `checkout.update_session`.
 	 */
@@ -311,7 +323,7 @@ final class CheckoutRules {
 	 * @param CompiledFields       $fields   The fields in force.
 	 * @param string               $address  Carrier::BILLING or Carrier::SHIPPING.
 	 * @param array<string, mixed> $document The address's values, by member.
-	 * @return list<array{field: string, reason: string}> The faults.
+	 * @return list<array{field: string, reason: string, message?: string}> The faults.
 	 */
 	private function addressFaults( CompiledFields $fields, string $address, array $document ): array {
 		$faults  = array();
@@ -323,10 +335,10 @@ final class CheckoutRules {
 			}
 
 			$carried[ $field->key ] = true;
-			$reason                 = $this->reasonFor( $fields, $field, $document[ $field->key ] ?? '' );
+			$fault                  = self::faultOf( $fields, $field, $address . '.' . $field->key, $document[ $field->key ] ?? '' );
 
-			if ( null !== $reason ) {
-				$faults[] = self::fault( $address . '.' . $field->key, $reason );
+			if ( null !== $fault ) {
+				$faults[] = $fault;
 			}
 		}
 
@@ -340,7 +352,59 @@ final class CheckoutRules {
 	}
 
 	/**
-	 * Returns why a value given for a field is refused, or null when it is accepted or not given.
+	 * Returns the fault of a value given for a field, or null when it is accepted or not given.
+	 *
+	 * The field's own rules judge it first (reasonFor()); a value they accept then meets its
+	 * declaration's own check (checkFault()), the last rule.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CompiledFields $fields The fields in force.
+	 * @param CheckoutField  $field  The field.
+	 * @param string         $path   The value's wire path, such as billing_address.phone.
+	 * @param mixed          $value  The value given; an empty string for none.
+	 * @return array{field: string, reason: string, message?: string}|null The fault, or null.
+	 */
+	private static function faultOf( CompiledFields $fields, CheckoutField $field, string $path, mixed $value ): ?array {
+		$reason = self::reasonFor( $fields, $field, $value );
+
+		if ( null !== $reason ) {
+			return self::fault( $path, $reason );
+		}
+
+		return is_string( $value ) && '' !== $value ? self::checkFault( $field, $path, $value ) : null;
+	}
+
+	/**
+	 * Returns the fault of a value its declaration's own check refuses, or null when the field has no check or the check accepts the value.
+	 *
+	 * The check is given a value every other rule of its field accepted, and answers null, or the
+	 * sentence that says why it refuses it, which the fault carries as its message. A check that
+	 * throws refuses the value too, with no message: what it threw is not for the shopper to read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CheckoutField $field The field.
+	 * @param string        $path  The value's wire path.
+	 * @param string        $value The value, which every other rule of the field accepted.
+	 * @return array{field: string, reason: string, message?: string}|null The fault, or null.
+	 */
+	private static function checkFault( CheckoutField $field, string $path, string $value ): ?array {
+		if ( null === $field->check ) {
+			return null;
+		}
+
+		try {
+			$refusal = ( $field->check )( $value );
+		} catch ( \Throwable ) {
+			return self::fault( $path, self::REJECTED );
+		}
+
+		return null === $refusal ? null : self::fault( $path, self::REJECTED ) + array( 'message' => (string) $refusal );
+	}
+
+	/**
+	 * Returns why a field's own rules refuse a value given for it, or null when they accept it or it is not given.
 	 *
 	 * In the order the checkout judges a value: whether the field is asked for, its length, its
 	 * characters, then its type.
@@ -352,7 +416,7 @@ final class CheckoutRules {
 	 * @param mixed          $value  The value given; an empty string for none.
 	 * @return string|null The reason, or null.
 	 */
-	private function reasonFor( CompiledFields $fields, CheckoutField $field, mixed $value ): ?string {
+	private static function reasonFor( CompiledFields $fields, CheckoutField $field, mixed $value ): ?string {
 		if ( ! is_string( $value ) ) {
 			return self::FORMAT;
 		}
@@ -374,7 +438,7 @@ final class CheckoutRules {
 			return self::CHARACTERS;
 		}
 
-		return $this->typeFault( $field, $value );
+		return self::typeFault( $field, $value );
 	}
 
 	/**
@@ -386,7 +450,7 @@ final class CheckoutRules {
 	 * @param string        $value The value, plain text within its length.
 	 * @return string|null FORMAT, NOT_AN_OPTION, or null.
 	 */
-	private function typeFault( CheckoutField $field, string $value ): ?string {
+	private static function typeFault( CheckoutField $field, string $value ): ?string {
 		return match ( $field->type ) {
 			CheckoutFieldType::Email    => false === is_email( $value ) ? self::FORMAT : null,
 			CheckoutFieldType::Country  => self::isCountry( $value ) ? null : self::FORMAT,
@@ -488,7 +552,7 @@ final class CheckoutRules {
 	 *
 	 * @param array $faults The faults.
 	 *
-	 * @phpstan-param list<array{field: string, reason: string}> $faults
+	 * @phpstan-param list<array{field: string, reason: string, message?: string}> $faults
 	 */
 	private static function refuseFaults( array $faults ): void {
 		if ( array() !== $faults ) {
