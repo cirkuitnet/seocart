@@ -172,8 +172,8 @@ final class MysqlOrderRepository implements OrderRepository {
 	 *
 	 * @var string
 	 */
-	public const INSERT_FIELD_VALUE = 'INSERT INTO {order_field_values} ( order_id, field_key, section, type, label_snapshot, field_value, value_label_snapshot, locale_snapshot, position ) '
-		. "VALUES ( %d, %s, %s, %s, %s, %s, NULLIF( %s, '' ), %s, %d )";
+	public const INSERT_FIELD_VALUE = 'INSERT INTO {order_field_values} ( order_id, field_key, field_source, section, type, label_snapshot, field_value, value_label_snapshot, locale_snapshot, position ) '
+		. "VALUES ( %d, %s, %s, %s, %s, %s, %s, NULLIF( %s, '' ), %s, %d )";
 
 	/**
 	 * A totals snapshot, as the order's current one.
@@ -543,7 +543,7 @@ final class MysqlOrderRepository implements OrderRepository {
 	 *
 	 * @var string
 	 */
-	public const FIELD_VALUES_OF = 'SELECT order_id, field_key, section, type, label_snapshot, field_value, value_label_snapshot, locale_snapshot FROM {order_field_values} WHERE order_id IN ({list}) ORDER BY order_id, position';
+	public const FIELD_VALUES_OF = 'SELECT order_id, field_key, field_source, section, type, label_snapshot, field_value, value_label_snapshot, locale_snapshot FROM {order_field_values} WHERE order_id IN ({list}) ORDER BY order_id, position';
 
 	/**
 	 * Whether any order is fulfilled from a location, on the `fulfilment_location` key: what a location's deletion asks.
@@ -926,7 +926,7 @@ final class MysqlOrderRepository implements OrderRepository {
 		$rows = array();
 
 		foreach ( $order->fieldValues as $position => $value ) {
-			$rows[] = array( $orderId, $value->key, $value->section, $value->type, $value->label, $value->value, (string) $value->valueLabel, $order->locale->toString(), $position );
+			$rows[] = array( $orderId, $value->key, $value->source, $value->section, $value->type, $value->label, $value->value, (string) $value->valueLabel, $order->locale->toString(), $position );
 		}
 
 		if ( array() !== $rows ) {
@@ -1636,7 +1636,7 @@ final class MysqlOrderRepository implements OrderRepository {
 	 * @since 0.2.0
 	 *
 	 * @param int[] $orderIds The orders.
-	 * @return array<int, list<array{key: string, section: string, type: string, label: string, field_value: string|null, value_label: string|null, locale: string}>>
+	 * @return array<int, list<array{key: string, source: string, section: string, type: string, label: string, field_value: string|null, value_label: string|null, locale: string}>>
 	 *         Each order that has values, by id, with its values in the order the form showed their fields.
 	 *
 	 * @phpstan-param list<int> $orderIds
@@ -1651,6 +1651,7 @@ final class MysqlOrderRepository implements OrderRepository {
 		foreach ( $this->statements->rows( self::FIELD_VALUES_OF, $orderIds ) as $row ) {
 			$found[ (int) $row['order_id'] ][] = array(
 				'key'         => (string) $row['field_key'],
+				'source'      => (string) $row['field_source'],
 				'section'     => (string) $row['section'],
 				'type'        => (string) $row['type'],
 				'label'       => (string) $row['label_snapshot'],

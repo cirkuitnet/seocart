@@ -50,6 +50,7 @@ final class OrderFieldValuesTest extends OrderTestCase {
 			array(
 				array(
 					'key'         => 'order_note',
+					'source'      => 'core',
 					'section'     => 'order',
 					'type'        => 'textarea',
 					'label'       => 'Order note',
@@ -59,6 +60,7 @@ final class OrderFieldValuesTest extends OrderTestCase {
 				),
 				array(
 					'key'         => 'acme_delivery_slot',
+					'source'      => 'acme',
 					'section'     => 'order',
 					'type'        => 'select',
 					'label'       => 'Delivery slot',
@@ -102,8 +104,8 @@ final class OrderFieldValuesTest extends OrderTestCase {
 	 */
 	private static function withValues(): NewOrder {
 		$values = array(
-			new OrderFieldValue( 'order_note', 'order', 'textarea', 'Order note', "Ring twice.\nThank you.", null ),
-			new OrderFieldValue( 'acme_delivery_slot', 'order', 'select', 'Delivery slot', 'morning', 'Morning' ),
+			new OrderFieldValue( 'order_note', 'core', 'order', 'textarea', 'Order note', "Ring twice.\nThank you.", null ),
+			new OrderFieldValue( 'acme_delivery_slot', 'acme', 'order', 'select', 'Delivery slot', 'morning', 'Morning' ),
 		);
 
 		return new NewOrder( ...array_merge( get_object_vars( NewOrders::forTwoLines() ), array( 'fieldValues' => $values ) ) );

@@ -28,8 +28,9 @@ defined( 'ABSPATH' ) || exit;
  * answers a list of these, and a staff screen of an order embeds the same list, so a member is
  * declared here once. The value and a select's option label are personal data: an answer leaves
  * them out for a user who may not see personal data, and they are null once the order is erased.
- * The key, section, type, label and locale are what the field was when the order was placed;
- * `current_label` is what it is now, null for a field no longer declared.
+ * The key, source, section, type, label and locale are what the field was when the order was
+ * placed; `current_label` is what it is now, null for a field no longer declared or a key another
+ * source declares today.
  *
  * Declarations are data: building them reads nothing.
  *
@@ -62,10 +63,19 @@ final class OrderFieldValueFields {
 				required: true,
 				max_length: CheckoutField::KEY_MAX_LENGTH
 			),
+			new FieldSpec(
+				name: 'source',
+				type: FieldType::String,
+				description: 'Who declared the field when the order was placed: core for SEOCart\'s own fields, or the id of the extension that registered it.',
+				label: static fn(): string => __( 'Source', 'seocart' ),
+				example: 'acme',
+				required: true,
+				max_length: CheckoutField::KEY_MAX_LENGTH
+			),
 			self::closed( 'section', 'Where the checkout form showed the field: contact or order.', static fn(): string => __( 'Section', 'seocart' ), array_column( Section::cases(), 'value' ) ),
 			self::closed( 'type', 'What the field\'s value was, such as text, textarea, select or checkbox; a ticked checkbox is 1.', static fn(): string => __( 'Type', 'seocart' ), array_column( CheckoutFieldType::cases(), 'value' ) ),
 			self::label( 'label', 'The field\'s label as the shopper saw it, in the order\'s locale.', static fn(): string => __( 'Label', 'seocart' ), false ),
-			self::label( 'current_label', 'The field\'s label as it is declared today, in the request\'s language; null when no field of this key is declared any more.', static fn(): string => __( 'Label today', 'seocart' ), true ),
+			self::label( 'current_label', 'The field\'s label as it is declared today, in the request\'s language; null when no field of this key and source is declared any more.', static fn(): string => __( 'Label today', 'seocart' ), true ),
 			new FieldSpec(
 				name: 'field_value',
 				type: FieldType::String,

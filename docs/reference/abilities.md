@@ -564,7 +564,7 @@ Returns the values an order was placed with for its checkout fields that are no 
 
 ### Output
 
-- `field_values` (always): The order's checkout field values, in the order the checkout form showed their fields; empty when it has none. A list of objects, each with `key`, `section`, `type`, `label`, `current_label`, `field_value`, `value_label`, `locale`. Personal data: returned only to a user who holds the capability `seocart_view_customer_pii`.
+- `field_values` (always): The order's checkout field values, in the order the checkout form showed their fields; empty when it has none. A list of objects, each with `key`, `source`, `section`, `type`, `label`, `current_label`, `field_value`, `value_label`, `locale`. Personal data: returned only to a user who holds the capability `seocart_view_customer_pii`.
 
 ## `seocart/capture-payment`
 

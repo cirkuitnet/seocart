@@ -27,7 +27,9 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: how staff read an order's field values. Two statements: the order's id by its
  * uuid, and its values (OrderRepository::fieldValuesOf(), the read the export and the messages
- * share). The labels kept are the shopper's; `current_label` is today's declaration's, resolved in
+ * share). The labels kept are the shopper's; `current_label` is today's declaration's, only when
+ * today's field of the row's key has the row's source (another extension may declare the same
+ * stored key later, and its label is not this field's), resolved in
  * the request's language, and null for a key no field declares any more. Personal data is left out
  * of the answer for a user who may not see it by the answer's own serializer.
  *
@@ -36,11 +38,11 @@ defined( 'ABSPATH' ) || exit;
 final class OrderFieldValues {
 
 	/**
-	 * Returns the declared checkout fields, read the first time a read needs them.
+	 * Returns the checkout fields declared today with who declared each, by key, read the first time a read needs them.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @var \Closure(): list<CheckoutField>
+	 * @var \Closure(): array<string, array{field: CheckoutField, source: string}>
 	 */
 	private \Closure $declared;
 
@@ -51,9 +53,10 @@ final class OrderFieldValues {
 	 *
 	 * @param OrderRepository $orders     The orders.
 	 * @param Authorizer      $authorizer Checks the reader's capability.
-	 * @param callable        $declared   Returns the checkout fields declared today, in form order.
+	 * @param callable        $declared   Returns the checkout fields declared today with who declared
+	 *                                    each, by key (CheckoutRules::declarations()).
 	 *
-	 * @phpstan-param callable(): list<CheckoutField> $declared
+	 * @phpstan-param callable(): array<string, array{field: CheckoutField, source: string}> $declared
 	 */
 	public function __construct( private OrderRepository $orders, private Authorizer $authorizer, callable $declared ) {
 		$this->declared = \Closure::fromCallable( $declared );
@@ -69,24 +72,21 @@ final class OrderFieldValues {
 	 *
 	 * @param array<string, mixed> $input The prepared input: order_uuid.
 	 * @param Actor                $actor Who reads.
-	 * @return array{field_values: list<array{key: string, section: string, type: string, label: string, current_label: string|null, field_value: string|null, value_label: string|null, locale: string}>} The values, in the order the form showed their fields.
+	 * @return array{field_values: list<array{key: string, source: string, section: string, type: string, label: string, current_label: string|null, field_value: string|null, value_label: string|null, locale: string}>} The values, in the order the form showed their fields.
 	 */
 	public function list( array $input, Actor $actor ): array {
 		$this->authorizer->authorize( $actor, OrderOperations::VIEW_CAPABILITY );
 
-		$orderId = $this->orders->idOf( (string) $input['order_uuid'] ) ?? CodedException::raise( OrderError::NotFound );
-		$labels  = array();
-
-		foreach ( ( $this->declared )() as $field ) {
-			$labels[ $field->key ] = $field->label;
-		}
-
-		$values = array();
+		$orderId  = $this->orders->idOf( (string) $input['order_uuid'] ) ?? CodedException::raise( OrderError::NotFound );
+		$declared = ( $this->declared )();
+		$values   = array();
 
 		foreach ( $this->orders->fieldValuesOf( array( $orderId ) )[ $orderId ] ?? array() as $row ) {
-			$current  = $labels[ $row['key'] ] ?? null;
+			$today    = $declared[ $row['key'] ] ?? null;
+			$current  = null !== $today && $row['source'] === $today['source'] ? $today['field']->label : null;
 			$values[] = array(
 				'key'           => $row['key'],
+				'source'        => $row['source'],
 				'section'       => $row['section'],
 				'type'          => $row['type'],
 				'label'         => $row['label'],

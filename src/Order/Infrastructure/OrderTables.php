@@ -572,7 +572,8 @@ final class OrderTables {
 	 *
 	 * A row is written with its order and never changed by anything but the eraser: the key, the
 	 * section, the type and the labels are what the field declared when the order was placed, in
-	 * the order's locale, so staff see a field its extension no longer declares as it was. Every
+	 * the order's locale, with who declared the field, so staff see a field its extension no longer
+	 * declares, or another extension now declares under the same key, as it was. Every
 	 * value is personal data, whatever its field; the eraser destroys the value and the option's
 	 * label and keeps what the field was.
 	 *
@@ -592,6 +593,7 @@ final class OrderTables {
 				self::id( 'Surrogate key.' ),
 				self::orderId( 'The order the value belongs to.' ),
 				new ColumnSpec( 'field_key', 'varchar(64)', Classification::Public, 'The checkout field\'s key, such as order_note or an extension\'s acme_po_number.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'field_source', 'varchar(64)', Classification::Public, 'Who declared the field when the order was placed: core for SEOCart\'s own, or the id of the extension that registered it. Another extension may later declare a field of the same key; it is not this one.', collation: 'ascii_bin' ),
 				new ColumnSpec( 'section', 'varchar(16)', Classification::Public, 'Where the form showed the field: contact or order.', collation: 'ascii_bin' ),
 				new ColumnSpec( 'type', 'varchar(16)', Classification::Public, 'What the field\'s value was: text, textarea, select or checkbox.', collation: 'ascii_bin' ),
 				new ColumnSpec( 'label_snapshot', 'varchar(255)', Classification::Public, 'The field\'s label the shopper saw.' ),

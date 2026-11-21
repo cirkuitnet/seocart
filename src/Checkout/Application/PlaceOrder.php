@@ -473,7 +473,7 @@ final class PlaceOrder {
 			$cart->id,
 			destinationLocationId: $routing->destinationLocationId
 		);
-		$order     = $this->orders->insert( OrderDocument::of( $calculation->totals, $cart->locale, $session->details, $sold, $hold->holdGroup, $customer, $routing->destinationLocationId, $routing->transferLeadDays, $this->rules->fields() ), $actor );
+		$order     = $this->orders->insert( OrderDocument::of( $calculation->totals, $cart->locale, $session->details, $sold, $hold->holdGroup, $customer, $routing->destinationLocationId, $routing->transferLeadDays, $this->rules->declarations() ), $actor );
 		$summary   = $calculation->totals->summary;
 		$tokenHash = $token->hash();
 

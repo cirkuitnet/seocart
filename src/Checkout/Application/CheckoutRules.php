@@ -285,6 +285,29 @@ final class CheckoutRules {
 	}
 
 	/**
+	 * Returns every declared field with who declared it, by key, in form order, asking for the fields first.
+	 *
+	 * An order keeps the source of each value's field, and its read gives today's label only to a
+	 * row whose field today has the same key and the same source.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{field: CheckoutField, source: string}> The fields and their sources.
+	 */
+	public function declarations(): array {
+		$declarations = array();
+
+		foreach ( $this->fields() as $field ) {
+			$declarations[ $field->key ] = array(
+				'field'  => $field,
+				'source' => $this->sourceOf( $field ),
+			);
+		}
+
+		return $declarations;
+	}
+
+	/**
 	 * Returns the registrations of extension fields refused in this request, asking for the fields first.
 	 *
 	 * @since 0.2.0

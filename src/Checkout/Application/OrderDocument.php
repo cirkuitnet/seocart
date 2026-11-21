@@ -85,13 +85,14 @@ final class OrderDocument {
 	 *                                                           Default null, none planned.
 	 * @param int|null                     $transferLeadDays     Optional. The extra days the shopper was told a transfer
 	 *                                                           adds; null when the plan needs none. Default null.
-	 * @param CheckoutField[]              $fields               Optional. The declared checkout fields, in form order, whose
-	 *                                                           words the order keeps with each value. Default none.
+	 * @param array                        $declared             Optional. The declared checkout fields with who declared each,
+	 *                                                           by key, in form order (CheckoutRules::declarations()), whose
+	 *                                                           words and source the order keeps with each value. Default none.
 	 * @return NewOrder The document.
 	 *
-	 * @phpstan-param list<CheckoutField> $fields
+	 * @phpstan-param array<string, array{field: CheckoutField, source: string}> $declared
 	 */
-	public static function of( Totals $totals, Locale $locale, CheckoutDetails $details, array $sold, ?string $holdGroup, ?int $customerId, ?int $fulfilmentLocationId = null, ?int $transferLeadDays = null, array $fields = array() ): NewOrder {
+	public static function of( Totals $totals, Locale $locale, CheckoutDetails $details, array $sold, ?string $holdGroup, ?int $customerId, ?int $fulfilmentLocationId = null, ?int $transferLeadDays = null, array $declared = array() ): NewOrder {
 		$billing = $details->billingAddress ?? throw new \InvalidArgumentException( 'An order is placed with a billing address.' );
 
 		return new NewOrder(
@@ -109,12 +110,12 @@ final class OrderDocument {
 			holdGroup: $holdGroup,
 			fulfilmentLocationId: $fulfilmentLocationId,
 			transferLeadDays: $transferLeadDays,
-			fieldValues: self::fieldValues( $details, $fields )
+			fieldValues: self::fieldValues( $details, $declared )
 		);
 	}
 
 	/**
-	 * Copies the checkout's custom field values, in form order, each with its field's words as the shopper sees them now: its label and, for a select, the chosen option's label.
+	 * Copies the checkout's custom field values, in form order, each with who declared its field and the field's words as the shopper sees them now: its label and, for a select, the chosen option's label.
 	 *
 	 * The details are those the checkout's rules let be placed (CheckoutRules::forPlacement()), so
 	 * every value is one a field in force accepts. A label is resolved in the request's locale, the
@@ -122,16 +123,16 @@ final class OrderDocument {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param CheckoutDetails $details The checkout, as placed.
-	 * @param CheckoutField[] $fields  The declared fields, in form order.
+	 * @param CheckoutDetails $details  The checkout, as placed.
+	 * @param array           $declared The declared fields with who declared each, by key, in form order.
 	 * @return list<OrderFieldValue> The values.
 	 *
-	 * @phpstan-param list<CheckoutField> $fields
+	 * @phpstan-param array<string, array{field: CheckoutField, source: string}> $declared
 	 */
-	private static function fieldValues( CheckoutDetails $details, array $fields ): array {
+	private static function fieldValues( CheckoutDetails $details, array $declared ): array {
 		$values = array();
 
-		foreach ( $fields as $field ) {
+		foreach ( $declared as list( 'field' => $field, 'source' => $source ) ) {
 			$value = $details->fieldValues[ $field->key ] ?? null;
 
 			if ( null === $value ) {
@@ -141,6 +142,7 @@ final class OrderDocument {
 			$option   = $field->options[ $value ] ?? null;
 			$values[] = new OrderFieldValue(
 				$field->key,
+				$source,
 				$field->section->value,
 				$field->type->value,
 				OrderFieldValue::kept( ( $field->label )() ),

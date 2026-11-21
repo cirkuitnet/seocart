@@ -391,6 +391,7 @@ final class OneDeclarationTest extends PlacementTestCase {
 			$option     = $fields[ $key ]->options[ $value ] ?? null;
 			$expected[] = array(
 				'key'           => $key,
+				'source'        => 'order_note' === $key ? BuiltInFields::SOURCE : AcmeCheckoutFields::ID,
 				'section'       => $fields[ $key ]->section->value,
 				'type'          => $fields[ $key ]->type->value,
 				'label'         => ( $fields[ $key ]->label )(),

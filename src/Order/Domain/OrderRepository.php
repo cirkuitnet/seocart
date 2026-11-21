@@ -407,7 +407,7 @@ interface OrderRepository {
 	 * @since 0.2.0
 	 *
 	 * @param int[] $orderIds The orders.
-	 * @return array<int, list<array{key: string, section: string, type: string, label: string, field_value: string|null, value_label: string|null, locale: string}>>
+	 * @return array<int, list<array{key: string, source: string, section: string, type: string, label: string, field_value: string|null, value_label: string|null, locale: string}>>
 	 *         Each order that has values, by id, with its values in the order the form showed their fields.
 	 *
 	 * @phpstan-param list<int> $orderIds

@@ -8245,6 +8245,11 @@
                                     "maxLength": 48,
                                     "description": "The checkout field's key, as the order keeps it, such as order_note or an extension's acme_po_number."
                                 },
+                                "source": {
+                                    "type": "string",
+                                    "maxLength": 48,
+                                    "description": "Who declared the field when the order was placed: core for SEOCart's own fields, or the id of the extension that registered it."
+                                },
                                 "section": {
                                     "type": "string",
                                     "enum": [
@@ -8278,7 +8283,7 @@
                                         "null"
                                     ],
                                     "maxLength": 255,
-                                    "description": "The field's label as it is declared today, in the request's language; null when no field of this key is declared any more."
+                                    "description": "The field's label as it is declared today, in the request's language; null when no field of this key and source is declared any more."
                                 },
                                 "field_value": {
                                     "type": [
@@ -8303,6 +8308,7 @@
                             },
                             "required": [
                                 "key",
+                                "source",
                                 "section",
                                 "type",
                                 "label",
@@ -8316,6 +8322,7 @@
                             [
                                 {
                                     "key": "acme_po_number",
+                                    "source": "acme",
                                     "section": "contact",
                                     "type": "text",
                                     "label": "Purchase order number",

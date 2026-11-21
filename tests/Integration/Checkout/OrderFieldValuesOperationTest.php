@@ -12,6 +12,12 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Checkout;
 
 use SEOCart\Application\Operations\OperationRegistry;
+use SEOCart\Checkout\Domain\Fields\BuiltInFields;
+use SEOCart\Contracts\Checkout\CheckoutField;
+use SEOCart\Contracts\Checkout\CheckoutFieldRegistry;
+use SEOCart\Contracts\Checkout\CheckoutFieldType;
+use SEOCart\Contracts\Checkout\Presence;
+use SEOCart\Contracts\Checkout\Section;
 use SEOCart\Interfaces\Operations\OperationInvoker;
 use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Application\OrderFieldValues;
@@ -205,6 +211,47 @@ final class OrderFieldValuesOperationTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Tests that a row keeps the field it was: when another extension later declares a field under the same stored key, the order's read gives the row no label today, since today's field is not the one the shopper answered.
+	 *
+	 * `a_b` registers `c` and an order keeps `a_b_c`; later `a` registers `b_c`, stored as `a_b_c`
+	 * too.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_key_another_extension_declares_later_gets_no_label_today(): void {
+		$first = static function ( CheckoutFieldRegistry $registry ): void {
+			$registry->register( 'a_b', new CheckoutField( key: 'c', section: Section::Order, type: CheckoutFieldType::Text, label: static fn(): string => 'The first field', maxLength: 20, presences: array( Presence::Optional ) ) );
+		};
+		$later = static function ( CheckoutFieldRegistry $registry ): void {
+			$registry->register( 'a', new CheckoutField( key: 'b_c', section: Section::Order, type: CheckoutFieldType::Text, label: static fn(): string => 'Another field', maxLength: 20, presences: array( Presence::Optional ) ) );
+		};
+
+		add_action( CheckoutFieldRegistry::ACTION, $first );
+
+		try {
+			$uuid = $this->placedWith( array( 'a_b_c' => 'Kept' ) );
+		} finally {
+			remove_action( CheckoutFieldRegistry::ACTION, $first );
+		}
+
+		add_action( CheckoutFieldRegistry::ACTION, $later );
+
+		try {
+			$staff = $this->userGranted( OrderOperations::VIEW_CAPABILITY, OperationInvoker::PERSONAL_DATA_CAPABILITY );
+			$read  = $this->kernelOver( $this->db, $this->tokens )->get( OrderFieldValues::class )->list( array( 'order_uuid' => $uuid ), $staff );
+		} finally {
+			remove_action( CheckoutFieldRegistry::ACTION, $later );
+		}
+
+		$row = $read['field_values'][0] ?? array();
+
+		$this->assertSame( array( 'a_b_c', 'The first field', 'Kept' ), array( $row['key'] ?? null, $row['label'] ?? null, $row['field_value'] ?? null ) );
+		$this->assertArrayHasKey( 'current_label', $row );
+		$this->assertNull( $row['current_label'], 'The row takes the label of another extension\'s field of the same stored key.' );
+		$this->assertSame( 'a_b', $row['source'] ?? null, 'The row does not keep who declared its field.' );
+	}
+
+	/**
 	 * Places an order whose checkout holds custom field values, and returns its uuid.
 	 *
 	 * @since 0.2.0
@@ -245,7 +292,7 @@ final class OrderFieldValuesOperationTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Returns one value as the read answers it, the field declared today with the label the order keeps, in the site's locale.
+	 * Returns one value as the read answers it, the field declared today with the label the order keeps, in the site's locale: the order note SEOCart's own, every other field the fixture extension's.
 	 *
 	 * @since 0.2.0
 	 *
@@ -260,6 +307,7 @@ final class OrderFieldValuesOperationTest extends PlacementTestCase {
 	private static function value( string $key, string $section, string $type, string $label, string $value, ?string $valueLabel ): array {
 		return array(
 			'key'           => $key,
+			'source'        => 'order_note' === $key ? BuiltInFields::SOURCE : AcmeCheckoutFields::ID,
 			'section'       => $section,
 			'type'          => $type,
 			'label'         => $label,

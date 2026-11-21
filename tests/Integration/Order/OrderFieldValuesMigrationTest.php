@@ -60,6 +60,7 @@ final class OrderFieldValuesMigrationTest extends DatabaseTestCase {
 		. "\t`id` bigint unsigned NOT NULL AUTO_INCREMENT,\n"
 		. "\t`order_id` bigint unsigned NOT NULL,\n"
 		. "\t`field_key` varchar(64) COLLATE ascii_bin NOT NULL,\n"
+		. "\t`field_source` varchar(64) COLLATE ascii_bin NOT NULL,\n"
 		. "\t`section` varchar(16) COLLATE ascii_bin NOT NULL,\n"
 		. "\t`type` varchar(16) COLLATE ascii_bin NOT NULL,\n"
 		. "\t`label_snapshot` varchar(255) NOT NULL,\n"
@@ -152,6 +153,7 @@ final class OrderFieldValuesMigrationTest extends DatabaseTestCase {
 				'id'                   => 'public',
 				'order_id'             => 'public',
 				'field_key'            => 'public',
+				'field_source'         => 'public',
 				'section'              => 'public',
 				'type'                 => 'public',
 				'label_snapshot'       => 'public',

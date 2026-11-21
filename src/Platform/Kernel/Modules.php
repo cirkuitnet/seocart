@@ -1726,7 +1726,7 @@ final class Modules {
 			)
 		);
 		// An order's field values are read with the checkout's fields declared today, whose labels it answers beside the ones kept.
-		$container->bind( OrderFieldValues::class, static fn( Container $c ): OrderFieldValues => new OrderFieldValues( $c->get( OrderRepository::class ), $c->get( Authorizer::class ), static fn(): array => $c->get( CheckoutRules::class )->fields() ) );
+		$container->bind( OrderFieldValues::class, static fn( Container $c ): OrderFieldValues => new OrderFieldValues( $c->get( OrderRepository::class ), $c->get( Authorizer::class ), static fn(): array => $c->get( CheckoutRules::class )->declarations() ) );
 		$container->bind( ActorCustomers::class, static fn( Container $c ): ActorCustomers => $c->get( Customers::class ) );
 		$container->bind( OrderAccessPolicy::class, static fn( Container $c ): OrderAccessPolicy => new OrderAccessPolicy( $c->get( OrderRepository::class ), $c->get( AccessKeys::class ), $c->get( ActorCustomers::class ) ) );
 		$container->bind( OrderStatusRead::class, static fn( Container $c ): OrderStatusRead => new OrderStatusRead( $c->get( OrderAccessPolicy::class ) ) );

@@ -16,7 +16,7 @@ defined( 'ABSPATH' ) || exit;
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- This exception reports a caller's programming error to the developer; it is never HTML.
 
 /**
- * One value of a checkout field that is no address member, with what the field was when the order was placed: its key, section, type and label, and a chosen option's label.
+ * One value of a checkout field that is no address member, with what the field was when the order was placed: its key, who declared it, its section, type and label, and a chosen option's label.
  *
  * Owns one fact: what an order keeps of a checkout field's value. Every member is a snapshot in
  * the order's locale, never read back from the field's declaration, which may change or go. The
@@ -43,6 +43,7 @@ final readonly class OrderFieldValue {
 	 * @throws \InvalidArgumentException When the key or the value is empty, or a label is longer than LABEL_MAX_LENGTH (kept() cuts one).
 	 *
 	 * @param string      $key        The field's key.
+	 * @param string      $source     Who declared the field: core, or the id of the extension that registered it.
 	 * @param string      $section    Where the form showed it: contact or order.
 	 * @param string      $type       What its value was: text, textarea, select or checkbox.
 	 * @param string      $label      The field's label the shopper saw.
@@ -51,6 +52,7 @@ final readonly class OrderFieldValue {
 	 */
 	public function __construct(
 		public string $key,
+		public string $source,
 		public string $section,
 		public string $type,
 		public string $label,
