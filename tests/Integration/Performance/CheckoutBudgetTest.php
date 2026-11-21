@@ -25,16 +25,21 @@ use SEOCart\Tests\Support\Checkout\CheckoutTestCase;
  * - one transaction, which sends the cart's compare-and-swap and one statement to the session table;
  * - after it, one read of the session, which gives the totals their destination;
  * - no read of the lines' figures for sale: the answer carries the totals, never the lines;
- * - 18 statements on a cold cache, within a budget of 20, on a three-line cart.
+ * - 17 statements on a cold cache, within a budget of 20, on a three-line cart.
  *
  * The write is measured cold, with the object cache flushed after the request that fills the
  * cart, because no real request inherits the options an earlier request read.
+ *
+ * WordPress installs every site with its permalink structure among the options it loads at boot,
+ * and the REST server reads it for each answer's Link header; the test library's single-site
+ * install deletes that option, where a network keeps it, so the test puts it back as WordPress
+ * installs it and measures the request a real site serves, single or networked.
  *
  * The measurement is printed for the report.
  *
  * Planted violations: in UpdateCheckoutSession::update(), save the session twice in the closure:
  * the transaction then sends two statements to the session table; in CheckoutRules::current(),
- * read the `checkout` group in a values() call of its own: the cold write sends 19.
+ * read the `checkout` group in a values() call of its own: the cold write sends 18.
  *
  * @since 0.1.0
  * @since 0.2.0 Measured cold, and its statements pinned.
@@ -61,26 +66,44 @@ final class CheckoutBudgetTest extends CheckoutTestCase {
 	 *
 	 * @var int
 	 */
-	private const COLD_WRITE = 18;
+	private const COLD_WRITE = 17;
 
 	/**
-	 * Wires the kernel and boots a spy server.
+	 * Whether the test added the permalink structure's option, which it then removes.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var bool
+	 */
+	private bool $addedPermalinkStructure = false;
+
+	/**
+	 * Wires the kernel, boots a spy server, and gives the site the permalink structure WordPress installs it with.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Gives the site its permalink structure.
 	 */
 	public function set_up(): void {
 		parent::set_up();
 
 		$this->bootStoreApi();
+
+		// WordPress's installer adds it empty and autoloaded; add_option() changes nothing where it exists.
+		$this->addedPermalinkStructure = add_option( 'permalink_structure', '' );
 	}
 
 	/**
-	 * Restores the request globals and discards the server.
+	 * Restores the request globals, discards the server, and removes the permalink structure if the test added it.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Removes the permalink structure it added.
 	 */
 	public function tear_down(): void {
 		$this->shutStoreApi();
+
+		if ( $this->addedPermalinkStructure ) {
+			delete_option( 'permalink_structure' );
+		}
 
 		parent::tear_down();
 	}
