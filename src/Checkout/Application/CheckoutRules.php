@@ -601,7 +601,8 @@ final class CheckoutRules {
 	/**
 	 * Returns why a field's own rules refuse a value given for it, or null when they accept it or it is not given.
 	 *
-	 * In the order the checkout judges a value: whether the field is asked for, its length, its
+	 * In the order the checkout judges a value: whether the field is asked for; for a select or a
+	 * checkbox, whether the value is one of its closed set, however long; otherwise its length, its
 	 * characters, then its type.
 	 *
 	 * @since 0.2.0
@@ -625,6 +626,11 @@ final class CheckoutRules {
 			return self::NOT_ACCEPTED;
 		}
 
+		if ( CheckoutFieldType::Select === $field->type || CheckoutFieldType::Checkbox === $field->type ) {
+			// A closed set: a value outside it is that fault, whatever its length or characters.
+			return self::typeFault( $field, $value );
+		}
+
 		if ( mb_strlen( $value ) > $field->maxLength ) {
 			return self::TOO_LONG;
 		}
@@ -642,7 +648,7 @@ final class CheckoutRules {
 	 * @since 0.2.0
 	 *
 	 * @param CheckoutField $field The field.
-	 * @param string        $value The value, plain text within its length.
+	 * @param string        $value The value: for a select or a checkbox, as given; otherwise plain text within its length.
 	 * @return string|null FORMAT, NOT_AN_OPTION, or null.
 	 */
 	private static function typeFault( CheckoutField $field, string $value ): ?string {
