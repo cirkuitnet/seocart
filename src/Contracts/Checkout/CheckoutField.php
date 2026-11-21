@@ -30,8 +30,8 @@ defined( 'ABSPATH' ) || exit;
  *   screen or an answer shows them.
  * - The longest value is counted in characters: at most LINE_MAX_LENGTH for a one-line type and
  *   TEXTAREA_MAX_LENGTH for a textarea.
- * - A select lists its options, at least one and at most MAX_OPTIONS, each a value and a label
- *   closure; no other type lists any.
+ * - A select lists its options, at least one and at most MAX_OPTIONS, each a value no longer
+ *   than the field's longest value and a label closure; no other type lists any.
  * - The autocomplete token is the HTML one the form gives the input, or null for none.
  * - The check, when given, is the field's own rule beyond its type: a closure given a value that
  *   already passed the field's rules, answering null when it accepts it, or the sentence that
@@ -118,8 +118,9 @@ final readonly class CheckoutField {
 	 *                                   characters, no presence or one twice is given, the longest
 	 *                                   value is below 1 or above its type's limit, or options are
 	 *                                   given to a type that is not a select, none to a select, more
-	 *                                   than MAX_OPTIONS of them, or one that is not a non-empty
-	 *                                   value with a label.
+	 *                                   than MAX_OPTIONS of them, one that is not a non-empty value
+	 *                                   with a label, or one whose value is longer than the longest
+	 *                                   value.
 	 *
 	 * @param string            $key          The key, lower-case snake_case.
 	 * @param Section           $section      Where the form shows the field.
@@ -159,7 +160,7 @@ final readonly class CheckoutField {
 
 		self::checkPresences( $key, $presences );
 		self::checkLength( $key, $type, $maxLength );
-		self::checkOptions( $key, $type, $options );
+		self::checkOptions( $key, $type, $options, $maxLength );
 
 		$this->presences = $presences;
 		$this->options   = $options;
@@ -257,7 +258,7 @@ final readonly class CheckoutField {
 	}
 
 	/**
-	 * Refuses options on a type that is not a select, a select without any, more than MAX_OPTIONS of them, or one that is not a non-empty value with a label closure.
+	 * Refuses options on a type that is not a select, a select without any, more than MAX_OPTIONS of them, one that is not a non-empty value with a label closure, or one whose value is longer than the field's longest value, which no shopper could then choose.
 	 *
 	 * @since 0.2.0
 	 *
@@ -265,11 +266,12 @@ final readonly class CheckoutField {
 	 *
 	 * @param string            $key     The field's key, for the message.
 	 * @param CheckoutFieldType $type    The type.
-	 * @param array             $options The options.
+	 * @param array             $options   The options.
+	 * @param int               $maxLength The longest value, in characters.
 	 *
 	 * @phpstan-param array<mixed> $options
 	 */
-	private static function checkOptions( string $key, CheckoutFieldType $type, array $options ): void {
+	private static function checkOptions( string $key, CheckoutFieldType $type, array $options, int $maxLength ): void {
 		if ( array() !== $options && CheckoutFieldType::Select !== $type ) {
 			throw new \InvalidArgumentException( sprintf( 'The checkout field %1$s lists options, which only a select has.', $key ) );
 		}
@@ -285,6 +287,10 @@ final readonly class CheckoutField {
 		foreach ( $options as $value => $label ) {
 			if ( '' === (string) $value || ! $label instanceof \Closure ) {
 				throw new \InvalidArgumentException( sprintf( 'Each option of the checkout field %1$s is a non-empty value with a label closure.', $key ) );
+			}
+
+			if ( mb_strlen( (string) $value ) > $maxLength ) {
+				throw new \InvalidArgumentException( sprintf( 'The checkout field %1$s lists the option %2$s, longer than its longest value of %3$d characters, so no shopper could choose it.', $key, (string) $value, $maxLength ) );
 			}
 		}
 	}
