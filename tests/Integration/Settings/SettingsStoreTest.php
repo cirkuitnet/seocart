@@ -393,6 +393,37 @@ final class SettingsStoreTest extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Tests that an independent setting is created only where it has no row: the first create writes it with autoload off and is read back, a second changes nothing and is told so, and a value the setting refuses, or a setting kept in a document, is refused before anything is written.
+	 *
+	 * Planted violations: in SettingsStore::createScalar(), send WRITE_SCALAR instead of CREATE_ROW:
+	 * the second create replaces the first value; leave out forget() after a create: the created
+	 * value is served as the absence the first read cached.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_scalar_is_created_only_where_it_has_no_row(): void {
+		$created = array( 'seocart_fixture_scalars_weight_unit' => array( 'lb', 'off' ) );
+
+		$this->assertSame( 'kg', $this->store->value( 'weight_unit' ), 'The setting reads as its default, its absence cached.' );
+		$this->assertTrue( $this->store->createScalar( 'weight_unit', 'lb' ) );
+		$this->assertSame( 'lb', $this->store->value( 'weight_unit' ), 'The created value was served as absent.' );
+		$this->assertSame( $created, self::rows( 'seocart_fixture_scalars_weight_unit' ) );
+		$this->assertFalse( $this->store->createScalar( 'weight_unit', 'oz' ), 'A create over a row that exists was answered as made.' );
+		$this->assertSame( $created, self::rows( 'seocart_fixture_scalars_weight_unit' ), 'A create replaced a row that exists.' );
+
+		foreach ( array( array( 'weight_unit', 'stone' ), array( 'mode', 'live' ) ) as list( $name, $value ) ) {
+			try {
+				$this->store->createScalar( $name, $value );
+				$this->fail( "{$name} was created with {$value}." );
+			} catch ( \InvalidArgumentException $refused ) {
+				$this->assertNotSame( '', $refused->getMessage() );
+			}
+		}
+
+		$this->assertSame( $created, self::rows( 'seocart_fixture_%' ), 'A refused create wrote something.' );
+	}
+
+	/**
 	 * Tests that a document is read under a lock only inside a transaction, where the lock would last.
 	 *
 	 * @since 0.1.0

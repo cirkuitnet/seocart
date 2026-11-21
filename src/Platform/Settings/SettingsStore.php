@@ -41,6 +41,9 @@ defined( 'ABSPATH' ) || exit;
  *   autoloaded is switched off even when its value does not change. update_option() is not used:
  *   it would put the new value into the object cache before the transaction around it commits.
  *   The value is serialized as core would, so get_option() reads back exactly what was written.
+ * - A scalar whose writer must never replace a value written meanwhile is created instead with the
+ *   plain INSERT that creates a document (createScalar()), which the option name's unique key lets
+ *   only one writer win, and is changed from then on by compare-and-swap (swapScalar()).
  * - A document is written whole, by compare-and-swap: the writer names the version it read, the
  *   store reads the row, and one conditional statement replaces the row, and sets autoload off,
  *   only if it still holds exactly what was read. Every write stores the next version, so a
@@ -76,15 +79,16 @@ final class SettingsStore {
 	public const COMPARE_AND_SWAP = "UPDATE %i SET option_value = %s, autoload = 'off' WHERE option_name = %s AND option_value = CAST( %s AS BINARY )";
 
 	/**
-	 * The statement that creates a document; the unique option name makes a second creator fail.
+	 * The statement that creates an option's row, a document's or a scalar's first value; the unique option name makes a second creator fail.
 	 *
 	 * Placeholders: the options table, the option name and the value.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Creates a scalar's row too, and was renamed from CREATE_DOCUMENT.
 	 *
 	 * @var string
 	 */
-	public const CREATE_DOCUMENT = "INSERT INTO %i ( option_name, option_value, autoload ) VALUES ( %s, %s, 'off' )";
+	public const CREATE_ROW = "INSERT INTO %i ( option_name, option_value, autoload ) VALUES ( %s, %s, 'off' )";
 
 	/**
 	 * The statement that writes a scalar: inserts the row, or updates it, with autoload off either way.
@@ -300,20 +304,14 @@ final class SettingsStore {
 		$checked = array();
 
 		foreach ( $values as $name => $value ) {
-			$setting = $this->registry->setting( (string) $name );
+			list( $option, $stored ) = $this->scalarRow( (string) $name, $value );
 
-			if ( Storage::Scalar !== $setting->storage() ) {
-				throw new \InvalidArgumentException( 'The setting ' . $setting->name() . ' is stored in a document; write it with replaceDocument().' );
-			}
-
-			$checked[ $setting->optionName() ] = SettingValues::toOption( SettingValues::forStorage( $setting, $value ) );
+			$checked[ $option ] = $stored;
 		}
 
 		$table = $this->database->prefix() . 'options';
 
-		foreach ( $checked as $option => $text ) {
-			$stored = maybe_serialize( $text );
-
+		foreach ( $checked as $option => $stored ) {
 			$this->database->execute( self::WRITE_SCALAR, $table, $option, $stored, $stored );
 
 			$this->forget( $option );
@@ -345,20 +343,75 @@ final class SettingsStore {
 	 * @return bool True when the value was replaced; false when the option no longer held the value read.
 	 */
 	public function swapScalar( string $name, int|string $read, int|string $replacement ): bool {
-		$setting = $this->registry->setting( $name );
+		list( $option, $written ) = $this->scalarRow( $name, $replacement );
 
-		if ( Storage::Scalar !== $setting->storage() ) {
-			throw new \InvalidArgumentException( 'The setting ' . $setting->name() . ' is stored in a document; replace it with replaceDocument().' );
-		}
-
-		$option  = $setting->optionName();
-		$written = maybe_serialize( SettingValues::toOption( SettingValues::forStorage( $setting, $replacement ) ) );
 		$swapped = 1 === $this->database->execute( self::COMPARE_AND_SWAP, $this->database->prefix() . 'options', $written, $option, maybe_serialize( SettingValues::toOption( $read ) ) );
 
 		$this->forget( $option );
 		$this->settle( $option );
 
 		return $swapped;
+	}
+
+	/**
+	 * Creates an independent setting's option with its first value, only if it has no row: it never replaces a value.
+	 *
+	 * The first write of a setting that is changed from then on by compare-and-swap (swapScalar()),
+	 * which needs a row to compare with. It sends the plain INSERT that creates a document
+	 * (CREATE_ROW), never the insert that updates a row that exists (WRITE_SCALAR), so when two
+	 * writers create the option at once, the option name's unique key lets one win. The other
+	 * changes nothing and is told so, which is no error: it reads the option again and goes on from
+	 * what the winner stored. Either way the option is removed from the object cache, as after every
+	 * write attempt, so no reader is served the absence it cached before.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \InvalidArgumentException When the name is not a scalar setting, or the value does not
+	 *                                   fit it.
+	 * @phpstan-throws \InvalidArgumentException|CodedException
+	 *
+	 * @param string     $name  The setting's name.
+	 * @param int|string $value Its first value.
+	 * @return bool True when this call created the option; false when it had a row already.
+	 */
+	public function createScalar( string $name, int|string $value ): bool {
+		list( $option, $stored ) = $this->scalarRow( $name, $value );
+
+		try {
+			$this->database->execute( self::CREATE_ROW, $this->database->prefix() . 'options', $option, $stored );
+		} catch ( DuplicateKey ) {
+			$this->forget( $option );
+
+			return false;
+		}
+
+		$this->forget( $option );
+		$this->settle( $option );
+
+		return true;
+	}
+
+	/**
+	 * Returns the option an independent setting is kept in, and the text a value is stored as there, checked as every write checks it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \InvalidArgumentException When the name is not a scalar setting, or the value does not
+	 *                                   fit it.
+	 * @phpstan-throws \InvalidArgumentException|CodedException
+	 *
+	 * @param string $name  The setting's name.
+	 * @param mixed  $value The value.
+	 * @return array{0: string, 1: string} The option's name, and the value as the option stores it.
+	 */
+	private function scalarRow( string $name, mixed $value ): array {
+		$setting = $this->registry->setting( $name );
+
+		if ( Storage::Scalar !== $setting->storage() ) {
+			throw new \InvalidArgumentException( 'The setting ' . $setting->name() . ' is stored in a document; write it with replaceDocument().' );
+		}
+
+		return array( $setting->optionName(), (string) maybe_serialize( SettingValues::toOption( SettingValues::forStorage( $setting, $value ) ) ) );
 	}
 
 	/**
@@ -569,7 +622,7 @@ final class SettingsStore {
 
 		if ( null === $current ) {
 			try {
-				$this->database->execute( self::CREATE_DOCUMENT, $table, $option, $json );
+				$this->database->execute( self::CREATE_ROW, $table, $option, $json );
 			} catch ( DuplicateKey ) {
 				$this->conflict( $group );
 			}

@@ -17,8 +17,6 @@ use SEOCart\Checkout\Domain\Fields\CompiledFields;
 use SEOCart\Contracts\Checkout\CheckoutField;
 use SEOCart\Contracts\Checkout\Presence;
 use SEOCart\Platform\Authorization\Actor;
-use SEOCart\Platform\Database\Exception\LockNotAcquired;
-use SEOCart\Platform\Database\LockService;
 use SEOCart\Platform\Settings\SettingsError;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Platform\Settings\SettingValues;
@@ -39,9 +37,10 @@ defined( 'ABSPATH' ) || exit;
  * in all, then is told `settings.version_conflict`. Two staff changing two fields at once keep
  * both changes. A change that changes nothing writes nothing.
  *
- * An option never written has no row to compare with, so its first write creates it under a lock
- * that every first writer of the group takes: inside it the option is read again, and written only
- * if it is still missing, so a first write never overwrites one that landed meanwhile.
+ * An option never written has no row to compare with, so a first change creates it
+ * (SettingsStore::createScalar()), with an insert that the option name's unique key lets only one
+ * writer win and that never replaces a row. A first change that lost to another writer reads the
+ * winner's row and swaps, within the same attempts, so it never overwrites what landed meanwhile.
  *
  * Presence choices are kept only where they differ from a field's default; a choice for a key no
  * declaration names is dropped by the next change. Limits are replaced whole.
@@ -58,15 +57,6 @@ final class CheckoutSettingsService {
 	 * @var int
 	 */
 	public const ATTEMPTS = 3;
-
-	/**
-	 * The lock a first write of the group's options takes.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @var string
-	 */
-	public const CREATE_LOCK = 'checkout_settings_create';
 
 	/**
 	 * The reason of a limit whose currency SEOCart does not know.
@@ -102,12 +92,10 @@ final class CheckoutSettingsService {
 	 *
 	 * @param CheckoutRules $rules The checkout's rules: the declared fields and the group's one reader.
 	 * @param SettingsStore $store The store's settings, which the changes are written through.
-	 * @param LockService   $locks The lock a first write takes.
 	 */
 	public function __construct(
 		private CheckoutRules $rules,
-		private SettingsStore $store,
-		private LockService $locks
+		private SettingsStore $store
 	) {
 	}
 
@@ -242,11 +230,15 @@ final class CheckoutSettingsService {
 	}
 
 	/**
-	 * Changes one setting of the group by compare-and-swap, and returns what it holds after.
+	 * Changes one setting of the group by compare-and-swap, creating it on its first change, and returns what it holds after.
+	 *
+	 * Each attempt reads the option past the cache. With no row, the change is applied to the
+	 * setting's default and the option created (SettingsStore::createScalar()); a create that lost
+	 * to another writer's is an attempt lost like a swap, and the next attempt reads the winner's row.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @throws CodedException `settings.version_conflict` when ATTEMPTS swaps all lost.
+	 * @throws CodedException `settings.version_conflict` when ATTEMPTS creates and swaps all lost.
 	 *
 	 * @param string   $name   The setting: CheckoutSettings::FIELD_PRESENCE or ::ORDER_LIMITS.
 	 * @param \Closure $change Given the canonical text read, answers the canonical text to store.
@@ -259,8 +251,10 @@ final class CheckoutSettingsService {
 			$read = $this->store->storedText( $name );
 
 			if ( null === $read ) {
-				if ( $this->createdWith( $name, $change ) ) {
-					return $change( CheckoutSettings::NONE );
+				$next = $change( CheckoutSettings::NONE );
+
+				if ( $this->store->createScalar( $name, $next ) ) {
+					return $next;
 				}
 
 				continue;
@@ -274,38 +268,6 @@ final class CheckoutSettingsService {
 		}
 
 		CodedException::raise( SettingsError::VersionConflict, array( 'group' => CheckoutSettings::GROUP ) );
-	}
-
-	/**
-	 * Writes a setting never written before, under the group's create lock, unless another writer created it meanwhile.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param string   $name   The setting.
-	 * @param \Closure $change Given the setting's default, answers the text to store.
-	 * @return bool True when this writer created it; false when it exists now, or the lock was not had.
-	 *
-	 * @phpstan-param \Closure(string): string $change
-	 */
-	private function createdWith( string $name, \Closure $change ): bool {
-		try {
-			return $this->locks->withLock(
-				self::CREATE_LOCK,
-				30,
-				5,
-				function () use ( $name, $change ): bool {
-					if ( null !== $this->store->storedText( $name ) ) {
-						return false;
-					}
-
-					$this->store->writeScalars( array( $name => $change( CheckoutSettings::NONE ) ) );
-
-					return true;
-				}
-			);
-		} catch ( LockNotAcquired ) {
-			return false;
-		}
 	}
 
 	/**

@@ -20,13 +20,15 @@ use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 use SEOCart\Tests\Support\QueryLog;
 
 /**
- * The form read sends one statement on a cold request, the one that reads the store's checkout choices with the settings the calculation reads next, and none once they are read; each staff read sends one; a staff change sends two, the read of the stored choice past the cache and its compare-and-swap, and no transaction.
+ * The form read sends one statement on a cold request, the one that reads the store's checkout choices with the settings the calculation reads next, and none once they are read; each staff read sends one; a staff change sends two, the read of the stored choice past the cache and its compare-and-swap, and no transaction; a store's first change sends two too, the read that finds no row and the insert that creates it, and takes no lock.
  *
  * Each measurement starts as a request does: a container of its own, and no object cache but the
  * options WordPress loads at boot. The statements are printed for the report.
  *
- * Planted violation: in CheckoutRules::current(), read the `checkout` group in a values() call of
- * its own, then the inventory settings in another: the cold form read sends two.
+ * Planted violations: in CheckoutRules::current(), read the `checkout` group in a values() call of
+ * its own, then the inventory settings in another: the cold form read sends two; in
+ * CheckoutSettingsService::swap(), create the option with SettingsStore::writeScalars(): the first
+ * change's insert replaces a row that exists.
  *
  * @group performance
  *
@@ -110,6 +112,19 @@ final class CheckoutSettingsBudgetTest extends PlacementTestCase {
 			$this->assertSame( array( 'SELECT', 'UPDATE' ), array_map( static fn( string $sql ): string => strtok( $sql, ' ' ), $log->sqls() ) );
 			$this->assertSame( 0, $log->matching( '/^START TRANSACTION/' )->count() );
 		}
+	}
+
+	/**
+	 * Tests that a store's first change of its fields sends two statements, the read that finds no row and the insert that creates it, takes no lock and replaces no row.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_first_change_sends_two_statements(): void {
+		$service = $this->coldKernel()->get( CheckoutSettingsService::class );
+		$first   = $this->measured( 'The first change of the fields', static fn() => $service->updateFields( self::change( 'company', 'optional' ), Actor::user( 1 ) ) );
+
+		$this->assertSame( array( 'SELECT', 'INSERT' ), array_map( static fn( string $sql ): string => (string) strtok( $sql, ' ' ), $first->sqls() ), 'The first change\'s statements.' );
+		$this->assertSame( 0, $first->matching( '/GET_LOCK|RELEASE_LOCK|ON DUPLICATE KEY UPDATE/' )->count(), 'A first change takes no lock and replaces no row.' );
 	}
 
 	/**

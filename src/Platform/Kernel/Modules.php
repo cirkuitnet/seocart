@@ -1493,7 +1493,7 @@ final class Modules {
 		// The rules read their group with the inventory group's settings, which the calculation reads next: one statement primes both.
 		$container->bind( CheckoutRules::class, static fn( Container $c ): CheckoutRules => new CheckoutRules( $c->get( SettingsStore::class ), InventorySettings::settings(), BuiltInFields::all() ) );
 		$container->bind( CheckoutForm::class, static fn( Container $c ): CheckoutForm => new CheckoutForm( $c->get( CheckoutRules::class ) ) );
-		$container->bind( CheckoutSettingsService::class, static fn( Container $c ): CheckoutSettingsService => new CheckoutSettingsService( $c->get( CheckoutRules::class ), $c->get( SettingsStore::class ), $c->get( LockService::class ) ) );
+		$container->bind( CheckoutSettingsService::class, static fn( Container $c ): CheckoutSettingsService => new CheckoutSettingsService( $c->get( CheckoutRules::class ), $c->get( SettingsStore::class ) ) );
 		$container->bind( UpdateCheckoutSession::class, static fn( Container $c ): UpdateCheckoutSession => new UpdateCheckoutSession( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( Gateways::class ), $c->get( PlannedPricing::class ), $c->get( CheckoutRules::class ) ) );
 		$container->bind( ChangeCartCurrency::class, static fn( Container $c ): ChangeCartCurrency => new ChangeCartCurrency( $c->get( CartService::class ), $c->get( CheckoutSessions::class ), $c->get( PresentmentCurrencies::class ), $c->get( Orders::class ), self::baseCurrency( $c ), $c->get( ActorCustomers::class ) ) );
 		$container->bind(

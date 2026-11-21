@@ -214,7 +214,7 @@ final class SettingsConcurrencyTest extends DatabaseTestCase {
 
 		$b      = $this->secondConnection();
 		$winner = self::documentJson( 1, array( 'account' => 'from_b' ) );
-		$sent   = self::sendBefore( '/^INSERT /', $b, (string) $wpdb->prepare( SettingsStore::CREATE_DOCUMENT, $wpdb->options, 'seocart_fixture_document', $winner ) );
+		$sent   = self::sendBefore( '/^INSERT /', $b, (string) $wpdb->prepare( SettingsStore::CREATE_ROW, $wpdb->options, 'seocart_fixture_document', $winner ) );
 
 		try {
 			$this->store->replaceDocument( SettingsFixtures::DOCUMENT, 0, array( 'account' => 'from_a' ) );
@@ -225,6 +225,32 @@ final class SettingsConcurrencyTest extends DatabaseTestCase {
 
 		$this->assertTrue( $sent->fired );
 		$this->assertSame( $winner, self::committedDocument( $b ) );
+	}
+
+	/**
+	 * Tests that two creators of one independent setting leave one winner: the second changes nothing, is told so, and is then served the winner's value, not the absence it cached.
+	 *
+	 * A reads the setting, which caches its absence, and creates it; just before A's statement
+	 * leaves, B creates it with another value.
+	 *
+	 * Planted violations: in SettingsStore::createScalar(), send WRITE_SCALAR instead of CREATE_ROW:
+	 * A's value replaces B's; leave out forget() after a lost create: A is served the absence it
+	 * cached.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_two_creators_of_one_scalar_leave_one_winner(): void {
+		global $wpdb;
+
+		$this->assertSame( 'kg', $this->store->value( 'weight_unit' ), 'The setting reads as its default, its absence cached.' );
+
+		$b    = $this->secondConnection();
+		$sent = self::sendBefore( '/^INSERT /', $b, (string) $wpdb->prepare( SettingsStore::CREATE_ROW, $wpdb->options, 'seocart_fixture_scalars_weight_unit', 'lb' ) );
+
+		$this->assertFalse( $this->store->createScalar( 'weight_unit', 'oz' ), 'A created a setting B had already created.' );
+		$this->assertTrue( $sent->fired );
+		$this->assertSame( 'lb', $b->fetchValue( (string) $wpdb->prepare( 'SELECT option_value FROM %i WHERE option_name = %s', $wpdb->options, 'seocart_fixture_scalars_weight_unit' ) ), 'B\'s value is not what is committed.' );
+		$this->assertSame( 'lb', $this->store->value( 'weight_unit' ), 'The lost create was served the absence it cached.' );
 	}
 
 	/**
