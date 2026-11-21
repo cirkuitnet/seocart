@@ -249,7 +249,7 @@ final class OrderFieldValuesOperationTest extends PlacementTestCase {
 		$this->assertSame( array( 'a_b_c', 'The first field', 'Kept' ), array( $row['key'] ?? null, $row['label'] ?? null, $row['field_value'] ?? null ) );
 		$this->assertArrayHasKey( 'current_label', $row );
 		$this->assertNull( $row['current_label'], 'The row takes the label of another extension\'s field of the same stored key.' );
-		$this->assertSame( 'a_b', $row['source'] ?? null, 'The row does not keep who declared its field.' );
+		$this->assertSame( 'a_b', $row['source'], 'The row does not keep who declared its field.' );
 	}
 
 	/**
