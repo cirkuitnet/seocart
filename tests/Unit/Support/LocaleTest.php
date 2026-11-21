@@ -59,6 +59,7 @@ final class LocaleTest extends TestCase {
 			'informal Swiss German'            => array( 'de_CH_informal', 'de-CH' ),
 			'Portuguese after the 1990 reform' => array( 'pt_PT_ao90', 'pt-PT' ),
 			'a variant without a region'       => array( 'art_xemoji', 'art' ),
+			'as long as a column holds'        => array( 'en_US_abcdefghijklmn', 'en-US' ),
 		);
 	}
 
@@ -86,17 +87,18 @@ final class LocaleTest extends TestCase {
 	 */
 	public static function data_strings_that_are_not_wordpress_locales(): array {
 		return array(
-			'empty'               => array( '' ),
-			'a BCP 47 tag'        => array( 'en-US' ),
-			'lower-case region'   => array( 'en_us' ),
-			'upper-case language' => array( 'EN_US' ),
-			'one letter'          => array( 'e' ),
-			'a language name'     => array( 'english' ),
-			'three-letter region' => array( 'en_USA' ),
-			'trailing underscore' => array( 'en_US_' ),
-			'upper-case variant'  => array( 'de_DE_Formal' ),
-			'trailing line feed'  => array( "en_US\n" ),
-			'a numeric region'    => array( 'es_419' ),
+			'empty'                      => array( '' ),
+			'a BCP 47 tag'               => array( 'en-US' ),
+			'lower-case region'          => array( 'en_us' ),
+			'upper-case language'        => array( 'EN_US' ),
+			'one letter'                 => array( 'e' ),
+			'a language name'            => array( 'english' ),
+			'three-letter region'        => array( 'en_USA' ),
+			'trailing underscore'        => array( 'en_US_' ),
+			'upper-case variant'         => array( 'de_DE_Formal' ),
+			'trailing line feed'         => array( "en_US\n" ),
+			'a numeric region'           => array( 'es_419' ),
+			'longer than a column holds' => array( 'en_US_abcdefghijklmno' ),
 		);
 	}
 

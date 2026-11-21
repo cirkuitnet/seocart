@@ -13,6 +13,8 @@ namespace SEOCart\Support;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- This exception reports a caller's programming error to the developer; it is never HTML.
+
 /**
  * A WordPress locale.
  *
@@ -20,7 +22,8 @@ defined( 'ABSPATH' ) || exit;
  * every `locale` column stores — and how that form is written as a BCP 47
  * language tag. A WordPress locale is a language code of two or three lower-case letters, an
  * optional region of two upper-case letters, and an optional variant of four or more lower-case
- * letters and digits: 'ja', 'en_GB', 'pt_BR', 'ast', 'de_DE_formal', 'pt_PT_ao90'.
+ * letters and digits: 'ja', 'en_GB', 'pt_BR', 'ast', 'de_DE_formal', 'pt_PT_ao90'; all of it
+ * at most MAX_LENGTH characters, what every `locale` column holds.
  *
  * Variants are accepted because WordPress ships translations under them (de_DE_formal is one
  * of the most used), so a store can run in one. They are dropped from the BCP 47 form, since
@@ -33,6 +36,16 @@ defined( 'ABSPATH' ) || exit;
  * @since 0.1.0
  */
 final class Locale {
+
+	/**
+	 * The longest locale, in characters: what every `locale` column holds. No WordPress locale
+	 * comes near it; a longer string is refused rather than cut by the column.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const MAX_LENGTH = 20;
 
 	/**
 	 * The shape of a WordPress locale: language, optional region, optional variant.
@@ -71,14 +84,14 @@ final class Locale {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @throws \InvalidArgumentException When the string is not a WordPress locale.
+	 * @throws \InvalidArgumentException When the string is not a WordPress locale, or is longer than MAX_LENGTH.
 	 *
 	 * @param string $locale A WordPress locale, for example 'en_US' or 'de_DE_formal'.
 	 * @return self The locale.
 	 */
 	public static function of( string $locale ): self {
-		if ( 1 !== preg_match( self::PATTERN, $locale ) ) {
-			throw new \InvalidArgumentException( 'A WordPress locale is a language of two or three lower-case letters, an optional region of two upper-case letters and an optional variant, joined by underscores: en_US, ja, de_DE_formal.' );
+		if ( strlen( $locale ) > self::MAX_LENGTH || 1 !== preg_match( self::PATTERN, $locale ) ) {
+			throw new \InvalidArgumentException( sprintf( 'A WordPress locale is a language of two or three lower-case letters, an optional region of two upper-case letters and an optional variant, joined by underscores, in at most %d characters: en_US, ja, de_DE_formal.', self::MAX_LENGTH ) );
 		}
 
 		return new self( $locale );

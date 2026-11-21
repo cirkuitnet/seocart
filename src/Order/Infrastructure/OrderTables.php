@@ -16,6 +16,7 @@ use SEOCart\Platform\Database\Schema\ColumnSpec;
 use SEOCart\Platform\Database\Schema\IndexSpec;
 use SEOCart\Platform\Database\Schema\MutationPattern;
 use SEOCart\Platform\Database\Schema\TableDefinition;
+use SEOCart\Support\Locale;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -834,7 +835,7 @@ final class OrderTables {
 	 * @return ColumnSpec The column.
 	 */
 	private static function locale( string $name, string $note ): ColumnSpec {
-		return new ColumnSpec( $name, 'varchar(20)', Classification::Public, $note, collation: 'ascii_bin' );
+		return new ColumnSpec( $name, 'varchar(' . Locale::MAX_LENGTH . ')', Classification::Public, $note, collation: 'ascii_bin' );
 	}
 
 	/**
