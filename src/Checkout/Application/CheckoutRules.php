@@ -428,8 +428,7 @@ final class CheckoutRules {
 	 * @throws CodedException `checkout.session_incomplete` with the detail `missing`, the wire paths of
 	 *                        what is missing: the details first, then each required field, billing
 	 *                        before shipping, then the custom fields; `checkout.invalid_fields`, as
-	 *                        validate() answers it, for
-	 *                        a value kept that the declarations refuse.
+	 *                        validate() answers it, for a value kept that the declarations refuse.
 	 *
 	 * @param CheckoutSession|null $session The session the placement read, or null when the cart has none.
 	 * @return CheckoutSession The session to place, its addresses holding only the values in force.

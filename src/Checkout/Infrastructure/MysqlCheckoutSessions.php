@@ -239,8 +239,8 @@ final class MysqlCheckoutSessions implements CheckoutSessions {
 
 		$values = self::document( (string) $stored );
 
-		foreach ( $values as $key => $value ) {
-			if ( ! is_string( $key ) || ! is_string( $value ) || '' === $value ) {
+		foreach ( $values as $value ) {
+			if ( ! is_string( $value ) || '' === $value ) {
 				throw new \UnexpectedValueException( 'A checkout session holds a document of field values that is not one.' );
 			}
 		}

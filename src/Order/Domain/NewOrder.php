@@ -183,8 +183,8 @@ final readonly class NewOrder {
 		$fields = array();
 
 		foreach ( $this->fieldValues as $value ) {
-			if ( ! $value instanceof OrderFieldValue || isset( $fields[ $value->key ] ) ) {
-				throw new \InvalidArgumentException( 'An order keeps one value per checkout field, each an OrderFieldValue.' );
+			if ( isset( $fields[ $value->key ] ) ) {
+				throw new \InvalidArgumentException( 'An order keeps one value per checkout field.' );
 			}
 
 			$fields[ $value->key ] = true;

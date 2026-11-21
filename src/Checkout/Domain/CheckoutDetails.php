@@ -92,8 +92,8 @@ final readonly class CheckoutDetails {
 		public ?string $paymentMethodKey,
 		public array $fieldValues = array()
 	) {
-		foreach ( $fieldValues as $key => $value ) {
-			if ( ! is_string( $key ) || ! is_string( $value ) || '' === $value ) {
+		foreach ( $fieldValues as $value ) {
+			if ( '' === $value ) {
 				throw new \InvalidArgumentException( 'A checkout field\'s value is a non-empty string, kept by the field\'s key.' );
 			}
 		}
