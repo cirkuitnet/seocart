@@ -587,8 +587,8 @@ final class CheckoutOperations {
 						static fn(): string => __( 'Order limits', 'seocart' ),
 						array(
 							self::limitCurrency(),
-							self::limitBound( 'minimum_minor', 'The smallest order the store takes in the currency, in its minor units; null for none.', static fn(): string => __( 'Minimum order', 'seocart' ), 2500 ),
-							self::limitBound( 'maximum_minor', 'The largest order the store takes in the currency, in its minor units; null for none.', static fn(): string => __( 'Maximum order', 'seocart' ), 500000 ),
+							self::minimumBound(),
+							self::maximumBound(),
 						),
 						required: true
 					),
@@ -715,13 +715,35 @@ final class CheckoutOperations {
 					minimum: 0,
 					privacy: Privacy::Financial
 				),
-				self::limitBound( 'minimum_minor', 'The smallest order the store takes in the currency, in its minor units; null for none.', static fn(): string => __( 'Minimum order', 'seocart' ), 2500 ),
-				self::limitBound( 'maximum_minor', 'The largest order the store takes in the currency, in its minor units; null for none.', static fn(): string => __( 'Maximum order', 'seocart' ), 500000 ),
+				self::minimumBound(),
+				self::maximumBound(),
 				self::formClosed( 'basis', 'gross when every line\'s price was entered with tax, so the amount includes it; net otherwise.', static fn(): string => __( 'Basis', 'seocart' ), array( OrderLimits::NET, OrderLimits::GROSS ) ),
 			),
 			required: true,
 			nullable: true
 		);
+	}
+
+	/**
+	 * Declares the minimum of an order limit, as the form read and the session write's order limit both answer it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return FieldSpec The field.
+	 */
+	private static function minimumBound(): FieldSpec {
+		return self::limitBound( 'minimum_minor', 'The smallest order the store takes in the currency, in its minor units; null for none.', static fn(): string => __( 'Minimum order', 'seocart' ), 2500 );
+	}
+
+	/**
+	 * Declares the maximum of an order limit, as the form read and the session write's order limit both answer it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return FieldSpec The field.
+	 */
+	private static function maximumBound(): FieldSpec {
+		return self::limitBound( 'maximum_minor', 'The largest order the store takes in the currency, in its minor units; null for none.', static fn(): string => __( 'Maximum order', 'seocart' ), 500000 );
 	}
 
 	/**

@@ -214,6 +214,27 @@ final class CheckoutRules {
 	}
 
 	/**
+	 * Returns what every list of checkout fields tells a client a field is: its key, section, type, and its label and help in the request's language.
+	 *
+	 * The form read and the staff's field list both start each field with these, the members
+	 * CheckoutOperations::fieldIdentity() declares, and add their own.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param CheckoutField $field The field.
+	 * @return array{key: string, section: string, type: string, label: string, help: string|null} The members, by wire name.
+	 */
+	public static function identityOf( CheckoutField $field ): array {
+		return array(
+			'key'     => $field->key,
+			'section' => $field->section->value,
+			'type'    => $field->type->value,
+			'label'   => ( $field->label )(),
+			'help'    => null === $field->help ? null : ( $field->help )(),
+		);
+	}
+
+	/**
 	 * Returns the order limits, read with the fields.
 	 *
 	 * @since 0.2.0

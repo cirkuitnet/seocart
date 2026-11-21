@@ -302,12 +302,7 @@ final class CheckoutSettingsService {
 	private static function fieldList( CompiledFields $fields ): array {
 		return array(
 			'fields' => array_map(
-				static fn( CheckoutField $field ): array => array(
-					'key'       => $field->key,
-					'section'   => $field->section->value,
-					'type'      => $field->type->value,
-					'label'     => ( $field->label )(),
-					'help'      => null === $field->help ? null : ( $field->help )(),
+				static fn( CheckoutField $field ): array => CheckoutRules::identityOf( $field ) + array(
 					'presence'  => $fields->presenceOf( $field )->value,
 					'presences' => array_map( static fn( Presence $presence ): array => array( 'presence' => $presence->value ), $field->presences ),
 					'source'    => BuiltInFields::SOURCE,
