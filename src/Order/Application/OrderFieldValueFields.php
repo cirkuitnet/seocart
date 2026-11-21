@@ -74,7 +74,7 @@ final class OrderFieldValueFields {
 			),
 			self::closed( 'section', 'Where the checkout form showed the field: contact or order.', static fn(): string => __( 'Section', 'seocart' ), array_column( Section::cases(), 'value' ) ),
 			self::closed( 'type', 'What the field\'s value was, such as text, textarea, select or checkbox; a ticked checkbox is 1.', static fn(): string => __( 'Type', 'seocart' ), array_column( CheckoutFieldType::cases(), 'value' ) ),
-			self::label( 'label', 'The field\'s label as the shopper saw it, in the order\'s locale.', static fn(): string => __( 'Label', 'seocart' ), false ),
+			self::label( 'label', 'The field\'s label as the shopper saw it, in the locale named by `locale`.', static fn(): string => __( 'Label', 'seocart' ), false ),
 			self::label( 'current_label', 'The field\'s label as it is declared today, in the request\'s language; null when no field of this key and source is declared any more.', static fn(): string => __( 'Label today', 'seocart' ), true ),
 			new FieldSpec(
 				name: 'field_value',
@@ -90,7 +90,7 @@ final class OrderFieldValueFields {
 			new FieldSpec(
 				name: 'value_label',
 				type: FieldType::String,
-				description: 'For a select, the chosen option\'s label as the shopper saw it, in the order\'s locale; null for any other type, and once the order is erased.',
+				description: 'For a select, the chosen option\'s label as the shopper saw it, in the locale named by `locale`; null for any other type, and once the order is erased.',
 				label: static fn(): string => __( 'Value shown', 'seocart' ),
 				example: 'Morning',
 				required: true,

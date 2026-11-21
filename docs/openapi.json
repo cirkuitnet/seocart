@@ -8275,7 +8275,7 @@
                                 "label": {
                                     "type": "string",
                                     "maxLength": 255,
-                                    "description": "The field's label as the shopper saw it, in the order's locale."
+                                    "description": "The field's label as the shopper saw it, in the locale named by `locale`."
                                 },
                                 "current_label": {
                                     "type": [
@@ -8299,7 +8299,7 @@
                                         "null"
                                     ],
                                     "maxLength": 255,
-                                    "description": "For a select, the chosen option's label as the shopper saw it, in the order's locale; null for any other type, and once the order is erased."
+                                    "description": "For a select, the chosen option's label as the shopper saw it, in the locale named by `locale`; null for any other type, and once the order is erased."
                                 },
                                 "locale": {
                                     "type": "string",
