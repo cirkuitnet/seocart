@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Order;
 
+use SEOCart\Checkout\Infrastructure\Migrations\AddSessionFieldValues;
 use SEOCart\Customer\Infrastructure\Migrations\CreateCustomers;
 use SEOCart\Order\Infrastructure\Migrations\AddOrderCustomerIndex;
 use SEOCart\Order\Infrastructure\Migrations\CreateOrderTables;
@@ -107,7 +108,7 @@ final class OrderCustomerIndexMigrationTest extends DatabaseTestCase {
 
 		$this->assertContains( AddOrderCustomerIndex::ID, $ids, 'The registry runs the migration.' );
 		$this->assertGreaterThan( CreateCustomers::ID, $migration->id(), 'The index sorts after the records whose orders it lists.' );
-		$this->assertSame( AddOrderCustomerIndex::ID, max( $ids ), 'The index is the latest migration.' );
+		$this->assertLessThan( AddSessionFieldValues::ID, $migration->id(), 'The index sorts before the migrations added after it, so a release that has it has every migration before it.' );
 		$this->assertTrue( $migration->canOperateHalfApplied(), 'The store keeps trading while the index is added.' );
 		$this->assertEquals( array( OrderTables::orders() ), $migration->tables() );
 	}
