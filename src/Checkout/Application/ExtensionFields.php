@@ -29,10 +29,11 @@ defined( 'ABSPATH' ) || exit;
  *
  * A registration is refused, reported once with the code REJECTED and kept for the request
  * (refused()), never thrown: after the action ran; with an extension id that is no snake_case key;
- * past MAX_FIELDS; for the `address` section, which would need a value per address; of a type no
- * extension may declare; under a key that SEOCart's own fields or the session write's members
- * hold, given or stored, or a stored key with a reserved prefix; under a stored key registered
- * already, the first registration winning; and when the stored key is not one a field can have.
+ * under a stored key registered already, the first registration winning, and so a duplicate even
+ * at the limit; past MAX_FIELDS; for the `address` section, which would need a value per address;
+ * of a type no extension may declare; under a key that SEOCart's own fields or the session write's
+ * members hold, given or stored, or a stored key with a reserved prefix; and when the stored key is
+ * not one a field can have.
  * A listener that throws is reported by its exception's class, never its message. A report names
  * the extension, the key and the reason, never a label or a value.
  *
@@ -340,11 +341,11 @@ final class ExtensionFields implements CheckoutFieldRegistry {
 		return match ( true ) {
 			! $this->collecting                                            => self::LATE,
 			! CheckoutField::isKey( $extensionId )                         => self::INVALID_KEY,
+			isset( $this->fields[ $stored ] )                              => self::DUPLICATE,
 			count( $this->fields ) >= self::MAX_FIELDS                     => self::TOO_MANY,
 			Section::Address === $field->section                           => self::ADDRESS_SECTION,
 			! in_array( $field->type, self::TYPES, true )                  => self::TYPE,
 			$this->isReserved( $field->key ) || $this->isReserved( $stored ) => self::RESERVED_KEY,
-			isset( $this->fields[ $stored ] )                              => self::DUPLICATE,
 			! CheckoutField::isKey( $stored )                              => self::INVALID_KEY,
 			default                                                        => null,
 		};

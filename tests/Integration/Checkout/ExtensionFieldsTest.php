@@ -241,7 +241,7 @@ final class ExtensionFieldsTest extends DatabaseTestCase {
 	}
 
 	/**
-	 * Tests the limits that depend on what was registered before: the 21st field and a key registered twice are refused, the first registration of a key winning; a registration after the action ran is refused late.
+	 * Tests the limits that depend on what was registered before: the 21st field and a key registered twice are refused, a key registered twice as a duplicate even at the limit, the first registration of a key winning; a registration after the action ran is refused late.
 	 *
 	 * @since 0.2.0
 	 */
@@ -263,7 +263,7 @@ final class ExtensionFieldsTest extends DatabaseTestCase {
 		$registry->register( 'acme', self::field( 'too_late' ) );
 
 		$this->assertSame(
-			array( array( 'field_1', ExtensionFields::TOO_MANY ), array( 'one_too_many', ExtensionFields::TOO_MANY ), array( 'too_late', ExtensionFields::LATE ) ),
+			array( array( 'field_1', ExtensionFields::DUPLICATE ), array( 'one_too_many', ExtensionFields::TOO_MANY ), array( 'too_late', ExtensionFields::LATE ) ),
 			array_map( static fn( array $report ): array => array( $report['context']['key'], $report['context']['reason'] ), $this->reports )
 		);
 		$this->assertCount( CheckoutFieldRegistry::MAX_FIELDS, array_slice( $rules->fields(), count( BuiltInFields::all() ) ), 'A late registration joined the fields.' );
