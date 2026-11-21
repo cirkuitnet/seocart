@@ -229,6 +229,7 @@ seocart jobs run` and from a short tick on admin requests; `wp seocart jobs stat
 - A payment plugin's form, such as a card form, appears inside the checkout's payment section, and a bank's confirmation step completes there before the order is confirmed. A payment method whose plugin form is missing is shown unavailable rather than left out.
 - An order placed by a logged-in shopper now belongs to that shopper's customer account, and a logged-in customer can list and read their own orders without the order's key.
 - Each checkout field can be hidden, optional or required from one setting, and a store can set a minimum and a maximum order amount for each currency it sells in: the checkout tells the shopper where the cart stands, and an order outside the limits is not placed.
+- A shopper can leave an order note at checkout, and extensions can add checkout fields of their own, such as a purchase order number or a delivery slot; the store chooses whether each is hidden, optional or required, and the order keeps every value with the words the shopper saw, for staff to read (`GET /seocart/v1/orders/{order_uuid}/field-values`, `wp seocart order field-values`).
 
 ### Changed
 
