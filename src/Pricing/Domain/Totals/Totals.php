@@ -52,6 +52,19 @@ final readonly class Totals {
 	public TotalsSummary $summary;
 
 	/**
+	 * The lines after their discounts, before any adjustment outside a line: every line's taxed amount, added up with the summary.
+	 *
+	 * The goods at the prices the shopper was shown, less what was taken off them, in net, tax and
+	 * gross; shipping, its discount and fees are not in it. It is not part of toArray(): whatever
+	 * measures the goods reads it here and adds nothing up itself.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var TaxedMoney
+	 */
+	public TaxedMoney $linesAfterDiscounts;
+
+	/**
 	 * The net discount of each source that took something off, keyed by the source, added up with the summary.
 	 *
 	 * @since 0.1.0
@@ -91,8 +104,9 @@ final readonly class Totals {
 	) {
 		$sums = $this->summarise();
 
-		$this->summary   = $sums['summary'];
-		$this->discounts = $sums['discounts'];
+		$this->summary             = $sums['summary'];
+		$this->linesAfterDiscounts = $sums['lines'];
+		$this->discounts           = $sums['discounts'];
 	}
 
 	/**
@@ -202,11 +216,13 @@ final readonly class Totals {
 	 * already include. So the subtotal, discounts, shipping and fees add up to the net, and the net
 	 * and the tax to the grand total. The base figures are the same sums of the same members' base
 	 * nets, so they add up the same way. A discount also counts toward its source's figure, with
-	 * the same taxed net and base net it adds to the discount total.
+	 * the same taxed net and base net it adds to the discount total. The lines' own sum, net, tax
+	 * and gross, is kept too: the lines after their discounts.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Answers the lines after their discounts.
 	 *
-	 * @return array{summary: TotalsSummary, discounts: array<string, SourceDiscount>} The summary, and the discounts by source.
+	 * @return array{summary: TotalsSummary, lines: TaxedMoney, discounts: array<string, SourceDiscount>} The summary, the lines after their discounts, and the discounts by source.
 	 */
 	private function summarise(): array {
 		$lines     = TaxedMoney::zero( $this->currency );
@@ -271,6 +287,7 @@ final readonly class Totals {
 
 		return array(
 			'summary'   => $summary,
+			'lines'     => $lines,
 			'discounts' => $bySource,
 		);
 	}

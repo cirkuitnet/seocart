@@ -56,7 +56,6 @@ final class NoMoneyArithmeticTest extends TestCase {
 	 * @var array<string, string>
 	 */
 	private const ALLOWED = array(
-		'src/Checkout/Application/OrderLimits.php'       => 'It adds up the calculation\'s own lines after their discounts, gross or net as the prices were entered, to compare the goods with the store\'s order limits: a measure for one rule, never stored as a total.',
 		'src/Payment/Domain/AmountCheck.php'             => 'It adds a tender to what the order has tendered, to decide whether an approval stays within the grand total.',
 		'src/Payment/Domain/CaptureShare.php'            => 'It splits the intent\'s frozen base amount between what a partial capture takes and what it leaves, by largest remainder: a stored figure split, not a total computed.',
 		'src/Payment/Domain/Projection.php'              => 'It adds a payment to the locked order\'s amounts, and a refund to the intent\'s, to decide which state the database\'s update will record.',

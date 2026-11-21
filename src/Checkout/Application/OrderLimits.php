@@ -26,9 +26,9 @@ defined( 'ABSPATH' ) || exit;
  * in: with tax when every line's price was entered with tax, without it otherwise, as the order
  * records the basis (OrderDocument::priceEntryMode()). So it is the shelf prices a shopper was
  * shown, less what was taken off them. Every goods discount is a line's, so the lines' own figures
- * are the whole of it. The figure is the calculation's lines added up, never a client's total, in
- * the cart's currency, never converted: a currency without an entry has no limit, and the bounds
- * are inclusive.
+ * are the whole of it. The figure is the calculation's own (Totals::$linesAfterDiscounts), which
+ * this class only reads, never a client's total, in the cart's currency, never converted: a
+ * currency without an entry has no limit, and the bounds are inclusive.
  *
  * The session write tells the shopper where the cart stands (verdict()); the placement refuses an
  * order outside the limits (refuse()), the only place one is enforced.
@@ -104,20 +104,16 @@ final class OrderLimits {
 	 * @since 0.2.0
 	 *
 	 * @param Totals $totals The calculation's totals.
-	 * @return array{amount: Money, basis: string} The lines after their discounts, added up, gross
-	 *                                             when every line's price was entered gross and net
-	 *                                             otherwise; the basis, GROSS or NET.
+	 * @return array{amount: Money, basis: string} The lines after their discounts, as the calculation
+	 *                                             added them up: gross when every line's price was
+	 *                                             entered gross and net otherwise; the basis, GROSS or NET.
 	 */
 	public static function amountOf( Totals $totals ): array {
-		$basis  = self::GROSS === OrderDocument::priceEntryMode( $totals ) ? self::GROSS : self::NET;
-		$amount = Money::zero( $totals->currency );
-
-		foreach ( $totals->lines as $line ) {
-			$amount = $amount->add( self::GROSS === $basis ? $line->amount->gross() : $line->amount->net() );
-		}
+		$basis = self::GROSS === OrderDocument::priceEntryMode( $totals ) ? self::GROSS : self::NET;
+		$goods = $totals->linesAfterDiscounts;
 
 		return array(
-			'amount' => $amount,
+			'amount' => self::GROSS === $basis ? $goods->gross() : $goods->net(),
 			'basis'  => $basis,
 		);
 	}

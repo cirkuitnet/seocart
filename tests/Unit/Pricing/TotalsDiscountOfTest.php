@@ -15,6 +15,7 @@ use PHPUnit\Framework\TestCase;
 use SEOCart\Pricing\Domain\AmountBasis;
 use SEOCart\Pricing\Domain\Engine\Engine;
 use SEOCart\Pricing\Domain\Source;
+use SEOCart\Pricing\Domain\Totals\AdjustmentScope;
 use SEOCart\Pricing\Domain\Totals\AdjustmentType;
 use SEOCart\Pricing\Domain\Totals\Totals;
 use SEOCart\Tests\Support\Pricing\CartB;
@@ -23,6 +24,8 @@ use SEOCart\Tests\Support\Pricing\ScenarioFixture;
 
 /**
  * The discount of each source is the sum of its discounts' taxed nets, and their base nets: every share and a free-shipping discount included, whatever basis each was authored in.
+ *
+ * The lines after their discounts, kept with the summary, are every line's taxed amount added up.
  *
  * Planted violations, each shown red and removed:
  *
@@ -107,6 +110,44 @@ final class TotalsDiscountOfTest extends TestCase {
 		if ( $net ) {
 			$this->assertSame( $totals->summary->discountTotal->minorUnits(), array_sum( array_column( $actual, 0 ) ), 'Every discount was authored net, so the sources add up to the summary\'s discount total.' );
 		}
+	}
+
+	/**
+	 * Tests that the lines after their discounts are every line's taxed amount added up, whose net is the subtotal with the discounts inside the lines, and nothing outside them.
+	 *
+	 * Cart B is shipped, with a free-shipping discount, so neither the net total nor the subtotal
+	 * with the discount total is the figure.
+	 *
+	 * Planted violation: in Totals::summarise(), keep the lines with the adjustments outside a line
+	 * (`$taxed`) instead of the lines alone: Cart B's shipping is counted in.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider data_calculations
+	 *
+	 * @param \Closure $calculate Returns the totals.
+	 *
+	 * @phpstan-param \Closure(): Totals $calculate
+	 */
+	public function test_the_lines_after_their_discounts_are_every_lines_amount( \Closure $calculate ): void {
+		$totals  = $calculate();
+		$lines   = array( 0, 0, 0 );
+		$inLines = 0;
+
+		foreach ( $totals->lines as $line ) {
+			$lines = array( $lines[0] + $line->amount->net()->minorUnits(), $lines[1] + $line->amount->tax()->minorUnits(), $lines[2] + $line->amount->gross()->minorUnits() );
+		}
+
+		foreach ( $totals->adjustments as $adjustment ) {
+			if ( AdjustmentScope::Line === $adjustment->adjustment->scope ) {
+				$inLines += $adjustment->amount->net()->minorUnits();
+			}
+		}
+
+		$goods = $totals->linesAfterDiscounts;
+
+		$this->assertSame( $lines, array( $goods->net()->minorUnits(), $goods->tax()->minorUnits(), $goods->gross()->minorUnits() ), 'Every line after its discounts, added up: net, tax and gross.' );
+		$this->assertSame( $totals->summary->subtotal->minorUnits() + $inLines, $goods->net()->minorUnits(), 'The subtotal and the discounts inside the lines.' );
 	}
 
 	/**
