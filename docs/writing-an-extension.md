@@ -1044,18 +1044,33 @@ everything in it that is no provider's comes from SEOCart, at the commit the ext
 - **`bin/ci/extension-live-lib.sh`**, sourced by that script and by the extension's own: the run's
   files, in one work directory, `$RUNNER_TEMP/seocart-live` (`settings.json`, `run-list`,
   `report`, and the checkout's `site`), and the helpers `fail`, `output`, `mask`, `random_hex`,
-  `nonce`, `filtered` (a command's output passed through the guard below), `site_wp` and `count`
-  (a count from Playwright's summary).
+  `nonce`, `filtered` (a command's output passed through the guard below, line by line, and kept
+  in a file; the step fails when the guard cannot run, whatever the command returned), `site_wp`
+  and `count` (a count from Playwright's summary).
 - **`.github/actions/extension-live-setup`**, a job's set-up: PHP, Composer and SEOCart's
   development install; with `wordpress: 'true'`, the default, WordPress and SEOCart's test
   configuration; with `browser: 'true'`, Node.js, the browser scripts' dependencies, Chromium for
   Playwright, and the browser scripts' own tests.
 - **`tests/Conformance/Payment/Live/`**: the declaration an extension writes (`LiveDeclaration`);
-  the guard of everything a run prints (`MessageGuard`: an address with a query, an authorization
-  header and a card number by the Luhn check for every extension, and the shapes of the
-  provider's credentials its declaration adds); the readers of the run's files and the jobs'
-  outputs; the verdict; and the two checks the extension's workflow test runs, `WorkflowFacts`
-  and `SettingsLast`.
+  the guard (`MessageGuard`, below); the readers of the run's files and the jobs' outputs; the
+  verdict; and the two checks the extension's workflow test runs, `WorkflowFacts` and
+  `SettingsLast`.
+
+The log of a public repository's run is public, so the guard blanks out what must not be shown,
+or refuses to print it. It reads each text it is given a line at a time, so a value split over two
+lines is not recognised, and it recognises: an address with a query; an authorization header
+(`Bearer` or `Basic` and the token after it); a card number, 13 to 19 digits that pass the Luhn
+check, written as a run of digits with single spaces allowed between them, or in groups the way a
+card is printed (four digits, then two to four groups of three to six, each after a space or a
+hyphen); and the shapes of the provider's credentials that the extension's declaration adds. What
+passes through it: the output of every command run through `filtered`, which is the conformance
+suite's and the live tests' PHPUnit output and whatever the extension's steps run through it, such
+as the checkout's Playwright tests; the outputs, errors and summary lines SEOCart's PHP steps
+write, the run's report included, and the verdict's table; and the live tests' failure messages
+and facts, when they are built with the guard's `say()` and `LiveRun::report()`. What does not:
+anything else a step prints, such as the extension's script's own lines, WP-CLI's output while the
+site is built and configured, and the set-up's output. The PHP server's log of the checkout's
+site goes to a file in the work directory, which nothing prints.
 
 ### What the extension writes
 
@@ -1086,14 +1101,14 @@ return new class() extends LiveDeclaration {
 
 What is derived, and from where:
 
-| Derived | From | The Stripe gateway's |
-| --- | --- | --- |
-| The repository and the slug | the `name` of `composer.json` | `cirkuitnet/seocart-gateway-for-stripe` |
-| The live tests' PHPUnit group | the slug without `seocart-gateway-for-`, then `-live` | `stripe-live` |
-| The release zip | the slug | `dist/seocart-gateway-for-stripe-<version>.zip` |
-| The provider's script | the workflow's basename | `bin/ci/stripe-test-mode.sh` |
-| The concurrency group | the workflow's basename | `stripe-test-mode` |
-| The verdict's title | the workflow's `name:` | `Stripe test mode` |
+| Derived                       | From                                                  | The Stripe gateway's                            |
+| ----------------------------- | ----------------------------------------------------- | ----------------------------------------------- |
+| The repository and the slug   | the `name` of `composer.json`                         | `cirkuitnet/seocart-gateway-for-stripe`         |
+| The live tests' PHPUnit group | the slug without `seocart-gateway-for-`, then `-live` | `stripe-live`                                   |
+| The release zip               | the slug                                              | `dist/seocart-gateway-for-stripe-<version>.zip` |
+| The provider's script         | the workflow's basename                               | `bin/ci/stripe-test-mode.sh`                    |
+| The concurrency group         | the workflow's basename                               | `stripe-test-mode`                              |
+| The verdict's title           | the workflow's `name:`                                | `Stripe test mode`                              |
 
 **`bin/ci/<the workflow's basename>.sh`** holds the provider's steps: `check-secrets`, `settings`
 (the one file of credentials the tests read, readable by its owner alone, and the run list and the
@@ -1130,7 +1145,10 @@ steps:
 
 The `verdict` job needs every part, runs `if: always()`, checks out the extension and SEOCart, and
 runs `sh seocart/bin/ci/extension-live.sh verdict ext` with `SEOCART_LIVE_NEEDS:
-${{ toJSON(needs) }}` and `SEOCART_LIVE_PARTS: ${{ inputs.parts || 'all' }}` in its env. A part
+${{ toJSON(needs) }}` and `SEOCART_LIVE_PARTS: ${{ inputs.parts || 'all' }}` in its env. GitHub
+gives the result of every job the verdict needs, `skipped` included, so the verdict is red when a
+job of the declaration has none, whatever the parts were; a part the run selected must succeed. A
+part
 that waits for a secret, such as webhooks before the provider's webhook exists, runs
 `sh seocart/bin/ci/extension-live.sh optional ext <job>` after `*checkout-core`, with that secret
 alone in its env, and its live step only `if:` the output says `present`; the verdict then reads
@@ -1147,11 +1165,13 @@ its `tests/`), and `SettingsLast`.
 The settings file holds the provider's key, so a job writes it after everything that installs,
 downloads or builds, and nothing after it installs, downloads or builds: a package's install
 script, a build, a downloaded browser or an action would otherwise run with the key readable.
-`SettingsLast` holds a workflow to that with closed lists. After a job's settings step, the job
+`SettingsLast` holds a workflow to that with closed lists. A job's settings step is the step that
+runs `sh ext/bin/ci/<basename>.sh settings`, whatever it is named or anchored as. After it, the job
 may run only `sh seocart/bin/ci/extension-live.sh conformance ext`, `… live ext <part>` for a part
 the declaration states, and the provider's steps the extension names, as
 `sh ext/bin/ci/<basename>.sh <step>`; each with the keys `name`, `id`, `if` and `run` alone, and
-no action. The shell those steps reach, SEOCart's script and lib included, may run only commands
+no action. Those steps read the file, so a job that runs one with no settings step before it is
+refused. The shell those steps reach, SEOCart's script and lib included, may run only commands
 that cannot install, download or build: no `npm`, `npx`, `composer` or `pip`; Playwright as the
 set-up installed it, `node_modules/.bin/playwright`; WP-CLI, `sed` and `sort`, whose options can
 run code, only in calls written out whole. SEOCart's own tests hold its script and lib to the rule
