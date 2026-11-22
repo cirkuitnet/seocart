@@ -209,6 +209,55 @@ final class ExtensionLiveScriptTest extends TestCase {
 	}
 
 	/**
+	 * Tests that the filter fails closed: when the guard cannot run, as with a declaration that is missing or broken, a command that passed fails the step, and none of its output is shown or kept.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider brokenDeclarations
+	 *
+	 * @param string|null $declaration The extension's tests/live.php; null for none.
+	 */
+	public function test_the_filter_fails_closed_when_the_guard_fails( ?string $declaration ): void {
+		$this->writeFile( 'extension/composer.json', '{"name": "example/seocart-gateway-for-broken"}' );
+
+		if ( null !== $declaration ) {
+			$this->writeFile( 'extension/tests/live.php', $declaration );
+		}
+
+		$program = implode(
+			"\n",
+			array(
+				'core=$1',
+				'ext=$2',
+				'. "$core/bin/ci/extension-live-lib.sh"',
+				'mkdir -p "$work"',
+				'filtered "$work/kept" sh -c \'printf "%s\n" "what the command printed"; exit 0\'',
+				'printf "status=%s\n" "$?"',
+				'printf "kept=%s\n" "$(cat "$work/kept")"',
+			)
+		);
+		$run     = $this->process( array( 'sh', '-c', $program, 'sh', dirname( __DIR__, 5 ), $this->directory . '/extension' ), array( 'RUNNER_TEMP' => $this->directory ) );
+
+		$this->assertStringNotContainsString( 'what the command printed', $run['out'] . $run['err'] );
+		$this->assertStringContainsString( "::error::The guard of the extension's declaration failed, so the output above is not the command's whole output, and the step fails whatever the command returned.\nstatus=1\n", $run['out'] );
+	}
+
+	/**
+	 * Returns declarations the guard cannot be built from.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string|null}> The tests/live.php, or null for none; by name.
+	 */
+	public static function brokenDeclarations(): array {
+		return array(
+			'no declaration'           => array( null ),
+			'a declaration of nothing' => array( "<?php\nreturn array();\n" ),
+			'a declaration in error'   => array( "<?php\nreturn new class() extends {\n" ),
+		);
+	}
+
+	/**
 	 * Runs bin/ci/extension-live.sh.
 	 *
 	 * @since 0.2.0

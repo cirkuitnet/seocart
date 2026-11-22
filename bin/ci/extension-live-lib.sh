@@ -59,17 +59,30 @@ nonce() {
 }
 
 # Runs a command with its output passed through the guard of the extension's declaration and kept
-# in a file, and returns the command's status: the pipe's status would be the filter's.
+# in a file, and returns the command's status: the pipe's status would be the filter's, so each
+# status is kept in a file of its own. Fails closed: when the guard fails, as it does with a missing
+# or broken tests/live.php, the command's output is not shown, and the step fails whatever the
+# command's status.
 filtered() {
 	kept=$1
 	shift
 	status_file=$work/status
+	guard_file=$work/guard-status
+	rm -f "$status_file" "$guard_file"
 	{
 		code=0
 		"$@" 2>&1 || code=$?
 		echo "$code" >"$status_file"
-	} | php "$step_php" redact "$ext" | tee "$kept"
-	return "$(cat "$status_file")"
+	} | {
+		guarded=0
+		php "$step_php" redact "$ext" || guarded=$?
+		echo "$guarded" >"$guard_file"
+	} | tee "$kept"
+	if [ "$(cat "$guard_file" 2>/dev/null || echo 1)" != 0 ]; then
+		printf '::error::%s\n' 'The guard of the extension'\''s declaration failed, so the output above is not the command'\''s whole output, and the step fails whatever the command returned.'
+		return 1
+	fi
+	return "$(cat "$status_file" 2>/dev/null || echo 1)"
 }
 
 # Runs WP-CLI against the checkout's site. Standard input is closed so that no command waits for a
