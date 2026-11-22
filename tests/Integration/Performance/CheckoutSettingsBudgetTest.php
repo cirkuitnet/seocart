@@ -27,8 +27,8 @@ use SEOCart\Tests\Support\QueryLog;
  *
  * Planted violations: in CheckoutRules::current(), read the `checkout` group in a values() call of
  * its own, then the inventory settings in another: the cold form read sends two; in
- * CheckoutRules::accounts(), read the choice of accounts at checkout in a values() call of its
- * own: the cold form read sends two; in
+ * CheckoutRules::current(), read the choice of accounts at checkout past the cache, in a statement
+ * of its own (SettingsStore::valuesAsStored()): the cold form read sends two; in
  * CheckoutSettingsService::swap(), create the option with SettingsStore::writeScalars(): the first
  * change's insert replaces a row that exists.
  *

@@ -227,6 +227,12 @@ An internal error carries a generic message and empty details: it is a code mark
 - Message: The product of post {post_id} was changed by another save while this one was being written; nothing was saved. Try again.
 - Values: `post_id`
 
+## `checkout.account_required`
+
+- HTTP status: 401
+- Message: The store takes orders from signed-in customers only, so the order was not placed. Sign in, then place the order again.
+- Values: none
+
 ## `checkout.cart_empty`
 
 - HTTP status: 422

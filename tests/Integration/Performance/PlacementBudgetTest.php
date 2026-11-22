@@ -454,8 +454,9 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	/**
 	 * Tests that where the store requires an account, a customer's placement of Cart A costs what it costs anywhere: the store's choice is read with the checkout's rules, in the statement the placement sends anyway.
 	 *
-	 * Planted violation: in CheckoutRules::accounts(), read the choice in a values() call of its
-	 * own: the part before the first unit grows by one, under the checkout's rules.
+	 * Planted violation: in CheckoutRules::current(), read the choice past the cache, in a statement
+	 * of its own (SettingsStore::valuesAsStored()): the part before the first unit grows by one,
+	 * under the checkout's rules.
 	 *
 	 * @since 0.2.0
 	 */

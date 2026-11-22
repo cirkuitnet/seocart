@@ -25,7 +25,7 @@ wp seocart settings get [--format=<format>]
 Changes the store settings the request names, checking every value before saving any, and returns every store setting.
 
 ```sh
-wp seocart settings update [--base_currency=<base_currency>] [--cross_zone_policy=<cross_zone_policy>] [--tax_rounding_mode=<tax_rounding_mode>] [--order_agent_per_order=<order_agent_per_order>] [--order_agent_per_day=<order_agent_per_day>] [--multi_location_fulfilment=<multi_location_fulfilment>] [--transfer_lead_days=<transfer_lead_days>] [--transfer_warning_days=<transfer_warning_days>] [--format=<format>]
+wp seocart settings update [--base_currency=<base_currency>] [--cross_zone_policy=<cross_zone_policy>] [--tax_rounding_mode=<tax_rounding_mode>] [--order_agent_per_order=<order_agent_per_order>] [--order_agent_per_day=<order_agent_per_day>] [--multi_location_fulfilment=<multi_location_fulfilment>] [--transfer_lead_days=<transfer_lead_days>] [--transfer_warning_days=<transfer_warning_days>] [--accounts=<accounts>] [--format=<format>]
 ```
 
 - Operation: `settings.update_settings`
@@ -42,6 +42,7 @@ wp seocart settings update [--base_currency=<base_currency>] [--cross_zone_polic
 - `[--multi_location_fulfilment=<multi_location_fulfilment>]`: What happens when no one location can ship a whole order: split ships it from several locations, transfer accepts it and brings its units to one location before it ships, refuse refuses it at checkout. One of `split`, `transfer`, `refuse`.
 - `[--transfer_lead_days=<transfer_lead_days>]`: The days a shopper is told an order adds when its units must first be brought to one location. An integer from 0 to 365.
 - `[--transfer_warning_days=<transfer_warning_days>]`: The days a transfer an order waits for may stay requested before it is flagged. An integer from 1 to 365.
+- `[--accounts=<accounts>]`: Whether a shopper must be signed in to place an order: optional takes orders from guests and signed-in customers alike, required from signed-in customers only, and guest_only offers no sign-in, though a signed-in customer's order is still theirs. One of `optional`, `required`, `guest_only`.
 - `[--format=<format>]`: Render the result in a particular format. One of `table`, `json`. Default `table`.
 
 ## `wp seocart stock adjust`
