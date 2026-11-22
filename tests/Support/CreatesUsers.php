@@ -64,6 +64,26 @@ trait CreatesUsers {
 	}
 
 	/**
+	 * Creates a user of the current site with a role and an email address, which may be another user's: written to WordPress's users table directly, since WordPress refuses two accounts one address.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $role  The role, for example `subscriber`.
+	 * @param string $email The address.
+	 * @return int The user's id.
+	 */
+	protected function createUserWithEmail( string $role, string $email ): int {
+		global $wpdb;
+
+		$id = $this->createUser( $role );
+
+		$wpdb->update( $wpdb->users, array( 'user_email' => $email ), array( 'ID' => $id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- The test writes an address WordPress would refuse to share.
+		clean_user_cache( $id );
+
+		return $id;
+	}
+
+	/**
 	 * Deletes every user this test created, from the whole network when there is one.
 	 *
 	 * @since 0.1.0

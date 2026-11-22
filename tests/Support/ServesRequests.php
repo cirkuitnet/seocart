@@ -123,4 +123,37 @@ trait ServesRequests {
 		\PHPUnit\Framework\Assert::assertSame( $status, $body['data']['status'] );
 		\PHPUnit\Framework\Assert::assertIsString( $body['data']['correlation_id'] );
 	}
+
+	/**
+	 * Makes the next request a guest's.
+	 *
+	 * @since 0.1.0
+	 * @since 0.2.0 Shared by every test that serves requests.
+	 *
+	 * @return array<string, string> The headers a guest sends: none.
+	 */
+	protected function asGuest(): array {
+		wp_set_current_user( 0 );
+		unset( $GLOBALS['wp_rest_auth_cookie'] );
+
+		return array();
+	}
+
+	/**
+	 * Makes the next request a logged-in browser's: the user is current, the login cookie valid, and the nonce sent.
+	 *
+	 * @since 0.1.0
+	 * @since 0.2.0 Shared by every test that serves requests.
+	 *
+	 * @param int $user The user.
+	 * @return array<string, string> The nonce header.
+	 */
+	protected function logIn( int $user ): array {
+		wp_set_current_user( $user );
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound, WordPress.WP.GlobalVariablesOverride.Prohibited -- WordPress's own record that the login cookie was valid.
+		$GLOBALS['wp_rest_auth_cookie'] = true;
+
+		return array( 'X-WP-Nonce' => wp_create_nonce( 'wp_rest' ) );
+	}
 }

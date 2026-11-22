@@ -12,17 +12,22 @@ declare( strict_types=1 );
 namespace SEOCart\Order\Application;
 
 use SEOCart\Order\Domain\AccessKeys;
+use SEOCart\Order\Domain\ClaimableOrder;
+use SEOCart\Order\Domain\Machine;
 use SEOCart\Order\Domain\OrderAccess;
 use SEOCart\Order\Domain\OrderRepository;
 use SEOCart\Order\Domain\OrderSummary;
 use SEOCart\Order\Domain\OrderView;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Database\Isolation;
+use SEOCart\Platform\Database\RetryPolicy;
+use SEOCart\Platform\Database\TransactionManager;
 use SEOCart\Support\Error\CodedException;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Decides whether an actor may see an order without a capability, and reads the order for them.
+ * Decides whether an actor may see an order without a capability, and reads the order for them; and decides who may make a guest's order theirs.
  *
  * Owns one fact: who may see an order on a storefront. Access is granted when the order belongs
  * to a customer and the actor is that customer, or when the actor presents the order's access key
@@ -30,6 +35,14 @@ defined( 'ABSPATH' ) || exit;
  * test, and an order that belongs to no customer belongs to no actor, a visitor included. Every
  * storefront surface that shows an order asks this one policy, so there is no logged-in path to
  * drift apart from a guest's.
+ *
+ * It also owns the one way a guest's order becomes a customer's (claim()): a signed-in person who
+ * presents the order's unexpired key, and whose account's email address is the one the order was
+ * placed with, has the order made their customer record's, by one conditional update, with an
+ * audit row. The address is never enough alone, and neither is the key: the key proves the
+ * browser that placed the order, the address that the account is the shopper's. A claim reads the
+ * actor's customer and the order whatever the outcome, and every refusal is `order.not_found`
+ * after those two reads, so neither the answer nor the work tells which test failed.
  *
  * Every refusal is the same `order.not_found`: no such order, another customer's order, a wrong
  * key and an expired key look alike, so an answer never confirms that an order exists. Whether a
@@ -46,10 +59,28 @@ defined( 'ABSPATH' ) || exit;
  * The same owner test lists a customer's own orders (ownOrders()): a key opens one order, never a
  * list, so an actor who is no customer is listed nothing.
  *
+ * A claim costs: nothing for an actor who is no person; two reads for a refusal and for the
+ * owner's repeat, which writes nothing; and for a claim, those two and one unit of work at READ
+ * COMMITTED, in the placement's lock order (the customer's record, then the order): the record
+ * (ActorCustomers::customerFor(): one read, one insert more for a first record, one conditional
+ * unlink more for a stale link), the conditional update, and the audit row; five statements for
+ * a customer with a record, six at a first record, seven with a stale link, and one more read
+ * for the loser of two claims at once.
+ *
  * @since 0.1.0
- * @since 0.2.0 Learns the actor's customer before the order; lists a customer's own orders.
+ * @since 0.2.0 Learns the actor's customer before the order; lists a customer's own orders; decides
+ *              a claim of a guest's order.
  */
 final class OrderAccessPolicy {
+
+	/**
+	 * The reason of the order event a claim writes.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CLAIMED = 'customer_claimed';
 
 	/**
 	 * The order statements.
@@ -79,18 +110,54 @@ final class OrderAccessPolicy {
 	private ActorCustomers $customers;
 
 	/**
+	 * The unit of work of a claim.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var TransactionManager
+	 */
+	private TransactionManager $tx;
+
+	/**
+	 * Records a claim among the order's events.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var Orders
+	 */
+	private Orders $events;
+
+	/**
+	 * Returns a WordPress user's email address, or null when there is no such user.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var \Closure(int): ?string
+	 */
+	private \Closure $emailOf;
+
+	/**
 	 * Creates the policy. Sends nothing.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The unit of work, the order's events and the account's email address, for a claim.
 	 *
-	 * @param OrderRepository $orders    The order statements.
-	 * @param AccessKeys      $keys      Checks a presented key against an order's hash.
-	 * @param ActorCustomers  $customers Says which customer an actor is.
+	 * @param OrderRepository    $orders    The order statements.
+	 * @param AccessKeys         $keys      Checks a presented key against an order's hash.
+	 * @param ActorCustomers     $customers Says which customer an actor is, and creates a first record.
+	 * @param TransactionManager $tx        The unit of work of a claim.
+	 * @param Orders             $events    Records a claim among the order's events.
+	 * @param \Closure           $emailOf   Returns a WordPress user's email address, or null when there is no such user.
+	 *
+	 * @phpstan-param \Closure(int): ?string $emailOf
 	 */
-	public function __construct( OrderRepository $orders, AccessKeys $keys, ActorCustomers $customers ) {
+	public function __construct( OrderRepository $orders, AccessKeys $keys, ActorCustomers $customers, TransactionManager $tx, Orders $events, \Closure $emailOf ) {
 		$this->orders    = $orders;
 		$this->keys      = $keys;
 		$this->customers = $customers;
+		$this->tx        = $tx;
+		$this->events    = $events;
+		$this->emailOf   = $emailOf;
 	}
 
 	/**
@@ -155,6 +222,119 @@ final class OrderAccessPolicy {
 			'orders'   => array_slice( $orders, 0, $perPage ),
 			'has_more' => count( $orders ) > $perPage,
 		);
+	}
+
+	/**
+	 * Makes a guest's order the customer record of the signed-in person who presents its key, when their account's email address is the order's; answers the owner's repeat as done.
+	 *
+	 * In order: an actor who is no person is refused, with no statement; the actor's customer is
+	 * read, then the order, whatever either turns out to be. An order already the actor's
+	 * customer's is answered as done, with nothing written. Otherwise the order is claimed only
+	 * when it exists, has no customer, was placed by a visitor, the key opens it, and the account's
+	 * email address is the order's, compared trimmed and in ASCII lower case, in constant time.
+	 * Every other outcome is `order.not_found`.
+	 *
+	 * The claim is one unit of work: the actor's record (created at a first claim), the
+	 * conditional update, and the audit row naming the order by its uuid. When the update changes
+	 * no row, another request claimed the order first: the order is read again, the claim is done
+	 * when the order is now the actor's customer's, and otherwise the unit rolls back, a record it
+	 * created with it, and the claim is refused.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `order.not_found` for every refusal.
+	 *
+	 * @param string      $orderUuid The order's public identifier.
+	 * @param Actor       $actor     Who claims.
+	 * @param string|null $key       The access key the actor presented, or null for none.
+	 */
+	public function claim( string $orderUuid, Actor $actor, ?string $key ): void {
+		if ( ! $actor->isPerson() ) {
+			CodedException::raise( OrderError::NotFound );
+		}
+
+		$customer = $this->customers->customerOf( $actor );
+		$order    = $this->orders->findForClaim( $orderUuid );
+
+		// The owner's repeat, such as a retry whose answer was lost: done, and nothing written.
+		if ( null !== $order && self::isCustomer( $order->access, $customer ) ) {
+			return;
+		}
+
+		if ( null === $order || ! $this->mayClaim( $order, $actor, $key ) ) {
+			CodedException::raise( OrderError::NotFound );
+		}
+
+		$this->tx->transaction(
+			function () use ( $order, $orderUuid, $actor ): void {
+				$this->claimInside( $order, $orderUuid, $actor );
+			},
+			RetryPolicy::deadlocks(),
+			Isolation::ReadCommitted
+		);
+	}
+
+	/**
+	 * Tells whether the actor may make an order theirs: a guest's order, which a visitor placed, opened by the key presented, placed with the account's email address.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param ClaimableOrder $order The order, as read.
+	 * @param Actor          $actor A person.
+	 * @param string|null    $key   The presented key, or null.
+	 * @return bool True when every test passes.
+	 */
+	private function mayClaim( ClaimableOrder $order, Actor $actor, ?string $key ): bool {
+		return null === $order->access->customerId
+			&& null === $order->actorId
+			&& $this->keyOpens( $order->access, $key )
+			&& $this->isAccountsEmail( $actor, $order->email );
+	}
+
+	/**
+	 * Tells whether an email address is the actor's account's: the two compared trimmed and in ASCII lower case, in constant time.
+	 *
+	 * WordPress compares addresses so, and the database's collation too; the order keeps the
+	 * address as it was typed.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Actor  $actor A person.
+	 * @param string $email The order's address.
+	 * @return bool False when it is not, or when the actor's user is gone.
+	 */
+	private function isAccountsEmail( Actor $actor, string $email ): bool {
+		$account = ( $this->emailOf )( $actor->userId() );
+
+		return null !== $account && hash_equals( strtolower( trim( $account ) ), strtolower( trim( $email ) ) );
+	}
+
+	/**
+	 * Makes the order the actor's customer record's, inside the claim's unit of work, in the placement's lock order: the record, then the order.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `order.not_found` when the actor's user is gone, or another customer claimed the order first.
+	 *
+	 * @param ClaimableOrder $order     The order, as read before the unit.
+	 * @param string         $orderUuid The order's public identifier.
+	 * @param Actor          $actor     A person.
+	 */
+	private function claimInside( ClaimableOrder $order, string $orderUuid, Actor $actor ): void {
+		$customer = $this->customers->customerFor( $actor ) ?? CodedException::raise( OrderError::NotFound );
+
+		if ( $this->orders->claim( $order->id, $customer ) ) {
+			$this->events->appendAudit( $order->id, self::CLAIMED, $orderUuid, $actor, Machine::Order );
+
+			return;
+		}
+
+		// Another request claimed the order first: done when it was this customer's, refused, and rolled back, otherwise.
+		$now = $this->orders->findForClaim( $orderUuid );
+
+		if ( null === $now || ! self::isCustomer( $now->access, $customer ) ) {
+			CodedException::raise( OrderError::NotFound );
+		}
 	}
 
 	/**

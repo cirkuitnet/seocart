@@ -122,14 +122,15 @@ final class OrderStatusRead {
 	}
 
 	/**
-	 * Returns the key the client presented.
+	 * Returns the key the client presented, as the status read and a claim take it: from the input the key header fills, an empty value being no key.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Public: a claim takes the key so too.
 	 *
 	 * @param array<string, mixed> $input The prepared input.
 	 * @return string|null The key, or null when it is absent or empty.
 	 */
-	private static function presentedKey( array $input ): ?string {
+	public static function presentedKey( array $input ): ?string {
 		$key = isset( $input[ OrderStoreOperations::KEY ] ) && is_string( $input[ OrderStoreOperations::KEY ] ) ? trim( $input[ OrderStoreOperations::KEY ] ) : '';
 
 		return '' === $key ? null : $key;

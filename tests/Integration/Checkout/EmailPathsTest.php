@@ -22,9 +22,12 @@ use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Settings\Settings;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Support\Error\CodedException;
+use SEOCart\Tests\Support\Cart\ServesStoreApi;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 use SEOCart\Tests\Support\CreatesUsers;
 use SEOCart\Tests\Support\Customer\CustomerRecords;
+use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
+use SEOCart\Tests\Support\Order\ClaimsOrders;
 use SEOCart\Tests\Support\StatementShapes;
 
 /**
@@ -47,22 +50,113 @@ use SEOCart\Tests\Support\StatementShapes;
  * only an address no user has (`get_user_by( 'email', … )`): the account's address is placed and
  * the fresh one refused.
  *
+ * A signed-in user's refused claims of an order, whatever failed (the key, the address, the key's
+ * time, the order's existence, its being another customer's), are one answer at two statements of
+ * one shape each: a claim never tells which test an order failed.
+ *
  * @since 0.2.0
  */
 final class EmailPathsTest extends PlacementTestCase {
 
+	use ClaimsOrders;
 	use CreatesUsers;
 	use CustomerRecords;
+	use ServesStoreApi;
 
 	/**
-	 * Deletes the users the test created.
+	 * Shuts the spy server a test booted, and deletes the users the test created.
 	 *
 	 * @since 0.2.0
 	 */
 	public function tear_down(): void {
+		if ( isset( $this->server ) ) {
+			wp_set_current_user( 0 );
+			$this->shutStoreApi();
+		}
+
 		$this->deleteCreatedUsers();
 
 		parent::tear_down();
+	}
+
+	/**
+	 * Tests that a signed-in user's five refused claims are the same answer, in status, bytes and headers, at two statements of one shape each: the user's customer, and the order.
+	 *
+	 * The refusals: the order placed with the account's address, with another order's key; an order
+	 * placed with another address, with its own key; the account's address, with the order's
+	 * expired key; a uuid no order has; another customer's order placed with the account's address,
+	 * with its key.
+	 *
+	 * Planted violation: in OrderAccessPolicy::claim(), refuse an actor who has no customer record
+	 * before the order is read: each refusal then costs one statement, not two.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_signed_in_users_refused_claims_are_one_answer_at_two_statements_each(): void {
+		global $wpdb;
+
+		$this->bootStoreApi();
+
+		$user    = $this->createUser( 'subscriber' );
+		$account = get_userdata( $user );
+
+		$this->assertInstanceOf( \WP_User::class, $account );
+
+		$email    = (string) $account->user_email;
+		$keyed    = $this->placeWithEmail( self::guest(), $email, 'claim-keyed' );
+		$wrong    = $this->placeWithEmail( self::guest(), $email, 'claim-wrong' );
+		$another  = $this->placeWithEmail( self::guest(), 'someone-else@example.org', 'claim-another' );
+		$expired  = $this->placeWithEmail( self::guest(), $email, 'claim-expired' );
+		$theirs   = $this->placeWithEmail( Actor::user( $this->createUser( 'subscriber' ) ), $email, 'claim-theirs' );
+		$refusals = array(
+			'the account\'s address, a wrong key'         => array( $keyed['uuid'], $wrong['key'] ),
+			'another address, the order\'s key'           => array( $another['uuid'], $another['key'] ),
+			'the account\'s address, the expired key'     => array( $expired['uuid'], $expired['key'] ),
+			'a uuid no order has'                         => array( SequentialIdGenerator::nth( 999999 ), $keyed['key'] ),
+			'another customer\'s order, the same address' => array( $theirs['uuid'], $theirs['key'] ),
+		);
+		$plugin   = '/' . preg_quote( $wpdb->prefix . 'seocart_', '/' ) . '/';
+		$counter  = '/' . preg_quote( $this->table( 'rate_counters' ), '/' ) . '/';
+		$answers  = array();
+		$counts   = array();
+		$shapes   = array();
+
+		$this->db->execute( 'UPDATE %i SET access_key_expires_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE uuid = %s', $this->table( OrderTables::ORDERS ), $expired['uuid'] );
+
+		foreach ( $refusals as $refusal => list( $uuid, $key ) ) {
+			$answer = array();
+			$log    = $this->captureQueries(
+				function () use ( $uuid, $key, $user, &$answer ): void {
+					$answer = $this->claim( $uuid, $this->logIn( $user ) + self::keyHeader( $key ) );
+				}
+			);
+			$own    = array_values( array_filter( $log->sqls(), static fn( string $sql ): bool => 1 === preg_match( $plugin, $sql ) && 1 !== preg_match( $counter, $sql ) ) );
+
+			$this->assertSame( 404, $answer['status'], ucfirst( $refusal ) . ': ' . (string) wp_json_encode( $answer['body'] ) );
+			$this->assertSame( 'order.not_found', $answer['body']['code'] ?? null );
+
+			$correlation         = (string) $answer['body']['data']['correlation_id'];
+			$answers[ $refusal ] = array(
+				'status'  => $answer['status'],
+				'bytes'   => str_replace( $correlation, '', (string) $this->server->sent_body ),
+				'headers' => array_map( static fn( string $value ): string => str_replace( $correlation, '', $value ), $answer['headers'] ),
+			);
+			$counts[ $refusal ]  = count( $own );
+			$shapes[ $refusal ]  = array_map( array( StatementShapes::class, 'shape' ), $own );
+		}
+
+		$lines = array();
+
+		foreach ( $shapes as $refusal => $statements ) {
+			$lines[] = sprintf( '%-46s %d: %s', $refusal, $counts[ $refusal ], implode( ' | ', array_map( static fn( string $shape ): string => substr( $shape, 0, 90 ), $statements ) ) );
+		}
+
+		fwrite( STDOUT, "\nA signed-in user's refused claims, the claim's statements in shape:\n  " . implode( "\n  ", $lines ) . "\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- Printed for the report.
+
+		$this->assertCount( 1, array_unique( array_map( 'wp_json_encode', $answers ) ), "The refused claims can be told apart:\n" . (string) wp_json_encode( $answers, JSON_PRETTY_PRINT ) );
+		$this->assertSame( array_fill_keys( array_keys( $refusals ), 2 ), $counts, 'Each refused claim reads the user\'s customer and the order.' );
+		$this->assertCount( 1, array_unique( array_map( 'wp_json_encode', $shapes ) ), "The refused claims' statements differ in shape:\n" . (string) wp_json_encode( $shapes, JSON_PRETTY_PRINT ) );
+		$this->assertSame( array(), array_filter( $this->customerRows(), static fn( array $row ): bool => $user === $row['user_id'] ), 'No refused claim left the claimant a record.' );
 	}
 
 	/**

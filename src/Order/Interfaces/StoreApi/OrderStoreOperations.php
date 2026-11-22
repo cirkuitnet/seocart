@@ -15,6 +15,8 @@ use SEOCart\Application\Operations\Annotations;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\RequestHeader;
 use SEOCart\Application\Operations\RestBinding;
+use SEOCart\Application\Operations\WriteMethod;
+use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
 use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Domain\AmountBasis;
 use SEOCart\Order\Domain\FulfillmentStatus;
@@ -28,7 +30,7 @@ use SEOCart\Support\Schema\ResourceSchema;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Declares `order.get_status`, a shopper's read of one order, `order.list_own`, a customer's list of their own orders, and `order.get_own`, a customer's read of one of them with its addresses, on the Store API.
+ * Declares `order.get_status`, a shopper's read of one order, `order.list_own`, a customer's list of their own orders, `order.get_own`, a customer's read of one of them with its addresses, and `order.claim_order`, a customer's claim of an order they placed as a guest, on the Store API.
  *
  * Owns one fact: how an order is offered to a storefront. The route is
  * `GET seocart/store/v1/orders/{uuid}`: an order is named by its uuid, never by its internal id or
@@ -59,10 +61,18 @@ defined( 'ABSPATH' ) || exit;
  * opens no address; it answers only the actor's own order, so it is declared owner_only and the
  * actor is shown those members. Every refusal is `order.not_found`.
  *
+ * The claim is `POST seocart/store/v1/account/orders`: a signed-in customer adds to their account
+ * an order they placed as a guest, named in the body, with its key in the header KEY_HEADER and
+ * nowhere else. It is a public write, under the Store API's request policy (its header, and the
+ * REST nonce with a login cookie) and a rate limit of its own; it answers the order's uuid, the
+ * same for the owner's repeat, and every refusal is `order.not_found`. A retry is the owner's
+ * repeat, so the claim needs no idempotency key.
+ *
  * Declarations are data: building the definition calls no WordPress function.
  *
  * @since 0.1.0
- * @since 0.2.0 The list of a customer's own orders, and the owner's read of one of them.
+ * @since 0.2.0 The list of a customer's own orders, the owner's read of one of them, and the claim
+ *              of a guest's order.
  */
 final class OrderStoreOperations {
 
@@ -193,6 +203,51 @@ final class OrderStoreOperations {
 	public const OWN_RESOURCE = 'StoreOwnOrder';
 
 	/**
+	 * The id of a customer's claim of an order they placed as a guest.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CLAIM = 'order.claim_order';
+
+	/**
+	 * The name of the resource a claim answers with: the order's uuid.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CLAIM_RESOURCE = 'StoreOrderClaim';
+
+	/**
+	 * What the rate limit of claims counts, per client: a bucket of its own, which neither spends nor is starved by the placements'.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CLAIM_BUCKET = 'order.claim';
+
+	/**
+	 * The most claims one client may send in a window: ten an hour. A shopper claims each order they placed as a guest once, and a retry after a lost answer is a repeat; beyond that a client is guessing at a key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const CLAIM_LIMIT = 10;
+
+	/**
+	 * The window claims are counted in: an hour.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	public const CLAIM_WINDOW = 3600;
+
+	/**
 	 * Builds the status read.
 	 *
 	 * @since 0.1.0
@@ -206,15 +261,7 @@ final class OrderStoreOperations {
 			summary: 'Returns an order\'s number, statuses, totals and lines to its customer, or to whoever presents its access key in the X-SEOCart-Order-Key header; it carries no address and no email, and every refusal is order.not_found.',
 			input: array(
 				self::uuid( 'The order\'s public identifier, from its confirmation.' ),
-				new FieldSpec(
-					name: self::KEY,
-					type: FieldType::String,
-					description: 'The order\'s access key, sent in the X-SEOCart-Order-Key header and nowhere else: a key in the URL is refused.',
-					label: static fn(): string => __( 'Access key', 'seocart' ),
-					example: '0123456789abcdef0123456789abcdef',
-					max_length: 64,
-					privacy: Privacy::Secret
-				),
+				self::key(),
 			),
 			output: new ResourceSchema( self::RESOURCE, self::status() ),
 			capability: null,
@@ -329,6 +376,55 @@ final class OrderStoreOperations {
 			service: array( AccountOrderRead::class, 'read' ),
 			rest: new RestBinding( self::OWN_ROUTE, store: true ),
 			owner_only: true
+		);
+	}
+
+	/**
+	 * Builds a signed-in customer's claim of an order they placed as a guest.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return OperationDefinition The definition.
+	 */
+	public static function claim(): OperationDefinition {
+		return new OperationDefinition(
+			id: self::CLAIM,
+			label: static fn(): string => __( 'Add an order to my account', 'seocart' ),
+			summary: 'Adds an order the logged-in customer placed as a guest to their account, when the X-SEOCart-Order-Key header carries its unexpired key and the account\'s email address is the one the order was placed with; it answers the same when the order is theirs already, and every refusal is order.not_found.',
+			input: array(
+				self::uuid( 'The order\'s public identifier, from its confirmation.' ),
+				self::key(),
+			),
+			output: new ResourceSchema( self::CLAIM_RESOURCE, array( self::uuid( 'The order\'s public identifier: the order is the customer\'s.' ) ) ),
+			capability: null,
+			resource_field: null,
+			errors: array( OrderError::NotFound ),
+			annotations: new Annotations( read_only: false, destructive: false, idempotent: true ),
+			service: array( AccountOrderClaim::class, 'claim' ),
+			rest: new RestBinding( self::LIST_ROUTE, WriteMethod::Post, store: true, headers: array( self::KEY => new RequestHeader( self::KEY_HEADER ) ) ),
+			public_write: StoreRequestPolicy::write( self::CLAIM_BUCKET, self::CLAIM_LIMIT, self::CLAIM_WINDOW, false )
+		);
+	}
+
+	/**
+	 * Declares the order's access key, an input the route reads from the request header KEY_HEADER and from nowhere else.
+	 *
+	 * The status read and a claim take it so: a key in the URL, which would land in logs the
+	 * plugin cannot redact, is refused as a bad request before the service runs.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return FieldSpec The field.
+	 */
+	private static function key(): FieldSpec {
+		return new FieldSpec(
+			name: self::KEY,
+			type: FieldType::String,
+			description: 'The order\'s access key, sent in the X-SEOCart-Order-Key header and nowhere else: a key in the URL is refused.',
+			label: static fn(): string => __( 'Access key', 'seocart' ),
+			example: '0123456789abcdef0123456789abcdef',
+			max_length: 64,
+			privacy: Privacy::Secret
 		);
 	}
 

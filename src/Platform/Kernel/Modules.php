@@ -146,6 +146,7 @@ use SEOCart\Order\Infrastructure\MysqlOrderRepository;
 use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\SequenceOrderNumberGenerator;
 use SEOCart\Order\Infrastructure\WordPressAccessKeys;
+use SEOCart\Order\Interfaces\StoreApi\AccountOrderClaim;
 use SEOCart\Order\Interfaces\StoreApi\AccountOrderRead;
 use SEOCart\Order\Interfaces\StoreApi\OrderStatusRead;
 use SEOCart\Order\Interfaces\StoreApi\OwnOrdersRead;
@@ -1733,11 +1734,27 @@ final class Modules {
 		// An order's field values are read with the checkout's fields declared today, whose labels it answers beside the ones kept.
 		$container->bind( OrderFieldValues::class, static fn( Container $c ): OrderFieldValues => new OrderFieldValues( $c->get( OrderRepository::class ), $c->get( Authorizer::class ), static fn(): array => $c->get( CheckoutRules::class )->declarations() ) );
 		$container->bind( ActorCustomers::class, static fn( Container $c ): ActorCustomers => $c->get( Customers::class ) );
-		$container->bind( OrderAccessPolicy::class, static fn( Container $c ): OrderAccessPolicy => new OrderAccessPolicy( $c->get( OrderRepository::class ), $c->get( AccessKeys::class ), $c->get( ActorCustomers::class ) ) );
+		// A claim compares the order's email address with the account's: the request's own user, from WordPress's cache.
+		$container->bind(
+			OrderAccessPolicy::class,
+			static fn( Container $c ): OrderAccessPolicy => new OrderAccessPolicy(
+				$c->get( OrderRepository::class ),
+				$c->get( AccessKeys::class ),
+				$c->get( ActorCustomers::class ),
+				$c->get( TransactionManager::class ),
+				$c->get( Orders::class ),
+				static function ( int $userId ): ?string {
+					$user = get_userdata( $userId );
+
+					return $user instanceof \WP_User ? (string) $user->user_email : null;
+				}
+			)
+		);
 		$container->bind( OrderStatusRead::class, static fn( Container $c ): OrderStatusRead => new OrderStatusRead( $c->get( OrderAccessPolicy::class ) ) );
 		$container->bind( OwnOrdersRead::class, static fn( Container $c ): OwnOrdersRead => new OwnOrdersRead( $c->get( OrderAccessPolicy::class ) ) );
 		// The owner's read names an order's addresses as the checkout names an address's members.
 		$container->bind( AccountOrderRead::class, static fn( Container $c ): AccountOrderRead => new AccountOrderRead( $c->get( OrderAccessPolicy::class ), AddressDocument::of( ... ) ) );
+		$container->bind( AccountOrderClaim::class, static fn( Container $c ): AccountOrderClaim => new AccountOrderClaim( $c->get( OrderAccessPolicy::class ) ) );
 	}
 
 	/**

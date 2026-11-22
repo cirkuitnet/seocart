@@ -18,8 +18,12 @@ use SEOCart\Order\Domain\OrderStatus;
 use SEOCart\Order\Domain\PaymentStatus;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Order\Interfaces\StoreApi\OrderStoreOperations;
+use SEOCart\Platform\Database\Schema\DdlGenerator;
+use SEOCart\Platform\Database\Schema\SchemaVerifier;
+use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\Kernel\Container;
 use SEOCart\Platform\Kernel\Modules;
+use SEOCart\Platform\RateLimiter\Migrations\CreateRateCountersMigration;
 use SEOCart\Support\Clock;
 use SEOCart\Tests\Support\CreatesUsers;
 use SEOCart\Tests\Support\Customer\CustomerRecords;
@@ -27,6 +31,7 @@ use SEOCart\Tests\Support\Doubles\SequentialIdGenerator;
 use SEOCart\Tests\Support\KernelContainer;
 use SEOCart\Tests\Support\KernelHooks;
 use SEOCart\Tests\Support\OperationSurfaces;
+use SEOCart\Tests\Support\Order\ClaimsOrders;
 use SEOCart\Tests\Support\Order\NewOrders;
 use SEOCart\Tests\Support\Order\OrderTestCase;
 use SEOCart\Tests\Support\Order\StoreOrderSurfaces;
@@ -34,7 +39,7 @@ use SEOCart\Tests\Support\ServesRequests;
 use Spy_REST_Server;
 
 /**
- * The storefront's order surfaces through their real routes, `order.get_status`, `order.list_own` and `order.get_own`: the five cases of who may see an order on each, and one answer for every refusal.
+ * The storefront's order surfaces through their real routes, `order.get_status`, `order.list_own`, `order.get_own` and `order.claim_order`: the five cases of who may see an order on each, and one answer for every refusal.
  *
  * The five cases run on every surface StoreOrderSurfaces lists, which a unit test holds to the
  * operation registry: (1) a guest with the order's key; (2) a guest without one; (3) a logged-in
@@ -43,7 +48,8 @@ use Spy_REST_Server;
  * customer once the key has expired. The status read opens the order to 1 and 4 and to its
  * customer in 5; the list lists it for its customer alone: a key opens one order, never a list;
  * the owner's read, which answers the order's addresses, opens it to its customer alone: a key
- * opens no address.
+ * opens no address; and the claim (`order.claim_order`), run on the order its owner has already,
+ * answers the owner's repeat as done and refuses everyone else, a visitor with the key included.
  *
  * The real Modules::register() and subscribe() serve the production operations on a spy server,
  * over the test's connection and real order tables, the way WordPress serves a request from the
@@ -68,6 +74,7 @@ use Spy_REST_Server;
  */
 final class OrderStatusRouteTest extends OrderTestCase {
 
+	use ClaimsOrders;
 	use CreatesUsers;
 	use CustomerRecords;
 	use ServesRequests;
@@ -101,6 +108,9 @@ final class OrderStatusRouteTest extends OrderTestCase {
 
 		$this->saveRequestGlobals();
 		$this->createCustomerTable();
+
+		// A claim is a Store API write, counted in its rate limit.
+		( new CreateRateCountersMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
 
 		$container = KernelContainer::build(
 			$this->db,
@@ -185,8 +195,15 @@ final class OrderStatusRouteTest extends OrderTestCase {
 
 				return array( $read['status'], 200 === $read['status'] && $uuid === $order->uuid );
 			},
+			// The order is its owner's already: only the owner's repeat is answered as done.
+			OrderStoreOperations::CLAIM      => function ( array $headers ) use ( $order ): array {
+				$claimed = $this->claim( $order->uuid, $headers );
+				$uuid    = $claimed['body']['uuid'] ?? null;
+
+				return array( $claimed['status'], 200 === $claimed['status'] && $uuid === $order->uuid );
+			},
 		);
-		$cases       = array(
+		$cases    = array(
 			'3. another customer, no key'               => fn(): array => $this->logIn( $someoneElse ),
 			'3. another customer, another order\'s key' => fn(): array => $this->logIn( $someoneElse ) + $otherKey,
 			'3. an administrator, no key'               => fn(): array => $this->logIn( $admin ),
@@ -197,12 +214,13 @@ final class OrderStatusRouteTest extends OrderTestCase {
 			'5. a guest with the expired key'           => fn(): array => $this->asGuest() + $key,
 			'5. the customer, logged in, once the key expired' => fn(): array => $this->logIn( $owner ),
 		);
-		$expected    = array(
+		$expected = array(
 			OrderStoreOperations::GET_STATUS => array( '404', '404', '404', '404', '200 shown', '404', '200 shown', '404', '200 shown' ),
 			OrderStoreOperations::LIST_OWN   => array( '200', '200', '200', '200', '200', '200', '200 shown', '200', '200 shown' ),
 			OrderStoreOperations::GET_OWN    => array( '404', '404', '404', '404', '404', '404', '200 shown', '404', '200 shown' ),
+			OrderStoreOperations::CLAIM      => array( '404', '404', '404', '404', '404', '404', '200 shown', '404', '200 shown' ),
 		);
-		$table       = array();
+		$table    = array();
 
 		foreach ( StoreOrderSurfaces::FIVE_CASES as $surface ) {
 			$this->assertArrayHasKey( $surface, $runners, "{$surface} is a storefront surface that shows an order, and no five cases run on it here." );
@@ -220,10 +238,10 @@ final class OrderStatusRouteTest extends OrderTestCase {
 			}
 		}
 
-		$lines = array( sprintf( '%-52s %-18s %-18s %s', 'case', OrderStoreOperations::GET_STATUS, OrderStoreOperations::LIST_OWN, OrderStoreOperations::GET_OWN ) );
+		$lines = array( sprintf( '%-52s %-18s %-18s %-18s %s', 'case', OrderStoreOperations::GET_STATUS, OrderStoreOperations::LIST_OWN, OrderStoreOperations::GET_OWN, OrderStoreOperations::CLAIM ) );
 
 		foreach ( array_keys( $cases ) as $case ) {
-			$lines[] = sprintf( '%-52s %-18s %-18s %s', $case, $table[ OrderStoreOperations::GET_STATUS ][ $case ] ?? '-', $table[ OrderStoreOperations::LIST_OWN ][ $case ] ?? '-', $table[ OrderStoreOperations::GET_OWN ][ $case ] ?? '-' );
+			$lines[] = sprintf( '%-52s %-18s %-18s %-18s %s', $case, $table[ OrderStoreOperations::GET_STATUS ][ $case ] ?? '-', $table[ OrderStoreOperations::LIST_OWN ][ $case ] ?? '-', $table[ OrderStoreOperations::GET_OWN ][ $case ] ?? '-', $table[ OrderStoreOperations::CLAIM ][ $case ] ?? '-' );
 		}
 
 		fwrite( STDOUT, "\nThe five cases on every storefront order surface:\n  " . implode( "\n  ", $lines ) . "\n" );
@@ -876,37 +894,6 @@ final class OrderStatusRouteTest extends OrderTestCase {
 			'headers' => array_map( static fn( string $value ): string => str_replace( $correlation, '', $value ), $read['headers'] ),
 			'cookies' => $read['cookies'],
 		);
-	}
-
-	/**
-	 * Makes the next request a guest's.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @return array<string, string> The headers a guest sends: none.
-	 */
-	private function asGuest(): array {
-		wp_set_current_user( 0 );
-		unset( $GLOBALS['wp_rest_auth_cookie'] );
-
-		return array();
-	}
-
-	/**
-	 * Makes the next request a logged-in browser's: the user is current, the login cookie valid, and the nonce sent.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param int $user The user.
-	 * @return array<string, string> The nonce header.
-	 */
-	private function logIn( int $user ): array {
-		wp_set_current_user( $user );
-
-		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound, WordPress.WP.GlobalVariablesOverride.Prohibited -- WordPress's own record that the login cookie was valid.
-		$GLOBALS['wp_rest_auth_cookie'] = true;
-
-		return array( 'X-WP-Nonce' => wp_create_nonce( 'wp_rest' ) );
 	}
 
 	/**

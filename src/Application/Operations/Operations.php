@@ -78,6 +78,7 @@ final class Operations {
 		$registry->add( OrderStoreOperations::LIST_OWN, array( OrderStoreOperations::class, 'listOwn' ) );
 		// The order module does not know the checkout: the owner's read is handed the checkout's address members here.
 		$registry->add( OrderStoreOperations::GET_OWN, static fn(): OperationDefinition => OrderStoreOperations::getOwn( BuiltInFields::addressMembers( Carrier::BILLING ), BuiltInFields::addressMembers( Carrier::SHIPPING ) ) );
+		$registry->add( OrderStoreOperations::CLAIM, array( OrderStoreOperations::class, 'claim' ) );
 		$registry->add( CheckoutOperations::UPDATE_SESSION, array( CheckoutOperations::class, 'updateSession' ) );
 		$registry->add( CheckoutOperations::PLACE_ORDER, array( CheckoutOperations::class, 'placeOrder' ) );
 		$registry->add( CheckoutOperations::RESUME_PAYMENT, array( CheckoutOperations::class, 'resumePayment' ) );

@@ -33,6 +33,7 @@ use SEOCart\Payment\Infrastructure\Migrations\CreatePaymentTables;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundClaimTable;
 use SEOCart\Payment\Infrastructure\Migrations\CreateRefundTables;
 use SEOCart\Payment\Infrastructure\Migrations\CreateWebhookReceipts;
+use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Authorization\ProductCapabilities;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
@@ -615,6 +616,39 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 	 */
 	protected function chooseAccounts( AccountsAtCheckout $choice ): void {
 		( new SettingsStore( Settings::registry(), $this->db ) )->writeScalars( array( CheckoutSettings::ACCOUNTS => $choice->value ) );
+	}
+
+	/**
+	 * Places an order of one unit from a cart of its own, its checkout written with an email address, approved, and returns its uuid and the key the placement answered.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Actor  $actor Who places it.
+	 * @param string $email The address typed at checkout.
+	 * @param string $key   The placement's idempotency key.
+	 * @return array{uuid: string, key: string} The order.
+	 */
+	protected function placeWithEmail( Actor $actor, string $email, string $key ): array {
+		$cart = $this->startCart( array( $this->sellable() => 1 ) );
+
+		$this->kernel->get( UpdateCheckoutSession::class )->update(
+			array(
+				'cart_version'       => $cart->version,
+				'billing_address'    => self::wireAddress( Carrier::BILLING, 'US', $email ),
+				'shipping_address'   => self::wireAddress( Carrier::SHIPPING, 'US' ),
+				'payment_method_key' => StubGateway::ID,
+			),
+			self::guest()
+		);
+
+		$answer = $this->freshPlacement()->place( $this->placeInput( $key ), $actor );
+
+		$this->assertSame( 'approved', $answer['outcome'] ?? null, 'The order was placed.' );
+
+		return array(
+			'uuid' => (string) $answer['order_uuid'],
+			'key'  => (string) $answer['order_key'],
+		);
 	}
 
 	/**

@@ -43,6 +43,7 @@ final class StoreOrderSurfaces {
 		'order.get_status',
 		'order.list_own',
 		'order.get_own',
+		'order.claim_order',
 	);
 
 	/**
