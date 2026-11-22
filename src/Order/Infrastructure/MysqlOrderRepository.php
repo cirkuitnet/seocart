@@ -13,6 +13,7 @@ namespace SEOCart\Order\Infrastructure;
 
 use SEOCart\Order\Domain\AccessKeys;
 use SEOCart\Order\Domain\AmountBasis;
+use SEOCart\Order\Domain\ClaimableOrder;
 use SEOCart\Order\Domain\FulfillmentStatus;
 use SEOCart\Order\Domain\LineOption;
 use SEOCart\Order\Domain\LockedOrder;
@@ -423,13 +424,40 @@ final class MysqlOrderRepository implements OrderRepository {
 	public const FIND_ADDRESSES = 'SELECT role, first_name, last_name, company, line1, line2, city, region, postcode, country, phone, email, tax_id FROM {order_addresses} WHERE order_id = %d';
 
 	/**
+	 * Whether an order's access key has expired, as every read that judges a key selects it: by the database clock, an order without a key counting as expired.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const KEY_EXPIRED = 'COALESCE( access_key_expires_at <= UTC_TIMESTAMP(), 1 ) AS key_expired';
+
+	/**
 	 * What an access check compares, by uuid; whether the key expired is decided by the database clock, and an order without a key counts as expired.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @var string
 	 */
-	public const FIND_FOR_ACCESS = 'SELECT uuid, customer_id, access_key_hash, COALESCE( access_key_expires_at <= UTC_TIMESTAMP(), 1 ) AS key_expired FROM {orders} WHERE uuid = %s';
+	public const FIND_FOR_ACCESS = 'SELECT uuid, customer_id, access_key_hash, ' . self::KEY_EXPIRED . ' FROM {orders} WHERE uuid = %s';
+
+	/**
+	 * What a claim of a guest's order judges, by uuid: the order's id, its customer, who placed it and the address it was placed with, and its key as an access check judges it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FIND_FOR_CLAIM = 'SELECT id, customer_id, actor_id, email, access_key_hash, ' . self::KEY_EXPIRED . ' FROM {orders} WHERE uuid = %s';
+
+	/**
+	 * A guest's order made a customer's, by the primary key, only while it has no customer: of two claims at once, one changes the row.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const CLAIM = 'UPDATE {orders} SET customer_id = %d, updated_at = UTC_TIMESTAMP(6) WHERE id = %d AND customer_id IS NULL';
 
 	/**
 	 * A page of a customer's orders, newest first, by the `customer` key; the declined attempts left out.
@@ -1361,12 +1389,56 @@ final class MysqlOrderRepository implements OrderRepository {
 	public function findForAccess( string $uuid ): ?OrderAccess {
 		$row = self::isUuid( $uuid ) ? ( $this->statements->rows( self::FIND_FOR_ACCESS, $uuid )[0] ?? null ) : null;
 
+		return null === $row ? null : self::access( (string) $row['uuid'], $row );
+	}
+
+	/**
+	 * Reads what a claim of a guest's order judges, by its public identifier.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $uuid The public identifier.
+	 * @return ClaimableOrder|null The facts, or null when there is no such order; a string that is not a UUID names none.
+	 */
+	public function findForClaim( string $uuid ): ?ClaimableOrder {
+		$row = self::isUuid( $uuid ) ? ( $this->statements->rows( self::FIND_FOR_CLAIM, $uuid )[0] ?? null ) : null;
+
 		if ( null === $row ) {
 			return null;
 		}
 
+		return new ClaimableOrder( (int) $row['id'], self::nullableId( $row['actor_id'] ), (string) $row['email'], self::access( $uuid, $row ) );
+	}
+
+	/**
+	 * Makes an order a customer's while it still has no customer, inside the caller's transaction.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param int $orderId    The order's internal id.
+	 * @param int $customerId The customer record it becomes.
+	 * @return bool True when the order changed; false when it has a customer already.
+	 */
+	public function claim( int $orderId, int $customerId ): bool {
+		$this->statements->requireTransaction( __METHOD__ );
+
+		return 1 === $this->statements->execute( self::CLAIM, $customerId, $orderId );
+	}
+
+	/**
+	 * Builds an order's access facts from a read that selected its customer, its key's hash and whether the key has expired.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string               $uuid The order's public identifier.
+	 * @param array<string, mixed> $row  The row.
+	 * @return OrderAccess The facts.
+	 */
+	private static function access( string $uuid, array $row ): OrderAccess {
 		return new OrderAccess(
-			(string) $row['uuid'],
+			$uuid,
 			self::nullableId( $row['customer_id'] ),
 			null === $row['access_key_hash'] ? null : (string) $row['access_key_hash'],
 			'1' === (string) $row['key_expired']

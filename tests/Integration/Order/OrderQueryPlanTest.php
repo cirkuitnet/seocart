@@ -129,6 +129,27 @@ final class OrderQueryPlanTest extends OrderTestCase {
 	}
 
 	/**
+	 * Tests that a claim of a guest's order changes the order by its primary key.
+	 *
+	 * The recorder judges the reads; the claim's conditional update is explained here, as the
+	 * server would run it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_claim_changes_the_order_by_its_primary_key(): void {
+		global $wpdb;
+
+		$order                      = $this->place();
+		list( $update, $arguments ) = OrderStatements::expand( MysqlOrderRepository::CLAIM, array( 1, $order->id ), fn( string $name ): string => $this->table( $name ) );
+		$plan                       = (array) $wpdb->get_results( (string) $wpdb->prepare( 'EXPLAIN ' . $update, ...$arguments ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The claim's own statement, expanded with its placeholders as the module sends it.
+
+		fwrite( STDOUT, "\nThe claim's update, explained:\n  " . (string) wp_json_encode( $plan ) . "\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- Printed for the report.
+
+		$this->assertCount( 1, $plan );
+		$this->assertSame( 'PRIMARY', $plan[0]['key'] ?? null, 'The claim finds its order by the primary key.' );
+	}
+
+	/**
 	 * Tests that a customer's list of their orders keeps the rule on an orders table large enough to be judged, by the `customer` key, and finds the customer's newest orders.
 	 *
 	 * The orders are spread over five hundred customers.
@@ -315,9 +336,10 @@ final class OrderQueryPlanTest extends OrderTestCase {
 		$orders->accept( $inserted->id, Actor::system( 'payment', 3 ) );
 		$db->transaction( static fn(): LockedOrder => $orders->lockForPayment( $inserted->id ) );
 
-		// The order's reads by uuid: for showing it, and for its access check.
+		// The order's reads by uuid: for showing it, for its access check, and for a claim of a guest's order.
 		$orders->findByUuid( $inserted->uuid );
 		$repository->findForAccess( $inserted->uuid );
+		$repository->findForClaim( $inserted->uuid );
 
 		// The order's id by its uuid, and the checkout field values of a list of orders, which staff's read of an order's values sends.
 		$repository->idOf( $inserted->uuid );

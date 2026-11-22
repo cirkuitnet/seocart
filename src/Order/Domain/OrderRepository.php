@@ -460,6 +460,32 @@ interface OrderRepository {
 	public function findForAccess( string $uuid ): ?OrderAccess;
 
 	/**
+	 * Reads what a claim of a guest's order judges, by its public identifier: one read, by the unique key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $uuid The public identifier.
+	 * @return ClaimableOrder|null The order's facts, or null when there is no such order; a string that is not a UUID names none.
+	 */
+	public function findForClaim( string $uuid ): ?ClaimableOrder;
+
+	/**
+	 * Makes an order a customer's while it still has no customer: one conditional update, by the primary key, inside the caller's transaction.
+	 *
+	 * Of two claims of one order at once, one changes the row; the other finds a customer there
+	 * and changes nothing.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws \LogicException Outside a transaction.
+	 *
+	 * @param int $orderId    The order's internal id.
+	 * @param int $customerId The customer record it becomes.
+	 * @return bool True when the order changed; false when it has a customer already.
+	 */
+	public function claim( int $orderId, int $customerId ): bool;
+
+	/**
 	 * Reads a page of a customer's orders, newest first, leaving out the declined attempts (status `failed`). One read.
 	 *
 	 * @since 0.2.0
