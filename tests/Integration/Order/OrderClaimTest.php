@@ -171,6 +171,100 @@ final class OrderClaimTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Tests what each path of a claim sends: the claim's own statements, the rate limit's count set apart, with the unit of work's control statements printed beside.
+	 *
+	 * A visitor sends nothing; a refusal and the owner's repeat read the user's customer and the
+	 * order; a claim adds the unit: the record (one read, one insert more at a first record, one
+	 * conditional unlink more for a stale link), the update and the audit row. The loser of two
+	 * claims at once, here another customer's claim committed between the read and the update,
+	 * reads the order again where a winner writes its audit row, and its unit rolls back.
+	 *
+	 * Planted violation: in OrderAccessPolicy::claim(), ask ActorCustomers::customerFor() for the
+	 * repeat too: the repeat costs more than a refusal.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_what_each_claim_costs(): void {
+		$paths  = array(
+			'a visitor'                          => array( 0, fn(): array => $this->claimPath( 'visitor' ) ),
+			'a refusal'                          => array( 2, fn(): array => $this->claimPath( 'refused' ) ),
+			'the owner\'s repeat'                => array( 2, fn(): array => $this->claimPath( 'repeat' ) ),
+			'a claim, the customer has a record' => array( 5, fn(): array => $this->claimPath( 'record' ) ),
+			'a claim at a first record'          => array( 6, fn(): array => $this->claimPath( 'first' ) ),
+			'a claim with a stale link'          => array( 7, fn(): array => $this->claimPath( 'stale' ) ),
+			'the loser of two claims at once'    => array( 5, fn(): array => $this->claimPath( 'loser' ) ),
+		);
+		$counts = array();
+		$lines  = array();
+
+		foreach ( $paths as $path => list( $expected, $measure ) ) {
+			list( $status, $own, $control ) = $measure();
+
+			$counts[ $path ] = count( $own );
+			$lines[]         = sprintf( '%-36s %d %s; the unit\'s control: %s', $path, count( $own ), (string) $status, array() === $control ? 'none' : implode( ', ', $control ) );
+
+			foreach ( $own as $statement ) {
+				$lines[] = '    ' . substr( (string) preg_replace( '/\s+/', ' ', $statement ), 0, 130 );
+			}
+		}
+
+		fwrite( STDOUT, "\nWhat each claim sends, the rate limit's count set apart:\n  " . implode( "\n  ", $lines ) . "\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- Printed for the report.
+
+		$this->assertSame( array_map( static fn( array $path ): int => $path[0], $paths ), $counts );
+	}
+
+	/**
+	 * Sets up one path of a claim, sends it, and returns its status, the claim's own statements and the unit of work's control statements.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $path `visitor`, `refused`, `repeat`, `record`, `first`, `stale` or `loser`.
+	 * @return array{0: int|null, 1: list<string>, 2: list<string>} What was sent.
+	 */
+	private function claimPath( string $path ): array {
+		$order = $this->guestOrder( self::EMAIL );
+		$user  = $this->createUserWithEmail( 'subscriber', self::EMAIL );
+
+		if ( 'repeat' === $path ) {
+			$this->assertSame( 200, $this->claim( $order['uuid'], $this->logIn( $user ) + self::keyHeader( $order['key'] ) )['status'] );
+		}
+
+		if ( in_array( $path, array( 'record', 'loser' ), true ) ) {
+			$this->plantCustomer( $user, self::registeredAt( $user ) );
+		}
+
+		if ( 'stale' === $path ) {
+			$this->plantCustomer( $user, '2001-01-01 00:00:00' );
+		}
+
+		if ( 'loser' === $path ) {
+			$winner = $this->plantCustomer( $this->createUser( 'subscriber' ), null );
+			$b      = $this->secondConnection();
+
+			// Another customer's claim commits between this claim's read of the order and its update.
+			$this->beforeStatement(
+				'/^' . preg_quote( sprintf( 'UPDATE `%s` SET customer_id', $this->table( OrderTables::ORDERS ) ), '/' ) . '/',
+				fn() => $b->query( sprintf( "UPDATE `%s` SET customer_id = %d WHERE uuid = '%s'", $this->table( OrderTables::ORDERS ), $winner, $order['uuid'] ) )
+			);
+		}
+
+		$headers = 'visitor' === $path ? $this->asGuest() : $this->logIn( $user );
+		$key     = 'refused' === $path ? self::keyHeader( $this->guestOrder( self::EMAIL )['key'] ) : self::keyHeader( $order['key'] );
+		$answer  = array();
+		$log     = $this->captureQueries(
+			function () use ( $order, $headers, $key, &$answer ): void {
+				$answer = $this->claim( $order['uuid'], $headers + $key );
+			}
+		);
+
+		return array(
+			$answer['status'] ?? null,
+			$this->claimsOwn( $log->sqls() ),
+			array_values( preg_grep( '/^(SET TRANSACTION|START TRANSACTION|SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK|COMMIT)/', $log->sqls() ) ),
+		);
+	}
+
+	/**
 	 * Asserts what a claimed order reads like to its new customer: the owner's read with its addresses, in their list, and the status read without a key; and its audit row.
 	 *
 	 * @since 0.2.0

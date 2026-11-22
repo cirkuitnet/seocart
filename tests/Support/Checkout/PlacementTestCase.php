@@ -239,6 +239,29 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 	}
 
 	/**
+	 * Starts, in a process of its own, a signed-in user's claim of an order with its key, as another request does.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $orderUuid      The order.
+	 * @param string $key            The key the claim presents.
+	 * @param int    $userId         The signed-in user who claims.
+	 * @param string $dieAtStatement Optional. How a statement begins at which the process is killed,
+	 *                               before it is sent; empty for none. Default empty.
+	 * @return RunningProbe The running claim; its report names its answer or its refusal.
+	 */
+	protected function startClaim( string $orderUuid, string $key, int $userId, string $dieAtStatement = '' ): RunningProbe {
+		$request = array(
+			'uuid'             => $orderUuid,
+			'order_key'        => $key,
+			'user_id'          => $userId,
+			'die_at_statement' => $dieAtStatement,
+		);
+
+		return ChildProcessProbe::start( __DIR__ . '/placement-probe.php', array( 'claim', base64_encode( (string) wp_json_encode( $request ) ) ) );
+	}
+
+	/**
 	 * Starts, in a process of its own, the settlement of an order with the stub gateway's answer for its intent, as a webhook delivers it.
 	 *
 	 * @since 0.1.0

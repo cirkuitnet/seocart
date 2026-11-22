@@ -5,6 +5,7 @@
  * Usage: php tests/Support/Checkout/placement-probe.php <result-file> place <request>
  *        php tests/Support/Checkout/placement-probe.php <result-file> settle <order-uuid>
  *        php tests/Support/Checkout/placement-probe.php <result-file> <window-end|capture|void|capture-and-die> <request>
+ *        php tests/Support/Checkout/placement-probe.php <result-file> claim <request>
  *
  * The placement concurrency and recovery tests start this script through
  * ChildProcessProbe::start(), so that a placement or a settlement runs on a connection of its own
@@ -33,6 +34,11 @@
  *   made the capture and remembered it, before anything is recorded.
  *   For these three, a request's `provider_file` makes the gateway a FileProviderGateway that
  *   remembers in that file, which the test's own process shares.
+ * - `claim`: a signed-in customer's claim of an order, through the claim's service, for the
+ *   request's `user_id`, of the order `uuid` with the key `order_key`; the request's
+ *   `die_at_statement`, when given, kills it with SIGKILL as it is about to send the first
+ *   statement that begins so, which inside a unit of work leaves that unit to the server to roll
+ *   back, as a request killed mid-way does.
  *
  * The report names the answer (`answer_json`, as encoded), or the refusal (`refused`, `context`,
  * `details`), or any other failure, with the retries.
@@ -51,6 +57,8 @@ use SEOCart\Contracts\Payment\Mode;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Contracts\Payment\PaymentQuery;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Order\Interfaces\StoreApi\AccountOrderClaim;
+use SEOCart\Order\Interfaces\StoreApi\OrderStoreOperations;
 use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Domain\VoidReason;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
@@ -68,8 +76,8 @@ use SEOCart\Tests\Support\Doubles\RecordingGateway;
 // phpcs:disable WordPress.WP.AlternativeFunctions -- The probe writes its report to the file its parent reads.
 // phpcs:disable WordPress.DB.DirectDatabaseQuery -- The probe reads the order's intent to ask the stub about it.
 
-if ( 'cli' !== PHP_SAPI || ! isset( $argv[1], $argv[2], $argv[3] ) || ! in_array( $argv[2], array( 'place', 'settle', 'window-end', 'capture', 'void', 'capture-and-die' ), true ) ) {
-	fwrite( STDERR, 'Usage: php tests/Support/Checkout/placement-probe.php <result-file> <place|settle|window-end|capture|void|capture-and-die> <request|order-uuid>' . PHP_EOL );
+if ( 'cli' !== PHP_SAPI || ! isset( $argv[1], $argv[2], $argv[3] ) || ! in_array( $argv[2], array( 'place', 'settle', 'window-end', 'capture', 'void', 'capture-and-die', 'claim' ), true ) ) {
+	fwrite( STDERR, 'Usage: php tests/Support/Checkout/placement-probe.php <result-file> <place|settle|window-end|capture|void|capture-and-die|claim> <request|order-uuid>' . PHP_EOL );
 
 	exit( 2 );
 }
@@ -114,6 +122,11 @@ add_filter(
 		}
 
 		if ( 'START TRANSACTION' === $query && true === ( $seocart_probe_request['die_at_transaction'] ?? false ) ) {
+			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.system_calls_exec -- No posix extension on every host: the shell kills the process.
+			exec( 'kill -9 ' . getmypid() );
+		}
+
+		if ( '' !== (string) ( $seocart_probe_request['die_at_statement'] ?? '' ) && str_starts_with( $query, (string) $seocart_probe_request['die_at_statement'] ) ) {
 			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.system_calls_exec -- No posix extension on every host: the shell kills the process.
 			exec( 'kill -9 ' . getmypid() );
 		}
@@ -171,6 +184,12 @@ add_filter(
 try {
 	if ( 'place' === $argv[2] ) {
 		$seocart_probe_outcome = array( 'answer_json' => (string) wp_json_encode( $seocart_probe_kernel->get( PlaceOrder::class )->place( (array) ( $seocart_probe_request['input'] ?? array() ), Actor::user( (int) ( $seocart_probe_request['user_id'] ?? 0 ) ) ) ) );
+	} elseif ( 'claim' === $argv[2] ) {
+		$seocart_probe_input   = array(
+			'uuid'                    => (string) ( $seocart_probe_request['uuid'] ?? '' ),
+			OrderStoreOperations::KEY => (string) ( $seocart_probe_request['order_key'] ?? '' ),
+		);
+		$seocart_probe_outcome = array( 'answer_json' => (string) wp_json_encode( $seocart_probe_kernel->get( AccountOrderClaim::class )->claim( $seocart_probe_input, Actor::user( $seocart_probe_user ) ) ) );
 	} elseif ( 'window-end' === $argv[2] ) {
 		$seocart_probe_store  = Actor::system( 'reconciliation', 0 );
 		$seocart_probe_intent = (string) $wpdb->get_var( $wpdb->prepare( 'SELECT i.uuid FROM %i i JOIN %i o ON o.id = i.order_id WHERE o.uuid = %s', $seocart_probe_db->table( PaymentTables::INTENTS ), $seocart_probe_db->table( OrderTables::ORDERS ), (string) ( $seocart_probe_request['order_uuid'] ?? '' ) ) );
