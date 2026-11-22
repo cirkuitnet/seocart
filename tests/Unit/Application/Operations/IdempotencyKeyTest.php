@@ -119,6 +119,34 @@ final class IdempotencyKeyTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a signed-in person's placement key is hashed with the person as well as the cart, and a key that is the cart's alone exactly as before.
+	 *
+	 * Planted violations, each shown red and removed: in IdempotencyClaim::keyHash(), join the person
+	 * to the cart token's hash as text (`$cartTokenHash . '|' . $person` as the salt): a visitor who
+	 * chooses the key `{person}|{key}` reaches the person's key; and salt a key with no person too (the
+	 * cart token's hash hashed again): the cart's own keys change.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_persons_placement_key_is_hashed_with_the_person(): void {
+		$cart   = hash( 'sha256', 'a cart' );
+		$other  = hash( 'sha256', 'another cart' );
+		$person = '42|2026-11-14 09:30:00';
+
+		$this->assertSame( '68baac90efe012951936bf23e14976598b6cf9eca89b73ee5eec86222f342463', IdempotencyClaim::keyHash( $cart, 'attempt-1' ), 'A key that is the cart\'s alone is hashed as before.' );
+		$this->assertSame( IdempotencyKey::hash( $cart, 'attempt-1' ), IdempotencyClaim::keyHash( $cart, 'attempt-1', null ) );
+		$this->assertNotSame( IdempotencyClaim::keyHash( $cart, 'attempt-1', $person ), IdempotencyClaim::keyHash( $cart, $person . '|attempt-1' ), 'A visitor who chooses the key "{person}|{key}" does not reach the person\'s key.' );
+		$this->assertSame( 'd047febbb8b88f814b87ec3fe659d61bd6cbeedc283d0813ac9ba77d8609fb97', IdempotencyClaim::keyHash( $cart, 'attempt-1', $person ), 'A person\'s key is hashed with the cart token\'s hash hashed with the person.' );
+		$this->assertNotSame( IdempotencyClaim::keyHash( $cart, 'attempt-1' ), IdempotencyClaim::keyHash( $cart, 'attempt-1', $person ), 'A person\'s key is not the cart\'s.' );
+		$this->assertNotSame( IdempotencyClaim::keyHash( $cart, 'attempt-1', $person ), IdempotencyClaim::keyHash( $cart, 'attempt-1', '43|2026-11-14 09:30:00' ), 'Two people on one cart share no key.' );
+		$this->assertNotSame( IdempotencyClaim::keyHash( $cart, 'attempt-1', $person ), IdempotencyClaim::keyHash( $other, 'attempt-1', $person ), 'One person on two carts shares no key.' );
+
+		$this->expectException( \InvalidArgumentException::class );
+
+		IdempotencyClaim::keyHash( $cart, 'attempt-1', '' );
+	}
+
+	/**
 	 * Tests that a request's fingerprint is the SHA-256 of its canonical form's JSON, so one more byte is another request.
 	 *
 	 * @since 0.2.0

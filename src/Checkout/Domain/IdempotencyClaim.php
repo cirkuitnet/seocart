@@ -23,9 +23,12 @@ defined( 'ABSPATH' ) || exit;
  * Owns one fact: what a key stands for. A client sends one key per attempt to place an order and
  * the same key when it retries that attempt. Keys are scoped to the cart, by hashing the cart
  * token's hash with the key (keyHash()), so no client can collide with another cart's key, and
- * neither the key nor the token is stored.
+ * neither the key nor the token is stored. A signed-in person's keys are scoped to the cart and
+ * to the person, so two people presenting one cart never share a key: another person who sends
+ * the key reaches a key of their own.
  *
  * @since 0.1.0
+ * @since 0.2.0 A signed-in person's keys are the person's.
  */
 final readonly class IdempotencyClaim {
 
@@ -92,22 +95,35 @@ final readonly class IdempotencyClaim {
 	}
 
 	/**
-	 * Returns the hash a key is stored and found by: the SHA-256 of the cart token's hash and the key, joined by a bar.
+	 * Returns the hash a key is stored and found by: the SHA-256 of the cart token's hash and the key, joined by a bar; for a person, of the cart token's hash hashed with the person, and the key.
+	 *
+	 * The person is hashed into the salt, never joined to it as text: a key may hold a bar, so a
+	 * visitor who chose the key `{person}|{key}` would otherwise reach that person's `{key}`. The
+	 * salt of a key that is the cart's alone is the cart token's hash, and a person's is another
+	 * SHA-256; the two never meet.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The person.
 	 *
 	 * @throws \InvalidArgumentException When the cart token's hash is not a SHA-256 in lower-case
-	 *                                   hexadecimal, or the key is empty or longer than MAX_KEY_LENGTH.
+	 *                                   hexadecimal, the key is empty or longer than MAX_KEY_LENGTH,
+	 *                                   or the person is empty.
 	 *
-	 * @param string $cartTokenHash The hash of the token of the cart the order is placed from.
-	 * @param string $key           The key the client sent.
+	 * @param string      $cartTokenHash The hash of the token of the cart the order is placed from.
+	 * @param string      $key           The key the client sent.
+	 * @param string|null $person        Optional. The signed-in person who sends it: their user id and
+	 *                                   registration time. Default null: the key is the cart's alone.
 	 * @return string The hash, 64 lower-case hexadecimal characters.
 	 */
-	public static function keyHash( string $cartTokenHash, string $key ): string {
+	public static function keyHash( string $cartTokenHash, string $key, ?string $person = null ): string {
 		if ( 1 !== preg_match( '/^[0-9a-f]{64}\z/', $cartTokenHash ) ) {
 			throw new \InvalidArgumentException( 'A cart token hash is a SHA-256 in lower-case hexadecimal: 64 characters.' );
 		}
 
-		return IdempotencyKey::hash( $cartTokenHash, $key );
+		if ( '' === $person ) {
+			throw new \InvalidArgumentException( 'A person is a user\'s id and registration time, never empty: pass null for a key that is the cart\'s alone.' );
+		}
+
+		return IdempotencyKey::hash( null === $person ? $cartTokenHash : hash( 'sha256', $cartTokenHash . '|' . $person ), $key );
 	}
 }

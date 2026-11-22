@@ -72,7 +72,10 @@ use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
  * line's reservation on its own: Cart B's hold step sends one outbox insert per line. In
  * PlaceOrder::placeInside(), ask ActorCustomers::customerFor() a second time: a logged-in
  * placement's first unit grows by one, under the customer; and in the kernel's closure of a user's
- * registration time, clean the user's cache before reading it: the customer's step reads the user.
+ * registration time, clean the user's cache before reading it: the customer's step reads the user,
+ * and so do the part before the first unit, where the placement asks who the person is, and a
+ * customer's cold replay. A logged-in placement's figures hold while its actor is the user
+ * WordPress authenticated for the request, whose row the request's cache then holds.
  * The checkout's rules read their settings group in the statement that primes the routing mode's
  * group, which the calculation read cold before: in CheckoutRules::current(), read the `checkout`
  * group in a values() call of its own: the part before the first unit grows by one (Cart A's to 11),
@@ -314,6 +317,15 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	private const REPLAY = 1;
 
 	/**
+	 * The statements of a cold replay of a customer's placement: the read of its key, and the read of the customer's link, which says whether the actor is still the customer the answer is kept for.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var int
+	 */
+	private const REPLAY_CUSTOMER = 2;
+
+	/**
 	 * The statements of a cold placement by a visitor where the store requires an account, refused, by step: the key's read, the cart's, the count of its declines and the checkout's rules, which hold the store's choice; nothing after, and no transaction.
 	 *
 	 * @since 0.2.0
@@ -409,6 +421,49 @@ final class PlacementBudgetTest extends PlacementTestCase {
 
 		$this->assertSame( 'approved', $answer['outcome'] ?? null, 'The replay answers what the placement answered.' );
 		$this->assertSame( self::REPLAY, $log->count(), 'A cold replay of Cart A\'s placement.' );
+	}
+
+	/**
+	 * Tests that a cold replay of a customer's placement of Cart A reads the key and the customer's link alone, and answers what the placement answered.
+	 *
+	 * The user is logged in after the cold flush, as WordPress authenticates a request before the
+	 * placement runs, so who the person is costs the replay nothing.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_cold_replay_of_a_customers_placement_reads_the_key_and_the_link(): void {
+		$user    = $this->createUser( 'subscriber' );
+		$variant = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+
+		$this->readyCart( self::quantities( ReferenceCarts::cartA( $variant ) ) );
+
+		// The request measure() places, sent again as it was.
+		$input = $this->placeInput( 'budget-Cart A, a customer', self::APPROVE );
+
+		$this->measure( 'Cart A, a customer', self::APPROVE, 'approved', Actor::user( $user ) );
+
+		// A request starts cold: a container of its own, and no object cache but the options WordPress loads at boot.
+		$replay = $this->kernelOver( $this->db, $this->tokens )->get( PlaceOrder::class );
+		$answer = array();
+
+		wp_cache_flush();
+		wp_load_alloptions();
+
+		// WordPress authenticates a logged-in shopper's request before the placement runs: the user is in its cache.
+		wp_set_current_user( $user );
+
+		$log = $this->captureQueries(
+			function () use ( $replay, $input, $user, &$answer ): void {
+				$answer = $replay->place( $input, Actor::user( $user ) );
+			}
+		);
+
+		wp_set_current_user( 0 );
+
+		fwrite( STDOUT, sprintf( "\nReplaying Cart A for a customer, cold: %d statements.\n  %s\n", $log->count(), implode( "\n  ", $log->sqls() ) ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- The measurement is printed for the report.
+
+		$this->assertSame( 'approved', $answer['outcome'] ?? null, 'The replay answers what the placement answered.' );
+		$this->assertSame( self::REPLAY_CUSTOMER, $log->count(), 'A cold replay of a customer\'s placement of Cart A.' );
 	}
 
 	/**

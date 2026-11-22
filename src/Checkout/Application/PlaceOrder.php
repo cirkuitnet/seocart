@@ -115,11 +115,16 @@ use SEOCart\Support\Locale;
  *
  * The first unit's answer is kept with the key, so a client that lost its answer and sends the same
  * request again gets it back, its access key included; the key is kept sealed with the cart's
- * token and the request's idempotency key, which the store never keeps (KeptAnswer). An answer kept
- * for an order that has a customer is given back only to an actor who is that customer: anyone
- * else who sends its key, a visitor included, is answered exactly as for a key never seen, from
- * the cart as it is, with the same statements, so another account signed in on the same browser
- * is never handed the order's number or key (keptAnswer()). The same
+ * token and the request's idempotency key, which the store never keeps (KeptAnswer). A signed-in
+ * person's key is that person's: it is hashed with the person as well as the cart, so the placer
+ * reaches it by their own hash, and another person or a visitor who sends it, whether the cart
+ * placed its order or opened again after a declined payment, reaches a key of their own and is
+ * answered exactly as for a key never seen, with the same statements: another account signed in
+ * on the same browser is never handed the order's number or key, nor refused by the placer's key.
+ * A key that is the cart's alone, as a guest's is, is still reached by whoever presents the cart's
+ * token and the key, a person signed in since included, who reads it after their own. An answer
+ * kept for an order that has a customer is given back only to an actor who is still that customer
+ * (keptAnswer()). The claim is made under the request's own hash alone. The same
  * request is the same cart version, grand total and currency: the key is the cart's, and a cart
  * version is claimed once, so the payment data a retry sends is not compared, and a client need
  * not keep it (fingerprint()). The kept
@@ -137,7 +142,8 @@ use SEOCart\Support\Locale;
  *              each unit where the plan found it, records where the order is fulfilled from, and plans
  *              once more when the plan went stale. Leaves the payment data out of a request's
  *              fingerprint. Records the customer a logged-in user's order belongs to, and gives a kept
- *              answer for a customer's order back to that customer alone. Judges the checkout by the
+ *              answer for a customer's order back to that customer alone. Scopes a signed-in person's
+ *              keys to the person. Judges the checkout by the
  *              checkout's rules, and the goods by the store's order limits. Refuses anyone but a
  *              signed-in person where the store requires an account.
  */
@@ -318,9 +324,12 @@ final class PlaceOrder {
 			CodedException::raise( CheckoutError::IdempotencyKeyMissing );
 		}
 
-		$keyHash     = IdempotencyClaim::keyHash( $token->hash(), $key );
+		// A signed-in person's key is theirs; a key the cart's alone, as a guest's is, is read after it.
+		$person      = $this->customers->personOf( $actor );
+		$keyHash     = IdempotencyClaim::keyHash( $token->hash(), $key, $person );
+		$cartKeyHash = null === $person ? null : IdempotencyClaim::keyHash( $token->hash(), $key );
 		$fingerprint = self::fingerprint( $input );
-		$kept        = $this->keptAnswer( $keyHash, $fingerprint, $token, $key, $actor );
+		$kept        = $this->keptAnswer( $keyHash, $cartKeyHash, $fingerprint, $token, $key, $actor );
 
 		if ( null !== $kept ) {
 			return $kept;
@@ -349,7 +358,7 @@ final class PlaceOrder {
 				break;
 			} catch ( CodedException $refused ) {
 				if ( ! $replan || ! self::isStalePlan( $refused ) ) {
-					return $this->answerRefusedClaim( $refused, $keyHash, $fingerprint, $token, $key, $actor );
+					return $this->answerRefusedClaim( $refused, $keyHash, $cartKeyHash, $fingerprint, $token, $key, $actor );
 				}
 
 				// One more plan, from the stock as it is now, unless the pricing planned again already; never a third attempt.
@@ -824,18 +833,19 @@ final class PlaceOrder {
 	 *
 	 * @param CodedException $refused     The refusal.
 	 * @param string         $keyHash     The key's hash.
+	 * @param string|null    $cartKeyHash The key's hash as the cart's alone, read after the first for a signed-in person; null for anyone else.
 	 * @param string         $fingerprint The request's fingerprint.
 	 * @param CartToken      $token       The cart token the request presented.
 	 * @param string         $key         The idempotency key the request sent.
 	 * @param Actor          $actor       Who places the order.
 	 * @return array<string, mixed> The earlier request's answer.
 	 */
-	private function answerRefusedClaim( CodedException $refused, string $keyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): array {
+	private function answerRefusedClaim( CodedException $refused, string $keyHash, ?string $cartKeyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): array {
 		if ( ! in_array( $refused->errorCode(), array( CartError::NotOpen, CartError::VersionStale, CartError::NotFound ), true ) ) {
 			throw $refused;
 		}
 
-		$kept = $this->keptAnswer( $keyHash, $fingerprint, $token, $key, $actor );
+		$kept = $this->keptAnswer( $keyHash, $cartKeyHash, $fingerprint, $token, $key, $actor );
 
 		if ( null !== $kept ) {
 			return $kept;
@@ -853,32 +863,36 @@ final class PlaceOrder {
 	/**
 	 * Returns the answer an earlier request with the key placed its order with, when this actor may be given it; null, as for a key never seen, otherwise.
 	 *
-	 * One plain read, before any transaction: the key's. An answer kept for an order without a
-	 * customer is given to whoever presents the cart's token and the key, as ever. One kept for a
-	 * customer's order is given only to an actor who is that customer: the actor must be the user
-	 * who placed it, which costs nothing to compare, and then still that customer, which costs the
-	 * link's read. A key still claimed by a logged-in user's placement is that user's alone. Whom
-	 * the key is for is decided before its state or the request's fingerprint is judged, and before
-	 * the sealed order key is opened: any other actor, a visitor included, gets null after the
-	 * key's read alone, whatever body it sent, and is then answered from the cart as a request with
-	 * a new key is, with the same statements. Only the placement's own actor, or anyone holding the
-	 * cart's token for an order without a customer, is ever refused by the key itself
-	 * (`checkout.idempotency_key_reused`, `checkout.placement_in_progress`).
+	 * One plain read, before any transaction: the key's, under the request's own hash and, for a
+	 * signed-in person, under the cart's own hash too, in the same statement. A signed-in person's
+	 * keys are hashed with the person, so the placer reaches their key by their own hash, and
+	 * another person or a visitor who sends it reads where it is not: they get null, and are then
+	 * answered from the cart as a request with a new key is, with the same statements. A key that is
+	 * the cart's alone, as a guest's is, is reached by whoever presents the cart's token and the
+	 * key, signed in since or not. Each row found is then judged by whom it is kept for, before its
+	 * state or the request's fingerprint, and before the sealed order key is opened: an answer kept
+	 * for a customer's order is given only to the user who placed it while they are still that
+	 * customer, which costs the link's read, so a placer whose record was unlinked since gets null;
+	 * and a key under the cart's own hash that names a user is that user's alone. The request's own
+	 * row is judged first. Only the placement's own actor, or anyone holding the cart's token for a
+	 * key that is the cart's, is ever refused by the key itself (`checkout.idempotency_key_reused`,
+	 * `checkout.placement_in_progress`).
 	 *
 	 * @since 0.2.0
 	 *
 	 * @throws CodedException The key's refusals: `checkout.idempotency_key_reused`,
 	 *                        `checkout.placement_in_progress`.
 	 *
-	 * @param string    $keyHash     The key's hash.
-	 * @param string    $fingerprint The request's fingerprint.
-	 * @param CartToken $token       The cart token the request presented.
-	 * @param string    $key         The idempotency key the request sent.
-	 * @param Actor     $actor       Who sends the request.
+	 * @param string      $keyHash     The key's hash.
+	 * @param string|null $cartKeyHash The key's hash as the cart's alone, read after the first for a signed-in person; null for anyone else.
+	 * @param string      $fingerprint The request's fingerprint.
+	 * @param CartToken   $token       The cart token the request presented.
+	 * @param string      $key         The idempotency key the request sent.
+	 * @param Actor       $actor       Who sends the request.
 	 * @return array<string, mixed>|null The kept answer, as a retry is given it; null when there is none for this actor.
 	 */
-	private function keptAnswer( string $keyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): ?array {
-		$replay = $this->keys->replay( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint, fn( ?string $kept ): bool => $this->mayBeAnswered( $kept, $actor ) );
+	private function keptAnswer( string $keyHash, ?string $cartKeyHash, string $fingerprint, CartToken $token, #[\SensitiveParameter] string $key, Actor $actor ): ?array {
+		$replay = $this->keys->replay( IdempotencyClaim::PLACE_ORDER_SCOPE, $keyHash, $fingerprint, fn( ?string $kept ): bool => $this->mayBeAnswered( $kept, $actor ), $cartKeyHash );
 
 		if ( null === $replay ) {
 			return null;
@@ -911,7 +925,11 @@ final class PlaceOrder {
 	 * Tells whether an actor is the one a key is kept for: the user who placed, and, once the order has a customer, still that customer.
 	 *
 	 * The user is compared first, at no cost; only that user's customer is read. A key still claimed
-	 * names its user alone: the order, and so its customer, is not written yet.
+	 * names its user alone: the order, and so its customer, is not written yet. A person's key is
+	 * reached by its hash by that person alone, so what this decides there is the customer half:
+	 * whether the placer is still the order's customer. The user half is a second line, for a key
+	 * under the cart's own hash that names a user, which the claim of a user WordPress no longer had
+	 * when it hashed the key leaves: only that user is answered from it.
 	 *
 	 * @since 0.2.0
 	 *

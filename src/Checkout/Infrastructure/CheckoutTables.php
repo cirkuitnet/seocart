@@ -159,7 +159,7 @@ final class CheckoutTables {
 			array(
 				new ColumnSpec( 'id', 'bigint unsigned', $public, 'Surrogate key.', autoIncrement: true ),
 				new ColumnSpec( 'scope', 'varchar(32)', $public, 'What the key was claimed for: the operation id of the order placement.', collation: 'ascii_bin' ),
-				new ColumnSpec( 'key_hash', 'char(64)', $public, 'The SHA-256 of the cart token\'s hash and the key the client sent, in hexadecimal; neither the key nor the token is stored.', collation: 'ascii_bin' ),
+				new ColumnSpec( 'key_hash', 'char(64)', $public, 'The SHA-256 of the cart token\'s hash and the key the client sent, in hexadecimal; for a signed-in person\'s placement the cart token\'s hash is first hashed with that person (their user id and registration time). Neither the key, the token nor the person is stored.', collation: 'ascii_bin' ),
 				new ColumnSpec( 'request_fingerprint', 'char(64)', $public, 'The SHA-256 of the canonical form of the request that claimed the key, in hexadecimal: a retry must send the same request.', collation: 'ascii_bin' ),
 				new ColumnSpec( 'state', 'varchar(12)', $public, 'claimed while the request that owns the key places its order, placed once the order is placed, in the same transaction.', collation: 'ascii_bin' ),
 				new ColumnSpec( 'order_id', 'bigint unsigned', $public, 'The order placed with the key; NULL while claimed.', nullable: true ),

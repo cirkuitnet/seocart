@@ -11,15 +11,20 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Checkout;
 
+use SEOCart\Checkout\Infrastructure\CheckoutTables;
 use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Contracts\Payment\Outcome;
+use SEOCart\Inventory\Infrastructure\InventoryTables;
+use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Application\PaymentError;
 use SEOCart\Payment\Application\PaymentService;
 use SEOCart\Payment\Domain\Webhook\ReceiptResult;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
+use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Checkout\WebhookTestCase;
+use SEOCart\Tests\Support\CreatesUsers;
 use SEOCart\Tests\Support\Payment\StubWebhooks;
 
 /**
@@ -30,6 +35,19 @@ use SEOCart\Tests\Support\Payment\StubWebhooks;
  * @since 0.2.0
  */
 final class WebhookSettlementTest extends WebhookTestCase {
+
+	use CreatesUsers;
+
+	/**
+	 * Deletes the users the test created.
+	 *
+	 * @since 0.2.0
+	 */
+	public function tear_down(): void {
+		$this->deleteCreatedUsers();
+
+		parent::tear_down();
+	}
 
 	/**
 	 * Tests that an approval delivered for a placement whose gateway never answered settles it: the order accepted, its unit allocated, one ledger row, and the receipt applied with the row.
@@ -203,6 +221,58 @@ final class WebhookSettlementTest extends WebhookTestCase {
 	}
 
 	/**
+	 * Tests that an approval of a placement that failed, arriving after another order was placed from the cart its decline opened again, is kept for a person and leaves that other order alone: its statuses, its allocation, the stock, the cart and its key.
+	 *
+	 * Two rounds: a guest whose next attempt sends a key never seen; and a signed-in user whose key a
+	 * visitor then sends, which places under a key row of the visitor's own. In both, the approval is
+	 * the first intent's, and only the first order and its key's answer change.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_late_approval_after_another_order_was_placed_from_the_reopened_cart_leaves_that_order_alone(): void {
+		$user   = $this->createUser( 'subscriber' );
+		$rounds = array(
+			'a guest, then a key never seen' => array( self::guest(), 'late-1', 'late-1, again' ),
+			'a signed-in user, then a visitor with the same key' => array( Actor::user( $user ), 'late-2', null ),
+		);
+
+		foreach ( $rounds as $round => list( $first, $key, $nextKey ) ) {
+			$variant = $this->sellable();
+			$cart    = $this->readyCart( array( $variant => 1 ) );
+
+			try {
+				$this->placement->place( $this->placeInput( $key, StubGateway::DECLINE ), $first );
+				$this->fail( "{$round}: the first attempt was not declined." );
+			} catch ( CodedException $declined ) {
+				$this->assertSame( 'checkout.payment_declined', $declined->errorCode()->value, $round );
+			}
+
+			$failed = $this->latestPlaced();
+
+			try {
+				$next = $this->placement->place( $this->placeInput( $nextKey ?? $key ), self::guest() );
+			} catch ( CodedException $refused ) {
+				$this->fail( "{$round}: the order from the cart opened again was refused " . $refused->errorCode()->value );
+			}
+
+			$this->assertSame( 'approved', $next['outcome'] ?? null, $round );
+
+			$second   = (int) $this->db->fetchValue( 'SELECT id FROM %i WHERE uuid = %s', $this->table( OrderTables::ORDERS ), $next['order_uuid'] );
+			$around   = $this->around( $second, $variant, $cart->id );
+			$keptNext = $this->keyOf( $second );
+			$late     = StubWebhooks::of( $this->resultAbout( $failed, Operation::Authorize, Outcome::Approved, 'stub-ch-late-' . $failed['intent_uuid'] ) )->withEventId( 'evt_late_' . substr( md5( $round ), 0, 12 ) );
+
+			$this->assertSame( array( 'converted', $second ), array( $around['cart']['status'] ?? null, $around['cart']['order_id'] ?? null ), "{$round}: the cart is converted, naming the second order." );
+			$this->assertSame( ReceiptResult::Unapplied, $this->deliver( $late ), $round );
+			$this->assertSame( array( 'unapplied', PaymentService::LATE_APPROVAL ), array( $this->receiptOf( $late->eventId() )['result'] ?? null, $this->receiptOf( $late->eventId() )['result_code'] ?? null ), $round );
+			$this->assertSame( array( 'failed', '1' ), array( $this->orderState( $failed['order_id'] )['status'], $this->orderState( $failed['order_id'] )['has_unreconciled_money'] ), "{$round}: the first order is still failed, and flagged." );
+			$this->assertSame( $around, $this->around( $second, $variant, $cart->id ), "{$round}: the second order, its allocation, the stock and the cart are as they were." );
+			$this->assertSame( 'late_approval', $this->keptOutcome( $failed['order_id'] ), "{$round}: the first key keeps the late approval." );
+			$this->assertSame( $keptNext, $this->keyOf( $second ), "{$round}: the second key is as it was." );
+		}
+	}
+
+	/**
 	 * Tests that a result naming only the provider's own reference to the intent is settled on the intent that reference belongs to.
 	 *
 	 * @since 0.2.0
@@ -269,5 +339,38 @@ final class WebhookSettlementTest extends WebhookTestCase {
 		$warning = $this->logged( 'payment.webhook_ignored' );
 
 		$this->assertSame( $placed['order_uuid'], $warning[0]['order_uuid'] ?? null, 'The dispute names its order in the log.' );
+	}
+
+	/**
+	 * Reads what a delivery about another order must leave alone: an order's statuses and flag, its allocation rows, its variant's stock and its cart's row, as committed.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId The order.
+	 * @param int $variant The variant it holds.
+	 * @param int $cartId  The cart it was placed from.
+	 * @return array<string, mixed> The four.
+	 */
+	private function around( int $orderId, int $variant, int $cartId ): array {
+		$b = $this->secondConnection();
+
+		return array(
+			'order'       => $this->orderState( $orderId ),
+			'allocations' => $this->db->fetchAll( 'SELECT * FROM %i WHERE order_id = %d ORDER BY id', $this->table( InventoryTables::ALLOCATIONS ), $orderId ),
+			'stock'       => $this->committedStock( $b, $variant ),
+			'cart'        => $this->committedCart( $b, $cartId ),
+		);
+	}
+
+	/**
+	 * Reads the row of the key an order was placed with, whole.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $orderId The order.
+	 * @return array<string, mixed>|null The row, or null.
+	 */
+	private function keyOf( int $orderId ): ?array {
+		return $this->db->fetchRow( 'SELECT * FROM %i WHERE order_id = %d', $this->table( CheckoutTables::IDEMPOTENCY_KEYS ), $orderId );
 	}
 }

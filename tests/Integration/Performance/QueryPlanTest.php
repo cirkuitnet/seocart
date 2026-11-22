@@ -636,6 +636,7 @@ final class QueryPlanTest extends DatabaseTestCase {
 		$found = $wpdb->get_row( $wpdb->prepare( 'EXPLAIN ' . MysqlIdempotencyKeys::FIND_EITHER, $this->db->table( CheckoutTables::IDEMPOTENCY_KEYS ), ...$either ), ARRAY_A );
 
 		$this->assertSame( 'scope_key', $found['key'] ?? null, 'A key is looked for under two hashes by its unique key: ' . (string) wp_json_encode( $found ) );
+		$this->assertContains( $found['type'] ?? null, array( 'range', 'const', 'ref', 'eq_ref' ), 'A key is looked for under two hashes by points of its unique key, never by a scan of it: ' . (string) wp_json_encode( $found ) );
 
 		// A settlement finds the cart by the order it placed: the UPDATE's plan is read here, since the recorder judges SELECTs.
 		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The statement is the repository's constant, with its own placeholders; this is its prepare step.
