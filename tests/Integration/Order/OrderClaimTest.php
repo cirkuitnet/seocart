@@ -12,12 +12,18 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Order;
 
 use SEOCart\Application\Operations\RestBinding;
+use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
+use SEOCart\Cart\Interfaces\StoreApi\CartTokenTransport;
+use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
+use SEOCart\Checkout\Domain\Fields\Carrier;
+use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Customer\Infrastructure\CustomerTables;
 use SEOCart\Order\Application\OrderAccessPolicy;
 use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Order\Interfaces\StoreApi\AccountOrderClaim;
 use SEOCart\Order\Interfaces\StoreApi\OrderStoreOperations;
+use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Platform\Database\Database;
 use SEOCart\Platform\Database\TransactionManager;
@@ -26,8 +32,10 @@ use SEOCart\Platform\Kernel\GatedTransactionManager;
 use SEOCart\Platform\Kernel\GateState;
 use SEOCart\Platform\Kernel\KernelError;
 use SEOCart\Platform\Kernel\SchemaGate;
+use SEOCart\Platform\RateLimiter\RateCountersTable;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Cart\ServesStoreApi;
+use SEOCart\Tests\Support\Checkout\ChecksOutOverTheWire;
 use SEOCart\Tests\Support\Checkout\PlacementKernel;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 use SEOCart\Tests\Support\CreatesUsers;
@@ -59,6 +67,7 @@ use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
  */
 final class OrderClaimTest extends PlacementTestCase {
 
+	use ChecksOutOverTheWire;
 	use ClaimsOrders;
 	use CreatesUsers;
 	use CustomerRecords;
@@ -193,6 +202,98 @@ final class OrderClaimTest extends PlacementTestCase {
 		$this->assertNull( $this->customerOf( $other['uuid'] ), 'The refused claims left the order a guest\'s.' );
 		$this->assertNull( $this->customerOf( $loggedIn['uuid'] ) );
 		$this->assertNull( $this->customerOf( $unaddressed['uuid'] ) );
+	}
+
+	/**
+	 * Tests that a client's claims are counted ten an hour in a bucket of their own: the eleventh is refused before it is judged, another client is still judged, and the client's placement is not refused by the claims' count.
+	 *
+	 * A client is the trusted address and the WordPress user, as the request policy counts them;
+	 * both signed-in users here send from one address.
+	 *
+	 * Planted violations: OrderStoreOperations::CLAIM_LIMIT 1000: the eleventh claim is judged,
+	 * and taken; the claim declared on the placement's bucket: the client's placement is refused
+	 * `store_api.rate_limited`; OrderStoreOperations::CLAIM_WINDOW 60: the count's window is a
+	 * minute long.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_clients_claims_are_counted_ten_an_hour_in_a_bucket_of_their_own(): void {
+		$order  = $this->guestOrder( self::EMAIL );
+		$first  = $this->createUserWithEmail( 'subscriber', self::EMAIL );
+		$second = $this->createUserWithEmail( 'subscriber', self::EMAIL );
+
+		for ( $nth = 1; $nth <= 10; ++$nth ) {
+			$refused = $this->claim( $order['uuid'], $this->logIn( $first ) );
+
+			$this->assertSame( array( 404, 'order.not_found' ), array( $refused['status'], $refused['body']['code'] ?? null ), "Claim {$nth}, without the key." );
+		}
+
+		$limited = $this->claim( $order['uuid'], $this->logIn( $first ) + self::keyHeader( $order['key'] ) );
+
+		$this->assertSame( 429, $limited['status'], 'The eleventh claim in the hour, with the key: ' . (string) wp_json_encode( $limited['body'] ) );
+		$this->assertErrorShape( $limited['body'], 'store_api.rate_limited', 429 );
+		$this->assertNull( $this->customerOf( $order['uuid'] ), 'The refused claim was not judged: the order is still a guest\'s.' );
+
+		$judged = $this->claim( $order['uuid'], $this->logIn( $second ) + self::keyHeader( $order['key'] ) );
+
+		$this->assertSame( 200, $judged['status'], 'Another client is judged in the same hour: ' . (string) wp_json_encode( $judged['body'] ) );
+
+		$placed = $this->placeSignedIn( $first );
+
+		$this->assertSame( 200, $placed['status'], 'The client\'s placement is not counted with its claims: ' . (string) wp_json_encode( $placed['body'] ) );
+		$this->assertSame( 'approved', $placed['body']['outcome'] ?? null );
+		$this->assertSame( 3600, (int) $this->db->fetchValue( 'SELECT TIMESTAMPDIFF( SECOND, window_start, expires_at ) FROM %i WHERE scope = %s LIMIT 1', $this->table( RateCountersTable::NAME ), OrderStoreOperations::CLAIM_BUCKET ), 'The claims are counted by the hour.' );
+	}
+
+	/**
+	 * Places an order of one unit as a signed-in browser does, over the Store API: the cart, its checkout and the placement, each a request of its own with the REST nonce.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int $user The signed-in user.
+	 * @return array{status: int|null, headers: array<string, string>, body: array<string, mixed>} The placement's answer.
+	 */
+	private function placeSignedIn( int $user ): array {
+		$store = '/' . RestBinding::STORE_NAMESPACE;
+		$write = array( StoreRequestPolicy::HEADER => StoreRequestPolicy::HEADER_VALUE );
+
+		unset( $_COOKIE[ CartTokenTransport::COOKIE ] );
+
+		$started = $this->serve( $this->server, 'POST', $store . CartOperations::LINES_ROUTE, $write + $this->logIn( $user ), self::linesBody( array( $this->sellable() => 1 ) ) );
+
+		$this->assertSame( 200, $started['status'], (string) wp_json_encode( $started['body'] ) );
+		$this->presentCookie( $this->cookies[ count( $this->cookies ) - 1 ]['value'] );
+		$this->newRequest();
+
+		$cart    = $this->serve( $this->server, 'GET', $store . CartOperations::CART_ROUTE, $this->logIn( $user ) );
+		$written = $this->serve(
+			$this->server,
+			'PUT',
+			$store . CheckoutOperations::ROUTE,
+			$write + $this->logIn( $user ),
+			array(
+				'cart_version'       => $cart['body']['version'] ?? 0,
+				'billing_address'    => self::wireAddress( Carrier::BILLING, 'US', self::EMAIL ),
+				'shipping_address'   => self::wireAddress( Carrier::SHIPPING, 'US' ),
+				'payment_method_key' => StubGateway::ID,
+			)
+		);
+
+		$this->assertSame( 200, $written['status'], (string) wp_json_encode( $written['body'] ) );
+		$this->newRequest();
+
+		return $this->serve(
+			$this->server,
+			'POST',
+			$store . CheckoutOperations::ROUTE,
+			$write + $this->logIn( $user ) + array( CheckoutOperations::IDEMPOTENCY_HEADER => 'a signed-in placement' ),
+			array(
+				'cart_version'      => $written['body']['version'],
+				'grand_total_minor' => $written['body']['totals']['summary']['grand_minor'],
+				'currency'          => $written['body']['totals']['currency'],
+				'payment_data'      => array( 'payment_token' => self::APPROVE ),
+			)
+		);
 	}
 
 	/**

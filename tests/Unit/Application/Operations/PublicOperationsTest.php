@@ -112,6 +112,40 @@ final class PublicOperationsTest extends TestCase {
 	}
 
 	/**
+	 * Tests that a claim of an order is counted in a bucket of its own, `order.claim`, ten an hour per client, with no cart, and that no other operation counts there.
+	 *
+	 * The figures are written here as numbers, so a changed constant fails; the other operations
+	 * are judged by the constant, which is what they would share.
+	 *
+	 * Planted violations: OrderStoreOperations::CLAIM_LIMIT 1000; the claim declared on the
+	 * placement's bucket; OrderStoreOperations::CLAIM_WINDOW 60.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_claim_is_counted_in_a_bucket_of_its_own_ten_an_hour(): void {
+		$claim  = null;
+		$shared = array();
+
+		foreach ( Operations::registry()->all() as $definition ) {
+			$write = $definition->publicWrite();
+
+			if ( OrderStoreOperations::CLAIM === $definition->id() ) {
+				$claim = $write;
+			} elseif ( null !== $write && OrderStoreOperations::CLAIM_BUCKET === $write->rateLimit()->bucket() ) {
+				$shared[] = $definition->id();
+			}
+		}
+
+		$this->assertNotNull( $claim, 'The claim declares no public write.' );
+		$this->assertSame(
+			array( 'order.claim', 10, 3600, false ),
+			array( $claim->rateLimit()->bucket(), $claim->rateLimit()->limit(), $claim->rateLimit()->windowSeconds(), $claim->requiresCart() ),
+			'The claim\'s bucket, its limit, its window in seconds, and whether it needs a cart.'
+		);
+		$this->assertSame( array(), $shared, 'Another operation counts in the claim\'s bucket.' );
+	}
+
+	/**
 	 * Tests that the owner's read of an order is the one operation of the registry that answers only its actor's own data.
 	 *
 	 * An operation declared so shows its actor every personal field it answers, so each one is a
