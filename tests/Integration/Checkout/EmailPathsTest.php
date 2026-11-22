@@ -51,7 +51,7 @@ use SEOCart\Tests\Support\StatementShapes;
  * the fresh one refused.
  *
  * A signed-in user's refused claims of an order, whatever failed (the key, the address, the key's
- * time, the order's existence, its being another customer's), are one answer at two statements of
+ * time, the order's existence, its being another customer's, no address on either side), are one answer at two statements of
  * one shape each: a claim never tells which test an order failed.
  *
  * @since 0.2.0
@@ -80,12 +80,13 @@ final class EmailPathsTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Tests that a signed-in user's five refused claims are the same answer, in status, bytes and headers, at two statements of one shape each: the user's customer, and the order.
+	 * Tests that a signed-in user's six refused claims are the same answer, in status, bytes and headers, at two statements of one shape each: the user's customer, and the order.
 	 *
 	 * The refusals: the order placed with the account's address, with another order's key; an order
 	 * placed with another address, with its own key; the account's address, with the order's
 	 * expired key; a uuid no order has; another customer's order placed with the account's address,
-	 * with its key.
+	 * with its key; and, last, an order and the account both without an address, with the order's
+	 * key.
 	 *
 	 * Planted violation: in OrderAccessPolicy::claim(), refuse an actor who has no customer record
 	 * before the order is read: each refusal then costs one statement, not two.
@@ -108,12 +109,14 @@ final class EmailPathsTest extends PlacementTestCase {
 		$another  = $this->placeWithEmail( self::guest(), 'someone-else@example.org', 'claim-another' );
 		$expired  = $this->placeWithEmail( self::guest(), $email, 'claim-expired' );
 		$theirs   = $this->placeWithEmail( Actor::user( $this->createUser( 'subscriber' ) ), $email, 'claim-theirs' );
+		$blank    = $this->placeWithEmail( self::guest(), $email, 'claim-blank' );
 		$refusals = array(
 			'the account\'s address, a wrong key'         => array( $keyed['uuid'], $wrong['key'] ),
 			'another address, the order\'s key'           => array( $another['uuid'], $another['key'] ),
 			'the account\'s address, the expired key'     => array( $expired['uuid'], $expired['key'] ),
 			'a uuid no order has'                         => array( SequentialIdGenerator::nth( 999999 ), $keyed['key'] ),
 			'another customer\'s order, the same address' => array( $theirs['uuid'], $theirs['key'] ),
+			'no address on the order nor on the account'  => array( $blank['uuid'], $blank['key'] ),
 		);
 		$plugin   = '/' . preg_quote( $wpdb->prefix . 'seocart_', '/' ) . '/';
 		$counter  = '/' . preg_quote( $this->table( 'rate_counters' ), '/' ) . '/';
@@ -124,6 +127,13 @@ final class EmailPathsTest extends PlacementTestCase {
 		$this->db->execute( 'UPDATE %i SET access_key_expires_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE uuid = %s', $this->table( OrderTables::ORDERS ), $expired['uuid'] );
 
 		foreach ( $refusals as $refusal => list( $uuid, $key ) ) {
+			// Last, the order and the account both lose their address, which no checkout would leave: written directly.
+			if ( $blank['uuid'] === $uuid ) {
+				$this->db->execute( "UPDATE %i SET email = '' WHERE uuid = %s", $this->table( OrderTables::ORDERS ), $uuid );
+				$wpdb->update( $wpdb->users, array( 'user_email' => '' ), array( 'ID' => $user ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- An account without an address, which WordPress would refuse.
+				clean_user_cache( $user );
+			}
+
 			$answer = array();
 			$log    = $this->captureQueries(
 				function () use ( $uuid, $key, $user, &$answer ): void {

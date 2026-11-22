@@ -52,7 +52,8 @@ use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
  * `null === $order->actorId`: the order placed logged-in is taken; in OrderAccessPolicy::claim(),
  * call ActorCustomers::customerFor() before the decision: the refused users are left with a
  * record; leave out the audit row: the claim writes no row; write it on the repeat too: the repeat
- * writes a second.
+ * writes a second; in OrderAccessPolicy::isAccountsEmail(), leave out the refusal of an empty
+ * address: an order and an account without one are taken as a match.
  *
  * @since 0.2.0
  */
@@ -124,8 +125,13 @@ final class OrderClaimTest extends PlacementTestCase {
 		$stranger    = $this->createUserWithEmail( 'subscriber', 'stranger@example.org' );
 		$admin       = $this->createUserWithEmail( 'administrator', 'admin@example.org' );
 		$caseClaimer = $this->createUserWithEmail( 'subscriber', 'Ada@Example.com' );
+		$unaddressed = $this->guestOrder( self::EMAIL );
+		$noAddress   = $this->createUserWithEmail( 'subscriber', '' );
 
 		$this->expireKey( $expired['uuid'] );
+
+		// No checkout places an order without an address: the empty one is written directly.
+		$this->db->execute( "UPDATE %i SET email = '' WHERE uuid = %s", $this->table( OrderTables::ORDERS ), $unaddressed['uuid'] );
 
 		$rows  = array(
 			'a user with E and the key'                    => array( 200, fn(): array => $this->claim( $order['uuid'], $this->logIn( $claimant ) + self::keyHeader( $order['key'] ) ) ),
@@ -141,6 +147,7 @@ final class OrderClaimTest extends PlacementTestCase {
 			'the key in the query'                         => array( 400, fn(): array => $this->claim( $other['uuid'], $this->logIn( $claimant ), array(), array( OrderStoreOperations::KEY => $other['key'] ) ) ),
 			'the key in the body'                          => array( 400, fn(): array => $this->claim( $other['uuid'], $this->logIn( $claimant ), array( OrderStoreOperations::KEY => $other['key'] ) ) ),
 			'an order placed logged-in that has no customer' => array( 404, fn(): array => $this->claim( $loggedIn['uuid'], $this->logIn( $claimant ) + self::keyHeader( $loggedIn['key'] ) ) ),
+			'no address on the order nor on the account'   => array( 404, fn(): array => $this->claim( $unaddressed['uuid'], $this->logIn( $noAddress ) + self::keyHeader( $unaddressed['key'] ) ) ),
 			'E in another case (Ada@Example.com)'          => array( 200, fn(): array => $this->claim( $cased['uuid'], $this->logIn( $caseClaimer ) + self::keyHeader( $cased['key'] ) ) ),
 		);
 		$table = array();
@@ -171,6 +178,7 @@ final class OrderClaimTest extends PlacementTestCase {
 
 		$this->assertSame( array_map( static fn( array $row ): int => $row[0], $rows ), array_map( static fn( array $row ): ?int => $row[1], $table ), 'The claims\' answers.' );
 		$this->assertSame( 0, $sent['a visitor with the key'], 'A visitor is no person: the claim sends nothing.' );
+		$this->assertSame( 2, $sent['no address on the order nor on the account'], 'Two empty addresses are refused after the same two reads as every refusal.' );
 		$this->assertSame( 1, $this->auditRows( $order['uuid'] ), 'The repeat writes no second audit row.' );
 		$this->assertSame( 1, $this->auditRows( $cased['uuid'] ) );
 		$this->assertSame( array( $order['uuid'], $cased['uuid'] ), array( $table['a user with E and the key'][2], $table['E in another case (Ada@Example.com)'][2] ), 'A claim answers the order\'s uuid.' );
@@ -184,6 +192,7 @@ final class OrderClaimTest extends PlacementTestCase {
 		$this->assertSame( array( $placer, $claimant, $caseClaimer ), $records, 'No refusal leaves a customer record: the placer\'s, and the two claimants\'.' );
 		$this->assertNull( $this->customerOf( $other['uuid'] ), 'The refused claims left the order a guest\'s.' );
 		$this->assertNull( $this->customerOf( $loggedIn['uuid'] ) );
+		$this->assertNull( $this->customerOf( $unaddressed['uuid'] ) );
 	}
 
 	/**

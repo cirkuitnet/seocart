@@ -304,18 +304,25 @@ final class OrderAccessPolicy {
 	 * Tells whether an email address is the actor's account's: the two compared trimmed and in ASCII lower case, in constant time.
 	 *
 	 * WordPress compares addresses so, and the database's collation too; the order keeps the
-	 * address as it was typed.
+	 * address as it was typed. An empty address is no address: an account and an order that both
+	 * have none do not match.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param Actor  $actor A person.
 	 * @param string $email The order's address.
-	 * @return bool False when it is not, or when the actor's user is gone.
+	 * @return bool False when it is not, when either address is empty once trimmed, or when the
+	 *              actor's user is gone.
 	 */
 	private function isAccountsEmail( Actor $actor, string $email ): bool {
-		$account = ( $this->emailOf )( $actor->userId() );
+		$account = strtolower( trim( (string) ( $this->emailOf )( $actor->userId() ) ) );
+		$order   = strtolower( trim( $email ) );
 
-		return null !== $account && hash_equals( strtolower( trim( $account ) ), strtolower( trim( $email ) ) );
+		if ( '' === $account || '' === $order ) {
+			return false;
+		}
+
+		return hash_equals( $account, $order );
 	}
 
 	/**
