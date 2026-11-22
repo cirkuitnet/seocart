@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Customer;
 
 use SEOCart\Customer\Application\Customers;
+use SEOCart\Customer\Infrastructure\CustomerTables;
 use SEOCart\Order\Application\OrderAccessPolicy;
 use SEOCart\Order\Domain\InsertedOrder;
 use SEOCart\Platform\Authorization\Actor;
@@ -29,7 +30,8 @@ use SEOCart\Tests\Support\Order\OrderTestCase;
  * The production Customers and OrderAccessPolicy, from the kernel's container over the test's
  * connection and real WordPress users. A link matches only the user it names at the time that user
  * registered: a visitor, a process, a deleted user and a new user given a deleted user's id match
- * none, and send no statement where nothing can match.
+ * none, and send no statement where nothing can match. The same pair names the person an actor
+ * is.
  *
  * Planted violations, each named on its test.
  *
@@ -202,6 +204,74 @@ final class CustomerLinkTest extends OrderTestCase {
 		);
 		$this->assertNull( $this->customers()->customerOf( Actor::user( $user ) ) );
 		$this->assertRefused( $order, Actor::user( $user ), 'The user of an unlinked record' );
+	}
+
+	/**
+	 * Tests who a person is: a user, as their id and the time they registered, at no statement for a user WordPress has read, as it reads the user it authenticates, and at WordPress's own read alone for one it has not; nobody for a visitor, a process acting for a user, or a deleted user; and never a read of the records.
+	 *
+	 * Planted violation: in Customers::personOf(), drop the `isPerson()` check. A process acting for
+	 * the user is then that person.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_person_is_a_users_id_and_registration_time_and_nobody_else_is_one(): void {
+		$user = $this->createUser( 'subscriber' );
+		$gone = $this->createUser( 'subscriber' );
+
+		$this->plantCustomer( $user, self::registeredAt( $user ) );
+
+		foreach ( array(
+			'a visitor'                     => Actor::user( 0 ),
+			'a process acting for the user' => Actor::system( 'cli', $user ),
+		) as $who => $actor ) {
+			$asked = $this->personWithStatements( $actor );
+
+			$this->assertNull( $asked['person'], "{$who} is no person." );
+			$this->assertQueryCount( 0, $asked['log'], "Asking who {$who} is" );
+		}
+
+		// The user as WordPress's authentication leaves them: read, and in the request's cache.
+		$expected = $user . '|' . self::registeredAt( $user );
+		$warm     = $this->personWithStatements( Actor::user( $user ) );
+
+		$this->assertSame( $expected, $warm['person'], 'A user is their id and registration time.' );
+		$this->assertQueryCount( 0, $warm['log'], 'Asking who a user WordPress has read is' );
+
+		clean_user_cache( $user );
+
+		$cold = $this->personWithStatements( Actor::user( $user ) );
+
+		$this->assertSame( $expected, $cold['person'], 'A user WordPress has not read is the same person.' );
+		$this->assertGreaterThan( 0, $cold['log']->forTable( $GLOBALS['wpdb']->users )->count(), 'WordPress reads the user it has not read.' );
+		$this->assertQueryCount( 0, $cold['log']->forTable( $this->db->table( CustomerTables::CUSTOMERS ) ), 'Asking who a user is, of the records' );
+		$this->assertSame( $cold['log']->count(), $cold['log']->forTable( $GLOBALS['wpdb']->users )->count() + $cold['log']->forTable( $GLOBALS['wpdb']->usermeta )->count(), 'Asking who a user is reads WordPress\'s user alone: ' . implode( '; ', $cold['log']->sqls() ) );
+		$this->assertTrue( $this->deleteUser( $gone ) );
+
+		clean_user_cache( $gone );
+
+		$this->assertNull( $this->customers()->personOf( Actor::user( $gone ) ), 'A user WordPress no longer has is no person.' );
+	}
+
+	/**
+	 * Asks the production service who an actor is, and returns the answer with the statements it cost.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Actor $actor The actor.
+	 * @return array{person: string|null, log: \SEOCart\Tests\Support\QueryLog} The person, and the statements.
+	 */
+	private function personWithStatements( Actor $actor ): array {
+		$person = null;
+		$log    = $this->captureQueries(
+			function () use ( $actor, &$person ): void {
+				$person = $this->customers()->personOf( $actor );
+			}
+		);
+
+		return array(
+			'person' => $person,
+			'log'    => $log,
+		);
 	}
 
 	/**

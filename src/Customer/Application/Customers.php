@@ -20,7 +20,7 @@ use SEOCart\Support\IdGenerator;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Says which customer record an actor is, creates the record of a user's first order, and unlinks a record from its user.
+ * Says which customer record an actor is and which person, creates the record of a user's first order, and unlinks a record from its user.
  *
  * Owns one fact: who a customer record belongs to. A record is linked to a WordPress user by a
  * pair, the user's id and the time the user registered, and an actor is the record's customer only
@@ -144,6 +144,28 @@ final class Customers implements ActorCustomers {
 		}
 
 		return $this->records->create( $this->ids->generate(), $actor->userId(), $registeredAt );
+	}
+
+	/**
+	 * Returns the person an actor is, as a link names a person: the user's id and the time they registered, joined by a bar.
+	 *
+	 * The pair a link holds, read through the same closure: the user's registration time, from
+	 * WordPress's cache for the user it authenticated. The records are not read. A visitor and a
+	 * process are no person and cost nothing; a user WordPress no longer has is none either.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Actor $actor The actor.
+	 * @return string|null `{user id}|{registration time}`; null when the actor is no person.
+	 */
+	public function personOf( Actor $actor ): ?string {
+		if ( ! $actor->isPerson() ) {
+			return null;
+		}
+
+		$registeredAt = ( $this->registeredAt )( $actor->userId() );
+
+		return null === $registeredAt ? null : $actor->userId() . '|' . $registeredAt;
 	}
 
 	/**
