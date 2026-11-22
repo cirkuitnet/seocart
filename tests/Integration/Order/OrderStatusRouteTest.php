@@ -35,6 +35,7 @@ use SEOCart\Tests\Support\Order\ClaimsOrders;
 use SEOCart\Tests\Support\Order\NewOrders;
 use SEOCart\Tests\Support\Order\OrderTestCase;
 use SEOCart\Tests\Support\Order\StoreOrderSurfaces;
+use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
 use SEOCart\Tests\Support\ServesRequests;
 use Spy_REST_Server;
 
@@ -77,6 +78,7 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	use ClaimsOrders;
 	use CreatesUsers;
 	use CustomerRecords;
+	use PricesInCurrencies;
 	use ServesRequests;
 
 	/**
@@ -109,8 +111,9 @@ final class OrderStatusRouteTest extends OrderTestCase {
 		$this->saveRequestGlobals();
 		$this->createCustomerTable();
 
-		// A claim is a Store API write, counted in its rate limit.
+		// A claim is a Store API write, counted in its rate limit, and asks the schema gate: the store is installed, its schema current.
 		( new CreateRateCountersMigration() )->up( new SchemaOperations( $this->db, new DdlGenerator(), new SchemaVerifier( $this->db ) ) );
+		$this->plantBootRecord();
 
 		$container = KernelContainer::build(
 			$this->db,
@@ -138,7 +141,7 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	}
 
 	/**
-	 * Restores the request globals, discards the server and deletes the users.
+	 * Restores the request globals and the installation record, discards the server and deletes the users.
 	 *
 	 * @since 0.1.0
 	 */
@@ -147,6 +150,7 @@ final class OrderStatusRouteTest extends OrderTestCase {
 
 		OperationSurfaces::discard();
 
+		$this->removeBootRecord();
 		$this->deleteCreatedUsers();
 
 		parent::tear_down();

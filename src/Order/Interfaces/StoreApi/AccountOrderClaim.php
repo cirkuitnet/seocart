@@ -54,7 +54,8 @@ final class AccountOrderClaim {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @throws CodedException `order.not_found` for every refusal.
+	 * @throws CodedException `order.not_found` for every refusal; `store.unavailable` for a signed-in
+	 *                        user while the schema gate is closed, before any read.
 	 *
 	 * @param array<string, mixed> $input The prepared input: the order's uuid, and the key when the header carries one.
 	 * @param Actor                $actor The user WordPress authenticated the request as, 0 for a visitor.

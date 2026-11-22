@@ -12,15 +12,29 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Order;
 
 use SEOCart\Application\Operations\RestBinding;
+use SEOCart\Customer\Infrastructure\CustomerTables;
 use SEOCart\Order\Application\OrderAccessPolicy;
+use SEOCart\Order\Application\OrderError;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Order\Interfaces\StoreApi\AccountOrderClaim;
 use SEOCart\Order\Interfaces\StoreApi\OrderStoreOperations;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Database\Database;
+use SEOCart\Platform\Database\TransactionManager;
+use SEOCart\Platform\Kernel\Container;
+use SEOCart\Platform\Kernel\GatedTransactionManager;
+use SEOCart\Platform\Kernel\GateState;
+use SEOCart\Platform\Kernel\KernelError;
+use SEOCart\Platform\Kernel\SchemaGate;
+use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Cart\ServesStoreApi;
+use SEOCart\Tests\Support\Checkout\PlacementKernel;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 use SEOCart\Tests\Support\CreatesUsers;
 use SEOCart\Tests\Support\Customer\CustomerRecords;
+use SEOCart\Tests\Support\Doubles\ClosedGateTransactions;
 use SEOCart\Tests\Support\Order\ClaimsOrders;
+use SEOCart\Tests\Support\Pricing\PricesInCurrencies;
 
 /**
  * A guest's order, placed with the address E, claimed over `POST seocart/store/v1/account/orders` by real WordPress users: as a table of who sends what, and what each is answered.
@@ -47,6 +61,7 @@ final class OrderClaimTest extends PlacementTestCase {
 	use ClaimsOrders;
 	use CreatesUsers;
 	use CustomerRecords;
+	use PricesInCurrencies;
 	use ServesStoreApi;
 
 	/**
@@ -79,13 +94,14 @@ final class OrderClaimTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Restores the request globals and deletes the users.
+	 * Restores the request globals and the installation record, and deletes the users.
 	 *
 	 * @since 0.2.0
 	 */
 	public function tear_down(): void {
 		wp_set_current_user( 0 );
 		$this->shutStoreApi();
+		$this->removeBootRecord();
 		$this->deleteCreatedUsers();
 
 		parent::tear_down();
@@ -171,6 +187,68 @@ final class OrderClaimTest extends PlacementTestCase {
 	}
 
 	/**
+	 * Tests that while the schema gate is closed, a signed-in claim, one the gate would let through and the owner's repeat alike, is refused `store.unavailable` before it reads the link or the order, and writes nothing; a visitor's is still `order.not_found`, with no statement.
+	 *
+	 * The claim runs through the kernel with a transaction manager that plays the closed gate, as
+	 * the gate's refusals of the other services whose first statements are reads are tested.
+	 *
+	 * Planted violations: in OrderAccessPolicy::claim(), leave out the gate's question: the claim
+	 * reads the link and the order, and the repeat is answered as done; ask it after the two reads:
+	 * both claims read the link and the order before they are refused.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_while_the_gate_is_closed_a_signed_in_claim_is_refused_before_its_first_read(): void {
+		$order  = $this->guestOrder( self::EMAIL );
+		$owned  = $this->guestOrder( self::EMAIL );
+		$user   = $this->createUserWithEmail( 'subscriber', self::EMAIL );
+		$owner  = $this->createUserWithEmail( 'subscriber', self::EMAIL );
+		$gated  = PlacementKernel::over(
+			$this->db,
+			$this->tokens,
+			$this->identities,
+			$this->wake,
+			$this->reporter(),
+			array( TransactionManager::class => fn(): TransactionManager => new ClosedGateTransactions( $this->db, GateState::CodeNewer ) )
+		);
+		$claims = array(
+			'a claim the gate would let through' => array( $order, $user ),
+			'the owner\'s repeat'                => array( $owned, $owner ),
+		);
+
+		// The owner's order became theirs while the gate was open.
+		$this->assertSame( 200, $this->claim( $owned['uuid'], $this->logIn( $owner ) + self::keyHeader( $owned['key'] ) )['status'] );
+
+		foreach ( $claims as $claim => list( $target, $claimant ) ) {
+			$refusal = null;
+			$log     = $this->captureQueries(
+				function () use ( $gated, $target, $claimant, &$refusal ): void {
+					$refusal = self::refusalOf( fn() => $gated->get( AccountOrderClaim::class )->claim( self::claimInput( $target ), Actor::user( $claimant ) ) );
+				}
+			);
+
+			$this->assertSame( KernelError::StoreUnavailable, $refusal?->errorCode(), ucfirst( $claim ) . ' with the gate closed.' );
+
+			foreach ( array( CustomerTables::CUSTOMERS, OrderTables::ORDERS, OrderTables::EVENTS ) as $table ) {
+				$this->assertQueryCount( 0, $log->forTable( $this->table( $table ) ), "{$claim}: {$table}, before the refusal" );
+			}
+		}
+
+		$visitor = null;
+		$log     = $this->captureQueries(
+			function () use ( $gated, $order, &$visitor ): void {
+				$visitor = self::refusalOf( fn() => $gated->get( AccountOrderClaim::class )->claim( self::claimInput( $order ), Actor::user( 0 ) ) );
+			}
+		);
+
+		$this->assertSame( OrderError::NotFound, $visitor?->errorCode(), 'A visitor is no person, whatever the gate.' );
+		$this->assertSame( 0, $log->count(), 'A visitor\'s claim sends nothing.' );
+		$this->assertNull( $this->customerOf( $order['uuid'] ), 'The order is still a guest\'s.' );
+		$this->assertSame( array(), array_filter( $this->customerRows(), static fn( array $row ): bool => $user === $row['user_id'] ), 'The claimant has no record.' );
+		$this->assertSame( array( 0, 1 ), array( $this->auditRows( $order['uuid'] ), $this->auditRows( $owned['uuid'] ) ), 'No claim row was written while the gate was closed.' );
+	}
+
+	/**
 	 * Tests what each path of a claim sends: the claim's own statements, the rate limit's count set apart, with the unit of work's control statements printed beside.
 	 *
 	 * A visitor sends nothing; a refusal and the owner's repeat read the user's customer and the
@@ -179,13 +257,21 @@ final class OrderClaimTest extends PlacementTestCase {
 	 * claims at once, here another customer's claim committed between the read and the update,
 	 * reads the order again where a winner writes its audit row, and its unit rolls back.
 	 *
+	 * The claims run through the production's gated transaction manager, the store installed and
+	 * its schema current, so the schema gate's question is in every count: it reads the
+	 * installation record WordPress loads with its options, and sends nothing.
+	 *
 	 * Planted violation: in OrderAccessPolicy::claim(), ask ActorCustomers::customerFor() for the
 	 * repeat too: the repeat costs more than a refusal.
 	 *
 	 * @since 0.2.0
 	 */
 	public function test_what_each_claim_costs(): void {
-		$paths  = array(
+		$this->plantBootRecord();
+		$this->shutStoreApi();
+		$this->bootStoreApi( array( TransactionManager::class => static fn( Container $c ): TransactionManager => new GatedTransactionManager( $c->get( Database::class ), $c->get( SchemaGate::class ) ) ) );
+
+		$paths   = array(
 			'a visitor'                          => array( 0, fn(): array => $this->claimPath( 'visitor' ) ),
 			'a refusal'                          => array( 2, fn(): array => $this->claimPath( 'refused' ) ),
 			'the owner\'s repeat'                => array( 2, fn(): array => $this->claimPath( 'repeat' ) ),
@@ -194,14 +280,16 @@ final class OrderClaimTest extends PlacementTestCase {
 			'a claim with a stale link'          => array( 7, fn(): array => $this->claimPath( 'stale' ) ),
 			'the loser of two claims at once'    => array( 5, fn(): array => $this->claimPath( 'loser' ) ),
 		);
-		$counts = array();
-		$lines  = array();
+		$counts  = array();
+		$options = array();
+		$lines   = array();
 
 		foreach ( $paths as $path => list( $expected, $measure ) ) {
-			list( $status, $own, $control ) = $measure();
+			list( $status, $own, $control, $optionReads ) = $measure();
 
-			$counts[ $path ] = count( $own );
-			$lines[]         = sprintf( '%-36s %d %s; the unit\'s control: %s', $path, count( $own ), (string) $status, array() === $control ? 'none' : implode( ', ', $control ) );
+			$counts[ $path ]  = count( $own );
+			$options[ $path ] = $optionReads;
+			$lines[]          = sprintf( '%-36s %d %s; the unit\'s control: %s; options read: %d', $path, count( $own ), (string) $status, array() === $control ? 'none' : implode( ', ', $control ), $optionReads );
 
 			foreach ( $own as $statement ) {
 				$lines[] = '    ' . substr( (string) preg_replace( '/\s+/', ' ', $statement ), 0, 130 );
@@ -211,17 +299,20 @@ final class OrderClaimTest extends PlacementTestCase {
 		fwrite( STDOUT, "\nWhat each claim sends, the rate limit's count set apart:\n  " . implode( "\n  ", $lines ) . "\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- Printed for the report.
 
 		$this->assertSame( array_map( static fn( array $path ): int => $path[0], $paths ), $counts );
+		$this->assertSame( array_fill_keys( array_keys( $paths ), 0 ), $options, 'The schema gate\'s question reads no option: the installation record is loaded with WordPress\'s options.' );
 	}
 
 	/**
-	 * Sets up one path of a claim, sends it, and returns its status, the claim's own statements and the unit of work's control statements.
+	 * Sets up one path of a claim, sends it, and returns its status, the claim's own statements, the unit of work's control statements and how many statements read WordPress's options.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param string $path `visitor`, `refused`, `repeat`, `record`, `first`, `stale` or `loser`.
-	 * @return array{0: int|null, 1: list<string>, 2: list<string>} What was sent.
+	 * @return array{0: int|null, 1: list<string>, 2: list<string>, 3: int} What was sent.
 	 */
 	private function claimPath( string $path ): array {
+		global $wpdb;
+
 		$order = $this->guestOrder( self::EMAIL );
 		$user  = $this->createUserWithEmail( 'subscriber', self::EMAIL );
 
@@ -261,6 +352,7 @@ final class OrderClaimTest extends PlacementTestCase {
 			$answer['status'] ?? null,
 			$this->claimsOwn( $log->sqls() ),
 			array_values( preg_grep( '/^(SET TRANSACTION|START TRANSACTION|SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK|COMMIT)/', $log->sqls() ) ),
+			$log->forTable( $wpdb->options )->count(),
 		);
 	}
 
@@ -293,6 +385,39 @@ final class OrderClaimTest extends PlacementTestCase {
 			$event,
 			'The audit row names the order and the user, and nothing else of anyone\'s.'
 		);
+	}
+
+	/**
+	 * Returns what a claim's service is handed for an order: its uuid, and its key as the header carries it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array{uuid: string, key: string} $order The order.
+	 * @return array<string, string> The prepared input.
+	 */
+	private static function claimInput( array $order ): array {
+		return array(
+			'uuid'                    => $order['uuid'],
+			OrderStoreOperations::KEY => $order['key'],
+		);
+	}
+
+	/**
+	 * Runs work that must be refused, and returns the refusal, or null when it was not.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param \Closure $work The work.
+	 * @return CodedException|null The refusal.
+	 */
+	private static function refusalOf( \Closure $work ): ?CodedException {
+		try {
+			$work();
+		} catch ( CodedException $refused ) {
+			return $refused;
+		}
+
+		return null;
 	}
 
 	/**

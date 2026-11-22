@@ -59,13 +59,16 @@ defined( 'ABSPATH' ) || exit;
  * The same owner test lists a customer's own orders (ownOrders()): a key opens one order, never a
  * list, so an actor who is no customer is listed nothing.
  *
- * A claim costs: nothing for an actor who is no person; two reads for a refusal and for the
- * owner's repeat, which writes nothing; and for a claim, those two and one unit of work at READ
- * COMMITTED, in the placement's lock order (the customer's record, then the order): the record
- * (ActorCustomers::customerFor(): one read, one insert more for a first record, one conditional
- * unlink more for a stale link), the conditional update, and the audit row; five statements for
- * a customer with a record, six at a first record, seven with a stale link, and one more read
- * for the loser of two claims at once.
+ * A claim costs: nothing for an actor who is no person; for a person, first the schema gate's
+ * answer, which sends nothing (the installation record it reads is loaded with WordPress's
+ * options), and while the gate is closed `store.unavailable` before any read; then two reads for
+ * a refusal and for the owner's repeat, which writes nothing; and for a claim, those two and one
+ * unit of work at READ COMMITTED, in the placement's lock order (the customer's record, then the
+ * order): the record (ActorCustomers::customerFor(): one read, one insert more for a first
+ * record, one conditional unlink more for a stale link), the conditional update, and the audit
+ * row; five statements for a customer with a record, six at a first record, seven with a stale
+ * link. The loser of two claims at once reads the order again where a winner writes its audit
+ * row, and rolls back: five statements for a customer with a record.
  *
  * @since 0.1.0
  * @since 0.2.0 Learns the actor's customer before the order; lists a customer's own orders; decides
@@ -227,8 +230,10 @@ final class OrderAccessPolicy {
 	/**
 	 * Makes a guest's order the customer record of the signed-in person who presents its key, when their account's email address is the order's; answers the owner's repeat as done.
 	 *
-	 * In order: an actor who is no person is refused, with no statement; the actor's customer is
-	 * read, then the order, whatever either turns out to be. An order already the actor's
+	 * In order: an actor who is no person is refused, with no statement; while the schema gate is
+	 * closed, a person is refused `store.unavailable`, before anything is read, the owner's repeat
+	 * included; then the actor's customer is read, then the order, whatever either turns out to
+	 * be. An order already the actor's
 	 * customer's is answered as done, with nothing written. Otherwise the order is claimed only
 	 * when it exists, has no customer, was placed by a visitor, the key opens it, and the account's
 	 * email address is the order's, compared trimmed and in ASCII lower case, in constant time.
@@ -242,7 +247,8 @@ final class OrderAccessPolicy {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @throws CodedException `order.not_found` for every refusal.
+	 * @throws CodedException `order.not_found` for every refusal; `store.unavailable` for a person while
+	 *                        the schema gate is closed, before any read.
 	 *
 	 * @param string      $orderUuid The order's public identifier.
 	 * @param Actor       $actor     Who claims.
@@ -252,6 +258,9 @@ final class OrderAccessPolicy {
 		if ( ! $actor->isPerson() ) {
 			CodedException::raise( OrderError::NotFound );
 		}
+
+		// A claim's first statements are reads: the gate is asked before them, not only by the unit of work.
+		$this->tx->refuseWhileClosed();
 
 		$customer = $this->customers->customerOf( $actor );
 		$order    = $this->orders->findForClaim( $orderUuid );
