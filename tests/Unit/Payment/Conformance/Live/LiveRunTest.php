@@ -15,7 +15,10 @@ use PHPUnit\Framework\TestCase;
 use SEOCart\Tests\Conformance\Payment\Live\LiveRun;
 
 /**
- * A fact reported is one safe line through the declaration's guard, and a report reads back its last value of each; the run list holds a provider's id and a store uuid per line, written and read here alone; a file no variable names is refused, naming the settings step that creates it.
+ * A fact reported is one safe line through the declaration's guard, and a report reads back its last value of each; the run list holds a provider's id and a store uuid per line, written and read here alone; both are their owner's alone from their first byte, whatever the umask; a file no variable names is refused, naming the settings step that creates it.
+ *
+ * Planted violation, shown red and removed: LiveRun::append() writing the line, then changing the
+ * file's mode: in a process with a umask of 022 that cannot change a mode, the file is 0644.
  *
  * @since 0.2.0
  */
@@ -54,6 +57,57 @@ final class LiveRunTest extends TestCase {
 		}
 
 		parent::tearDown();
+	}
+
+	/**
+	 * Tests that, with a umask of 022, a file a line creates is its owner's alone, and one that is there already, readable by others, is brought to its owner's alone, its lines kept.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_files_are_their_owners_alone_with_a_umask_of_022(): void {
+		$previous = umask( 0022 );
+
+		try {
+			unlink( $this->file );
+			putenv( LiveRun::RUN_LIST . '=' . $this->file );
+
+			LiveRun::append( LiveRun::RUN_LIST, "first\n" );
+			clearstatcache();
+			$this->assertSame( 0600, fileperms( $this->file ) & 0777, 'A file the line creates is its owner\'s alone.' );
+
+			chmod( $this->file, 0644 );
+			LiveRun::append( LiveRun::RUN_LIST, "second\n" );
+			clearstatcache();
+			$this->assertSame( 0600, fileperms( $this->file ) & 0777, 'A file there already is brought to its owner\'s alone.' );
+			$this->assertSame( "first\nsecond\n", file_get_contents( $this->file ) );
+		} finally {
+			umask( $previous );
+		}
+	}
+
+	/**
+	 * Tests that a file a line creates is its owner's alone from its first byte: a PHP process of its own, with a umask of 022 and no way to change a file's mode, writes the line to a file readable by its owner alone.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_new_file_is_its_owners_alone_from_its_first_byte(): void {
+		unlink( $this->file );
+
+		$code = sprintf(
+			'umask( 0022 ); require %1$s; putenv( %2$s ); \%3$s::append( %4$s, "first\n" );',
+			var_export( dirname( __DIR__, 4 ) . '/Conformance/Payment/Live/LiveRun.php', true ),
+			var_export( LiveRun::REPORT . '=' . $this->file, true ),
+			LiveRun::class,
+			var_export( LiveRun::REPORT, true )
+		);
+
+		// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.system_calls_exec -- a PHP process of its own, run with chmod() disabled.
+		exec( escapeshellarg( PHP_BINARY ) . ' -d disable_functions=chmod -r ' . escapeshellarg( $code ) . ' 2>&1', $output, $status );
+		clearstatcache();
+
+		$file = is_file( $this->file ) ? array( decoct( fileperms( $this->file ) & 0777 ), (string) file_get_contents( $this->file ) ) : array( 'none', '' );
+
+		$this->assertSame( array( 0, '600', "first\n" ), array( $status, $file[0], $file[1] ), implode( "\n", $output ) );
 	}
 
 	/**

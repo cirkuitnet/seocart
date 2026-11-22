@@ -91,18 +91,38 @@ final class LiveRun {
 	}
 
 	/**
-	 * Appends a line to the file an environment variable names, readable by its owner alone.
+	 * Appends a line to the file an environment variable names, readable by its owner alone from its first byte.
+	 *
+	 * A file the line creates is created readable by its owner alone, whatever the process's umask:
+	 * there is no moment between its creation and a change of its mode. A file that is there already
+	 * is brought to that mode before the line is written.
 	 *
 	 * @since 0.2.0
+	 *
+	 * @throws \RuntimeException When the line cannot be written.
 	 *
 	 * @param string $variable The variable.
 	 * @param string $line     The line, with its newline.
 	 */
 	public static function append( string $variable, string $line ): void {
-		$file = self::file( $variable );
+		$file     = self::file( $variable );
+		$previous = umask( 0077 );
 
-		file_put_contents( $file, $line, FILE_APPEND | LOCK_EX );
-		chmod( $file, 0600 );
+		try {
+			clearstatcache( true, $file );
+
+			if ( file_exists( $file ) && 0600 !== ( fileperms( $file ) & 0777 ) ) {
+				chmod( $file, 0600 );
+			}
+
+			$written = file_put_contents( $file, $line, FILE_APPEND | LOCK_EX );
+		} finally {
+			umask( $previous );
+		}
+
+		if ( false === $written ) {
+			throw new \RuntimeException( sprintf( 'The live tests could not write to the file %s names.', $variable ) );
+		}
 	}
 
 	/**
