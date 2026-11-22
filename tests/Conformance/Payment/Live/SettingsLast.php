@@ -30,7 +30,11 @@ namespace SEOCart\Tests\Conformance\Payment\Live;
  * directory of its own) and no action at all. Those steps read the file, so none can run before it
  * is written: a job that runs one with no settings step before it is refused, as the rule has then
  * lost track of where the file is written (a settings step written in a form it does not read, such
- * as a block of lines, included).
+ * as a block of lines, included). The workflow is read as WorkflowFacts::read() reads it, by
+ * relative indentation, a plain `run:` value without its trailing comment. The rule fails closed
+ * on what it could not read: a workflow from which no job was read, a job of the declaration that
+ * was not read or has no settings step it recognises, and `defaults:` at the top or in a job, or a
+ * job's own `env:`, which every step after the settings step would follow, are each refused.
  *
  * The shell those steps run is read as two programs: SEOCart's bin/ci/extension-live.sh, and the
  * extension's bin/ci/<basename>.sh, each with SEOCart's bin/ci/extension-live-lib.sh where its top
@@ -40,9 +44,11 @@ namespace SEOCart\Tests\Conformance\Payment\Live;
  * argument, may run only the commands COMMANDS allows and the calls EXACT and the caller list,
  * a wrapper's command checked at its call (WRAPPERS). Every function of the lib is held to the
  * same lists whether a step reaches it or not, as any step of any extension may. A script that
- * defines a function of the lib again is refused: its copy would run in the lib's place. A line
- * the functions do not hold, such as one after a `}` that ends a function early, is the top
- * level's; a command substitution in backticks, which is not read, is refused.
+ * defines a function of the lib again is refused: its copy would run in the lib's place; so is a
+ * script that, once it has sourced the lib, assigns one of the variables the lib's functions read.
+ * A line the functions do not hold, such as one after a `}` that ends a function early, is the
+ * top level's; what the reader does not read is refused: a command substitution in backticks, a
+ * here-document, and a quote that never closes.
  *
  * @since 0.2.0
  */
@@ -144,6 +150,20 @@ final class SettingsLast {
 	private const KEYWORDS = array( 'if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'esac', '!', '{', '}' );
 
 	/**
+	 * What the shell reader does not read, each refused where it stands, by the token the reader puts in its place: a command substitution in backticks, a here-document (whose body would be read as commands), and a quote that never closes (what follows it would be read as one word).
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, string>
+	 */
+	private const UNREAD = array(
+		'`'  => 'a command substitution in backticks, which this rule does not read',
+		'<<' => 'a here-document, which this rule does not read',
+		"'"  => 'a quote that never closes, so what follows it is not read',
+		'"'  => 'a quote that never closes, so what follows it is not read',
+	);
+
+	/**
 	 * The extension's declaration.
 	 *
 	 * @since 0.2.0
@@ -220,8 +240,24 @@ final class SettingsLast {
 			'runner' => array(),
 			'script' => array(),
 		);
-		$jobs       = self::jobSteps( $sources['workflow'] );
+		$workflow   = WorkflowFacts::read( $sources['workflow'] );
+		$jobs       = array_map( static fn( array $job ): array => $job['steps'], $workflow['jobs'] );
 		$anchors    = array();
+		$written    = array();
+
+		if ( array() === $jobs ) {
+			$violations[] = 'No job was read from the workflow, so nothing it runs is checked.';
+		}
+
+		if ( isset( $workflow['top']['defaults'] ) ) {
+			$violations[] = 'The workflow sets defaults:, which every step after a settings step would follow: a live workflow sets none.';
+		}
+
+		foreach ( $workflow['jobs'] as $job => $read ) {
+			foreach ( array_intersect( array( 'defaults', 'env' ), array_keys( $read['keys'] ) ) as $key ) {
+				$violations[] = sprintf( 'The job %1$s sets %2$s: for all its steps, those after its settings step included: a live workflow gives env: only to a step, and sets no defaults:.', $job, $key );
+			}
+		}
 
 		foreach ( $jobs as $items ) {
 			foreach ( $items as $item ) {
@@ -241,7 +277,8 @@ final class SettingsLast {
 				$run      = null === $resolved || isset( $resolved['deep']['run'] ) ? null : ( $resolved['keys']['run'] ?? null );
 
 				if ( $settings === $run ) {
-					$after = true;
+					$after           = true;
+					$written[ $job ] = true;
 					continue;
 				}
 
@@ -261,6 +298,16 @@ final class SettingsLast {
 			}
 		}
 
+		// Every part's job writes the settings file: one whose steps were not read, or whose settings
+		// step was not recognised, is a job this rule could not follow, never one it passes.
+		foreach ( array_keys( $this->declaration->jobs() ) as $job ) {
+			if ( array() === ( $jobs[ $job ] ?? array() ) ) {
+				$violations[] = sprintf( 'The job %1$s was not read from the workflow, or no step of it was: what it runs after its settings step is not checked.', $job );
+			} elseif ( ! isset( $written[ $job ] ) ) {
+				$violations[] = sprintf( 'The job %1$s has no step this rule reads as its settings step, `run: %2$s`: what it runs after the settings file is written is not checked.', $job, $settings );
+			}
+		}
+
 		$lib = self::parts( $sources['lib'] );
 
 		return array_values(
@@ -269,10 +316,103 @@ final class SettingsLast {
 					$violations,
 					$this->libViolations( $lib ),
 					$this->programViolations( basename( self::RUNNER ), $sources['runner'], $lib, $used['runner'] ),
-					$this->programViolations( basename( $this->declaration->script() ), $sources['script'], $lib, $used['script'] )
+					$this->programViolations( basename( $this->declaration->script() ), $sources['script'], $lib, $used['script'] ),
+					self::libAssignments( basename( $this->declaration->script() ), $sources['script'], $lib )
 				)
 			)
 		);
+	}
+
+	/**
+	 * Returns each assignment, in the provider's script, of a variable the lib's functions read, once the script has sourced the lib.
+	 *
+	 * The lib's paths (the variables its top level assigns), and core and ext, which the script sets
+	 * before it sources the lib, decide what the lib's functions run and read: `filtered` runs
+	 * `$step_php`, every step writes under `$work`. A script that assigns one afterwards, at its top
+	 * level or in any function, changes what SEOCart's helpers do, so it is refused, whether the
+	 * assignment stands alone, before a command, or after `export`, `readonly`, `local`, `unset` or
+	 * `read`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string                                                                                        $name  The script's file name.
+	 * @param string[]                                                                                      $lines The script's lines.
+	 * @param array{functions: array<string, list<string>>, dispatch: list<string>|null, top: list<string>} $lib   The lib's parts.
+	 * @return list<string> The violations.
+	 * @phpstan-param list<string> $lines
+	 */
+	private static function libAssignments( string $name, array $lines, array $lib ): array {
+		$parts     = self::parts( $lines );
+		$variables = array( 'core', 'ext' );
+		$texts     = array();
+		$sourced   = false;
+
+		foreach ( self::commands( $lib['top'] ) as $words ) {
+			$variables = array_merge( $variables, self::assigned( $words ) );
+		}
+
+		foreach ( $parts['top'] as $line ) {
+			if ( $sourced ) {
+				$texts['its top level, after it sources the lib'][] = $line;
+			}
+
+			foreach ( self::commands( array( $line ) ) as $words ) {
+				$sourced = $sourced || array( '.', '"$core/' . self::LIB . '"' ) === self::bare( $words );
+			}
+		}
+
+		if ( ! $sourced ) {
+			return array();
+		}
+
+		foreach ( $parts['functions'] as $function => $body ) {
+			$texts[ $function . '()' ] = $body;
+		}
+
+		$violations = array();
+
+		foreach ( $texts as $where => $text ) {
+			foreach ( self::commands( $text ) as $words ) {
+				foreach ( array_intersect( self::assigned( $words ), $variables ) as $variable ) {
+					$violations[] = sprintf( '%1$s assigns %2$s in %3$s: the lib sets it, and what its functions run and read depends on it.', $name, $variable, $where );
+				}
+			}
+		}
+
+		return $violations;
+	}
+
+	/**
+	 * Returns the variables a simple command assigns: by its assignments before the command's name, or as the arguments of `export`, `readonly`, `local`, `unset` or `read`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string[] $words The command's words.
+	 * @return list<string> The variables' names.
+	 * @phpstan-param list<string> $words
+	 */
+	private static function assigned( array $words ): array {
+		$names = array();
+		$words = array_values( array_filter( $words, static fn( string $word ): bool => ! in_array( $word, self::KEYWORDS, true ) ) );
+
+		foreach ( $words as $at => $word ) {
+			if ( 1 === preg_match( '/^([A-Za-z_][A-Za-z0-9_]*)=/', $word, $match ) ) {
+				$names[] = $match[1];
+				continue;
+			}
+
+			if ( in_array( $word, array( 'export', 'readonly', 'local', 'unset', 'read' ), true ) ) {
+				foreach ( array_slice( $words, $at + 1 ) as $argument ) {
+					if ( 1 === preg_match( '/^([A-Za-z_][A-Za-z0-9_]*)(?:=|$)/', $argument, $match ) ) {
+						$names[] = $match[1];
+					}
+				}
+			}
+
+			break;
+		}
+
+		return $names;
 	}
 
 	/**
@@ -363,10 +503,10 @@ final class SettingsLast {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string                                                                                       $job        The job.
-	 * @param array{alias: ?string, keys: array<string, string>, deep: array<string, bool>}                $item       The step: its alias or anchor, its keys and their first lines, its keys whose value goes on.
-	 * @param array<string, array{alias: ?string, keys: array<string, string>, deep: array<string, bool>}> $anchors    The steps the workflow anchors, by the anchor's name.
-	 * @param string[]                                                                                     $violations The violations, noted into.
+	 * @param string                                                                                                           $job        The job.
+	 * @param array{alias: ?string, keys: array<string, string>, deep: array<string, bool>, from: int, to: int}                $item       The step: its alias or anchor, its keys and their first lines, its keys whose value goes on.
+	 * @param array<string, array{alias: ?string, keys: array<string, string>, deep: array<string, bool>, from: int, to: int}> $anchors    The steps the workflow anchors, by the anchor's name.
+	 * @param string[]                                                                                                         $violations The violations, noted into.
 	 * @return array{string, string}|null `runner` or `script`, and the step, such as `live payments` or `configure`.
 	 * @phpstan-param list<string> $violations
 	 */
@@ -405,7 +545,7 @@ final class SettingsLast {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param array{alias: ?string, keys: array<string, string>, deep: array<string, bool>} $item The step.
+	 * @param array{alias: ?string, keys: array<string, string>, deep: array<string, bool>, from: int, to: int} $item The step.
 	 * @return array{string, string}|null `runner` or `script`, and the step, such as `live payments` or `configure`; null for any other step.
 	 */
 	private function listed( array $item ): ?array {
@@ -437,9 +577,9 @@ final class SettingsLast {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param array{alias: ?string, keys: array<string, string>, deep: array<string, bool>}                $item    The step.
-	 * @param array<string, array{alias: ?string, keys: array<string, string>, deep: array<string, bool>}> $anchors The steps the workflow anchors, by the anchor's name.
-	 * @return array{alias: ?string, keys: array<string, string>, deep: array<string, bool>}|null The step; null for the alias of no anchor.
+	 * @param array{alias: ?string, keys: array<string, string>, deep: array<string, bool>, from: int, to: int}                $item    The step.
+	 * @param array<string, array{alias: ?string, keys: array<string, string>, deep: array<string, bool>, from: int, to: int}> $anchors The steps the workflow anchors, by the anchor's name.
+	 * @return array{alias: ?string, keys: array<string, string>, deep: array<string, bool>, from: int, to: int}|null The step; null for the alias of no anchor.
 	 */
 	private static function resolved( array $item, array $anchors ): ?array {
 		if ( null === $item['alias'] || ! str_starts_with( $item['alias'], '*' ) ) {
@@ -509,6 +649,10 @@ final class SettingsLast {
 	 * @phpstan-param list<string> $words
 	 */
 	private function refusal( array $words, string $within, array $functions ): ?string {
+		if ( 1 === count( $words ) && isset( self::UNREAD[ $words[0] ] ) ) {
+			return self::UNREAD[ $words[0] ];
+		}
+
 		$words = self::bare( $words );
 
 		if ( array() === $words ) {
@@ -517,10 +661,6 @@ final class SettingsLast {
 
 		$name    = $words[0];
 		$command = implode( ' ', $words );
-
-		if ( '`' === $name ) {
-			return 'a command substitution in backticks, which this rule does not read';
-		}
 
 		if ( isset( self::WRAPPERS[ $name ] ) ) {
 			return $this->refusal( array_slice( $words, 1 + self::WRAPPERS[ $name ] ), $within, $functions );
@@ -585,8 +725,9 @@ final class SettingsLast {
 	 * Returns the simple commands of a function's lines, each as its words, quotes kept: a command
 	 * substitution `$( … )`, in double quotes or in a parameter's expansion `${ … }` as much as
 	 * outside them, is a command of its own, an arithmetic expansion a number, a case's
-	 * patterns and the heads of `case` and `for` no command, and a backtick outside single quotes
-	 * the command `` ` ``, which is refused.
+	 * patterns (alternatives joined by `|` included) and the heads of `case` and `for` no command;
+	 * a backtick outside single quotes, a here-document's `<<` and a quote that never closes are
+	 * each a command of their own token (UNREAD), which is refused.
 	 *
 	 * @since 0.2.0
 	 *
@@ -613,6 +754,7 @@ final class SettingsLast {
 		$words    = array();
 		$word     = null;
 		$cases    = 0;
+		$pattern  = false;
 		$length   = strlen( $text );
 
 		for ( $at = 0; $at <= $length; $at++ ) {
@@ -626,13 +768,18 @@ final class SettingsLast {
 				$at       = $close;
 			} elseif ( "'" === $char ) {
 				$close = strpos( $text, "'", $at + 1 );
-				$close = false === $close ? $length : $close;
+
+				if ( false === $close ) {
+					$commands[] = array( "'" );
+					$close      = $length;
+				}
+
 				$word .= substr( $text, $at, $close - $at + 1 );
 				$at    = $close;
 			} elseif ( '"' === $char ) {
 				[ $quoted, $inner, $at ] = self::doubleQuoted( $text, $at );
 				$word                   .= $quoted;
-				$commands                = array_merge( $commands, $inner );
+				$commands                = array_merge( $commands, $inner, $at >= $length ? array( array( '"' ) ) : array() );
 			} elseif ( '\\' === $char ) {
 				$word .= substr( $text, $at++, 2 );
 			} elseif ( '`' === $char ) {
@@ -641,19 +788,61 @@ final class SettingsLast {
 			} elseif ( '#' === $char && null === $word ) {
 				$close = strpos( $text, "\n", $at );
 				$at    = ( false === $close ? $length : $close ) - 1;
+			} elseif ( '<<' === $two ) {
+				$commands[] = array( '<<' );
+				$word      .= '<<';
+				++$at;
 			} elseif ( '>' === $char || '<' === $char ) {
 				$word .= $char . ( '&' === ( $text[ $at + 1 ] ?? '' ) ? $text[ ++$at ] : '' );
 			} elseif ( ' ' === $char || "\t" === $char ) {
 				self::endWord( $word, $words );
 			} elseif ( in_array( $char, array( "\n", ';', '&', '|', '(', ')' ), true ) ) {
 				self::endWord( $word, $words );
-				self::endCommand( $words, $commands, $cases, ')' === $char );
+				self::separate( $char, ';' === $char && ';' === ( $text[ $at + 1 ] ?? '' ), $words, $commands, $cases, $pattern );
+				$at += ';' === $char && ';' === ( $text[ $at + 1 ] ?? '' ) ? 1 : 0;
 			} else {
 				$word .= $char;
 			}
 		}
 
+		// A quote or a substitution that runs to the end of the text leaves words no separator ended.
+		self::endWord( $word, $words );
+		self::endCommand( $words, $commands, $cases, $pattern, false );
+
 		return $commands;
+	}
+
+	/**
+	 * Reads one separator: in a case's pattern, `|` joins its alternatives and `)` ends it, so the pattern is no command; `;;` ends a branch, and what comes next is a pattern, or `esac`; any other separator ends the command being read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string   $char     The separator.
+	 * @param bool     $branch   Whether it is the `;;` that ends a case's branch.
+	 * @param string[] $words    The command's words.
+	 * @param array    $commands The commands, added to.
+	 * @param int      $cases    How many `case` commands are open.
+	 * @param bool     $pattern  Whether a case's pattern is being read.
+	 * @phpstan-param list<string> $words
+	 * @phpstan-param list<list<string>> $commands
+	 */
+	private static function separate( string $char, bool $branch, array &$words, array &$commands, int &$cases, bool &$pattern ): void {
+		if ( $pattern && ')' === $char ) {
+			$words   = array();
+			$pattern = false;
+		} elseif ( $pattern && in_array( $char, array( '|', '(' ), true ) ) {
+			return;
+		} elseif ( $pattern && array() === $words ) {
+			return;
+		} else {
+			// In a pattern, anything but `esac` before its `)` is no pattern: it is read as a command, so nothing goes unread.
+			$pattern = $pattern && array( 'esac' ) !== $words ? false : $pattern;
+			self::endCommand( $words, $commands, $cases, $pattern, ')' === $char );
+		}
+
+		if ( $branch && $cases > 0 ) {
+			$pattern = true;
+		}
 	}
 
 	/**
@@ -737,25 +926,28 @@ final class SettingsLast {
 	}
 
 	/**
-	 * Ends the command being read: a case's pattern (one word before `)` inside a `case`) and the heads of `case` and `for` are dropped.
+	 * Ends the command being read: the heads of `case` and `for` are dropped, and after a `case`'s head its first pattern is read, unless a `)` ended the head with the pattern in it.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param string[] $words    The command's words, emptied.
 	 * @param array    $commands The commands, added to.
 	 * @param int      $cases    How many `case` commands are open.
+	 * @param bool     $pattern  Whether a case's pattern is being read.
 	 * @param bool     $closing  Whether a `)` ends it.
 	 * @phpstan-param list<string> $words
 	 * @phpstan-param list<list<string>> $commands
 	 */
-	private static function endCommand( array &$words, array &$commands, int &$cases, bool $closing ): void {
+	private static function endCommand( array &$words, array &$commands, int &$cases, bool &$pattern, bool $closing ): void {
 		$head = self::bare( $words )[0] ?? null;
 
 		if ( 'case' === $head ) {
 			++$cases;
+			$pattern = ! $closing;
 		} elseif ( 'esac' === ( $words[0] ?? null ) ) {
 			--$cases;
-		} elseif ( 'for' !== $head && ! ( $closing && $cases > 0 && 1 === count( $words ) ) && array() !== $words ) {
+			$pattern = false;
+		} elseif ( 'for' !== $head && array() !== $words ) {
 			$commands[] = $words;
 		}
 
@@ -838,79 +1030,6 @@ final class SettingsLast {
 		}
 
 		return $reached;
-	}
-
-	/**
-	 * Returns a job's steps, each as its alias or anchor, its keys and their first lines, and the keys whose value goes on to deeper lines; by job.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param string[] $lines The workflow's lines.
-	 * @return array<string, list<array{alias: ?string, keys: array<string, string>, deep: array<string, bool>}>> The steps.
-	 * @phpstan-param list<string> $lines
-	 */
-	private static function jobSteps( array $lines ): array {
-		$jobs = array();
-		$job  = null;
-		$key  = null;
-
-		foreach ( $lines as $line ) {
-			if ( 1 === preg_match( '/^    ([a-z][a-z0-9-]*):\s*$/', $line, $match ) ) {
-				$job          = $match[1];
-				$jobs[ $job ] = array();
-				continue;
-			}
-
-			if ( null === $job || '' === trim( $line ) || str_starts_with( ltrim( $line ), '#' ) ) {
-				continue;
-			}
-
-			if ( 1 === preg_match( '/^            - (?:([*&][a-z0-9-]+)\s*)?(.*)$/', $line, $match ) ) {
-				$jobs[ $job ][] = array(
-					'alias' => '' === $match[1] ? null : $match[1],
-					'keys'  => array(),
-					'deep'  => array(),
-				);
-				$key            = '' === $match[2] ? null : self::stepKey( $jobs[ $job ][ count( $jobs[ $job ] ) - 1 ], $match[2] );
-				continue;
-			}
-
-			if ( array() === $jobs[ $job ] ) {
-				continue;
-			}
-
-			$at = count( $jobs[ $job ] ) - 1;
-
-			if ( 1 === preg_match( '/^              ([^ ].*)$/', $line, $match ) ) {
-				$key = self::stepKey( $jobs[ $job ][ $at ], $match[1] );
-			} elseif ( null !== $key && str_starts_with( $line, '               ' ) ) {
-				$jobs[ $job ][ $at ]['deep'][ $key ] = true;
-			}
-		}
-
-		return $jobs;
-	}
-
-	/**
-	 * Reads one `key: value` line of a step into it, and returns the key.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param array  $item The step, read into.
-	 * @param string $text The line, without its indentation.
-	 * @return string The key; `?` for a line that is no key.
-	 * @phpstan-param array{alias: ?string, keys: array<string, string>, deep: array<string, bool>} $item
-	 */
-	private static function stepKey( array &$item, string $text ): string {
-		if ( 1 !== preg_match( '/^([A-Za-z0-9_-]+):\s*(.*)$/', $text, $match ) ) {
-			$item['keys']['?'] = $text;
-
-			return '?';
-		}
-
-		$item['keys'][ $match[1] ] = $match[2];
-
-		return $match[1];
 	}
 
 	/**
