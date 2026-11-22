@@ -2596,7 +2596,9 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->assertReceivedAsRead( $name . ' delivered again', $headers, $body, $at->modify( '+2 seconds' ), $first, $first->eventId );
 
 		if ( null !== $payment ) {
-			$this->assertSame( $payment, $this->db->fetchValue( 'SELECT intent_uuid FROM %i WHERE provider = %s AND mode = %s AND event_id = %s', $this->table( WebhookReceiptTables::RECEIPTS ), $this->gatewayId(), $this->suiteMode()->value, DeliveredValues::eventId( (string) $first->eventId ) ), $rule->message() . sprintf( 'the delivery %s names its payment by the provider\'s id, and the store\'s route did not settle it against the store\'s payment of that id.', $name ) );
+			$mode = $this->suiteMode();
+
+			$this->assertSame( $payment, $this->db->fetchValue( 'SELECT intent_uuid FROM %i WHERE provider = %s AND mode = %s AND event_id = %s', $this->table( WebhookReceiptTables::RECEIPTS ), $this->gatewayId(), $mode->value, DeliveredValues::eventId( (string) $first->eventId ) ), $rule->message() . sprintf( 'the delivery %1$s names its payment by the provider\'s id, and the store\'s route did not settle it against the store\'s payment of that id: the receipt of its event was read in %2$s mode.', $name, $mode->value ) );
 		}
 
 		return $first->kind;
@@ -2665,7 +2667,8 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 			$request->set_header( (string) $header, (string) $value );
 		}
 
-		$before = $this->receiptOf( $eventId );
+		$readIn = $this->suiteMode();
+		$before = $this->receiptOf( $eventId, $readIn );
 
 		$this->gatewayClock->setTo( $arrives );
 		KernelHooks::detach( 'rest_api_init' );
@@ -2682,23 +2685,25 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		}
 
 		$data    = (array) $response->get_data();
-		$failure = ReceiptRules::failure( $name, $reading, $response->get_status(), isset( $data['code'] ) ? (string) $data['code'] : null, $before, $this->receiptOf( $eventId ), $body );
+		$failure = ReceiptRules::failure( $name, $reading, $response->get_status(), isset( $data['code'] ) ? (string) $data['code'] : null, $before, $this->receiptOf( $eventId, $readIn ), $body );
 
+		// ReceiptRules' sentence is kept whole; the mode the receipt was looked for in follows it.
 		if ( null !== $failure ) {
-			self::fail( $failure );
+			self::fail( $failure . sprintf( ' The receipt was read in %s mode.', $readIn->value ) );
 		}
 	}
 
 	/**
-	 * Reads the receipt the store's receiver keeps of an event of the gateway in the suite's mode (suiteMode()).
+	 * Reads the receipt the store's receiver keeps of an event of the gateway in a mode.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @param string|null $eventId The event's id, as the gateway reads it; null for none.
+	 * @param Mode        $mode    The mode: the suite's (suiteMode()), in which the deliveries are sent.
 	 * @return array{id: int, result: string, result_code: string, payload_hash: string}|null The receipt; null when there is none.
 	 */
-	private function receiptOf( ?string $eventId ): ?array {
-		$row = null === $eventId ? null : $this->db->fetchRow( 'SELECT id, result, result_code, payload_hash FROM %i WHERE provider = %s AND mode = %s AND event_id = %s', $this->table( WebhookReceiptTables::RECEIPTS ), $this->gatewayId(), $this->suiteMode()->value, DeliveredValues::eventId( $eventId ) );
+	private function receiptOf( ?string $eventId, Mode $mode ): ?array {
+		$row = null === $eventId ? null : $this->db->fetchRow( 'SELECT id, result, result_code, payload_hash FROM %i WHERE provider = %s AND mode = %s AND event_id = %s', $this->table( WebhookReceiptTables::RECEIPTS ), $this->gatewayId(), $mode->value, DeliveredValues::eventId( $eventId ) );
 
 		return null === $row ? null : array(
 			'id'           => (int) $row['id'],
