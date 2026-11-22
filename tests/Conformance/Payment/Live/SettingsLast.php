@@ -17,8 +17,9 @@ namespace SEOCart\Tests\Conformance\Payment\Live;
  * The rule: the settings file that holds a key is written after everything that installs,
  * downloads or builds, and nothing after it installs, downloads or builds; otherwise a package's
  * install script, a build, a downloaded browser or an action would run with the file readable.
- * The lists are closed. After a job's settings step (`- *settings`, or the step `- &settings`
- * anchors) the job may run only:
+ * The lists are closed. A job's settings step is the step that runs the provider script's settings
+ * step, `sh ext/bin/ci/<basename>.sh settings`, known by what it runs whatever it is named or
+ * anchored as; an alias is read as the step its anchor marks. After it, the job may run only:
  *
  * - SEOCart's steps that read the file: `sh seocart/bin/ci/extension-live.sh conformance ext`, and
  *   `… live ext <part>` for each live part the declaration states;
@@ -26,7 +27,10 @@ namespace SEOCart\Tests\Conformance\Payment\Live;
  *   gateway's configuration, the checkout's browser tests and the clean-up;
  *
  * each with the keys `name`, `id`, `if` and `run` alone (no environment, shell or working
- * directory of its own) and no action at all; an alias is read as the step its anchor marks.
+ * directory of its own) and no action at all. Those steps read the file, so none can run before it
+ * is written: a job that runs one with no settings step before it is refused, as the rule has then
+ * lost track of where the file is written (a settings step written in a form it does not read, such
+ * as a block of lines, included).
  *
  * The shell those steps run is read as two programs: SEOCart's bin/ci/extension-live.sh, and the
  * extension's bin/ci/<basename>.sh, each with SEOCart's bin/ci/extension-live-lib.sh where its top
@@ -227,16 +231,29 @@ final class SettingsLast {
 			}
 		}
 
+		$settings = 'sh ext/' . $this->declaration->script() . ' settings';
+
 		foreach ( $jobs as $job => $items ) {
 			$after = false;
 
 			foreach ( $items as $item ) {
-				if ( in_array( $item['alias'], array( '*settings', '&settings' ), true ) ) {
+				$resolved = self::resolved( $item, $anchors );
+				$run      = null === $resolved || isset( $resolved['deep']['run'] ) ? null : ( $resolved['keys']['run'] ?? null );
+
+				if ( $settings === $run ) {
 					$after = true;
 					continue;
 				}
 
-				$step = $after ? $this->scriptStep( $job, $item, $anchors, $violations ) : null;
+				if ( ! $after ) {
+					if ( null !== $resolved && null !== $this->listed( $resolved ) ) {
+						$violations[] = sprintf( 'The job %1$s runs `run: %2$s` with no settings step before it: the step reads the settings file, so the rule has lost track of where the file is written.', $job, $resolved['keys']['run'] ?? '' );
+					}
+
+					continue;
+				}
+
+				$step = $this->scriptStep( $job, $item, $anchors, $violations );
 
 				if ( null !== $step ) {
 					$used[ $step[0] ][ $step[1] ][ $job ] = true;
@@ -374,26 +391,62 @@ final class SettingsLast {
 			$violations[] = sprintf( 'The job %1$s gives a step after its settings step the key %2$s: only %3$s.', $job, $key, implode( ', ', self::STEP_KEYS ) );
 		}
 
+		$listed = $this->listed( $item );
+
+		if ( null === $listed ) {
+			$violations[] = sprintf( 'The job %1$s runs, after its settings step, a command that is not one of the script\'s steps: `run: %2$s`.', $job, $item['keys']['run'] ?? '' );
+		}
+
+		return $listed;
+	}
+
+	/**
+	 * Returns which script a step runs, and which of its steps, when it is one the lists allow after a settings step: each of these reads the settings file.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array{alias: ?string, keys: array<string, string>, deep: array<string, bool>} $item The step.
+	 * @return array{string, string}|null `runner` or `script`, and the step, such as `live payments` or `configure`; null for any other step.
+	 */
+	private function listed( array $item ): ?array {
+		if ( isset( $item['deep']['run'] ) ) {
+			return null;
+		}
+
 		$run    = $item['keys']['run'] ?? '';
 		$runner = array( 'sh seocart/' . self::RUNNER . ' conformance ext' => 'conformance' );
+		$script = 'sh ext/' . $this->declaration->script() . ' ';
 
 		foreach ( array_keys( $this->declaration->liveParts() ) as $part ) {
 			$runner[ 'sh seocart/' . self::RUNNER . ' live ext ' . $part ] = 'live ' . $part;
 		}
 
-		if ( ! isset( $item['deep']['run'] ) && isset( $runner[ $run ] ) ) {
+		if ( isset( $runner[ $run ] ) ) {
 			return array( 'runner', $runner[ $run ] );
 		}
 
-		$script = 'sh ext/' . $this->declaration->script() . ' ';
-
-		if ( ! isset( $item['deep']['run'] ) && str_starts_with( $run, $script ) && in_array( substr( $run, strlen( $script ) ), $this->steps, true ) ) {
+		if ( str_starts_with( $run, $script ) && in_array( substr( $run, strlen( $script ) ), $this->steps, true ) ) {
 			return array( 'script', substr( $run, strlen( $script ) ) );
 		}
 
-		$violations[] = sprintf( 'The job %1$s runs, after its settings step, a command that is not one of the script\'s steps: `run: %2$s`.', $job, $run );
-
 		return null;
+	}
+
+	/**
+	 * Returns a step as the workflow runs it: the step itself, or, for an alias, the step its anchor marks.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array{alias: ?string, keys: array<string, string>, deep: array<string, bool>}                $item    The step.
+	 * @param array<string, array{alias: ?string, keys: array<string, string>, deep: array<string, bool>}> $anchors The steps the workflow anchors, by the anchor's name.
+	 * @return array{alias: ?string, keys: array<string, string>, deep: array<string, bool>}|null The step; null for the alias of no anchor.
+	 */
+	private static function resolved( array $item, array $anchors ): ?array {
+		if ( null === $item['alias'] || ! str_starts_with( $item['alias'], '*' ) ) {
+			return $item;
+		}
+
+		return $anchors[ substr( $item['alias'], 1 ) ] ?? null;
 	}
 
 	/**
