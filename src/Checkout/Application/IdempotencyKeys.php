@@ -78,13 +78,19 @@ interface IdempotencyKeys {
 	 * answers nothing, as a key never seen does, whatever its fingerprint and its state: neither a
 	 * replay nor a refusal of the key tells that request anything of the placement.
 	 *
+	 * A key the request may find under either of two hashes, such as a signed-in person's, kept
+	 * under the person's own hash or, for an answer kept before, under the cart's alone, is read
+	 * once for both: the row of the first hash is judged first, and the row of the second only when
+	 * the first is missing, expired or not the request's to be answered from. Each is handed to the
+	 * decider alike, and the first left answers; none left answers nothing.
+	 *
 	 * @since 0.1.0
 	 *
 	 * @throws CodedException `checkout.idempotency_key_reused` when the order was placed for a request
 	 *                        of another fingerprint; `checkout.placement_in_progress` when another
 	 *                        request holds the key and has not placed its order.
 	 *
-	 * @since 0.2.0 The decider.
+	 * @since 0.2.0 The decider, and a second hash.
 	 *
 	 * @param string        $scope       What the key is claimed for.
 	 * @param string        $keyHash     The key's hash: IdempotencyClaim::keyHash().
@@ -92,11 +98,13 @@ interface IdempotencyKeys {
 	 * @param \Closure|null $mayAnswer   Optional. Tells, from what the key keeps (JSON, or null for nothing),
 	 *                                   whether the request may be answered from the key at all. Default null:
 	 *                                   every request may.
+	 * @param string|null   $elseKeyHash Optional. A second hash the key may be kept under, read in the same
+	 *                                   statement and judged after the first. Default null: the first alone.
 	 * @return IdempotencyClaim|null A replay of the earlier answer, or null.
 	 *
 	 * @phpstan-param (\Closure(string|null): bool)|null $mayAnswer
 	 */
-	public function replay( string $scope, string $keyHash, string $fingerprint, ?\Closure $mayAnswer = null ): ?IdempotencyClaim;
+	public function replay( string $scope, string $keyHash, string $fingerprint, ?\Closure $mayAnswer = null, ?string $elseKeyHash = null ): ?IdempotencyClaim;
 
 	/**
 	 * Records that the request that owns a key placed its order, and the answer it sends: claimed becomes placed.

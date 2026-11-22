@@ -40,6 +40,11 @@ defined( 'ABSPATH' ) || exit;
  * re-claim of an expired key, is a conditional UPDATE that carries the expiry in its WHERE clause.
  * Expiry is always judged by the database clock.
  *
+ * Before any transaction, a request looks for the answer its key keeps with one plain read by the
+ * unique key: under its hash, or, for a key that may be kept under either of two hashes, under
+ * both in the same statement, each row then judged in the order the hashes are given. A claim is
+ * only ever made under one hash: the request's own.
+ *
  * Doctor's search for stranded claims and the retention job's deletes live here too, because
  * they are key SQL; they are not part of the port placement sees.
  *
@@ -77,6 +82,15 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	 * @var string
 	 */
 	public const FIND = 'SELECT id, request_fingerprint, state, order_id, response_json, expires_at <= UTC_TIMESTAMP() AS expired FROM %i WHERE scope = %s AND key_hash = %s';
+
+	/**
+	 * A key that may be kept under either of two hashes, as last committed, before any transaction: each row found, with its hash, so the two can be told apart. A plain read of two points of the unique key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const FIND_EITHER = 'SELECT id, key_hash, request_fingerprint, state, order_id, response_json, expires_at <= UTC_TIMESTAMP() AS expired FROM %i WHERE scope = %s AND key_hash IN ( %s, %s )';
 
 	/**
 	 * Claims an expired key again, for a new request and a TTL from now: only while it is still expired.
@@ -218,7 +232,14 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	/**
 	 * Answers a request with the answer of the earlier request that placed its order with the same key, when there was one. One plain read.
 	 *
+	 * The key is read under its hash with FIND, or, given a second hash, under both with
+	 * FIND_EITHER; the rows found are then judged alike, the first hash's first: a row that has
+	 * expired, or that the decider says the request may not be answered from, is passed over, and
+	 * the first row left answers, with its answer or the key's own refusal. The second hash's row is
+	 * not looked at when the first's answers.
+	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The decider, and a second hash.
 	 *
 	 * @throws CodedException `checkout.idempotency_key_reused` or `checkout.placement_in_progress`.
 	 *
@@ -226,23 +247,26 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 	 * @param string        $keyHash     The key's hash.
 	 * @param string        $fingerprint The SHA-256 of the request's canonical form.
 	 * @param \Closure|null $mayAnswer   Optional. Tells, from what the key keeps, whether the request may be answered from it. Default null: every request may.
-	 * @return IdempotencyClaim|null A replay of the earlier answer; null when the key is new or expired, or the decider says no.
+	 * @param string|null   $elseKeyHash Optional. A second hash the key may be kept under, judged after the first. Default null: the first alone.
+	 * @return IdempotencyClaim|null A replay of the earlier answer; null when the key is new or expired under each hash, or the decider says no to each.
 	 *
 	 * @phpstan-param (\Closure(string|null): bool)|null $mayAnswer
 	 */
-	public function replay( string $scope, string $keyHash, string $fingerprint, ?\Closure $mayAnswer = null ): ?IdempotencyClaim {
-		$row = $this->db->fetchRow( self::FIND, $this->keys(), $scope, $keyHash );
+	public function replay( string $scope, string $keyHash, string $fingerprint, ?\Closure $mayAnswer = null, ?string $elseKeyHash = null ): ?IdempotencyClaim {
+		foreach ( $this->found( $scope, $keyHash, $elseKeyHash ) as $row ) {
+			if ( '1' === (string) $row['expired'] ) {
+				continue;
+			}
 
-		if ( null === $row || '1' === (string) $row['expired'] ) {
-			return null;
+			// Whom the key is for is decided before its state or the request's fingerprint is: anyone else learns nothing from it.
+			if ( null !== $mayAnswer && ! $mayAnswer( null === $row['response_json'] ? null : (string) $row['response_json'] ) ) {
+				continue;
+			}
+
+			return self::answerLive( $row, $fingerprint );
 		}
 
-		// Whom the key is for is decided before its state or the request's fingerprint is: anyone else learns nothing from it.
-		if ( null !== $mayAnswer && ! $mayAnswer( null === $row['response_json'] ? null : (string) $row['response_json'] ) ) {
-			return null;
-		}
-
-		return self::answerLive( $row, $fingerprint );
+		return null;
 	}
 
 	/**
@@ -394,6 +418,28 @@ final class MysqlIdempotencyKeys implements IdempotencyKeys {
 		}
 
 		return IdempotencyClaim::replay( (int) $row['id'], (int) $row['order_id'], (string) $row['response_json'] );
+	}
+
+	/**
+	 * Returns the rows of a key kept under one hash, or under either of two, in the order the hashes are given: one plain read, by the unique key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string      $scope       What the key is claimed for.
+	 * @param string      $keyHash     The key's hash.
+	 * @param string|null $elseKeyHash A second hash the key may be kept under, or null for none.
+	 * @return list<array<string, mixed>> The rows found: the first hash's, then the second's.
+	 */
+	private function found( string $scope, string $keyHash, ?string $elseKeyHash ): array {
+		if ( null === $elseKeyHash || $elseKeyHash === $keyHash ) {
+			$row = $this->db->fetchRow( self::FIND, $this->keys(), $scope, $keyHash );
+
+			return null === $row ? array() : array( $row );
+		}
+
+		$byHash = array_column( $this->db->fetchAll( self::FIND_EITHER, $this->keys(), $scope, $keyHash, $elseKeyHash ), null, 'key_hash' );
+
+		return array_values( array_filter( array( $byHash[ $keyHash ] ?? null, $byHash[ $elseKeyHash ] ?? null ) ) );
 	}
 
 	/**

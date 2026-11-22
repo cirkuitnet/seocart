@@ -627,6 +627,16 @@ final class QueryPlanTest extends DatabaseTestCase {
 		// A placement's look for the answer its key keeps, before it reads the cart: by the key's unique key.
 		$keys->replay( 'checkout.place_order', IdempotencyClaim::keyHash( hash( 'sha256', 'a query-plan cart' ), 'attempt-0' ), hash( 'sha256', 'request' ) );
 
+		// The same look under two hashes at once, as a signed-in person's placement reads its own and the cart's: two points of the unique key.
+		$either = array( 'checkout.place_order', IdempotencyClaim::keyHash( hash( 'sha256', 'a query-plan cart' ), 'attempt-0' ), IdempotencyClaim::keyHash( hash( 'sha256', 'another query-plan cart' ), 'attempt-0' ) );
+
+		$keys->replay( $either[0], $either[1], hash( 'sha256', 'request' ), null, $either[2] );
+
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The statement is the repository's constant, with its own placeholders; this is its prepare step.
+		$found = $wpdb->get_row( $wpdb->prepare( 'EXPLAIN ' . MysqlIdempotencyKeys::FIND_EITHER, $this->db->table( CheckoutTables::IDEMPOTENCY_KEYS ), ...$either ), ARRAY_A );
+
+		$this->assertSame( 'scope_key', $found['key'] ?? null, 'A key is looked for under two hashes by its unique key: ' . (string) wp_json_encode( $found ) );
+
 		// A settlement finds the cart by the order it placed: the UPDATE's plan is read here, since the recorder judges SELECTs.
 		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The statement is the repository's constant, with its own placeholders; this is its prepare step.
 		$settle = $wpdb->get_row( $wpdb->prepare( 'EXPLAIN ' . MysqlCartRepository::SETTLE_ORDER, $cartTable, CartStatus::Converted->value, 1 ), ARRAY_A );

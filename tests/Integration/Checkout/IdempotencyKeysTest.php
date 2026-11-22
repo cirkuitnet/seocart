@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests the claim of an idempotency key: its answers, the re-claim of an expired key, and the completion
+ * Tests the claim of an idempotency key: its answers, the re-claim of an expired key, the completion, and the read under two hashes
  *
  * @package SEOCart
  * @since   0.1.0
@@ -14,11 +14,12 @@ namespace SEOCart\Tests\Integration\Checkout;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\IdempotencyClaim;
 use SEOCart\Checkout\Infrastructure\CheckoutTables;
+use SEOCart\Checkout\Infrastructure\MysqlIdempotencyKeys;
 use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Checkout\CheckoutTestCase;
 
 /**
- * The answers of a claim, each from the row the claim found, and the transaction both steps need.
+ * The answers of a claim, each from the row the claim found, and the transaction both steps need; and the read of a key kept under either of two hashes.
  *
  * Every claim and completion runs over wpdb in a transaction that commits, so the row each test
  * reads back through connection B is what a later request would find. Expiry is moved and judged
@@ -38,6 +39,27 @@ final class IdempotencyKeysTest extends CheckoutTestCase {
 	 * @var string
 	 */
 	private const RESPONSE = '{"status":201,"body":{"order_uuid":"00000000-0000-4000-8000-000000000001","access_key":"k3y-été","order_number":"SC-1001"}}';
+
+	/**
+	 * The order each of two hashes' rows was placed with, by which a replay tells them apart.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array{first: int, second: int}
+	 */
+	private const ORDERS = array(
+		'first'  => 41,
+		'second' => 42,
+	);
+
+	/**
+	 * What a key keeps when its answer is someone else's, which the decider of the two-hash read refuses.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const SOMEONE_ELSE = 'someone else';
 
 	/**
 	 * Tests that a new key is the claiming request's, stored claimed, in one statement.
@@ -294,5 +316,150 @@ final class IdempotencyKeysTest extends CheckoutTestCase {
 		$this->assertTrue( $this->claimCommitted( $hash, self::digest( 'request 1' ) )->owned );
 		$this->assertTrue( $this->db->transaction( fn(): IdempotencyClaim => $this->keys->claim( 'checkout.other', $hash, self::digest( 'request 1' ), self::KEY_TTL ) )->owned );
 		$this->assertSame( 2, $this->checkoutRows( CheckoutTables::IDEMPOTENCY_KEYS ) );
+	}
+
+	/**
+	 * Tests that a key read under two hashes is read in one statement, and its rows judged in the order the hashes are given: a row that expired or that the decider refuses is passed over, and the first row left answers, with its answer or the key's own refusal; and that a read under one hash sends the one-hash statement, as before.
+	 *
+	 * Planted violations: in MysqlIdempotencyKeys::found(), give the second hash's row first: "both
+	 * placed" is answered the second's; in MysqlIdempotencyKeys::replay(), ask the decider of the
+	 * first hash's row alone: "both refused" is answered the second's; and a row the decider refuses
+	 * ends the read (`return null` in place of `continue`): "the first refused, the second admitted"
+	 * is answered nothing.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_key_read_under_two_hashes_judges_the_first_hashs_row_first_in_one_statement(): void {
+		$request = self::digest( 'the request' );
+		$another = self::digest( 'another request' );
+		$cases   = array(
+			'neither row'                            => array( null, null, null ),
+			'the second\'s row alone, placed for the request' => array( null, self::kept( $request ), 'second' ),
+			'both placed'                            => array( self::kept( $request ), self::kept( $request ), 'first' ),
+			'the first expired, the second live'     => array( self::kept( $request, expired: true ), self::kept( $request ), 'second' ),
+			'the first refused, the second admitted' => array( self::kept( $request, refused: true ), self::kept( $request ), 'second' ),
+			'both refused'                           => array( self::kept( $request, refused: true ), self::kept( $request, refused: true ), null ),
+			'the first admitted for another request, the second\'s for this one' => array( self::kept( $another ), self::kept( $request ), CheckoutError::IdempotencyKeyReused->value ),
+			'the first missing, the second claimed and admitted' => array( null, self::kept( $request, placed: false ), CheckoutError::PlacementInProgress->value ),
+		);
+
+		foreach ( $cases as $case => list( $first, $second, $expected ) ) {
+			$hashes = array(
+				'first'  => self::keyHash( 'the first, ' . md5( $case ) ),
+				'second' => self::keyHash( 'the second, ' . md5( $case ) ),
+			);
+
+			foreach ( array_filter(
+				array(
+					'first'  => $first,
+					'second' => $second,
+				)
+			) as $which => $row ) {
+				$this->plantKept( $hashes[ $which ], $row, self::ORDERS[ $which ] );
+			}
+
+			$read = $this->readUnder( $hashes['first'], $request, $hashes['second'] );
+
+			$this->assertSame( $expected, $read['answer'], $case );
+			$this->assertCount( 1, $read['statements'], "{$case}: one statement." );
+			$this->assertMatchesRegularExpression( self::shapeOf( MysqlIdempotencyKeys::FIND_EITHER ), $read['statements'][0], "{$case}: the read of both hashes." );
+		}
+
+		$hash = self::keyHash( 'one hash' );
+
+		$this->plantKept( $hash, self::kept( $request ), self::ORDERS['first'] );
+
+		foreach ( array(
+			'no second hash'              => null,
+			'a second hash, the same one' => $hash,
+		) as $case => $second ) {
+			$read = $this->readUnder( $hash, $request, $second );
+
+			$this->assertSame( 'first', $read['answer'], $case );
+			$this->assertCount( 1, $read['statements'], "{$case}: one statement." );
+			$this->assertMatchesRegularExpression( self::shapeOf( MysqlIdempotencyKeys::FIND ), $read['statements'][0], "{$case}: the read of one hash, as before." );
+		}
+	}
+
+	/**
+	 * Returns how a key is planted for a case: placed or claimed, for a request, expired or not, and kept for this request or for someone the decider refuses.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $fingerprint The request it was claimed for.
+	 * @param bool   $placed      Optional. Whether its order was placed. Default true.
+	 * @param bool   $expired     Optional. Whether it has expired. Default false.
+	 * @param bool   $refused     Optional. Whether the decider refuses this request from it. Default false.
+	 * @return array{fingerprint: string, placed: bool, expired: bool, refused: bool} The key.
+	 */
+	private static function kept( string $fingerprint, bool $placed = true, bool $expired = false, bool $refused = false ): array {
+		return array(
+			'fingerprint' => $fingerprint,
+			'placed'      => $placed,
+			'expired'     => $expired,
+			'refused'     => $refused,
+		);
+	}
+
+	/**
+	 * Claims a key as kept() describes it, in a transaction that commits, and completes it with an order when it is placed.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string                                                                 $hash    The key's hash.
+	 * @param array{fingerprint: string, placed: bool, expired: bool, refused: bool} $row     The key.
+	 * @param int                                                                    $orderId The order it was placed with.
+	 */
+	private function plantKept( string $hash, array $row, int $orderId ): void {
+		$keeps = (string) wp_json_encode(
+			array(
+				'order' => $orderId,
+				'for'   => $row['refused'] ? self::SOMEONE_ELSE : 'this request',
+			)
+		);
+		$id    = $this->db->transaction(
+			function () use ( $hash, $row, $orderId, $keeps ): int {
+				$claim = $this->keys->claim( self::SCOPE, $hash, $row['fingerprint'], self::KEY_TTL, $keeps );
+
+				if ( $row['placed'] ) {
+					$this->keys->complete( $claim->id, $orderId, $keeps );
+				}
+
+				return $claim->id;
+			}
+		);
+
+		if ( $row['expired'] ) {
+			$this->keyExpiresIn( $id, -1 );
+		}
+	}
+
+	/**
+	 * Reads a key under one hash or two with a decider that refuses what is kept for someone else, and returns which row answered, or the refusal, with the statements the read sent.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string      $hash        The first hash.
+	 * @param string      $fingerprint The request's fingerprint.
+	 * @param string|null $elseHash    The second hash, or null for none.
+	 * @return array{answer: string|null, statements: list<string>} `first` or `second` for the row whose answer was replayed, a refusal's code, or null; and the statements.
+	 */
+	private function readUnder( string $hash, string $fingerprint, ?string $elseHash ): array {
+		$answer = null;
+		$log    = $this->captureQueries(
+			function () use ( $hash, $fingerprint, $elseHash, &$answer ): void {
+				try {
+					$replay = $this->keys->replay( self::SCOPE, $hash, $fingerprint, static fn( ?string $kept ): bool => ! str_contains( (string) $kept, self::SOMEONE_ELSE ), $elseHash );
+					$answer = null === $replay ? null : (string) array_search( $replay->orderId, self::ORDERS, true );
+				} catch ( CodedException $refused ) {
+					$answer = $refused->errorCode()->value;
+				}
+			}
+		);
+
+		return array(
+			'answer'     => $answer,
+			'statements' => $log->sqls(),
+		);
 	}
 }
