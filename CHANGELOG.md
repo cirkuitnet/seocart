@@ -231,6 +231,7 @@ seocart jobs run` and from a short tick on admin requests; `wp seocart jobs stat
 - Each checkout field can be hidden, optional or required from one setting, and a store can set a minimum and a maximum order amount for each currency it sells in: the checkout tells the shopper where the cart stands, and an order outside the limits is not placed.
 - A shopper can leave an order note at checkout, and extensions can add checkout fields of their own, such as a purchase order number or a delivery slot; the store chooses whether each is hidden, optional or required, and the order keeps every value with the words the shopper saw, for staff to read (`GET /seocart/v1/orders/{order_uuid}/field-values`, `wp seocart order field-values`).
 - A store can now require shoppers to sign in before they place an order, with the "Accounts at checkout" setting (`accounts`: `optional`, the default, `required` or `guest_only`); and a signed-in customer can now read one of their own orders with its billing and shipping addresses, which nobody else can, an order's key included.
+- A shopper who placed an order as a guest can now add it to their account, once signed in, from the browser that placed it, when the account's email address is the one the order was placed with; the order then belongs to their account, and the change is recorded among the order's events.
 
 ### Changed
 

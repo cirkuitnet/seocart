@@ -43,9 +43,9 @@ use SEOCart\Tests\Support\SecondConnection;
  * again is taken.
  *
  * Planted violations: in MysqlOrderRepository::CLAIM, leave out `AND customer_id IS NULL`: the
- * second user's update moves the order and writes a second audit row; in
- * OrderAccessPolicy::claimInside(), refuse when the update changed no row without reading the
- * order again: the same user's second claim is refused.
+ * second user's claim is taken too, moves the order and writes a second audit row; in
+ * OrderAccessPolicy::claimInside(), refuse whenever the update changed no row, whoever the order
+ * now belongs to: the same user's second claim is refused.
  *
  * @group concurrency
  *

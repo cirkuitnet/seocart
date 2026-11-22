@@ -92,6 +92,121 @@
                         }
                     }
                 }
+            },
+            "post": {
+                "operationId": "order.claim_order",
+                "summary": "Adds an order the logged-in customer placed as a guest to their account, when the X-SEOCart-Order-Key header carries its unexpired key and the account's email address is the one the order was placed with; it answers the same when the order is theirs already, and every refusal is order.not_found.",
+                "description": "Public: requires no capability. The Store API's request policy requires the header `X-SEOCart-Store: 1`, the `X-WP-Nonce` header when a login cookie is sent, and at most 10 requests per client in 3600 seconds.",
+                "parameters": [
+                    {
+                        "name": "X-SEOCart-Order-Key",
+                        "in": "header",
+                        "required": false,
+                        "description": "The order's access key, sent in the X-SEOCart-Order-Key header and nowhere else: a key in the URL is refused.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "examples": [
+                                "0123456789abcdef0123456789abcdef"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "uuid": {
+                                        "type": "string",
+                                        "format": "uuid",
+                                        "description": "The order's public identifier, from its confirmation.",
+                                        "examples": [
+                                            "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b"
+                                        ]
+                                    }
+                                },
+                                "required": [
+                                    "uuid"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "The operation succeeded. The body is the StoreOrderClaim resource.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StoreOrderClaim"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The request does not match the input schema: `rest_invalid_param` or `rest_missing_callback_param`.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "`store_api.header_missing`: This request changes the store, so it must carry the header X-SEOCart-Store: 1.\n\n`store_api.nonce_missing`: You are logged in, but this request carries no valid nonce, so it would run as a guest. Fetch a new nonce, send it as X-WP-Nonce, and try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`order.not_found`: The order was not found.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "405": {
+                        "description": "`store_api.read_method`: This request changes the store, so it must be sent as a POST, PUT, PATCH or DELETE request. A GET or HEAD request never changes it, whatever method it names.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "`store_api.rate_limited`: Too many requests. Wait a moment, then try again.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "`store.unavailable`: The store is temporarily unavailable while its database is being updated ({reason}).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Error"
+                                }
+                            }
+                        }
+                    }
+                }
             }
         },
         "/account/orders/{uuid}": {
@@ -10046,6 +10161,22 @@
                     "refunded_minor",
                     "due_minor",
                     "lines"
+                ]
+            },
+            "StoreOrderClaim": {
+                "type": "object",
+                "properties": {
+                    "uuid": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The order's public identifier: the order is the customer's.",
+                        "examples": [
+                            "0192a4b3-7c5d-7e8f-9a0b-1c2d3e4f5a6b"
+                        ]
+                    }
+                },
+                "required": [
+                    "uuid"
                 ]
             },
             "StoreOrderList": {
