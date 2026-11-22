@@ -55,6 +55,7 @@ use SEOCart\Payment\Domain\Refund\Refund;
 use SEOCart\Payment\Domain\Refund\RefundLineRequest;
 use SEOCart\Payment\Domain\Refund\RefundRequest;
 use SEOCart\Payment\Domain\VoidReason;
+use SEOCart\Payment\Domain\Webhook\ReceiptDecision;
 use SEOCart\Payment\Infrastructure\Gateway\OfflineGateway;
 use SEOCart\Payment\Infrastructure\PaymentTables;
 use SEOCart\Payment\Infrastructure\WebhookReceiptTables;
@@ -2595,10 +2596,14 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->assertReceivedAsRead( $name, $headers, $body, $at->modify( '+1 second' ), $first, $first->eventId );
 		$this->assertReceivedAsRead( $name . ' delivered again', $headers, $body, $at->modify( '+2 seconds' ), $first, $first->eventId );
 
+		// The store writes the intent's uuid on a receipt it ignored as the other mode's too: settled against the payment is never that.
 		if ( null !== $payment ) {
-			$mode = $this->suiteMode();
+			$mode      = $this->suiteMode();
+			$receipt   = $this->db->fetchRow( 'SELECT intent_uuid, result, result_code FROM %i WHERE provider = %s AND mode = %s AND event_id = %s', $this->table( WebhookReceiptTables::RECEIPTS ), $this->gatewayId(), $mode->value, DeliveredValues::eventId( (string) $first->eventId ) );
+			$otherMode = ReceiptDecision::MODE_MISMATCH === ( $receipt['result_code'] ?? null );
+			$found     = null === $receipt ? 'is not there' : sprintf( 'says %1$s (%2$s) about the intent %3$s', (string) $receipt['result'], (string) $receipt['result_code'], (string) ( $receipt['intent_uuid'] ?? 'none' ) );
 
-			$this->assertSame( $payment, $this->db->fetchValue( 'SELECT intent_uuid FROM %i WHERE provider = %s AND mode = %s AND event_id = %s', $this->table( WebhookReceiptTables::RECEIPTS ), $this->gatewayId(), $mode->value, DeliveredValues::eventId( (string) $first->eventId ) ), $rule->message() . sprintf( 'the delivery %1$s names its payment by the provider\'s id, and the store\'s route did not settle it against the store\'s payment of that id: the receipt of its event was read in %2$s mode.', $name, $mode->value ) );
+			$this->assertSame( array( $payment, false ), array( $receipt['intent_uuid'] ?? null, $otherMode ), $rule->message() . sprintf( 'the delivery %1$s names its payment by the provider\'s id, and the store\'s route did not settle it against the store\'s payment of that id, %2$s: the receipt of its event, read in %3$s mode, %4$s.', $name, $payment, $mode->value, $found ) );
 		}
 
 		return $first->kind;
