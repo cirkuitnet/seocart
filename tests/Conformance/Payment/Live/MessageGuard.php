@@ -20,11 +20,13 @@ namespace SEOCart\Tests\Conformance\Payment\Live;
  * redact() applies the same shapes to text the workflow did not build, such as PHPUnit's output.
  *
  * The shapes that are no provider's apply to every extension: an address with a query, an
- * authorization header, and a card number, which is a run of 13 to 19 digits that passes the Luhn
- * check, as SEOCart's own log reads it. A provider's ids may hold a long run of digits; most do not
- * pass the check, and the rare one that does is withheld (shown()). The extension's declaration
- * adds the shapes of its provider's credentials. A guard is built from a declaration, so there is
- * no guard that lacks a provider's shapes.
+ * authorization header, and a card number, which is 13 to 19 digits that pass the Luhn check, as
+ * SEOCart's own log reads it: in a run of digits with single spaces allowed between them, or written
+ * in groups separated by spaces or hyphens, as a card is printed. A provider's ids may hold a long
+ * run of digits; most do not pass the check, and the rare one that does is withheld (shown()). The
+ * extension's declaration adds the shapes of its provider's credentials. A guard is built from a
+ * declaration, so there is no guard that lacks a provider's shapes. Each text is read as it is
+ * given, a line of a log at a time: a value split over two lines is not recognised.
  *
  * @since 0.2.0
  */
@@ -62,6 +64,19 @@ final class MessageGuard {
 	 * @var string
 	 */
 	private const DIGIT_RUN = '/(?<![0-9])[0-9](?: ?[0-9]){12,}(?![0-9])/';
+
+	/**
+	 * A number written in groups, as a card is printed: four digits, then two to four groups of three to six digits, each after one space or hyphen; the whole run, with no digit or group joined to either end.
+	 *
+	 * It is a card number only when its digits are 13 to 19 and pass the Luhn check (isCard()): a
+	 * uuid, a date or an id whose digits are joined by hyphens has groups of other lengths, or more
+	 * digits.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const GROUPED = '/(?<![0-9]|[0-9][ -])[0-9]{4}(?:[ -][0-9]{3,6}){2,4}(?![0-9]|[ -][0-9])/';
 
 	/**
 	 * The shapes this guard refuses: SHAPES, then the declaration's.
@@ -144,9 +159,16 @@ final class MessageGuard {
 		}
 
 		preg_match_all( self::DIGIT_RUN, $value, $runs );
+		preg_match_all( self::GROUPED, $value, $groups );
 
 		foreach ( $runs[0] as $run ) {
-			if ( self::holdsCard( str_replace( ' ', '', $run ) ) ) {
+			if ( self::holdsCard( self::digits( $run ) ) ) {
+				return self::CARD;
+			}
+		}
+
+		foreach ( $groups[0] as $run ) {
+			if ( self::isCard( self::digits( $run ) ) ) {
 				return self::CARD;
 			}
 		}
@@ -167,11 +189,41 @@ final class MessageGuard {
 			$text = (string) preg_replace( $pattern, '[redacted: ' . $shape . ']', $text );
 		}
 
-		return (string) preg_replace_callback(
+		$text = (string) preg_replace_callback(
 			self::DIGIT_RUN,
-			static fn( array $run ): string => self::holdsCard( str_replace( ' ', '', $run[0] ) ) ? '[redacted: ' . self::CARD . ']' : $run[0],
+			static fn( array $run ): string => self::holdsCard( self::digits( $run[0] ) ) ? '[redacted: ' . self::CARD . ']' : $run[0],
 			$text
 		);
+
+		return (string) preg_replace_callback(
+			self::GROUPED,
+			static fn( array $run ): string => self::isCard( self::digits( $run[0] ) ) ? '[redacted: ' . self::CARD . ']' : $run[0],
+			$text
+		);
+	}
+
+	/**
+	 * Returns a run's digits, its separators taken out.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $run The run.
+	 * @return string Its digits.
+	 */
+	private static function digits( string $run ): string {
+		return str_replace( array( ' ', '-' ), '', $run );
+	}
+
+	/**
+	 * Tells whether digits, all of them, are a card number: 13 to 19 of them that pass the Luhn check.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $digits The digits.
+	 * @return bool True when they are.
+	 */
+	private static function isCard( string $digits ): bool {
+		return strlen( $digits ) >= 13 && strlen( $digits ) <= 19 && self::passesLuhn( $digits );
 	}
 
 	/**

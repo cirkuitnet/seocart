@@ -15,7 +15,7 @@ use PHPUnit\Framework\TestCase;
 use SEOCart\Tests\Conformance\Payment\Live\MessageGuard;
 
 /**
- * A message refuses an argument shaped like an address with a query, an authorization header, a card number (a run of 13 to 19 digits that passes the Luhn check) or a credential of the declaration's provider, and redact() blanks the same shapes out of any text; ids, words, uuids, commits and runs of digits that are no card pass.
+ * A message refuses an argument shaped like an address with a query, an authorization header, a card number (13 to 19 digits that pass the Luhn check, in a run with single spaces or in groups separated by spaces or hyphens) or a credential of the declaration's provider, and redact() blanks the same shapes out of any text; ids, words, uuids, nonces, dates, commits and runs of digits that are no card pass.
  *
  * Every canary of a key is built when the test runs, so no key-shaped text is kept in the repository.
  *
@@ -23,7 +23,8 @@ use SEOCart\Tests\Conformance\Payment\Live\MessageGuard;
  * shapes: the fixture provider's canary is formatted into the message and left in the text; the
  * card-number check taken out of shapeOf() and redact(): a published test card's number is
  * printed by a guard whose declaration states no shape; the card shape without its Luhn check: an
- * id with a long run of digits that no card has is refused.
+ * id with a long run of digits that no card has is refused; the grouped card numbers left out of
+ * shapeOf() and redact(): a test card written with hyphens is printed.
  *
  * @since 0.2.0
  */
@@ -117,6 +118,73 @@ final class MessageGuardTest extends TestCase {
 		$this->assertSame( 'card [redacted: a card number] declined', $guard->redact( 'card 4012888888881881 declined' ) );
 		$this->assertSame( MessageGuard::CARD, $guard->shapeOf( '4012 8888 8888 1881' ) );
 		$this->assertSame( 'an [redacted: an authorization header] header', $guard->redact( 'an Bearer UnitTestAccessTokenOfTheFixturesOnly header' ) );
+	}
+
+	/**
+	 * Tests that a card number written in groups, with hyphens or with spaces and hyphens between them, is blanked and refused.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider groupedCards
+	 *
+	 * @param string $written The card's number as written.
+	 */
+	public function test_a_card_number_in_groups_is_redacted( string $written ): void {
+		$guard = StatedDeclaration::with( array( 'shapes' => array() ) )->guard();
+
+		$this->assertSame( 'paid with [redacted: a card number] today', $guard->redact( 'paid with ' . $written . ' today' ) );
+		$this->assertSame( MessageGuard::CARD, $guard->shapeOf( $written ) );
+	}
+
+	/**
+	 * Returns published test cards' numbers written in groups.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string}> The number as written; by name.
+	 */
+	public static function groupedCards(): array {
+		return array(
+			'four groups, hyphens'        => array( '4111-1111-1111-1111' ),
+			'spaces and hyphens'          => array( '4012 8888-8888 1881' ),
+			'four, six and five digits'   => array( '3782-822463-10005' ),
+			'another network, hyphenated' => array( '6011-1111-1111-1117' ),
+		);
+	}
+
+	/**
+	 * Tests that values whose digits are joined by hyphens, dots or colons, but are no card, are printed as they are.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider hyphenatedValues
+	 *
+	 * @param string $value The value.
+	 */
+	public function test_hyphenated_values_that_are_no_card_are_printed( string $value ): void {
+		$guard = StatedDeclaration::fixture()->guard();
+
+		$this->assertNull( $guard->shapeOf( $value ), $value . ' is printed.' );
+		$this->assertSame( 'x ' . $value . ' y', $guard->redact( 'x ' . $value . ' y' ) );
+	}
+
+	/**
+	 * Returns values with digits joined by separators that are no card number.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string}> The value; by name.
+	 */
+	public static function hyphenatedValues(): array {
+		return array(
+			'a uuid'                 => array( '019b76da-a800-7328-ab32-c90d699f9327' ),
+			'a uuid of zeros'        => array( '0199c0de-0000-7000-8000-00000000a001' ),
+			'a uuid of digits'       => array( '12345678-1234-1234-1234-123456789012' ),
+			'a run nonce'            => array( 'r45012335462.1' ),
+			'a date-time'            => array( '2026-11-22T07:01:33Z' ),
+			'a date and a time'      => array( '2026-11-22 07:01:33' ),
+			'a provider\'s event id' => array( 'WH-2WR32451HC0233532-67976317FL4543714' ),
+		);
 	}
 
 	/**
