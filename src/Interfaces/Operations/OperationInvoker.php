@@ -54,9 +54,12 @@ defined( 'ABSPATH' ) || exit;
  *    reporter, and the surface gets the ErrorTranslator's generic internal error, which carries no
  *    exception message.
  * 5. The result is serialized through the output schema for the actor: secrets never, personal
- *    data only when the actor's user holds the personal-data capability.
+ *    data only when the actor's user holds the personal-data capability, or when the operation
+ *    answers only the actor's own data (OperationDefinition::isOwnerOnly()), which is the actor's
+ *    to see.
  *
  * @since 0.1.0
+ * @since 0.2.0 An operation that answers only its actor's own data carries its personal fields.
  */
 final class OperationInvoker {
 
@@ -182,7 +185,7 @@ final class OperationInvoker {
 				SchemaException::raise( 'The service of %1$s returned %2$s instead of an array keyed by wire name.', $definition->id(), get_debug_type( $result ) );
 			}
 
-			return $definition->output()->serialize( $result, user_can( $actor->userId(), self::PERSONAL_DATA_CAPABILITY ) );
+			return $definition->output()->serialize( $result, $definition->isOwnerOnly() || user_can( $actor->userId(), self::PERSONAL_DATA_CAPABILITY ) );
 		} catch ( CodedException $error ) {
 			if ( self::isUndeclared( $definition, $error ) ) {
 				_doing_it_wrong(

@@ -77,6 +77,7 @@ use SEOCart\Checkout\Application\ReceiveWebhook;
 use SEOCart\Checkout\Application\ResumePayment;
 use SEOCart\Checkout\Application\SettlePlacement;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
+use SEOCart\Checkout\Domain\AddressDocument;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\CheckoutSession;
 use SEOCart\Checkout\Domain\Fields\BuiltInFields;
@@ -145,6 +146,7 @@ use SEOCart\Order\Infrastructure\MysqlOrderRepository;
 use SEOCart\Order\Infrastructure\OrderStatements;
 use SEOCart\Order\Infrastructure\SequenceOrderNumberGenerator;
 use SEOCart\Order\Infrastructure\WordPressAccessKeys;
+use SEOCart\Order\Interfaces\StoreApi\AccountOrderRead;
 use SEOCart\Order\Interfaces\StoreApi\OrderStatusRead;
 use SEOCart\Order\Interfaces\StoreApi\OwnOrdersRead;
 use SEOCart\Payment\Application\GatewayConfiguration;
@@ -1734,6 +1736,8 @@ final class Modules {
 		$container->bind( OrderAccessPolicy::class, static fn( Container $c ): OrderAccessPolicy => new OrderAccessPolicy( $c->get( OrderRepository::class ), $c->get( AccessKeys::class ), $c->get( ActorCustomers::class ) ) );
 		$container->bind( OrderStatusRead::class, static fn( Container $c ): OrderStatusRead => new OrderStatusRead( $c->get( OrderAccessPolicy::class ) ) );
 		$container->bind( OwnOrdersRead::class, static fn( Container $c ): OwnOrdersRead => new OwnOrdersRead( $c->get( OrderAccessPolicy::class ) ) );
+		// The owner's read names an order's addresses as the checkout names an address's members.
+		$container->bind( AccountOrderRead::class, static fn( Container $c ): AccountOrderRead => new AccountOrderRead( $c->get( OrderAccessPolicy::class ), AddressDocument::of( ... ) ) );
 	}
 
 	/**

@@ -42,6 +42,7 @@ final class StoreOrderSurfaces {
 	public const FIVE_CASES = array(
 		'order.get_status',
 		'order.list_own',
+		'order.get_own',
 	);
 
 	/**

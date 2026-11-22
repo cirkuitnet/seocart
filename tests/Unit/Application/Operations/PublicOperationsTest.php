@@ -16,11 +16,13 @@ use SEOCart\Application\Operations\Annotations;
 use SEOCart\Application\Operations\CliBinding;
 use SEOCart\Application\Operations\OperationDefinition;
 use SEOCart\Application\Operations\OperationRegistry;
+use SEOCart\Application\Operations\Operations;
 use SEOCart\Application\Operations\PublicWrite;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Application\Operations\WriteMethod;
 use SEOCart\Cart\Application\StoreApiError;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
+use SEOCart\Order\Interfaces\StoreApi\OrderStoreOperations;
 use SEOCart\Platform\RateLimiter\RateLimit;
 use SEOCart\Support\Schema\SchemaException;
 use SEOCart\Tests\Fixtures\Operations\FixtureStockError;
@@ -88,6 +90,48 @@ final class PublicOperationsTest extends TestCase {
 		$this->assertNull( $definition->publicWrite() );
 		$this->assertSame( 'GET', $definition->httpMethod() );
 		$this->assertSame( array( FixtureStockError::Insufficient ), $definition->errors() );
+		$this->assertFalse( $definition->isOwnerOnly(), 'An operation answers more than its actor\'s own data unless it says so.' );
+	}
+
+	/**
+	 * Tests that a public read may declare that it answers only its actor's own data.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_public_read_may_answer_its_actors_own_data(): void {
+		$definition = self::publicVariant(
+			array(
+				'annotations'  => new Annotations( read_only: true, destructive: false, idempotent: true ),
+				'rest'         => new RestBinding( FixtureStockOperation::ROUTE, null, store: true ),
+				'public_write' => null,
+				'owner_only'   => true,
+			)
+		);
+
+		$this->assertTrue( $definition->isOwnerOnly() );
+	}
+
+	/**
+	 * Tests that the owner's read of an order is the one operation of the registry that answers only its actor's own data.
+	 *
+	 * An operation declared so shows its actor every personal field it answers, so each one is a
+	 * decision to make on purpose, here.
+	 *
+	 * Planted violation: declare `owner_only: true` on OrderStoreOperations::getStatus(): it is
+	 * listed beside the owner's read.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_owners_read_is_the_one_operation_that_answers_its_actors_own_data(): void {
+		$ownerOnly = array();
+
+		foreach ( Operations::registry()->all() as $definition ) {
+			if ( $definition->isOwnerOnly() ) {
+				$ownerOnly[] = $definition->id();
+			}
+		}
+
+		$this->assertSame( array( OrderStoreOperations::GET_OWN ), $ownerOnly );
 	}
 
 	/**
@@ -115,33 +159,42 @@ final class PublicOperationsTest extends TestCase {
 		$guarded = array( 'capability' => 'seocart_manage_inventory' );
 
 		return array(
-			'public write without its PublicWrite' => array( array( 'public_write' => null ), 'is a public write, which cannot be declared without its PublicWrite' ),
-			'public operation on an admin route'   => array( array( 'rest' => new RestBinding( FixtureStockOperation::ROUTE, WriteMethod::Post ) ), 'requires no capability, so it must be a Store API route' ),
-			'public operation without a route'     => array(
+			'public write without its PublicWrite'  => array( array( 'public_write' => null ), 'is a public write, which cannot be declared without its PublicWrite' ),
+			'public operation on an admin route'    => array( array( 'rest' => new RestBinding( FixtureStockOperation::ROUTE, WriteMethod::Post ) ), 'requires no capability, so it must be a Store API route' ),
+			'public operation without a route'      => array(
 				array(
 					'rest'    => null,
 					'ability' => 'fixture-adjust-stock',
 				),
 				'requires no capability, so it must be a Store API route',
 			),
-			'public operation naming a resource'   => array( array( 'resource_field' => 'item_id' ), 'checks nothing on a resource' ),
-			'public operation with an ability'     => array( array( 'ability' => 'fixture-adjust-stock' ), 'is never an ability, a command or exposed to agents' ),
-			'public operation with a command'      => array( array( 'cli' => new CliBinding( array( 'fixture-stock', 'adjust' ), array( 'item_id' ) ) ), 'is never an ability, a command or exposed to agents' ),
-			'public operation exposed to agents'   => array( array( 'agent_exposed' => true ), 'is never an ability, a command or exposed to agents' ),
-			'public read with a PublicWrite'       => array(
+			'public operation naming a resource'    => array( array( 'resource_field' => 'item_id' ), 'checks nothing on a resource' ),
+			'public operation with an ability'      => array( array( 'ability' => 'fixture-adjust-stock' ), 'is never an ability, a command or exposed to agents' ),
+			'public operation with a command'       => array( array( 'cli' => new CliBinding( array( 'fixture-stock', 'adjust' ), array( 'item_id' ) ) ), 'is never an ability, a command or exposed to agents' ),
+			'public operation exposed to agents'    => array( array( 'agent_exposed' => true ), 'is never an ability, a command or exposed to agents' ),
+			'public read with a PublicWrite'        => array(
 				array(
 					'annotations' => new Annotations( read_only: true, destructive: false, idempotent: true ),
 					'rest'        => new RestBinding( FixtureStockOperation::ROUTE, null, store: true ),
 				),
 				'is a public read: it has no write policy to declare',
 			),
-			'capability with a PublicWrite'        => array( $guarded + array( 'rest' => new RestBinding( FixtureStockOperation::ROUTE, WriteMethod::Post ) ), 'so it is not a public write: declare no PublicWrite' ),
-			'capability on a Store API route'      => array(
+			'capability with a PublicWrite'         => array( $guarded + array( 'rest' => new RestBinding( FixtureStockOperation::ROUTE, WriteMethod::Post ) ), 'so it is not a public write: declare no PublicWrite' ),
+			'capability on a Store API route'       => array(
 				$guarded + array( 'public_write' => null ),
 				'but the Store API (seocart/store/v1) serves public operations only',
 			),
-			'refusal also declared as an error'    => array( array( 'errors' => array( StoreApiError::RateLimited ) ), 'declares the error code store_api.rate_limited twice' ),
-			'refusal that is not a catalog case'   => array(
+			'public write of its actor\'s own data' => array( array( 'owner_only' => true ), 'is a public write: only a public read may answer its actor\'s own personal data' ),
+			'capability and its actor\'s own data'  => array(
+				$guarded + array(
+					'rest'         => new RestBinding( FixtureStockOperation::ROUTE, WriteMethod::Post ),
+					'public_write' => null,
+					'owner_only'   => true,
+				),
+				'which decides who sees its personal data: only a public read of the Store API may answer its actor\'s own',
+			),
+			'refusal also declared as an error'     => array( array( 'errors' => array( StoreApiError::RateLimited ) ), 'declares the error code store_api.rate_limited twice' ),
+			'refusal that is not a catalog case'    => array(
 				// @phpstan-ignore argument.type (The refusal written as a string is the declaration being refused.)
 				array( 'public_write' => new PublicWrite( new RateLimit( 'fixture.write', 5, 60 ), false, array( 'store_api.rate_limited' ) ) ),
 				'must be cases of an error catalog',

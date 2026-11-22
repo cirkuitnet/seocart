@@ -28,7 +28,7 @@ use SEOCart\Support\Schema\ResourceSchema;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Declares `order.get_status`, a shopper's read of one order, and `order.list_own`, a customer's list of their own orders, on the Store API.
+ * Declares `order.get_status`, a shopper's read of one order, `order.list_own`, a customer's list of their own orders, and `order.get_own`, a customer's read of one of them with its addresses, on the Store API.
  *
  * Owns one fact: how an order is offered to a storefront. The route is
  * `GET seocart/store/v1/orders/{uuid}`: an order is named by its uuid, never by its internal id or
@@ -53,10 +53,16 @@ defined( 'ABSPATH' ) || exit;
  * its REST nonce, which WordPress serves as a visitor, is listed nothing. Each row names the order
  * by its uuid, number, dates, statuses and total: no address and no email.
  *
+ * The owner's read is `GET seocart/store/v1/account/orders/{uuid}`: what the status read answers,
+ * with the order's billing address, which carries its email address, and its shipping address,
+ * each member personal data. It is granted by the owner test alone and takes no key, so a key
+ * opens no address; it answers only the actor's own order, so it is declared owner_only and the
+ * actor is shown those members. Every refusal is `order.not_found`.
+ *
  * Declarations are data: building the definition calls no WordPress function.
  *
  * @since 0.1.0
- * @since 0.2.0 The list of a customer's own orders.
+ * @since 0.2.0 The list of a customer's own orders, and the owner's read of one of them.
  */
 final class OrderStoreOperations {
 
@@ -160,6 +166,33 @@ final class OrderStoreOperations {
 	public const MOST_PAGE = 1000000;
 
 	/**
+	 * The id of the owner's read of one of their orders.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const GET_OWN = 'order.get_own';
+
+	/**
+	 * The route of the owner's read, relative to the Store API's namespace.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const OWN_ROUTE = '/account/orders/{uuid}';
+
+	/**
+	 * The name of the resource the owner's read answers with: the status read's, with the order's addresses.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const OWN_RESOURCE = 'StoreOwnOrder';
+
+	/**
 	 * Builds the status read.
 	 *
 	 * @since 0.1.0
@@ -183,65 +216,7 @@ final class OrderStoreOperations {
 					privacy: Privacy::Secret
 				),
 			),
-			output: new ResourceSchema(
-				self::RESOURCE,
-				array(
-					self::uuid( 'The order\'s public identifier.' ),
-					new FieldSpec(
-						name: 'order_number',
-						type: FieldType::String,
-						description: 'The number shown to people on the order and in its emails; a request never names an order by it.',
-						label: static fn(): string => __( 'Order number', 'seocart' ),
-						example: '000042',
-						required: true
-					),
-					new FieldSpec(
-						name: 'status',
-						type: FieldType::String,
-						description: 'Where the order is in its life, from pending payment to completed.',
-						label: static fn(): string => __( 'Status', 'seocart' ),
-						example: OrderStatus::Processing->value,
-						required: true,
-						allowed: array_map( static fn( OrderStatus $status ): string => $status->value, OrderStatus::cases() )
-					),
-					new FieldSpec(
-						name: 'payment_status',
-						type: FieldType::String,
-						description: 'How far the order has been paid, or refunded.',
-						label: static fn(): string => __( 'Payment status', 'seocart' ),
-						example: PaymentStatus::Paid->value,
-						required: true,
-						allowed: array_map( static fn( PaymentStatus $status ): string => $status->value, PaymentStatus::cases() )
-					),
-					new FieldSpec(
-						name: 'currency',
-						type: FieldType::String,
-						description: 'The ISO 4217 code of the currency every amount is in.',
-						label: static fn(): string => __( 'Currency', 'seocart' ),
-						example: 'USD',
-						required: true
-					),
-					self::amount( 'subtotal_minor', 'The lines before discounts, in minor units.', static fn(): string => __( 'Subtotal', 'seocart' ) ),
-					self::amount( 'discount_total_minor', 'Every discount, in minor units.', static fn(): string => __( 'Discounts', 'seocart' ) ),
-					self::amount( 'shipping_total_minor', 'Shipping, in minor units.', static fn(): string => __( 'Shipping', 'seocart' ) ),
-					self::amount( 'fee_total_minor', 'Every fee, in minor units.', static fn(): string => __( 'Fees', 'seocart' ) ),
-					self::amount( 'tax_total_minor', 'Every tax, in minor units.', static fn(): string => __( 'Tax', 'seocart' ) ),
-					self::amount( 'grand_total_minor', 'The order\'s total, in minor units.', static fn(): string => __( 'Total', 'seocart' ) ),
-					self::amount( 'paid_minor', 'What has been captured so far, in minor units.', static fn(): string => __( 'Paid', 'seocart' ) ),
-					self::amount( 'refunded_minor', 'What has been refunded so far, in minor units.', static fn(): string => __( 'Refunded', 'seocart' ) ),
-					self::amount( 'due_minor', 'What is still to be paid, in minor units.', static fn(): string => __( 'Due', 'seocart' ) ),
-					new FieldSpec(
-						name: 'transfer_days',
-						type: FieldType::Integer,
-						description: 'The extra days the shopper was told, when the order was placed, that bringing its items together adds to delivery; null when the order needed no transfer. It is what was told then, whatever the store says now.',
-						label: static fn(): string => __( 'Extra days for a transfer', 'seocart' ),
-						example: 3,
-						nullable: true,
-						minimum: 0
-					),
-					self::lines(),
-				)
-			),
+			output: new ResourceSchema( self::RESOURCE, self::status() ),
 			capability: null,
 			resource_field: null,
 			errors: array( OrderError::NotFound ),
@@ -312,6 +287,114 @@ final class OrderStoreOperations {
 			annotations: new Annotations( read_only: true, destructive: false, idempotent: true ),
 			service: array( OwnOrdersRead::class, 'list' ),
 			rest: new RestBinding( self::LIST_ROUTE, store: true )
+		);
+	}
+
+	/**
+	 * Builds the owner's read of one of their orders, with its addresses.
+	 *
+	 * The address members are the checkout's, compiled from its built-in fields, each personal
+	 * data: the kernel hands them in, since this module does not know the checkout. The billing
+	 * address carries the email address the order was placed with; the shipping address does not.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param FieldSpec[] $billing  The members of the billing address.
+	 * @param FieldSpec[] $shipping The members of the shipping address.
+	 * @return OperationDefinition The definition.
+	 *
+	 * @phpstan-param list<FieldSpec> $billing
+	 * @phpstan-param list<FieldSpec> $shipping
+	 */
+	public static function getOwn( array $billing, array $shipping ): OperationDefinition {
+		return new OperationDefinition(
+			id: self::GET_OWN,
+			label: static fn(): string => __( 'Get one of my orders', 'seocart' ),
+			summary: 'Returns one of the logged-in customer\'s own orders: its number, statuses, totals and lines, with its billing address, which carries the email address, and its shipping address; no key opens it, and every refusal is order.not_found.',
+			input: array( self::uuid( 'The order\'s public identifier, from the customer\'s list of orders.' ) ),
+			output: new ResourceSchema(
+				self::OWN_RESOURCE,
+				array_merge(
+					self::status(),
+					array(
+						FieldSpec::object( 'billing_address', 'The address the order is billed to, with the email address the order was placed with.', static fn(): string => __( 'Billing address', 'seocart' ), $billing, required: true ),
+						FieldSpec::object( 'shipping_address', 'Where the order ships, or null when nothing is shipped.', static fn(): string => __( 'Shipping address', 'seocart' ), $shipping, required: true, nullable: true ),
+					)
+				)
+			),
+			capability: null,
+			resource_field: null,
+			errors: array( OrderError::NotFound ),
+			annotations: new Annotations( read_only: true, destructive: false, idempotent: true ),
+			service: array( AccountOrderRead::class, 'read' ),
+			rest: new RestBinding( self::OWN_ROUTE, store: true ),
+			owner_only: true
+		);
+	}
+
+	/**
+	 * Declares what the status read answers, and the owner's read begins with: the order's number, statuses, totals and lines, as the order recorded them; no address and no email.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return list<FieldSpec> The fields.
+	 */
+	private static function status(): array {
+		return array(
+			self::uuid( 'The order\'s public identifier.' ),
+			new FieldSpec(
+				name: 'order_number',
+				type: FieldType::String,
+				description: 'The number shown to people on the order and in its emails; a request never names an order by it.',
+				label: static fn(): string => __( 'Order number', 'seocart' ),
+				example: '000042',
+				required: true
+			),
+			new FieldSpec(
+				name: 'status',
+				type: FieldType::String,
+				description: 'Where the order is in its life, from pending payment to completed.',
+				label: static fn(): string => __( 'Status', 'seocart' ),
+				example: OrderStatus::Processing->value,
+				required: true,
+				allowed: array_map( static fn( OrderStatus $status ): string => $status->value, OrderStatus::cases() )
+			),
+			new FieldSpec(
+				name: 'payment_status',
+				type: FieldType::String,
+				description: 'How far the order has been paid, or refunded.',
+				label: static fn(): string => __( 'Payment status', 'seocart' ),
+				example: PaymentStatus::Paid->value,
+				required: true,
+				allowed: array_map( static fn( PaymentStatus $status ): string => $status->value, PaymentStatus::cases() )
+			),
+			new FieldSpec(
+				name: 'currency',
+				type: FieldType::String,
+				description: 'The ISO 4217 code of the currency every amount is in.',
+				label: static fn(): string => __( 'Currency', 'seocart' ),
+				example: 'USD',
+				required: true
+			),
+			self::amount( 'subtotal_minor', 'The lines before discounts, in minor units.', static fn(): string => __( 'Subtotal', 'seocart' ) ),
+			self::amount( 'discount_total_minor', 'Every discount, in minor units.', static fn(): string => __( 'Discounts', 'seocart' ) ),
+			self::amount( 'shipping_total_minor', 'Shipping, in minor units.', static fn(): string => __( 'Shipping', 'seocart' ) ),
+			self::amount( 'fee_total_minor', 'Every fee, in minor units.', static fn(): string => __( 'Fees', 'seocart' ) ),
+			self::amount( 'tax_total_minor', 'Every tax, in minor units.', static fn(): string => __( 'Tax', 'seocart' ) ),
+			self::amount( 'grand_total_minor', 'The order\'s total, in minor units.', static fn(): string => __( 'Total', 'seocart' ) ),
+			self::amount( 'paid_minor', 'What has been captured so far, in minor units.', static fn(): string => __( 'Paid', 'seocart' ) ),
+			self::amount( 'refunded_minor', 'What has been refunded so far, in minor units.', static fn(): string => __( 'Refunded', 'seocart' ) ),
+			self::amount( 'due_minor', 'What is still to be paid, in minor units.', static fn(): string => __( 'Due', 'seocart' ) ),
+			new FieldSpec(
+				name: 'transfer_days',
+				type: FieldType::Integer,
+				description: 'The extra days the shopper was told, when the order was placed, that bringing its items together adds to delivery; null when the order needed no transfer. It is what was told then, whatever the store says now.',
+				label: static fn(): string => __( 'Extra days for a transfer', 'seocart' ),
+				example: 3,
+				nullable: true,
+				minimum: 0
+			),
+			self::lines(),
 		);
 	}
 

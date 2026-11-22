@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Checkout;
 
+use SEOCart\Application\Operations\Operations;
 use SEOCart\Application\Operations\RestBinding;
 use SEOCart\Checkout\Application\CheckoutRules;
 use SEOCart\Checkout\Application\ExtensionFields;
@@ -29,6 +30,7 @@ use SEOCart\Interfaces\Operations\OperationInvoker;
 use SEOCart\Inventory\Application\InventorySettings;
 use SEOCart\Order\Application\OrderOperations;
 use SEOCart\Order\Infrastructure\OrderTables;
+use SEOCart\Order\Interfaces\StoreApi\OrderStoreOperations;
 use SEOCart\Platform\Database\Schema\Classification;
 use SEOCart\Platform\Database\Schema\ColumnSpec;
 use SEOCart\Platform\Database\Schema\DdlGenerator;
@@ -50,7 +52,7 @@ use SEOCart\Tests\Support\CreatesUsers;
 use SEOCart\Tests\Support\GrantsCapabilities;
 
 /**
- * One declaration behind every surface: the session's compiled schema, the form read, the staff's field list and the generated reference page show each built-in field's name, label, length and type as its declaration states them; a field added to the list the checkout's rules are handed appears on the form and in the staff's list, and takes a presence, with nothing else written for it; an extension's fields, by their one registration, reach every surface from the form to the order's read, and the order keeps them as the shopper gave them; and no file under src/ but the registry and the address document declares a schema field named as an address member.
+ * One declaration behind every surface: the session's compiled schema, the owner's read of an order, the form read, the staff's field list and the generated reference page show each built-in field's name, label, length and type as its declaration states them; a field added to the list the checkout's rules are handed appears on the form and in the staff's list, and takes a presence, with nothing else written for it; an extension's fields, by their one registration, reach every surface from the form to the order's read, and the order keeps them as the shopper gave them; and no file under src/ but the registry and the address document declares a schema field named as an address member.
  *
  * Planted violations, each shown red and removed:
  * - in CheckoutOperations::address(), add one member by hand, `new FieldSpec( name: 'city', …,
@@ -230,6 +232,50 @@ final class OneDeclarationTest extends PlacementTestCase {
 			),
 			self::byKey( $this->store( 'GET', CheckoutOperations::FORM_ROUTE )['body']['fields'] ?? array() )[ self::EXTRA ] ?? null
 		);
+	}
+
+	/**
+	 * Tests that the owner's read of an order, as the operation registry builds it, carries the session's compiled address members: the same names, in the same order, with the same labels, lengths, types and privacy.
+	 *
+	 * Planted violation: in OrderStoreOperations::getOwn(), put one billing address member written
+	 * by hand in place of the one handed in (`new FieldSpec( name: 'city', …, max_length: 120 )`):
+	 * the member differs here, and the scan below names the file.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_owners_read_carries_the_sessions_address_members(): void {
+		$session = $this->schemaMembers();
+		$own     = null;
+
+		foreach ( Operations::registry()->all() as $definition ) {
+			if ( OrderStoreOperations::GET_OWN === $definition->id() ) {
+				$own = $definition;
+			}
+		}
+
+		$this->assertNotNull( $own, 'The registry has no owner\'s read.' );
+
+		$answered = array();
+
+		foreach ( $own->output()->fields() as $field ) {
+			$answered[ $field->name() ] = $field;
+		}
+
+		foreach ( array( Carrier::BILLING, Carrier::SHIPPING ) as $address ) {
+			$this->assertArrayHasKey( $address, $answered, "The owner's read answers no {$address}." );
+
+			$members = array();
+
+			foreach ( $answered[ $address ]->fields() as $member ) {
+				$members[ $member->name() ] = array( ( $member->label() )(), $member->maxLength(), $member->type(), $member->privacy() );
+			}
+
+			$this->assertSame(
+				array_map( static fn( FieldSpec $member ): array => array( ( $member->label() )(), $member->maxLength(), $member->type(), $member->privacy() ), $session[ $address ] ),
+				$members,
+				"{$address} on the owner's read is the session's."
+			);
+		}
 	}
 
 	/**

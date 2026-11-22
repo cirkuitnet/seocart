@@ -34,14 +34,16 @@ use SEOCart\Tests\Support\ServesRequests;
 use Spy_REST_Server;
 
 /**
- * The storefront's order surfaces through their real routes, `order.get_status` and `order.list_own`: the five cases of who may see an order on each, and one answer for every refusal.
+ * The storefront's order surfaces through their real routes, `order.get_status`, `order.list_own` and `order.get_own`: the five cases of who may see an order on each, and one answer for every refusal.
  *
  * The five cases run on every surface StoreOrderSurfaces lists, which a unit test holds to the
  * operation registry: (1) a guest with the order's key; (2) a guest without one; (3) a logged-in
  * user who does not own it, another customer and an administrator, without a key and with
  * another order's key; (4) its customer, logged in, without a key; (5) its expired key, and its
  * customer once the key has expired. The status read opens the order to 1 and 4 and to its
- * customer in 5; the list lists it for its customer alone: a key opens one order, never a list.
+ * customer in 5; the list lists it for its customer alone: a key opens one order, never a list;
+ * the owner's read, which answers the order's addresses, opens it to its customer alone: a key
+ * opens no address.
  *
  * The real Modules::register() and subscribe() serve the production operations on a spy server,
  * over the test's connection and real order tables, the way WordPress serves a request from the
@@ -150,7 +152,9 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	 * `if ( is_user_logged_in() ) { return true; }` first: case 3 opens the order on the status
 	 * read; in MysqlOrderRepository::OWN_ORDERS, drop `customer_id = %d AND` (and its value): case 3
 	 * lists the order to another customer; in OwnOrdersRead::list(), when the request carries the
-	 * key header, list the order the key opens: case 1 lists the order to a guest.
+	 * key header, list the order the key opens: case 1 lists the order to a guest; in
+	 * AccountOrderRead::read(), hand authorize() the key header's value: case 1 shows the order, with
+	 * its addresses, on the owner's read.
 	 *
 	 * @since 0.2.0
 	 */
@@ -175,6 +179,12 @@ final class OrderStatusRouteTest extends OrderTestCase {
 
 				return array( $list['status'], in_array( $order->uuid, array_column( (array) ( $list['body']['orders'] ?? array() ), 'uuid' ), true ) );
 			},
+			OrderStoreOperations::GET_OWN    => function ( array $headers ) use ( $order ): array {
+				$read = $this->readOwn( $order->uuid, $headers );
+				$uuid = $read['body']['uuid'] ?? null;
+
+				return array( $read['status'], 200 === $read['status'] && $uuid === $order->uuid );
+			},
 		);
 		$cases       = array(
 			'3. another customer, no key'               => fn(): array => $this->logIn( $someoneElse ),
@@ -190,6 +200,7 @@ final class OrderStatusRouteTest extends OrderTestCase {
 		$expected    = array(
 			OrderStoreOperations::GET_STATUS => array( '404', '404', '404', '404', '200 shown', '404', '200 shown', '404', '200 shown' ),
 			OrderStoreOperations::LIST_OWN   => array( '200', '200', '200', '200', '200', '200', '200 shown', '200', '200 shown' ),
+			OrderStoreOperations::GET_OWN    => array( '404', '404', '404', '404', '404', '404', '200 shown', '404', '200 shown' ),
 		);
 		$table       = array();
 
@@ -209,10 +220,10 @@ final class OrderStatusRouteTest extends OrderTestCase {
 			}
 		}
 
-		$lines = array( sprintf( '%-52s %-18s %s', 'case', OrderStoreOperations::GET_STATUS, OrderStoreOperations::LIST_OWN ) );
+		$lines = array( sprintf( '%-52s %-18s %-18s %s', 'case', OrderStoreOperations::GET_STATUS, OrderStoreOperations::LIST_OWN, OrderStoreOperations::GET_OWN ) );
 
 		foreach ( array_keys( $cases ) as $case ) {
-			$lines[] = sprintf( '%-52s %-18s %s', $case, $table[ OrderStoreOperations::GET_STATUS ][ $case ] ?? '-', $table[ OrderStoreOperations::LIST_OWN ][ $case ] ?? '-' );
+			$lines[] = sprintf( '%-52s %-18s %-18s %s', $case, $table[ OrderStoreOperations::GET_STATUS ][ $case ] ?? '-', $table[ OrderStoreOperations::LIST_OWN ][ $case ] ?? '-', $table[ OrderStoreOperations::GET_OWN ][ $case ] ?? '-' );
 		}
 
 		fwrite( STDOUT, "\nThe five cases on every storefront order surface:\n  " . implode( "\n  ", $lines ) . "\n" );
@@ -223,7 +234,7 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	}
 
 	/**
-	 * Tests that a logged-in customer's three refusals, an order that does not exist, a guest's order and another customer's order, are the same answer, at two reads each.
+	 * Tests that a logged-in customer's three refusals, an order that does not exist, a guest's order and another customer's order, are the same answer, at two reads each, on the status read and on the owner's read.
 	 *
 	 * The actor's customer is asked before the order is read, whatever the order turns out to be,
 	 * so neither the answer nor the work tells an order that exists from one that does not, or a
@@ -246,28 +257,35 @@ final class OrderStatusRouteTest extends OrderTestCase {
 			'a guest\'s order'             => $this->place()->uuid,
 			'another customer\'s order'    => $this->place( NewOrders::forTwoLines( 'USD', 'USD', $this->plantCustomer( $other, self::registeredAt( $other ) ) ) )->uuid,
 		);
-		$answers  = array();
-		$reads    = array();
+		$readers  = array(
+			'the status read'   => fn( string $uuid, array $headers ): array => $this->read( $uuid, $headers ),
+			'the owner\'s read' => fn( string $uuid, array $headers ): array => $this->readOwn( $uuid, $headers ),
+		);
 
 		$this->place( NewOrders::forTwoLines( 'USD', 'USD', $this->plantCustomer( $actor, self::registeredAt( $actor ) ) ) );
 
-		foreach ( $refusals as $refusal => $uuid ) {
-			$read = null;
-			$log  = $this->captureQueries(
-				function () use ( $uuid, $actor, &$read ): void {
-					$read = $this->read( $uuid, $this->logIn( $actor ) );
-				}
-			);
+		foreach ( $readers as $surface => $reader ) {
+			$answers = array();
+			$reads   = array();
 
-			$this->assertNotNull( $read );
-			$this->assertNotFound( $read, ucfirst( $refusal ) );
+			foreach ( $refusals as $refusal => $uuid ) {
+				$read = null;
+				$log  = $this->captureQueries(
+					function () use ( $reader, $uuid, $actor, &$read ): void {
+						$read = $reader( $uuid, $this->logIn( $actor ) );
+					}
+				);
 
-			$answers[ $refusal ] = $this->comparable( $read );
-			$reads[ $refusal ]   = $log->matching( $plugin )->count();
+				$this->assertNotNull( $read );
+				$this->assertNotFound( $read, ucfirst( $refusal ) . ", on {$surface}" );
+
+				$answers[ $refusal ] = $this->comparable( $read );
+				$reads[ $refusal ]   = $log->matching( $plugin )->count();
+			}
+
+			$this->assertCount( 1, array_unique( array_map( 'wp_json_encode', $answers ) ), "The refusals of {$surface} can be told apart:\n" . (string) wp_json_encode( $answers, JSON_PRETTY_PRINT ) );
+			$this->assertSame( array_fill_keys( array_keys( $refusals ), 2 ), $reads, "Each refusal of {$surface} costs the actor's customer and the access check." );
 		}
-
-		$this->assertCount( 1, array_unique( array_map( 'wp_json_encode', $answers ) ), "The refusals can be told apart:\n" . (string) wp_json_encode( $answers, JSON_PRETTY_PRINT ) );
-		$this->assertSame( array_fill_keys( array_keys( $refusals ), 2 ), $reads, 'Each refusal costs the actor\'s customer and the access check.' );
 	}
 
 	/**
@@ -687,6 +705,74 @@ final class OrderStatusRouteTest extends OrderTestCase {
 
 		$this->assertQueryCount( 6, $read->matching( $plugin ), 'the customer\'s read of their order: their customer, its access check, then the order\'s four' );
 		$this->assertQueryCount( 2, $refused->matching( $plugin ), 'refusing a logged-in user: their customer, and the access check' );
+
+		$own        = $this->captureQueries(
+			function () use ( $owner, $order ): void {
+				$this->assertSame( 200, $this->readOwn( $order->uuid, $this->logIn( $owner ) )['status'] );
+			}
+		);
+		$ownRefused = $this->captureQueries(
+			function () use ( $other, $order ): void {
+				$this->assertNotFound( $this->readOwn( $order->uuid, $this->logIn( $other ) ), 'Another user, logged in, on the owner\'s read' );
+			}
+		);
+		$visitor    = $this->captureQueries(
+			function () use ( $order ): void {
+				$this->assertNotFound( $this->readOwn( $order->uuid, $this->asGuest() + array( OrderStoreOperations::KEY_HEADER => $order->accessKey ) ), 'A visitor with the key, on the owner\'s read' );
+			}
+		);
+
+		$this->assertQueryCount( 6, $own->matching( $plugin ), 'the owner\'s read with the addresses: their customer, its access check, then the order\'s four, which hold the addresses' );
+		$this->assertQueryCount( 2, $ownRefused->matching( $plugin ), 'refusing a logged-in user the owner\'s read: their customer, and the access check' );
+		$this->assertQueryCount( 1, $visitor->matching( $plugin ), 'refusing a visitor the owner\'s read: the access check' );
+	}
+
+	/**
+	 * Tests that the owner reads their order with its addresses: the status read's answer, then each address member by member as the order's own rows hold it, the email among the billing address's.
+	 *
+	 * Planted violation: leave `owner_only` off OrderStoreOperations::getOwn(): the addresses
+	 * arrive as `{}`, as personal data does to a user without the capability to see it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_owner_reads_their_order_with_its_addresses(): void {
+		$owner  = $this->createUser( 'subscriber' );
+		$order  = $this->place( NewOrders::forTwoLines( 'EUR', 'USD', $this->plantCustomer( $owner, self::registeredAt( $owner ) ) ) );
+		$own    = $this->readOwn( $order->uuid, $this->logIn( $owner ) );
+		$status = $this->read( $order->uuid, $this->logIn( $owner ) );
+		$rows   = array();
+
+		foreach ( $this->db->fetchAll( 'SELECT * FROM %i WHERE order_id = %d', $this->table( OrderTables::ADDRESSES ), $order->id ) as $row ) {
+			$rows[ (string) $row['role'] ] = $row;
+		}
+
+		$this->assertSame( 200, $own['status'], (string) wp_json_encode( $own['body'] ) );
+		$this->assertSame( $status['body'], array_diff_key( $own['body'], array_flip( array( 'billing_address', 'shipping_address' ) ) ), 'The owner\'s read begins with what the status read answers.' );
+		$this->assertSame( array( 'billing', 'shipping' ), array_keys( $rows ) );
+
+		$printed   = array();
+		$addresses = array(
+			'billing'  => 'billing_address',
+			'shipping' => 'shipping_address',
+		);
+
+		foreach ( $addresses as $role => $member ) {
+			$answered = (array) ( $own['body'][ $member ] ?? array() );
+
+			$this->assertNotSame( array(), $answered, "The owner's {$member} arrived empty." );
+
+			foreach ( $answered as $name => $value ) {
+				$this->assertSame( (string) $rows[ $role ][ $name ], $value, "{$member}.{$name} is the order's own row." );
+
+				$printed[] = sprintf( '%-32s %-28s %s', "{$member}.{$name}", (string) wp_json_encode( $value ), (string) wp_json_encode( $rows[ $role ][ $name ] ) );
+			}
+		}
+
+		$this->assertSame( $rows['billing']['email'], $own['body']['billing_address']['email'] ?? null, 'The email is the billing address\'s.' );
+		$this->assertArrayNotHasKey( 'email', (array) $own['body']['shipping_address'], 'The shipping address carries no email.' );
+		$this->assertNotStore( $own );
+
+		fwrite( STDOUT, "\nThe owner's read, member by member, beside the order's address rows:\n  " . implode( "\n  ", $printed ) . "\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- Printed for the report.
 	}
 
 	/**
@@ -724,6 +810,19 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	 */
 	private function read( string $uuid, array $headers = array(), array $query = array() ): array {
 		return $this->get( str_replace( '{uuid}', $uuid, OrderStoreOperations::STATUS_ROUTE ), $headers, $query );
+	}
+
+	/**
+	 * Serves one owner's read of an order, with its addresses.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string                $uuid    What the URL names the order by.
+	 * @param array<string, string> $headers Optional. The request headers. Default none.
+	 * @return array{status: int|null, headers: array<string, string>, body: array<string, mixed>, raw: string, cookies: list<string>} What was sent, the body's bytes, and every cookie the transport sent while answering.
+	 */
+	private function readOwn( string $uuid, array $headers = array() ): array {
+		return $this->get( str_replace( '{uuid}', $uuid, OrderStoreOperations::OWN_ROUTE ), $headers, array() );
 	}
 
 	/**

@@ -63,9 +63,13 @@ defined( 'ABSPATH' ) || exit;
  * - agent exposure for an operation that is destructive, moves money or reads personal data in
  *   bulk (a primitive of the money or data-sensitivity group), that requires a meta capability,
  *   whose reach cannot be told from its declaration, or whose input or output has a personal-data
- *   or secret field. Those are never exposed; the check fails closed.
+ *   or secret field. Those are never exposed; the check fails closed;
+ * - an operation declared to answer only its actor's own data (owner_only) that is anything but a
+ *   public read of the Store API: its personal fields are carried to the actor because the service
+ *   answers that actor's own data alone, which only a read that checks no capability may claim.
  *
  * @since 0.1.0
+ * @since 0.2.0 An operation may answer only its actor's own data (isOwnerOnly()).
  */
 final class OperationDefinition {
 
@@ -245,9 +249,19 @@ final class OperationDefinition {
 	private ?CliBinding $cli;
 
 	/**
+	 * Whether the operation answers only its actor's own data, so its personal fields are carried to that actor.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var bool
+	 */
+	private bool $ownerOnly;
+
+	/**
 	 * Declares an operation.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 The `owner_only` argument.
 	 *
 	 * @throws SchemaException When the declaration breaks one of the rules this class lists.
 	 *
@@ -274,6 +288,9 @@ final class OperationDefinition {
 	 * @param PublicWrite|null $public_write   Optional. For a public write, its rate limit, cart
 	 *                                         requirement and the policy's refusals, which are
 	 *                                         added to the error codes. Default none.
+	 * @param bool             $owner_only     Optional. Whether the service answers only the
+	 *                                         actor's own data, so the actor is shown its personal
+	 *                                         fields; a public read of the Store API only. Default false.
 	 *
 	 * @phpstan-param \Closure(): string                $label
 	 * @phpstan-param list<FieldSpec>                   $input
@@ -295,7 +312,8 @@ final class OperationDefinition {
 		?string $ability = null,
 		?CliBinding $cli = null,
 		bool $agent_exposed = false,
-		?PublicWrite $public_write = null
+		?PublicWrite $public_write = null,
+		bool $owner_only = false
 	) {
 		if ( 1 !== preg_match( self::ID_PATTERN, $id ) ) {
 			SchemaException::raise( 'The operation id "%1$s" is not module.verb_noun in snake_case, such as inventory.adjust_stock.', $id );
@@ -312,10 +330,10 @@ final class OperationDefinition {
 		self::checkErrors( $id, $errors );
 
 		if ( null === $capability ) {
-			self::checkPublic( $id, $rest, $annotations, $resource_field, $ability, $cli, $agent_exposed, $public_write );
+			self::checkPublic( $id, $rest, $annotations, $resource_field, $ability, $cli, $agent_exposed, $public_write, $owner_only );
 		} else {
 			self::checkCapability( $id, $capability, $resource_field, $fields );
-			self::checkGuarded( $id, $capability, $rest, $public_write );
+			self::checkGuarded( $id, $capability, $rest, $public_write, $owner_only );
 
 			if ( self::movesMoney( $capability ) && ! $annotations->isDestructive() ) {
 				SchemaException::raise( 'The operation %1$s requires %2$s: it moves money, so it must be annotated destructive.', $id, $capability );
@@ -361,6 +379,7 @@ final class OperationDefinition {
 		$this->cli           = $cli;
 		$this->agentExposed  = $agent_exposed;
 		$this->publicWrite   = $public_write;
+		$this->ownerOnly     = $owner_only;
 	}
 
 	/**
@@ -494,6 +513,20 @@ final class OperationDefinition {
 	 */
 	public function isAgentExposed(): bool {
 		return $this->agentExposed;
+	}
+
+	/**
+	 * Tells whether the operation answers only its actor's own data.
+	 *
+	 * Its answer is serialized for the actor as for a user who may see personal data, since the
+	 * only person it can name is the actor: the service decides that, by the owner test alone.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return bool True for a public read of the Store API that answers the actor's own data alone.
+	 */
+	public function isOwnerOnly(): bool {
+		return $this->ownerOnly;
 	}
 
 	/**
@@ -671,13 +704,14 @@ final class OperationDefinition {
 	}
 
 	/**
-	 * Checks a public operation: a Store API route, and a write policy exactly when it writes.
+	 * Checks a public operation: a Store API route, a write policy exactly when it writes, and an answer of the actor's own data only when it reads.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Refuses a public write that answers only its actor's own data.
 	 *
 	 * @throws SchemaException When the operation is not on a Store API route, names a resource,
-	 *                         has an ability, a command or agent exposure, or is a write without a
-	 *                         PublicWrite or a read with one.
+	 *                         has an ability, a command or agent exposure, is a write without a
+	 *                         PublicWrite or a read with one, or is a write declared owner_only.
 	 *
 	 * @param string           $id             The operation id, for messages.
 	 * @param RestBinding|null $rest           The route, or null.
@@ -687,8 +721,9 @@ final class OperationDefinition {
 	 * @param CliBinding|null  $cli            The command, or null.
 	 * @param bool             $agent_exposed  Whether agents may see the ability.
 	 * @param PublicWrite|null $public_write   The write's declaration, or null.
+	 * @param bool             $owner_only     Whether the operation answers only its actor's own data.
 	 */
-	private static function checkPublic( string $id, ?RestBinding $rest, Annotations $annotations, ?string $resource_field, ?string $ability, ?CliBinding $cli, bool $agent_exposed, ?PublicWrite $public_write ): void {
+	private static function checkPublic( string $id, ?RestBinding $rest, Annotations $annotations, ?string $resource_field, ?string $ability, ?CliBinding $cli, bool $agent_exposed, ?PublicWrite $public_write, bool $owner_only ): void {
 		if ( null === $rest || ! $rest->isStore() ) {
 			SchemaException::raise( 'The operation %1$s requires no capability, so it must be a Store API route (%2$s): every other route requires a capability.', $id, RestBinding::STORE_NAMESPACE );
 		}
@@ -708,23 +743,33 @@ final class OperationDefinition {
 		if ( ! $annotations->isReadOnly() && null === $public_write ) {
 			SchemaException::raise( 'The operation %1$s is a public write, which cannot be declared without its PublicWrite: the rate limit and the cart requirement that the Store API\'s request policy enforces instead of a capability.', $id );
 		}
+
+		if ( $owner_only && ! $annotations->isReadOnly() ) {
+			SchemaException::raise( 'The operation %1$s is a public write: only a public read may answer its actor\'s own personal data, so declare it not owner_only.', $id );
+		}
 	}
 
 	/**
-	 * Checks an operation that requires a capability: never on a Store API route, never a public write.
+	 * Checks an operation that requires a capability: never on a Store API route, never a public write, never one that answers only its actor's own data.
 	 *
 	 * @since 0.1.0
+	 * @since 0.2.0 Refuses an operation declared owner_only.
 	 *
-	 * @throws SchemaException When the operation declares a PublicWrite, or its route is the Store API's.
+	 * @throws SchemaException When the operation declares a PublicWrite or owner_only, or its route is the Store API's.
 	 *
 	 * @param string           $id           The operation id, for messages.
 	 * @param string           $capability   The capability.
 	 * @param RestBinding|null $rest         The route, or null.
 	 * @param PublicWrite|null $public_write The write's declaration, or null.
+	 * @param bool             $owner_only   Whether the operation answers only its actor's own data.
 	 */
-	private static function checkGuarded( string $id, string $capability, ?RestBinding $rest, ?PublicWrite $public_write ): void {
+	private static function checkGuarded( string $id, string $capability, ?RestBinding $rest, ?PublicWrite $public_write, bool $owner_only ): void {
 		if ( null !== $public_write ) {
 			SchemaException::raise( 'The operation %1$s requires %2$s, so it is not a public write: declare no PublicWrite.', $id, $capability );
+		}
+
+		if ( $owner_only ) {
+			SchemaException::raise( 'The operation %1$s requires %2$s, which decides who sees its personal data: only a public read of the Store API may answer its actor\'s own, so declare it not owner_only.', $id, $capability );
 		}
 
 		if ( null !== $rest && $rest->isStore() ) {

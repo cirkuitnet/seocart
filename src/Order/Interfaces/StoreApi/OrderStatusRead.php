@@ -13,6 +13,7 @@ namespace SEOCart\Order\Interfaces\StoreApi;
 
 use SEOCart\Order\Application\OrderAccessPolicy;
 use SEOCart\Order\Domain\OrderLineView;
+use SEOCart\Order\Domain\OrderView;
 use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Support\Error\CodedException;
 
@@ -64,8 +65,18 @@ final class OrderStatusRead {
 	 * @return array<string, mixed> The order, keyed by wire name.
 	 */
 	public function read( array $input, Actor $actor ): array {
-		$order = $this->policy->authorize( (string) $input['uuid'], $actor, self::presentedKey( $input ) );
+		return self::statusOf( $this->policy->authorize( (string) $input['uuid'], $actor, self::presentedKey( $input ) ) );
+	}
 
+	/**
+	 * Names an order's number, statuses, totals and lines on the wire, as the status read answers them and the owner's read begins.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param OrderView $order The order, as the policy read it.
+	 * @return array<string, mixed> The order's status, keyed by wire name.
+	 */
+	public static function statusOf( OrderView $order ): array {
 		return array(
 			'uuid'                 => $order->uuid,
 			'order_number'         => $order->orderNumber,

@@ -15,6 +15,8 @@ use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Cart\Interfaces\StoreApi\StoreOperations;
 use SEOCart\Catalog\Interfaces\StoreApi\CatalogOperations;
 use SEOCart\Checkout\Interfaces\Rest\CheckoutSettingsOperations;
+use SEOCart\Checkout\Domain\Fields\BuiltInFields;
+use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Checkout\Interfaces\StoreApi\CheckoutOperations;
 use SEOCart\Inventory\Application\InventoryOperations;
 use SEOCart\Inventory\Application\LocationOperations;
@@ -74,6 +76,8 @@ final class Operations {
 		$registry->add( CartOperations::UPDATE_LINE, array( CartOperations::class, 'updateLine' ) );
 		$registry->add( OrderStoreOperations::GET_STATUS, array( OrderStoreOperations::class, 'getStatus' ) );
 		$registry->add( OrderStoreOperations::LIST_OWN, array( OrderStoreOperations::class, 'listOwn' ) );
+		// The order module does not know the checkout: the owner's read is handed the checkout's address members here.
+		$registry->add( OrderStoreOperations::GET_OWN, static fn(): OperationDefinition => OrderStoreOperations::getOwn( BuiltInFields::addressMembers( Carrier::BILLING ), BuiltInFields::addressMembers( Carrier::SHIPPING ) ) );
 		$registry->add( CheckoutOperations::UPDATE_SESSION, array( CheckoutOperations::class, 'updateSession' ) );
 		$registry->add( CheckoutOperations::PLACE_ORDER, array( CheckoutOperations::class, 'placeOrder' ) );
 		$registry->add( CheckoutOperations::RESUME_PAYMENT, array( CheckoutOperations::class, 'resumePayment' ) );
