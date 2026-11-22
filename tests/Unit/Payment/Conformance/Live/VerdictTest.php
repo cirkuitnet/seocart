@@ -23,7 +23,8 @@ use SEOCart\Tests\Conformance\Payment\Live\Verdict;
  * success; the counts' check removed: the run without the suite's counts is green; the optional
  * part's reason shown for its job whatever the job's result: the job that failed reads skipped; a
  * job's missing result read only for a selected job: a job the run did not select, without a
- * result, is green.
+ * result, is green; a head read from the outputs the guard has seen: the commit whose digits read
+ * as a card number is not reported.
  *
  * @since 0.2.0
  */
@@ -237,6 +238,24 @@ final class VerdictTest extends TestCase {
 
 		$this->assertStringNotContainsString( $canary, $verdict['summary'] . implode( ' ', $verdict['problems'] ) );
 		$this->assertStringContainsString( 'settled: [redacted: a fixture key]', $verdict['summary'] );
+	}
+
+	/**
+	 * Tests that a commit whose digits the guard reads as a card number is shown whole: the table names the commit under test.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_commit_whose_digits_read_as_a_card_is_shown_whole(): void {
+		$head  = '5924928625130705100287b96ddfd63f9cec4b63';
+		$needs = self::needs();
+
+		$this->assertSame( '[redacted: a card number]b96ddfd63f9cec4b63', StatedDeclaration::fixture()->guard()->redact( $head ), 'The guard reads the commit\'s digits as a card number.' );
+
+		foreach ( array_keys( $needs ) as $job ) {
+			$needs[ $job ]['outputs']['core-head'] = $head;
+		}
+
+		$this->assertStringContainsString( '| payments | `' . self::EXT . '` | `' . $head . '` |', self::judge( $needs, 'all' )['summary'] );
 	}
 
 	/**

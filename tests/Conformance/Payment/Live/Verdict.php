@@ -107,7 +107,7 @@ final class Verdict {
 
 		foreach ( array_keys( $declaration->jobs() ) as $job ) {
 			$outputs = self::outputs( $declaration, $needs, $job );
-			$lines[] = sprintf( '| %1$s | %2$s | %3$s | %4$s |', $job, self::head( $outputs['ext-head'] ?? '' ), self::head( $outputs['core-head'] ?? '' ), self::facts( $declaration, $outputs ) );
+			$lines[] = sprintf( '| %1$s | %2$s | %3$s | %4$s |', $job, self::head( $needs, $job, 'ext-head' ), self::head( $needs, $job, 'core-head' ), self::facts( $declaration, $outputs ) );
 		}
 
 		if ( array() !== $problems ) {
@@ -222,14 +222,22 @@ final class Verdict {
 	}
 
 	/**
-	 * Shows a commit, or says it is not known.
+	 * Shows a job's commit, or says it is not known.
+	 *
+	 * The commit is read as the job reported it, not through the guard: a value of a commit's shape,
+	 * 40 hexadecimal digits, is shown whole, as nothing else may stand there. Its digits can read as a
+	 * card number, in about one commit in sixty, and the guard would blank them out.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @param string $head The commit, as `git rev-parse` prints it.
+	 * @param array<mixed> $needs  The jobs' results and outputs.
+	 * @param string       $job    The job.
+	 * @param string       $output The output that holds the commit, as `git rev-parse` prints it.
 	 * @return string The commit in code, or `not reported`.
 	 */
-	private static function head( string $head ): string {
-		return 1 === preg_match( '/^[0-9a-f]{40}$/D', $head ) ? '`' . $head . '`' : 'not reported';
+	private static function head( array $needs, string $job, string $output ): string {
+		$head = $needs[ $job ]['outputs'][ $output ] ?? null;
+
+		return is_string( $head ) && 1 === preg_match( '/^[0-9a-f]{40}$/D', $head ) ? '`' . $head . '`' : 'not reported';
 	}
 }
