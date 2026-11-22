@@ -17,14 +17,15 @@ namespace SEOCart\Tests\Conformance\Payment\Live;
  * The workflow holds the provider's test credentials, and the repository is public, so its shape
  * is checked on every pull request: it starts only by hand or on its schedule, so it can never be
  * one of the checks a merge waits for; it reads the repository and nothing more; each job runs
- * only in the extension's repository, as a fork has no secrets; a secret reaches only the step
- * that needs it, through that step's `env:`; nothing traces the shell, prints the environment or
+ * only in the extension's repository, as a fork has no secrets; a secret reaches only a step that
+ * needs it, through that step's `env:`; nothing traces the shell, prints the environment or
  * uploads a file; one run at a time uses the account, and none is cancelled midway; every job has
  * a time limit; the jobs and the choices of the `parts` input are the parts the declaration states,
  * no other; each part's job runs when its own part or `all` is chosen; and the verdict waits for
  * every part, runs whatever becomes of them, and checks SEOCart out before it judges, as its step
- * is SEOCart's. The workflow is plain YAML in a known layout, two spaces deeper per level as the
- * repository's files are written, so its lines are read by their indentation; nothing parses it.
+ * is SEOCart's. The workflow is plain YAML, so its lines are read by their indentation, each
+ * relative to the line it belongs to, as YAML reads it, whatever width a level is written at;
+ * nothing parses it. read() gives that reading of its jobs and steps to SettingsLast as well.
  *
  * copies() finds a class of SEOCart's live workflow that an extension's tests still declare: a
  * copy left behind, which would drift from SEOCart's.
@@ -78,10 +79,135 @@ final class WorkflowFacts {
 			self::jobs( $declaration, $lines ),
 			self::parts( $declaration, $lines ),
 			self::permissions( $lines ),
-			self::secrets( $lines ),
+			self::secrets( $declaration, $lines ),
 			self::forbidden( $lines ),
 			self::concurrency( $declaration, $lines )
 		);
+	}
+
+	/**
+	 * Returns the workflow's structure, as SEOCart's checks of a live workflow read it: the keys at its top, and each job's keys and steps.
+	 *
+	 * Every line is read by its indentation relative to the line it belongs to, as YAML reads it, so
+	 * any consistent indentation reads alike, and a list may stand at its key's own indentation. A
+	 * step is read as its alias or anchor, its keys with their values on the key's own line (a plain
+	 * value without its trailing comment), and the keys whose value goes on to deeper lines; a line of
+	 * a step that does not line up with its keys is read as the key `?`.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string[] $lines The workflow's lines.
+	 * @return array{top: array<string, int>, jobs: array<string, array{line: int, keys: array<string, int>, steps: list<array{alias: ?string, keys: array<string, string>, deep: array<string, bool>, from: int, to: int}>}>} Each top key's line, by key; each job's line, keys and steps, by job.
+	 * @phpstan-param list<string> $lines
+	 */
+	public static function read( array $lines ): array {
+		$lines = array_map( static fn( string $line ): string => rtrim( $line, "\r\n" ), $lines );
+		$top   = array();
+		$jobs  = array();
+
+		foreach ( $lines as $at => $line ) {
+			if ( ! self::isBlank( $line ) && 0 === self::indent( $line ) && 1 === preg_match( '/^["\']?([A-Za-z0-9_.\-]+)["\']?\s*:/', $line, $match ) ) {
+				$top[ $match[1] ] ??= $at;
+			}
+		}
+
+		foreach ( self::children( $lines, $top['jobs'] ?? null ) as $job => $at ) {
+			$keys  = self::children( $lines, $at );
+			$steps = array();
+
+			foreach ( self::items( $lines, $keys['steps'] ?? null ) as list( $from, $to ) ) {
+				$steps[] = self::step( $lines, $from, $to );
+			}
+
+			$jobs[ $job ] = array(
+				'line'  => $at,
+				'keys'  => $keys,
+				'steps' => $steps,
+			);
+		}
+
+		return array(
+			'top'  => $top,
+			'jobs' => $jobs,
+		);
+	}
+
+	/**
+	 * Reads one step: the list item from its dash to the line after its last.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string[] $lines The lines.
+	 * @param int      $from  The item's first line, its dash's.
+	 * @param int      $to    The line after its last.
+	 * @return array{alias: ?string, keys: array<string, string>, deep: array<string, bool>, from: int, to: int} The step.
+	 * @phpstan-param list<string> $lines
+	 */
+	private static function step( array $lines, int $from, int $to ): array {
+		$step = array(
+			'alias' => null,
+			'keys'  => array(),
+			'deep'  => array(),
+			'from'  => $from,
+			'to'    => $to,
+		);
+
+		preg_match( '/^\s*-\s*(?:([*&][A-Za-z0-9_-]+)(?:\s+|$))?(.*)$/D', $lines[ $from ], $match );
+
+		$step['alias'] = '' === ( $match[1] ?? '' ) ? null : $match[1];
+		$rest          = $match[2] ?? '';
+		$column        = null;
+		$key           = null;
+
+		if ( '' !== trim( $rest ) && ! str_starts_with( ltrim( $rest ), '#' ) ) {
+			$column = strlen( $lines[ $from ] ) - strlen( $rest );
+			$key    = self::stepKey( $step, $rest );
+		}
+
+		for ( $next = $from + 1; $next < $to; $next++ ) {
+			if ( self::isBlank( $lines[ $next ] ) ) {
+				continue;
+			}
+
+			$width    = self::indent( $lines[ $next ] );
+			$column ??= $width;
+
+			if ( $width === $column ) {
+				$key = self::stepKey( $step, ltrim( $lines[ $next ] ) );
+			} elseif ( $width > $column && null !== $key ) {
+				$step['deep'][ $key ] = true;
+			} else {
+				$step['keys']['?'] = trim( $lines[ $next ] );
+				$key               = '?';
+			}
+		}
+
+		return $step;
+	}
+
+	/**
+	 * Reads one `key: value` line of a step into it, and returns the key.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array  $step The step, read into.
+	 * @param string $text The line, without its indentation.
+	 * @return string The key; `?` for a line that is no key.
+	 * @phpstan-param array{alias: ?string, keys: array<string, string>, deep: array<string, bool>, from: int, to: int} $step
+	 */
+	private static function stepKey( array &$step, string $text ): string {
+		if ( 1 !== preg_match( '/^([A-Za-z0-9_-]+):(?:\s+(.*))?$/D', $text, $match ) ) {
+			$step['keys']['?'] = $text;
+
+			return '?';
+		}
+
+		$value = $match[2] ?? '';
+
+		// A plain value ends where a comment begins; a quoted one is kept whole, quotes and all.
+		$step['keys'][ $match[1] ] = '' !== $value && ( "'" === $value[0] || '"' === $value[0] ) ? $value : rtrim( (string) preg_replace( '/(?:^|\s+)#.*$/', '', $value ) );
+
+		return $match[1];
 	}
 
 	/**
@@ -326,6 +452,10 @@ final class WorkflowFacts {
 	/**
 	 * Returns the items of a list under a key, each as the line it starts on and the line after its last.
 	 *
+	 * The items stand at the first indentation after the key, deeper than the key or, as YAML allows,
+	 * at the key's own, their dashes counting as indentation; a line at that indentation that is no
+	 * item, or a line less indented, ends the list.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @param string[] $lines The lines.
@@ -350,15 +480,16 @@ final class WorkflowFacts {
 			}
 
 			$width = self::indent( $lines[ $next ] );
+			$item  = 1 === preg_match( '/^\s*-(?:\s|$)/', $lines[ $next ] );
 
-			if ( $width <= $depth ) {
+			$first ??= $width > $depth || ( $width === $depth && $item ) ? $width : -1;
+
+			if ( -1 === $first || $width < $first || ( $width === $first && ! $item ) ) {
 				$end = $next;
 				break;
 			}
 
-			$first ??= $width;
-
-			if ( $width === $first && str_starts_with( ltrim( $lines[ $next ] ), '- ' ) ) {
+			if ( $width === $first ) {
 				$items[] = $next;
 			}
 		}
@@ -474,7 +605,7 @@ final class WorkflowFacts {
 	}
 
 	/**
-	 * Checks that a secret is only ever the value of an entry of a step's `env:`, written `NAME: ${{ secrets.NAME }}`.
+	 * Checks that a secret is only ever the value of an entry of the `env:` of a step that needs one, written `NAME: ${{ secrets.NAME }}`.
 	 *
 	 * Every expression that names the `secrets` context counts, however it reads it: `secrets.NAME`,
 	 * `secrets['NAME']`, the whole context in `toJSON(secrets)`, in any letter case, and an
@@ -483,15 +614,23 @@ final class WorkflowFacts {
 	 * expression ends, as GitHub reads it, at the first `}}` outside a quoted string, so a `}}`
 	 * inside a string cannot end it early and leave the rest unread.
 	 *
+	 * The steps that need a secret are those that run one of the extension's script's steps (its
+	 * secrets' check, its settings step) and SEOCart's `optional` step, which says whether the
+	 * optional part's secret is set: never a step that uses an action, and never a step that runs
+	 * anything else, such as one that installs or builds, nor a job or the workflow as a whole.
+	 *
 	 * @since 0.2.0
 	 *
-	 * @param string[] $lines The lines.
+	 * @param LiveDeclaration $declaration The extension's declaration.
+	 * @param string[]        $lines       The lines.
 	 * @return list<string> What is wrong.
 	 * @phpstan-param list<string> $lines
 	 */
-	private static function secrets( array $lines ): array {
+	private static function secrets( LiveDeclaration $declaration, array $lines ): array {
 		$problems = array();
 		$text     = implode( "\n", $lines );
+		$steps    = array_merge( ...array_values( array_map( static fn( array $job ): array => $job['steps'], self::read( $lines )['jobs'] ) ) );
+		$needs    = '/^sh (?:ext\/' . preg_quote( $declaration->script(), '/' ) . ' [a-z][a-z0-9-]*|seocart\/bin\/ci\/extension-live\.sh optional ext [a-z][a-z0-9-]*)$/D';
 
 		// An expression runs to the first two closing braces outside a single-quoted string. A
 		// quote doubled inside a string, its escape, reads as two strings back to back.
@@ -514,6 +653,13 @@ final class WorkflowFacts {
 				|| null === $step || ! str_starts_with( ltrim( $lines[ $step ] ), '- ' )
 			) {
 				$problems[ $at ] = sprintf( 'Line %d: a secret is used other than as the value of an entry of a step\'s env.', $at + 1 );
+				continue;
+			}
+
+			$holder = array_values( array_filter( $steps, static fn( array $item ): bool => $item['from'] <= $at && $at < $item['to'] ) )[0] ?? null;
+
+			if ( null === $holder || isset( $holder['keys']['uses'] ) || isset( $holder['deep']['run'] ) || 1 !== preg_match( $needs, $holder['keys']['run'] ?? '' ) ) {
+				$problems[ $at ] = sprintf( 'Line %d: a secret is given to a step that does not need it: only a step that runs the extension\'s script, or extension-live.sh optional, may hold one, never an action.', $at + 1 );
 			}
 		}
 

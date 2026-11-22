@@ -115,7 +115,35 @@ final class WorkflowFactsTest extends TestCase {
 			'the verdict without SEOCart'    => array( 'the verdict does not check SEOCart (cirkuitnet/seocart) out before its step', static fn( array $lines ): array => self::without( $lines, '/^            - \*checkout-core$/', true ) ),
 			'SEOCart checked out after it'   => array( 'the verdict does not check SEOCart (cirkuitnet/seocart) out before its step', static fn( array $lines ): array => self::after( self::without( $lines, '/^            - \*checkout-core$/', true ), '/^                  SEOCART_LIVE_PARTS: /', '            - *checkout-core' ) ),
 			'another repository checked out' => array( 'the verdict does not check SEOCart (cirkuitnet/seocart) out before its step', static fn( array $lines ): array => self::replaced( $lines, '/^                  repository: cirkuitnet\/seocart$/', '                  repository: cirkuitnet/seocart-fork' ) ),
+			'a secret for the site\'s build' => array( 'a secret is given to a step that does not need it', static fn( array $lines ): array => self::secretAfter( $lines, '/^              run: sh seocart\/bin\/ci\/extension-live.sh site ext$/' ) ),
+			'a secret for the set-up action' => array( 'a secret is given to a step that does not need it', static fn( array $lines ): array => self::secretAfter( $lines, '/^              uses: \.\/seocart\/\.github\/actions\/extension-live-setup$/' ) ),
+			'a secret for SEOCart\'s heads'  => array( 'a secret is given to a step that does not need it', static fn( array $lines ): array => self::secretAfter( $lines, $heads ) ),
 		);
+	}
+
+	/**
+	 * Tests that the facts hold, and are read, at any consistent indentation: the workflow at two spaces a level, and one job's steps at its `steps:` key's own.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_workflow_keeps_every_fact_at_any_indentation(): void {
+		$this->assertSame( array(), WorkflowFacts::violations( StatedDeclaration::fixture(), self::twoSpaces( self::workflow() ) ) );
+		$this->assertSame( array(), WorkflowFacts::violations( StatedDeclaration::fixture(), self::indentless( self::workflow(), 'verdict' ) ) );
+		$this->assertStringContainsString( 'a secret is given to a step that does not need it', implode( "\n", WorkflowFacts::violations( StatedDeclaration::fixture(), self::twoSpaces( self::secretAfter( self::workflow(), '/^              run: sh seocart\/bin\/ci\/extension-live.sh site ext$/' ) ) ) ) );
+	}
+
+	/**
+	 * Returns the lines with a secret given, in an `env:` of its own, to the step whose key a pattern finds.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string[] $lines   The lines.
+	 * @param string   $pattern The step's key line, at fourteen spaces.
+	 * @return list<string> The lines, planted.
+	 * @phpstan-param list<string> $lines
+	 */
+	private static function secretAfter( array $lines, string $pattern ): array {
+		return self::after( self::after( $lines, $pattern, '                  FIXTURE_PAY_API_KEY: ${{ secrets.FIXTURE_PAY_API_KEY }}' ), $pattern, '              env:' );
 	}
 
 	/**
