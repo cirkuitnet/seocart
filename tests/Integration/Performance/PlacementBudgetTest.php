@@ -14,6 +14,7 @@ namespace SEOCart\Tests\Integration\Performance;
 use SEOCart\Cart\Infrastructure\CartTables;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\ReceiveWebhook;
+use SEOCart\Checkout\Domain\AccountsAtCheckout;
 use SEOCart\Contracts\Payment\GatewayResult;
 use SEOCart\Contracts\Payment\Operation;
 use SEOCart\Contracts\Payment\Outcome;
@@ -313,6 +314,20 @@ final class PlacementBudgetTest extends PlacementTestCase {
 	private const REPLAY = 1;
 
 	/**
+	 * The statements of a cold placement by a visitor where the store requires an account, refused, by step: the key's read, the cart's, the count of its declines and the checkout's rules, which hold the store's choice; nothing after, and no transaction.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, int>
+	 */
+	private const ACCOUNT_REQUIRED_REFUSED = array(
+		'replay: the key, read'       => 1,
+		'cart: its row and lines'     => 2,
+		'declines: the cart\'s count' => 1,
+		'the checkout\'s rules'       => 1,
+	);
+
+	/**
 	 * The statements of the last placement measured, by part and step.
 	 *
 	 * @since 0.2.0
@@ -434,6 +449,77 @@ final class PlacementBudgetTest extends PlacementTestCase {
 
 			$this->assertSame( $guestSteps, $steps, "Cart A, {$kind}: every other step sends what a guest's placement sends." );
 		}
+	}
+
+	/**
+	 * Tests that where the store requires an account, a customer's placement of Cart A costs what it costs anywhere: the store's choice is read with the checkout's rules, in the statement the placement sends anyway.
+	 *
+	 * Planted violation: in CheckoutRules::accounts(), read the choice in a values() call of its
+	 * own: the part before the first unit grows by one, under the checkout's rules.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_placing_cart_a_as_a_customer_where_an_account_is_required_costs_what_it_costs_anywhere(): void {
+		$user    = $this->createUser( 'subscriber' );
+		$standIn = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+
+		// The user's first order, which creates their record, before the store requires an account.
+		$this->readyCart( self::quantities( ReferenceCarts::cartA( $standIn ) ) );
+		$this->measure( 'Cart A, a first order', self::APPROVE, 'approved', Actor::user( $user ) );
+		$this->chooseAccounts( AccountsAtCheckout::Required );
+
+		$variant = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+
+		$this->readyCart( self::quantities( ReferenceCarts::cartA( $variant ) ) );
+
+		$parts = $this->measure( 'Cart A, a customer, an account required', self::APPROVE, 'approved', Actor::user( $user ) );
+
+		$this->assertSame( self::CART_A_CUSTOMER, $parts, 'Cart A, a customer, an account required' );
+		$this->assertSame( 1, $this->lastSteps['before']['the checkout\'s rules'] ?? 0, 'The store\'s choice is read with the checkout\'s rules.' );
+	}
+
+	/**
+	 * Tests that where the store requires an account, a visitor's placement, cold, is refused once the checkout's rules are read: the steps before them, and nothing written.
+	 *
+	 * Planted violation: in PlaceOrder::place(), ask the store's choice after the session is read:
+	 * the refusal reads the session too.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_visitors_placement_where_an_account_is_required_is_refused_at_the_checkouts_rules(): void {
+		$variant = $this->sellable( 5, Inputs::money( ReferenceCarts::CART_A_PRICE, self::CURRENCY )->minorUnits() );
+
+		$this->readyCart( self::quantities( ReferenceCarts::cartA( $variant ) ) );
+		$this->chooseAccounts( AccountsAtCheckout::Required );
+
+		$input     = $this->placeInput( 'budget-refused' );
+		$placement = $this->kernelOver( $this->db, $this->tokens )->get( PlaceOrder::class );
+		$refusal   = null;
+
+		wp_cache_flush();
+		wp_load_alloptions();
+
+		$log = $this->captureQueries(
+			function () use ( $placement, $input, &$refusal ): void {
+				try {
+					$placement->place( $input, self::guest() );
+				} catch ( CodedException $refused ) {
+					$refusal = $refused->errorCode()->value;
+				}
+			}
+		);
+
+		$steps = array();
+
+		foreach ( $log->entries() as $entry ) {
+			$step           = self::stepOf( $entry );
+			$steps[ $step ] = ( $steps[ $step ] ?? 0 ) + 1;
+		}
+
+		fwrite( STDOUT, sprintf( "\nRefusing a visitor's placement of Cart A where an account is required, cold: %d statements.\n", $log->count() ) . implode( '', array_map( static fn( string $step, int $count ): string => sprintf( "    %-36s %d\n", $step, $count ), array_keys( $steps ), $steps ) ) . '  ' . implode( "\n  ", $log->sqls() ) . "\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- The measurement is printed for the report.
+
+		$this->assertSame( 'checkout.account_required', $refusal );
+		$this->assertSame( self::ACCOUNT_REQUIRED_REFUSED, $steps, 'The refusal\'s statements, by step.' );
 	}
 
 	/**

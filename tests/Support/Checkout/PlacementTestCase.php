@@ -16,8 +16,10 @@ use SEOCart\Cart\Domain\Cart;
 use SEOCart\Cart\Domain\CartLine;
 use SEOCart\Cart\Domain\CartToken;
 use SEOCart\Catalog\Infrastructure\CatalogTables;
+use SEOCart\Checkout\Application\CheckoutSettings;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
+use SEOCart\Checkout\Domain\AccountsAtCheckout;
 use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Contracts\Payment\PaymentGateway;
 use SEOCart\Customer\Infrastructure\Migrations\CreateCustomers;
@@ -39,6 +41,8 @@ use SEOCart\Platform\Database\SchemaOperations;
 use SEOCart\Platform\Events\Migrations\CreateOutboxMigration;
 use SEOCart\Platform\Events\OutboxTable;
 use SEOCart\Platform\Kernel\Container;
+use SEOCart\Platform\Settings\Settings;
+use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Pricing\Infrastructure\Migrations\CreateRateTables;
 use SEOCart\Tests\Support\ChildProcessProbe;
 use SEOCart\Tests\Support\Doubles\FakeCartTokens;
@@ -187,8 +191,8 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 			$wpdb->delete( $wpdb->posts, array( 'ID' => $postId ) );
 		}
 
-		// A test that routed in another mode leaves the next one the store's defaults.
-		foreach ( InventorySettings::settings() as $setting ) {
+		// A test that routed in another mode, or required an account, leaves the next one the store's defaults.
+		foreach ( array_merge( InventorySettings::settings(), CheckoutSettings::settings() ) as $setting ) {
 			delete_option( $setting->optionName() );
 		}
 
@@ -600,6 +604,17 @@ abstract class PlacementTestCase extends CheckoutTestCase {
 			),
 			self::guest()
 		);
+	}
+
+	/**
+	 * Stores the store's choice of accounts at checkout, as the settings operations keep it; a placement of a new request reads it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param AccountsAtCheckout $choice The choice.
+	 */
+	protected function chooseAccounts( AccountsAtCheckout $choice ): void {
+		( new SettingsStore( Settings::registry(), $this->db ) )->writeScalars( array( CheckoutSettings::ACCOUNTS => $choice->value ) );
 	}
 
 	/**

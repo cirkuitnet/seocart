@@ -11,12 +11,17 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Checkout;
 
+use SEOCart\Checkout\Application\CheckoutSettings;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\UpdateCheckoutSession;
+use SEOCart\Checkout\Domain\AccountsAtCheckout;
 use SEOCart\Checkout\Domain\Fields\Carrier;
 use SEOCart\Order\Infrastructure\OrderTables;
 use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
 use SEOCart\Platform\Authorization\Actor;
+use SEOCart\Platform\Settings\Settings;
+use SEOCart\Platform\Settings\SettingsStore;
+use SEOCart\Support\Error\CodedException;
 use SEOCart\Tests\Support\Checkout\PlacementTestCase;
 use SEOCart\Tests\Support\CreatesUsers;
 use SEOCart\Tests\Support\Customer\CustomerRecords;
@@ -32,9 +37,15 @@ use SEOCart\Tests\Support\StatementShapes;
  * shape (StatementShapes), and the answers are equal once the identifiers each request was given
  * and the address it sent are set aside. Time is not measured; equal statements are the proof.
  *
- * Planted violation: in PlaceOrder::placeInside(), look the session's email up with
+ * Where the store requires an account, both guests are refused alike, by who they are: the same
+ * statements, up to the read of the checkout's rules, and the same refusal.
+ *
+ * Planted violations: in PlaceOrder::placeInside(), look the session's email up with
  * `get_user_by( 'email', … )` and, when it finds a user, place the order for that user's record.
- * The account's placement then reads the user, and its order has a customer.
+ * The account's placement then reads the user, and its order has a customer. In
+ * PlaceOrder::refuseWithoutAccount(), decide by the session's email instead of the actor, refusing
+ * only an address no user has (`get_user_by( 'email', … )`): the account's address is placed and
+ * the fresh one refused.
  *
  * @since 0.2.0
  */
@@ -85,7 +96,46 @@ final class EmailPathsTest extends PlacementTestCase {
 	}
 
 	/**
-	 * Starts a guest's cart of one unit, writes its checkout with an address, places it, and returns what each request sent and answered.
+	 * Tests that where the store requires an account, a guest's placement with an account's address is refused as one with a fresh address: the same statements, the same refusal, and nothing written.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_where_an_account_is_required_an_accounts_address_is_refused_as_a_fresh_one(): void {
+		$account = $this->createUser( 'subscriber' );
+		$user    = get_userdata( $account );
+
+		$this->assertInstanceOf( \WP_User::class, $user );
+
+		// The account has a customer record and an order, placed before the store required an account.
+		$this->readyCart( array( $this->sellable() => 1 ) );
+		$this->placement->place( $this->placeInput( 'the account\'s own order' ), Actor::user( $account ) );
+		$this->assertCount( 1, $this->customerRows(), 'The account has a customer record.' );
+
+		$this->chooseAccounts( AccountsAtCheckout::Required );
+
+		$mug   = $this->sellable( 5 );
+		$known = $this->guestPath( $mug, (string) $user->user_email );
+		$fresh = $this->guestPath( $mug, 'nobody-' . strtolower( wp_generate_password( 10, false ) ) . '@example.org' );
+
+		$this->printSideBySide( $known['placement_statements'], $fresh['placement_statements'] );
+
+		$this->assertSame( 'checkout.account_required', $known['answer']['refused'] ?? null, 'The guest with an account\'s address is refused.' );
+		$this->assertSame( $fresh['session_statements'], $known['session_statements'], 'The session write sends the same statements whatever the address.' );
+		$this->assertSame( $fresh['session'], $known['session'], 'The session write answers the same whatever the address.' );
+		$this->assertSame( $fresh['placement_statements'], $known['placement_statements'], 'The refused placement sends the same statements whatever the address.' );
+		$this->assertSame( $fresh['answer'], $known['answer'], 'The refusal is the same whatever the address.' );
+
+		foreach ( array( $known, $fresh ) as $path ) {
+			$this->assertSame( array(), preg_grep( '/^(INSERT|UPDATE|DELETE|REPLACE)\b/', $path['placement_sql'] ), 'A refused placement writes nothing.' );
+			$this->assertCount( 1, preg_grep( '/seocart_checkout_accounts.*seocart_checkout_field_presence|seocart_checkout_field_presence.*seocart_checkout_accounts/s', $path['placement_sql'] ), 'The choice is read once, with the checkout\'s rules.' );
+		}
+
+		$this->assertSame( AccountsAtCheckout::Required->value, ( new SettingsStore( Settings::registry(), $this->db ) )->values( CheckoutSettings::settings() )[ CheckoutSettings::ACCOUNTS ], 'The store\'s choice is as it was written.' );
+		$this->assertCount( 1, $this->customerRows(), 'No record was made or used for an address.' );
+	}
+
+	/**
+	 * Starts a guest's cart of one unit, writes its checkout with an address, places it, and returns what each request sent and answered, or the placement's refusal.
 	 *
 	 * Each request is cold: a container of its own, and no object cache but the options WordPress
 	 * loads at boot. The address and the identifiers each request was given are set aside in the
@@ -95,7 +145,9 @@ final class EmailPathsTest extends PlacementTestCase {
 	 *
 	 * @param int    $variant The variant the cart holds one unit of.
 	 * @param string $email   The address typed.
-	 * @return array{session: array<string, mixed>, session_statements: list<string>, answer: array<string, mixed>, placement_statements: list<string>, customer: int|null} What happened.
+	 * @return array{session: array<string, mixed>, session_statements: list<string>, answer: array<string, mixed>, placement_statements: list<string>, placement_sql: list<string>, customer: int|null}
+	 *         What happened, the placement's statements as sent besides their shapes; a refused
+	 *         placement's answer is its code, message and details.
 	 */
 	private function guestPath( int $variant, string $email ): array {
 		$cart    = $this->startCart( array( $variant => 1 ) );
@@ -128,16 +180,25 @@ final class EmailPathsTest extends PlacementTestCase {
 
 		$placed   = $this->captureQueries(
 			function () use ( $placement, $input, &$answer ): void {
-				$answer = $placement->place( $input, self::guest() );
+				try {
+					$answer = $placement->place( $input, self::guest() );
+				} catch ( CodedException $refused ) {
+					$answer = array(
+						'refused' => $refused->errorCode()->value,
+						'message' => $refused->getMessage(),
+						'details' => $refused->details(),
+					);
+				}
 			}
 		);
-		$customer = $this->db->fetchValue( 'SELECT customer_id FROM %i WHERE uuid = %s', $this->table( OrderTables::ORDERS ), (string) $answer['order_uuid'] );
+		$customer = isset( $answer['order_uuid'] ) ? $this->db->fetchValue( 'SELECT customer_id FROM %i WHERE uuid = %s', $this->table( OrderTables::ORDERS ), (string) $answer['order_uuid'] ) : null;
 
 		return array(
 			'session'              => self::setAside( $session, $email ),
 			'session_statements'   => StatementShapes::of( $written ),
 			'answer'               => self::setAside( $answer, $email ),
 			'placement_statements' => StatementShapes::of( $placed ),
+			'placement_sql'        => $placed->sqls(),
 			'customer'             => null === $customer ? null : (int) $customer,
 		);
 	}

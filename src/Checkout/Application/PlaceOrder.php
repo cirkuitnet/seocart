@@ -24,6 +24,7 @@ use SEOCart\Cart\Domain\CartLine;
 use SEOCart\Cart\Domain\CartStatus;
 use SEOCart\Cart\Domain\CartToken;
 use SEOCart\Catalog\Application\Query\Sellability;
+use SEOCart\Checkout\Domain\AccountsAtCheckout;
 use SEOCart\Checkout\Domain\CheckoutError;
 use SEOCart\Checkout\Domain\CheckoutSession;
 use SEOCart\Checkout\Domain\FrozenQuotes;
@@ -70,7 +71,9 @@ use SEOCart\Support\Locale;
  *
  * Owns one fact: the order in which a placement does its work. Before anything is written, a
  * request whose key an earlier request placed its order with is answered as that one was; then
- * the cart, its checkout and its totals are checked, and the cart is priced from what the store
+ * the cart is checked, a store that takes orders from signed-in customers only refuses anyone
+ * else, by who acts and never by an address (`checkout.account_required`), the checkout and the
+ * totals are checked, and the cart is priced from what the store
  * holds, never from the client: the client's grand total must be the one priced. The checkout is
  * judged once by the checkout's rules (CheckoutRules::forPlacement()), and the order, the gateway's
  * billing contact and the kept answer are all built from the session they answer; the goods of
@@ -135,7 +138,8 @@ use SEOCart\Support\Locale;
  *              once more when the plan went stale. Leaves the payment data out of a request's
  *              fingerprint. Records the customer a logged-in user's order belongs to, and gives a kept
  *              answer for a customer's order back to that customer alone. Judges the checkout by the
- *              checkout's rules, and the goods by the store's order limits.
+ *              checkout's rules, and the goods by the store's order limits. Refuses anyone but a
+ *              signed-in person where the store requires an account.
  */
 final class PlaceOrder {
 
@@ -273,7 +277,8 @@ final class PlaceOrder {
 	 *                        `checkout.idempotency_key_reused` and `checkout.placement_in_progress`;
 	 *                        `cart.not_found`; `store_api.rate_limited` after too many declines of the cart;
 	 *                        `cart.not_open` (naming the order being placed) and
-	 *                        `cart.version_stale`; `checkout.cart_empty`,
+	 *                        `cart.version_stale`; `checkout.account_required` for anyone but a
+	 *                        signed-in person where the store requires an account; `checkout.cart_empty`,
 	 *                        `checkout.session_incomplete`, `checkout.invalid_fields`,
 	 *                        `checkout.line_unsellable`, `checkout.totals_changed`,
 	 *                        `checkout.subtotal_below_minimum`, `checkout.subtotal_above_maximum`
@@ -324,6 +329,7 @@ final class PlaceOrder {
 		$cart = $this->openCart( (int) $input['cart_version'], $actor );
 
 		$this->refuseAfterDeclines( $token );
+		$this->refuseWithoutAccount( $actor );
 
 		// The session as the checkout's rules let it be placed: the order, the gateway's contact and the kept answer are built from it.
 		$session     = $this->rules->forPlacement( $this->sessions->find( $cart->id ) );
@@ -999,6 +1005,27 @@ final class PlaceOrder {
 
 		if ( $this->limiter->peek( $limit->bucket(), $this->identities->ofCart( $token ), $limit->windowSeconds() ) >= $limit->limit() ) {
 			CodedException::raise( StoreApiError::RateLimited );
+		}
+	}
+
+	/**
+	 * Refuses a placement by anyone but a signed-in person when the store takes orders from signed-in customers only, before anything is written.
+	 *
+	 * It asks who acts and the store's choice, nothing else: never the address the checkout holds,
+	 * which proves nothing about who places. Called after the kept answer, so a retry of a placement
+	 * made before the store chose is still answered, and before the checkout is judged, so a
+	 * visitor is told to sign in before being told to fix a field. The choice is read with the
+	 * checkout's rules, which the placement reads next anyway: it costs no statement.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @throws CodedException `checkout.account_required`.
+	 *
+	 * @param Actor $actor Who places the order.
+	 */
+	private function refuseWithoutAccount( Actor $actor ): void {
+		if ( AccountsAtCheckout::Required === $this->rules->accounts() && ! $actor->isPerson() ) {
+			CodedException::raise( CheckoutError::AccountRequired );
 		}
 	}
 

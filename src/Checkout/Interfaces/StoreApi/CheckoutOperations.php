@@ -446,6 +446,7 @@ final class CheckoutOperations {
 				CartError::NotFound,
 				CartError::NotOpen,
 				CartError::VersionStale,
+				CheckoutError::AccountRequired,
 				CheckoutError::CartEmpty,
 				CheckoutError::SessionIncomplete,
 				CheckoutError::InvalidFields,

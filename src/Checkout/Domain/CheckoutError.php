@@ -102,6 +102,13 @@ enum CheckoutError: string implements ErrorCode {
 	case IdempotencyKeyMissing = 'checkout.idempotency_key_missing';
 
 	/**
+	 * The store takes orders from signed-in customers only, and nobody is signed in: a visitor's placement, refused before anything is written.
+	 *
+	 * @since 0.2.0
+	 */
+	case AccountRequired = 'checkout.account_required';
+
+	/**
 	 * The cart has no line to place an order for.
 	 *
 	 * @since 0.1.0
@@ -232,6 +239,11 @@ enum CheckoutError: string implements ErrorCode {
 				self::IdempotencyKeyMissing,
 				400,
 				static fn(): string => __( 'An order is placed only with an Idempotency-Key header: a new key, such as a UUID, for each attempt, and the same key again when the attempt is retried.', 'seocart' )
+			),
+			new ErrorDefinition(
+				self::AccountRequired,
+				401,
+				static fn(): string => __( 'The store takes orders from signed-in customers only, so the order was not placed. Sign in, then place the order again.', 'seocart' )
 			),
 			new ErrorDefinition(
 				self::CartEmpty,
