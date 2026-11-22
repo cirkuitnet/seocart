@@ -74,15 +74,34 @@ final class ExtensionLiveScriptTest extends TestCase {
 	}
 
 	/**
-	 * Tests that the heads step gives the extension's commit and SEOCart's.
+	 * Tests that the heads step gives the extension's commit and SEOCart's, each the commit of its own checkout: the fixture is copied into a git repository of its own, so the two differ.
 	 *
 	 * @since 0.2.0
 	 */
 	public function test_heads_gives_both_commits(): void {
-		$run = $this->runner( array( 'heads', StatedDeclaration::FIXTURE ) );
+		$files = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( StatedDeclaration::FIXTURE, \FilesystemIterator::SKIP_DOTS ) );
+		$root  = (string) realpath( StatedDeclaration::FIXTURE );
 
+		foreach ( $files as $file ) {
+			if ( $file instanceof \SplFileInfo && $file->isFile() ) {
+				$this->writeFile( 'extension/' . substr( (string) $file->getRealPath(), strlen( $root ) + 1 ), (string) file_get_contents( $file->getPathname() ) );
+			}
+		}
+
+		// A repository of the test's own, its configuration left out, so no setting of the machine's changes the commit.
+		$git = 'env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@example.org GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@example.org git -C ' . escapeshellarg( $this->directory . '/extension' );
+
+		// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.system_calls_exec -- the test's own repository.
+		exec( $git . ' init -q && ' . $git . ' add -A && ' . $git . ' commit -q -m fixture && ' . $git . ' rev-parse HEAD', $extension, $status );
+		// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.system_calls_exec -- SEOCart's own checkout, read.
+		exec( 'git -C ' . escapeshellarg( dirname( __DIR__, 5 ) ) . ' rev-parse HEAD', $core );
+
+		$run = $this->runner( array( 'heads', $this->directory . '/extension' ) );
+
+		$this->assertSame( 0, $status, 'The fixture\'s copy could not be committed.' );
+		$this->assertNotSame( $extension, $core );
 		$this->assertSame( 0, $run['status'], $run['err'] );
-		$this->assertMatchesRegularExpression( '/^ext-head=([0-9a-f]{40})\ncore-head=\1\n$/D', $run['out'], 'The fixture is a folder of SEOCart\'s checkout, so its commit is SEOCart\'s.' );
+		$this->assertSame( 'ext-head=' . end( $extension ) . "\ncore-head=" . end( $core ) . "\n", $run['out'] );
 	}
 
 	/**
