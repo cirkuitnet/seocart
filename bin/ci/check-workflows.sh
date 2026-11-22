@@ -31,7 +31,10 @@
 # covers every *.sh under its bin/; check 3 has no setup action, PHP matrix or PHP_FLOOR of
 # its own to check, and instead requires every call of SEOCart's workflows
 # (cirkuitnet/seocart/.github/workflows/<file>@<commit>) to name the commit
-# SEOCART_CORE_REF in seocart-core.env pins, so the pin is stated once and moved once.
+# SEOCART_CORE_REF in seocart-core.env pins, so the pin is stated once and moved once. It
+# reports any use of SEOCart's composite actions from GitHub
+# (cirkuitnet/seocart/.github/actions/<name>@<ref>): an extension uses them from the checkout
+# beside it (./seocart/.github/actions/<name>), which is at the pin, so they follow it.
 #
 # Needs actionlint (https://github.com/rhysd/actionlint) and shellcheck on PATH. POSIX sh
 # and awk: runs on the Ubuntu runner and on a developer machine alike.
@@ -258,6 +261,20 @@ awk -v core_pin="$core_pin" '
 
 		# A workflow or an action of this repository: there is nothing to pin.
 		if ( reference ~ /^\.\// ) {
+			next
+		}
+
+		# An extension uses the composite actions of SEOCart from the checkout beside it, which is at
+		# the commit seocart-core.env pins: from GitHub, at a ref of their own, they would be a second
+		# pin that bin/dev/bump-core.sh does not move. The names of owners and repositories on GitHub
+		# ignore case, and the reference may be quoted.
+		named = tolower( reference )
+		sub( /^["\047]/, "", named )
+		if ( core_pin != "" && named ~ /^cirkuitnet\/seocart\/\.github\/actions\// ) {
+			sub( /^cirkuitnet\/seocart\/\.github\/actions\//, "", named )
+			sub( /[@ \t"\047].*$/, "", named )
+			printf "%s:%d: use SEOCart\047s actions from the checkout beside the extension: ./seocart/.github/actions/%s\n", FILENAME, FNR, named
+			bad = 1
 			next
 		}
 

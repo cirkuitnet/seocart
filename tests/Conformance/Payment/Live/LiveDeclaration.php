@@ -136,7 +136,7 @@ abstract class LiveDeclaration {
 	private ?MessageGuard $guard = null;
 
 	/**
-	 * Returns the live workflow's file name in .github/workflows, such as `stripe-test-mode.yml`.
+	 * Returns the live workflow's file name in .github/workflows, such as `example-sandbox.yml`.
 	 *
 	 * @since 0.2.0
 	 *
@@ -289,7 +289,7 @@ abstract class LiveDeclaration {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @return string Such as `cirkuitnet/seocart-gateway-for-stripe`.
+	 * @return string Such as `cirkuitnet/seocart-gateway-for-example`.
 	 */
 	final public function repository(): string {
 		return $this->loaded( $this->repository );
@@ -300,7 +300,7 @@ abstract class LiveDeclaration {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @return string Such as `seocart-gateway-for-stripe`.
+	 * @return string Such as `seocart-gateway-for-example`.
 	 */
 	final public function slug(): string {
 		return substr( $this->repository(), (int) strpos( $this->repository(), '/' ) + 1 );
@@ -311,7 +311,7 @@ abstract class LiveDeclaration {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @return string Such as `stripe-live`.
+	 * @return string Such as `example-live`.
 	 */
 	final public function liveGroup(): string {
 		return substr( $this->slug(), strlen( self::SLUG_PREFIX ) ) . '-live';
@@ -322,7 +322,7 @@ abstract class LiveDeclaration {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @return string Such as `stripe-test-mode`.
+	 * @return string Such as `example-sandbox`.
 	 */
 	final public function basename(): string {
 		return (string) preg_replace( '/\.ya?ml$/D', '', $this->workflow() );
@@ -333,7 +333,7 @@ abstract class LiveDeclaration {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @return string Such as `bin/ci/stripe-test-mode.sh`.
+	 * @return string Such as `bin/ci/example-sandbox.sh`.
 	 */
 	final public function script(): string {
 		return 'bin/ci/' . $this->basename() . '.sh';

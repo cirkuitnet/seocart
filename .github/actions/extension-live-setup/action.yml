@@ -1,0 +1,72 @@
+# Sets up a job of a payment extension's live workflow: PHP and Composer with SEOCart's development
+# install, then, as the job asks, WordPress with SEOCart's test configuration, and Node.js with the
+# extension's browser scripts' dependencies and Chromium for Playwright.
+#
+# It installs everything the job needs, so a job runs it before its settings step, which writes the
+# file of the provider's credentials, and never after: once that file exists, nothing may install,
+# download or build. It reads no secret and writes no settings file (a test of SEOCart's holds it
+# to that).
+#
+# Called only from an extension's live workflow, once SEOCart is checked out beside the extension
+# (seocart/ and ext/ in the workspace), as
+#
+#     uses: ./seocart/.github/actions/extension-live-setup
+#
+# from the checkout beside the extension, never from GitHub at a ref: the live workflow checks
+# SEOCart out at the commit seocart-core.env pins, so this action, bin/ci/extension-live.sh and the
+# classes they run are of the same commit, and there is no second pin. A `./` path is read from the
+# workspace, not from this folder, so the steps below name ./seocart/... as well; SEOCart's own
+# workflows never call this action.
+
+name: Set up an extension's live workflow job
+description: Sets up PHP, Composer and SEOCart's development install, and as asked WordPress, Node.js and Chromium, for a payment extension's live workflow.
+
+inputs:
+    wordpress:
+        description: '"true" downloads WordPress and writes SEOCart''s test configuration, for the integration tests; "false" leaves them out, as a job whose own site step installs WordPress does.'
+        required: false
+        default: 'true'
+    browser:
+        description: '"true" sets up Node.js, installs the browser scripts'' dependencies and Chromium for Playwright, and tests the browser scripts, for a job that runs a browser.'
+        required: false
+        default: 'false'
+
+runs:
+    using: composite
+    steps:
+        - name: Set up PHP and Composer
+          uses: ./seocart/.github/actions/setup-php-composer
+          with:
+              working-directory: seocart
+              extensions: mysqli
+              tools: wp-cli:2.12.0
+              install: full
+
+        - name: Download WordPress and write SEOCart's test configuration
+          if: ${{ inputs.wordpress == 'true' }}
+          shell: bash
+          run: sh seocart/bin/ci/prepare-integration.sh "$WORDPRESS_VERSION"
+
+        - name: Set up Node.js
+          if: ${{ inputs.browser == 'true' }}
+          uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+          with:
+              node-version-file: seocart/.nvmrc
+
+        - name: Install the browser scripts' dependencies
+          if: ${{ inputs.browser == 'true' }}
+          shell: bash
+          working-directory: ext/tests/browser
+          run: npm ci
+
+        - name: Install Chromium for Playwright
+          if: ${{ inputs.browser == 'true' }}
+          shell: bash
+          working-directory: ext/tests/browser
+          run: npx playwright install --with-deps chromium
+
+        - name: Test the browser scripts
+          if: ${{ inputs.browser == 'true' }}
+          shell: bash
+          working-directory: ext/tests/browser
+          run: node --test
