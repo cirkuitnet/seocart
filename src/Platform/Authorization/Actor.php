@@ -131,4 +131,19 @@ final class Actor {
 	public function systemName(): ?string {
 		return $this->systemName;
 	}
+
+	/**
+	 * Tells whether the actor is a person: a WordPress user acting in person.
+	 *
+	 * A visitor (user 0) is no person, and neither is a process acting on anyone's authority: a
+	 * command or a job is not the person whose authority it runs on. Only a person may be a
+	 * customer, place an order that is theirs, or make an order theirs.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return bool False for a visitor and for a process.
+	 */
+	public function isPerson(): bool {
+		return $this->userId >= 1 && null === $this->systemName;
+	}
 }

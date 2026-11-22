@@ -26,6 +26,7 @@ use SEOCart\Cart\Interfaces\StoreApi\CartOperations;
 use SEOCart\Cart\Interfaces\StoreApi\StoreRequestPolicy;
 use SEOCart\Checkout\Application\ChangeCartCurrency;
 use SEOCart\Checkout\Application\CheckoutForm;
+use SEOCart\Checkout\Application\CheckoutSettings;
 use SEOCart\Checkout\Application\OrderLimits;
 use SEOCart\Checkout\Application\PlaceOrder;
 use SEOCart\Checkout\Application\ResumePayment;
@@ -88,7 +89,8 @@ use SEOCart\Support\Schema\ResourceSchema;
  *
  * - `checkout.get_form`, `GET seocart/store/v1/checkout/form`: the checkout form as the store set
  *   it up, compiled from the declared checkout fields and the store's choices: the fields asked
- *   for, in form order, and the order limits per currency. It is the same for every visitor.
+ *   for, in form order, the order limits per currency, and whether a shopper must be signed in to
+ *   place an order. It is the same for every visitor.
  *
  * The operations are public, so they are routes of the Store API only, guarded by their request
  * policy. The session write and the currency switch are counted in the cart writes' rate limit: a
@@ -574,7 +576,7 @@ final class CheckoutOperations {
 		return new OperationDefinition(
 			id: self::GET_FORM,
 			label: static fn(): string => __( 'Read the checkout form', 'seocart' ),
-			summary: 'Returns the checkout form as the store set it up: every field the checkout asks for, in the order to show them, with its label in the request\'s language, whether an order needs it, its longest value, its options and where its value is sent, and the order limits per currency. A field the store hides is not listed, and the checkout refuses a value for it.',
+			summary: 'Returns the checkout form as the store set it up: every field the checkout asks for, in the order to show them, with its label in the request\'s language, whether an order needs it, its longest value, its options and where its value is sent, the order limits per currency, and whether a shopper must be signed in to place an order. A field the store hides is not listed, and the checkout refuses a value for it.',
 			input: array(),
 			output: new ResourceSchema(
 				'CheckoutForm',
@@ -597,6 +599,7 @@ final class CheckoutOperations {
 						),
 						required: true
 					),
+					CheckoutSettings::accountsField( answered: true ),
 				)
 			),
 			capability: null,

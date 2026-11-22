@@ -95,7 +95,7 @@ final class Customers implements ActorCustomers {
 	 * @return int|null The record's id, from 1; null when the actor is no customer.
 	 */
 	public function customerOf( Actor $actor ): ?int {
-		if ( ! self::isPerson( $actor ) ) {
+		if ( ! $actor->isPerson() ) {
 			return null;
 		}
 
@@ -122,7 +122,7 @@ final class Customers implements ActorCustomers {
 	 * @return int|null The record's id, from 1; null when the actor is no customer.
 	 */
 	public function customerFor( Actor $actor ): ?int {
-		if ( ! self::isPerson( $actor ) ) {
+		if ( ! $actor->isPerson() ) {
 			return null;
 		}
 
@@ -172,18 +172,6 @@ final class Customers implements ActorCustomers {
 	 */
 	public function unlink( int $customerId ): bool {
 		return $this->records->unlink( $customerId );
-	}
-
-	/**
-	 * Tells whether an actor is a person who may be a customer: a WordPress user acting in person.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param Actor $actor The actor.
-	 * @return bool False for a visitor (user 0) and for a process acting on anyone's authority.
-	 */
-	private static function isPerson( Actor $actor ): bool {
-		return $actor->userId() >= 1 && null === $actor->systemName();
 	}
 
 	/**

@@ -28,20 +28,41 @@ use SEOCart\Platform\Settings\Storage;
 final class CheckoutSettingsTest extends TestCase {
 
 	/**
-	 * Tests the group: two internal scalars, each `{}` by default.
+	 * Tests the group: two internal scalars, each `{}` by default, and the choice of accounts at checkout, exposed, `optional` by default.
 	 *
 	 * @since 0.2.0
+	 * @since 0.2.0 The choice of accounts at checkout.
 	 */
-	public function test_the_group_holds_two_internal_scalars(): void {
+	public function test_the_group_holds_two_internal_scalars_and_the_accounts_choice(): void {
 		$this->assertSame(
 			array(
 				CheckoutSettings::FIELD_PRESENCE => array( Storage::Scalar, false, '{}', 'seocart_checkout_field_presence' ),
 				CheckoutSettings::ORDER_LIMITS   => array( Storage::Scalar, false, '{}', 'seocart_checkout_order_limits' ),
+				CheckoutSettings::ACCOUNTS       => array( Storage::Scalar, true, 'optional', 'seocart_checkout_accounts' ),
 			),
 			array_combine(
 				array_map( static fn( Setting $setting ): string => $setting->name(), CheckoutSettings::settings() ),
 				array_map( static fn( Setting $setting ): array => array( $setting->storage(), $setting->isExposed(), $setting->field()->defaultValue(), $setting->optionName() ), CheckoutSettings::settings() )
 			)
+		);
+	}
+
+	/**
+	 * Tests that the choice of accounts at checkout takes the three answers AccountsAtCheckout names, and that the form read's member is the same field, always given.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_accounts_choice_is_one_field_the_setting_and_the_form_share(): void {
+		$setting = self::setting( CheckoutSettings::ACCOUNTS )->field();
+		$member  = CheckoutSettings::accountsField( answered: true );
+
+		$this->assertSame( array( 'optional', 'required', 'guest_only' ), $setting->allowedValues() );
+		$this->assertSame( array( false, 'optional' ), array( $setting->isRequired(), $setting->defaultValue() ), 'The setting is optional until the store chooses.' );
+		$this->assertSame( array( true, null ), array( $member->isRequired(), $member->defaultValue() ), 'The form read always answers the choice.' );
+		$this->assertSame(
+			array( $setting->name(), $setting->type(), $setting->description(), $setting->example(), $setting->allowedValues() ),
+			array( $member->name(), $member->type(), $member->description(), $member->example(), $member->allowedValues() ),
+			'The form read\'s member is the setting\'s field.'
 		);
 	}
 

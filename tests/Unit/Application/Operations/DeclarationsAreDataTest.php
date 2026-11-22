@@ -102,6 +102,7 @@ final class DeclarationsAreDataTest extends TestCase {
 		'src/Cart/Domain/UnavailableLine.php',
 		'src/Checkout/Interfaces/StoreApi/CheckoutOperations.php',
 		'src/Checkout/Domain/CheckoutError.php',
+		'src/Checkout/Domain/AccountsAtCheckout.php',
 		'src/Checkout/Domain/AddressDocument.php',
 		'src/Checkout/Domain/CheckoutDetails.php',
 		'src/Checkout/Domain/IdempotencyClaim.php',

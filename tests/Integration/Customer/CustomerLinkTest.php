@@ -97,7 +97,7 @@ final class CustomerLinkTest extends OrderTestCase {
 	 *
 	 * No code links a record to user 0: the planted row is what a broken import could leave.
 	 *
-	 * Planted violation: in Customers::isPerson(), drop `$actor->userId() >= 1 &&`. The visitor
+	 * Planted violation: in Actor::isPerson(), drop `$this->userId >= 1 &&`. The visitor
 	 * then matches the planted record, sends the read, and reads its order without a key.
 	 *
 	 * @since 0.2.0
@@ -120,7 +120,7 @@ final class CustomerLinkTest extends OrderTestCase {
 	/**
 	 * Tests that a process acting on a user's authority is no customer, even of the user's own record, and sends no statement.
 	 *
-	 * Planted violation: in Customers::isPerson(), drop `&& null === $actor->systemName()`. The
+	 * Planted violation: in Actor::isPerson(), drop `&& null === $this->systemName`. The
 	 * process then answers as the user's record.
 	 *
 	 * @since 0.2.0

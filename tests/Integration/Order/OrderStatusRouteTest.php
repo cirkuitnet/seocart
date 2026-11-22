@@ -634,7 +634,7 @@ final class OrderStatusRouteTest extends OrderTestCase {
 	/**
 	 * Tests that a read costs the access check's one query and the order's four, whatever its number of lines, and a refusal the one; a logged-in actor's, one more each: their customer.
 	 *
-	 * Planted violation: in Customers::isPerson(), drop `$actor->userId() >= 1 &&`: a visitor's
+	 * Planted violation: in Actor::isPerson(), drop `$this->userId >= 1 &&`: a visitor's
 	 * read then asks for the customer, at six reads and two.
 	 *
 	 * @since 0.1.0

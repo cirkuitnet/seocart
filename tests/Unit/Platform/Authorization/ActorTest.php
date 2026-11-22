@@ -56,6 +56,31 @@ final class ActorTest extends TestCase {
 	}
 
 	/**
+	 * Tests who is a person: a user acting in person, never a visitor and never a process, whoever it acts for.
+	 *
+	 * Planted violations: in Actor::isPerson(), drop `$this->userId >= 1 &&`: the visitor is a
+	 * person; drop `&& null === $this->systemName`: the command is.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_only_a_user_acting_in_person_is_a_person(): void {
+		$this->assertSame(
+			array(
+				'a user in person'                     => true,
+				'a visitor'                            => false,
+				'a command run as a user'              => false,
+				'a job acting on no user\'s authority' => false,
+			),
+			array(
+				'a user in person'                     => Actor::user( 5 )->isPerson(),
+				'a visitor'                            => Actor::user( 0 )->isPerson(),
+				'a command run as a user'              => Actor::system( 'cli', 5 )->isPerson(),
+				'a job acting on no user\'s authority' => Actor::system( 'reconciliation', 0 )->isPerson(),
+			)
+		);
+	}
+
+	/**
 	 * Tests the actors that cannot exist.
 	 *
 	 * A user id is never negative, and a process always says which process it is.

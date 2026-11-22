@@ -19,14 +19,15 @@ use SEOCart\Platform\Authorization\Actor;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Performs `checkout.get_form`: the fields the checkout asks for, in form order, with their words and limits, and the order limits per currency.
+ * Performs `checkout.get_form`: the fields the checkout asks for, in form order, with their words and limits, the order limits per currency, and whether a shopper must be signed in.
  *
  * Owns one fact: what a storefront's checkout form shows, so a client mirrors the server and never
  * decides a field of its own. A hidden field is not listed. Each field says whether an order needs
  * it, its longest value, a select's options, its autocomplete token, and where its value is sent
  * (Carrier): in each address, in the billing address alone, or in the custom fields. The labels
  * are translated in the request's locale. The order limits are the store's, by currency; where the
- * cart stands against them is the session write's answer (OrderLimits::verdict()).
+ * cart stands against them is the session write's answer (OrderLimits::verdict()). The store's
+ * choice of accounts at checkout tells a storefront whether to offer a sign-in, or to ask for one.
  *
  * The storefront's own render calls read() in PHP, so the block and the route show one form. The
  * answer holds no personal data and is the same for every visitor.
@@ -52,7 +53,7 @@ final class CheckoutForm {
 	 *
 	 * @param array<string, mixed> $input The prepared input: the operation declares none.
 	 * @param Actor                $actor Who reads: anyone.
-	 * @return array{fields: list<array<string, mixed>>, order_limits: list<array{currency: string, minimum_minor: int|null, maximum_minor: int|null}>} The form, by wire name.
+	 * @return array{fields: list<array<string, mixed>>, order_limits: list<array{currency: string, minimum_minor: int|null, maximum_minor: int|null}>, accounts: string} The form, by wire name.
 	 */
 	public function read( array $input, Actor $actor ): array {
 		unset( $input, $actor );
@@ -80,6 +81,7 @@ final class CheckoutForm {
 				$fields->inForce()
 			),
 			'order_limits' => $limits,
+			'accounts'     => $this->rules->accounts()->value,
 		);
 	}
 

@@ -27,6 +27,8 @@ use SEOCart\Tests\Support\QueryLog;
  *
  * Planted violations: in CheckoutRules::current(), read the `checkout` group in a values() call of
  * its own, then the inventory settings in another: the cold form read sends two; in
+ * CheckoutRules::accounts(), read the choice of accounts at checkout in a values() call of its
+ * own: the cold form read sends two; in
  * CheckoutSettingsService::swap(), create the option with SettingsStore::writeScalars(): the first
  * change's insert replaces a row that exists.
  *
@@ -62,6 +64,7 @@ final class CheckoutSettingsBudgetTest extends PlacementTestCase {
 
 		$this->assertSame( 1, $cold->count(), 'The cold form read.' );
 		$this->assertSame( 1, $cold->matching( '/seocart_checkout_field_presence.*seocart_inventory_multi_location_fulfilment|seocart_inventory_multi_location_fulfilment.*seocart_checkout_field_presence/s' )->count(), 'The checkout group is read with the inventory group\'s settings, in one statement.' );
+		$this->assertSame( 1, $cold->matching( '/seocart_checkout_accounts.*seocart_checkout_field_presence|seocart_checkout_field_presence.*seocart_checkout_accounts/s' )->count(), 'The choice of accounts at checkout is read with the rest of its group, in the same statement.' );
 		$this->assertSame( 0, $warm->count(), 'The warm form read.' );
 	}
 

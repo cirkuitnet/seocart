@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Checkout\Application;
 
+use SEOCart\Checkout\Domain\AccountsAtCheckout;
 use SEOCart\Checkout\Domain\AddressDocument;
 use SEOCart\Checkout\Domain\CheckoutDetails;
 use SEOCart\Checkout\Domain\CheckoutError;
@@ -215,6 +216,15 @@ final class CheckoutRules {
 	private array $limits = array();
 
 	/**
+	 * Whether a shopper must be signed in to place an order, once read.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var AccountsAtCheckout
+	 */
+	private AccountsAtCheckout $accounts = AccountsAtCheckout::Optional;
+
+	/**
 	 * Creates the rules. Reads nothing and fires nothing.
 	 *
 	 * @since 0.2.0
@@ -255,6 +265,7 @@ final class CheckoutRules {
 			$values = $this->store->values( array_merge( CheckoutSettings::settings(), $this->alongside ) );
 
 			$this->limits   = CheckoutSettings::limits( (string) $values[ CheckoutSettings::ORDER_LIMITS ] );
+			$this->accounts = AccountsAtCheckout::from( (string) $values[ CheckoutSettings::ACCOUNTS ] );
 			$this->compiled = new CompiledFields( $this->fields(), CheckoutSettings::presences( (string) $values[ CheckoutSettings::FIELD_PRESENCE ] ) );
 		}
 
@@ -352,6 +363,19 @@ final class CheckoutRules {
 		$this->current();
 
 		return $this->limits;
+	}
+
+	/**
+	 * Returns whether a shopper must be signed in to place an order, read with the fields.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return AccountsAtCheckout The store's choice; Optional until it chooses.
+	 */
+	public function accounts(): AccountsAtCheckout {
+		$this->current();
+
+		return $this->accounts;
 	}
 
 	/**

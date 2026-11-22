@@ -1,6 +1,6 @@
 <?php
 /**
- * CheckoutSettings: the settings of the `checkout` group, the store's presence choices and its order limits
+ * CheckoutSettings: the settings of the `checkout` group, the store's presence choices, its order limits and whether it takes guests' orders
  *
  * @package SEOCart
  * @since   0.2.0
@@ -11,6 +11,7 @@ declare( strict_types=1 );
 
 namespace SEOCart\Checkout\Application;
 
+use SEOCart\Checkout\Domain\AccountsAtCheckout;
 use SEOCart\Contracts\Checkout\CheckoutField;
 use SEOCart\Contracts\Checkout\Presence;
 use SEOCart\Platform\Settings\Setting;
@@ -24,20 +25,23 @@ defined( 'ABSPATH' ) || exit;
 // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- These exceptions report a programming error to the developer; they are never HTML.
 
 /**
- * Declares the `checkout` group: which presence the store chose for each checkout field, and the smallest and largest order it takes in each currency.
+ * Declares the `checkout` group: which presence the store chose for each checkout field, the smallest and largest order it takes in each currency, and whether a shopper must be signed in to place an order.
  *
- * Owns one fact: how the two choices are stored. Each is an option of its own holding a JSON
- * object, internal to the checkout: the staff operations write them, by compare-and-swap, and the
- * checkout's rules read them, in one statement with the settings the calculation reads next.
+ * Owns one fact: how the three choices are stored. Each is an option of its own, and the
+ * checkout's rules read all three in one statement with the settings the calculation reads next.
+ * The first two hold a JSON object, internal to the checkout: its staff operations write them, by
+ * compare-and-swap. The third is a word, exposed to the settings operations, which write it.
  *
  * - `field_presence` maps a field's key to `hidden`, `optional` or `required`, for the fields whose
  *   presence differs from their default only. A key no declaration names is ignored when read.
  * - `order_limits` maps a currency code to `{ "max": …, "min": … }`, each a whole number of the
  *   currency's minor units from 1, or null for no bound; a currency without an entry has no limit,
  *   and an entry without either bound is left out. The minimum is never above the maximum.
+ * - `accounts` is `optional`, `required` or `guest_only` (AccountsAtCheckout), `optional` until the
+ *   store chooses: only `required` changes what a placement accepts.
  *
- * Each value's check decodes it, refuses any other shape, and stores the canonical form: the keys
- * sorted, the encoding fixed. A shape no client can send is a programming error
+ * Each JSON value's check decodes it, refuses any other shape, and stores the canonical form: the
+ * keys sorted, the encoding fixed. A shape no client can send is a programming error
  * (\InvalidArgumentException), and a stored value of another shape reads as
  * `settings.stored_value_invalid`, as for any setting. Nothing here holds personal data.
  *
@@ -76,7 +80,16 @@ final class CheckoutSettings {
 	public const ORDER_LIMITS = 'order_limits';
 
 	/**
-	 * What either setting holds when nothing was chosen: an empty object.
+	 * The name of the setting of whether a shopper must be signed in to place an order.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	public const ACCOUNTS = 'accounts';
+
+	/**
+	 * What the presence choices or the order limits hold when nothing was chosen: an empty object.
 	 *
 	 * @since 0.2.0
 	 *
@@ -139,6 +152,35 @@ final class CheckoutSettings {
 				exposed: false,
 				check: static fn( int|string $value ): string => self::encode( self::limits( (string) $value ) )
 			),
+			Setting::scalar(
+				group: self::GROUP,
+				field: self::accountsField(),
+				exposed: true
+			),
+		);
+	}
+
+	/**
+	 * Declares the store's choice of accounts at checkout, the one field the setting stores and the checkout form answers.
+	 *
+	 * The setting's field is optional and `optional` until the store chooses; an answer's member is
+	 * the same field, always given, with no default.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param bool $answered Optional. True for an answer's member; false for the setting's field. Default false.
+	 * @return FieldSpec The field.
+	 */
+	public static function accountsField( bool $answered = false ): FieldSpec {
+		return new FieldSpec(
+			name: self::ACCOUNTS,
+			type: FieldType::String,
+			description: 'Whether a shopper must be signed in to place an order: optional takes orders from guests and signed-in customers alike, required from signed-in customers only, and guest_only offers no sign-in, though a signed-in customer\'s order is still theirs.',
+			label: static fn(): string => __( 'Accounts at checkout', 'seocart' ),
+			example: AccountsAtCheckout::Required->value,
+			required: $answered,
+			default_value: $answered ? null : AccountsAtCheckout::Optional->value,
+			allowed: array_column( AccountsAtCheckout::cases(), 'value' )
 		);
 	}
 

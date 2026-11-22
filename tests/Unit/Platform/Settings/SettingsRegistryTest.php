@@ -68,11 +68,12 @@ final class SettingsRegistryTest extends TestCase {
 				'seocart_inventory_transfer_warning_days' => array( InventorySettings::TRANSFER_WARNING_DAYS ),
 				'seocart_checkout_field_presence'         => array( CheckoutSettings::FIELD_PRESENCE ),
 				'seocart_checkout_order_limits'           => array( CheckoutSettings::ORDER_LIMITS ),
+				'seocart_checkout_accounts'               => array( CheckoutSettings::ACCOUNTS ),
 			),
 			$options
 		);
 
-		$this->assertSame( array( InternationalSettings::BASE_CURRENCY, InternationalSettings::CROSS_ZONE_POLICY, InternationalSettings::TAX_ROUNDING_MODE, RefundCapSettings::ORDER_AGENT_PER_ORDER, RefundCapSettings::ORDER_AGENT_PER_DAY, InventorySettings::MULTI_LOCATION_FULFILMENT, InventorySettings::TRANSFER_LEAD_DAYS, InventorySettings::TRANSFER_WARNING_DAYS ), array_map( static fn( Setting $setting ): string => $setting->name(), $registry->exposed() ) );
+		$this->assertSame( array( InternationalSettings::BASE_CURRENCY, InternationalSettings::CROSS_ZONE_POLICY, InternationalSettings::TAX_ROUNDING_MODE, RefundCapSettings::ORDER_AGENT_PER_ORDER, RefundCapSettings::ORDER_AGENT_PER_DAY, InventorySettings::MULTI_LOCATION_FULFILMENT, InventorySettings::TRANSFER_LEAD_DAYS, InventorySettings::TRANSFER_WARNING_DAYS, CheckoutSettings::ACCOUNTS ), array_map( static fn( Setting $setting ): string => $setting->name(), $registry->exposed() ) );
 		$this->assertSame( 'USD', $registry->setting( InternationalSettings::BASE_CURRENCY )->field()->defaultValue() );
 		$this->assertSame( array( SupportError::UnknownCurrency ), $registry->setting( InternationalSettings::BASE_CURRENCY )->errors() );
 
@@ -178,6 +179,7 @@ final class SettingsRegistryTest extends TestCase {
 				'seocart_inventory_transfer_warning_days' => array( 'Settings', InventorySettings::settings()[2]->field()->description(), false, Classification::Public ),
 				'seocart_checkout_field_presence'         => array( 'Settings', CheckoutSettings::settings()[0]->field()->description(), false, Classification::Public ),
 				'seocart_checkout_order_limits'           => array( 'Settings', CheckoutSettings::settings()[1]->field()->description(), false, Classification::Public ),
+				'seocart_checkout_accounts'               => array( 'Settings', CheckoutSettings::accountsField()->description(), false, Classification::Public ),
 			),
 			self::described( Settings::registry()->optionDefinitions() )
 		);
