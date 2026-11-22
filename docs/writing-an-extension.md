@@ -25,6 +25,10 @@ at one pinned commit:
   what the extension's CI runs.
 - SEOCart is always a **git checkout**, never a release zip: the integration bootstrap the
   extension's tests run on lives in SEOCart's `tests/`, which no zip or `git archive` contains.
+- A payment extension's **live workflow**, which runs it against its provider's test environment,
+  runs SEOCart's steps, set-up action and checks from that same checkout; the extension states
+  only what is its provider's, in `tests/live.php` (see
+  [The live workflow of a payment extension](#the-live-workflow-of-a-payment-extension)).
 
 So SEOCart needs `composer install` before an extension's gates can run, and its test database
 (`sh bin/dev/provision-test-db.sh <slug>` in SEOCart, or `new-worktree.sh`, which runs it) before
@@ -1015,6 +1019,184 @@ check-workflows: shared setup, action pins and remaining agreement
 
 check-workflows: PASS
 ```
+
+## The live workflow of a payment extension
+
+A payment extension's pull requests replay its provider's recorded answers. Its live workflow
+calls the provider for real: it runs the extension against the provider's test environment with
+the repository's secrets, weekly and by hand, and never on a pull request or a push, so it is never
+a check a merge waits for and a provider's outage never blocks one. The workflow is the
+extension's own file, such as `.github/workflows/stripe-test-mode.yml` in the Stripe gateway;
+everything in it that is no provider's comes from SEOCart, at the commit the extension pins.
+
+### What SEOCart provides
+
+- **`bin/ci/extension-live.sh`**, the steps that are no provider's, run as
+  `sh seocart/bin/ci/extension-live.sh <step> ext [<argument>]`: `heads` (the two commits under
+  test, as the job's outputs); `site` (SEOCart's scripts and both zips built, WordPress installed
+  with SEOCart and the extension from those zips, and the site the checkout's browser tests use
+  served on the runner); `conformance` (the conformance suite with every request sent to the
+  provider, its tests and skips checked against the declaration, and what it created there put on
+  the run list from the tapes it recorded); `live <part>` (a part's live tests: exactly as many as
+  the declaration states must run, and each pass); `optional <job>` (whether the secret the
+  optional part needs is set, never its value); and `verdict` (the run's closing table, and its
+  result).
+- **`bin/ci/extension-live-lib.sh`**, sourced by that script and by the extension's own: the run's
+  files, in one work directory, `$RUNNER_TEMP/seocart-live` (`settings.json`, `run-list`,
+  `report`, and the checkout's `site`), and the helpers `fail`, `output`, `mask`, `random_hex`,
+  `nonce`, `filtered` (a command's output passed through the guard below), `site_wp` and `count`
+  (a count from Playwright's summary).
+- **`.github/actions/extension-live-setup`**, a job's set-up: PHP, Composer and SEOCart's
+  development install; with `wordpress: 'true'`, the default, WordPress and SEOCart's test
+  configuration; with `browser: 'true'`, Node.js, the browser scripts' dependencies, Chromium for
+  Playwright, and the browser scripts' own tests.
+- **`tests/Conformance/Payment/Live/`**: the declaration an extension writes (`LiveDeclaration`);
+  the guard of everything a run prints (`MessageGuard`: an address with a query, an authorization
+  header and a card number by the Luhn check for every extension, and the shapes of the
+  provider's credentials its declaration adds); the readers of the run's files and the jobs'
+  outputs; the verdict; and the two checks the extension's workflow test runs, `WorkflowFacts`
+  and `SettingsLast`.
+
+### What the extension writes
+
+**`tests/live.php`** returns the declaration: what differs from one provider to the next, and
+nothing that can be derived. SEOCart reads it by path, so whatever class of its own it needs, it
+requires by path too: the verdict's job installs nothing. The Stripe gateway's, abridged:
+
+```php
+return new class() extends LiveDeclaration {
+	public function workflow(): string {
+		return 'stripe-test-mode.yml';
+	}
+
+	public function jobs(): array {
+		return array(
+			'live-conformance' => 'conformance',
+			'three-d-secure'   => 'three-d-secure',
+			'webhooks'         => 'webhooks',
+			'checkout'         => 'checkout',
+		);
+	}
+
+	// liveParts(): each part that runs `live <part>`, with its PHPUnit filter and how many tests it runs;
+	// proofs(), facts(), suiteTests(), suiteSkips(), shapes(), createdBy(); and optionalPart(), when a
+	// part runs nothing while a secret is absent.
+};
+```
+
+What is derived, and from where:
+
+| Derived | From | The Stripe gateway's |
+| --- | --- | --- |
+| The repository and the slug | the `name` of `composer.json` | `cirkuitnet/seocart-gateway-for-stripe` |
+| The live tests' PHPUnit group | the slug without `seocart-gateway-for-`, then `-live` | `stripe-live` |
+| The release zip | the slug | `dist/seocart-gateway-for-stripe-<version>.zip` |
+| The provider's script | the workflow's basename | `bin/ci/stripe-test-mode.sh` |
+| The concurrency group | the workflow's basename | `stripe-test-mode` |
+| The verdict's title | the workflow's `name:` | `Stripe test mode` |
+
+**`bin/ci/<the workflow's basename>.sh`** holds the provider's steps: `check-secrets`, `settings`
+(the one file of credentials the tests read, readable by its owner alone, and the run list and the
+report beside it), the gateway's configuration on the checkout's site, the checkout's browser
+tests, and the clean-up at the provider. `check-secrets` runs before SEOCart is checked out, so it
+does without the lib; every other step sources it:
+
+```sh
+#!/bin/sh
+# shellcheck disable=SC2154 # The paths and helpers of SEOCart's lib are assigned there.
+
+set -eu
+
+ext=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
+core=$(CDPATH='' cd -- "$ext/../seocart" 2>/dev/null && pwd) || core=$ext/../seocart
+# shellcheck source=/dev/null
+[ "${1:-}" = check-secrets ] || . "$core/bin/ci/extension-live-lib.sh"
+```
+
+**The workflow** has one job per part and a `verdict` job. A part's job, in order:
+
+```yaml
+steps:
+    - *checkout-extension # actions/checkout into ext/
+    - *check-secrets # sh ext/bin/ci/<basename>.sh check-secrets, the secrets in its env
+    - *choose-core # the commit ext/seocart-core.env pins, or the core-ref input
+    - *checkout-core # cirkuitnet/seocart at that commit, into seocart/
+    - *heads # sh seocart/bin/ci/extension-live.sh heads ext
+    - uses: ./seocart/.github/actions/extension-live-setup
+    - *settings # sh ext/bin/ci/<basename>.sh settings, the secrets in its env
+    - run: sh seocart/bin/ci/extension-live.sh live ext three-d-secure
+    - *cleanup # sh ext/bin/ci/<basename>.sh cleanup, if: always()
+```
+
+The `verdict` job needs every part, runs `if: always()`, checks out the extension and SEOCart, and
+runs `sh seocart/bin/ci/extension-live.sh verdict ext` with `SEOCART_LIVE_NEEDS:
+${{ toJSON(needs) }}` and `SEOCART_LIVE_PARTS: ${{ inputs.parts || 'all' }}` in its env. A part
+that waits for a secret, such as webhooks before the provider's webhook exists, runs
+`sh seocart/bin/ci/extension-live.sh optional ext <job>` after `*checkout-core`, with that secret
+alone in its env, and its live step only `if:` the output says `present`; the verdict then reads
+its proofs as skipped, with the declaration's reason, and the run stays green.
+
+The extension's workflow test calls `WorkflowFacts::violations()` on the workflow (the triggers,
+the permissions, the repository's guard on every job, secrets only in a step's env, one
+concurrency group, the jobs and the `parts` choices exactly the declaration's, the verdict's
+needs and checkout), `WorkflowFacts::copies()` on its root (no class of SEOCart's left copied in
+its `tests/`), and `SettingsLast`.
+
+### The settings file is written last
+
+The settings file holds the provider's key, so a job writes it after everything that installs,
+downloads or builds, and nothing after it installs, downloads or builds: a package's install
+script, a build, a downloaded browser or an action would otherwise run with the key readable.
+`SettingsLast` holds a workflow to that with closed lists. After a job's settings step, the job
+may run only `sh seocart/bin/ci/extension-live.sh conformance ext`, `… live ext <part>` for a part
+the declaration states, and the provider's steps the extension names, as
+`sh ext/bin/ci/<basename>.sh <step>`; each with the keys `name`, `id`, `if` and `run` alone, and
+no action. The shell those steps reach, SEOCart's script and lib included, may run only commands
+that cannot install, download or build: no `npm`, `npx`, `composer` or `pip`; Playwright as the
+set-up installed it, `node_modules/.bin/playwright`; WP-CLI, `sed` and `sort`, whose options can
+run code, only in calls written out whole. SEOCart's own tests hold its script and lib to the rule
+on a fixture extension; the extension's workflow test holds its workflow and script to it, naming
+its steps after the settings step and its whole calls that name its provider:
+
+```php
+$rule = new SettingsLast(
+	$declaration,
+	array( 'configure', 'checkout', 'cleanup' ),
+	array( 'site_wp seocart gateway configure <gateway id> --mode=test --from-file="$settings" --no-webhooks --user=admin' )
+);
+
+$this->assertSame( array(), $rule->violations( SettingsLast::sources( $declaration ) ) );
+```
+
+### SEOCart's action, from the checkout beside the extension
+
+A job uses the action as `./seocart/.github/actions/extension-live-setup`, never as
+`cirkuitnet/seocart/.github/actions/extension-live-setup@<ref>`. The job checks SEOCart out at
+the commit `seocart-core.env` pins, or the one `core-ref` names, so the local path runs the action
+of the same commit as the script and the classes, and `bin/dev/bump-core.sh` has nothing more to
+move. A reference to GitHub must name a literal ref, which would be a second pin that nothing
+moves with `seocart-core.env`; in an extension, `check-workflows.sh` reports one. Two facts of
+GitHub's shape the layout: an action of the workspace exists only once the checkout that brings
+it has run, so the steps before `*checkout-core` (the extension's checkout, the secrets' check, the
+choice of the commit) stay in the extension's workflow; and a `./` path is read from the job's
+workspace, not from the action's own folder, so the action names `./seocart/...` for what it
+calls, and serves only this layout.
+
+### One run
+
+A run starts weekly, or by hand from the repository's Actions tab or with GitHub's CLI, which
+takes the workflow's name; `parts` picks one part, or `all`:
+
+```text
+gh workflow run "Stripe test mode" -R cirkuitnet/seocart-gateway-for-stripe -f parts=checkout
+gh run list -R cirkuitnet/seocart-gateway-for-stripe --workflow "Stripe test mode" --limit 1
+gh run watch <the run's id> -R cirkuitnet/seocart-gateway-for-stripe
+```
+
+`--ref <branch>` runs a branch's copy of the workflow. GitHub starts a workflow by hand only when
+its file is on the default branch, so a new live workflow's first run follows its merge. The
+verdict's table, in the run's summary, lists each thing the run proves with the job that proves
+it, its result and counts, and each job's two commits and the facts it reported.
 
 ## Protect the main branch
 
