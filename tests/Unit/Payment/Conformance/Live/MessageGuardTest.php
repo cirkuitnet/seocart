@@ -54,20 +54,16 @@ final class MessageGuardTest extends TestCase {
 	public function test_a_credential_is_refused_and_redacted( string $kind, string $canary ): void {
 		$guard = StatedDeclaration::fixture()->guard();
 
-		$this->assertSame( $kind, $guard->shapeOf( $canary ) );
-
 		try {
-			$guard->say( 'The answer was %s.', $canary );
-			$this->fail( sprintf( 'A message carried %s.', $kind ) );
+			// The canary is made up for this run: a message that carried it may show it.
+			$this->fail( sprintf( 'A message carried %1$s: %2$s', $kind, $guard->say( 'The answer was %s.', $canary ) ) );
 		} catch ( \LogicException $refused ) {
 			$this->assertStringContainsString( $kind, $refused->getMessage() );
 			$this->assertStringNotContainsString( $canary, $refused->getMessage() );
 		}
 
-		$redacted = $guard->redact( 'before ' . $canary . ' after' );
-
-		$this->assertStringNotContainsString( $canary, $redacted );
-		$this->assertSame( 'before [redacted: ' . $kind . '] after', $redacted );
+		$this->assertSame( 'before [redacted: ' . $kind . '] after', $guard->redact( 'before ' . $canary . ' after' ) );
+		$this->assertSame( $kind, $guard->shapeOf( $canary ) );
 	}
 
 	/**
@@ -118,8 +114,8 @@ final class MessageGuardTest extends TestCase {
 	public function test_a_card_number_is_guarded_with_no_shape_declared(): void {
 		$guard = StatedDeclaration::with( array( 'shapes' => array() ) )->guard();
 
-		$this->assertSame( MessageGuard::CARD, $guard->shapeOf( '4012 8888 8888 1881' ) );
 		$this->assertSame( 'card [redacted: a card number] declined', $guard->redact( 'card 4012888888881881 declined' ) );
+		$this->assertSame( MessageGuard::CARD, $guard->shapeOf( '4012 8888 8888 1881' ) );
 		$this->assertSame( 'an [redacted: an authorization header] header', $guard->redact( 'an Bearer UnitTestAccessTokenOfTheFixturesOnly header' ) );
 	}
 
