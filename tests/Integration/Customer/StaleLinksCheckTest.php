@@ -28,7 +28,12 @@ use SEOCart\Tests\Support\KernelContainer;
  * Planted violations, each shown red and removed: in StaleLinksCheck::staleOf(), compare the
  * user's id alone (drop `|| ! $link->matches( … )`): the record of a user registered at another
  * time is not counted; in StaleLinksCheck::run(), read one page only (drop the loop): the
- * records past the first page are not counted.
+ * records past the first page are not counted; in StaleLinksCheck::repair(), unlink each link
+ * found still stale by its record's id alone (`$this->customers->unlink( $link->customerId )` in
+ * place of `unlinkStale( $link )`): the links changed between the check and its repair to a live
+ * pair are unlinked; in MysqlCustomerRepository::UNLINK_STALE, drop
+ * `AND user_registered_at <=> NULLIF( %s, '' )`: the link set to its own user's registration time
+ * between the check and its repair is unlinked.
  *
  * @since 0.2.0
  */
@@ -170,6 +175,60 @@ final class StaleLinksCheckTest extends DatabaseTestCase {
 	}
 
 	/**
+	 * Tests that a link rewritten between the check and its repair is left for the next run: one moved to another user at that user's time, one moved to another stale pair, and one set to its own user's registration time.
+	 *
+	 * The repair reads the users again but not the links, so it still holds each link as run() read
+	 * it: only its conditional unlink, which holds the record's id, user id and registration time,
+	 * leaves a rewritten link alone. The next run finds the one still stale, and its repair unlinks it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_a_link_that_changes_between_the_check_and_its_repair_is_left_for_the_next_run(): void {
+		$first   = $this->createUser( 'subscriber' );
+		$second  = $this->createUser( 'subscriber' );
+		$third   = $this->createUser( 'subscriber' );
+		$fourth  = $this->createUser( 'subscriber' );
+		$fifth   = $this->createUser( 'subscriber' );
+		$moved   = $this->plantCustomer( $first, '2001-02-03 04:05:06' );
+		$stale   = $this->plantCustomer( $second, '2001-02-03 04:05:06' );
+		$renewed = $this->plantCustomer( $fifth, '2001-02-03 04:05:06' );
+		$check   = $this->check();
+
+		$this->assertSame( '3 customer records are linked to a user who is gone or registered at another time.', $check->run()->summary );
+
+		// Between the check and its repair, an import or a restore rewrites the three links.
+		$this->relink( $moved, $third, self::registeredAt( $third ) );
+		$this->relink( $stale, $fourth, '2002-03-04 05:06:07' );
+		$this->relink( $renewed, $fifth, self::registeredAt( $fifth ) );
+
+		$this->assertSame( array(), $check->repair()->changes, 'The repair unlinked a link rewritten since the check.' );
+		$this->assertSame(
+			array(
+				$moved   => array(
+					'user_id'            => $third,
+					'user_registered_at' => self::registeredAt( $third ),
+				),
+				$stale   => array(
+					'user_id'            => $fourth,
+					'user_registered_at' => '2002-03-04 05:06:07',
+				),
+				$renewed => array(
+					'user_id'            => $fifth,
+					'user_registered_at' => self::registeredAt( $fifth ),
+				),
+			),
+			$this->customerRows(),
+			'Every rewritten link is as it was rewritten.'
+		);
+		$this->assertSame( array( $moved, $renewed ), array( $this->customers()->customerOf( Actor::user( $third ) ), $this->customers()->customerOf( Actor::user( $fifth ) ) ), 'The two live links name their users\' records.' );
+
+		$this->assertSame( '1 customer record is linked to a user who is gone or registered at another time.', $check->run()->summary, 'The next run finds the link still stale.' );
+		$this->assertSame( array( "unlinked customer record {$stale} from its user." ), $check->repair()->changes, 'The next repair unlinks it alone.' );
+		$this->assertTrue( $this->check()->run()->passed, 'Nothing is stale after the next repair.' );
+		$this->assertSame( array( $third, $fifth ), array( $this->customerRows()[ $moved ]['user_id'] ?? null, $this->customerRows()[ $renewed ]['user_id'] ?? null ), 'The two live links stay.' );
+	}
+
+	/**
 	 * Tests that the check reads every page: records past the first page are counted too.
 	 *
 	 * @since 0.2.0
@@ -199,5 +258,29 @@ final class StaleLinksCheckTest extends DatabaseTestCase {
 	 */
 	private function check(): StaleLinksCheck {
 		return $this->kernel->get( StaleLinksCheck::class );
+	}
+
+	/**
+	 * Returns the production customers service.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return Customers The service.
+	 */
+	private function customers(): Customers {
+		return $this->kernel->get( Customers::class );
+	}
+
+	/**
+	 * Rewrites a record's link by SQL, as an import or a restore writes the table, with no code of the store's.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param int    $record       The record.
+	 * @param int    $userId       The user the link names now.
+	 * @param string $registeredAt The registration time the link holds now.
+	 */
+	private function relink( int $record, int $userId, string $registeredAt ): void {
+		$this->db->execute( 'UPDATE %i SET user_id = %d, user_registered_at = %s WHERE id = %d', $this->db->table( CustomerTables::CUSTOMERS ), $userId, $registeredAt, $record );
 	}
 }
