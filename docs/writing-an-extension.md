@@ -1058,11 +1058,13 @@ everything in it that is no provider's comes from SEOCart, at the commit the ext
 
 The log of a public repository's run is public, so the guard blanks out what must not be shown,
 or refuses to print it. It reads each text it is given a line at a time, so a value split over two
-lines is not recognised, and it recognises: an address with a query; an authorization header
-(`Bearer` or `Basic` and the token after it); a card number, 13 to 19 digits that pass the Luhn
-check, written as a run of digits with single spaces allowed between them, or in groups the way a
-card is printed (four digits, then two to four groups of three to six, each after a space or a
-hyphen); and the shapes of the provider's credentials that the extension's declaration adds. What
+lines is not recognised, and it recognises: an address with a query; an authorization header (its
+name in any letter case, then `:` or `=`, plain or in JSON, and whatever credentials follow it, of
+any scheme, to the end of the value), and a `Bearer` or `Basic` token on its own; a card number, 13
+to 19 digits that pass the Luhn check, written as a run of digits with single spaces allowed
+between them, or in groups the way a card is printed (four digits, then two to four groups of
+three to six, each after a space or a hyphen); and the shapes of the provider's credentials that
+the extension's declaration adds, none of which may match an empty text. What
 passes through it: the output of every command run through `filtered`, which is the conformance
 suite's and the live tests' PHPUnit output and whatever the extension's steps run through it, such
 as the checkout's Playwright tests; the outputs, errors and summary lines SEOCart's PHP steps
@@ -1128,6 +1130,11 @@ core=$(CDPATH='' cd -- "$ext/../seocart" 2>/dev/null && pwd) || core=$ext/../seo
 [ "${1:-}" = check-secrets ] || . "$core/bin/ci/extension-live-lib.sh"
 ```
 
+Once it has sourced the lib, the script assigns none of the lib's variables (its paths such as
+`work`, `settings` and `step_php`, and `core` and `ext`): the lib's functions read them, so a
+script that changed one would change what SEOCart's helpers run and where they write. A PHP entry of
+the extension's own has a path of its own.
+
 **The workflow** has one job per part and a `verdict` job. A part's job, in order:
 
 ```yaml
@@ -1148,17 +1155,23 @@ runs `sh seocart/bin/ci/extension-live.sh verdict ext` with `SEOCART_LIVE_NEEDS:
 ${{ toJSON(needs) }}` and `SEOCART_LIVE_PARTS: ${{ inputs.parts || 'all' }}` in its env. GitHub
 gives the result of every job the verdict needs, `skipped` included, so the verdict is red when a
 job of the declaration has none, whatever the parts were; a part the run selected must succeed. A
-part
-that waits for a secret, such as webhooks before the provider's webhook exists, runs
+part that waits for a secret, such as webhooks before the provider's webhook exists, runs
 `sh seocart/bin/ci/extension-live.sh optional ext <job>` after `*checkout-core`, with that secret
 alone in its env, and its live step only `if:` the output says `present`; the verdict then reads
 its proofs as skipped, with the declaration's reason, and the run stays green.
 
+A secret is named only in the `env:` of a step that needs it: a step that runs the extension's
+script (its secrets' check, its settings step) or `extension-live.sh optional`; never a step that
+uses an action or runs anything else, and never a job or the whole workflow. Neither the workflow
+nor a job sets `defaults:`, and a job has no `env:` of its own, as every step after the settings
+step would follow them; the workflow's own `env:` (the WordPress version and the database's
+throwaway values) is the place for what all its steps share.
+
 The extension's workflow test calls `WorkflowFacts::violations()` on the workflow (the triggers,
-the permissions, the repository's guard on every job, secrets only in a step's env, one
-concurrency group, the jobs and the `parts` choices exactly the declaration's, the verdict's
-needs and checkout), `WorkflowFacts::copies()` on its root (no class of SEOCart's left copied in
-its `tests/`), and `SettingsLast`.
+the permissions, the repository's guard on every job, secrets only in the env of the steps that
+need them, one concurrency group, the jobs and the `parts` choices exactly the declaration's, the
+verdict's needs and checkout), `WorkflowFacts::copies()` on its root (no class of SEOCart's left
+copied in its `tests/`), and `SettingsLast`.
 
 ### The settings file is written last
 
@@ -1166,17 +1179,23 @@ The settings file holds the provider's key, so a job writes it after everything 
 downloads or builds, and nothing after it installs, downloads or builds: a package's install
 script, a build, a downloaded browser or an action would otherwise run with the key readable.
 `SettingsLast` holds a workflow to that with closed lists. A job's settings step is the step that
-runs `sh ext/bin/ci/<basename>.sh settings`, whatever it is named or anchored as. After it, the job
-may run only `sh seocart/bin/ci/extension-live.sh conformance ext`, `… live ext <part>` for a part
-the declaration states, and the provider's steps the extension names, as
+runs `sh ext/bin/ci/<basename>.sh settings`, whatever it is named or anchored as, with or without a
+comment after it on its line; every part's job has one. After it, the job may run only
+`sh seocart/bin/ci/extension-live.sh conformance ext`, `… live ext <part>` for a part the
+declaration states, and the provider's steps the extension names, as
 `sh ext/bin/ci/<basename>.sh <step>`; each with the keys `name`, `id`, `if` and `run` alone, and
 no action. Those steps read the file, so a job that runs one with no settings step before it is
-refused. The shell those steps reach, SEOCart's script and lib included, may run only commands
-that cannot install, download or build: no `npm`, `npx`, `composer` or `pip`; Playwright as the
-set-up installed it, `node_modules/.bin/playwright`; WP-CLI, `sed` and `sort`, whose options can
-run code, only in calls written out whole. SEOCart's own tests hold its script and lib to the rule
-on a fixture extension; the extension's workflow test holds its workflow and script to it, naming
-its steps after the settings step and its whole calls that name its provider:
+refused. The rule fails closed: a workflow from which it reads no job, a part's job it cannot read,
+and a part's job whose settings step it does not recognise are refused, never passed. The shell
+those steps reach, SEOCart's script and lib included, may run only commands that cannot install,
+download or build: no `npm`, `npx`, `composer` or `pip`; Playwright as the set-up installed it,
+`node_modules/.bin/playwright`; WP-CLI, `sed` and `sort`, whose options can run code, only in calls
+written out whole; `jq`; the site's file read with `. "$site_env"`; and of PHP, besides what
+SEOCart's own steps run, only the extension's `tests/Integration/Live/cleanup.php`, so a clean-up's
+PHP entry must have that path. What the rule does not read it refuses: a here-document, a command
+substitution in backticks, and a quote that never closes. SEOCart's own tests hold its script and
+lib to the rule on a fixture extension; the extension's workflow test holds its workflow and script
+to it, naming its steps after the settings step and its whole calls that name its provider:
 
 ```php
 $rule = new SettingsLast(
