@@ -21,7 +21,9 @@ use SEOCart\Tests\Conformance\Payment\Live\Verdict;
  * Planted violations, each shown red and removed: in Verdict::judge(), a selected job's failure
  * taken as a success: the run whose selected job failed is green; a skipped job counted as a
  * success; the counts' check removed: the run without the suite's counts is green; the optional
- * part's reason shown for its job whatever the job's result: the job that failed reads skipped.
+ * part's reason shown for its job whatever the job's result: the job that failed reads skipped; a
+ * job's missing result read only for a selected job: a job the run did not select, without a
+ * result, is green.
  *
  * @since 0.2.0
  */
@@ -81,7 +83,54 @@ final class VerdictTest extends TestCase {
 
 		$needs = self::needs();
 		unset( $needs['webhooks'] );
-		$this->assertSame( array( 'The job webhooks was selected and ended missing.' ), self::judge( $needs, 'all' )['problems'] );
+		$this->assertSame( array( 'The job webhooks has no result in the jobs the verdict was given: the verdict\'s needs must list every job, as GitHub gives each one\'s result, skipped included.' ), self::judge( $needs, 'all' )['problems'] );
+	}
+
+	/**
+	 * Tests that a job with no result is red whatever the parts selected: GitHub gives every needed job's result, so a job with none is one the verdict's needs lost.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider partsInputs
+	 *
+	 * @param string $parts The parts input.
+	 */
+	public function test_a_job_without_a_result_is_red_whatever_the_parts( string $parts ): void {
+		$needs = self::needs(
+			array(
+				'live-conformance' => 'skipped',
+				'settled-refunds'  => 'skipped',
+				'webhooks'         => 'skipped',
+				'checkout'         => 'skipped',
+			)
+		);
+
+		$this->assertTrue( self::judge( $needs, 'payments' )['green'], 'With every job\'s result, the run of one part is green.' );
+
+		unset( $needs['settled-refunds'] );
+		$needs['webhooks'] = array( 'result' => '' );
+
+		$verdict = self::judge( $needs, $parts );
+
+		$this->assertFalse( $verdict['green'] );
+		$this->assertContains( 'The job settled-refunds has no result in the jobs the verdict was given: the verdict\'s needs must list every job, as GitHub gives each one\'s result, skipped included.', $verdict['problems'] );
+		$this->assertContains( 'The job webhooks has no result in the jobs the verdict was given: the verdict\'s needs must list every job, as GitHub gives each one\'s result, skipped included.', $verdict['problems'] );
+	}
+
+	/**
+	 * Returns parts inputs, one that selects the jobs without a result and some that do not.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string}> The input; by name.
+	 */
+	public static function partsInputs(): array {
+		return array(
+			'another part'    => array( 'payments' ),
+			'its own part'    => array( 'settled-refunds' ),
+			'all parts'       => array( 'all' ),
+			'a scheduled run' => array( '' ),
+		);
 	}
 
 	/**

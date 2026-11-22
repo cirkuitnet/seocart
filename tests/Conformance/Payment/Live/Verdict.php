@@ -14,8 +14,10 @@ namespace SEOCart\Tests\Conformance\Payment\Live;
 /**
  * Reads the results and outputs of the run's jobs and says, for each thing the run proves against the provider, which job proves it and how it went.
  *
- * A job the run's `parts` input selected must succeed: a skipped one would read green and prove
- * nothing. A job not selected is expected skipped. The suite's job must report its counts, and the
+ * Every job the declaration states must have a result, selected or not: GitHub gives the result of
+ * each job the verdict needs, `skipped` included, so a job with none is one the verdict's `needs:`
+ * lost. A job the run's `parts` input selected must succeed: a skipped one would read green and
+ * prove nothing. A job not selected is expected skipped. The suite's job must report its counts, and the
  * skips the replay has, no other. The declaration's optional part may say it ran nothing because
  * a secret is absent: its proofs then read as skipped, with the reason the declaration gives, and
  * the run stays green, as long as its job succeeded.
@@ -49,7 +51,9 @@ final class Verdict {
 			$result  = self::result( $needs, $job );
 			$enabled = 'all' === $parts || $part === $parts;
 
-			if ( $enabled && 'success' !== $result ) {
+			if ( 'missing' === $result ) {
+				$problems[] = sprintf( 'The job %s has no result in the jobs the verdict was given: the verdict\'s needs must list every job, as GitHub gives each one\'s result, skipped included.', $job );
+			} elseif ( $enabled && 'success' !== $result ) {
 				$problems[] = sprintf( 'The job %1$s was selected and ended %2$s.', $job, $result );
 			}
 		}
