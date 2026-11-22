@@ -184,7 +184,60 @@ final class MessageGuardTest extends TestCase {
 			'a date-time'            => array( '2026-11-22T07:01:33Z' ),
 			'a date and a time'      => array( '2026-11-22 07:01:33' ),
 			'a provider\'s event id' => array( 'WH-2WR32451HC0233532-67976317FL4543714' ),
+			'groups no card has'     => array( '4242-42424242424-2' ),
 		);
+	}
+
+	/**
+	 * Tests that an authorization header is blanked whatever the letter case of its name and whatever its scheme, with the credentials after it, plain or in JSON.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider authorizationHeaders
+	 *
+	 * @param string $text     The text.
+	 * @param string $redacted The text as the guard leaves it.
+	 * @param string $secret   The credentials, which must not be left.
+	 */
+	public function test_an_authorization_header_of_any_case_and_scheme_is_redacted( string $text, string $redacted, string $secret ): void {
+		$guard = StatedDeclaration::with( array( 'shapes' => array() ) )->guard();
+
+		$this->assertSame( $redacted, $guard->redact( $text ) );
+		$this->assertStringNotContainsString( $secret, $guard->redact( $text ) );
+		$this->assertSame( 'an authorization header', $guard->shapeOf( $text ) );
+	}
+
+	/**
+	 * Returns authorization headers with credentials made up as the test runs.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string, string, string}> The text, the text redacted, and the credentials; by name.
+	 */
+	public static function authorizationHeaders(): array {
+		$secret = bin2hex( random_bytes( 12 ) );
+
+		return array(
+			'lower case, as HTTP/2 writes it' => array( 'header authorization: bearer ' . $secret, 'header [redacted: an authorization header]', $secret ),
+			'another scheme'                  => array( 'header Authorization: Token ' . $secret, 'header [redacted: an authorization header]', $secret ),
+			'a name in capitals, no scheme'   => array( 'AUTHORIZATION=' . $secret, '[redacted: an authorization header]', $secret ),
+			'in JSON'                         => array( '{"Authorization":"Token ' . $secret . '","accept":"*/*"}', '{"[redacted: an authorization header]","accept":"*/*"}', $secret ),
+			'in JSON inside a string'         => array( '"{\"authorization\":\"Basic ' . $secret . '\"}"', '"{\"[redacted: an authorization header]\"}"', $secret ),
+		);
+	}
+
+	/**
+	 * Tests that a text that only uses the word authorization, or holds it in a longer name, is printed as it is.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_word_authorization_alone_is_printed(): void {
+		$guard = StatedDeclaration::fixture()->guard();
+
+		foreach ( array( 'The authorization was voided before its capture.', 'Authorization declined by the issuer', 'reauthorization: none', 'authorization_id: 42' ) as $text ) {
+			$this->assertNull( $guard->shapeOf( $text ), $text . ' is printed.' );
+			$this->assertSame( $text, $guard->redact( $text ) );
+		}
 	}
 
 	/**

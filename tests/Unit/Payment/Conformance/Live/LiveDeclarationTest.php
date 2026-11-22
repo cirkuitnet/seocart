@@ -195,6 +195,7 @@ final class LiveDeclarationTest extends TestCase {
 			'a suite of no test'          => array( array( 'suiteTests' => 0 ), 'The conformance test holds no test.' ),
 			'a skip of no test'           => array( array( 'suiteSkips' => array( 'rule 9' => 'expires' ) ), 'The skip `rule 9` for `expires`' ),
 			'a shape that is no pattern'  => array( array( 'shapes' => array( 'a key' => '/(unclosed/' ) ), 'The shape of a key is no regular expression' ),
+			'a shape of an empty text'    => array( array( 'shapes' => array( 'a key' => '/x*/' ) ), 'The shape of a key matches an empty text, so it would blank every line and refuse every message.' ),
 			'an optional part of no job'  => array(
 				array(
 					'optionalPart' => array(

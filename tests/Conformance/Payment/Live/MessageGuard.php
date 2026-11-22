@@ -38,13 +38,18 @@ final class MessageGuard {
 	 * An address with a query comes first: redact() blanks it whole before it blanks a secret its
 	 * query may hold. Each slash after the scheme may carry the backslash JSON puts before it.
 	 *
+	 * An authorization header is its name, in any letter case as HTTP/2 writes it in lower case, then
+	 * `:` or `=`, quoted or not as in JSON, and whatever credentials follow it, of any scheme, to the
+	 * end of the value or the line; or a `Bearer` or `Basic` token standing without the header's name.
+	 * A word that only contains `authorization`, or a sentence that uses it, is no header.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @var array<string, string>
 	 */
 	public const SHAPES = array(
 		'an address with a query' => '#[a-z][a-z0-9+.\-]*:(?:\\\\?/){2}[^\s?\#"\'<>]*\?[^\s"\'<>]*#i',
-		'an authorization header' => '/\b(?:Bearer|Basic)\s+[A-Za-z0-9+\/=._\-]{8,}/',
+		'an authorization header' => '/\b(?i:authorization)\\\\?["\']?\s*[:=]\s*\\\\?["\']?[^"\'\\\\\r\n]*[^"\'\\\\\s]|\b(?:Bearer|Basic)\s+[A-Za-z0-9+\/=._\-]{8,}/',
 	);
 
 	/**
@@ -92,7 +97,7 @@ final class MessageGuard {
 	 *
 	 * @since 0.2.0
 	 *
-	 * @throws \LogicException When a shape the declaration states is no regular expression: a guard that cannot apply it would print what it should refuse.
+	 * @throws \LogicException When a shape the declaration states is no regular expression, as a guard that cannot apply it would print what it should refuse; or matches an empty text, as it would then blank every line and refuse every message.
 	 *
 	 * @param LiveDeclaration $declaration The extension's declaration, whose shapes are added.
 	 */
@@ -102,6 +107,10 @@ final class MessageGuard {
 		foreach ( $this->shapes as $shape => $pattern ) {
 			if ( ! self::compiles( $pattern ) ) {
 				throw new \LogicException( sprintf( 'The shape of %s is no regular expression, so it would be printed.', $shape ) );
+			}
+
+			if ( 1 === preg_match( $pattern, '' ) ) {
+				throw new \LogicException( sprintf( 'The shape of %s matches an empty text, so it would blank every line and refuse every message.', $shape ) );
 			}
 		}
 	}
