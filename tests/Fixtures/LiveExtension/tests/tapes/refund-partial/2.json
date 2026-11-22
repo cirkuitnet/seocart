@@ -1,0 +1,11 @@
+{
+	"request": {
+		"method": "POST",
+		"path": "/v1/refunds",
+		"body": "{\"charge\":\"fp_ch_0002B\",\"amount\":1000,\"reference\":\"0199c0de-0000-7000-8000-00000000a003\"}"
+	},
+	"response": {
+		"status": 201,
+		"body": "{\"id\":\"fp_re_0003C\",\"status\":\"succeeded\"}"
+	}
+}

@@ -1,0 +1,11 @@
+{
+	"request": {
+		"method": "POST",
+		"path": "/v1/charges",
+		"body": "{\"amount\":3000,\"currency\":\"usd\",\"reference\":\"0199c0de-0000-7000-8000-00000000a001\"}"
+	},
+	"response": {
+		"status": 201,
+		"body": "{\"id\":\"fp_ch_0001A\",\"status\":\"authorized\"}"
+	}
+}

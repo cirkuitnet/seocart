@@ -1,0 +1,6 @@
+{
+	"name": "example/seocart-gateway-for-fixture-pay",
+	"description": "A payment extension in the shape SEOCart's tests of the live workflow's pieces read: its declaration, its live workflow and its provider's script. Nothing installs or runs it.",
+	"type": "wordpress-plugin",
+	"license": "GPL-3.0-or-later"
+}

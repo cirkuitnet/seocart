@@ -1,0 +1,310 @@
+# The fixture extension's live workflow, in the shape a payment extension writes its own: SEOCart's
+# tests read it (WorkflowFacts, SettingsLast), and nothing runs it. It proves the extension against
+# its provider's sandbox with the repository's secrets: the conformance suite with every request
+# sent to the provider; payments, settled refunds and webhooks through the gateway; and the
+# checkout's card form in a browser, on a site installed on the runner. Started by hand or weekly,
+# never by a pull request or a push, so it is never a check a merge waits for.
+#
+# Each job checks the extension out into ext/ and SEOCart beside it into seocart/, at the commit
+# seocart-core.env pins or the core-ref input names, then sets up with SEOCart's action
+# (./seocart/.github/actions/extension-live-setup), which installs everything the job needs before
+# the settings step. SEOCart's steps are bin/ci/extension-live.sh; the provider's are
+# bin/ci/fixture-pay-sandbox.sh. Without the FIXTURE_PAY_SIGNATURE_KEY secret the webhooks part
+# runs nothing and says why; the other parts run.
+
+name: Fixture Pay sandbox
+
+on:
+    schedule:
+        # Weekly, off the hour. A scheduled run takes the inputs' defaults.
+        - cron: '23 5 * * 3'
+    workflow_dispatch:
+        inputs:
+            core-ref:
+                description: 'The SEOCart commit to test against: empty for the one ext/seocart-core.env pins, a full commit SHA, or main.'
+                type: string
+                default: ''
+            parts:
+                description: 'The parts to run.'
+                type: choice
+                options:
+                    - all
+                    - conformance
+                    - payments
+                    - settled-refunds
+                    - webhooks
+                    - checkout
+                default: all
+
+permissions:
+    contents: read
+
+# The sandbox account is shared: one run uses it at a time, and none is cancelled halfway.
+concurrency:
+    group: fixture-pay-sandbox
+    cancel-in-progress: false
+
+env:
+    # The WordPress the integration jobs install, as SEOCart's extension workflow does.
+    WORDPRESS_VERSION: '7.1'
+    # Throwaway values for the MySQL service container, as SEOCart's extension workflow has
+    # them: the container lives for one job and is reachable from nowhere else.
+    SEOCART_CI_DB_HOST: '127.0.0.1:3306'
+    SEOCART_CI_DB_USER: root
+    SEOCART_CI_DB_PASSWORD: ci-throwaway
+    SEOCART_CI_DB_NAME: seocart_tests
+
+jobs:
+    live-conformance:
+        if: github.repository == 'example/seocart-gateway-for-fixture-pay' && contains(fromJSON('["all", "conformance"]'), inputs.parts || 'all')
+        runs-on: ubuntu-24.04
+        timeout-minutes: 30
+        outputs:
+            ext-head: ${{ steps.heads.outputs.ext-head }}
+            core-head: ${{ steps.heads.outputs.core-head }}
+            nonce: ${{ steps.run.outputs.nonce }}
+            tests: ${{ steps.run.outputs.tests }}
+            assertions: ${{ steps.run.outputs.assertions }}
+            skipped: ${{ steps.run.outputs.skipped }}
+            skip-set: ${{ steps.run.outputs.skip-set }}
+        services:
+            mysql: &mysql
+                image: mysql:8.4
+                env:
+                    MYSQL_ROOT_PASSWORD: ${{ env.SEOCART_CI_DB_PASSWORD }}
+                    MYSQL_DATABASE: ${{ env.SEOCART_CI_DB_NAME }}
+                ports:
+                    - 3306:3306
+                options: >-
+                    --health-cmd="mysqladmin ping --host=127.0.0.1 --silent"
+                    --health-interval=5s
+                    --health-timeout=5s
+                    --health-retries=24
+        steps:
+            - &checkout-extension
+              name: Check out the extension
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  path: ext
+                  persist-credentials: false
+
+            # Before any set-up: a missing secret fails the job at once, naming the secret.
+            - &check-secrets
+              name: Check the sandbox secret
+              run: sh ext/bin/ci/fixture-pay-sandbox.sh check-secrets
+              env:
+                  FIXTURE_PAY_API_KEY: ${{ secrets.FIXTURE_PAY_API_KEY }}
+
+            - &choose-core
+              name: Choose the SEOCart commit
+              id: core
+              run: |
+                  if [ -n "$CORE_REF" ]; then
+                      case $GITHUB_EVENT_NAME in
+                          schedule | workflow_dispatch) ;;
+                          *)
+                              echo "::error::core-ref is refused on a $GITHUB_EVENT_NAME run: only a schedule or workflow_dispatch run may pass core-ref."
+                              exit 1
+                              ;;
+                      esac
+                  fi
+                  ref=${CORE_REF:-$(sed -n 's/^SEOCART_CORE_REF=\([0-9a-f]\{40\}\)$/\1/p' ext/seocart-core.env)}
+                  case $ref in
+                      main) ;;
+                      *[!0-9a-f]* | '') ref='' ;;
+                      *) [ "${#ref}" -eq 40 ] || ref='' ;;
+                  esac
+                  if [ -z "$ref" ]; then
+                      echo "::error::No SEOCart commit to test against: ext/seocart-core.env must hold the line SEOCART_CORE_REF=<40 hexadecimal digits>, and core-ref may only be a commit like it or main."
+                      exit 1
+                  fi
+                  echo "ref=$ref" >>"$GITHUB_OUTPUT"
+              env:
+                  CORE_REF: ${{ inputs.core-ref }}
+
+            - &checkout-core
+              name: Check out SEOCart beside the extension
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  repository: cirkuitnet/seocart
+                  ref: ${{ steps.core.outputs.ref }}
+                  path: seocart
+                  persist-credentials: false
+
+            - &heads
+              name: Note the commits under test
+              id: heads
+              run: sh seocart/bin/ci/extension-live.sh heads ext
+
+            - &setup
+              name: Set up PHP, Composer, WordPress and SEOCart's test configuration
+              uses: ./seocart/.github/actions/extension-live-setup
+
+            # Written last, just before the tests that read it.
+            - &settings
+              name: Write the sandbox settings file
+              run: sh ext/bin/ci/fixture-pay-sandbox.sh settings
+              env:
+                  FIXTURE_PAY_API_KEY: ${{ secrets.FIXTURE_PAY_API_KEY }}
+                  FIXTURE_PAY_SIGNATURE_KEY: ${{ secrets.FIXTURE_PAY_SIGNATURE_KEY }}
+
+            - name: Run the conformance suite against the sandbox
+              id: run
+              run: sh seocart/bin/ci/extension-live.sh conformance ext
+
+            - &cleanup
+              name: Clean up at the provider, and remove the settings file
+              if: always()
+              run: sh ext/bin/ci/fixture-pay-sandbox.sh cleanup
+
+    payments:
+        if: github.repository == 'example/seocart-gateway-for-fixture-pay' && contains(fromJSON('["all", "payments"]'), inputs.parts || 'all')
+        runs-on: ubuntu-24.04
+        timeout-minutes: 30
+        outputs:
+            ext-head: ${{ steps.heads.outputs.ext-head }}
+            core-head: ${{ steps.heads.outputs.core-head }}
+            tests: ${{ steps.run.outputs.tests }}
+            assertions: ${{ steps.run.outputs.assertions }}
+            skipped: ${{ steps.run.outputs.skipped }}
+        services:
+            mysql: *mysql
+        steps:
+            - *checkout-extension
+            - *check-secrets
+            - *choose-core
+            - *checkout-core
+            - *heads
+            - *setup
+            - *settings
+
+            - name: Run the payment tests against the sandbox
+              id: run
+              run: sh seocart/bin/ci/extension-live.sh live ext payments
+
+            - *cleanup
+
+    settled-refunds:
+        if: github.repository == 'example/seocart-gateway-for-fixture-pay' && contains(fromJSON('["all", "settled-refunds"]'), inputs.parts || 'all')
+        runs-on: ubuntu-24.04
+        timeout-minutes: 30
+        outputs:
+            ext-head: ${{ steps.heads.outputs.ext-head }}
+            core-head: ${{ steps.heads.outputs.core-head }}
+            tests: ${{ steps.run.outputs.tests }}
+            assertions: ${{ steps.run.outputs.assertions }}
+            skipped: ${{ steps.run.outputs.skipped }}
+            settled: ${{ steps.run.outputs.settled }}
+        services:
+            mysql: *mysql
+        steps:
+            - *checkout-extension
+            - *check-secrets
+            - *choose-core
+            - *checkout-core
+            - *heads
+            - *setup
+            - *settings
+
+            - name: Run the settled refunds' tests against the sandbox
+              id: run
+              run: sh seocart/bin/ci/extension-live.sh live ext settled-refunds
+
+            - *cleanup
+
+    webhooks:
+        if: github.repository == 'example/seocart-gateway-for-fixture-pay' && contains(fromJSON('["all", "webhooks"]'), inputs.parts || 'all')
+        runs-on: ubuntu-24.04
+        timeout-minutes: 30
+        outputs:
+            ext-head: ${{ steps.heads.outputs.ext-head }}
+            core-head: ${{ steps.heads.outputs.core-head }}
+            signature-key: ${{ steps.optional.outputs.signature-key }}
+            tests: ${{ steps.run.outputs.tests }}
+            assertions: ${{ steps.run.outputs.assertions }}
+            skipped: ${{ steps.run.outputs.skipped }}
+            notifications: ${{ steps.run.outputs.notifications }}
+        services:
+            mysql: *mysql
+        steps:
+            - *checkout-extension
+            - *check-secrets
+            - *choose-core
+            - *checkout-core
+
+            # Whether the repository holds the signature key, never the key itself: without it the
+            # part runs nothing, says why, and the other parts run.
+            - name: Check the signature key
+              id: optional
+              run: sh seocart/bin/ci/extension-live.sh optional ext webhooks
+              env:
+                  FIXTURE_PAY_SIGNATURE_KEY: ${{ secrets.FIXTURE_PAY_SIGNATURE_KEY }}
+
+            - *heads
+            - *setup
+            - *settings
+
+            - name: Run the webhook tests against the sandbox
+              id: run
+              if: steps.optional.outputs.signature-key == 'present'
+              run: sh seocart/bin/ci/extension-live.sh live ext webhooks
+
+            - *cleanup
+
+    checkout:
+        if: github.repository == 'example/seocart-gateway-for-fixture-pay' && contains(fromJSON('["all", "checkout"]'), inputs.parts || 'all')
+        runs-on: ubuntu-24.04
+        timeout-minutes: 40
+        outputs:
+            ext-head: ${{ steps.heads.outputs.ext-head }}
+            core-head: ${{ steps.heads.outputs.core-head }}
+            tests: ${{ steps.run.outputs.tests }}
+            skipped: ${{ steps.run.outputs.skipped }}
+        services:
+            mysql: *mysql
+        steps:
+            - *checkout-extension
+            - *check-secrets
+            - *choose-core
+            - *checkout-core
+            - *heads
+
+            - name: Set up PHP, Composer, Node.js, the browser scripts' dependencies and Chromium
+              uses: ./seocart/.github/actions/extension-live-setup
+              with:
+                  wordpress: 'false'
+                  browser: 'true'
+
+            # WordPress on PHP's built-in server, SEOCart and the extension installed from the zips
+            # built here: all the job installs and builds, done before the settings file exists.
+            - name: Build SEOCart, and install a site with it and the extension
+              run: sh seocart/bin/ci/extension-live.sh site ext
+
+            - *settings
+
+            # From here on nothing is installed or built: the settings file holds the key.
+            - name: Configure the gateway in test mode from the settings file, its webhooks left out
+              run: sh ext/bin/ci/fixture-pay-sandbox.sh configure
+
+            - name: Run the checkout's card form in a browser against the sandbox
+              id: run
+              run: sh ext/bin/ci/fixture-pay-sandbox.sh checkout
+
+            - *cleanup
+
+    verdict:
+        needs: [live-conformance, payments, settled-refunds, webhooks, checkout]
+        if: always() && github.repository == 'example/seocart-gateway-for-fixture-pay'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 5
+        steps:
+            - *checkout-extension
+            - *choose-core
+            - *checkout-core
+
+            # PHP from the runner's image: the verdict reads only the jobs' results and outputs.
+            - name: Judge the run
+              run: sh seocart/bin/ci/extension-live.sh verdict ext
+              env:
+                  SEOCART_LIVE_NEEDS: ${{ toJSON(needs) }}
+                  SEOCART_LIVE_PARTS: ${{ inputs.parts || 'all' }}

@@ -1,0 +1,11 @@
+{
+	"request": {
+		"method": "GET",
+		"path": "/v1/charges/fp_ch_0001A",
+		"body": ""
+	},
+	"response": {
+		"status": 200,
+		"body": "{\"id\":\"fp_ch_0001A\",\"status\":\"authorized\"}"
+	}
+}
