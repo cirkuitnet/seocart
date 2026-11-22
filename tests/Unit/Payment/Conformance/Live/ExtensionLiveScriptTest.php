@@ -231,10 +231,13 @@ final class ExtensionLiveScriptTest extends TestCase {
 	 * @return array{status: int, out: string, err: string} The exit status, and what it printed on each stream.
 	 */
 	private function process( array $command, array $env ): array {
+		// Standard input is a pipe closed at once, never a file: once a test has loaded Patchwork, which
+		// Brain Monkey uses, a file is opened through Patchwork's stream wrapper, which cannot hand it
+		// to a process.
 		$process = proc_open(
 			$command,
 			array(
-				0 => array( 'file', '/dev/null', 'r' ),
+				0 => array( 'pipe', 'r' ),
 				1 => array( 'pipe', 'w' ),
 				2 => array( 'pipe', 'w' ),
 			),
@@ -248,6 +251,8 @@ final class ExtensionLiveScriptTest extends TestCase {
 		);
 
 		$this->assertIsResource( $process );
+
+		fclose( $pipes[0] );
 
 		$out = (string) stream_get_contents( $pipes[1] );
 		$err = (string) stream_get_contents( $pipes[2] );
