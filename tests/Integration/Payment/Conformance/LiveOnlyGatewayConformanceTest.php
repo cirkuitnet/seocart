@@ -12,12 +12,6 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Integration\Payment\Conformance;
 
 use SEOCart\Contracts\Payment\GatewayRegistry;
-use SEOCart\Contracts\Payment\GatewayResult;
-use SEOCart\Contracts\Payment\Operation;
-use SEOCart\Contracts\Payment\Outcome;
-use SEOCart\Payment\Infrastructure\Gateway\StubGateway;
-use SEOCart\Support\Currency;
-use SEOCart\Support\Money;
 use SEOCart\Tests\Support\Doubles\LiveOnlyGateway;
 use SEOCart\Tests\Support\Payment\StubWebhooks;
 
@@ -52,13 +46,13 @@ final class LiveOnlyGatewayConformanceTest extends StandInConformanceCase {
 	private const BY_REFERENCE = 'authorized-by-reference';
 
 	/**
-	 * The provider's id of the payment that delivery is about, as the stand-in names an approved intent.
+	 * The uuid of the intent that delivery is about, by which the stand-in names its charge and the provider's id of it.
 	 *
 	 * @since 0.2.0
 	 *
 	 * @var string
 	 */
-	private const REFERENCED_PAYMENT = 'stub-pi-approve-019b76da-a800-7000-8000-00000000000b';
+	private const PAYMENT = '019b76da-a800-7000-8000-00000000000b';
 
 	/**
 	 * Returns the gateway's id.
@@ -90,9 +84,7 @@ final class LiveOnlyGatewayConformanceTest extends StandInConformanceCase {
 	 * @return array<string, StubWebhooks> The events by the delivery's name.
 	 */
 	protected function webhooks(): array {
-		$approved = new GatewayResult( StubGateway::ID, Operation::Authorize, Outcome::Approved, '', Money::of( 3000, Currency::of( 'USD' ) ), 'stub-ch-019b76da-a800-7000-8000-00000000000b', self::REFERENCED_PAYMENT );
-
-		return parent::webhooks() + array( self::BY_REFERENCE => StubWebhooks::of( $approved ) );
+		return parent::webhooks() + array( self::BY_REFERENCE => StubWebhooks::of( self::approval( self::PAYMENT )->forIntent( '' ) ) );
 	}
 
 	/**
@@ -103,6 +95,6 @@ final class LiveOnlyGatewayConformanceTest extends StandInConformanceCase {
 	 * @return array<string, string> The provider's ids, by the delivery's name.
 	 */
 	protected function deliveryPayments(): array {
-		return array( self::BY_REFERENCE => self::REFERENCED_PAYMENT );
+		return array( self::BY_REFERENCE => (string) self::approval( self::PAYMENT )->providerIntentId );
 	}
 }

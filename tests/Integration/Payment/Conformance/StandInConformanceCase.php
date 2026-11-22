@@ -78,13 +78,22 @@ abstract class StandInConformanceCase extends GatewayConformanceCase {
 	 * @return array<string, StubWebhooks> The events by the delivery's name.
 	 */
 	protected function webhooks(): array {
-		$intent   = '019b76da-a800-7000-8000-00000000000a';
-		$approved = new GatewayResult( StubGateway::ID, Operation::Authorize, Outcome::Approved, $intent, Money::of( 3000, Currency::of( 'USD' ) ), 'stub-ch-' . $intent, 'stub-pi-approve-' . $intent );
-
 		return array(
-			'authorized'      => StubWebhooks::of( $approved ),
+			'authorized'      => StubWebhooks::of( self::approval( '019b76da-a800-7000-8000-00000000000a' ) ),
 			'account-updated' => StubWebhooks::event( 'evt_conformance_account_updated', 'account.updated', array( 'account' => 'stub' ) ),
 		);
+	}
+
+	/**
+	 * Returns the stand-in's approval of an intent's authorization, as a delivery reports it: named by the store's uuid of the intent, with the charge and the provider's id the stand-in gives it.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $intentUuid The intent.
+	 * @return GatewayResult The approval.
+	 */
+	protected static function approval( string $intentUuid ): GatewayResult {
+		return new GatewayResult( StubGateway::ID, Operation::Authorize, Outcome::Approved, $intentUuid, Money::of( 3000, Currency::of( 'USD' ) ), 'stub-ch-' . $intentUuid, 'stub-pi-approve-' . $intentUuid );
 	}
 
 	/**
