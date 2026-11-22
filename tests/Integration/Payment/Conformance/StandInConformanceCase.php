@@ -45,14 +45,15 @@ abstract class StandInConformanceCase extends GatewayConformanceCase {
 	}
 
 	/**
-	 * Returns the deliveries rule 10 reads, as the stand-in would send them in the suite's mode.
+	 * Returns the deliveries rule 10 reads, as the stand-in would send them.
 	 *
 	 * The stand-in has no provider to record, so rule 10 reads these as they are, signed with the
-	 * stand-in's own secret.
+	 * stand-in's own secret, and sends them to the gateway in the suite's mode. With no recording,
+	 * a delivery states no mode of its own.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @return array<string, array<string, mixed>> The deliveries by name: mode, signed_at, headers, body.
+	 * @return array<string, array<string, mixed>> The deliveries by name: signed_at, headers, body.
 	 */
 	protected function freshDeliveries(): array {
 		$at        = new \DateTimeImmutable( '2026-06-01T12:00:00+00:00' );
@@ -60,7 +61,6 @@ abstract class StandInConformanceCase extends GatewayConformanceCase {
 
 		foreach ( $this->webhooks() as $name => $webhook ) {
 			$delivered[ $name ] = array(
-				'mode'      => $this->suiteMode()->value,
 				'signed_at' => $at->format( \DateTimeInterface::ATOM ),
 				'headers'   => $webhook->headers( $at->getTimestamp() ),
 				'body'      => $webhook->body(),

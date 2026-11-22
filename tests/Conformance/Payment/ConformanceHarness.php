@@ -571,11 +571,16 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
-	 * Returns fresh webhook deliveries to record, by name; called only while recording.
+	 * Returns fresh webhook deliveries, by name: those a recording writes to the tape, or, for a gateway without tapes, those rule 10 reads.
+	 *
+	 * A delivery to record states the mode it was sent in, which the tape keeps beside it
+	 * (TapeScrubber::delivery()); a recording is made in test mode only. Nothing reads that mode
+	 * back: rule 10 reads a delivery's signed time, headers and body, and sends it to the gateway
+	 * in the suite's mode (suiteMode()), so a gateway without tapes states none.
 	 *
 	 * @since 0.2.0
 	 *
-	 * @return array<string, array<string, mixed>> Each delivery (mode, signed_at, headers, body) by name; none keeps the recorded ones.
+	 * @return array<string, array<string, mixed>> Each delivery (signed_at, headers, body, and mode while recording) by name; none keeps the recorded ones.
 	 */
 	protected function freshDeliveries(): array {
 		return array();
