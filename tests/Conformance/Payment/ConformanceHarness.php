@@ -1996,7 +1996,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
-	 * Returns the mode the suite configures the gateway in, resolves it in and opens its payments in: test, so that no provider is ever called live from a test.
+	 * Returns the mode the suite configures the gateway in, resolves it in, opens its payments in, and sends it its requests and webhook deliveries in: test, so that no provider is ever called live from a test.
 	 *
 	 * A gateway that declares no host calls no provider, so for one with no test mode, such as an
 	 * offline payment method, live is a formality, and the suite uses it. A gateway that declares a
@@ -2299,7 +2299,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		foreach ( $this->refundSteps( $placed, $cell ) as $step => list( $units, $shipping ) ) {
 			list( $refund, $exchanges ) = $this->refundWatched( $placed, $units, $shipping );
 			$intent                     = $this->intentRow( $uuid );
-			$check( $step, $exchanges, ( new GatewayRefund( $uuid, $intent['provider_intent_id'], $refund->total, $refund->uuid, Mode::Test ) )->idempotencyKey(), $this->namesOf( $placed ), $refund->total );
+			$check( $step, $exchanges, ( new GatewayRefund( $uuid, $intent['provider_intent_id'], $refund->total, $refund->uuid, $this->suiteMode() ) )->idempotencyKey(), $this->namesOf( $placed ), $refund->total );
 		}
 
 		$voided = $this->place( $rule, Scenario::Approve, $cell );
@@ -2590,7 +2590,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->assertReceivedAsRead( $name . ' delivered again', $headers, $body, $at->modify( '+2 seconds' ), $first, $first->eventId );
 
 		if ( null !== $payment ) {
-			$this->assertSame( $payment, $this->db->fetchValue( 'SELECT intent_uuid FROM %i WHERE provider = %s AND mode = %s AND event_id = %s', $this->table( WebhookReceiptTables::RECEIPTS ), $this->gatewayId(), Mode::Test->value, DeliveredValues::eventId( (string) $first->eventId ) ), $rule->message() . sprintf( 'the delivery %s names its payment by the provider\'s id, and the store\'s route did not settle it against the store\'s payment of that id.', $name ) );
+			$this->assertSame( $payment, $this->db->fetchValue( 'SELECT intent_uuid FROM %i WHERE provider = %s AND mode = %s AND event_id = %s', $this->table( WebhookReceiptTables::RECEIPTS ), $this->gatewayId(), $this->suiteMode()->value, DeliveredValues::eventId( (string) $first->eventId ) ), $rule->message() . sprintf( 'the delivery %s names its payment by the provider\'s id, and the store\'s route did not settle it against the store\'s payment of that id.', $name ) );
 		}
 
 		return $first->kind;
@@ -2651,7 +2651,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	private function assertReceivedAsRead( string $name, array $headers, string $body, \DateTimeImmutable $arrives, WebhookReading $reading, ?string $eventId ): void {
 		$route   = new WebhookRoute( fn(): ReceiveWebhook => $this->kernel->get( ReceiveWebhook::class ), $this->kernel->get( ErrorTranslator::class ), FrozenClock::at( $arrives->format( \DateTimeInterface::ATOM ) ), $this->kernel->get( Reporter::class ) );
 		$server  = $_SERVER;
-		$request = new \WP_REST_Request( 'POST', '/' . WebhookAddress::NAMESPACE . WebhookAddress::path( $this->gatewayId(), Mode::Test ) );
+		$request = new \WP_REST_Request( 'POST', '/' . WebhookAddress::NAMESPACE . WebhookAddress::path( $this->gatewayId(), $this->suiteMode() ) );
 
 		$request->set_body( $body );
 
@@ -2684,7 +2684,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
-	 * Reads the receipt the store's receiver keeps of an event of the gateway in test mode.
+	 * Reads the receipt the store's receiver keeps of an event of the gateway in the suite's mode (suiteMode()).
 	 *
 	 * @since 0.2.0
 	 *
@@ -2692,7 +2692,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	 * @return array{id: int, result: string, result_code: string, payload_hash: string}|null The receipt; null when there is none.
 	 */
 	private function receiptOf( ?string $eventId ): ?array {
-		$row = null === $eventId ? null : $this->db->fetchRow( 'SELECT id, result, result_code, payload_hash FROM %i WHERE provider = %s AND mode = %s AND event_id = %s', $this->table( WebhookReceiptTables::RECEIPTS ), $this->gatewayId(), Mode::Test->value, DeliveredValues::eventId( $eventId ) );
+		$row = null === $eventId ? null : $this->db->fetchRow( 'SELECT id, result, result_code, payload_hash FROM %i WHERE provider = %s AND mode = %s AND event_id = %s', $this->table( WebhookReceiptTables::RECEIPTS ), $this->gatewayId(), $this->suiteMode()->value, DeliveredValues::eventId( $eventId ) );
 
 		return null === $row ? null : array(
 			'id'           => (int) $row['id'],
@@ -2731,7 +2731,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 		$this->gatewayClock->setTo( $now );
 
 		try {
-			return $this->gateway()->readWebhook( new WebhookEnvelope( $this->gatewayId(), Mode::Test, $headers, $body, $now ) );
+			return $this->gateway()->readWebhook( new WebhookEnvelope( $this->gatewayId(), $this->suiteMode(), $headers, $body, $now ) );
 		} catch ( \Throwable $thrown ) {
 			self::fail( $rule->message() . sprintf( 'readWebhook() threw %1$s on the delivery %2$s with %3$s: it answers rejected, never throws.', get_class( $thrown ), $name, $what ) );
 		}
