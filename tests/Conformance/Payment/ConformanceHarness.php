@@ -1996,11 +1996,12 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
-	 * Returns the mode the suite configures the gateway in, resolves it in, opens its payments in, and sends it its requests and webhook deliveries in: test, so that no provider is ever called live from a test.
+	 * Returns the gateway's suite mode: the mode the suite configures the gateway in, resolves it in and opens its payments in, sends it its requests and webhook deliveries in, and reads their receipts in.
 	 *
-	 * A gateway that declares no host calls no provider, so for one with no test mode, such as an
-	 * offline payment method, live is a formality, and the suite uses it. A gateway that declares a
-	 * host and no test mode fails the test.
+	 * It is test whenever the gateway declares test mode, so that no provider is ever called live
+	 * from a test. A gateway that declares no host calls no provider, so for one with no test mode,
+	 * such as an offline payment method, live is a formality, and the suite uses it. A gateway that
+	 * declares a host and no test mode fails the test.
 	 *
 	 * @since 0.2.0
 	 *
