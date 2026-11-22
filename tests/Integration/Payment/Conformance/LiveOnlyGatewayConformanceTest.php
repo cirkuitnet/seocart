@@ -31,10 +31,12 @@ use SEOCart\Tests\Support\Payment\StubWebhooks;
  *
  * Planted violations, shown red and removed: in ConformanceHarness, put back to the test mode, one
  * at a time, each mode the suite passes the gateway, or the store on its behalf, that a gateway of
- * no host and live mode alone can see: the requests of rules 3, 7, 8 and 19 and the delivery's
+ * no host and live mode alone can see: the calls of rules 3, 7, 8 and 19 and the delivery's
  * envelope (the gateway refuses each, naming the mode), the gateway the registry resolves, the
  * intents openIntent() opens, the webhook route's address, the receipt a delivery leaves and the
- * receipt that names a delivery's payment: this test fails each time.
+ * receipt that names a delivery's payment: this test fails each time. Such a gateway sees no other
+ * mode the suite passes: configure() stores a mode only for a gateway of two modes, and the keys
+ * rules 6 and 12 derive are read only for a gateway that declares a host, which declares test mode.
  *
  * @since 0.2.0
  */
