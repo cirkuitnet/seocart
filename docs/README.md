@@ -17,6 +17,14 @@ plugin's own help screens.
 | [writing-an-extension.md](writing-an-extension.md)                           | A SEOCart extension's repository: generating it, pinning it to SEOCart, running its gates, moving it to a newer SEOCart and releasing it                                       |
 | [maintenance/rest-posts-controller.md](maintenance/rest-posts-controller.md) | What the product's REST controller overrides or reproduces of WordPress core, to check against each WordPress major                                                            |
 
+## The storefront
+
+| Document                                     | What it covers                                                                                        |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| [storefront-blocks.md](storefront-blocks.md) | The storefront's blocks: how one is added, the state of their two stores, and what a page sends       |
+| [styling.md](styling.md)                     | The classes the blocks print and the `--seocart-*` variables a theme styles them with                 |
+| [data-layer.md](data-layer.md)               | The e-commerce events the blocks push onto `window.dataLayer` for a tag manager, and the keys of each |
+
 The contribution process is in [CONTRIBUTING.md](../CONTRIBUTING.md). The definition of done
 is the [pull request template](../.github/pull_request_template.md), and that file is its
 only copy. Vulnerability reports follow [SECURITY.md](../SECURITY.md).

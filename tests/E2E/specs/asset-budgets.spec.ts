@@ -8,6 +8,11 @@
  * plugin's first admin screen is the product editor, whose Product data area is one script and
  * one stylesheet; their ceilings are read from budget.json's rules through fileBudgetBytes(), the
  * way bin/check-asset-budget.js reads them for the build, never restated here.
+ *
+ * A product's page, whose content is the storefront's three product blocks, loads the storefront's
+ * two script modules and its stylesheet and nothing else of the plugin, logged out and logged in:
+ * each file within its budget.json rule, the modules within the one budget the file does not hold,
+ * the plugin's script modules on one template together (STOREFRONT_MODULES_BYTES).
  */
 
 import { test, expect } from '../fixtures';
@@ -16,6 +21,20 @@ import {
 	type AssetBytes,
 } from '../fixtures/asset-bytes';
 import { fileBudgetBytes } from '../support/budget';
+import {
+	createBlockProduct,
+	trashBlockProduct,
+} from '../support/block-product';
+
+/**
+ * The most compressed bytes the plugin's script modules may weigh together on one storefront
+ * template, beyond what WordPress ships: a budget of the template, not of a file, so budget.json,
+ * whose rules are per file, does not hold it.
+ */
+const STOREFRONT_MODULES_BYTES = 25 * 1024;
+
+/** The most script modules of the plugin's one storefront template may load. */
+const STOREFRONT_MODULES_COUNT = 3;
 
 /**
  * Measures one template, prints its report unconditionally (so the byte total and the plugin
@@ -181,6 +200,98 @@ test.describe( 'Asset byte budgets', () => {
 			description
 		).toBe( true );
 	} );
+
+	for ( const loggedIn of [ false, true ] as const ) {
+		const who = loggedIn ? 'an administrator' : 'a logged-out visitor';
+
+		test( `a product page loads the storefront's two modules and its stylesheet, within their budgets, for ${ who }`, async ( {
+			page,
+			assetBytes,
+			pluginBasePath,
+			requestUtils,
+		} ) => {
+			const product = await createBlockProduct(
+				requestUtils,
+				'Asset budget product',
+				[
+					{
+						key: 'size',
+						label: 'Size',
+						values: [
+							{ key: 'small', label: 'Small' },
+							{ key: 'large', label: 'Large' },
+						],
+					},
+				],
+				[
+					{ values: { size: 'small' }, priceMinor: 1800, onHand: 5 },
+					{ values: { size: 'large' }, priceMinor: 5800, onHand: 5 },
+				]
+			);
+
+			try {
+				if ( ! loggedIn ) {
+					await page.context().clearCookies();
+				}
+
+				const report = await assetBytes.measure(
+					`product page (${ who })`,
+					() => page.goto( product.link ).then( () => undefined )
+				);
+				const buildBase = `${ pluginBasePath }build/`;
+				const files = report.hits.map( ( hit ) => {
+					const path = new URL( hit.url ).pathname;
+
+					return path.startsWith( buildBase )
+						? path.slice( buildBase.length )
+						: path;
+				} );
+				const budgets = files.map( ( file ) =>
+					fileBudgetBytes( file )
+				);
+				const modules = report.hits.filter( ( hit, index ) =>
+					files[ index ].endsWith( '.js' )
+				);
+				const moduleBytes = modules.reduce(
+					( total, hit ) => total + hit.bytes,
+					0
+				);
+				const description = describeAssetByteReport(
+					report,
+					budgets.reduce< number >(
+						( total, budget ) => total + ( budget ?? 0 ),
+						0
+					)
+				);
+
+				// eslint-disable-next-line no-console
+				console.log(
+					`${ description }\nScript modules: ${ modules.length } of ${ STOREFRONT_MODULES_COUNT }, ${ moduleBytes } of ${ STOREFRONT_MODULES_BYTES } bytes together.`
+				);
+
+				expect( [ ...new Set( files ) ].sort(), description ).toEqual( [
+					'blocks/product.js',
+					'blocks/store.js',
+					'blocks/storefront.css',
+				] );
+				report.hits.forEach( ( hit, index ) => {
+					expect( budgets[ index ], description ).toBeDefined();
+					expect( hit.bytes, description ).toBeGreaterThan( 0 );
+					expect( hit.bytes, description ).toBeLessThanOrEqual(
+						budgets[ index ] ?? 0
+					);
+				} );
+				expect( modules.length, description ).toBeLessThanOrEqual(
+					STOREFRONT_MODULES_COUNT
+				);
+				expect( moduleBytes, description ).toBeLessThanOrEqual(
+					STOREFRONT_MODULES_BYTES
+				);
+			} finally {
+				await trashBlockProduct( requestUtils, product.id );
+			}
+		} );
+	}
 
 	test( 'General Settings (options-general.php) loads no plugin bytes', async ( {
 		admin,

@@ -2,15 +2,24 @@
  * webpack configuration for `npm run build`: @wordpress/scripts' own two configurations, the
  * classic scripts and the script modules, plus the plugin's own entries.
  *
- * wp-scripts finds the scripts of the blocks under assets/ through their block.json files, and
- * keeps doing so. An admin screen has no block.json, so each directory under assets/admin/ that
- * holds an index.js becomes the entry `admin/<directory>`, built to build/admin/<directory>.js,
- * where budget.json's `admin/**` rules apply to it.
+ * wp-scripts builds the scripts a block.json file under assets/ names, and blockEntries() keeps
+ * asking it for them, but no block of the plugin's has one there: the storefront blocks'
+ * block.json files live under src/, beside the class that registers them, name no file and need
+ * no build, and their renderers load what this build writes. An admin screen has no block.json,
+ * so each directory under assets/admin/ that holds an index.js becomes the entry
+ * `admin/<directory>`, built to build/admin/<directory>.js, where budget.json's `admin/**` rules
+ * apply to it.
  *
  * The storefront's scripts are ES modules, built by wp-scripts' module configuration, which it
  * exports only when run with --experimental-modules, as `npm run build` and `npm run start` do.
- * Each entry of STOREFRONT_MODULES is built to build/<entry>.js, where budget.json's
- * `storefront/**` rule applies to it.
+ * Each entry of STOREFRONT_MODULES is built to build/<entry>: the payment host to
+ * build/storefront/, where budget.json's `storefront/**` rule applies to it, and the blocks' two
+ * modules and their stylesheet to build/blocks/, where its `blocks/**` rules apply. The
+ * stylesheet is built in this configuration, which writes no right-to-left copy of it: it is
+ * written with logical properties instead, and the empty script webpack makes for it is dropped
+ * (DropEmptyScripts), its .asset.json kept. A module the others import by its id is an external
+ * module of theirs (STOREFRONT_EXTERNALS), so a page holds one copy of it whatever blocks share
+ * it.
  *
  * The list of a script's WordPress dependencies and its version is written as a .asset.json file,
  * not wp-scripts' default .asset.php: every PHP file the plugin ships must refuse to run on its
@@ -28,13 +37,24 @@ const ASSETS = join( __dirname, 'assets' );
 const ADMIN = join( ASSETS, 'admin' );
 
 /**
- * The storefront's script modules, keyed by the path they are built to under build/.
+ * The storefront's script modules and stylesheet, keyed by the path they are built to under build/.
  *
  * @type {Object<string, string>}
  */
 const STOREFRONT_MODULES = {
 	'storefront/payments': join( ASSETS, 'storefront', 'payments', 'index.js' ),
+	'blocks/store': join( ASSETS, 'blocks', 'store', 'index.js' ),
+	'blocks/product': join( ASSETS, 'blocks', 'product', 'index.js' ),
+	'blocks/storefront': join( ASSETS, 'blocks', 'storefront.css' ),
 };
+
+/**
+ * The storefront's modules another storefront module imports by id: left out of the importer's
+ * bundle and listed in its .asset.json file, so WordPress puts the one copy in the page's import map.
+ *
+ * @type {string[]}
+ */
+const STOREFRONT_EXTERNALS = [ '@seocart/store' ];
 
 if ( ! Array.isArray( defaultConfig ) ) {
 	// Without the flag wp-scripts exports the classic configuration alone, and the storefront's
@@ -103,13 +123,55 @@ function withPluginEntries( config, entries ) {
 			plugin instanceof DependencyExtractionWebpackPlugin
 				? new DependencyExtractionWebpackPlugin( {
 						outputFormat: 'json',
+						// Read in a module build only; imported statically, as @wordpress/interactivity is.
+						requestToExternalModule: ( request ) =>
+							STOREFRONT_EXTERNALS.includes( request )
+								? `module ${ request }`
+								: undefined,
 					} )
 				: plugin
 		),
 	};
 }
 
+/**
+ * Drops the script webpack writes for an entry that is a stylesheet only: it is empty, and
+ * nothing loads it. It runs after the dependency lists are written, so the stylesheet keeps the
+ * .asset.json file its version is read from.
+ */
+class DropEmptyScripts {
+	apply( compiler ) {
+		compiler.hooks.thisCompilation.tap(
+			'DropEmptyScripts',
+			( compilation ) =>
+				compilation.hooks.processAssets.tap(
+					{
+						name: 'DropEmptyScripts',
+						stage: compiler.webpack.Compilation
+							.PROCESS_ASSETS_STAGE_REPORT,
+					},
+					( assets ) =>
+						Object.keys( assets )
+							.filter(
+								( name ) =>
+									name.endsWith( '.js' ) &&
+									0 === assets[ name ].size() &&
+									name.replace( /\.js$/, '.css' ) in assets
+							)
+							.forEach( ( name ) =>
+								compilation.deleteAsset( name )
+							)
+				)
+		);
+	}
+}
+
+const moduleBuild = withPluginEntries( moduleConfig, () => STOREFRONT_MODULES );
+
 module.exports = [
 	withPluginEntries( scriptConfig, adminEntries ),
-	withPluginEntries( moduleConfig, () => STOREFRONT_MODULES ),
+	{
+		...moduleBuild,
+		plugins: [ ...moduleBuild.plugins, new DropEmptyScripts() ],
+	},
 ];

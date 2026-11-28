@@ -1,0 +1,367 @@
+/**
+ * The storefront's stylesheet: the --seocart-* variables, then the rules of the components the
+ * storefront blocks print.
+ *
+ * The variables are the one place a theme's values enter. Each is declared once, on
+ * :where( :root ), whose specificity is zero, so a theme's stylesheet, Global Styles or a
+ * merchant's Additional CSS overrides any of them without fighting a selector. Each takes the
+ * theme.json preset it stands for, with a literal value for a theme that has none.
+ *
+ * Below the variables, a rule selects .seocart-* classes only and reads --seocart-* variables
+ * only: no theme value, colour or font is written there, so restyling the storefront is setting
+ * variables. Variants of a component are --{variant} classes; transient states are is-{state}
+ * classes. Logical properties make the same file right for right-to-left languages.
+ */
+
+/* stylelint-disable selector-class-pattern -- The class contract: seocart-{component}, seocart-{component}__{part} and seocart-{component}--{variant}. */
+
+/* Variables */
+
+:where(:root) {
+	--seocart-color-text: var(--wp--preset--color--contrast, currentcolor);
+	--seocart-color-bg: var(--wp--preset--color--base, canvas);
+	--seocart-color-muted: color-mix(
+		in srgb,
+		var(--seocart-color-text) 62%,
+		var(--seocart-color-bg)
+	);
+	--seocart-color-border: color-mix(
+		in srgb,
+		var(--seocart-color-text) 16%,
+		var(--seocart-color-bg)
+	);
+	--seocart-color-border-strong: color-mix(
+		in srgb,
+		var(--seocart-color-text) 34%,
+		var(--seocart-color-bg)
+	);
+	--seocart-color-surface: color-mix(
+		in srgb,
+		var(--seocart-color-text) 4%,
+		var(--seocart-color-bg)
+	);
+	--seocart-color-field: var(--seocart-color-bg);
+	--seocart-color-primary: var(--wp--preset--color--contrast, currentcolor);
+	--seocart-color-on-primary: var(--wp--preset--color--base, canvas);
+	--seocart-color-link: var(--wp--preset--color--contrast, currentcolor);
+	--seocart-color-focus: color-mix(
+		in srgb,
+		#1a73e8 70%,
+		var(--seocart-color-text)
+	);
+	--seocart-color-error: color-mix(
+		in srgb,
+		#c5221f 70%,
+		var(--seocart-color-text)
+	);
+	--seocart-color-error-bg: color-mix(
+		in srgb,
+		var(--seocart-color-error) 8%,
+		var(--seocart-color-bg)
+	);
+	--seocart-color-success: color-mix(
+		in srgb,
+		#137333 70%,
+		var(--seocart-color-text)
+	);
+	--seocart-font-body: var(--wp--preset--font-family--body, inherit);
+	--seocart-font-heading: var(--wp--preset--font-family--heading, inherit);
+	--seocart-heading-weight: var(--wp--custom--heading-weight, 600);
+	--seocart-radius: var(--wp--custom--radius, 4px);
+	--seocart-radius-button: var(--wp--custom--button-radius, 4px);
+	--seocart-control-height: 48px;
+	--seocart-gap: 16px;
+	--seocart-section-gap: 32px;
+	--seocart-summary-width: 420px;
+}
+
+/* Money and hidden text */
+
+.seocart-money {
+	font-variant-numeric: tabular-nums;
+}
+
+.seocart-visually-hidden {
+	position: absolute;
+	inline-size: 1px;
+	block-size: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+/* Price */
+
+.seocart-price {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: calc(var(--seocart-gap) / 2);
+	color: var(--seocart-color-text);
+}
+
+.seocart-price__amount {
+	font-size: 1.375em;
+	font-weight: var(--seocart-heading-weight);
+}
+
+.seocart-price__compare-at {
+	color: var(--seocart-color-muted);
+}
+
+.seocart-price.is-pending .seocart-price__amount {
+	border-radius: var(--seocart-radius);
+	background: var(--seocart-color-surface);
+	color: transparent;
+}
+
+/* Variant picker */
+
+.seocart-variant-picker {
+	display: grid;
+	gap: var(--seocart-gap);
+}
+
+.seocart-options {
+	min-inline-size: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.seocart-options__legend {
+	margin-block-end: calc(var(--seocart-gap) / 2);
+	padding: 0;
+	color: var(--seocart-color-text);
+	font-weight: var(--seocart-heading-weight);
+}
+
+.seocart-options__current {
+	color: var(--seocart-color-muted);
+	font-weight: 400;
+}
+
+.seocart-options__values {
+	display: flex;
+	flex-wrap: wrap;
+	gap: calc(var(--seocart-gap) / 2);
+}
+
+.seocart-pill {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	gap: calc(var(--seocart-gap) / 2);
+	min-block-size: max(24px, var(--seocart-control-height));
+	padding-inline: var(--seocart-gap);
+	border: 1px solid var(--seocart-color-border-strong);
+	border-radius: var(--seocart-radius-button);
+	background: var(--seocart-color-field);
+	color: var(--seocart-color-text);
+	font-family: var(--seocart-font-body);
+	cursor: pointer;
+	transition:
+		border-color 0.15s ease,
+		background-color 0.15s ease;
+}
+
+.seocart-pill:hover {
+	border-color: var(--seocart-color-text);
+}
+
+.seocart-pill:has(.seocart-pill__input:checked) {
+	border-color: var(--seocart-color-primary);
+	background: var(--seocart-color-primary);
+	color: var(--seocart-color-on-primary);
+}
+
+.seocart-pill:has(.seocart-pill__input:focus-visible) {
+	outline: 2px solid var(--seocart-color-focus);
+	outline-offset: 2px;
+}
+
+.seocart-pill.is-unavailable .seocart-pill__label {
+	text-decoration: line-through;
+}
+
+.seocart-pill__input {
+	position: absolute;
+	inset: 0;
+	margin: 0;
+	opacity: 0;
+	cursor: pointer;
+}
+
+.seocart-pill__swatch {
+	inline-size: 1.25em;
+	block-size: 1.25em;
+	border: 1px solid var(--seocart-color-border);
+	border-radius: 50%;
+}
+
+.seocart-pill__image {
+	inline-size: 1.75em;
+	block-size: 1.75em;
+	border-radius: var(--seocart-radius);
+	object-fit: cover;
+}
+
+.seocart-pill__label {
+	overflow-wrap: anywhere;
+}
+
+/* Add to cart */
+
+.seocart-add-to-cart {
+	display: grid;
+	gap: var(--seocart-gap);
+	container-type: inline-size;
+}
+
+.seocart-add-to-cart__quantity {
+	display: grid;
+	gap: calc(var(--seocart-gap) / 2);
+	justify-items: start;
+}
+
+.seocart-add-to-cart__label {
+	color: var(--seocart-color-text);
+	font-weight: var(--seocart-heading-weight);
+}
+
+.seocart-add-to-cart__status {
+	margin: 0;
+	color: var(--seocart-color-text);
+}
+
+/* Room enough: the quantity beside its label. */
+@container (min-width: 24rem) {
+	/* stylelint-disable-next-line rule-empty-line-before -- Prettier opens a block with no empty line. */
+	.seocart-add-to-cart__quantity {
+		grid-template-columns: auto auto;
+		justify-content: start;
+		align-items: center;
+		gap: var(--seocart-gap);
+	}
+}
+
+/* Quantity */
+
+.seocart-qty {
+	display: inline-flex;
+	align-items: stretch;
+	block-size: max(24px, var(--seocart-control-height));
+	border: 1px solid var(--seocart-color-border-strong);
+	border-radius: var(--seocart-radius);
+	background: var(--seocart-color-field);
+}
+
+.seocart-qty__step {
+	min-inline-size: max(24px, var(--seocart-control-height));
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--seocart-color-text);
+	font: inherit;
+	cursor: pointer;
+}
+
+.seocart-qty__input {
+	inline-size: 3.5em;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--seocart-color-text);
+	font: inherit;
+	text-align: center;
+	appearance: textfield;
+}
+
+.seocart-qty__step:focus-visible,
+.seocart-qty__input:focus-visible {
+	outline: 2px solid var(--seocart-color-focus);
+	outline-offset: 2px;
+}
+
+/* Button */
+
+.seocart-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: calc(var(--seocart-gap) / 2);
+	min-block-size: max(24px, var(--seocart-control-height));
+	padding-inline: calc(var(--seocart-gap) * 1.5);
+	border: 1px solid var(--seocart-color-primary);
+	border-radius: var(--seocart-radius-button);
+	background: var(--seocart-color-primary);
+	color: var(--seocart-color-on-primary);
+	font-family: var(--seocart-font-body);
+	font-weight: var(--seocart-heading-weight);
+	cursor: pointer;
+}
+
+.seocart-button:focus-visible {
+	outline: 2px solid var(--seocart-color-focus);
+	outline-offset: 2px;
+}
+
+.seocart-button[aria-disabled="true"] {
+	cursor: not-allowed;
+	opacity: 0.55;
+}
+
+.seocart-button[aria-busy="true"] {
+	cursor: progress;
+	opacity: 0.75;
+}
+
+.seocart-button--block {
+	inline-size: 100%;
+}
+
+.seocart-button--large {
+	min-block-size: max(24px, calc(var(--seocart-control-height) + 8px));
+	font-size: 1.0625em;
+}
+
+/* Notices */
+
+.seocart-notice {
+	margin: 0;
+	color: var(--seocart-color-text);
+}
+
+.seocart-notice:not(:empty) {
+	padding: calc(var(--seocart-gap) * 0.75) var(--seocart-gap);
+	border: 1px solid var(--seocart-color-border);
+	border-radius: var(--seocart-radius);
+	background: var(--seocart-color-surface);
+}
+
+.seocart-notice--error {
+	color: var(--seocart-color-error);
+}
+
+.seocart-notice--error:not(:empty) {
+	border-color: var(--seocart-color-error);
+	background: var(--seocart-color-error-bg);
+}
+
+/* The editor's placeholder */
+
+.seocart-placeholder {
+	margin: 0;
+	padding: var(--seocart-gap);
+	border: 1px dashed var(--seocart-color-border-strong);
+	border-radius: var(--seocart-radius);
+	color: var(--seocart-color-muted);
+}
+
+/* No movement for a shopper who asks for none. */
+@media (prefers-reduced-motion: reduce) {
+	/* stylelint-disable-next-line rule-empty-line-before -- Prettier opens a block with no empty line. */
+	.seocart-pill {
+		transition: none;
+	}
+}

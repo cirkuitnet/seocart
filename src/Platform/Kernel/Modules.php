@@ -43,6 +43,7 @@ use SEOCart\Catalog\Application\Projection\PriceProjector;
 use SEOCart\Catalog\Application\Projection\SearchDocumentProjector;
 use SEOCart\Catalog\Application\Projection\StockSummaries;
 use SEOCart\Catalog\Application\Projection\StockSummaryProjector;
+use SEOCart\Catalog\Application\Query\ProductPage;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Application\Search\CatalogSearch;
 use SEOCart\Catalog\Application\Search\ListingFacts;
@@ -64,6 +65,10 @@ use SEOCart\Catalog\Infrastructure\WordPressPostGateway;
 use SEOCart\Catalog\Interfaces\Admin\ProductEditorPanel;
 use SEOCart\Catalog\Interfaces\Cli\CatalogCommand;
 use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
+use SEOCart\Catalog\Interfaces\Storefront\AddToCartBlock;
+use SEOCart\Catalog\Interfaces\Storefront\ProductBlocks;
+use SEOCart\Catalog\Interfaces\Storefront\ProductPriceBlock;
+use SEOCart\Catalog\Interfaces\Storefront\VariantPickerBlock;
 use SEOCart\Checkout\Application\ChangeCartCurrency;
 use SEOCart\Checkout\Application\CheckoutForm;
 use SEOCart\Checkout\Application\CheckoutRules;
@@ -254,6 +259,9 @@ use SEOCart\Platform\Settings\Settings;
 use SEOCart\Platform\Settings\SettingsError;
 use SEOCart\Platform\Settings\SettingsService;
 use SEOCart\Platform\Settings\SettingsStore;
+use SEOCart\Platform\Storefront\Blocks;
+use SEOCart\Platform\Storefront\StoreConfig;
+use SEOCart\Platform\Storefront\StorefrontAssets;
 use SEOCart\Pricing\Application\Calculator;
 use SEOCart\Pricing\Application\ExchangeRates;
 use SEOCart\Pricing\Application\FulfilmentRouter;
@@ -309,7 +317,8 @@ use SEOCart\Tax\Domain\TaxRoundingMode;
  * reads an option, translates or computes an address. Hooks that only matter in the admin, on the
  * command line, in a cron run or on a network are added only there. An idle front-end request
  * gets these hooks, and loads no file but the main file, the kernel, the container and this one,
- * and the two the product post type's registration loads on `init`:
+ * the ones the product post type's registration loads on `init`, and the storefront blocks'
+ * registrar:
  *
  * - `plugins_loaded` and the activation and deactivation hooks, from the main file;
  * - `map_meta_cap`, the one capability mapper, which returns before it resolves anything for a
@@ -321,6 +330,8 @@ use SEOCart\Tax\Domain\TaxRoundingMode;
  * - JOB_HOOK, which Action Scheduler fires to run one of the plugin's jobs, wherever its queue
  *   runs — another plugin's runner included;
  * - `init`, which registers the product post type;
+ * - `init` again, which registers the storefront blocks from their block.json files and builds
+ *   none of their renderers, each resolved when its block renders;
  * - `wp_after_insert_post`, `transition_post_status` and `pre_delete_post`, which keep a product
  *   consistent with its post whichever path writes, trashes or deletes it: a cron run empties
  *   the trash, and any plugin may delete a post anywhere. Each returns at once for a post of
@@ -331,8 +342,8 @@ use SEOCart\Tax\Domain\TaxRoundingMode;
  * `unexpected` and `internal` shapes.
  *
  * It also keeps the lists the kernel cannot derive at run time without loading every class: the
- * error catalogs, the domain events, the plugin's own event listeners and the maintenance
- * commands. Each has a test that holds it to
+ * error catalogs, the domain events, the plugin's own event listeners, the maintenance commands
+ * and the storefront blocks. Each has a test that holds it to
  * what exists. The migration chain is not one of them: the migrator runs the data registry's
  * migrations, the one production list of what the plugin owns in a site.
  *
@@ -494,6 +505,23 @@ final class Modules {
 	);
 
 	/**
+	 * The storefront blocks: each block's name, with the class that renders it.
+	 *
+	 * Blocks::register() registers each on `init` from the block.json file in the folder named after
+	 * it, and resolves its renderer from the container only when the block renders. A test holds
+	 * this list and those files equal.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var array<string, class-string<\SEOCart\Platform\Storefront\BlockRenderer>>
+	 */
+	public const STOREFRONT_BLOCKS = array(
+		'seocart/product-price'  => ProductPriceBlock::class,
+		'seocart/variant-picker' => VariantPickerBlock::class,
+		'seocart/add-to-cart'    => AddToCartBlock::class,
+	);
+
+	/**
 	 * Binds every module's factories. Builds nothing.
 	 *
 	 * @since 0.1.0
@@ -511,6 +539,7 @@ final class Modules {
 		self::eventsRegister( $container );
 		self::jobsRegister( $container );
 		self::catalogRegister( $container );
+		self::storefrontRegister( $container );
 		self::inventoryRegister( $container );
 		self::rateLimiterRegister( $container );
 		self::cartRegister( $container );
@@ -540,6 +569,7 @@ final class Modules {
 		self::operationsSubscribe( $container );
 		self::jobsSubscribe( $container, $cron || $ajax || $cli );
 		self::catalogSubscribe( $container, $admin );
+		self::storefrontSubscribe( $container );
 		self::inventorySubscribe( $container );
 		self::kernelSubscribe( $container, $admin, $ajax, $cli, $cron, is_multisite() );
 	}
@@ -1130,6 +1160,20 @@ final class Modules {
 				array( $c->get( Reporter::class ), 'error' )
 			)
 		);
+		$container->bind(
+			ProductPage::class,
+			static fn( Container $c ): ProductPage => new ProductPage(
+				$c->get( ProductRepository::class ),
+				$c->get( Sellability::class ),
+				static fn( array $variantIds ): array => $c->get( Availability::class )->forSale( $variantIds, null ),
+				self::baseCurrency( $c ),
+				self::rateVersion( $c )
+			)
+		);
+		$container->bind( ProductBlocks::class, static fn( Container $c ): ProductBlocks => new ProductBlocks( $c->get( ProductPage::class ), $c->get( StorefrontAssets::class ), $c->get( StoreConfig::class ), $c->get( RequestLanguage::class ) ) );
+		$container->bind( ProductPriceBlock::class, static fn( Container $c ): ProductPriceBlock => new ProductPriceBlock( $c->get( ProductBlocks::class ) ) );
+		$container->bind( VariantPickerBlock::class, static fn( Container $c ): VariantPickerBlock => new VariantPickerBlock( $c->get( ProductBlocks::class ) ) );
+		$container->bind( AddToCartBlock::class, static fn( Container $c ): AddToCartBlock => new AddToCartBlock( $c->get( ProductBlocks::class ) ) );
 	}
 
 	/**
@@ -1305,6 +1349,38 @@ final class Modules {
 			},
 			PHP_INT_MAX,
 			2
+		);
+	}
+
+	/**
+	 * The storefront: the loader of its script modules and its stylesheet, and its store module's configuration, each built the first time a block renders.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Container $container The container.
+	 */
+	private static function storefrontRegister( Container $container ): void {
+		$container->bind( StorefrontAssets::class, static fn( Container $c ): StorefrontAssets => new StorefrontAssets( SEOCART_PLUGIN_FILE, $c->get( Reporter::class ) ) );
+		$container->bind( StoreConfig::class, static fn( Container $c ): StoreConfig => new StoreConfig( self::baseCurrency( $c ), self::rateVersion( $c ), $c->get( RequestLanguage::class ) ) );
+	}
+
+	/**
+	 * The storefront's hook: `init`, on every kind of request, which registers the storefront blocks.
+	 *
+	 * The editor needs the blocks to offer and preview them, and a page to render them, so they are
+	 * registered wherever the product post type is. The callback reads each block.json file and
+	 * builds nothing: each block's renderer is resolved from the container when the block renders.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Container $container The container the renderers are resolved from.
+	 */
+	private static function storefrontSubscribe( Container $container ): void {
+		add_action(
+			'init',
+			static function () use ( $container ): void {
+				Blocks::register( self::STOREFRONT_BLOCKS, $container );
+			}
 		);
 	}
 

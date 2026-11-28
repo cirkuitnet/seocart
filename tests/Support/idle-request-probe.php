@@ -35,6 +35,8 @@ declare( strict_types=1 );
 
 use SEOCart\Contracts\Checkout\CheckoutFieldRegistry;
 use SEOCart\Contracts\Payment\GatewayRegistry;
+use SEOCart\Platform\Kernel\Modules;
+use SEOCart\Platform\Storefront\StorefrontAssets;
 use SEOCart\Tests\Support\BootstrapProbes;
 use SEOCart\Tests\Support\LibraryShare;
 use SEOCart\Tests\Support\PluginOwnership;
@@ -95,25 +97,36 @@ $seocart_probe_files = LibraryShare::splitFiles( $seocart_probe_probes->loadedPl
 $seocart_probe_included      = get_included_files();
 $seocart_probe_registrations = did_action( GatewayRegistry::ACTION );
 $seocart_probe_field_fires   = did_action( CheckoutFieldRegistry::ACTION );
+// After the files too: naming the list loads the module wiring, which the plugin's own run loaded already.
+$seocart_probe_renderers = array_values( array_filter( Modules::STOREFRONT_BLOCKS, static fn( string $renderer ): bool => class_exists( $renderer, false ) ) );
+// The storefront's files registered, each from its .asset.json file: the loader is the only reader of those files.
+$seocart_probe_assets = array_merge(
+	array_values( array_filter( array_keys( StorefrontAssets::MODULES ), static fn( string $id ): bool => null !== wp_script_modules()->get_registered( $id ) ) ),
+	wp_style_is( StorefrontAssets::STYLE, 'registered' ) ? array( StorefrontAssets::STYLE ) : array()
+);
 
 file_put_contents(
 	$seocart_probe_result_file,
 	json_encode(
 		array(
-			'plugin_loaded'       => defined( 'SEOCART_PLUGIN_FILE' ),
-			'queries_run'         => $wpdb->num_queries,
-			'queries'             => $seocart_probe_queries,
-			'files'               => $seocart_probe_files['plugin'],
-			'library_files'       => $seocart_probe_files['library'],
-			'hooks'               => LibraryShare::ownHooks( $seocart_probe_probes->registeredPluginHooks() ),
+			'plugin_loaded'        => defined( 'SEOCART_PLUGIN_FILE' ),
+			'queries_run'          => $wpdb->num_queries,
+			'queries'              => $seocart_probe_queries,
+			'files'                => $seocart_probe_files['plugin'],
+			'library_files'        => $seocart_probe_files['library'],
+			'hooks'                => LibraryShare::ownHooks( $seocart_probe_probes->registeredPluginHooks() ),
 			// Every registration, so the test can tell what loading the plugin and its bundled library added.
-			'all_hooks'           => LibraryShare::describeAll( (array) $GLOBALS['wp_filter'], $seocart_probe_probes ),
+			'all_hooks'            => LibraryShare::describeAll( (array) $GLOBALS['wp_filter'], $seocart_probe_probes ),
 			// Every file, so a test can tell what loading an extension added.
-			'included_files'      => $seocart_probe_included,
+			'included_files'       => $seocart_probe_included,
 			// How often the payment gateways were registered: an idle request needs no gateway.
-			'registrations'       => $seocart_probe_registrations,
+			'registrations'        => $seocart_probe_registrations,
 			// How often the checkout fields were registered: an idle request needs no checkout field.
-			'field_registrations' => $seocart_probe_field_fires,
+			'field_registrations'  => $seocart_probe_field_fires,
+			// The storefront blocks' renderers loaded: an idle request renders no block, so it builds none.
+			'storefront_renderers' => $seocart_probe_renderers,
+			// The storefront's modules and stylesheet registered: an idle request reads no asset file, so it registers none.
+			'storefront_assets'    => $seocart_probe_assets,
 		),
 		JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE
 	)
