@@ -1,0 +1,74 @@
+/**
+ * The storefront's stylesheet: the --seocart-* variables, then the rules of the components the
+ * storefront blocks print.
+ *
+ * The variables are the one place a theme's values enter. Each is declared once, on
+ * :where( :root ), whose specificity is zero, so a theme's stylesheet, Global Styles or a
+ * merchant's Additional CSS overrides any of them without fighting a selector. Each takes the
+ * theme.json preset it stands for, with a literal value for a theme that has none.
+ *
+ * Below the variables, a rule selects .seocart-* classes only and reads --seocart-* variables
+ * only: no theme value, colour or font is written there, so restyling the storefront is setting
+ * variables. Variants of a component are --{variant} classes; transient states are is-{state}
+ * classes. Logical properties make the same file right for right-to-left languages.
+ */
+
+/* Variables */
+
+:where(:root) {
+	--seocart-color-text: var(--wp--preset--color--contrast, currentcolor);
+	--seocart-color-bg: var(--wp--preset--color--base, canvas);
+	--seocart-color-muted: color-mix(
+		in srgb,
+		var(--seocart-color-text) 62%,
+		var(--seocart-color-bg)
+	);
+	--seocart-color-border: color-mix(
+		in srgb,
+		var(--seocart-color-text) 16%,
+		var(--seocart-color-bg)
+	);
+	--seocart-color-border-strong: color-mix(
+		in srgb,
+		var(--seocart-color-text) 34%,
+		var(--seocart-color-bg)
+	);
+	--seocart-color-surface: color-mix(
+		in srgb,
+		var(--seocart-color-text) 4%,
+		var(--seocart-color-bg)
+	);
+	--seocart-color-field: var(--seocart-color-bg);
+	--seocart-color-primary: var(--wp--preset--color--contrast, currentcolor);
+	--seocart-color-on-primary: var(--wp--preset--color--base, canvas);
+	--seocart-color-link: var(--wp--preset--color--contrast, currentcolor);
+	--seocart-color-focus: color-mix(
+		in srgb,
+		#1a73e8 70%,
+		var(--seocart-color-text)
+	);
+	--seocart-color-error: color-mix(
+		in srgb,
+		#c5221f 70%,
+		var(--seocart-color-text)
+	);
+	--seocart-color-error-bg: color-mix(
+		in srgb,
+		var(--seocart-color-error) 8%,
+		var(--seocart-color-bg)
+	);
+	--seocart-color-success: color-mix(
+		in srgb,
+		#137333 70%,
+		var(--seocart-color-text)
+	);
+	--seocart-font-body: var(--wp--preset--font-family--body, inherit);
+	--seocart-font-heading: var(--wp--preset--font-family--heading, inherit);
+	--seocart-heading-weight: var(--wp--custom--heading-weight, 600);
+	--seocart-radius: var(--wp--custom--radius, 4px);
+	--seocart-radius-button: var(--wp--custom--button-radius, 4px);
+	--seocart-control-height: 48px;
+	--seocart-gap: 16px;
+	--seocart-section-gap: 32px;
+	--seocart-summary-width: 420px;
+}

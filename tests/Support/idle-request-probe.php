@@ -36,6 +36,7 @@ declare( strict_types=1 );
 use SEOCart\Contracts\Checkout\CheckoutFieldRegistry;
 use SEOCart\Contracts\Payment\GatewayRegistry;
 use SEOCart\Platform\Kernel\Modules;
+use SEOCart\Platform\Storefront\StorefrontAssets;
 use SEOCart\Tests\Support\BootstrapProbes;
 use SEOCart\Tests\Support\LibraryShare;
 use SEOCart\Tests\Support\PluginOwnership;
@@ -98,6 +99,11 @@ $seocart_probe_registrations = did_action( GatewayRegistry::ACTION );
 $seocart_probe_field_fires   = did_action( CheckoutFieldRegistry::ACTION );
 // After the files too: naming the list loads the module wiring, which the plugin's own run loaded already.
 $seocart_probe_renderers = array_values( array_filter( Modules::STOREFRONT_BLOCKS, static fn( string $renderer ): bool => class_exists( $renderer, false ) ) );
+// The storefront's files registered, each from its .asset.json file: the loader is the only reader of those files.
+$seocart_probe_assets = array_merge(
+	array_values( array_filter( array_keys( StorefrontAssets::MODULES ), static fn( string $id ): bool => null !== wp_script_modules()->get_registered( $id ) ) ),
+	wp_style_is( StorefrontAssets::STYLE, 'registered' ) ? array( StorefrontAssets::STYLE ) : array()
+);
 
 file_put_contents(
 	$seocart_probe_result_file,
@@ -119,6 +125,8 @@ file_put_contents(
 			'field_registrations'  => $seocart_probe_field_fires,
 			// The storefront blocks' renderers loaded: an idle request renders no block, so it builds none.
 			'storefront_renderers' => $seocart_probe_renderers,
+			// The storefront's modules and stylesheet registered: an idle request reads no asset file, so it registers none.
+			'storefront_assets'    => $seocart_probe_assets,
 		),
 		JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE
 	)

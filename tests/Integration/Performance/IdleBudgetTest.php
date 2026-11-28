@@ -243,7 +243,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @var array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>}}|null
+	 * @var array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>, storefront_assets: list<string>}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>, storefront_assets: list<string>}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>, storefront_assets: list<string>}}|null
 	 */
 	private static ?array $measurements = null;
 
@@ -411,6 +411,23 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Tests that an idle request reads no storefront asset file: none of the storefront's modules, nor its stylesheet, is registered.
+	 *
+	 * The loader, StorefrontAssets, is the one reader of the build's .asset.json files, and it
+	 * registers what it reads; only a block that renders asks it.
+	 *
+	 * Planted violation, in Blocks::register():
+	 * `$container->get( \SEOCart\Platform\Storefront\StorefrontAssets::class )->module( '@seocart/store' );`.
+	 * The store's .asset.json file is then read and its module registered on every request; G3's
+	 * file count fails too.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_an_idle_request_reads_no_storefront_asset_file(): void {
+		$this->assertSame( array(), self::measurement()['storefront_assets'], 'An idle request read the .asset.json files of these storefront modules or stylesheet and registered them, which only a block that renders needs.' );
+	}
+
+	/**
 	 * Tests that an idle request registers no payment gateway: the registration action fires only when something needs a gateway.
 	 *
 	 * Planted violation, in Modules::paymentRegister():
@@ -562,7 +579,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>} The report.
+	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>, storefront_assets: list<string>} The report.
 	 */
 	private static function measurement(): array {
 		return self::measurements()['with_plugin'];
@@ -578,7 +595,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>}} The reports.
+	 * @return array{without_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>, storefront_assets: list<string>}, with_plugin: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>, storefront_assets: list<string>}, without_plugin_again: array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>, storefront_assets: list<string>}} The reports.
 	 */
 	private static function measurements(): array {
 		if ( null === self::$measurements ) {
@@ -609,7 +626,7 @@ final class IdleBudgetTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 *
 	 * @param bool $load_plugin Whether the integration bootstrap loads the plugin.
-	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>} The report.
+	 * @return array{plugin_loaded: bool, queries_run: int, queries: array<int, array<int, mixed>>, files: array<string, int>, library_files: array<string, int>, hooks: list<array{hook: string, priority: int, callback: string}>, all_hooks: list<string>, registrations: int, field_registrations: int, storefront_renderers: list<string>, storefront_assets: list<string>} The report.
 	 */
 	private static function serveIdleRequestInChildProcess( bool $load_plugin ): array {
 		$result_file = (string) tempnam( sys_get_temp_dir(), 'seocart-idle-' );

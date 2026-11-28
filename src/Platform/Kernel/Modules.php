@@ -258,6 +258,7 @@ use SEOCart\Platform\Settings\SettingsError;
 use SEOCart\Platform\Settings\SettingsService;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Platform\Storefront\Blocks;
+use SEOCart\Platform\Storefront\StorefrontAssets;
 use SEOCart\Pricing\Application\Calculator;
 use SEOCart\Pricing\Application\ExchangeRates;
 use SEOCart\Pricing\Application\FulfilmentRouter;
@@ -535,6 +536,7 @@ final class Modules {
 		self::eventsRegister( $container );
 		self::jobsRegister( $container );
 		self::catalogRegister( $container );
+		self::storefrontRegister( $container );
 		self::inventoryRegister( $container );
 		self::rateLimiterRegister( $container );
 		self::cartRegister( $container );
@@ -1334,6 +1336,17 @@ final class Modules {
 			PHP_INT_MAX,
 			2
 		);
+	}
+
+	/**
+	 * The storefront: the loader of its script modules and its stylesheet, built the first time a block renders.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param Container $container The container.
+	 */
+	private static function storefrontRegister( Container $container ): void {
+		$container->bind( StorefrontAssets::class, static fn( Container $c ): StorefrontAssets => new StorefrontAssets( SEOCART_PLUGIN_FILE, $c->get( Reporter::class ) ) );
 	}
 
 	/**

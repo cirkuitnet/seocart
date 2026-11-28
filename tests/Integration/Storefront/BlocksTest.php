@@ -80,10 +80,9 @@ final class BlocksTest extends WP_UnitTestCase {
 
 			$this->assertInstanceOf( WP_Block_Type::class, $type, "{$name} is not registered after init." );
 			$this->assertTrue( $type->is_dynamic(), "{$name} has no render callback." );
-			$this->assertIsCallable( $type->render_callback, "{$name}'s render callback cannot be called." );
 			$this->assertTrue( $type->supports['autoRegister'] ?? false, "{$name} is not offered by the editor through WordPress's own render." );
 			$this->assertTrue( $type->supports['interactivity'] ?? false, "{$name} does not declare interactivity, so WordPress would not process its directives." );
-			$this->assertSame( array( 'postId', 'postType' ), $type->uses_context, "{$name}'s context" );
+			$this->assertSame( array( 'postId', 'postType' ), $type->get_uses_context(), "{$name}'s context" );
 
 			foreach ( array( 'editor_script_handles', 'script_handles', 'view_script_handles', 'view_script_module_ids', 'style_handles', 'editor_style_handles', 'view_style_handles' ) as $files ) {
 				$this->assertSame( array(), $type->{$files}, "{$name} names files of its own in {$files}." );

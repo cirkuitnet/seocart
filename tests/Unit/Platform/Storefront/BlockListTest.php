@@ -13,14 +13,14 @@ namespace SEOCart\Tests\Unit\Platform\Storefront;
 
 use PHPUnit\Framework\TestCase;
 use SEOCart\Platform\Kernel\Modules;
-use SEOCart\Platform\Storefront\BlockRenderer;
 use SEOCart\Platform\Storefront\Blocks;
 
 /**
  * Holds Modules::STOREFRONT_BLOCKS and the block.json files under src/Platform/Storefront/blocks/
  * equal, and each file to what a storefront block is.
  *
- * The list names each block's renderer; the files are what WordPress registers. A block in the
+ * The list names each block's renderer, a BlockRenderer by its declared type, which static
+ * analysis holds; the files are what WordPress registers. A block in the
  * list without a file would fail to register, and a file without an entry would never be
  * registered, so the two are compared in both directions. A storefront block names no script,
  * module, stylesheet or render file in its block.json: the renderer enqueues what the block needs
@@ -69,17 +69,6 @@ final class BlockListTest extends TestCase {
 
 		foreach ( $files as $name => $file ) {
 			$this->assertSame( realpath( Blocks::folder( $name ) . '/block.json' ), $file, "The block.json file of {$name} is not in the folder named after it, where Blocks::register() looks." );
-		}
-	}
-
-	/**
-	 * Tests that every block of the list is rendered by a block renderer.
-	 *
-	 * @since 0.2.0
-	 */
-	public function test_every_block_names_a_block_renderer(): void {
-		foreach ( Modules::STOREFRONT_BLOCKS as $name => $renderer ) {
-			$this->assertTrue( is_subclass_of( $renderer, BlockRenderer::class ), "The renderer of {$name}, {$renderer}, is not a BlockRenderer." );
 		}
 	}
 
