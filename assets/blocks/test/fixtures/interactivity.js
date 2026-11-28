@@ -4,13 +4,15 @@
  *
  * `store()` keeps each store's definition and returns it; a generator action runs as WordPress
  * runs one, to the end, each yielded promise awaited. A test sets the context an action sees
- * (`runtime.context`) and the configuration of each store (`runtime.config`).
+ * (`runtime.context`), the configuration of each store (`runtime.config`) and the state the server
+ * printed for a store (`runtime.state`), which its definition's state takes when it is made.
  */
 
 const runtime = {
 	stores: {},
 	context: {},
 	config: {},
+	state: {},
 };
 
 /**
@@ -54,7 +56,10 @@ function wrapped( group = {} ) {
 export function store( namespace, definition ) {
 	if ( definition ) {
 		runtime.stores[ namespace ] = {
-			state: definition.state ?? {},
+			state: Object.assign(
+				definition.state ?? {},
+				runtime.state[ namespace ]
+			),
 			actions: wrapped( definition.actions ),
 			callbacks: wrapped( definition.callbacks ),
 		};

@@ -2,7 +2,8 @@
  * `@seocart/store`: the storefront's session and cart, as the Interactivity store `seocart/store`.
  *
  * It owns every request the storefront blocks send to the Store API (client.js, queue.js), the
- * cart's version and the nonce. Its configuration is printed by the page, the same for every
+ * cart's version and the nonce, and the one function that pushes onto the data layer
+ * (data-layer.js). Its configuration is printed by the page, the same for every
  * visitor: `restRoot`, `nonceUrl`, `locale`, `currency`, `priceVersion` and `strings`, every
  * sentence the storefront shows, which a module names by its key (notice.js).
  *
@@ -31,6 +32,7 @@ import { createClient } from './client';
 import { createQueue } from './queue';
 
 export { text, noticeText } from './notice';
+export { pushEvent, item, whenShown } from './data-layer';
 
 /**
  * The store's name.
