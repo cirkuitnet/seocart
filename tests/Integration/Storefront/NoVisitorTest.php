@@ -11,7 +11,8 @@ declare( strict_types=1 );
 
 namespace SEOCart\Tests\Integration\Storefront;
 
-use SEOCart\Inventory\Infrastructure\MysqlLocationRepository;
+use SEOCart\Inventory\Domain\StockTarget;
+use SEOCart\Platform\Authorization\Actor;
 use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
 use SEOCart\Tests\Support\Catalog\SavesVariantSets;
 use SEOCart\Tests\Support\Catalog\VariantSets;
@@ -62,8 +63,14 @@ final class NoVisitorTest extends ProductWriteTestCase {
 	 * @since 0.2.0
 	 */
 	public function test_the_page_is_the_same_for_a_guest_and_a_subscriber(): void {
-		$location = ( new MysqlLocationRepository( $this->db ) )->all()[0]->uuid;
-		$post     = $this->saveSet( null, VariantSets::options(), VariantSets::withStock( VariantSets::variants( 'VISITOR', VariantSets::SIZES, VariantSets::GRINDS, array(), false ), array( $location ), self::UNITS ) )->postId;
+		$post    = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'VISITOR', VariantSets::SIZES, VariantSets::GRINDS, array(), false ) )->postId;
+		$targets = array();
+
+		foreach ( $this->products->findByPost( $post )?->variants() ?? array() as $index => $variant ) {
+			$targets[] = new StockTarget( (int) $variant->id(), $this->defaultLocation, self::UNITS + 2 * $index, 0 );
+		}
+
+		( $this->services->stockLevels ?? throw new \LogicException( 'The services were built without the stock unit.' ) )->apply( $targets, Actor::user( 1 ) );
 
 		wp_set_current_user( 0 );
 
@@ -75,6 +82,7 @@ final class NoVisitorTest extends ProductWriteTestCase {
 
 		$this->assertStringContainsString( '"products"', $guest, 'The page printed no product state, so equal bytes would prove nothing.' );
 		$this->assertStringContainsString( 'nonceUrl', $guest, 'The page printed no store configuration, so equal bytes would prove nothing.' );
+		$this->assertSame( 6, substr_count( $guest, '"inStock":true' ), 'A variant is not in stock, so a page without its count would prove nothing.' );
 		$this->assertSame( $guest, $subscriber, 'A guest and a subscriber are sent different pages.' );
 		$this->assertStringNotContainsString( wp_create_nonce( 'wp_rest' ), $subscriber, 'The page holds the subscriber\'s nonce.' );
 		$this->assertStringNotContainsStringIgnoringCase( 'user', $subscriber, 'The page names a user.' );
