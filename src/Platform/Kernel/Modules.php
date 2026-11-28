@@ -43,6 +43,7 @@ use SEOCart\Catalog\Application\Projection\PriceProjector;
 use SEOCart\Catalog\Application\Projection\SearchDocumentProjector;
 use SEOCart\Catalog\Application\Projection\StockSummaries;
 use SEOCart\Catalog\Application\Projection\StockSummaryProjector;
+use SEOCart\Catalog\Application\Query\ProductPage;
 use SEOCart\Catalog\Application\Query\Sellability;
 use SEOCart\Catalog\Application\Search\CatalogSearch;
 use SEOCart\Catalog\Application\Search\ListingFacts;
@@ -65,6 +66,7 @@ use SEOCart\Catalog\Interfaces\Admin\ProductEditorPanel;
 use SEOCart\Catalog\Interfaces\Cli\CatalogCommand;
 use SEOCart\Catalog\Interfaces\Rest\ProductPostsController;
 use SEOCart\Catalog\Interfaces\Storefront\AddToCartBlock;
+use SEOCart\Catalog\Interfaces\Storefront\ProductBlocks;
 use SEOCart\Catalog\Interfaces\Storefront\ProductPriceBlock;
 use SEOCart\Catalog\Interfaces\Storefront\VariantPickerBlock;
 use SEOCart\Checkout\Application\ChangeCartCurrency;
@@ -1157,9 +1159,20 @@ final class Modules {
 				array( $c->get( Reporter::class ), 'error' )
 			)
 		);
-		$container->bind( ProductPriceBlock::class, static fn(): ProductPriceBlock => new ProductPriceBlock() );
-		$container->bind( VariantPickerBlock::class, static fn(): VariantPickerBlock => new VariantPickerBlock() );
-		$container->bind( AddToCartBlock::class, static fn(): AddToCartBlock => new AddToCartBlock() );
+		$container->bind(
+			ProductPage::class,
+			static fn( Container $c ): ProductPage => new ProductPage(
+				$c->get( ProductRepository::class ),
+				$c->get( Sellability::class ),
+				static fn( array $variantIds ): array => $c->get( Availability::class )->forSale( $variantIds, null ),
+				self::baseCurrency( $c ),
+				self::rateVersion( $c )
+			)
+		);
+		$container->bind( ProductBlocks::class, static fn( Container $c ): ProductBlocks => new ProductBlocks( $c->get( ProductPage::class ) ) );
+		$container->bind( ProductPriceBlock::class, static fn( Container $c ): ProductPriceBlock => new ProductPriceBlock( $c->get( ProductBlocks::class ) ) );
+		$container->bind( VariantPickerBlock::class, static fn( Container $c ): VariantPickerBlock => new VariantPickerBlock( $c->get( ProductBlocks::class ) ) );
+		$container->bind( AddToCartBlock::class, static fn( Container $c ): AddToCartBlock => new AddToCartBlock( $c->get( ProductBlocks::class ) ) );
 	}
 
 	/**
