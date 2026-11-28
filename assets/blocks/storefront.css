@@ -239,6 +239,7 @@
 	/* stylelint-disable-next-line rule-empty-line-before -- Prettier opens a block with no empty line. */
 	.seocart-add-to-cart__quantity {
 		grid-template-columns: auto auto;
+		justify-content: start;
 		align-items: center;
 		gap: var(--seocart-gap);
 	}

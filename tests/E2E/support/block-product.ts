@@ -5,7 +5,7 @@
  * The product is published, its options and variants given in the same request as its post, as
  * the product editor sends them, each variant with a price in the store's base currency and, when
  * asked, units at the store's default location. Its content is the three blocks, each with no
- * attribute, as an editor inserts them.
+ * attribute, as an editor inserts them, unless the spec gives other content.
  */
 
 import type { RequestUtils } from '@wordpress/e2e-test-utils-playwright';
@@ -55,6 +55,7 @@ export interface BlockProduct {
  * @param axes         Its option axes; none for a product without options.
  * @param variants     Its variants, one per combination it sells; one with no values for a product without options.
  * @param currency     The store's base currency.
+ * @param content      The product's content: the three blocks unless given.
  * @return The product as created.
  */
 export async function createBlockProduct(
@@ -62,14 +63,18 @@ export async function createBlockProduct(
 	title: string,
 	axes: AxisInput[],
 	variants: VariantInput[],
-	currency = 'USD'
+	currency = 'USD',
+	content = PRODUCT_BLOCKS_CONTENT
 ): Promise< BlockProduct > {
-	const [ location ] = await requestUtils.rest<
-		Array< { location_uuid: string } >
-	>( {
+	const { locations } = await requestUtils.rest< {
+		locations: Array< { location_uuid: string; is_default: boolean } >;
+	} >( {
 		method: 'GET',
 		path: '/seocart/v1/locations',
 	} );
+	const location =
+		locations.find( ( candidate ) => candidate.is_default ) ??
+		locations[ 0 ];
 	const stamp = `${ Date.now() }-${ Math.floor( Math.random() * 1e6 ) }`;
 	const product = await requestUtils.rest< {
 		id: number;
@@ -84,7 +89,7 @@ export async function createBlockProduct(
 		data: {
 			title,
 			status: 'publish',
-			content: PRODUCT_BLOCKS_CONTENT,
+			content,
 			seocart: {
 				options: axes,
 				variants: variants.map( ( variant, index ) => ( {
