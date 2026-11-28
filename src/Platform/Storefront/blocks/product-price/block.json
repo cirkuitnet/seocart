@@ -1,0 +1,17 @@
+{
+	"$schema": "https://schemas.wp.org/trunk/block.json",
+	"apiVersion": 3,
+	"name": "seocart/product-price",
+	"title": "Product price",
+	"category": "theme",
+	"icon": "tag",
+	"description": "The price of the product the page shows, for the variant the shopper picks.",
+	"keywords": [ "price", "product" ],
+	"usesContext": [ "postId", "postType" ],
+	"supports": {
+		"html": false,
+		"interactivity": true,
+		"autoRegister": true
+	},
+	"textdomain": "seocart"
+}

@@ -1,0 +1,17 @@
+{
+	"$schema": "https://schemas.wp.org/trunk/block.json",
+	"apiVersion": 3,
+	"name": "seocart/add-to-cart",
+	"title": "Add to cart",
+	"category": "theme",
+	"icon": "cart",
+	"description": "The quantity and the button that add the variant the shopper picked to the cart.",
+	"keywords": [ "cart", "buy", "product" ],
+	"usesContext": [ "postId", "postType" ],
+	"supports": {
+		"html": false,
+		"interactivity": true,
+		"autoRegister": true
+	},
+	"textdomain": "seocart"
+}

@@ -1,0 +1,17 @@
+{
+	"$schema": "https://schemas.wp.org/trunk/block.json",
+	"apiVersion": 3,
+	"name": "seocart/variant-picker",
+	"title": "Variant picker",
+	"category": "theme",
+	"icon": "forms",
+	"description": "The options of the product the page shows, such as its sizes and colors, for the shopper to pick a variant.",
+	"keywords": [ "options", "variants", "product" ],
+	"usesContext": [ "postId", "postType" ],
+	"supports": {
+		"html": false,
+		"interactivity": true,
+		"autoRegister": true
+	},
+	"textdomain": "seocart"
+}
