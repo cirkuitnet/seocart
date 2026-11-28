@@ -82,7 +82,6 @@ final class NoVisitorTest extends ProductWriteTestCase {
 
 		$this->assertStringContainsString( '"products"', $guest, 'The page printed no product state, so equal bytes would prove nothing.' );
 		$this->assertStringContainsString( 'nonceUrl', $guest, 'The page printed no store configuration, so equal bytes would prove nothing.' );
-		$this->assertSame( 6, substr_count( $guest, '"inStock":true' ), 'A variant is not in stock, so a page without its count would prove nothing.' );
 		$this->assertSame( $guest, $subscriber, 'A guest and a subscriber are sent different pages.' );
 		$this->assertStringNotContainsString( wp_create_nonce( 'wp_rest' ), $subscriber, 'The page holds the subscriber\'s nonce.' );
 		$this->assertStringNotContainsStringIgnoringCase( 'user', $subscriber, 'The page names a user.' );
@@ -91,6 +90,8 @@ final class NoVisitorTest extends ProductWriteTestCase {
 		foreach ( range( self::UNITS, self::UNITS + 10, 2 ) as $units ) {
 			$this->assertStringNotContainsString( (string) $units, $subscriber, 'The page holds a count of units for sale.' );
 		}
+
+		$this->assertSame( 6, substr_count( $guest, '"inStock":true' ), 'A variant is not in stock, so a page without its count would prove nothing.' );
 	}
 
 	/**
