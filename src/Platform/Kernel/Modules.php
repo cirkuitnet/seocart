@@ -260,6 +260,7 @@ use SEOCart\Platform\Settings\SettingsError;
 use SEOCart\Platform\Settings\SettingsService;
 use SEOCart\Platform\Settings\SettingsStore;
 use SEOCart\Platform\Storefront\Blocks;
+use SEOCart\Platform\Storefront\StoreConfig;
 use SEOCart\Platform\Storefront\StorefrontAssets;
 use SEOCart\Pricing\Application\Calculator;
 use SEOCart\Pricing\Application\ExchangeRates;
@@ -341,8 +342,8 @@ use SEOCart\Tax\Domain\TaxRoundingMode;
  * `unexpected` and `internal` shapes.
  *
  * It also keeps the lists the kernel cannot derive at run time without loading every class: the
- * error catalogs, the domain events, the plugin's own event listeners and the maintenance
- * commands. Each has a test that holds it to
+ * error catalogs, the domain events, the plugin's own event listeners, the maintenance commands
+ * and the storefront blocks. Each has a test that holds it to
  * what exists. The migration chain is not one of them: the migrator runs the data registry's
  * migrations, the one production list of what the plugin owns in a site.
  *
@@ -1169,7 +1170,7 @@ final class Modules {
 				self::rateVersion( $c )
 			)
 		);
-		$container->bind( ProductBlocks::class, static fn( Container $c ): ProductBlocks => new ProductBlocks( $c->get( ProductPage::class ) ) );
+		$container->bind( ProductBlocks::class, static fn( Container $c ): ProductBlocks => new ProductBlocks( $c->get( ProductPage::class ), $c->get( StorefrontAssets::class ), $c->get( StoreConfig::class ), $c->get( RequestLanguage::class ) ) );
 		$container->bind( ProductPriceBlock::class, static fn( Container $c ): ProductPriceBlock => new ProductPriceBlock( $c->get( ProductBlocks::class ) ) );
 		$container->bind( VariantPickerBlock::class, static fn( Container $c ): VariantPickerBlock => new VariantPickerBlock( $c->get( ProductBlocks::class ) ) );
 		$container->bind( AddToCartBlock::class, static fn( Container $c ): AddToCartBlock => new AddToCartBlock( $c->get( ProductBlocks::class ) ) );
@@ -1352,7 +1353,7 @@ final class Modules {
 	}
 
 	/**
-	 * The storefront: the loader of its script modules and its stylesheet, built the first time a block renders.
+	 * The storefront: the loader of its script modules and its stylesheet, and its store module's configuration, each built the first time a block renders.
 	 *
 	 * @since 0.2.0
 	 *
@@ -1360,6 +1361,7 @@ final class Modules {
 	 */
 	private static function storefrontRegister( Container $container ): void {
 		$container->bind( StorefrontAssets::class, static fn( Container $c ): StorefrontAssets => new StorefrontAssets( SEOCART_PLUGIN_FILE, $c->get( Reporter::class ) ) );
+		$container->bind( StoreConfig::class, static fn( Container $c ): StoreConfig => new StoreConfig( self::baseCurrency( $c ), self::rateVersion( $c ), $c->get( RequestLanguage::class ) ) );
 	}
 
 	/**

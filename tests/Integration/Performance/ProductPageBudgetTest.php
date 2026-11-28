@@ -13,34 +13,32 @@ namespace SEOCart\Tests\Integration\Performance;
 
 use SEOCart\Platform\Kernel\BootOption;
 use SEOCart\Platform\Kernel\BootRecord;
-use SEOCart\Platform\Kernel\Container;
-use SEOCart\Platform\Kernel\Modules;
-use SEOCart\Platform\Storefront\Blocks;
+use SEOCart\Tests\Integration\Storefront\RendersProductBlocks;
 use SEOCart\Tests\Support\Catalog\ProductWriteTestCase;
 use SEOCart\Tests\Support\Catalog\SavesVariantSets;
 use SEOCart\Tests\Support\Catalog\VariantSets;
-use SEOCart\Tests\Support\KernelContainer;
 use SEOCart\Tests\Support\KernelTestCase;
 use SEOCart\Tests\Support\QueryLog;
-use WP_Block_Type;
-use WP_Block_Type_Registry;
 
 /**
  * The price, the variant picker and the add-to-cart block of one product, rendered together, cost the plugin the same few statements whatever the number of its variants.
  *
  * A statement is counted when it names one of the plugin's tables or options; WordPress's own
- * reads are printed beside the count and not counted. The blocks share one read of the product:
- * one load of the product with its options and the variants it publishes, their prices included,
- * and one read of the units for sale of all its variants. A product of six variants and one of
- * 250 are measured, and must cost the same. Cold is a request on a host with no persistent object
- * cache: the object cache emptied but for the autoloaded options. Warm is the same request after
- * one has run, with what it left in the object cache: a host with a persistent one.
+ * reads are printed beside the count, by their beginning only, and not counted. The blocks share
+ * one read of the product: one load of the product with its options and the variants it
+ * publishes, their prices included; the sellability rule's one fetch; and one read of the units
+ * for sale of the variants it lets be sold. A product of six variants and one of 250 are measured,
+ * and must cost the same. Warm is a request on a host with a persistent object cache, which holds
+ * the settings and the list of locations an earlier request read: the page's budget applies to
+ * it. Cold is a request on a host without one: the object cache emptied but for the autoloaded
+ * options. Both are pinned exactly, so neither can grow unseen.
  *
- * Each measure renders the blocks over a container of their own, as a request builds one, so the
- * read a request keeps for its other blocks is not left over from an earlier measure. The site is
- * measured installed: its installation record, which activation writes and WordPress loads with
- * the other autoloaded options, is planted for the measures and put back afterwards, so reading
- * the exchange-rate version from it costs nothing, as on a real store.
+ * Each measure renders the blocks over a container of their own (RendersProductBlocks), as a
+ * request builds one, so the read a request keeps for its other blocks is not left over from an
+ * earlier measure. The site is measured installed: its installation record, which activation
+ * writes and WordPress loads with the other autoloaded options, is planted for the measures and
+ * put back afterwards, so reading the exchange-rate version from it costs nothing, as on a real
+ * store.
  *
  * Planted violations, shown red and removed: in ProductPage::of(), read the view on every call
  * (the three blocks then cost three reads: COLD and WARM fail); in ProductPage::read(), ask for the
@@ -53,6 +51,7 @@ use WP_Block_Type_Registry;
  */
 final class ProductPageBudgetTest extends ProductWriteTestCase {
 
+	use RendersProductBlocks;
 	use SavesVariantSets;
 
 	/**
@@ -64,6 +63,10 @@ final class ProductPageBudgetTest extends ProductWriteTestCase {
 	 * variants on: its one fetch. The inventory settings and the list of locations, which the read of
 	 * the units for sale needs, and that read. Eleven, the same on MySQL and on MariaDB.
 	 *
+	 * Pinned so it cannot grow, and held to no page budget: the figure of a request on a host with
+	 * no persistent object cache is measured, like the cart read's, by the method the private answer
+	 * that hydrates a page's prices will be designed with.
+	 *
 	 * @since 0.2.0
 	 *
 	 * @var int
@@ -71,7 +74,7 @@ final class ProductPageBudgetTest extends ProductWriteTestCase {
 	private const COLD = 11;
 
 	/**
-	 * The plugin's statements of the three blocks on a warm request, as measured.
+	 * The plugin's statements of the three blocks on a warm request, as measured: the page's budget.
 	 *
 	 * COLD's, less the two groups of settings and the list of locations, which the object cache
 	 * holds: eight.
@@ -92,15 +95,6 @@ final class ProductPageBudgetTest extends ProductWriteTestCase {
 	private const COUNTED = '/seocart_/';
 
 	/**
-	 * The kernel's registrations of the blocks, taken out by the test and put back after it.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @var list<WP_Block_Type>
-	 */
-	private array $kernels = array();
-
-	/**
 	 * The installation record stored before the test planted one, or null when there was none; false until the test plants it.
 	 *
 	 * @since 0.2.0
@@ -110,39 +104,12 @@ final class ProductPageBudgetTest extends ProductWriteTestCase {
 	private mixed $recordBefore = false;
 
 	/**
-	 * Keeps the kernel's registrations of the blocks, to put back after the test.
-	 *
-	 * @since 0.2.0
-	 */
-	public function set_up(): void {
-		parent::set_up();
-
-		foreach ( array_keys( Modules::STOREFRONT_BLOCKS ) as $name ) {
-			$type = WP_Block_Type_Registry::get_instance()->get_registered( $name );
-
-			if ( $type instanceof WP_Block_Type ) {
-				$this->kernels[] = $type;
-			}
-		}
-	}
-
-	/**
-	 * Puts back the kernel's registrations of the blocks.
+	 * Puts back the kernel's registrations of the blocks, and the installation record.
 	 *
 	 * @since 0.2.0
 	 */
 	public function tear_down(): void {
-		$registry = WP_Block_Type_Registry::get_instance();
-
-		foreach ( $this->kernels as $type ) {
-			if ( $registry->is_registered( $type->name ) ) {
-				$registry->unregister( $type->name );
-			}
-
-			$registry->register( $type );
-		}
-
-		$this->kernels = array();
+		$this->restoreProductBlocks();
 
 		if ( null === $this->recordBefore ) {
 			delete_option( BootOption::NAME );
@@ -195,30 +162,14 @@ final class ProductPageBudgetTest extends ProductWriteTestCase {
 	 * @return QueryLog The statements.
 	 */
 	private function measure( int $postId, bool $cold ): QueryLog {
-		$this->registerOver( KernelContainer::build( $this->db, $this->reporter() ) );
+		$this->renderOver( $this->db, $this->reporter() );
 
 		if ( $cold ) {
 			wp_cache_flush();
 			wp_load_alloptions();
 		}
 
-		$GLOBALS['post'] = get_post( $postId ); // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- The page's post, as the main query sets it.
-
-		return $this->captureQueries(
-			static function (): void {
-				foreach ( array_keys( Modules::STOREFRONT_BLOCKS ) as $name ) {
-					render_block(
-						array(
-							'blockName'    => $name,
-							'attrs'        => array(),
-							'innerBlocks'  => array(),
-							'innerHTML'    => '',
-							'innerContent' => array(),
-						)
-					);
-				}
-			}
-		);
+		return $this->captureQueries( fn() => $this->renderBlocks( $postId, 'seocart/product-price', 'seocart/variant-picker', 'seocart/add-to-cart' ) );
 	}
 
 	/**
@@ -230,25 +181,6 @@ final class ProductPageBudgetTest extends ProductWriteTestCase {
 		$this->recordBefore = get_option( BootOption::NAME, null );
 
 		( new BootOption( $this->db, $this->reporter() ) )->mutate( static fn( BootRecord $record ): BootRecord => $record->isAbsent() ? KernelTestCase::installedRecord( KernelTestCase::codeHead() ) : $record );
-	}
-
-	/**
-	 * Registers the blocks again, over a container of their own.
-	 *
-	 * @since 0.2.0
-	 *
-	 * @param Container $container The container the renderers are resolved from.
-	 */
-	private function registerOver( Container $container ): void {
-		$registry = WP_Block_Type_Registry::get_instance();
-
-		foreach ( array_keys( Modules::STOREFRONT_BLOCKS ) as $name ) {
-			if ( $registry->is_registered( $name ) ) {
-				$registry->unregister( $name );
-			}
-		}
-
-		Blocks::register( Modules::STOREFRONT_BLOCKS, $container );
 	}
 
 	/**

@@ -16,7 +16,8 @@
  * build/storefront/, where budget.json's `storefront/**` rule applies to it, and the blocks' two
  * modules and their stylesheet to build/blocks/, where its `blocks/**` rules apply. The
  * stylesheet is built in this configuration, which writes no right-to-left copy of it: it is
- * written with logical properties instead. A module the others import by its id is an external
+ * written with logical properties instead, and the empty script webpack makes for it is dropped
+ * (DropEmptyScripts), its .asset.json kept. A module the others import by its id is an external
  * module of theirs (STOREFRONT_EXTERNALS), so a page holds one copy of it whatever blocks share
  * it.
  *
@@ -133,7 +134,44 @@ function withPluginEntries( config, entries ) {
 	};
 }
 
+/**
+ * Drops the script webpack writes for an entry that is a stylesheet only: it is empty, and
+ * nothing loads it. It runs after the dependency lists are written, so the stylesheet keeps the
+ * .asset.json file its version is read from.
+ */
+class DropEmptyScripts {
+	apply( compiler ) {
+		compiler.hooks.thisCompilation.tap(
+			'DropEmptyScripts',
+			( compilation ) =>
+				compilation.hooks.processAssets.tap(
+					{
+						name: 'DropEmptyScripts',
+						stage: compiler.webpack.Compilation
+							.PROCESS_ASSETS_STAGE_REPORT,
+					},
+					( assets ) =>
+						Object.keys( assets )
+							.filter(
+								( name ) =>
+									name.endsWith( '.js' ) &&
+									0 === assets[ name ].size() &&
+									name.replace( /\.js$/, '.css' ) in assets
+							)
+							.forEach( ( name ) =>
+								compilation.deleteAsset( name )
+							)
+				)
+		);
+	}
+}
+
+const moduleBuild = withPluginEntries( moduleConfig, () => STOREFRONT_MODULES );
+
 module.exports = [
 	withPluginEntries( scriptConfig, adminEntries ),
-	withPluginEntries( moduleConfig, () => STOREFRONT_MODULES ),
+	{
+		...moduleBuild,
+		plugins: [ ...moduleBuild.plugins, new DropEmptyScripts() ],
+	},
 ];
