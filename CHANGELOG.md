@@ -14,7 +14,8 @@ under `[Unreleased]`. The release process moves those entries under the new vers
 
 This is the platform foundation and the two proofs built on it: a product with its stock,
 and money through one calculation pipeline to a placed, paid and partially refundable
-order. **There is no storefront yet:** a shopper reaches the cart and checkout only
+order. **The storefront so far is three blocks for a product's page,** its price, its options
+and an add-to-cart form; past adding to the cart, a shopper reaches the cart and checkout only
 through the Store API (`seocart/store/v1`), payment is by bank transfer, cheque or cash on
 delivery, which the merchant records as received, and the only admin surface is the product editor's Product data area. The plugin registers the store
 settings route (`GET` and `PATCH`), the stock adjustment route, ability and command, the
@@ -47,7 +48,7 @@ jobs. The rest is the skeleton and the checks that keep it releasable.
   JSON-Schema array spelled out outside the schema module, a raw option write outside the
   settings registry, money arithmetic in an interface adapter, and `eval()`.
 - The integration test harness: query, hook and file-load counters, and a test that holds
-  an idle request to zero plugin queries, 8 loaded files and 12 registered hooks.
+  an idle request to zero plugin queries, 8 loaded files and 13 registered hooks.
 - The end-to-end harness: Playwright with the WordPress test utilities and axe-core, and a
   first test that finds SEOCart active on the Plugins screen.
 - Scripts under `bin/dev/` that create and remove a disposable WordPress site or test
@@ -232,6 +233,17 @@ seocart jobs run` and from a short tick on admin requests; `wp seocart jobs stat
 - A shopper can leave an order note at checkout, and extensions can add checkout fields of their own, such as a purchase order number or a delivery slot; the store chooses whether each is hidden, optional or required, and the order keeps every value with the words the shopper saw, for staff to read (`GET /seocart/v1/orders/{order_uuid}/field-values`, `wp seocart order field-values`).
 - A store can now require shoppers to sign in before they place an order, with the "Accounts at checkout" setting (`accounts`: `optional`, the default, `required` or `guest_only`); and a signed-in customer can now read one of their own orders with its billing and shipping addresses, which nobody else can, an order's key included.
 - A shopper who placed an order as a guest can now add it to their account, once signed in, from the browser that placed it, when the account's email address is the one the order was placed with; the order then belongs to their account, and the change is recorded among the order's events.
+- Three storefront blocks for a product's page: Product price, Variant picker and Add to cart.
+  The server renders them the same for every visitor, so a page cache can serve the page. Picking
+  an option changes the price, the legend and the button; adding sends the selected variant and
+  quantity through the Store API, one write at a time at the cart's version, sends an add the
+  version refused once more, fetches a logged-in shopper's REST nonce when the first write needs
+  one, and says in the form what came of it, including a quantity past the units for sale. The
+  blocks are styled only through `--seocart-*` CSS variables over the theme's own, listed with
+  their classes in `docs/styling.md`.
+- A data layer for tag managers: the storefront blocks push `view_item` when a product's page is
+  first shown and `add_to_cart` for each add the store accepts onto `window.dataLayer`, with the
+  keys `docs/data-layer.md` publishes. SEOCart loads no tag manager and sends the data nowhere.
 
 ### Changed
 

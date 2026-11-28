@@ -22,7 +22,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * Owns one fact: which variant a page shows first, defaultVariant(). Everything else is read
  * once by ProductPage. It holds no count of units and nothing of a visitor: a variant is in
- * stock or not, and its price is the public one in the page's currency.
+ * stock or not, and its price is the public one in the page's currency. A variant the
+ * sellability rule refuses is left out, so the page shows its combination as unavailable.
  *
  * @since 0.2.0
  *

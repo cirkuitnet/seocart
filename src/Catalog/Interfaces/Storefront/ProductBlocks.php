@@ -31,7 +31,8 @@ defined( 'ABSPATH' ) || exit;
  * share one read of the product (ProductPage) and one state, printed into the store
  * `seocart/product` under the post's id the first time one of them renders: the variants the
  * sellability rule lets a visitor buy, each price as minor units and the server's text, and
- * whether each is in stock, never a count of units. The state's first paint is answered on the
+ * whether each is in stock, never a count of units. A variant the rule refuses is left out, so
+ * its combination of values reads as unavailable. The state's first paint is answered on the
  * server by closures the store's getters stand for in the browser.
  *
  * Every block loads the storefront's stylesheet; a block a shopper acts on also loads the store

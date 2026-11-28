@@ -301,6 +301,18 @@ its payload.
   installation record, `seocart_boot`, which the kernel reads on every request, and the data
   registry refuses a second autoloaded option.
 
+## The storefront
+
+The storefront is blocks, rendered by the server from one read of the product a page shows, and the same
+for every visitor, so a page cache can serve them. A product block prints the product's state, its options,
+the variants a visitor may buy and each price as the server wrote it, into the Interactivity API store
+`seocart/product`. In the browser that store's module swaps one server-written text for another as the
+shopper picks, and computes with no price. Every request to the Store API goes through the other store,
+`seocart/store`, which holds the cart's version and, for a logged-in shopper, the REST nonce.
+[storefront-blocks.md](storefront-blocks.md) shows how a block is added, [styling.md](styling.md) lists the
+classes and the `--seocart-*` variables a theme styles the blocks with, and [data-layer.md](data-layer.md) is
+the shape of the events they push for a tag manager.
+
 ## Where to go next
 
 - [adding-an-operation.md](adding-an-operation.md): add a field to a real operation and watch
