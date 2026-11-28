@@ -61,6 +61,8 @@ final class NoVisitorTest extends ProductWriteTestCase {
 	 * Tests that the page is the same bytes for a guest and a subscriber, and holds no nonce, no user and no count of units.
 	 *
 	 * @since 0.2.0
+	 *
+	 * @throws \LogicException When the test's services were built without the stock unit.
 	 */
 	public function test_the_page_is_the_same_for_a_guest_and_a_subscriber(): void {
 		$post    = $this->saveSet( null, VariantSets::options(), VariantSets::variants( 'VISITOR', VariantSets::SIZES, VariantSets::GRINDS, array(), false ) )->postId;
