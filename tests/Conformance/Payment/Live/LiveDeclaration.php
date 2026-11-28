@@ -26,7 +26,8 @@ namespace SEOCart\Tests\Conformance\Payment\Live;
  *   part whose job runs `extension-live.sh live`, its PHPUnit filter and how many tests it runs;
  * - the proofs the verdict's table lists, and the facts a job reports beyond its counts and nonce;
  * - the conformance suite's run against the provider: how many tests the extension's
- *   conformance test holds, and the tests it skips, each by the scenario it cannot produce;
+ *   conformance test holds, and the tests it skips, each by the scenario it cannot produce or
+ *   by the operation its gateway's matrix does not declare;
  * - the shapes of the provider's credentials, which the guard adds to its own;
  * - the harvest: which objects a recorded exchange created at the provider;
  * - optionally, the one part that runs nothing, says why and stays green while a secret is absent.
@@ -201,6 +202,22 @@ abstract class LiveDeclaration {
 	abstract public function suiteSkips(): array;
 
 	/**
+	 * Returns the tests the conformance suite skips because no cell of the gateway's matrix in a currency the test store sells declares the operation each one's rule needs, each by that operation, which its skip names; none by default.
+	 *
+	 * Such a rule does not apply to the gateway: rules 11 and 17 need `sca`, which a gateway that
+	 * never asks a shopper to act does not declare. The suite skips a rule in those words only when
+	 * the matrix it reads has no such cell, so a gateway whose matrix declares the operation runs
+	 * the rule, and its run, holding no such skip, fails the check.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, string> Each operation, by test method.
+	 */
+	public function suiteUndeclared(): array {
+		return array();
+	}
+
+	/**
 	 * Returns the shapes of the provider's credentials, each a regular expression, by what it is; the guard applies its own shapes first.
 	 *
 	 * @since 0.2.0
@@ -366,7 +383,7 @@ abstract class LiveDeclaration {
 	}
 
 	/**
-	 * Returns what the declaration states that cannot be: a name of the wrong shape, a part or proof of no job, a job nothing proves, a shape that is no pattern.
+	 * Returns what the declaration states that cannot be: a name of the wrong shape, a part or proof of no job, a job nothing proves, a test skipped for two reasons, a shape that is no pattern.
 	 *
 	 * @since 0.2.0
 	 *
@@ -424,10 +441,21 @@ abstract class LiveDeclaration {
 			$problems[] = 'The conformance test holds no test.';
 		}
 
-		foreach ( $this->suiteSkips() as $test => $scenario ) {
-			if ( 1 !== preg_match( '/^test_\w+$/D', $test ) || 1 !== preg_match( '/^[a-z][a-z_]*$/D', $scenario ) ) {
-				$problems[] = sprintf( 'The skip `%1$s` for `%2$s` is not a test method and a scenario.', $test, $scenario );
+		$skips = array(
+			'a scenario'   => $this->suiteSkips(),
+			'an operation' => $this->suiteUndeclared(),
+		);
+
+		foreach ( $skips as $what => $each ) {
+			foreach ( $each as $test => $named ) {
+				if ( 1 !== preg_match( '/^test_\w+$/D', $test ) || 1 !== preg_match( '/^[a-z][a-z_]*$/D', $named ) ) {
+					$problems[] = sprintf( 'The skip `%1$s` for `%2$s` is not a test method and %3$s.', $test, $named, $what );
+				}
 			}
+		}
+
+		foreach ( array_keys( array_intersect_key( $this->suiteSkips(), $this->suiteUndeclared() ) ) as $test ) {
+			$problems[] = sprintf( 'The test `%s` is skipped both for a scenario and for an operation the matrix does not declare: a test is skipped for one reason.', $test );
 		}
 
 		try {

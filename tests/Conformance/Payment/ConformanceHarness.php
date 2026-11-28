@@ -84,6 +84,7 @@ use SEOCart\Support\IdGenerator;
 use SEOCart\Support\Money;
 use SEOCart\Support\Schema\FieldSpec;
 use SEOCart\Support\Schema\Privacy;
+use SEOCart\Tests\Conformance\Payment\Live\SuiteOutput;
 use SEOCart\Tests\Support\Checkout\CurrencySwitchTestCase;
 use SEOCart\Tests\Support\Checkout\PlacementKernel;
 use SEOCart\Tests\Support\CreatesUsers;
@@ -2057,7 +2058,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 	}
 
 	/**
-	 * Returns the first cell a rule runs in, which must declare an operation; the rule is skipped when none does.
+	 * Returns the first cell a rule runs in, which must declare an operation; the rule is skipped when none does, in the words a live run's check reads (SuiteOutput::undeclared()).
 	 *
 	 * @since 0.2.0
 	 *
@@ -2074,7 +2075,7 @@ abstract class ConformanceHarness extends CurrencySwitchTestCase {
 			}
 		}
 
-		self::markTestSkipped( $rule->message() . sprintf( 'skipped: no cell of the matrix in a currency the test store sells (%1$s) declares %2$s.', implode( ', ', self::SELLABLE ), $operation ) );
+		self::markTestSkipped( $rule->message() . SuiteOutput::undeclared( self::SELLABLE, $operation ) );
 	}
 
 	/**

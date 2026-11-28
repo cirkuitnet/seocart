@@ -17,13 +17,24 @@ namespace SEOCart\Tests\Conformance\Payment\Live;
  * `sh ../seocart/bin/ci/extension.sh conformance . payments` runs two PHPUnit processes: the
  * suite's unit group, then the extension's ConformanceTest with `--verbose`, which lists each
  * skipped test and its reason. Run against the provider, the second must hold exactly the tests
- * the declaration states, every one passing but those it skips, each skipped with the reason the
- * extension declares for its scenario. Any other skip reads green and proves nothing, so it fails
- * the check. A part's live tests must all run and pass: as many as the declaration states.
+ * the declaration states, every one passing but those it skips, each skipped for the reason the
+ * declaration gives it: a scenario the provider's test environment cannot produce, or an
+ * operation that no cell of the gateway's matrix declares, in the words the suite skips such a
+ * rule with (undeclared()). Any other skip reads green and proves nothing, so it fails the check.
+ * A part's live tests must all run and pass: as many as the declaration states.
  *
  * @since 0.2.0
  */
 final class SuiteOutput {
+
+	/**
+	 * How the suite says it skips a rule whose operation no cell of the gateway's matrix declares in a currency the test store sells: the currencies, then the operation.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var string
+	 */
+	private const UNDECLARED = 'skipped: no cell of the matrix in a currency the test store sells (%1$s) declares %2$s.';
 
 	/**
 	 * Returns each summary a PHPUnit run printed, in order.
@@ -76,6 +87,19 @@ final class SuiteOutput {
 	}
 
 	/**
+	 * Returns the words the suite skips a rule with when no cell of the gateway's matrix in a currency the test store sells declares the operation the rule needs; the check reads a skip for that reason by the same words.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string[] $currencies The currencies the test store sells.
+	 * @param string   $operation  The operation, such as `sca`.
+	 * @return string The words, after the rule's own.
+	 */
+	public static function undeclared( array $currencies, string $operation ): string {
+		return sprintf( self::UNDECLARED, implode( ', ', $currencies ), $operation );
+	}
+
+	/**
 	 * Checks the conformance suite's run: the unit group passed, and the extension's test ran its tests with exactly the declared skips.
 	 *
 	 * @since 0.2.0
@@ -93,7 +117,7 @@ final class SuiteOutput {
 
 		list( $unit, $suite ) = $summaries;
 		$problems             = array();
-		$expected             = self::sortedByKey( $declaration->suiteSkips() );
+		$expected             = self::sortedByKey( $declaration->suiteSkips() + $declaration->suiteUndeclared() );
 
 		if ( ! $unit['ok'] || 0 !== $unit['skipped'] + $unit['incomplete'] + $unit['risky'] ) {
 			$problems[] = 'The unit group did not pass whole.';
@@ -113,9 +137,15 @@ final class SuiteOutput {
 			$problems[] = sprintf( 'The skipped tests are %1$s, not exactly %2$s.', array() === $skipped ? 'none' : implode( ', ', array_keys( $skipped ) ), array() === $expected ? 'none' : implode( ', ', array_keys( $expected ) ) );
 		}
 
-		foreach ( $expected as $test => $scenario ) {
+		foreach ( $declaration->suiteSkips() as $test => $scenario ) {
 			if ( isset( $skipped[ $test ] ) && ! str_contains( $skipped[ $test ], sprintf( 'cannot produce the scenario %s in test mode', $scenario ) ) ) {
 				$problems[] = sprintf( 'The test %1$s was skipped for another reason than the scenario %2$s, which the provider\'s test environment cannot produce.', $test, $scenario );
+			}
+		}
+
+		foreach ( $declaration->suiteUndeclared() as $test => $operation ) {
+			if ( isset( $skipped[ $test ] ) && ! self::saysUndeclared( $skipped[ $test ], $operation ) ) {
+				$problems[] = sprintf( 'The test %1$s was skipped for another reason than the operation %2$s, which no cell of the gateway\'s matrix declares.', $test, $operation );
 			}
 		}
 
@@ -184,6 +214,27 @@ final class SuiteOutput {
 			'risky'      => $count( 'Risky' ),
 			'warnings'   => $count( 'Warnings' ),
 		);
+	}
+
+	/**
+	 * Returns whether a skip's reason ends in the words undeclared() gives for an operation, whichever currencies they name.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $reason    The first line of the skip's reason.
+	 * @param string $operation The operation.
+	 * @return bool Whether the reason is that operation's.
+	 */
+	private static function saysUndeclared( string $reason, string $operation ): bool {
+		$words = strtr(
+			preg_quote( self::UNDECLARED, '/' ),
+			array(
+				preg_quote( '%1$s', '/' ) => '[A-Z]{3}(?:, [A-Z]{3})*',
+				preg_quote( '%2$s', '/' ) => preg_quote( $operation, '/' ),
+			)
+		);
+
+		return 1 === preg_match( '/' . $words . '$/D', $reason );
 	}
 
 	/**

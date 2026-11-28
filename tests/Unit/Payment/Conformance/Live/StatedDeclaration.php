@@ -154,6 +154,15 @@ final class StatedDeclaration extends LiveDeclaration {
 	 *
 	 * @since 0.2.0
 	 */
+	public function suiteUndeclared(): array {
+		return $this->stated['suiteUndeclared'] ?? $this->base->suiteUndeclared();
+	}
+
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @since 0.2.0
+	 */
 	public function shapes(): array {
 		return $this->stated['shapes'] ?? $this->base->shapes();
 	}

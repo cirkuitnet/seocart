@@ -12,6 +12,7 @@ declare( strict_types=1 );
 namespace SEOCart\Tests\Unit\Payment\Conformance\Live;
 
 use PHPUnit\Framework\TestCase;
+use SEOCart\Tests\Conformance\Payment\Live\LiveDeclaration;
 use SEOCart\Tests\Conformance\Payment\Live\SuiteOutput;
 
 /**
@@ -20,11 +21,25 @@ use SEOCart\Tests\Conformance\Payment\Live\SuiteOutput;
  * Planted violations, each shown red and removed: in SuiteOutput::conformanceProblems(), the
  * declared count read as 16: the expected output fails; the skip set's check removed: the output
  * with a third skip passes; in SuiteOutput::liveProblems(), the part's count not checked: a
- * payments run of 5 tests passes.
+ * payments run of 5 tests passes. For a skip because the matrix declares no cell of an
+ * operation: the declared operations left out of the expected skips: the run of a gateway without
+ * `sca` fails; the reason's check removed: each other reason passes; the operation not read from
+ * the reason: another operation's words pass; the words not anchored at the reason's end: words
+ * with more after them pass; every skip in those words taken as declared: the fixture, whose
+ * matrix declares `sca`, passes rule 11 skipped in them.
  *
  * @since 0.2.0
  */
 final class SuiteOutputTest extends TestCase {
+
+	/**
+	 * The currencies the conformance suite's test store sells, as its skips name them.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @var list<string>
+	 */
+	private const SELLABLE = array( 'USD', 'GBP', 'EUR' );
 
 	/**
 	 * Tests that the output of a run as the replay runs passes, with its counts read.
@@ -118,6 +133,93 @@ final class SuiteOutputTest extends TestCase {
 	}
 
 	/**
+	 * Tests that the run of a gateway whose matrix declares no `sca` passes, with rules 11 and 17 skipped in the suite's words for that operation, as its declaration states; a declaration states none by default.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_rules_skipped_for_an_operation_the_matrix_does_not_declare_pass(): void {
+		$this->assertSame( array(), SuiteOutput::conformanceProblems( self::withoutSca(), self::outputOf( self::reasonsWithoutSca() ) ) );
+		$this->assertSame( array(), StatedDeclaration::fixture()->suiteUndeclared() );
+	}
+
+	/**
+	 * Tests that the suite's words for an operation the matrix does not declare pass only the skips the declaration states so: not where a matrix declares `sca`, as the fixture's does, and a declaration of no `sca` not against the run of a matrix that declares it.
+	 *
+	 * @since 0.2.0
+	 */
+	public function test_the_words_for_an_undeclared_operation_fail_where_the_matrix_declares_it(): void {
+		$words = self::reasonsWithoutSca();
+
+		$this->assertSame(
+			array( 'The test test_rule_17_void_answers_the_approval was skipped for another reason than the scenario requires_action_completed, which the provider\'s test environment cannot produce.' ),
+			SuiteOutput::conformanceProblems(
+				StatedDeclaration::fixture(),
+				self::outputOf(
+					array(
+						'test_rule_09_expiry' => self::scenarioReason( 'expires' ),
+						'test_rule_17_void_answers_the_approval' => $words['test_rule_17_void_answers_the_approval'],
+					)
+				)
+			)
+		);
+
+		$this->assertContains(
+			'The skipped tests are test_rule_09_expiry, test_rule_11_next_action_shape, test_rule_17_void_answers_the_approval, not exactly test_rule_09_expiry, test_rule_17_void_answers_the_approval.',
+			SuiteOutput::conformanceProblems( StatedDeclaration::fixture(), self::outputOf( array( 'test_rule_17_void_answers_the_approval' => self::scenarioReason( 'requires_action_completed' ) ) + $words ) )
+		);
+
+		$ran = SuiteOutput::conformanceProblems(
+			self::withoutSca(),
+			self::outputOf(
+				array(
+					'test_rule_09_expiry' => self::scenarioReason( 'expires' ),
+					'test_rule_17_void_answers_the_approval' => self::scenarioReason( 'requires_action_completed' ),
+				)
+			)
+		);
+
+		$this->assertContains( 'The skipped tests are test_rule_09_expiry, test_rule_17_void_answers_the_approval, not exactly test_rule_09_expiry, test_rule_11_next_action_shape, test_rule_17_void_answers_the_approval.', $ran );
+		$this->assertContains( 'The test test_rule_17_void_answers_the_approval was skipped for another reason than the operation sca, which no cell of the gateway\'s matrix declares.', $ran );
+	}
+
+	/**
+	 * Tests that a rule the declaration says is skipped for an operation the matrix does not declare fails when it is skipped for anything else.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @dataProvider otherReasons
+	 *
+	 * @param string $reason The rule's reason.
+	 */
+	public function test_a_skip_for_an_undeclared_operation_for_another_reason_fails( string $reason ): void {
+		$this->assertSame(
+			array( 'The test test_rule_11_next_action_shape was skipped for another reason than the operation sca, which no cell of the gateway\'s matrix declares.' ),
+			SuiteOutput::conformanceProblems( self::withoutSca(), self::outputOf( array( 'test_rule_11_next_action_shape' => $reason ) + self::reasonsWithoutSca() ) )
+		);
+	}
+
+	/**
+	 * Returns reasons rule 11 is skipped for other than its operation `sca`, which the matrix does not declare.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, array{string}> The reasons; by name.
+	 */
+	public static function otherReasons(): array {
+		$rule = 'Conformance rule 11 (next action shape): ';
+
+		return array(
+			'an arbitrary reason'        => array( $rule . 'skipped: not today.' ),
+			'the scenario not produced'  => array( $rule . 'skipped: the provider cannot produce the scenario requires_action in test mode: a reason.' ),
+			'another operation'          => array( $rule . SuiteOutput::undeclared( self::SELLABLE, 'void' ) ),
+			'an operation sca begins'    => array( $rule . SuiteOutput::undeclared( self::SELLABLE, 'scab' ) ),
+			'no currency named'          => array( $rule . SuiteOutput::undeclared( array(), 'sca' ) ),
+			'more after the words'       => array( $rule . SuiteOutput::undeclared( self::SELLABLE, 'sca' ) . ' Run it elsewhere.' ),
+			'the words in the rule name' => array( SuiteOutput::undeclared( self::SELLABLE, 'sca' ) . ' skipped: not today.' ),
+		);
+	}
+
+	/**
 	 * Tests that a run of the live tests passes only when every test ran and passed: a skip, a failure or no test at all fails it.
 	 *
 	 * @since 0.2.0
@@ -156,17 +258,75 @@ final class SuiteOutputTest extends TestCase {
 	 */
 	private static function output( ?array $skips = null ): string {
 		$skips ??= StatedDeclaration::fixture()->suiteSkips();
-		$text    = "> @test:unit --group conformance --fail-on-empty-test-suite\nPHPUnit 9.6.36 by Sebastian Bergmann and contributors.\n\n" . str_repeat( '.', 40 ) . "  40 / 40 (100%)\n\nTime: 00:01.234, Memory: 40.00 MB\n\nOK (40 tests, 120 assertions)\n";
-		$text   .= "> @php tests/Conformance/Payment/integration.php\nPHPUnit 9.6.36 by Sebastian Bergmann and contributors.\n\nRuntime:       PHP 8.4.27\n\n";
-		$text   .= str_repeat( '.', 17 - count( $skips ) ) . str_repeat( 'S', count( $skips ) ) . "  17 / 17 (100%)\n\nTime: 00:30.000, Memory: 80.00 MB\n\n";
-		$text   .= sprintf( "There %s %d skipped test%s:\n\n", 1 === count( $skips ) ? 'was' : 'were', count( $skips ), 1 === count( $skips ) ? '' : 's' );
-		$number  = 0;
 
-		foreach ( $skips as $test => $scenario ) {
-			$reason = null === $scenario ? 'Rule 10: a webhook delivery is verified before it is read: skipped: the gateway declares no webhooks.' : sprintf( 'Rule 0: the rule: skipped: the provider cannot produce the scenario %s in test mode: a reason.', $scenario );
-			$text  .= sprintf( "%1\$d) Example\\GatewayForFixturePay\\Tests\\Integration\\ConformanceTest::%2\$s\n%3\$s\n\n", ++$number, $test, $reason );
+		return self::outputOf( array_map( static fn( ?string $scenario ): string => null === $scenario ? 'Rule 10: a webhook delivery is verified before it is read: skipped: the gateway declares no webhooks.' : self::scenarioReason( $scenario ), $skips ) );
+	}
+
+	/**
+	 * Returns what `extension.sh conformance . payments` prints, as PHPUnit 9 prints it, with each skipped test's reason given.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param array<string, string> $reasons Each skipped test's reason, by name.
+	 * @return string The output.
+	 */
+	private static function outputOf( array $reasons ): string {
+		$text   = "> @test:unit --group conformance --fail-on-empty-test-suite\nPHPUnit 9.6.36 by Sebastian Bergmann and contributors.\n\n" . str_repeat( '.', 40 ) . "  40 / 40 (100%)\n\nTime: 00:01.234, Memory: 40.00 MB\n\nOK (40 tests, 120 assertions)\n";
+		$text  .= "> @php tests/Conformance/Payment/integration.php\nPHPUnit 9.6.36 by Sebastian Bergmann and contributors.\n\nRuntime:       PHP 8.4.27\n\n";
+		$text  .= str_repeat( '.', 17 - count( $reasons ) ) . str_repeat( 'S', count( $reasons ) ) . "  17 / 17 (100%)\n\nTime: 00:30.000, Memory: 80.00 MB\n\n";
+		$text  .= sprintf( "There %s %d skipped test%s:\n\n", 1 === count( $reasons ) ? 'was' : 'were', count( $reasons ), 1 === count( $reasons ) ? '' : 's' );
+		$number = 0;
+
+		foreach ( $reasons as $test => $reason ) {
+			$text .= sprintf( "%1\$d) Example\\GatewayForFixturePay\\Tests\\Integration\\ConformanceTest::%2\$s\n%3\$s\n\n", ++$number, $test, $reason );
 		}
 
-		return $text . sprintf( "OK, but incomplete, skipped, or risky tests!\nTests: 17, Assertions: 307, Skipped: %d.\n", count( $skips ) );
+		return $text . sprintf( "OK, but incomplete, skipped, or risky tests!\nTests: 17, Assertions: 307, Skipped: %d.\n", count( $reasons ) );
+	}
+
+	/**
+	 * Returns the reason the suite skips a rule with when the provider cannot produce its scenario.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @param string $scenario The scenario.
+	 * @return string The reason.
+	 */
+	private static function scenarioReason( string $scenario ): string {
+		return sprintf( 'Rule 0: the rule: skipped: the provider cannot produce the scenario %s in test mode: a reason.', $scenario );
+	}
+
+	/**
+	 * Returns the fixture's declaration as a gateway whose matrix declares no `sca` states its skips: rule 9 for its scenario, rules 11 and 17 for the operation.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return LiveDeclaration The declaration.
+	 */
+	private static function withoutSca(): LiveDeclaration {
+		return StatedDeclaration::with(
+			array(
+				'suiteSkips'      => array( 'test_rule_09_expiry' => 'expires' ),
+				'suiteUndeclared' => array(
+					'test_rule_11_next_action_shape' => 'sca',
+					'test_rule_17_void_answers_the_approval' => 'sca',
+				),
+			)
+		);
+	}
+
+	/**
+	 * Returns the reasons the suite gives the skips of a gateway whose matrix declares no `sca`: rule 9's scenario, and for rules 11 and 17 the words the suite says the operation with.
+	 *
+	 * @since 0.2.0
+	 *
+	 * @return array<string, string> Each reason, by test.
+	 */
+	private static function reasonsWithoutSca(): array {
+		return array(
+			'test_rule_09_expiry'                    => self::scenarioReason( 'expires' ),
+			'test_rule_11_next_action_shape'         => 'Conformance rule 11 (next action shape): ' . SuiteOutput::undeclared( self::SELLABLE, 'sca' ),
+			'test_rule_17_void_answers_the_approval' => 'Conformance rule 17 (void answers an approval already given): ' . SuiteOutput::undeclared( self::SELLABLE, 'sca' ),
+		);
 	}
 }

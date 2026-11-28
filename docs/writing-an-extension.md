@@ -1096,8 +1096,9 @@ return new class() extends LiveDeclaration {
 	}
 
 	// liveParts(): each part that runs `live <part>`, with its PHPUnit filter and how many tests it runs;
-	// proofs(), facts(), suiteTests(), suiteSkips(), shapes(), createdBy(); and optionalPart(), when a
-	// part runs nothing while a secret is absent.
+	// proofs(), facts(), suiteTests(), suiteSkips(), shapes(), createdBy(); suiteUndeclared(), when the
+	// suite skips a rule because no cell of the matrix declares the operation it needs (rules 11 and 17
+	// for a gateway without `sca`); and optionalPart(), when a part runs nothing while a secret is absent.
 };
 ```
 
